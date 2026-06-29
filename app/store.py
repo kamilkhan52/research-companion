@@ -13,12 +13,23 @@ from pathlib import Path
 from . import config
 from .models import Paper
 
-READING_LIST = config.PROJECT_DIR / "reading-list.md"
-READING_METHOD = config.PROJECT_DIR / "reading-method.md"
-# The aggregate cross-paper notes (the "working notes"). File kept as working-notes.md;
-# read_synthesis/write_synthesis are the historical accessor names.
-SYNTHESIS = config.PROJECT_DIR / "working-notes.md"
-CORPUS_DIR = config.PROJECT_DIR / "corpus"
+# Per-project file locations resolve against the active project (config.project_dir()), so
+# the same store functions serve every project. The aggregate cross-paper notes (the "working
+# notes") live in working-notes.md; read_synthesis/write_synthesis are the historical names.
+def _reading_list() -> Path:
+    return config.project_dir() / "reading-list.md"
+
+
+def _reading_method() -> Path:
+    return config.project_dir() / "reading-method.md"
+
+
+def _synthesis() -> Path:
+    return config.project_dir() / "working-notes.md"
+
+
+def _corpus_dir() -> Path:
+    return config.project_dir() / "corpus"
 
 # Entry line: **Title** — *unread*  (em dash, italic status). Tolerates a plain hyphen too.
 _ENTRY_RE = re.compile(r"^\*\*(?P<title>.+?)\*\*\s*[—-]\s*\*(?P<status>unread|read)\*\s*$")
@@ -73,28 +84,31 @@ def derive_slug(title: str) -> str:
 
 
 def read_method() -> str:
-    return READING_METHOD.read_text(encoding="utf-8") if READING_METHOD.exists() else ""
+    p = _reading_method()
+    return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
 def write_method(content: str) -> None:
-    READING_METHOD.write_text(content.rstrip() + "\n", encoding="utf-8")
+    _reading_method().write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
 def read_synthesis() -> str:
-    return SYNTHESIS.read_text(encoding="utf-8") if SYNTHESIS.exists() else ""
+    p = _synthesis()
+    return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
 def write_synthesis(content: str) -> None:
-    SYNTHESIS.write_text(content.rstrip() + "\n", encoding="utf-8")
+    _synthesis().write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
 def corpus_path(slug: str) -> Path:
-    return CORPUS_DIR / f"{slug}.md"
+    return _corpus_dir() / f"{slug}.md"
 
 
 def _parse_entries() -> list[dict]:
     """Return entries with title, status, group, slug, cites, and the raw text block."""
-    text = READING_LIST.read_text(encoding="utf-8") if READING_LIST.exists() else ""
+    rl = _reading_list()
+    text = rl.read_text(encoding="utf-8") if rl.exists() else ""
     lines = text.splitlines()
     entries: list[dict] = []
     group = ""
@@ -192,7 +206,7 @@ def reading_list_overview() -> str:
 # ---- corpus full-text ----
 
 def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
-    CORPUS_DIR.mkdir(parents=True, exist_ok=True)
+    _corpus_dir().mkdir(parents=True, exist_ok=True)
     lines = [f"# {title}", ""]
     for k in ("slug", "arxiv_id", "source", "venue"):
         if meta.get(k):
@@ -272,8 +286,9 @@ def set_status_read(slug: str) -> bool:
     target = next((e for e in entries if e["slug"] == slug), None)
     if not target:
         return False
-    lines = READING_LIST.read_text(encoding="utf-8").splitlines()
+    rl = _reading_list()
+    lines = rl.read_text(encoding="utf-8").splitlines()
     i = target["line_index"]
     lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
-    READING_LIST.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rl.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return True

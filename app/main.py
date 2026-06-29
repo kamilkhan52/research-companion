@@ -24,7 +24,7 @@ from .tts import TTSError
 
 app = FastAPI(title=config.APP_TITLE)
 
-AUDIO_DIR = config.STATE_DIR / "audio"
+AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (TTS cache shared across projects)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
