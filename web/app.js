@@ -130,8 +130,24 @@ function stopAllAudio() {
 }
 
 /* ---------------- app state + views ---------------- */
-const S = { papers: [], hasKey: false, model: "", narrationModel: "", speechProvider: "openai", view: "library", slug: null, autoplay: false, turns: [] };
+const S = { papers: [], projects: [], hasKey: false, model: "", narrationModel: "", speechProvider: "openai", view: "library", slug: null, autoplay: false, turns: [] };
 const REVIEW_SLUG = "_review", REVIEW_TITLE = "Working Notes Review";
+
+/* Active research project. All per-project API calls go through pp(); global calls (settings,
+ * models, prompts, speak/narrate) keep their plain /api/… path. */
+let PROJECT = localStorage.getItem("rc_project") || "";
+function pp(sub) { return "/api/projects/" + encodeURIComponent(PROJECT) + sub; }
+function setProject(pid) { PROJECT = pid; localStorage.setItem("rc_project", pid); }
+
+// Load the project list and make sure PROJECT points at a real one (default: first). Returns
+// false when there are no projects yet (caller shows the create-first-project screen).
+async function ensureProject() {
+  const r = await api("/api/projects");
+  S.projects = r.projects || [];
+  if (!S.projects.length) { PROJECT = ""; return false; }
+  if (!PROJECT || !S.projects.some((p) => p.id === PROJECT)) setProject(S.projects[0].id);
+  return true;
+}
 const $app = document.getElementById("app");
 const $title = document.getElementById("title");
 const $back = document.getElementById("backBtn");
@@ -148,12 +164,50 @@ function paperStatus(p) {
   return "unread";
 }
 
+function projectBarHtml() {
+  const opts = S.projects.map((p) =>
+    '<option value="' + p.id + '"' + (p.id === PROJECT ? " selected" : "") + ">" +
+    escapeHtml(p.name) + " (" + p.read_count + "/" + p.paper_count + ")</option>").join("");
+  return '<div class="project-bar">' +
+    '<select id="projectSelect" aria-label="Active project">' + opts + "</select>" +
+    '<button id="newProjectBtn" class="ghost" aria-label="New project">+ New</button></div>';
+}
+
+function wireProjectBar() {
+  const sel = document.getElementById("projectSelect");
+  if (sel) sel.onchange = (e) => { setProject(e.target.value); loadLibrary(); };
+  const nb = document.getElementById("newProjectBtn");
+  if (nb) nb.onclick = createProjectFlow;
+}
+
+async function createProjectFlow() {
+  const name = (window.prompt("Name your new research project:") || "").trim();
+  if (!name) return;
+  let res; try { res = await api("/api/projects", "POST", { name }); }
+  catch (e) { toast(e.message); return; }
+  setProject(res.project.id);
+  toast("Created “" + res.project.name + "”");
+  loadLibrary();
+}
+
+function renderNoProjects() {
+  setTitle("Reading Companion", false);
+  $app.innerHTML =
+    '<div class="panel"><h3>Create your first project</h3>' +
+    '<p class="muted">A project holds one reading list, its corpus, sessions, and working notes.</p>' +
+    '<button id="firstProjectBtn" class="primary">+ New project</button></div>';
+  document.getElementById("firstProjectBtn").onclick = createProjectFlow;
+}
+
 async function loadLibrary() {
   stopAllAudio();
   setTitle("Reading Companion", false);
   $app.innerHTML = '<div class="loading-row"><span class="spinner"></span> Loading reading list…</div>';
+  let hasProj;
+  try { hasProj = await ensureProject(); } catch (e) { $app.innerHTML = ""; toast(e.message); return; }
+  if (!hasProj) return renderNoProjects();
   let st;
-  try { st = await api("/api/state"); } catch (e) { $app.innerHTML = ""; toast(e.message); return; }
+  try { st = await api(pp("/state")); } catch (e) { $app.innerHTML = ""; toast(e.message); return; }
   S.papers = st.papers; S.hasKey = st.has_key; S.model = st.model; S.narrationModel = st.narration_model;
   S.speechProvider = st.speech_provider || "openai";
   S.view = "library"; S.slug = null;
@@ -162,7 +216,8 @@ async function loadLibrary() {
   if (!st.has_key) toast("Add your OpenRouter key in Settings (⚙) to start a paper.", 6000);
 
   const readCount = st.papers.filter((p) => p.list_status === "read").length;
-  let html = '<div class="card review-card" data-slug="' + REVIEW_SLUG + '">' +
+  let html = projectBarHtml() +
+    '<div class="card review-card" data-slug="' + REVIEW_SLUG + '">' +
     '<div class="ct"><div class="t">◆ Working Notes Review</div>' +
     '<div class="s">cross-paper synthesis of all ' + readCount + ' read so far</div></div>' +
     '<span class="badge review-badge">review</span></div>';
@@ -180,6 +235,7 @@ async function loadLibrary() {
     }
   }
   $app.innerHTML = html;
+  wireProjectBar();
   $app.querySelectorAll(".card").forEach((c) => c.onclick = () => openPaper(c.dataset.slug));
 }
 
@@ -188,7 +244,7 @@ async function openPaper(slug) {
   S.slug = slug;
   $app.innerHTML = '<div class="loading-row"><span class="spinner"></span> Opening…</div>';
   let sess;
-  try { sess = await api("/api/session/" + slug); } catch (e) { toast(e.message); return; }
+  try { sess = await api(pp("/session/" + slug)); } catch (e) { toast(e.message); return; }
   const p = sess.paper;
   setTitle(p.title, true);
   if (sess.state === "notes_drafted") return renderReview(slug);
@@ -203,7 +259,7 @@ async function openPaper(slug) {
 async function openComposeFirst(slug) {
   stopAllAudio(); removeComposer(); S.slug = slug; S.view = "compose";
   $app.innerHTML = '<div class="loading-row"><span class="spinner"></span> Preparing…</div>';
-  let draft; try { draft = await api("/api/opening_draft/" + slug); } catch (e) { toast(e.message); return; }
+  let draft; try { draft = await api(pp("/opening_draft/" + slug)); } catch (e) { toast(e.message); return; }
   setTitle(draft.title, true); S._composeTitle = draft.title;
   const isReview = slug === REVIEW_SLUG;
   const hint = isReview
@@ -225,7 +281,7 @@ async function startChat(slug) {
   const model = document.getElementById("firstModel").value;
   if (model) S.model = model;
   renderDiscussion({ slug, title: S._composeTitle || "" }, []);
-  const turn = await streamTurn("/api/chat/start_stream", { slug, prompt, model });
+  const turn = await streamTurn(pp("/chat/start_stream"), { slug, prompt, model });
   if (turn && turn.proposed_commit) renderReview(slug);
 }
 
@@ -251,7 +307,7 @@ async function doStart(slug, arxiv_id, pdf_url) {
   if (btn) { btn.disabled = true; btn.textContent = "Fetching… (can take ~30s)"; }
   $app.insertAdjacentHTML("beforeend", '<div class="loading-row" id="startLoad"><span class="spinner"></span> Working…</div>');
   let res;
-  try { res = await api("/api/start", "POST", { slug, arxiv_id, pdf_url }); }
+  try { res = await api(pp("/start"), "POST", { slug, arxiv_id, pdf_url }); }
   catch (e) { toast(e.message); if (btn) { btn.disabled = false; btn.textContent = "Fetch paper"; } const l = document.getElementById("startLoad"); if (l) l.remove(); return; }
   if (res.needs_confirmation) return renderCandidates(slug, res.candidates);
   openPaper(slug);  // now retrieved -> routes to the compose-first screen
@@ -534,13 +590,13 @@ async function sendReply() {
   const text = ta.value.trim(); if (!text) return;
   appendTurn({ role: "user", text });
   ta.value = ""; ta.style.height = "auto";
-  const turn = await streamTurn("/api/reply_stream", { slug: S.slug, text });
+  const turn = await streamTurn(pp("/reply_stream"), { slug: S.slug, text });
   if (turn && turn.proposed_commit) openPaper(S.slug);
 }
 
 async function continueTurn() {
   const note = document.getElementById("genNote"); if (note) note.remove();
-  const turn = await streamTurn("/api/continue_stream", { slug: S.slug });
+  const turn = await streamTurn(pp("/continue_stream"), { slug: S.slug });
   if (turn && turn.proposed_commit) openPaper(S.slug);
 }
 
@@ -555,7 +611,7 @@ async function retryWithModel(idx, modelId) {
   $app.querySelectorAll(".turn").forEach((el, i) => { if (i >= idx) el.remove(); });
   S.turns = S.turns.slice(0, idx);
   if (modelId) S.model = modelId;
-  const turn = await streamTurn("/api/retry_stream", { slug: S.slug, assistant_index: aidx, model: modelId || null });
+  const turn = await streamTurn(pp("/retry_stream"), { slug: S.slug, assistant_index: aidx, model: modelId || null });
   const fs = document.getElementById("favModel"); if (fs) fillModelSelect(fs, window._favs || [], S.model);
   if (turn && turn.proposed_commit) openPaper(S.slug);
 }
@@ -589,7 +645,7 @@ function closeTurnMenu() { const m = document.getElementById("turnMenu"); if (m)
 
 async function finishPaper() {
   if (!confirm("Wrap up this paper? The agent will draft the Notes block and a synthesis update for your review.")) return;
-  const turn = await streamTurn("/api/finish_stream", { slug: S.slug });
+  const turn = await streamTurn(pp("/finish_stream"), { slug: S.slug });
   if (turn && turn.proposed_commit) { removeComposer(); renderReview(S.slug); }
   else if (turn) toast("Agent kept discussing instead of drafting — nudge it or try again.");
 }
@@ -598,7 +654,7 @@ async function renderReview(slug) {
   removeComposer(); stopAllAudio(); S.view = "review";
   $app.innerHTML = '<div class="loading-row"><span class="spinner"></span> Loading draft…</div>';
   let r;
-  try { r = await api("/api/review/" + slug); } catch (e) { toast(e.message); return; }
+  try { r = await api(pp("/review/" + slug)); } catch (e) { toast(e.message); return; }
   const isReview = slug === REVIEW_SLUG;
   setTitle(isReview ? "Update working notes" : "Review — " + r.title, true);
   let html = '<div class="panel"><h3>' + (isReview ? "Update working notes" : "Approve notes &amp; working notes") + "</h3>" +
@@ -621,7 +677,7 @@ async function renderReview(slug) {
 }
 
 async function backToDiscussion(slug) {
-  try { await api("/api/reopen", "POST", { slug }); }
+  try { await api(pp("/reopen"), "POST", { slug }); }
   catch (e) { toast(e.message); return; }
   openPaper(slug);  // state is now in_discussion -> renders the discussion + composer
 }
@@ -631,7 +687,7 @@ async function approve(slug) {
   const body = { slug, synthesis: document.getElementById("synth").value };
   if (notesEl) body.notes_block = notesEl.value;
   const btn = document.getElementById("approveBtn"); btn.disabled = true; btn.textContent = "Committing…";
-  try { const res = await api("/api/approve", "POST", body);
+  try { const res = await api(pp("/approve"), "POST", body);
     toast("Committed " + res.result.rev + (slug === REVIEW_SLUG ? " — working notes updated." : " — marked read."));
     loadLibrary(); }
   catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "✓ Approve & commit"; }
@@ -642,7 +698,7 @@ async function requestChanges(slug) {
   if (!text) return;
   const msg = document.getElementById("reviewMsg");
   msg.innerHTML = '<div class="loading-row"><span class="spinner"></span> Revising…</div>';
-  try { const res = await api("/api/request_changes", "POST", { slug, text });
+  try { const res = await api(pp("/request_changes"), "POST", { slug, text });
     if (res.turn.proposed_commit) renderReview(slug); else openPaper(slug); }
   catch (e) { toast(e.message); msg.innerHTML = ""; }
 }

@@ -9,20 +9,26 @@ import json
 import re
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, committer, config, prompts, retriever, sessions, store, tts
+from . import agent, committer, config, projects, prompts, retriever, sessions, store, tts
 from .agent import AgentError
 from .committer import CommitError
 from .models import REVIEW_SLUG, REVIEW_TITLE
+from .projects import ProjectError
 from .prompts import PromptError
 from .retriever import RetrievalError
 from .tts import TTSError
 
 app = FastAPI(title=config.APP_TITLE)
+
+# All per-project data routes live under /api/projects/{pid}/… and run with that project bound
+# as active (use_project sets config's contextvar for the whole request, incl. streaming).
+project_router = APIRouter(prefix="/api/projects/{pid}",
+                           dependencies=[Depends(projects.use_project)], tags=["project"])
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (TTS cache shared across projects)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -88,6 +94,11 @@ class RetryReq(BaseModel):
     model: str | None = None
 
 
+class ProjectReq(BaseModel):
+    name: str
+    method: str | None = None   # optional starting reading-method; defaults to the template
+
+
 # ---------- helpers ----------
 
 def _paper_dict(slug: str) -> dict:
@@ -145,12 +156,47 @@ def health():
     return {"ok": True, "title": config.APP_TITLE}
 
 
-@app.get("/api/state")
-def get_state():
+# ---------- projects (management) ----------
+
+@app.get("/api/projects")
+def list_projects():
+    return {"projects": projects.list_projects()}
+
+
+@app.post("/api/projects")
+def create_project(req: ProjectReq):
+    try:
+        meta = projects.create_project(req.name, req.method)
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"project": meta}
+
+
+@app.get("/api/projects/{pid}/meta")
+def project_meta(pid: str):
+    if not projects.exists(pid):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+    return {"project": projects._read_meta(pid)}
+
+
+@app.patch("/api/projects/{pid}/meta")
+def rename_project(pid: str, req: ProjectReq):
+    try:
+        meta = projects.rename_project(pid, req.name)
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"project": meta}
+
+
+# ---------- per-project state ----------
+
+@project_router.get("/state")
+def get_state(pid: str):
     settings = config.load_settings()
     states = sessions.session_states()
     papers = [p.to_dict() for p in store.list_papers(states)]
     return {
+        "project": projects._read_meta(pid) or {"id": pid, "name": pid},
         "has_key": bool(settings.get("openrouter_api_key")),
         "model": settings.get("model"),
         "narration_model": settings.get("narration_model"),
@@ -311,7 +357,7 @@ def favorite_models():
 
 # ---------- session flows (Section 9) ----------
 
-@app.get("/api/session/{slug}")
+@project_router.get("/session/{slug}")
 def get_session(slug: str):
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
@@ -328,7 +374,7 @@ def get_session(slug: str):
     }
 
 
-@app.get("/api/opening_draft/{slug}")
+@project_router.get("/opening_draft/{slug}")
 def opening_draft(slug: str):
     """The editable first-prompt + default model for the compose-first screen. Returns the
     session's edited opening if one exists (for first-response retry), else the default."""
@@ -343,7 +389,7 @@ def opening_draft(slug: str):
     return {"prompt": prompt, "model": model, "title": p.title}
 
 
-@app.post("/api/start")
+@project_router.post("/start")
 def start_paper(req: StartReq):
     """Retrieve + cache a paper's full text (no session, no turn). The compose-first screen
     fires the first turn separately via /api/chat/start_stream."""
@@ -364,7 +410,7 @@ def start_paper(req: StartReq):
     return {"ok": True, "retrieved": True}
 
 
-@app.post("/api/chat/start_stream")
+@project_router.post("/chat/start_stream")
 def chat_start_stream(req: ChatStartReq):
     """Fire the first response for any chat (paper or review) with the edited opening prompt
     and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
@@ -388,7 +434,7 @@ def chat_start_stream(req: ChatStartReq):
                              headers=_SSE_HEADERS)
 
 
-@app.post("/api/reply")
+@project_router.post("/reply")
 def reply(req: ReplyReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
@@ -397,7 +443,7 @@ def reply(req: ReplyReq):
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
-@app.post("/api/reply_stream")
+@project_router.post("/reply_stream")
 def reply_stream(req: ReplyReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
@@ -406,7 +452,7 @@ def reply_stream(req: ReplyReq):
                              headers=_SSE_HEADERS)
 
 
-@app.post("/api/continue_stream")
+@project_router.post("/continue_stream")
 def continue_stream(req: FinishReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
@@ -417,7 +463,7 @@ def continue_stream(req: FinishReq):
                              headers=_SSE_HEADERS)
 
 
-@app.post("/api/retry_stream")
+@project_router.post("/retry_stream")
 def retry_stream(req: RetryReq):
     """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
     response to the preceding user message."""
@@ -430,7 +476,7 @@ def retry_stream(req: RetryReq):
                              headers=_SSE_HEADERS)
 
 
-@app.post("/api/finish_stream")
+@project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
@@ -441,7 +487,7 @@ def finish_stream(req: FinishReq):
                              headers=_SSE_HEADERS)
 
 
-@app.post("/api/continue")
+@project_router.post("/continue")
 def continue_turn(req: FinishReq):
     """Generate the assistant response for a reply that was recorded but never answered
     (e.g. a prior turn errored). No new user message is added."""
@@ -454,7 +500,7 @@ def continue_turn(req: FinishReq):
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
-@app.post("/api/finish")
+@project_router.post("/finish")
 def finish(req: FinishReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
@@ -463,7 +509,7 @@ def finish(req: FinishReq):
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
-@app.post("/api/request_changes")
+@project_router.post("/request_changes")
 def request_changes(req: RequestChangesReq):
     instruction = prompts.render("request_changes", feedback=req.text)
     sessions.record_user(req.slug, instruction, kind="revision")
@@ -471,7 +517,7 @@ def request_changes(req: RequestChangesReq):
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
-@app.post("/api/reopen")
+@project_router.post("/reopen")
 def reopen(req: FinishReq):
     """NotesDrafted -> InDiscussion: discard the rejected draft and go back to discussing,
     so the wrap-up step can be redone (e.g. after editing a prompt)."""
@@ -481,12 +527,12 @@ def reopen(req: FinishReq):
     return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
 
 
-@app.get("/api/review/{slug}")
+@project_router.get("/review/{slug}")
 def get_review(slug: str):
     return committer.review(slug)
 
 
-@app.post("/api/approve")
+@project_router.post("/approve")
 def approve(req: ApproveReq):
     proposed = sessions.latest_proposed_commit(req.slug) or {}
     notes = req.notes_block if req.notes_block is not None else proposed.get("notes_block", "")
@@ -497,6 +543,9 @@ def approve(req: ApproveReq):
     except CommitError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"result": result, "paper": _paper_dict(req.slug)}
+
+
+app.include_router(project_router)
 
 
 # ---------- static client (mounted last so /api/* wins) ----------

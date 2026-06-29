@@ -291,6 +291,16 @@ button.ghost:hover { border-color: var(--line-2); color: var(--cyan); }
 .check input { width: 18px; height: 18px; accent-color: var(--cyan); }
 .row { display: flex; gap: 11px; } .grow { flex: 1; }
 
+.project-bar { display: flex; gap: 9px; align-items: center; margin-bottom: 16px; }
+.project-bar select {
+  flex: 1; min-width: 0; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 9px 12px; font: inherit; font-family: var(--font-display); font-weight: 600;
+  letter-spacing: .01em; transition: border-color .15s, box-shadow .15s;
+}
+.project-bar select:focus { outline: none; border-color: rgba(52,231,224,.5); box-shadow: var(--glow-cyan); }
+.project-bar button { flex: 0 0 auto; padding: 9px 14px; }
+
 .review-sec { margin-bottom: 16px; }
 .review-sec .muted { font-family: var(--font-display); font-size: 12px; letter-spacing: .04em; }
 .review-sec textarea { width: 100%; min-height: 170px; max-height: 50vh; margin-top: 6px; }
