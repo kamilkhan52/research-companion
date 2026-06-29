@@ -16,8 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, committer, config, projects, prompts, retriever, sessions, store, tts
+from . import agent, auth, committer, config, projects, prompts, retriever, sessions, store, tts
 from .agent import AgentError
+from .auth import AuthError
 from .committer import CommitError
 from .models import REVIEW_SLUG, REVIEW_TITLE
 from .projects import ProjectError
@@ -27,11 +28,10 @@ from .tts import TTSError
 
 app = FastAPI(title=config.APP_TITLE)
 
-# ---------- exposure hardening (Phase A): CORS + optional bearer auth ----------
-# Both are env-gated and OFF by default, so the local/tunnel + web flow is unchanged. Turn on
-# when exposing the backend (e.g. a stable host for the mobile app):
-#   RC_AUTH_TOKEN=<long-random>     require Bearer token (or ?token=) on /api/* (not /health)
-#   RC_CORS_ORIGINS=https://a,https://b | *   allow these browser origins (native apps ignore CORS)
+# ---------- exposure hardening: CORS + user auth (Supabase) ----------
+# All env-gated and OFF by default, so local/tunnel use is unchanged. See app/auth.py for the
+# three modes (supabase | token | open). Enable browser cross-origin with:
+#   RC_CORS_ORIGINS=https://a,https://b | *   (native apps ignore CORS)
 _CORS_ORIGINS = [o.strip() for o in os.environ.get("RC_CORS_ORIGINS", "").split(",") if o.strip()]
 if _CORS_ORIGINS:
     app.add_middleware(
@@ -42,19 +42,24 @@ if _CORS_ORIGINS:
         allow_headers=["*"],
     )
 
-AUTH_TOKEN = os.environ.get("RC_AUTH_TOKEN", "")
+# Routes that must stay open even when auth is on (so clients can bootstrap login).
+_AUTH_EXEMPT = {"/api/health", "/api/auth/config"}
 
 
 @app.middleware("http")
-async def require_token(request: Request, call_next):
-    """When RC_AUTH_TOKEN is set, gate the API. The token may arrive as `Authorization: Bearer
-    <t>` (fetch/native) or `?token=<t>` (so <audio>/download tags work). OPTIONS preflight and
-    /api/health are always open; non-/api routes (the static SPA shell) load unauthenticated."""
-    if AUTH_TOKEN and request.method != "OPTIONS" \
-            and request.url.path.startswith("/api/") and request.url.path != "/api/health":
+async def authenticate(request: Request, call_next):
+    """Gate /api/* per app.auth.mode(). Token arrives as `Authorization: Bearer <t>` (fetch/
+    native) or `?token=<t>` (so <audio>/download/SSE tags work). OPTIONS, the exempt routes,
+    and non-/api routes (static SPA shell) are always allowed. The verified user (if any) is
+    stashed on request.state.user for handlers/future per-user data."""
+    request.state.user = None
+    if auth.enabled() and request.method != "OPTIONS" \
+            and request.url.path.startswith("/api/") and request.url.path not in _AUTH_EXEMPT:
         hdr = request.headers.get("authorization", "")
         token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else request.query_params.get("token", "")
-        if token != AUTH_TOKEN:
+        try:
+            request.state.user = auth.check(token)
+        except AuthError:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -188,6 +193,13 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 @app.get("/api/health")
 def health():
     return {"ok": True, "title": config.APP_TITLE}
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    """Public: tells clients the auth mode and (for supabase) the publishable URL + anon key,
+    so login config isn't hardcoded in the web/mobile clients."""
+    return auth.public_config()
 
 
 # ---------- projects (management) ----------

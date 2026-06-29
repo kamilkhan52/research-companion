@@ -27,7 +27,12 @@ Implemented on the backend + web client so any client can build against a stable
 
 1. **Multi-project** — `app/projects.py` registry; data routes under `/api/projects/{pid}/…`;
    per-project git-backed stores under `projects/`; app-global settings/keys in `.app-state/`.
-2. **Bearer auth** — `RC_AUTH_TOKEN` gates `/api/*` (Bearer header or `?token=`). Off by default.
+2. **User auth — Supabase** (Google + email magic-link). Backend verifies the user JWT locally
+   against Supabase's JWKS (`app/auth.py`, modes: supabase | token | open; off by default).
+   Web client has a sign-in screen via `supabase-js`. **Mobile (Phase B):**
+   `@react-native-google-signin` → `supabase.auth.signInWithIdToken` with the session in
+   `expo-secure-store`; needs a custom Expo dev build (not Expo Go) for native Google. Add
+   "Sign in with Apple" before iOS/TestFlight (Apple rule 4.8).
 3. **CORS** — `RC_CORS_ORIGINS` for browser clients (native apps ignore CORS). Off by default.
 4. **Typed API contract** — `scripts/gen-api-types.sh` generates `shared/api-types.ts` from the
    FastAPI OpenAPI schema, so the app's API types can't drift from the backend.

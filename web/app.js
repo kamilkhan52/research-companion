@@ -1,18 +1,78 @@
 "use strict";
 
-/* ---------------- auth (optional bearer token) ----------------
- * When the backend runs with RC_AUTH_TOKEN, the client must present it. Open the app once with
- * ?token=… (e.g. the tunnel URL) — it's saved and stripped from the address bar, then sent on
- * every API call. Header for fetch; ?token= for <audio>/download tags that can't set headers. */
+/* ---------------- auth ----------------
+ * Mode comes from the backend (/api/auth/config): "supabase" | "token" | "open".
+ *  - supabase: real user login (Google + email magic-link) via supabase-js; the access token
+ *    is sent as Bearer on fetch and as ?token= on <audio>/download/SSE tags.
+ *  - token: legacy shared secret — open the app once with ?token=… (saved + stripped from URL).
+ *  - open: no auth (local/tunnel default). */
+const Auth = { mode: "open", sb: null, accessToken: "", email: "" };
+
+// Legacy shared-token capture (token mode): ?token=… → saved and removed from the address bar.
 (function captureToken() {
   const u = new URL(window.location.href);
   const t = u.searchParams.get("token");
   if (t) { localStorage.setItem("rc_token", t); u.searchParams.delete("token");
     history.replaceState(null, "", u.pathname + u.search + u.hash); }
 })();
-function authToken() { return localStorage.getItem("rc_token") || ""; }
+
+function authToken() { return Auth.accessToken || localStorage.getItem("rc_token") || ""; }
 function authHeaders(h = {}) { const t = authToken(); if (t) h["Authorization"] = "Bearer " + t; return h; }
 function withTok(url) { const t = authToken(); if (!t) return url; return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t); }
+
+function applySession(session) {
+  Auth.accessToken = (session && session.access_token) || "";
+  Auth.email = (session && session.user && session.user.email) || "";
+  // If a session arrives while the login screen is up (OAuth/magic-link return), enter the app.
+  if (Auth.accessToken && document.querySelector(".auth-panel")) loadLibrary();
+  const so = document.getElementById("signOutRow");
+  if (so) so.classList.toggle("hidden", !Auth.accessToken);
+}
+
+async function initAuth() {
+  let cfg; try { cfg = await api("/api/auth/config"); } catch (e) { cfg = { mode: "open" }; }
+  Auth.mode = cfg.mode || "open";
+  if (Auth.mode !== "supabase") return;
+  const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+  Auth.sb = createClient(cfg.supabase_url, cfg.supabase_anon_key,
+    { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+  const { data } = await Auth.sb.auth.getSession();
+  applySession(data.session);
+  Auth.sb.auth.onAuthStateChange((_e, session) => applySession(session));
+}
+
+function needLogin() { return Auth.mode === "supabase" && !Auth.accessToken; }
+
+function renderLogin() {
+  setTitle("Reading Companion", false);
+  $app.innerHTML =
+    '<div class="panel auth-panel"><h3>Sign in</h3>' +
+    '<p class="muted">Sign in to use your research companion.</p>' +
+    '<button id="googleBtn" class="primary">Continue with Google</button>' +
+    '<div class="auth-or">or</div>' +
+    '<label class="field"><span>Email</span>' +
+    '<input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" /></label>' +
+    '<button id="magicBtn" class="ghost">Email me a magic link</button>' +
+    '<small id="authMsg" class="muted"></small></div>';
+  document.getElementById("googleBtn").onclick = signInGoogle;
+  document.getElementById("magicBtn").onclick = signInMagic;
+}
+
+async function signInGoogle() {
+  try { await Auth.sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin } }); }
+  catch (e) { toast(e.message); }
+}
+async function signInMagic() {
+  const email = (document.getElementById("authEmail").value || "").trim();
+  if (!email) { toast("Enter your email first."); return; }
+  const { error } = await Auth.sb.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
+  document.getElementById("authMsg").textContent =
+    error ? error.message : "Check your email for the sign-in link.";
+}
+async function signOut() {
+  try { if (Auth.sb) await Auth.sb.auth.signOut(); } catch (e) {}
+  Auth.accessToken = ""; location.reload();
+}
 
 /* ---------------- API ---------------- */
 async function api(path, method = "GET", body = null) {
@@ -857,4 +917,14 @@ $settings.onclick = (e) => { if (e.target === $settings) closeSettings(); };
 
 S.autoplay = localStorage.getItem("rc_autoplay") === "1";
 TTS.loadVoices();
-loadLibrary();
+
+async function boot() {
+  await initAuth();
+  const so = document.getElementById("signOutRow");
+  if (so) so.classList.toggle("hidden", !(Auth.mode === "supabase" && Auth.accessToken));
+  if (needLogin()) return renderLogin();
+  loadLibrary();
+}
+const signOutBtn = document.getElementById("signOutBtn");
+if (signOutBtn) signOutBtn.onclick = signOut;
+boot();

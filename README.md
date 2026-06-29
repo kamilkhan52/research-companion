@@ -42,18 +42,37 @@ single-project install, migrate the old `project/` store into `projects/`:
 ./scripts/migrate_to_projects.py "LLM Inference Serving"   # names the adopted project
 ```
 
-### Exposing the backend (optional)
+### Auth setup (Supabase — Google + email)
 
-The backend holds your paid API keys, so gate it before putting it on a stable public URL
-(an ad-hoc tunnel for quick testing is fine). Both are off by default:
+Auth is **off by default** (open, fine behind a private tunnel). To require real user login
+with Google and email magic-links, wire up Supabase once. The backend verifies the user's JWT
+locally against Supabase's JWKS — no server-side Supabase library, low lock-in.
+
+**One-time, in the dashboards (only you can do these — accounts + OAuth credentials):**
+
+1. **Supabase** → create a project. Settings → **enable asymmetric JWT signing keys** (so the
+   JWKS endpoint is live). Authentication → Providers → enable **Email** and **Google**.
+2. **Google Cloud Console** → create OAuth credentials:
+   - a **Web** client — add authorized redirect URI `https://<ref>.supabase.co/auth/v1/callback`
+     and your web origin to authorized JS origins;
+   - (later, for the Android app) an **Android** client with your app's SHA-1.
+   Put the Web client's ID + secret into Supabase's Google provider.
+3. Copy your project URL + **anon (publishable) key** from Supabase → API settings.
+
+**Then locally:**
 
 ```bash
-export RC_AUTH_TOKEN="$(openssl rand -hex 24)"      # require this token on /api/*
-export RC_CORS_ORIGINS="https://your-web-origin"    # only needed for browser clients
+# .env
+RC_SUPABASE_URL=https://<ref>.supabase.co
+RC_SUPABASE_ANON_KEY=<anon-key>
 ```
 
-With auth on, open the web app once as `https://…/?token=YOUR_TOKEN` — it saves the token and
-sends it on every call. Native clients send `Authorization: Bearer YOUR_TOKEN`.
+Restart — the web app now shows a Sign-in screen (Google / magic-link); sign out from Settings.
+Tokens are sent as `Authorization: Bearer …` (and `?token=…` for audio/SSE). Before shipping on
+iOS you'll also need "Sign in with Apple" (Apple's rule); Android-first means that can wait.
+
+> Legacy alternative (no Supabase): set `RC_AUTH_TOKEN` for a single shared-secret gate and open
+> the app once as `https://…/?token=YOUR_TOKEN`. `RC_CORS_ORIGINS` enables browser cross-origin.
 
 ## The loop
 
