@@ -1,8 +1,22 @@
 "use strict";
 
+/* ---------------- auth (optional bearer token) ----------------
+ * When the backend runs with RC_AUTH_TOKEN, the client must present it. Open the app once with
+ * ?token=… (e.g. the tunnel URL) — it's saved and stripped from the address bar, then sent on
+ * every API call. Header for fetch; ?token= for <audio>/download tags that can't set headers. */
+(function captureToken() {
+  const u = new URL(window.location.href);
+  const t = u.searchParams.get("token");
+  if (t) { localStorage.setItem("rc_token", t); u.searchParams.delete("token");
+    history.replaceState(null, "", u.pathname + u.search + u.hash); }
+})();
+function authToken() { return localStorage.getItem("rc_token") || ""; }
+function authHeaders(h = {}) { const t = authToken(); if (t) h["Authorization"] = "Bearer " + t; return h; }
+function withTok(url) { const t = authToken(); if (!t) return url; return url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(t); }
+
 /* ---------------- API ---------------- */
 async function api(path, method = "GET", body = null) {
-  const opt = { method, headers: {} };
+  const opt = { method, headers: authHeaders({}) };
   if (body) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   const r = await fetch(path, opt);
   let data = null;
@@ -407,8 +421,8 @@ async function listenOpenAI(idx, btn) {
   cont.textContent = narration; cont.classList.remove("hidden");
   const row = btn.closest(".audio-row");
   row.innerHTML =
-    '<audio class="tts-audio" controls preload="auto" src="' + url + '"></audio>' +
-    '<a class="dl" href="' + url + '" download="' + S.slug + '-narration.mp3">⬇ mp3</a>' +
+    '<audio class="tts-audio" controls preload="auto" src="' + withTok(url) + '"></audio>' +
+    '<a class="dl" href="' + withTok(url) + '" download="' + S.slug + '-narration.mp3">⬇ mp3</a>' +
     '<button class="transcript-toggle" data-idx="' + idx + '">Hide transcript</button>';
   row.querySelector(".transcript-toggle").onclick = (e) => toggleTranscript(idx, e.currentTarget);
   row.querySelector("audio.tts-audio").play().catch(() => {});  // best-effort; controls remain
@@ -536,7 +550,7 @@ async function streamTurn(endpoint, body) {
 
   let resp;
   try {
-    resp = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    resp = await fetch(endpoint, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
   } catch (e) { wrap.remove(); busyComposer(false); toast("Network error."); showGenNote(); return null; }
   if (!resp.ok || !resp.body) {
     let detail = "HTTP " + resp.status;

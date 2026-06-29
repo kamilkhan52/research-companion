@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,6 +26,38 @@ from .retriever import RetrievalError
 from .tts import TTSError
 
 app = FastAPI(title=config.APP_TITLE)
+
+# ---------- exposure hardening (Phase A): CORS + optional bearer auth ----------
+# Both are env-gated and OFF by default, so the local/tunnel + web flow is unchanged. Turn on
+# when exposing the backend (e.g. a stable host for the mobile app):
+#   RC_AUTH_TOKEN=<long-random>     require Bearer token (or ?token=) on /api/* (not /health)
+#   RC_CORS_ORIGINS=https://a,https://b | *   allow these browser origins (native apps ignore CORS)
+_CORS_ORIGINS = [o.strip() for o in os.environ.get("RC_CORS_ORIGINS", "").split(",") if o.strip()]
+if _CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+AUTH_TOKEN = os.environ.get("RC_AUTH_TOKEN", "")
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """When RC_AUTH_TOKEN is set, gate the API. The token may arrive as `Authorization: Bearer
+    <t>` (fetch/native) or `?token=<t>` (so <audio>/download tags work). OPTIONS preflight and
+    /api/health are always open; non-/api routes (the static SPA shell) load unauthenticated."""
+    if AUTH_TOKEN and request.method != "OPTIONS" \
+            and request.url.path.startswith("/api/") and request.url.path != "/api/health":
+        hdr = request.headers.get("authorization", "")
+        token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else request.query_params.get("token", "")
+        if token != AUTH_TOKEN:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
+
 
 # All per-project data routes live under /api/projects/{pid}/… and run with that project bound
 # as active (use_project sets config's contextvar for the whole request, incl. streaming).
