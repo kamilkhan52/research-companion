@@ -15,8 +15,12 @@ from datetime import datetime, timezone
 from . import assembler, config, prompts, store
 from .models import IN_DISCUSSION, NOTES_DRAFTED, COMMITTED, REVIEW_SLUG, Turn
 
-SESSIONS_DIR = config.PROJECT_DIR / "sessions"
-INDEX_FILE = config.STATE_DIR / "sessions.json"
+def _sessions_dir():
+    return config.project_dir() / "sessions"
+
+
+def _index_file():
+    return config.state_dir() / "sessions.json"
 
 
 def _now() -> str:
@@ -24,16 +28,17 @@ def _now() -> str:
 
 
 def _load_index() -> dict:
-    if INDEX_FILE.exists():
+    idx_file = _index_file()
+    if idx_file.exists():
         try:
-            return json.loads(INDEX_FILE.read_text())
+            return json.loads(idx_file.read_text())
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
 
 
 def _save_index(idx: dict) -> None:
-    INDEX_FILE.write_text(json.dumps(idx, indent=2))
+    _index_file().write_text(json.dumps(idx, indent=2))
 
 
 def session_states() -> dict[str, str]:
@@ -54,11 +59,11 @@ def set_state(slug: str, state: str) -> None:
 
 
 def _jsonl(slug: str):
-    return SESSIONS_DIR / f"{slug}.jsonl"
+    return _sessions_dir() / f"{slug}.jsonl"
 
 
 def _append_record(slug: str, record: dict) -> None:
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _sessions_dir().mkdir(parents=True, exist_ok=True)
     record["ts"] = _now()
     with _jsonl(slug).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -198,8 +203,11 @@ def reopen_discussion(slug: str) -> None:
 
 
 # ---- narration cache (keyed by canonical-text hash, so re-listens never re-synthesize) ----
+# App-global: identical canonical text narrates identically regardless of project, so the
+# cache is shared (and lives outside any project's git repo).
 
-NARRATION_CACHE = config.STATE_DIR / "narration-cache.json"
+def _narration_cache_file():
+    return config.APP_STATE_DIR / "narration-cache.json"
 
 
 def _ncache_key(text: str) -> str:
@@ -207,9 +215,10 @@ def _ncache_key(text: str) -> str:
 
 
 def _load_ncache() -> dict:
-    if NARRATION_CACHE.exists():
+    f = _narration_cache_file()
+    if f.exists():
         try:
-            return json.loads(NARRATION_CACHE.read_text())
+            return json.loads(f.read_text())
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
@@ -222,4 +231,4 @@ def get_cached_narration(text: str) -> str | None:
 def cache_narration(text: str, narration: str) -> None:
     cache = _load_ncache()
     cache[_ncache_key(text)] = narration
-    NARRATION_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=0))
+    _narration_cache_file().write_text(json.dumps(cache, ensure_ascii=False, indent=0))

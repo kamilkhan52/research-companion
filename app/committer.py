@@ -16,7 +16,7 @@ class CommitError(Exception):
 
 def _git(*args: str) -> str:
     proc = subprocess.run(
-        ["git", *args], cwd=str(store.config.PROJECT_DIR),
+        ["git", *args], cwd=str(store.config.project_dir()),
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
