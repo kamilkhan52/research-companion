@@ -291,6 +291,13 @@ button.ghost:hover { border-color: var(--line-2); color: var(--cyan); }
 .check input { width: 18px; height: 18px; accent-color: var(--cyan); }
 .row { display: flex; gap: 11px; } .grow { flex: 1; }
 
+.auth-panel { max-width: 420px; margin: 8vh auto 0; }
+.auth-panel button { width: 100%; margin-top: 6px; }
+.auth-panel .field { margin-top: 12px; }
+.auth-or { text-align: center; color: var(--muted); font-size: 13px; margin: 14px 0 4px;
+  font-family: var(--font-display); letter-spacing: .08em; }
+.auth-panel #authMsg { display: block; margin-top: 10px; }
+
 .project-bar { display: flex; gap: 9px; align-items: center; margin-bottom: 16px; }
 .project-bar select {
   flex: 1; min-width: 0; background: var(--panel-2); color: var(--text);
