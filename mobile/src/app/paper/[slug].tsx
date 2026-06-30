@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -21,6 +22,7 @@ import { streamPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
 import type { TranscriptEntry } from '@/api/types';
+import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
@@ -79,7 +81,12 @@ export default function DiscussionScreen() {
             contentContainerStyle={styles.thread}
             keyboardShouldPersistTaps="handled">
             {transcript.map((entry, i) => (
-              <Message key={i} entry={entry} />
+              <Message
+                key={i}
+                entry={entry}
+                audioId={`${slug}:${i}`}
+                title={session.data?.paper.title ?? 'Narration'}
+              />
             ))}
 
             {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
@@ -334,11 +341,28 @@ function Composer({
 
 // ---------- messages ----------
 
-function Message({ entry }: { entry: TranscriptEntry }) {
+function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: string; title: string }) {
+  const audio = useAudio();
   if (entry.role === 'user') return <UserBubble text={entry.text} />;
+
+  const loading = audio.loadingId === audioId;
+  const current = audio.currentId === audioId;
   return (
     <Card style={styles.assistant}>
       <Markdown text={entry.canonical} />
+      <Pressable
+        onPress={() => audio.playText({ id: audioId, title, text: entry.canonical })}
+        disabled={loading}
+        style={({ pressed }) => [styles.listenBtn, (pressed || current) && styles.listenBtnActive]}
+        accessibilityLabel="Listen to this response">
+        {loading ? (
+          <ActivityIndicator color={colors.cyan} size="small" />
+        ) : (
+          <Text variant="caption" color={current ? colors.cyan : colors.muted}>
+            {current ? '♪ Playing' : '► Listen'}
+          </Text>
+        )}
+      </Pressable>
     </Card>
   );
 }
@@ -394,6 +418,18 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   assistant: { backgroundColor: colors.panel },
+  listenBtn: {
+    alignSelf: 'flex-start',
+    marginTop: space.md,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    minWidth: 90,
+    alignItems: 'center',
+  },
+  listenBtnActive: { borderColor: colors.cyan },
   userRow: { alignItems: 'flex-end' },
   userBubble: {
     backgroundColor: colors.panel2,

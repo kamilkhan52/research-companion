@@ -15,10 +15,13 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
+import { View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
+import { AudioProvider } from '@/audio/AudioProvider';
+import { NowPlaying } from '@/components/NowPlaying';
 import { ProjectProvider } from '@/store/project';
 import { colors } from '@/theme/tokens';
 
@@ -51,16 +54,23 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <ProjectProvider>
-          <StatusBar style="light" />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: colors.bg },
-              animation: 'slide_from_right',
-            }}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-          </Stack>
+          <AudioProvider>
+            <StatusBar style="light" />
+            <View style={{ flex: 1, backgroundColor: colors.bg }}>
+              <View style={{ flex: 1 }}>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    animation: 'slide_from_right',
+                  }}>
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+                </Stack>
+              </View>
+              <NowPlaying />
+            </View>
+          </AudioProvider>
         </ProjectProvider>
       </QueryClientProvider>
     </SafeAreaProvider>
