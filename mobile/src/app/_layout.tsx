@@ -1,31 +1,68 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
+import {
+  ChakraPetch_600SemiBold,
+  ChakraPetch_700Bold,
+} from '@expo-google-fonts/chakra-petch';
+import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
+import {
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+} from '@expo-google-fonts/manrope';
 import { QueryClientProvider } from '@tanstack/react-query';
+import { useFonts } from 'expo-font';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { useColorScheme } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
 import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
 import { ProjectProvider } from '@/store/project';
+import { colors } from '@/theme/tokens';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-  const [booted, setBooted] = useState(false);
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [fontsLoaded] = useFonts({
+    ChakraPetch_600SemiBold,
+    ChakraPetch_700Bold,
+    Manrope_400Regular,
+    Manrope_500Medium,
+    Manrope_600SemiBold,
+    Manrope_700Bold,
+    JetBrainsMono_400Regular,
+  });
 
-  // Load persisted base URL + auth token before any request fires.
   useEffect(() => {
-    loadConfig().finally(() => setBooted(true));
+    loadConfig().finally(() => setConfigLoaded(true));
   }, []);
 
+  const ready = fontsLoaded && configLoaded;
+  useEffect(() => {
+    if (ready) SplashScreen.hideAsync().catch(() => {});
+  }, [ready]);
+
+  if (!ready) return null;
+
   return (
-    <QueryClientProvider client={queryClient}>
-      <ProjectProvider>
-        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-          <AnimatedSplashOverlay />
-          {booted && <AppTabs />}
-        </ThemeProvider>
-      </ProjectProvider>
-    </QueryClientProvider>
+    <SafeAreaProvider>
+      <QueryClientProvider client={queryClient}>
+        <ProjectProvider>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: colors.bg },
+              animation: 'slide_from_right',
+            }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+          </Stack>
+        </ProjectProvider>
+      </QueryClientProvider>
+    </SafeAreaProvider>
   );
 }

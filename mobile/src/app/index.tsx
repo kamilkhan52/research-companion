@@ -1,98 +1,203 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+// Library — the home screen. Project-scoped: a project bar (tap to switch/create) over the
+// list of papers in the active project. Tapping a paper opens its Discussion.
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
+import { hasBaseUrl } from '@/api/config';
+import { useProjectState, useProjects } from '@/api/queries';
+import type { Paper } from '@/api/types';
+import { IconButton, TopBar } from '@/components/TopBar';
+import { ProjectSwitcher } from '@/components/ProjectSwitcher';
+import { useActiveProject } from '@/store/project';
+import { Button, Card, Chip, Screen, Text } from '@/ui';
+import { colors, radius, space, stateMeta } from '@/theme/tokens';
+
+export default function LibraryScreen() {
+  const router = useRouter();
+  const { activePid, setActivePid, ready } = useActiveProject();
+  const { data: projects } = useProjects();
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  // Auto-select the first project if none is active yet.
+  useEffect(() => {
+    if (ready && !activePid && projects && projects.length > 0) {
+      setActivePid(projects[0].id);
+    }
+  }, [ready, activePid, projects, setActivePid]);
+
+  const stateQuery = useProjectState(activePid);
+  const activeProject = projects?.find((p) => p.id === activePid);
+
+  const grouped = useMemo(() => groupPapers(stateQuery.data?.papers ?? []), [stateQuery.data]);
+
+  const settingsBtn = (
+    <IconButton glyph="⚙" onPress={() => router.push('/settings')} accessibilityLabel="Settings" />
+  );
+
+  if (!hasBaseUrl()) {
     return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
+      <Screen>
+        <TopBar title="Reading Companion" right={settingsBtn} />
+        <Empty
+          heading="Connect to your server"
+          body="Set your backend URL (the Cloudflare tunnel link) in Settings to load your library."
+          action={<Button title="Open Settings" onPress={() => router.push('/settings')} />}
+        />
+      </Screen>
     );
   }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
+    <Screen>
+      <TopBar title="Reading Companion" right={settingsBtn} />
+
+      <ProjectBar
+        name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
+        subtitle={
+          activeProject
+            ? `${activeProject.paper_count} papers · ${activeProject.read_count} read`
+            : 'Tap to choose or create'
+        }
+        onPress={() => setSwitcherOpen(true)}
+      />
+
+      <ScrollView
+        contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={stateQuery.isFetching}
+            onRefresh={() => stateQuery.refetch()}
+            tintColor={colors.cyan}
+          />
+        }>
+        {!activePid ? (
+          <Empty
+            heading="No project selected"
+            body="Choose a research project, or create a new one to start reading."
+            action={<Button title="Choose project" onPress={() => setSwitcherOpen(true)} />}
+          />
+        ) : stateQuery.isLoading ? (
+          <ActivityIndicator color={colors.cyan} style={{ paddingVertical: space.xxl }} />
+        ) : stateQuery.isError ? (
+          <Empty
+            heading="Couldn't load papers"
+            body={(stateQuery.error as Error)?.message ?? 'Request failed.'}
+            action={<Button title="Retry" onPress={() => stateQuery.refetch()} />}
+          />
+        ) : grouped.length === 0 ? (
+          <Empty heading="No papers yet" body="This project's reading list is empty." />
+        ) : (
+          grouped.map(({ group, papers }) => (
+            <View key={group} style={{ marginBottom: space.lg }}>
+              <Text variant="label" style={styles.groupLabel}>
+                {group.toUpperCase()}
+              </Text>
+              <View style={{ gap: space.sm }}>
+                {papers.map((p) => (
+                  <PaperRow
+                    key={p.slug}
+                    paper={p}
+                    onPress={() => router.push(`/paper/${encodeURIComponent(p.slug)}`)}
+                  />
+                ))}
+              </View>
+            </View>
+          ))
+        )}
+      </ScrollView>
+
+      <ProjectSwitcher
+        visible={switcherOpen}
+        activePid={activePid}
+        onSelect={setActivePid}
+        onClose={() => setSwitcherOpen(false)}
+      />
+    </Screen>
   );
 }
 
-export default function HomeScreen() {
+function ProjectBar({ name, subtitle, onPress }: { name: string; subtitle: string; onPress: () => void }) {
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.projectBar, pressed && { opacity: 0.85 }]}>
+      <View style={{ flex: 1 }}>
+        <Text variant="caption" color={colors.muted}>
+          PROJECT
+        </Text>
+        <Text variant="heading" color={colors.violet} numberOfLines={1}>
+          {name}
+        </Text>
+        <Text variant="caption" style={{ marginTop: 1 }}>
+          {subtitle}
+        </Text>
+      </View>
+      <Text style={{ color: colors.muted, fontSize: 18 }}>⌄</Text>
+    </Pressable>
   );
+}
+
+function PaperRow({ paper, onPress }: { paper: Paper; onPress: () => void }) {
+  const stateKey = paper.session_state ?? (paper.list_status === 'read' ? 'committed' : 'unread');
+  const meta = stateMeta[stateKey] ?? stateMeta.unread;
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.8 }}>
+      <Card style={styles.paperRow}>
+        <View style={{ flex: 1, gap: 8 }}>
+          <Text variant="heading" numberOfLines={3}>
+            {paper.title}
+          </Text>
+          <Chip label={meta.label} color={meta.color} />
+        </View>
+        <Text style={{ color: colors.muted, fontSize: 20, marginTop: 2 }}>›</Text>
+      </Card>
+    </Pressable>
+  );
+}
+
+function Empty({ heading, body, action }: { heading: string; body: string; action?: React.ReactNode }) {
+  return (
+    <View style={styles.empty}>
+      <Text variant="title" style={{ textAlign: 'center', marginBottom: space.sm }}>
+        {heading}
+      </Text>
+      <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
+        {body}
+      </Text>
+      {action}
+    </View>
+  );
+}
+
+interface Group {
+  group: string;
+  papers: Paper[];
+}
+
+function groupPapers(papers: Paper[]): Group[] {
+  const map = new Map<string, Paper[]>();
+  for (const p of papers) {
+    const g = p.group || 'Ungrouped';
+    if (!map.has(g)) map.set(g, []);
+    map.get(g)!.push(p);
+  }
+  return Array.from(map, ([group, ps]) => ({ group, papers: ps }));
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
+  projectBar: {
     flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
     alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
+    marginHorizontal: space.md,
+    marginTop: space.md,
+    padding: space.md,
+    backgroundColor: colors.panel,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.line2,
   },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
-  },
+  list: { padding: space.md, paddingBottom: space.xxl },
+  groupLabel: { marginBottom: space.sm, marginLeft: space.xs },
+  paperRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
+  empty: { paddingVertical: space.xxl * 1.5, paddingHorizontal: space.lg, alignItems: 'center' },
 });
