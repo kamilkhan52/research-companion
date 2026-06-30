@@ -12,7 +12,9 @@
     },
     "android": {
       "package": "com.kamilkhan.researchcompanion",
-      "permissions": ["POST_NOTIFICATIONS"],
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -43,6 +45,13 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "ccf7b239-cc05-4a54-819e-36c78def850f"
+      }
+    },
+    "owner": "kamilkhan52"
   }
 }
