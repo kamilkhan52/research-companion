@@ -17,6 +17,18 @@ let baseUrl = BAKED_BASE_URL;
 let token: string | null = null;
 let loaded = false;
 
+// Reactive notification so screens/queries re-render when the base URL changes (e.g. the user
+// saves a server URL in Settings) instead of only after a full app restart.
+const listeners = new Set<() => void>();
+function notify() {
+  listeners.forEach((l) => l());
+}
+/** Subscribe to base-URL changes (for useSyncExternalStore). Returns an unsubscribe fn. */
+export function subscribeBaseUrl(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
 /** Load persisted config into memory. Call once at app boot before any request. */
 export async function loadConfig(): Promise<void> {
   if (loaded) return;
@@ -32,6 +44,7 @@ export async function loadConfig(): Promise<void> {
     token = null;
   }
   loaded = true;
+  notify();
 }
 
 /** Normalize a user-entered URL: trim, add https:// if missing, strip trailing slash. */
@@ -49,6 +62,7 @@ export function getBaseUrl(): string {
 export async function setBaseUrl(raw: string): Promise<void> {
   baseUrl = normalizeBaseUrl(raw);
   await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
+  notify();
 }
 
 export function hasBaseUrl(): boolean {

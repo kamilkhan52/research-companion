@@ -5,8 +5,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
-import { hasBaseUrl } from '@/api/config';
-import { useProjectState, useProjects } from '@/api/queries';
+import { useBaseUrl, useProjectState, useProjects } from '@/api/queries';
 import type { Paper } from '@/api/types';
 import { IconButton, TopBar } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
@@ -17,6 +16,7 @@ import { colors, radius, space, stateMeta } from '@/theme/tokens';
 export default function LibraryScreen() {
   const router = useRouter();
   const { activePid, setActivePid, ready } = useActiveProject();
+  const hasUrl = !!useBaseUrl();
   const { data: projects } = useProjects();
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
@@ -36,7 +36,7 @@ export default function LibraryScreen() {
     <IconButton glyph="⚙" onPress={() => router.push('/settings')} accessibilityLabel="Settings" />
   );
 
-  if (!hasBaseUrl()) {
+  if (!hasUrl) {
     return (
       <Screen>
         <TopBar title="Reading Companion" right={settingsBtn} />

@@ -2,9 +2,15 @@
 // switching projects swaps caches cleanly. Mutations invalidate the relevant queries.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
-import { hasBaseUrl } from './config';
+import { getBaseUrl, subscribeBaseUrl } from './config';
+
+/** Reactive base URL — re-renders consumers when it changes (e.g. saved in Settings). */
+export function useBaseUrl(): string {
+  return useSyncExternalStore(subscribeBaseUrl, getBaseUrl, getBaseUrl);
+}
 
 export const keys = {
   projects: ['projects'] as const,
@@ -16,50 +22,56 @@ export const keys = {
 };
 
 export function useProjects() {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: keys.projects,
     queryFn: async () => (await api.listProjects()).projects,
-    enabled: hasBaseUrl(),
+    enabled: hasUrl,
   });
 }
 
 export function useProjectState(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: pid ? keys.projectState(pid) : ['project', 'none', 'state'],
     queryFn: () => api.getProjectState(pid as string),
-    enabled: !!pid && hasBaseUrl(),
+    enabled: !!pid && hasUrl,
   });
 }
 
 export function useSession(pid: string | null, slug: string | null) {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: pid && slug ? keys.session(pid, slug) : ['project', 'none', 'session'],
     queryFn: () => api.getSession(pid as string, slug as string),
-    enabled: !!pid && !!slug && hasBaseUrl(),
+    enabled: !!pid && !!slug && hasUrl,
   });
 }
 
 export function useOpeningDraft(pid: string | null, slug: string | null) {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
     queryFn: () => api.getOpeningDraft(pid as string, slug as string),
-    enabled: !!pid && !!slug && hasBaseUrl(),
+    enabled: !!pid && !!slug && hasUrl,
   });
 }
 
 export function useSettings() {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: keys.settings,
     queryFn: api.getSettings,
-    enabled: hasBaseUrl(),
+    enabled: hasUrl,
   });
 }
 
 export function useFavoriteModels() {
+  const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: keys.favoriteModels,
     queryFn: async () => (await api.getFavoriteModels()).models,
-    enabled: hasBaseUrl(),
+    enabled: hasUrl,
     staleTime: 5 * 60_000,
   });
 }
