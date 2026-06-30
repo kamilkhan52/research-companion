@@ -1,0 +1,66 @@
+// Runtime config: the backend base URL and the auth token.
+// - Base URL is not secret -> AsyncStorage. Defaults can be baked via app.json `extra.apiBaseUrl`.
+// - Auth token is sensitive -> expo-secure-store (Keychain / Keystore).
+// Both are cached in memory after loadConfig() so the fetch client can read them synchronously.
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+import * as SecureStore from 'expo-secure-store';
+
+const BASE_URL_KEY = 'rc.baseUrl';
+const TOKEN_KEY = 'rc.authToken';
+
+const BAKED_BASE_URL: string =
+  (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined)?.trim() || '';
+
+let baseUrl = BAKED_BASE_URL;
+let token: string | null = null;
+let loaded = false;
+
+/** Load persisted config into memory. Call once at app boot before any request. */
+export async function loadConfig(): Promise<void> {
+  if (loaded) return;
+  try {
+    const stored = await AsyncStorage.getItem(BASE_URL_KEY);
+    if (stored) baseUrl = stored;
+  } catch {
+    // ignore; fall back to baked/default
+  }
+  try {
+    token = await SecureStore.getItemAsync(TOKEN_KEY);
+  } catch {
+    token = null;
+  }
+  loaded = true;
+}
+
+/** Normalize a user-entered URL: trim, add https:// if missing, strip trailing slash. */
+export function normalizeBaseUrl(raw: string): string {
+  let u = raw.trim();
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+  return u.replace(/\/+$/, '');
+}
+
+export function getBaseUrl(): string {
+  return baseUrl;
+}
+
+export async function setBaseUrl(raw: string): Promise<void> {
+  baseUrl = normalizeBaseUrl(raw);
+  await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
+}
+
+export function hasBaseUrl(): boolean {
+  return baseUrl.length > 0;
+}
+
+export function getToken(): string | null {
+  return token;
+}
+
+export async function setToken(value: string | null): Promise<void> {
+  token = value;
+  if (value) await SecureStore.setItemAsync(TOKEN_KEY, value);
+  else await SecureStore.deleteItemAsync(TOKEN_KEY);
+}
