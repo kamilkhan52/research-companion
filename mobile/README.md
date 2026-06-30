@@ -1,56 +1,77 @@
-# Welcome to your Expo app 👋
+# Research Companion — mobile app
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+React Native + Expo client for the Research Companion backend (`../app`). Android-first, with a
+thin client / server brain design: all retrieval, LLM analysis, narration and TTS stay on the
+server; the app renders the Library, streaming Discussion, and plays narration audio in the
+background (lock-screen controls) for listening on a walk.
 
-## Get started
+## What's here
 
-1. Install dependencies
+- **Library** — project switcher + papers, project-scoped (`/api/projects/{pid}/…`).
+- **Discussion** — compose-first opening prompt → streaming chat → draft notes → approve.
+- **Audio** — per-message *Listen*; background + lock-screen playback via `react-native-track-player`.
+- **Settings** — server URL (stored on device) + analysis/narration models, keys, speech (server-side).
 
-   ```bash
-   npm install
-   ```
+## Important: this needs a custom dev/standalone build, not Expo Go
 
-2. Start the app
+The app uses native modules (`react-native-track-player`, `expo-secure-store`, slider), so Expo Go
+won't run it. Build once, then iterate JS over Metro / OTA.
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+### Recommended: EAS cloud build (no local Android SDK needed)
 
 ```bash
-npm run reset-project
+cd mobile
+npm install -g eas-cli        # or use npx eas-cli@latest
+eas login                     # your Expo account (you must do this — I can't log in for you)
+eas build:configure           # one-time, links the project (creates the EAS project id)
+
+# A standalone APK you can sideload on your Android and use anywhere (best for "on a walk"):
+eas build --profile preview --platform android
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+EAS returns a download link / QR for the APK. Install it on the Android device, open the app, go to
+**Settings → Server**, paste the current Cloudflare tunnel URL, *Save & connect*. The tunnel URL
+changes each run, so you just update it in Settings — no rebuild needed.
 
-### Other setup steps
+For active development with live reload, use the `development` profile instead and run `npx expo start`:
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```bash
+eas build --profile development --platform android   # dev client APK (install once)
+npx expo start                                        # then open the dev build, scan/connect
+```
 
-## Learn more
+### Local build (alternative) — requires Android SDK + JDK 17 + adb
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+npx expo run:android   # prebuilds + compiles + installs on a connected device/emulator
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Configuration
 
-## Join the community
+- **Server URL**: set in-app (Settings). Persisted in AsyncStorage. Can be pre-baked via
+  `app.json` → `expo.extra.apiBaseUrl` if you want a default.
+- **Auth**: off by default (backend `RC_AUTH_*` unset). When Supabase auth is enabled later, the
+  app will add a sign-in screen; the API client already sends a bearer token if present.
+- **Audio requires the OpenAI speech provider** on the backend (Settings → Audio → OpenAI + key);
+  there's no browser TTS on a phone.
 
-Join our community of developers creating universal apps.
+## Notes / known risks to verify on-device
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `react-native-track-player` (v4.1.2) predates the New Architecture and runs via RN's bridgeless
+  interop on SDK 56. JS + bundling + prebuild all pass; **background/lock-screen audio must be
+  confirmed on a real device build.** If it misbehaves under new arch, the fallback is `expo-audio`
+  (loses some lock-screen richness) or setting `expo.newArchEnabled: false` in `app.json`.
+- iOS: add **Sign in with Apple** before TestFlight (App Store rule 4.8); needs an Apple Developer
+  account ($99/yr).
+
+## Project layout
+
+```
+src/
+  api/        # config, fetch client, SSE stream, typed endpoints, TanStack Query hooks
+  audio/      # TrackPlayer setup + AudioProvider (narrate→speak→play)
+  app/        # expo-router screens: index (Library), settings, paper/[slug] (Discussion)
+  components/  ui/  store/  theme/   # TopBar, ProjectSwitcher, Markdown, NowPlaying, primitives, tokens
+service.js    # TrackPlayer playback service (remote controls)
+index.js      # JS entry: registers playback service, then expo-router
+```
