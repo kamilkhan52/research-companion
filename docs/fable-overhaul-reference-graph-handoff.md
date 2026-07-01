@@ -1,5 +1,50 @@
 # Fable overhaul — reference graph + polish — handoff
 
+> ## ⚡ CHECKPOINT — 2026-07-01 ~12:15 PDT (pre-compaction), model: Claude Opus 4.8
+> Fable was unavailable this window; continued on Opus (Kamil's explicit choice after a Sonnet
+> retry). **This block supersedes the older status below it** for anything that conflicts.
+>
+> **What just got done (priority #1 — the graph-build-vanishes-when-minimized bug):**
+> - **Root cause:** the whole build was driven by one long-lived HTTP/SSE connection; when the
+>   mobile app was backgrounded the connection died and the build was silently orphaned
+>   mid-loop (never reached its final graph/recommendations step). Confirmed live earlier.
+> - **Backend fix (committed `8dc68eb`, on origin):** `app/graph_jobs.py` runs the build in a
+>   real background thread decoupled from any request. `POST /graph/build` starts/joins a job
+>   and returns immediately; `GET /graph/build/status` is a cheap poll target; `GET /graph` now
+>   includes a `build` snapshot. 8 new tests (drive a real bg thread, no network). 88 tests
+>   green, lint clean.
+> - **Mobile fix (committed `589e4a2`, LOCAL ONLY — see blocker):** `useGraphBuild.ts` rewritten
+>   from SSE to 1.5s polling; `resume(job)` re-attaches a reopened screen to an in-flight build;
+>   `graph.tsx` calls resume on load; types/endpoints updated. tsc clean, expo export bundles.
+> - **Verified LIVE just now:** restarted the server on the new code; `POST /graph/build`
+>   returned in 12ms with a `running` job; two independent polls 6s apart showed 6 papers
+>   `cached` (resumed, no wasted tokens) and paper 7 (`orca`) `extracting` — i.e. the build is
+>   advancing purely server-side with no connection held. **Priority #1 is fixed & proven.**
+>
+> **⏳ A REAL BUILD IS RUNNING RIGHT NOW** (started by that live test, `force=false`,
+> project `llm-inference-serving`, 18 papers). Because builds now survive independently, it
+> keeps going across this compaction. **Post-compaction, task #24 = just poll it:**
+> `curl -s http://localhost:8000/api/projects/llm-inference-serving/graph/build/status | python3 -m json.tool`
+> When `status` is `done`, confirm `GET /graph` has a non-null `graph` + `recommendations`.
+> If the server was restarted and the job is gone, re-run `POST …/graph/build {"force":false}`
+> (cached papers cost nothing). Expect some papers to hit the 480s deadline → `error`; those
+> just retry on the next build, by design.
+>
+> **🚧 BLOCKER: `git push` is failing** — `could not read Username for github.com` (osxkeychain
+> can't prompt in this non-interactive context; earlier interactive pushes worked). Commit
+> `589e4a2` is safe in **local** git but **NOT on origin**. First resume step: `git push` from
+> an interactive shell. Local is 1 commit ahead of `origin/fable-overhaul-graph-references`.
+>
+> **Server:** running detached on new code, logs at `/tmp/rc-fable-overhaul/server-opus.log`.
+> Metro + cloudflared tunnel from earlier were still up at last check (see older notes for URLs;
+> they rotate on restart).
+>
+> **Remaining priorities (not started this window):** #25 audio transcript + sentence
+> highlighting, #26 audio-gen progress UI, #27 user-message editing status/impl, #28 agentic
+> capabilities. Task list (TaskCreate #23-#28) tracks these.
+>
+> ---
+
 **Session:** overnight autonomous run, started 2026-07-01 00:15 PDT, this checkpoint updated
 ~02:05 PDT (first written ~01:42, then continued — see "Update" below). Model: Claude Fable 5
 (no fallback occurred — ran as Fable the whole session).
@@ -8,7 +53,7 @@
 Base: `main` at `e38f586` (clean tree, no pre-branch commit needed).
 
 **To resume:** `git fetch && git checkout fable-overhaul-graph-references && git pull`, then
-read "Immediate next steps" at the bottom of this doc.
+read the ⚡ CHECKPOINT block at the very top (it supersedes older status).
 
 ---
 
