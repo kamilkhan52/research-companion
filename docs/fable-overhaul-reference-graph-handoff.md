@@ -31,8 +31,13 @@ feature any project can (re)build from its own screen.
   references (by arxiv_id → doi → fuzzy title) and matches in-project citations by fuzzy
   title against the project's own papers, building graph nodes + directed edges.
 - Recommendation ranking for external papers: weighted by significant-citation count,
-  breadth of citing papers, and a lightweight bridge-ness proxy (rewards a node connecting
-  citing papers that don't otherwise overlap much in what else they cite).
+  breadth of citing papers, a lightweight local bridge-ness proxy (rewards a node connecting
+  citing papers that don't otherwise overlap much in what else they cite), and — added later
+  in the session — **real betweenness centrality** (Brandes' algorithm, unweighted/undirected,
+  normalized to the graph's own max), the rigorous global complement to the local heuristic.
+  Directly satisfies the brief's "Centrality/bridge-style ranking where feasible": verified
+  correct against three hand-derived textbook graphs (a path, a star, disconnected triangles)
+  before any integration code was written. See `app/graph.py::betweenness_centrality`.
 - **Incremental & resumable**: extraction is cached per paper by content hash
   (`.state/reference-graph.json`, per-project, gitignored like `sessions.json` — it's a
   derived cache over committed text, not authored content). Rebuilding only spends tokens on
@@ -197,7 +202,7 @@ async/stateful UI code and any pipeline that calls a real external API.
 ```
 # Backend
 source .venv/bin/activate
-python -m pytest tests/ -q                    # 68 passed
+python -m pytest tests/ -q                    # 78 passed
 python -m pyflakes app/*.py                   # clean
 python -c "from app import main; print('OK')" # imports fine
 
@@ -308,6 +313,8 @@ sufficient confidence to proceed without babysitting the full run to completion.
 ## Commit log this session (newest first)
 
 ```
+efdaac2 Add real betweenness centrality alongside the bridge-score heuristic
+44fb80f Update handoff doc: 7 bugs found+fixed, live build resuming correctly
 dc96463 Harden re-entrancy guards + improve extraction error diagnostics
 f80b2e0 Fix Settings: sync-from-server effect could clobber in-progress edits
 b5ba329 Fix two real bugs found via careful review + live re-testing
@@ -320,5 +327,5 @@ c3cfab5 Mobile: Reference Graph screen + navigation entry points
 76af973 Fix extraction truncation: bump token budget + add JSON salvage
 f4830e1 Backend: reference graph pipeline (extraction, matching, analysis, API)
 ```
-All pushed to `origin/fable-overhaul-graph-references`. 11 commits, 68 backend tests (up from
+All pushed to `origin/fable-overhaul-graph-references`. 13 commits, 78 backend tests (up from
 0 at the start of this session — first test suite in this repo).
