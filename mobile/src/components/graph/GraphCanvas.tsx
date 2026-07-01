@@ -3,7 +3,7 @@
 // already linked into the current build (expo-router's own Stack transitions depend on them),
 // so this ships with zero new native dependency / no EAS rebuild required.
 
-import { useCallback, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -116,7 +116,7 @@ export function GraphCanvas({
                 y={pos.y}
                 selected={node.id === selectedId}
                 dimmed={dimmed}
-                onPress={() => onSelectNode(node)}
+                onSelectNode={onSelectNode}
               />
             );
           })}
@@ -138,7 +138,7 @@ export function GraphCanvas({
  * centered exactly on the segment's midpoint with width = segment length; rotating a View
  * pivots around its own center by default, so this lands its two ends precisely on a and b
  * without needing transformOrigin support. */
-function EdgeLine({
+const EdgeLine = memo(function EdgeLine({
   a,
   b,
   significant,
@@ -192,22 +192,22 @@ function EdgeLine({
       />
     </>
   );
-}
+});
 
-function NodeCircle({
+const NodeCircle = memo(function NodeCircle({
   node,
   x,
   y,
   selected,
   dimmed,
-  onPress,
+  onSelectNode,
 }: {
   node: GraphNode;
   x: number;
   y: number;
   selected: boolean;
   dimmed: boolean;
-  onPress: () => void;
+  onSelectNode: (node: GraphNode) => void;
 }) {
   const r = nodeRadius(node);
   const isProject = node.kind === 'project';
@@ -215,10 +215,14 @@ function NodeCircle({
   const isSignificant = node.significant_cited_by_count > 0;
   const accent = isProject ? (isRead ? colors.green : colors.cyan) : colors.violet;
   const labelWidth = Math.max(r * 3.6, 74);
+  // Label only the nodes worth reading at a glance — project papers, significant refs, or the
+  // selection. Skipping the long tail of external leaf citations removes hundreds of Text
+  // layouts, the single biggest per-node cost when the whole graph is shown.
+  const showLabel = isProject || isSignificant || selected;
 
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onSelectNode(node)}
       hitSlop={6}
       accessibilityLabel={`${node.title}${isProject ? ' (in this project)' : ' (external reference)'}`}
       style={{ position: 'absolute', left: x - r, top: y - r, width: r * 2, height: r * 2, opacity: dimmed ? 0.16 : 1 }}>
@@ -243,23 +247,25 @@ function NodeCircle({
           }}
         />
       </View>
-      <Text
-        numberOfLines={2}
-        variant="caption"
-        style={{
-          position: 'absolute',
-          top: r * 2 + 3,
-          width: labelWidth,
-          left: -(labelWidth - r * 2) / 2,
-          textAlign: 'center',
-          fontSize: 10,
-          lineHeight: 12,
-        }}>
-        {node.title}
-      </Text>
+      {showLabel ? (
+        <Text
+          numberOfLines={2}
+          variant="caption"
+          style={{
+            position: 'absolute',
+            top: r * 2 + 3,
+            width: labelWidth,
+            left: -(labelWidth - r * 2) / 2,
+            textAlign: 'center',
+            fontSize: 10,
+            lineHeight: 12,
+          }}>
+          {node.title}
+        </Text>
+      ) : null}
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   viewport: { flex: 1, overflow: 'hidden' },

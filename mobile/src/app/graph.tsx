@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
-import type { GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
+import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
@@ -36,6 +36,7 @@ export default function GraphScreen() {
   const [filter, setFilter] = useState<FilterKind>('all');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showRecs, setShowRecs] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   const data = graphQuery.data;
   const graph = data?.graph ?? null;
@@ -80,6 +81,27 @@ export default function GraphScreen() {
     () => (isFiltering ? new Set(filteredNodes.map((n) => n.id)) : null),
     [isFiltering, filteredNodes],
   );
+
+  // Perf: the graph can be 700+ nodes (mostly single-citation external leaves). By default we
+  // render a focused subgraph — the project papers plus the external works that are significant
+  // or cited by 2+ project papers — which is both far faster (the layout is O(n²)) and more
+  // readable. Searching or an explicit "Show all" renders everything. Edges are kept only
+  // between visible nodes.
+  const renderAll = showAll || isFiltering;
+  const visibleGraph = useMemo(() => {
+    if (!graph) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
+    if (renderAll) return { nodes: graph.nodes, edges: graph.edges };
+    const keep = new Set<string>();
+    for (const n of graph.nodes) {
+      if (n.kind === 'project' || n.significant_cited_by_count > 0 || n.cited_by_project_count >= 2) {
+        keep.add(n.id);
+      }
+    }
+    return {
+      nodes: graph.nodes.filter((n) => keep.has(n.id)),
+      edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    };
+  }, [graph, renderAll]);
 
   function openPaper(slug: string) {
     setSelectedNode(null);
@@ -138,9 +160,19 @@ export default function GraphScreen() {
             resultCount={isFiltering ? filteredNodes.length : null}
           />
 
+          {!isFiltering && graph.nodes.length > visibleGraph.nodes.length ? (
+            <Pressable onPress={() => setShowAll((v) => !v)} style={styles.focusToggle}>
+              <Text variant="caption" color={colors.cyan}>
+                {showAll
+                  ? `Showing all ${graph.nodes.length} · tap to focus`
+                  : `Focused: ${visibleGraph.nodes.length} key papers · tap to show all ${graph.nodes.length}`}
+              </Text>
+            </Pressable>
+          ) : null}
+
           <GraphCanvas
-            nodes={graph.nodes}
-            edges={graph.edges}
+            nodes={visibleGraph.nodes}
+            edges={visibleGraph.edges}
             selectedId={selectedNode?.id ?? null}
             highlightIds={highlightIds}
             onSelectNode={setSelectedNode}
@@ -334,6 +366,16 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: colors.cyan, borderRadius: 3 },
+  focusToggle: {
+    alignSelf: 'center',
+    marginTop: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    backgroundColor: colors.panel2,
+  },
   filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
   searchInput: {
     backgroundColor: colors.panel2,
