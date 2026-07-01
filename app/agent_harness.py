@@ -15,10 +15,21 @@ the model to treat it as data to evaluate, never as instructions.
 """
 from __future__ import annotations
 
+import json
 import os
+from collections.abc import AsyncIterator
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    UserPromptPart,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -111,3 +122,56 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
     except Exception as e:  # normalize framework/provider errors into the app's error type
         raise agent_mod.AgentError(f"Agentic turn failed: {str(e)[:300]}") from e
     return agent_mod._parse(result.output)
+
+
+def _tool_detail(args) -> str:
+    """A short human label for a tool call, drawn from its most salient argument."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            return args[:80]
+    if isinstance(args, dict):
+        for k in ("query", "slug", "url"):
+            if args.get(k):
+                return str(args[k])[:80]
+    return ""
+
+
+async def stream_agentic_events(slug: str, history: list[dict],
+                                model: Model | None = None) -> AsyncIterator[dict]:
+    """Async event stream for an agentic turn. Yields dicts the SSE layer maps to client events:
+      {'type': 'text',  'text': <delta>}          — a chunk of the model's output text
+      {'type': 'tool',  'name': <tool>, 'detail'} — the model called a research tool
+      {'type': 'final', 'text': <full output>}    — the authoritative final answer, for parsing
+
+    The caller extracts the canonical prefix from the accumulated 'text' for display, and parses
+    'final' into a Turn. Tool execution (sync httpx tools) runs in Pydantic AI's threadpool."""
+    ag = build_agent(slug, model=model)
+    if history and history[-1]["role"] == "user":
+        prompt, prior = history[-1]["content"], history[:-1]
+    else:
+        prompt, prior = "", history
+    try:
+        async with ag.iter(prompt, message_history=_to_message_history(prior)) as run:
+            async for node in run:
+                if Agent.is_model_request_node(node):
+                    async with node.stream(run.ctx) as request_stream:
+                        async for event in request_stream:
+                            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                                if event.part.content:
+                                    yield {"type": "text", "text": event.part.content}
+                            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                                if event.delta.content_delta:
+                                    yield {"type": "text", "text": event.delta.content_delta}
+                elif Agent.is_call_tools_node(node):
+                    async with node.stream(run.ctx) as tool_stream:
+                        async for event in tool_stream:
+                            if isinstance(event, FunctionToolCallEvent):
+                                yield {"type": "tool", "name": event.part.tool_name,
+                                       "detail": _tool_detail(event.part.args)}
+        yield {"type": "final", "text": run.result.output if run.result else ""}
+    except agent_mod.AgentError:
+        raise
+    except Exception as e:  # normalize framework/provider errors
+        raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e

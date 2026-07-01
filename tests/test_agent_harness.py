@@ -4,10 +4,12 @@ model writes the final answer) runs with zero network. Proves both that the tool
 and that the result parses into a Turn via the existing text protocol."""
 from __future__ import annotations
 
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+import asyncio
 
-from app import agent_harness
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+from app import agent, agent_harness
 from tests.conftest import add_paper
 
 _CANON = ("### CANONICAL ###\n"
@@ -54,3 +56,36 @@ def test_agentic_turn_without_tools_still_parses(temp_project):
 def test_agentic_is_off_by_default():
     # Safety: the new path must not activate unless explicitly enabled.
     assert agent_harness.AGENTIC_ENABLED is False
+
+
+def test_streaming_emits_tool_then_text_then_final(temp_project):
+    add_paper(temp_project, "a", "Paper A", full_text="The alpha method improves throughput.")
+    state = {"n": 0}
+
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            yield {0: DeltaToolCall(name="read_paper_text", json_args='{"slug": "a"}', tool_call_id="1")}
+        else:
+            for chunk in ["### CANONICAL ###\n", "The alpha ", "method wins.\n",
+                          "### STATE ###\nin_discussion\n### END ###"]:
+                yield chunk
+
+    fm = FunctionModel(function=lambda m, i: None, stream_function=stream_fn)
+
+    async def _collect():
+        out = []
+        async for ev in agent_harness.stream_agentic_events(
+            "a", [{"role": "user", "content": "tell me about a"}], model=fm):
+            out.append(ev)
+        return out
+
+    events = asyncio.run(_collect())
+
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "tool" and kinds[-1] == "final"
+    tool = next(e for e in events if e["type"] == "tool")
+    assert tool["name"] == "read_paper_text" and tool["detail"] == "a"
+    # The SSE layer extracts the canonical prefix from accumulated text deltas.
+    text = "".join(e["text"] for e in events if e["type"] == "text")
+    assert agent.canonical_prefix(text) == "The alpha method wins."

@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, sessions, store, tts
+from . import agent, agent_harness, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -199,6 +199,48 @@ def _turn_stream(slug: str):
         return
     sessions.record_assistant(slug, turn)
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+
+
+async def _agentic_turn_stream(slug: str):
+    """Streaming turn through the Pydantic AI tool loop (when RC_AGENTIC is on). Same client
+    contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
+    'tool' events announcing each research tool the model calls. The final answer is parsed from
+    the agent's authoritative output."""
+    history = sessions.build_history(slug)
+    pieces: list[str] = []
+    sent = 0
+    final_text = ""
+    try:
+        async for ev in agent_harness.stream_agentic_events(slug, history):
+            if ev["type"] == "text":
+                pieces.append(ev["text"])
+                canon = agent.canonical_prefix("".join(pieces))
+                if len(canon) > sent:
+                    yield _sse({"type": "delta", "text": canon[sent:]})
+                    sent = len(canon)
+            elif ev["type"] == "tool":
+                yield _sse({"type": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
+            elif ev["type"] == "final":
+                final_text = ev["text"]
+    except AgentError as e:
+        yield _sse({"type": "error", "detail": str(e)})
+        return
+    turn = agent.parse(final_text or "".join(pieces))
+    if not turn.canonical.strip():
+        yield _sse({"type": "error", "detail":
+                    "The model returned an empty response. Try again, or switch the analysis "
+                    "model in Settings."})
+        return
+    sessions.record_assistant(slug, turn)
+    yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+
+
+def _stream_for(slug: str):
+    """Pick the streaming turn implementation: the agentic tool loop when enabled, else the
+    proven single-shot stream. Both are (async/sync) generators StreamingResponse can consume."""
+    if agent_harness.AGENTIC_ENABLED:
+        return _agentic_turn_stream(slug)
+    return _turn_stream(slug)
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -492,7 +534,7 @@ def chat_start_stream(req: ChatStartReq):
         title = p.title
     sessions.start_session(req.slug, title, kind=("review" if is_review else "paper"),
                            opening=(req.prompt or None))
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -510,7 +552,7 @@ def reply_stream(req: ReplyReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.record_user(req.slug, req.text, kind="reply")
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -521,7 +563,7 @@ def continue_stream(req: FinishReq):
     records = sessions.read_records(req.slug)
     if not records or records[-1]["role"] != "user":
         raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -534,7 +576,7 @@ def retry_stream(req: RetryReq):
     if req.model:
         config.save_settings({"model": req.model})
     sessions.truncate_before_assistant(req.slug, req.assistant_index)
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -548,7 +590,7 @@ def edit_stream(req: EditReq):
         raise HTTPException(status_code=400, detail="Edited message cannot be empty.")
     if not sessions.edit_reply(req.slug, req.reply_index, req.text.strip()):
         raise HTTPException(status_code=404, detail="No such message to edit.")
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -559,7 +601,7 @@ def finish_stream(req: FinishReq):
     # The review chat folds the discussion into the working notes; a paper drafts its Notes.
     key = "review_finish" if req.slug == REVIEW_SLUG else "finish_instruction"
     sessions.record_user(req.slug, prompts.get(key), kind="finish")
-    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
