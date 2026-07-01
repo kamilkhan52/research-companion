@@ -140,7 +140,7 @@ def test_job_error_path_sets_status_error_not_stuck_running(temp_project):
 
 def test_to_dict_excludes_internal_pid_field(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="Text A.")
-    job = graph_jobs.start_build(temp_project, extract_fn=fake_extractor())
+    graph_jobs.start_build(temp_project, extract_fn=fake_extractor())
     _wait_until_done(temp_project)
     d = graph_jobs.get_job(temp_project).to_dict()
     assert "pid" not in d

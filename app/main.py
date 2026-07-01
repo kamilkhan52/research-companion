@@ -116,7 +116,7 @@ class SettingsReq(BaseModel):
     speech_provider: str | None = None
     tts_model: str | None = None
     tts_voice: str | None = None
-    brave_api_key: str | None = None   # web search for the agent's research tools
+    parallel_api_key: str | None = None   # Parallel Search — web search for the agent's tools
 
 
 class NarrateReq(BaseModel):
@@ -316,14 +316,14 @@ def read_settings():
     s = config.load_settings()
     key = s.get("openrouter_api_key") or ""
     okey = s.get("openai_api_key") or ""
-    bkey = s.get("brave_api_key") or ""
+    pkey = s.get("parallel_api_key") or ""
     return {
         "has_key": bool(key), "key_hint": (key[:6] + "…") if key else "",
         "model": s.get("model"), "narration_model": s.get("narration_model"),
         "has_openai_key": bool(okey), "openai_key_hint": (okey[:6] + "…") if okey else "",
         "speech_provider": s.get("speech_provider"), "tts_model": s.get("tts_model"),
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
-        "has_brave_key": bool(bkey), "brave_key_hint": (bkey[:6] + "…") if bkey else "",
+        "has_parallel_key": bool(pkey), "parallel_key_hint": (pkey[:6] + "…") if pkey else "",
     }
 
 
@@ -336,7 +336,7 @@ def write_settings(req: SettingsReq):
         "has_openai_key": bool(merged.get("openai_api_key")),
         "speech_provider": merged.get("speech_provider"),
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),
-        "has_brave_key": bool(merged.get("brave_api_key")),
+        "has_parallel_key": bool(merged.get("parallel_api_key")),
     }
 
 

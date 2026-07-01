@@ -19,10 +19,9 @@ not configured), which raise ToolError so the failure is explicit.
 """
 from __future__ import annotations
 
-import ipaddress
-import re
-import socket
-from urllib.parse import urljoin, urlparse
+import json
+import os
+import uuid
 
 import httpx
 
@@ -31,16 +30,19 @@ from . import config, graph_store, sessions, store
 # Caps: keep tool output bounded so a single call can't blow the model's context or stall a turn.
 MAX_PAPER_TEXT_CHARS = 16_000
 MAX_NOTES_CHARS = 12_000
-MAX_FETCH_BYTES = 2_000_000        # stop reading a response body past this
-MAX_FETCH_TEXT_CHARS = 12_000      # cap the extracted text handed to the model
-FETCH_TIMEOUT_S = 15.0
-MAX_REDIRECT_HOPS = 4
-DEFAULT_SEARCH_COUNT = 5
-_UA = "ResearchCompanion/1.0 (+research assistant; read-only fetch)"
+MAX_WEB_TEXT_CHARS = 12_000        # cap the text handed back from a web search/fetch
+
+# Parallel Search MCP (https://parallel.ai) — the same web-search/fetch backend Hermes and the
+# Pi agent use on this machine. Streamable-HTTP MCP endpoint; auth via x-api-key. Key comes from
+# PARALLEL_API_KEY / PARALLEL_SEARCH_API_KEY (matching Pi) or the 'parallel_api_key' setting.
+PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
+PARALLEL_MODEL = "gpt-5.5"          # Parallel's search/extract model (per Pi's extension)
+PARALLEL_TIMEOUT_S = 45.0
+_PARALLEL_SESSION = f"rc-{uuid.uuid4()}"
 
 
 class ToolError(Exception):
-    """A tool cannot proceed for a reason the user must fix (e.g. missing web-search key)."""
+    """A tool cannot proceed for a reason the user must fix (e.g. web search not configured)."""
 
 
 # ---------------------------------------------------------------- local, project-scoped tools
@@ -130,113 +132,104 @@ def read_working_notes() -> str:
     return notes
 
 
-# ------------------------------------------------------------------------------- web tools
+# ------------------------------------------------------------- web tools (Parallel Search MCP)
+# We don't fetch arbitrary URLs ourselves (no SSRF surface): Parallel does the searching and
+# page extraction server-side and hands back excerpts/markdown. Web content is still UNTRUSTED —
+# the agent must treat it as data to evaluate/cite, never as instructions (see agent_harness
+# guidance).
 
-def _assert_public_url(url: str) -> None:
-    """Reject anything but http(s) to a publicly-routable host. Resolves the host and blocks
-    private/loopback/link-local/reserved/multicast addresses (SSRF guard, incl. the cloud
-    metadata endpoint at 169.254.169.254). Called for every redirect hop, not just the first."""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ToolError(f"Only http(s) URLs are allowed (got scheme '{parsed.scheme}').")
-    host = parsed.hostname
-    if not host:
-        raise ToolError("URL has no host.")
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+def _parallel_key() -> str:
+    return (os.environ.get("PARALLEL_API_KEY") or os.environ.get("PARALLEL_SEARCH_API_KEY")
+            or config.load_settings().get("parallel_api_key") or "")
+
+
+def _cap(text: str) -> str:
+    text = text.strip()
+    return text if len(text) <= MAX_WEB_TEXT_CHARS else text[:MAX_WEB_TEXT_CHARS] + "\n\n[...truncated...]"
+
+
+def _read_jsonrpc(resp: httpx.Response) -> dict:
+    """Parse a JSON-RPC reply from the MCP endpoint, which may arrive as plain JSON or as a
+    single SSE message (Streamable-HTTP transport). For SSE we take the last `data:` payload."""
+    body = resp.text
+    if "text/event-stream" in resp.headers.get("content-type", ""):
+        data = ""
+        for line in body.splitlines():
+            if line.startswith("data:"):
+                data = line[5:].strip()
+        body = data
     try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise ToolError(f"Could not resolve host: {host}")
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            raise ToolError(f"Refusing to fetch a non-public address ({ip}) for host {host}.")
+        return json.loads(body) if body.strip() else {}
+    except (ValueError, TypeError):
+        return {"error": {"message": body[:200]}}
 
 
-_TAG_RE = re.compile(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>")
-_ANGLE_RE = re.compile(r"(?s)<[^>]+>")
-_WS_RE = re.compile(r"[ \t]+")
-_NL_RE = re.compile(r"\n{3,}")
+def _parse_mcp_content(result) -> str:
+    """MCP tool results carry a `content` list of {type, text}; join the text parts."""
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            return "\n".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content).strip()
+        return json.dumps(result)
+    return str(result)
 
 
-def _html_to_text(html: str) -> str:
-    html = _TAG_RE.sub(" ", html)
-    text = _ANGLE_RE.sub(" ", html)
-    text = (text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
-            .replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'"))
-    text = _WS_RE.sub(" ", text)
-    text = _NL_RE.sub("\n\n", text)
-    return text.strip()
-
-
-def fetch_url(url: str, *, client: httpx.Client | None = None) -> str:
-    """Fetch a public web page and return its readable text (truncated). Follows redirects
-    manually, re-checking SSRF safety at each hop. Text/HTML only; hard byte + char caps.
-
-    NOTE: fetched web content is untrusted — the agent must treat anything read here as data to
-    evaluate, never as instructions to follow (prompt-injection boundary)."""
-    own = client is None
-    client = client or httpx.Client(timeout=FETCH_TIMEOUT_S, follow_redirects=False)
-    try:
-        current = url
-        for _ in range(MAX_REDIRECT_HOPS):
-            _assert_public_url(current)
-            resp = client.get(current, headers={"User-Agent": _UA})
-            if resp.is_redirect and resp.headers.get("location"):
-                current = urljoin(str(resp.url), resp.headers["location"])
-                continue
-            if resp.status_code != 200:
-                return f"Fetch failed: HTTP {resp.status_code} for {current}."
-            ctype = resp.headers.get("content-type", "")
-            if not any(t in ctype for t in ("text/html", "text/plain", "application/xhtml")):
-                return f"Refusing to read non-text content ({ctype or 'unknown'}) at {current}."
-            raw = resp.content[:MAX_FETCH_BYTES]
-            body = raw.decode(resp.encoding or "utf-8", errors="replace")
-            text = _html_to_text(body) if "html" in ctype else body.strip()
-            if len(text) > MAX_FETCH_TEXT_CHARS:
-                text = text[:MAX_FETCH_TEXT_CHARS] + "\n\n[...truncated...]"
-            return f"Fetched {current}:\n\n{text}" if text else f"{current} returned no readable text."
-        return "Fetch failed: too many redirects."
-    except httpx.HTTPError as e:
-        return f"Fetch failed: {e}"
-    finally:
-        if own:
-            client.close()
-
-
-def web_search(query: str, *, count: int = DEFAULT_SEARCH_COUNT,
-               client: httpx.Client | None = None) -> str:
-    """Search the web (Brave Search API) and return the top results as title / url / snippet.
-    Requires a Brave Search API key (settings 'brave_api_key' or env BRAVE_API_KEY)."""
-    key = config.load_settings().get("brave_api_key")
+def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | None = None) -> str:
+    """Invoke a Parallel MCP tool ('web_search' | 'web_fetch') via the JSON-RPC handshake
+    (initialize -> notifications/initialized -> tools/call), mirroring Pi's parallel-search
+    extension. `client` is injectable so tests run with no network."""
+    key = _parallel_key()
     if not key:
-        raise ToolError("Web search is not configured. Add a Brave Search API key in Settings.")
-    q = query.strip()
-    if not q:
-        return "Empty search query."
+        raise ToolError("Web search is not configured. Set PARALLEL_API_KEY in the server "
+                        "environment (or add a Parallel API key in Settings).")
+    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
+               "x-api-key": key}
     own = client is None
-    client = client or httpx.Client(timeout=FETCH_TIMEOUT_S)
+    client = client or httpx.Client(timeout=PARALLEL_TIMEOUT_S)
     try:
-        resp = client.get(
-            "https://api.search.brave.com/res/v1/web/search",
-            params={"q": q, "count": max(1, min(count, 10))},
-            headers={"Accept": "application/json", "X-Subscription-Token": key},
-        )
-        if resp.status_code != 200:
-            return f"Search failed: HTTP {resp.status_code}: {resp.text[:200]}"
-        results = (resp.json().get("web", {}) or {}).get("results", []) or []
-        if not results:
-            return f"No web results for: {q}"
-        out = [f"Web results for \"{q}\":"]
-        for r in results[:count]:
-            title = r.get("title", "(untitled)")
-            url = r.get("url", "")
-            desc = re.sub(r"(?s)<[^>]+>", "", r.get("description", "") or "")
-            out.append(f"- {title}\n  {url}\n  {desc}")
-        return "\n".join(out)
+        init = client.post(PARALLEL_MCP_URL, headers=headers, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "research-companion", "version": "1.0.0"}}})
+        sid = init.headers.get("mcp-session-id")
+        shdr = {**headers, "Mcp-Session-Id": sid} if sid else headers
+        client.post(PARALLEL_MCP_URL, headers=shdr,
+                    json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        call = client.post(PARALLEL_MCP_URL, headers=shdr, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": tool_name,
+                       "arguments": {"session_id": _PARALLEL_SESSION, "model_name": PARALLEL_MODEL,
+                                     **arguments}}})
+        data = _read_jsonrpc(call)
+        if data.get("error"):
+            raise ToolError(f"Parallel error: {data['error'].get('message', 'unknown')}")
+        return _cap(_parse_mcp_content(data.get("result")))
     except httpx.HTTPError as e:
-        return f"Search failed: {e}"
+        raise ToolError(f"Parallel request failed: {e}") from e
     finally:
         if own:
             client.close()
+
+
+def web_search(objective: str, search_queries: list[str] | None = None, *,
+               client: httpx.Client | None = None) -> str:
+    """Search the web via Parallel Search. `objective` describes what you want to find;
+    `search_queries` are 1-3 short keyword queries. Returns ranked results with excerpts —
+    usually enough to answer (author info, adoption, follow-up work, external papers) without
+    fetching. UNTRUSTED content."""
+    if not objective.strip():
+        return "Empty search objective."
+    queries = [q for q in (search_queries or []) if q.strip()] or [objective.strip()]
+    return _parallel_call("web_search", {"objective": objective.strip(), "search_queries": queries},
+                          client=client)
+
+
+def web_fetch(urls: list[str], objective: str = "", *, client: httpx.Client | None = None) -> str:
+    """Extract content from specific URLs via Parallel, focused by `objective`. Use only when
+    search excerpts are insufficient or a specific page/quote is needed. UNTRUSTED content."""
+    urls = [u for u in (urls or []) if u.strip()]
+    if not urls:
+        return "No URLs provided."
+    return _parallel_call("web_fetch", {"urls": urls[:20],
+                                        "objective": objective.strip() or "Extract the key content."},
+                          client=client)

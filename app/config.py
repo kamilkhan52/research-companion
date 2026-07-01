@@ -93,8 +93,9 @@ _ENV_DEFAULTS = {
     "speech_provider": os.environ.get("RC_SPEECH_PROVIDER", "openai"),  # openai | browser
     "tts_model": os.environ.get("RC_TTS_MODEL", "gpt-4o-mini-tts"),
     "tts_voice": os.environ.get("RC_TTS_VOICE", "alloy"),
-    # web search for the agent's research tools (Brave Search API); empty => web search off
-    "brave_api_key": os.environ.get("BRAVE_API_KEY", ""),
+    # web search for the agent's research tools (Parallel Search MCP); empty => web search off.
+    # Also read from PARALLEL_API_KEY / PARALLEL_SEARCH_API_KEY at call time (see research_tools).
+    "parallel_api_key": os.environ.get("PARALLEL_API_KEY", "") or os.environ.get("PARALLEL_SEARCH_API_KEY", ""),
 }
 
 
@@ -118,7 +119,7 @@ def save_settings(patch: dict) -> dict:
         except (json.JSONDecodeError, OSError):
             current = {}
     for key in ("openrouter_api_key", "model", "narration_model", "openai_api_key",
-                "speech_provider", "tts_model", "tts_voice", "brave_api_key"):
+                "speech_provider", "tts_model", "tts_voice", "parallel_api_key"):
         if key in patch and patch[key] is not None:
             current[key] = patch[key]
     SETTINGS_FILE.write_text(json.dumps(current, indent=2))

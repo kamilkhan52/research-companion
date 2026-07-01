@@ -89,8 +89,8 @@ export interface Settings {
   tts_model: string | null;
   tts_voice: string | null;
   voices: string[];
-  has_brave_key: boolean;
-  brave_key_hint: string;
+  has_parallel_key: boolean;
+  parallel_key_hint: string;
 }
 
 /** GET /api/auth/config */

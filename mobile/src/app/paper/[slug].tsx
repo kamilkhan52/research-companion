@@ -539,14 +539,10 @@ function StreamingBubble({ text }: { text: string }) {
 // Friendly label + glyph for each research tool the agent can call (agentic path).
 const TOOL_META: Record<string, { glyph: string; label: string }> = {
   web_search: { glyph: '🔎', label: 'Searching the web' },
-  _tool_web_search: { glyph: '🔎', label: 'Searching the web' },
-  fetch_url: { glyph: '🌐', label: 'Reading a page' },
-  _tool_fetch_url: { glyph: '🌐', label: 'Reading a page' },
-  read_paper_text: { glyph: '📄', label: 'Reading paper' },
-  read_paper_notes: { glyph: '🗒', label: 'Reading notes' },
+  web_fetch: { glyph: '🌐', label: 'Reading a page' },
+  read_paper_text: { glyph: '📄', label: 'Reading a paper' },
   related_papers: { glyph: '🕸', label: 'Finding related papers' },
   list_project_papers: { glyph: '📚', label: 'Scanning the project' },
-  read_working_notes: { glyph: '🗂', label: 'Reading working notes' },
 };
 
 function ToolActivityTrail({ tools }: { tools: ToolActivity[] }) {
