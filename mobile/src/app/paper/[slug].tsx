@@ -9,14 +9,15 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+
+import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths } from '@/api/endpoints';
@@ -83,7 +84,7 @@ export default function DiscussionScreen() {
       ) : (
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior="padding"
           keyboardVerticalOffset={8}>
           <ScrollView
             ref={scrollRef}
@@ -188,7 +189,7 @@ function ComposeFirst({
   }
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <ScrollView contentContainerStyle={styles.composeFirst} keyboardShouldPersistTaps="handled">
         <Text variant="label">OPENING PROMPT</Text>
         <Text variant="caption" style={{ marginBottom: space.sm }}>
@@ -356,22 +357,41 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
 
   const loading = audio.loadingId === audioId;
   const current = audio.currentId === audioId;
+  const [copied, setCopied] = useState(false);
+  const canonical = entry.canonical;
+
+  async function copy() {
+    await Clipboard.setStringAsync(canonical);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
   return (
     <Card style={styles.assistant}>
-      <Markdown text={entry.canonical} />
-      <Pressable
-        onPress={() => audio.playText({ id: audioId, title, text: entry.canonical })}
-        disabled={loading}
-        style={({ pressed }) => [styles.listenBtn, (pressed || current) && styles.listenBtnActive]}
-        accessibilityLabel="Listen to this response">
-        {loading ? (
-          <ActivityIndicator color={colors.cyan} size="small" />
-        ) : (
-          <Text variant="caption" color={current ? colors.cyan : colors.muted}>
-            {current ? '♪ Playing' : '► Listen'}
+      <Markdown text={canonical} />
+      <View style={styles.msgActions}>
+        <Pressable
+          onPress={() => audio.playText({ id: audioId, title, text: canonical })}
+          disabled={loading}
+          style={({ pressed }) => [styles.msgBtn, (pressed || current) && styles.msgBtnActive]}
+          accessibilityLabel="Listen to this response">
+          {loading ? (
+            <ActivityIndicator color={colors.cyan} size="small" />
+          ) : (
+            <Text variant="caption" color={current ? colors.cyan : colors.muted}>
+              {current ? '♪ Playing' : '► Listen'}
+            </Text>
+          )}
+        </Pressable>
+        <Pressable
+          onPress={copy}
+          style={({ pressed }) => [styles.msgBtn, (pressed || copied) && styles.msgBtnActive]}
+          accessibilityLabel="Copy this response">
+          <Text variant="caption" color={copied ? colors.cyan : colors.muted}>
+            {copied ? '✓ Copied' : '⧉ Copy'}
           </Text>
-        )}
-      </Pressable>
+        </Pressable>
+      </View>
     </Card>
   );
 }
@@ -427,18 +447,18 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   assistant: { backgroundColor: colors.panel },
-  listenBtn: {
+  msgActions: { flexDirection: 'row', gap: space.sm, marginTop: space.md },
+  msgBtn: {
     alignSelf: 'flex-start',
-    marginTop: space.md,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
-    minWidth: 90,
+    minWidth: 84,
     alignItems: 'center',
   },
-  listenBtnActive: { borderColor: colors.cyan },
+  msgBtnActive: { borderColor: colors.cyan },
   userRow: { alignItems: 'flex-end' },
   userBubble: {
     backgroundColor: colors.panel2,

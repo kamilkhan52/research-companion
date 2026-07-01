@@ -135,7 +135,65 @@ source = source.replace(
 
 if (source !== original) {
   fs.writeFileSync(file, source);
-  console.log('[patch-rntp] Applied RN 0.85 / New Architecture compatibility patches');
+  console.log('[patch-rntp] Applied RN 0.85 / New Architecture compatibility patches to MusicModule.kt');
 } else {
-  console.log('[patch-rntp] No changes (already patched)');
+  console.log('[patch-rntp] MusicModule.kt: no changes (already patched)');
+}
+
+// ---------- Fix 3: MusicService.kt event emission under New Architecture ----------
+// RNTP emits JS events via `reactNativeHost.reactInstanceManager.currentReactContext`, but
+// under the New Architecture accessing reactNativeHost throws ("You should not use
+// ReactNativeHost directly in the New Architecture"), crashing the playback service the moment
+// it emits an event. Resolve the ReactContext via reactHost (bridgeless/new-arch), falling back
+// to reactNativeHost only when reactHost is null (old arch). Fully-qualified names -> no imports.
+const svc = path.join(
+  __dirname,
+  '..',
+  'node_modules',
+  'react-native-track-player',
+  'android',
+  'src',
+  'main',
+  'java',
+  'com',
+  'doublesymmetry',
+  'trackplayer',
+  'service',
+  'MusicService.kt'
+);
+
+if (!fs.existsSync(svc)) {
+  console.warn('[patch-rntp] MusicService.kt not found; skipping');
+} else {
+  let s = fs.readFileSync(svc, 'utf8');
+  const before = s;
+
+  if (s.includes('private fun currentReactContext(')) {
+    console.log('[patch-rntp] MusicService.kt: already patched');
+  } else {
+    // 1) Route both emit paths through a new-arch-safe helper.
+    s = s.split('reactNativeHost.reactInstanceManager.currentReactContext').join('currentReactContext()');
+
+    // 2) Insert the helper just before the first emit() function.
+    const helper =
+      '    private fun currentReactContext(): com.facebook.react.bridge.ReactContext? {\n' +
+      '        val app = applicationContext as? com.facebook.react.ReactApplication ?: return null\n' +
+      '        val host = app.reactHost\n' +
+      '        return if (host != null) host.currentReactContext\n' +
+      '        else app.reactNativeHost.reactInstanceManager.currentReactContext\n' +
+      '    }\n\n';
+    const anchor = '    private fun emit(event: String, data: Bundle? = null) {';
+    if (s.includes(anchor)) {
+      s = s.replace(anchor, helper + anchor);
+    } else {
+      console.warn('[patch-rntp] MusicService.kt: emit() anchor not found; helper not inserted');
+    }
+
+    if (s !== before) {
+      fs.writeFileSync(svc, s);
+      console.log('[patch-rntp] Applied New Architecture event-emission patch to MusicService.kt');
+    } else {
+      console.warn('[patch-rntp] MusicService.kt: expected patterns not found; patch may need updating');
+    }
+  }
 }

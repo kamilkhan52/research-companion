@@ -12,6 +12,7 @@ import {
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
@@ -52,27 +53,29 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <QueryClientProvider client={queryClient}>
-        <ProjectProvider>
-          <AudioProvider>
-            <StatusBar style="light" />
-            <View style={{ flex: 1, backgroundColor: colors.bg }}>
-              <View style={{ flex: 1 }}>
-                <Stack
-                  screenOptions={{
-                    headerShown: false,
-                    contentStyle: { backgroundColor: colors.bg },
-                    animation: 'slide_from_right',
-                  }}>
-                  <Stack.Screen name="index" />
-                  <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-                </Stack>
+      <KeyboardProvider>
+        <QueryClientProvider client={queryClient}>
+          <ProjectProvider>
+            <AudioProvider>
+              <StatusBar style="light" />
+              <View style={{ flex: 1, backgroundColor: colors.bg }}>
+                <View style={{ flex: 1 }}>
+                  <Stack
+                    screenOptions={{
+                      headerShown: false,
+                      contentStyle: { backgroundColor: colors.bg },
+                      animation: 'slide_from_right',
+                    }}>
+                    <Stack.Screen name="index" />
+                    <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+                  </Stack>
+                </View>
+                <NowPlaying />
               </View>
-              <NowPlaying />
-            </View>
-          </AudioProvider>
-        </ProjectProvider>
-      </QueryClientProvider>
+            </AudioProvider>
+          </ProjectProvider>
+        </QueryClientProvider>
+      </KeyboardProvider>
     </SafeAreaProvider>
   );
 }
