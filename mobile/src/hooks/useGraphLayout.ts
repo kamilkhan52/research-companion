@@ -13,7 +13,27 @@ export function nodeRadius(node: GraphNode): number {
   return base + weight * 2.4;
 }
 
-export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutResult {
+export function useGraphLayout(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  serverBounds?: { width: number; height: number },
+): LayoutResult {
+  // Fast path: the server precomputed positions (temporal layout). Use them directly — no
+  // client-side O(n²) simulation, so the screen renders instantly at any size. Only kicks in
+  // when every rendered node has coordinates; otherwise we fall back to the client sim below.
+  const serverLayout = useMemo<LayoutResult | null>(() => {
+    if (!nodes.length || !nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
+      return null;
+    }
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const n of nodes) positions[n.id] = { x: n.x as number, y: n.y as number };
+    return {
+      positions,
+      width: serverBounds?.width ?? 2200,
+      height: serverBounds?.height ?? 2200,
+    };
+  }, [nodes, serverBounds?.width, serverBounds?.height]);
+
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
   const edgeInputs = useMemo(
     () => edges.map((e) => ({ source: e.source, target: e.target })),
@@ -26,7 +46,7 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     [nodeIds, edgeInputs],
   );
 
-  return useMemo(
+  const clientLayout = useMemo(
     () =>
       computeForceLayout(nodeIds, edgeInputs, {
         iterations: Math.min(260, 120 + nodeIds.length * 2),
@@ -35,4 +55,6 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [signature],
   );
+
+  return serverLayout ?? clientLayout;
 }

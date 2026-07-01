@@ -153,6 +153,10 @@ export interface GraphNode {
   cited_by_project_count: number;
   significant_cited_by_count: number;
   cites_count: number;
+  // Server-precomputed layout position (temporal Y: recent toward the bottom). Present on
+  // graphs built after layout was added; absent ones fall back to a client-side sim.
+  x?: number;
+  y?: number;
 }
 
 /** A recommended external node, with its score + human-readable reasons. */
@@ -180,6 +184,8 @@ export interface ReferenceGraph {
   model: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Canvas bounds for the server-precomputed node positions, when present. */
+  layout?: { width: number; height: number };
 }
 
 /** Cheap, no-LLM status check: which papers still need (re)extraction. */

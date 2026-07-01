@@ -32,7 +32,7 @@ from typing import Callable, Iterator
 
 import httpx
 
-from . import config, graph_store, store
+from . import config, graph_layout, graph_store, store
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -667,7 +667,9 @@ def build_graph(papers: list[Paper], force: bool = False,
                    if slug in {p.slug for p in papers}}
     nodes, edges = build_nodes_and_edges(papers, extractions)
     recs = score_recommendations(nodes, edges, len(papers))
-    graph_payload = {"built_at": _now(), "model": model, "nodes": nodes, "edges": edges}
+    layout = graph_layout.compute_layout(nodes, edges)  # adds x/y to each node (temporal Y)
+    graph_payload = {"built_at": _now(), "model": model, "nodes": nodes, "edges": edges,
+                     "layout": layout}
     graph_store.set_graph(data, graph_payload)
     graph_store.set_recommendations(data, recs)
     graph_store.save(data)

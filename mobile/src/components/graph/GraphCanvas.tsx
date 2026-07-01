@@ -23,14 +23,16 @@ export function GraphCanvas({
   selectedId,
   highlightIds,
   onSelectNode,
+  layoutBounds,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
   selectedId: string | null;
   highlightIds: Set<string> | null;
   onSelectNode: (node: GraphNode) => void;
+  layoutBounds?: { width: number; height: number };
 }) {
-  const { positions, width, height } = useGraphLayout(nodes, edges);
+  const { positions, width, height } = useGraphLayout(nodes, edges, layoutBounds);
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
   const translateX = useSharedValue(0);
@@ -157,10 +159,13 @@ const EdgeLine = memo(function EdgeLine({
   const midY = (a.y + b.y) / 2;
   const thickness = significant ? 2.6 : 1.4;
   const color = significant ? colors.violet : colors.line2;
-  // A small dot 60% of the way toward the target gives a lightweight directional cue
-  // (this is a directed citation graph) without needing a precise arrowhead polygon.
-  const dotX = a.x + dx * 0.6;
-  const dotY = a.y + dy * 0.6;
+  // Direction: source CITES target. An arrowhead ~78% of the way toward the target (short of
+  // its circle) points at the cited paper, so citation direction is legible. A triangle View
+  // (0-size box with colored bottom border) points "up" by default (−Y = angle −π/2), so we
+  // rotate it by angle + π/2 to aim it along the edge toward the target.
+  const s = significant ? 6 : 5;              // arrowhead half-width
+  const arrowX = a.x + dx * 0.78;
+  const arrowY = a.y + dy * 0.78;
 
   return (
     <>
@@ -181,13 +186,18 @@ const EdgeLine = memo(function EdgeLine({
         pointerEvents="none"
         style={{
           position: 'absolute',
-          left: dotX - 2.5,
-          top: dotY - 2.5,
-          width: 5,
-          height: 5,
-          borderRadius: 2.5,
-          backgroundColor: color,
-          opacity: dimmed ? 0.06 : significant ? 0.85 : 0.4,
+          left: arrowX - s,
+          top: arrowY - s * 0.8,
+          width: 0,
+          height: 0,
+          borderLeftWidth: s,
+          borderRightWidth: s,
+          borderBottomWidth: s * 1.6,
+          borderLeftColor: 'transparent',
+          borderRightColor: 'transparent',
+          borderBottomColor: color,
+          opacity: dimmed ? 0.06 : significant ? 0.95 : 0.55,
+          transform: [{ rotate: `${angle + Math.PI / 2}rad` }],
         }}
       />
     </>

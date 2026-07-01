@@ -77,31 +77,27 @@ export default function GraphScreen() {
   }, [graph, filter, query]);
 
   const isFiltering = !!query.trim() || filter !== 'all';
-  const highlightIds = useMemo(
-    () => (isFiltering ? new Set(filteredNodes.map((n) => n.id)) : null),
-    [isFiltering, filteredNodes],
-  );
 
-  // Perf: the graph can be 700+ nodes (mostly single-citation external leaves). By default we
-  // render a focused subgraph — the project papers plus the external works that are significant
-  // or cited by 2+ project papers — which is both far faster (the layout is O(n²)) and more
-  // readable. Searching or an explicit "Show all" renders everything. Edges are kept only
-  // between visible nodes.
-  const renderAll = showAll || isFiltering;
+  // What actually gets rendered. A filter/search CULLS to the matching nodes (not "render all
+  // and dim" — that was rendering 700+ views even for the 'significant' tab, the cause of the
+  // slow tabs). With no filter we default to a focused subgraph (project papers + significant /
+  // well-connected externals) unless "show all" is on. Edges are kept only between visible nodes.
   const visibleGraph = useMemo(() => {
     if (!graph) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
-    if (renderAll) return { nodes: graph.nodes, edges: graph.edges };
+    const withEdges = (keep: Set<string>, ns: GraphNode[]) => ({
+      nodes: ns,
+      edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    });
+    if (isFiltering) return withEdges(new Set(filteredNodes.map((n) => n.id)), filteredNodes);
+    if (showAll) return { nodes: graph.nodes, edges: graph.edges };
     const keep = new Set<string>();
     for (const n of graph.nodes) {
       if (n.kind === 'project' || n.significant_cited_by_count > 0 || n.cited_by_project_count >= 2) {
         keep.add(n.id);
       }
     }
-    return {
-      nodes: graph.nodes.filter((n) => keep.has(n.id)),
-      edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
-    };
-  }, [graph, renderAll]);
+    return withEdges(keep, graph.nodes.filter((n) => keep.has(n.id)));
+  }, [graph, isFiltering, filteredNodes, showAll]);
 
   function openPaper(slug: string) {
     setSelectedNode(null);
@@ -174,8 +170,9 @@ export default function GraphScreen() {
             nodes={visibleGraph.nodes}
             edges={visibleGraph.edges}
             selectedId={selectedNode?.id ?? null}
-            highlightIds={highlightIds}
+            highlightIds={null}
             onSelectNode={setSelectedNode}
+            layoutBounds={graph.layout}
           />
 
           {build.error ? <ErrorBanner detail={build.error} onDismiss={build.clearError} /> : null}
