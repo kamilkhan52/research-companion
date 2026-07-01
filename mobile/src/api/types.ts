@@ -149,6 +149,9 @@ export interface GraphNode {
 export interface GraphRecommendation extends GraphNode {
   recommend_score: number;
   recommend_reasons: string[];
+  /** Betweenness centrality (0-1, normalized to this graph's own max) — how much this node
+   * sits on shortest paths connecting otherwise-distant parts of the citation network. */
+  betweenness_centrality: number;
 }
 
 /** A directed citation edge: source (always a project paper) -> target (project or external). */

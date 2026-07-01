@@ -26,6 +26,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from collections import deque
 from difflib import SequenceMatcher
 from typing import Callable, Iterator
 
@@ -443,11 +444,66 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
     return list(nodes.values()), edges
 
 
+def betweenness_centrality(node_ids: list[str], edges: list[tuple[str, str]]) -> dict[str, float]:
+    """Brandes' algorithm (2001) for betweenness centrality: for every node, how often it lies
+    on the shortest path between two OTHER nodes, summed over all pairs. Treats the citation
+    graph as unweighted and undirected — citation direction doesn't matter for "does this paper
+    sit between two otherwise-distant parts of this project's citation network," which is what
+    "high-centrality bridge" means here. O(V*E), which is comfortably fast at this app's scale
+    (tens to a few hundred nodes); a real graph library would be overkill for that size.
+    Returns raw (unnormalized) scores — 0.0 for nodes with no shortest path routed through them,
+    including nodes in a graph with no cycles/alternate-routes at all (e.g. every node in a
+    disconnected set of triangles, since a triangle is a complete graph — no node is ever
+    strictly "between" the other two)."""
+    adj: dict[str, list[str]] = {n: [] for n in node_ids}
+    seen_pairs = set()
+    for a, b in edges:
+        if a not in adj or b not in adj or a == b:
+            continue
+        pair = (a, b) if a < b else (b, a)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        adj[a].append(b)
+        adj[b].append(a)
+
+    betweenness = {n: 0.0 for n in node_ids}
+    for s in node_ids:
+        stack: list[str] = []
+        pred: dict[str, list[str]] = {n: [] for n in node_ids}
+        sigma = {n: 0.0 for n in node_ids}
+        sigma[s] = 1.0
+        dist = {n: -1 for n in node_ids}
+        dist[s] = 0
+        queue = deque([s])
+        while queue:
+            v = queue.popleft()
+            stack.append(v)
+            for w in adj[v]:
+                if dist[w] < 0:
+                    dist[w] = dist[v] + 1
+                    queue.append(w)
+                if dist[w] == dist[v] + 1:
+                    sigma[w] += sigma[v]
+                    pred[w].append(v)
+        delta = {n: 0.0 for n in node_ids}
+        while stack:
+            w = stack.pop()
+            for v in pred[w]:
+                delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w])
+            if w != s:
+                betweenness[w] += delta[w]
+    # Each shortest path between a pair is discovered twice (once from each endpoint's BFS) in
+    # an undirected graph; halve to get the conventional undirected betweenness value.
+    return {n: v / 2.0 for n, v in betweenness.items()}
+
+
 def _bridge_score(node_id: str, edges: list[dict]) -> float:
-    """A lightweight bridge-ness proxy (not full betweenness centrality, which would need a
-    graph library): reward a node cited by MULTIPLE project papers whose *other* citations
-    don't otherwise overlap much — i.e. it connects citing papers that aren't already close
-    neighbors, rather than one repeatedly cited within a single tight cluster."""
+    """A lightweight, LOCAL complement to betweenness_centrality (which is global): reward a
+    node cited by MULTIPLE project papers whose *other* citations don't otherwise overlap much
+    — i.e. it connects citing papers that aren't already close neighbors, rather than one
+    repeatedly cited within a single tight cluster. Cheaper to compute and easier to explain
+    in a one-line reason than a raw centrality number, so both signals feed the final score."""
     citers = sorted({e["source"] for e in edges if e["target"] == node_id})
     if len(citers) < 2:
         return 0.0
@@ -468,7 +524,14 @@ def _bridge_score(node_id: str, edges: list[dict]) -> float:
 def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_count: int) -> list[dict]:
     """Recommendation score + human-readable reasons for each EXTERNAL node, highest first.
     Weighting: a significant citation counts most (it's evidence the project actually
-    depends on/engages with the work), breadth of citing papers next, then bridge-ness."""
+    depends on/engages with the work), breadth of citing papers next, then two complementary
+    centrality/bridge signals — a cheap local heuristic (_bridge_score) and real betweenness
+    centrality computed once over the whole graph (normalized to [0,1] by this graph's own max,
+    since raw betweenness scales with graph size and isn't meaningful compared across runs)."""
+    betweenness = betweenness_centrality(
+        [n["id"] for n in nodes], [(e["source"], e["target"]) for e in edges])
+    max_betweenness = max(betweenness.values(), default=0.0) or 1.0  # avoid dividing by zero
+
     out = []
     for n in nodes:
         if n["kind"] != "external":
@@ -478,8 +541,9 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
             continue
         sig = n["significant_cited_by_count"]
         bridge = _bridge_score(n["id"], edges)
+        centrality = betweenness.get(n["id"], 0.0) / max_betweenness
         coverage = cited / max(project_paper_count, 1)
-        score = round(sig * 3.0 + cited * 1.0 + coverage * 2.0 + bridge * 1.5, 3)
+        score = round(sig * 3.0 + cited * 1.0 + coverage * 2.0 + bridge * 1.5 + centrality * 3.0, 3)
         reasons = []
         if cited >= 2:
             reasons.append(f"Cited by {cited} of {project_paper_count} papers in this project")
@@ -490,7 +554,12 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
                 f"Used significantly (baseline/extension/dependency) in {sig} paper{'s' if sig != 1 else ''}")
         if bridge >= 1.0:
             reasons.append("Bridges papers that don't otherwise overlap much — likely connects distinct sub-threads")
-        out.append({**n, "recommend_score": score, "recommend_reasons": reasons})
+        if centrality >= 0.3:
+            reasons.append(
+                "High centrality — sits on the shortest connecting path between otherwise "
+                "distant parts of this project's citation network")
+        out.append({**n, "recommend_score": score, "recommend_reasons": reasons,
+                   "betweenness_centrality": round(centrality, 3)})
     out.sort(key=lambda n: n["recommend_score"], reverse=True)
     return out
 
