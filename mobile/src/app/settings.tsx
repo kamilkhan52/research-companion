@@ -4,7 +4,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -40,12 +40,18 @@ export default function SettingsScreen() {
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
 
+  // Sync local fields from the server exactly once, on first successful load — NOT on every
+  // settings.data change. A background refetch (e.g. right after saveSettings invalidates the
+  // query) would otherwise re-fire this and silently overwrite whatever the user is mid-typing
+  // into model/narrationModel/voice with the last-saved server values.
+  const initializedRef = useRef(false);
   useEffect(() => {
-    if (settings.data) {
+    if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
       setVoice(settings.data.tts_voice ?? '');
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
+      initializedRef.current = true;
     }
   }, [settings.data]);
 

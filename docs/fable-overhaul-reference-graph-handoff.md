@@ -1,7 +1,8 @@
 # Fable overhaul — reference graph + polish — handoff
 
-**Session:** overnight autonomous run, started 2026-07-01 00:15 PDT, this checkpoint written
-~01:42 PDT. Model: Claude Fable 5 (no fallback occurred — ran as Fable the whole session).
+**Session:** overnight autonomous run, started 2026-07-01 00:15 PDT, this checkpoint updated
+~02:05 PDT (first written ~01:42, then continued — see "Update" below). Model: Claude Fable 5
+(no fallback occurred — ran as Fable the whole session).
 
 **Branch:** `fable-overhaul-graph-references` (pushed; not yet merged to `main`).
 Base: `main` at `e38f586` (clean tree, no pre-branch commit needed).
@@ -88,10 +89,11 @@ bridge-score math, JSON parsing/salvage robustness, the store's persistence roun
 full pipeline test proving the incremental cache and the interrupted-build resumability.
 `requirements-dev.txt` added (pytest; not bundled into the runtime `requirements.txt`).
 
-#### Three real bugs found via live testing (not just unit tests) — all fixed
+#### Five real bugs found via live testing + careful self-review — all fixed
 
-The brief said to test on a small subset before scaling; doing that surfaced real issues a
-mocked test suite would never have caught:
+The brief said to test on a small subset before scaling; doing that (plus a deliberate,
+from-scratch review of the untested layout math before calling the mobile UI "done") surfaced
+real issues a mocked test suite alone would never have caught:
 
 1. **JSON truncation.** First live test (papers `punica`, then the harder `distserve`) hit
    `8000`-token cap → truncated mid-JSON on a 37-reference bibliography with contexts.
@@ -110,13 +112,45 @@ mocked test suite would never have caught:
    (a real risk: I killed one live to fix bug #2) lost **all** progress, contradicting the
    explicit "resumable" requirement. Fixed by saving after each paper; added a test that
    interrupts the generator mid-stream and confirms completed papers survive and aren't
-   re-extracted on resume.
+   re-extracted on resume. **Verified for real** when a later bug (#5) caused a genuine,
+   unplanned kill of a live build — `distserve`'s already-done extraction survived intact.
+4. **GraphCanvas mis-centered the graph.** React Native scales a transformed view around its
+   own center, so the canvas's center point doesn't move under `scale` alone — centering it on
+   the viewport only depends on translate, not scale. The code multiplied `translateX/Y` by
+   `INITIAL_SCALE`, which a numeric check confirmed would visibly mis-center the graph on
+   first load and on "Reset view" (in one concrete example, the graph's center would land 280
+   logical pixels away from the viewport's center on a 400-wide screen — not merely "a little
+   off," more like showing the wrong region of the canvas entirely). Found by deriving RN's
+   transform-around-center semantics from scratch while self-reviewing the untested
+   layout/canvas math, confirmed numerically with a small Python script before touching the
+   code — this is exactly the kind of bug tsc/bundle/doctor can't catch and that would only
+   otherwise surface on the still-pending on-device test.
+5. **Extraction calls could hang far past their intended timeout.** `httpx`'s `timeout=N` is a
+   *per-phase* budget (each of connect/read/write/pool up to N seconds), measured per socket
+   read, not a total wall-clock cap — some LLM API gateways send sparse keep-alive bytes on
+   long completions specifically to avoid tripping a client's per-read timeout, which resets
+   that clock indefinitely. Confirmed **directly and live**: a real `splitwise` extraction
+   call ran to 8m48s (and still climbing) past its 300s httpx timeout without ever erroring,
+   before I killed it. A single stuck paper would otherwise stall an entire project's build
+   indefinitely. Fixed with a real wall-clock deadline enforced via a background thread pool
+   (`_call_with_deadline`, `EXTRACTION_HARD_DEADLINE = 480s`) — not a naive
+   `with ThreadPoolExecutor() as ex:`, which would defeat the point (`__exit__` blocks until
+   every submitted job finishes, waiting out the very hang you're trying to escape); the
+   module-level executor is never explicitly shut down, and `max_workers=8` so one abandoned
+   thread can't also block submitting the *next* paper's request.
 
-A fourth thing worth naming even though it's not a "bug": `_bridge_score`'s co-citation
+A sixth thing worth naming even though it's not a "bug": `_bridge_score`'s co-citation
 overlap originally included the node itself in every citer's "other citations" set, which
 trivially inflates overlap and suppresses genuine bridge scores for nodes with few other
 citations. Found while writing tests (two failed against a reasonable-looking implementation),
 fixed by excluding the node from that set.
+
+**Pattern worth noting for future sessions:** every one of these six issues survived a clean
+`tsc`/`pytest`/`expo export`/`expo-doctor` pass — none of them are things static checks or
+mocked tests catch. Three came from actually calling the real API on real (messy, large)
+papers instead of stopping at a small happy-path sample; one came from deliberately re-deriving
+the math in new, untested UI code rather than trusting that "it compiles" means "it's correct."
+Both are worth treating as standard practice, not optional extras, for this kind of feature.
 
 ### Part A — polish (a start, not exhaustive — see "Remaining Part A" below)
 
