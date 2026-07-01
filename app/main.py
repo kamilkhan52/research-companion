@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, committer, config, graph, graph_store, projects, prompts, retriever, sessions, store, tts
+from . import agent, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -621,15 +621,25 @@ def add_paper(pid: str, req: AddPaperReq):
 # edges, external cited papers, and a recommendation ranking for which external papers to
 # add. Extraction is the only step that calls an LLM (OpenRouter, DeepSeek V4 Pro by default)
 # and is cached per paper by content hash, so rebuilds only spend tokens on changed papers.
+#
+# The build runs as a server-side background job (app/graph_jobs.py), NOT tied to any single
+# request/connection: POST /graph/build starts it (or joins one already running) and returns
+# immediately; GET /graph/build/status is polled by the client for progress. This survives a
+# mobile app being backgrounded, a dropped connection, or the app being closed and reopened —
+# none of that can kill a job that isn't waiting on it. An earlier SSE-stream-IS-the-build
+# design didn't survive any of those (confirmed live: a real build silently stopped partway
+# through when its driving connection went away, with no way to tell it had happened).
 
 @project_router.get("/graph")
 def get_graph(pid: str):
     papers = store.list_papers(sessions.session_states())
     data = graph_store.load()
+    job = graph_jobs.get_job(pid)
     return {
         "graph": data.get("graph"),
         "recommendations": data.get("recommendations") or [],
         "status": graph.status(papers),
+        "build": job.to_dict() if job else None,
     }
 
 
@@ -639,24 +649,21 @@ def get_graph_recommendations(pid: str):
     return {"recommendations": data.get("recommendations") or []}
 
 
-def _graph_build_stream(force: bool):
-    papers = store.list_papers(sessions.session_states())
-    try:
-        for event in graph.build_graph(papers, force=force):
-            yield _sse(event)
-    except Exception as e:
-        # Outermost boundary for a multi-call pipeline: per-paper LLM/network failures are
-        # already caught inside graph.extract_references_for_paper (and surfaced via each
-        # paper's own 'error' field in 'progress' events), so reaching here means something
-        # unexpected (e.g. a bug, or the papers list itself failing to load) — keep the SSE
-        # stream alive with an error event rather than a bare 500 mid-stream.
-        yield _sse({"type": "error", "detail": str(e)[:400]})
+@project_router.get("/graph/build/status")
+def get_graph_build_status(pid: str):
+    """Lightweight, cheap-to-poll endpoint for live build progress — the client polls this
+    every second or two while a build is running instead of holding a connection open."""
+    job = graph_jobs.get_job(pid)
+    return {"build": job.to_dict() if job else None}
 
 
 @project_router.post("/graph/build")
-def build_graph_stream(req: GraphBuildReq):
-    return StreamingResponse(_graph_build_stream(req.force), media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
+def build_graph_start(pid: str, req: GraphBuildReq):
+    """Starts a build in the background and returns its current snapshot immediately (does
+    NOT block until it finishes). If a build is already running for this project, joins it
+    (returns its current progress) rather than starting a duplicate."""
+    job = graph_jobs.start_build(pid, force=req.force)
+    return {"build": job.to_dict()}
 
 
 app.include_router(project_router)
