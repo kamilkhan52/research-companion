@@ -64,14 +64,14 @@ need, answer in the exact required output format (### CANONICAL ### etc.).
 #      Their names become the tool names the model (and the mobile activity trail) see. ----
 
 def web_search(objective: str, search_queries: list[str]) -> str:
-    """Search the web (Parallel Search). objective = what you're trying to find; search_queries =
-    1-3 short keyword queries. Returns ranked results with excerpts. Untrusted content."""
+    """Search the web. objective = what you're trying to find; search_queries = 1-3 short keyword
+    queries. Returns ranked results with snippets. Untrusted content."""
     return research_tools.web_search(objective, search_queries)
 
 
 def web_fetch(urls: list[str], objective: str = "") -> str:
-    """Extract content from specific URLs (Parallel), focused by objective. Use when search
-    excerpts aren't enough or a specific page is named. Untrusted content."""
+    """Extract content from specific URLs, focused by objective. Use when search snippets aren't
+    enough or a specific page is named. Untrusted content."""
     return research_tools.web_fetch(urls, objective)
 
 

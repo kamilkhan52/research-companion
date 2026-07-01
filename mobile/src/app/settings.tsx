@@ -38,6 +38,7 @@ export default function SettingsScreen() {
   const [narrationModel, setNarrationModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
   const [parallelKey, setParallelKey] = useState('');
+  const [firecrawlKey, setFirecrawlKey] = useState('');
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
 
@@ -77,6 +78,7 @@ export default function SettingsScreen() {
     if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
     if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
     if (parallelKey.trim()) payload.parallel_api_key = parallelKey.trim();
+    if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
     await saveSettings.mutateAsync(payload);
     setApiKey('');
     setOpenaiKey('');
@@ -181,8 +183,19 @@ export default function SettingsScreen() {
                 ) : null}
               </Section>
 
-              {/* Research agent — Parallel Search key for the analyst's web tools */}
-              <Section title="Research agent">
+              {/* Research agent — web-search provider keys for the analyst's tools */}
+              <Section title="Research agent (web search)">
+                <Label
+                  text="Firecrawl API key"
+                  hint={settings.data?.has_firecrawl_key ? `set (${settings.data.firecrawl_key_hint})` : 'not set'}
+                />
+                <Field
+                  value={firecrawlKey}
+                  onChangeText={setFirecrawlKey}
+                  placeholder={settings.data?.has_firecrawl_key ? 'Replace key…' : 'fc-…'}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
                 <Label
                   text="Parallel Search API key"
                   hint={settings.data?.has_parallel_key ? `set (${settings.data.parallel_key_hint})` : 'not set'}
@@ -196,8 +209,9 @@ export default function SettingsScreen() {
                 />
                 <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
                   Lets the analyst search the web and read outside papers mid-discussion (author
-                  info, adoption, follow-up work). Can also be set via PARALLEL_API_KEY on the
-                  server. Reading your own project's papers needs no key.
+                  info, adoption, follow-up work). It tries Firecrawl, then Parallel, then a
+                  keyless fallback — so search works even with no key, and upgrades when a key
+                  has credit. Reading your own project's papers needs no key.
                 </Text>
               </Section>
 

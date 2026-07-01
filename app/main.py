@@ -116,7 +116,8 @@ class SettingsReq(BaseModel):
     speech_provider: str | None = None
     tts_model: str | None = None
     tts_voice: str | None = None
-    parallel_api_key: str | None = None   # Parallel Search — web search for the agent's tools
+    parallel_api_key: str | None = None    # web search provider (agent tools)
+    firecrawl_api_key: str | None = None   # web search/fetch provider (agent tools)
 
 
 class NarrateReq(BaseModel):
@@ -317,6 +318,7 @@ def read_settings():
     key = s.get("openrouter_api_key") or ""
     okey = s.get("openai_api_key") or ""
     pkey = s.get("parallel_api_key") or ""
+    fkey = s.get("firecrawl_api_key") or ""
     return {
         "has_key": bool(key), "key_hint": (key[:6] + "…") if key else "",
         "model": s.get("model"), "narration_model": s.get("narration_model"),
@@ -324,6 +326,7 @@ def read_settings():
         "speech_provider": s.get("speech_provider"), "tts_model": s.get("tts_model"),
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
         "has_parallel_key": bool(pkey), "parallel_key_hint": (pkey[:6] + "…") if pkey else "",
+        "has_firecrawl_key": bool(fkey), "firecrawl_key_hint": (fkey[:6] + "…") if fkey else "",
     }
 
 
@@ -337,6 +340,7 @@ def write_settings(req: SettingsReq):
         "speech_provider": merged.get("speech_provider"),
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),
         "has_parallel_key": bool(merged.get("parallel_api_key")),
+        "has_firecrawl_key": bool(merged.get("firecrawl_api_key")),
     }
 
 

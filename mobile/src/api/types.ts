@@ -91,6 +91,8 @@ export interface Settings {
   voices: string[];
   has_parallel_key: boolean;
   parallel_key_hint: string;
+  has_firecrawl_key: boolean;
+  firecrawl_key_hint: string;
 }
 
 /** GET /api/auth/config */

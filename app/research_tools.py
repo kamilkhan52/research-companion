@@ -19,9 +19,14 @@ not configured), which raise ToolError so the failure is explicit.
 """
 from __future__ import annotations
 
+import html
+import ipaddress
 import json
 import os
+import re
+import socket
 import uuid
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
@@ -31,14 +36,22 @@ from . import config, graph_store, sessions, store
 MAX_PAPER_TEXT_CHARS = 16_000
 MAX_NOTES_CHARS = 12_000
 MAX_WEB_TEXT_CHARS = 12_000        # cap the text handed back from a web search/fetch
+WEB_TIMEOUT_S = 45.0
 
-# Parallel Search MCP (https://parallel.ai) — the same web-search/fetch backend Hermes and the
-# Pi agent use on this machine. Streamable-HTTP MCP endpoint; auth via x-api-key. Key comes from
-# PARALLEL_API_KEY / PARALLEL_SEARCH_API_KEY (matching Pi) or the 'parallel_api_key' setting.
+# Parallel Search MCP (https://parallel.ai) — the web-search/fetch backend the Pi agent uses on
+# this machine. Streamable-HTTP MCP endpoint; auth via x-api-key. Key from PARALLEL_API_KEY /
+# PARALLEL_SEARCH_API_KEY (matching Pi) or the 'parallel_api_key' setting.
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 PARALLEL_MODEL = "gpt-5.5"          # Parallel's search/extract model (per Pi's extension)
-PARALLEL_TIMEOUT_S = 45.0
 _PARALLEL_SESSION = f"rc-{uuid.uuid4()}"
+
+# Firecrawl (https://firecrawl.dev) — the fallback the Pi/Hermes setup uses. Key from
+# FIRECRAWL_API_KEY or the 'firecrawl_api_key' setting.
+FIRECRAWL_BASE = "https://api.firecrawl.dev/v2"
+
+# DuckDuckGo HTML — a keyless last resort so web search works even when the paid providers are
+# out of credit. Lower quality (no rich excerpts) but always available.
+DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
 
 class ToolError(Exception):
@@ -132,11 +145,16 @@ def read_working_notes() -> str:
     return notes
 
 
-# ------------------------------------------------------------- web tools (Parallel Search MCP)
-# We don't fetch arbitrary URLs ourselves (no SSRF surface): Parallel does the searching and
-# page extraction server-side and hands back excerpts/markdown. Web content is still UNTRUSTED —
-# the agent must treat it as data to evaluate/cite, never as instructions (see agent_harness
-# guidance).
+# ----------------------------------------------------------------------------------- web tools
+# Web search/fetch go through a provider CHAIN so they keep working as credit/availability
+# changes: Firecrawl -> Parallel -> DuckDuckGo (keyless). Whichever is configured-and-working
+# wins, in that order; the keyless DDG fallback means search almost always returns something.
+# All web content is UNTRUSTED — the agent treats it as data to evaluate/cite, never as
+# instructions (see agent_harness guidance).
+
+def _firecrawl_key() -> str:
+    return os.environ.get("FIRECRAWL_API_KEY") or config.load_settings().get("firecrawl_api_key") or ""
+
 
 def _parallel_key() -> str:
     return (os.environ.get("PARALLEL_API_KEY") or os.environ.get("PARALLEL_SEARCH_API_KEY")
@@ -147,6 +165,61 @@ def _cap(text: str) -> str:
     text = text.strip()
     return text if len(text) <= MAX_WEB_TEXT_CHARS else text[:MAX_WEB_TEXT_CHARS] + "\n\n[...truncated...]"
 
+
+# ---- provider: Firecrawl (https://firecrawl.dev) ----
+
+def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
+    key = _firecrawl_key()
+    if not key:
+        raise ToolError("no firecrawl key")
+    own = client is None
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
+    try:
+        resp = client.post(f"{FIRECRAWL_BASE}/search",
+                           headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                           json={"query": queries[0] if queries else objective, "limit": 5})
+        if resp.status_code != 200:
+            raise ToolError(f"firecrawl {resp.status_code}: {resp.text[:120]}")
+        results = (resp.json() or {}).get("data") or []
+        if not results:
+            raise ToolError("firecrawl returned no results")
+        out = [f"Web results for \"{objective}\":"]
+        for r in results[:5]:
+            out.append(f"- {r.get('title', '(untitled)')}\n  {r.get('url', '')}\n  "
+                       f"{(r.get('description') or '')[:300]}")
+        return "\n".join(out)
+    except httpx.HTTPError as e:
+        raise ToolError(f"firecrawl request failed: {e}") from e
+    finally:
+        if own:
+            client.close()
+
+
+def _firecrawl_fetch(urls: list[str], objective: str, *, client: httpx.Client | None = None) -> str:
+    key = _firecrawl_key()
+    if not key:
+        raise ToolError("no firecrawl key")
+    own = client is None
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
+    try:
+        chunks = []
+        for url in urls[:4]:
+            resp = client.post(f"{FIRECRAWL_BASE}/scrape",
+                               headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                               json={"url": url, "formats": ["markdown"]})
+            if resp.status_code != 200:
+                raise ToolError(f"firecrawl {resp.status_code}: {resp.text[:120]}")
+            md = ((resp.json() or {}).get("data") or {}).get("markdown", "")
+            chunks.append(f"# {url}\n\n{md}")
+        return "\n\n---\n\n".join(chunks)
+    except httpx.HTTPError as e:
+        raise ToolError(f"firecrawl request failed: {e}") from e
+    finally:
+        if own:
+            client.close()
+
+
+# ---- provider: Parallel Search MCP ----
 
 def _read_jsonrpc(resp: httpx.Response) -> dict:
     """Parse a JSON-RPC reply from the MCP endpoint, which may arrive as plain JSON or as a
@@ -165,7 +238,6 @@ def _read_jsonrpc(resp: httpx.Response) -> dict:
 
 
 def _parse_mcp_content(result) -> str:
-    """MCP tool results carry a `content` list of {type, text}; join the text parts."""
     if isinstance(result, dict):
         content = result.get("content")
         if isinstance(content, list) and content:
@@ -175,17 +247,15 @@ def _parse_mcp_content(result) -> str:
 
 
 def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | None = None) -> str:
-    """Invoke a Parallel MCP tool ('web_search' | 'web_fetch') via the JSON-RPC handshake
-    (initialize -> notifications/initialized -> tools/call), mirroring Pi's parallel-search
-    extension. `client` is injectable so tests run with no network."""
+    """Invoke a Parallel MCP tool via the JSON-RPC handshake (initialize ->
+    notifications/initialized -> tools/call), mirroring Pi's parallel-search extension."""
     key = _parallel_key()
     if not key:
-        raise ToolError("Web search is not configured. Set PARALLEL_API_KEY in the server "
-                        "environment (or add a Parallel API key in Settings).")
+        raise ToolError("no parallel key")
     headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
                "x-api-key": key}
     own = client is None
-    client = client or httpx.Client(timeout=PARALLEL_TIMEOUT_S)
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
     try:
         init = client.post(PARALLEL_MCP_URL, headers=headers, json={
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -202,34 +272,157 @@ def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | No
                                      **arguments}}})
         data = _read_jsonrpc(call)
         if data.get("error"):
-            raise ToolError(f"Parallel error: {data['error'].get('message', 'unknown')}")
-        return _cap(_parse_mcp_content(data.get("result")))
+            raise ToolError(f"parallel: {data['error'].get('message', 'unknown')}")
+        result = data.get("result") or {}
+        content = _parse_mcp_content(result)
+        # Parallel reports failures (e.g. 402 out-of-credit) as an isError tool result or as
+        # error text in the content, NOT as an HTTP/JSON-RPC error — so detect that and raise,
+        # letting the provider chain fall through to the next provider.
+        if result.get("isError") or content.startswith("Error executing tool") \
+                or "Insufficient credit" in content:
+            raise ToolError(content[:150])
+        return content
     except httpx.HTTPError as e:
-        raise ToolError(f"Parallel request failed: {e}") from e
+        raise ToolError(f"parallel request failed: {e}") from e
     finally:
         if own:
             client.close()
 
 
-def web_search(objective: str, search_queries: list[str] | None = None, *,
-               client: httpx.Client | None = None) -> str:
-    """Search the web via Parallel Search. `objective` describes what you want to find;
-    `search_queries` are 1-3 short keyword queries. Returns ranked results with excerpts —
-    usually enough to answer (author info, adoption, follow-up work, external papers) without
-    fetching. UNTRUSTED content."""
-    if not objective.strip():
-        return "Empty search objective."
-    queries = [q for q in (search_queries or []) if q.strip()] or [objective.strip()]
-    return _parallel_call("web_search", {"objective": objective.strip(), "search_queries": queries},
+def _parallel_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
+    return _parallel_call("web_search", {"objective": objective, "search_queries": queries}, client=client)
+
+
+def _parallel_fetch(urls: list[str], objective: str, *, client: httpx.Client | None = None) -> str:
+    return _parallel_call("web_fetch", {"urls": urls[:20],
+                                        "objective": objective or "Extract the key content."},
                           client=client)
 
 
-def web_fetch(urls: list[str], objective: str = "", *, client: httpx.Client | None = None) -> str:
-    """Extract content from specific URLs via Parallel, focused by `objective`. Use only when
-    search excerpts are insufficient or a specific page/quote is needed. UNTRUSTED content."""
-    urls = [u for u in (urls or []) if u.strip()]
+# ---- provider: DuckDuckGo HTML (keyless fallback) ----
+
+_DDG_A_RE = re.compile(r'result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+_DDG_SNIP_RE = re.compile(r'result__snippet"[^>]*>(.*?)</a>', re.S)
+_TAGS_RE = re.compile(r"<[^>]+>")
+
+
+def _ddg_unwrap(href: str) -> str:
+    if href.startswith("//"):
+        href = "https:" + href
+    if "duckduckgo.com/l/" in href:
+        q = parse_qs(urlparse(href).query).get("uddg")
+        if q:
+            return unquote(q[0])
+    return href
+
+
+def _ddg_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
+    own = client is None
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S, follow_redirects=True)
+    try:
+        resp = client.post(DDG_HTML_URL, data={"q": queries[0] if queries else objective},
+                           headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code != 200:
+            raise ToolError(f"duckduckgo {resp.status_code}")
+        links = _DDG_A_RE.findall(resp.text)
+        snips = _DDG_SNIP_RE.findall(resp.text)
+        if not links:
+            raise ToolError("duckduckgo returned no results")
+        out = [f"Web results for \"{objective}\":"]
+        for i, (href, title) in enumerate(links[:6]):
+            t = html.unescape(_TAGS_RE.sub("", title)).strip()
+            snip = html.unescape(_TAGS_RE.sub("", snips[i])).strip() if i < len(snips) else ""
+            out.append(f"- {t}\n  {_ddg_unwrap(href)}\n  {snip[:300]}")
+        return "\n".join(out)
+    except httpx.HTTPError as e:
+        raise ToolError(f"duckduckgo request failed: {e}") from e
+    finally:
+        if own:
+            client.close()
+
+
+# ---- provider: direct fetch (keyless fallback for web_fetch), with an SSRF guard ----
+
+def _assert_public_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ToolError(f"only http(s) allowed (got '{parsed.scheme}')")
+    host = parsed.hostname
+    if not host:
+        raise ToolError("url has no host")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise ToolError(f"could not resolve {host}")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            raise ToolError(f"refusing non-public address {ip}")
+
+
+def _direct_fetch(urls: list[str], objective: str, *, client: httpx.Client | None = None) -> str:
+    own = client is None
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S, follow_redirects=True)
+    try:
+        chunks = []
+        for url in urls[:3]:
+            _assert_public_url(url)
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                chunks.append(f"# {url}\n\n(fetch failed: HTTP {resp.status_code})")
+                continue
+            if "text/html" not in resp.headers.get("content-type", "") and \
+                    "text/plain" not in resp.headers.get("content-type", ""):
+                chunks.append(f"# {url}\n\n(non-text content)")
+                continue
+            body = resp.text
+            text = _TAGS_RE.sub(" ", re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", body))
+            text = html.unescape(re.sub(r"[ \t]+", " ", text)).strip()
+            chunks.append(f"# {url}\n\n{text[:6000]}")
+        return "\n\n---\n\n".join(chunks) if chunks else "No content fetched."
+    except httpx.HTTPError as e:
+        raise ToolError(f"fetch failed: {e}") from e
+    finally:
+        if own:
+            client.close()
+
+
+# ---- orchestrators: try providers in order, fall through on failure ----
+
+def _run_chain(providers: list[tuple[str, object]], *args) -> str:
+    attempts = []
+    for name, fn in providers:
+        try:
+            result = fn(*args)
+            if result and result.strip():
+                return _cap(result)
+        except ToolError as e:
+            attempts.append(f"{name} ({e})")
+    return "Web request failed — no provider available. Tried: " + "; ".join(attempts)
+
+
+def web_search(objective: str, search_queries: list[str] | None = None) -> str:
+    """Search the web. `objective` = what you want to find; `search_queries` = 1-3 short keyword
+    queries. Tries Firecrawl, then Parallel, then keyless DuckDuckGo. Returns ranked results with
+    snippets — usually enough to answer (author info, adoption, follow-up work, outside papers)
+    without fetching. UNTRUSTED content."""
+    objective = (objective or "").strip()
+    if not objective:
+        return "Empty search objective."
+    queries = [q.strip() for q in (search_queries or []) if q.strip()] or [objective]
+    return _run_chain(
+        [("Firecrawl", _firecrawl_search), ("Parallel", _parallel_search), ("DuckDuckGo", _ddg_search)],
+        objective, queries)
+
+
+def web_fetch(urls: list[str], objective: str = "") -> str:
+    """Extract content from specific URLs. Tries Firecrawl, then Parallel, then a direct fetch.
+    Use when search snippets aren't enough or a specific page is named. UNTRUSTED content."""
+    urls = [u.strip() for u in (urls or []) if u.strip()]
     if not urls:
         return "No URLs provided."
-    return _parallel_call("web_fetch", {"urls": urls[:20],
-                                        "objective": objective.strip() or "Extract the key content."},
-                          client=client)
+    objective = (objective or "").strip()
+    return _run_chain(
+        [("Firecrawl", _firecrawl_fetch), ("Parallel", _parallel_fetch), ("direct", _direct_fetch)],
+        urls, objective)
