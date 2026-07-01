@@ -292,3 +292,49 @@ def set_status_read(slug: str) -> bool:
     lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
     rl.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return True
+
+
+# ---- adding a paper (e.g. from a reference-graph recommendation) ----
+
+class DuplicatePaperError(ValueError):
+    pass
+
+
+def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) -> str:
+    """Append a new *unread* reading-list entry under `group` (created if it doesn't exist
+    yet). Returns the new entry's slug. Deliberately does NOT retrieve full text or git-commit
+    — this only edits reading-list.md (metadata), matching the rest of this module's "never
+    calls an LLM and never makes network calls" invariant; retrieval stays lazy (first time
+    the paper is opened) like every other paper, and committing stays a human's explicit,
+    reviewed action (committer.py), like every other change to a project's record."""
+    title = (title or "").strip()
+    if not title:
+        raise ValueError("Title is required.")
+    slug = derive_slug(title)
+    if any(p.slug == slug for p in list_papers()):
+        raise DuplicatePaperError(f"A paper with slug '{slug}' already exists in this project.")
+
+    group = (group or "Unsorted").strip() or "Unsorted"
+    heading = f"## {group}"
+    rl = _reading_list()
+    text = rl.read_text(encoding="utf-8") if rl.exists() else "# Reading list\n\n"
+    lines = text.splitlines()
+
+    block = [f"**{title}** — *unread*"]
+    if arxiv_id:
+        block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")  # provenance only; not parsed
+    block.append("")
+
+    heading_idx = next((i for i, l in enumerate(lines) if l.strip() == heading), None)
+    if heading_idx is not None:
+        end = len(lines)
+        for j in range(heading_idx + 1, len(lines)):
+            if _H2_RE.match(lines[j]):
+                end = j
+                break
+        new_lines = lines[:end] + block + lines[end:]
+    else:
+        new_lines = lines + ["", heading, ""] + block
+
+    rl.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    return slug

@@ -84,20 +84,50 @@ iOS you'll also need "Sign in with Apple" (Apple's rule); Android-first means th
 3. **Done** → the agent drafts the Notes block + a synthesis edit. Review on the same screen,
    **Approve** (commits to git, flips status to *read*) or **Request changes**.
 
+## Reference graph
+
+Each project can build a citation graph over its own papers: how they cite each other, which
+outside papers they lean on, and a ranked recommendation for which outside papers to add next
+(weighted by how many project papers cite it, how *significantly*, and whether it bridges
+otherwise-separate citing papers). One OpenRouter call per paper (DeepSeek V4 Pro by default —
+override with `RC_GRAPH_LLM_MODEL`) reads its cached full text and returns structured
+references, body-text citation contexts, and a significance verdict in one pass; matching/
+dedup/analysis is deterministic Python, no further LLM calls. Cached per paper by content
+hash and saved incrementally (survives an interrupted build), so rebuilding only spends
+tokens on papers that changed since last time.
+
+- `GET /api/projects/{pid}/graph`, `POST /api/projects/{pid}/graph/build` (`{"force": bool}`,
+  SSE progress), `GET /api/projects/{pid}/graph/recommendations`.
+- `POST /api/projects/{pid}/papers` adds a recommended paper to the reading list (unread;
+  full text stays lazily retrieved like any other paper).
+- See `app/graph.py` for the pipeline and `app/graph_store.py` for the per-project cache
+  (`.state/reference-graph.json`, gitignored — a derived cache, not authored content).
+- Mobile UI: the Library's project bar and the Discussion screen both have a "✦ Graph" entry
+  point (`mobile/src/app/graph.tsx`) — pan/zoom canvas, search/filter, node detail, and the
+  recommendations panel with a one-tap "Add to project".
+
+## Mobile app
+
+`mobile/` is the React Native + Expo client (Android-first) — the actively developed client
+day-to-day; `web/` still works but doesn't get new features first. See `mobile/README.md` for
+building/running it.
+
 ## Layout
 
 ```
-app/         FastAPI backend (the deterministic spine + agent client)
-web/         mobile-first single-page client
+app/         FastAPI backend (the deterministic spine + agent client + reference graph)
+web/         mobile-first single-page client (legacy; see mobile/ for the active client)
+mobile/      React Native + Expo client (Android-first)
 projects/    per-project git-backed stores (reading list, method, working-notes, corpus, sessions)
 .app-state/  app-global: API keys, model/TTS settings, prompt overrides, audio + narration caches
 shared/      generated API types (scripts/gen-api-types.sh) for typed clients
 docs/        architecture + mobile app plan
 scripts/     helpers (migrate_to_projects.py, gen-api-types.sh)
+tests/       backend test suite (pytest; requirements-dev.txt)
 ```
 
 `projects/` and `.app-state/` are gitignored by the code repo (each project is its own repo).
 
 See `app/agent.py` for the dual-output contract, `app/tts.py` for the swappable TTS seam,
-`app/projects.py` for the multi-project registry, and `docs/mobile-app-plan.md` for the
-native-app direction.
+`app/projects.py` for the multi-project registry, `app/graph.py` for the reference-graph
+pipeline, and `docs/mobile-app-plan.md` for the native-app direction.

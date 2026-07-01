@@ -5,6 +5,8 @@ is always driven through an injected fake in tests (see graph.build_graph's extr
 """
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from app import config, projects
@@ -12,7 +14,9 @@ from app import config, projects
 
 @pytest.fixture
 def temp_project(tmp_path, monkeypatch):
-    """Yields a project id with an empty reading-list, active for the duration of the test."""
+    """Yields a project id with an empty reading-list, active for the duration of the test.
+    Git-initialized like a real project (projects.create_project always does this), so tests
+    that check working-tree state (e.g. "this write wasn't committed") reflect production."""
     monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path)
     pid = "test-project"
     root = projects.project_path(pid)
@@ -23,12 +27,19 @@ def temp_project(tmp_path, monkeypatch):
     (root / "reading-list.md").write_text("# Reading list\n\n## Group\n\n", encoding="utf-8")
     (root / "reading-method.md").write_text("", encoding="utf-8")
     (root / "working-notes.md").write_text("", encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "-c", "user.email=test@test", "-c", "user.name=test", "add", "-A")
+    _git(root, "-c", "user.email=test@test", "-c", "user.name=test", "commit", "-q", "-m", "init")
 
     token = config.set_active_project(pid)
     try:
         yield pid
     finally:
         config.reset_active_project(token)
+
+
+def _git(cwd, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
 
 
 def add_paper(pid: str, slug: str, title: str, group: str = "Group", full_text: str = "full text") -> None:

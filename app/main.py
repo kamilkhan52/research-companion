@@ -142,6 +142,12 @@ class GraphBuildReq(BaseModel):
     force: bool = False   # re-extract every retrievable paper, ignoring the content-hash cache
 
 
+class AddPaperReq(BaseModel):
+    title: str
+    group: str | None = None
+    arxiv_id: str | None = None   # provenance only (e.g. from a graph node); not auto-retrieved
+
+
 # ---------- helpers ----------
 
 def _paper_dict(slug: str) -> dict:
@@ -593,6 +599,21 @@ def approve(req: ApproveReq):
     except CommitError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"result": result, "paper": _paper_dict(req.slug)}
+
+
+@project_router.post("/papers")
+def add_paper(pid: str, req: AddPaperReq):
+    """Add a new *unread* entry to this project's reading list — e.g. accepting a reference-
+    graph recommendation. Metadata only: full text stays lazily retrieved (first time it's
+    opened, like every other paper) and nothing is git-committed (like every other change to
+    the record, that stays an explicit human action via /approve)."""
+    try:
+        slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id)
+    except store.DuplicatePaperError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"paper": _paper_dict(slug)}
 
 
 # ---------- reference graph ----------

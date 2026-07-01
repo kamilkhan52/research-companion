@@ -8,6 +8,7 @@ import type {
   GraphResponse,
   ModelOption,
   OpeningDraft,
+  Paper,
   Project,
   ProjectState,
   Session,
@@ -64,6 +65,9 @@ export const reopen = (pid: string, slug: string) =>
   apiPost<{ state: string | null; transcript: unknown[] }>(`${P(pid)}/reopen`, { slug });
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
   apiPost<{ result: unknown; paper: unknown }>(`${P(pid)}/approve`, { slug, ...body });
+/** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation. */
+export const addPaper = (pid: string, title: string, group?: string, arxiv_id?: string) =>
+  apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, group, arxiv_id });
 
 // Stream endpoint paths (used with streamPost from stream.ts).
 export const streamPaths = (pid: string) => ({

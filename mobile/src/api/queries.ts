@@ -102,3 +102,15 @@ export function useGraph(pid: string | null) {
     enabled: !!pid && hasUrl,
   });
 }
+
+export function useAddPaper(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ title, group, arxivId }: { title: string; group?: string; arxivId?: string }) =>
+      api.addPaper(pid, title, group, arxivId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+      qc.invalidateQueries({ queryKey: keys.graph(pid) });
+    },
+  });
+}

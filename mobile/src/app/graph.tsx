@@ -142,6 +142,7 @@ export default function GraphScreen() {
       )}
 
       <NodeDetailSheet
+        pid={activePid}
         node={selectedNode}
         edges={graph?.edges ?? []}
         nodesById={nodesById}
@@ -150,6 +151,7 @@ export default function GraphScreen() {
       />
 
       <RecommendationsPanel
+        pid={activePid}
         visible={showRecs}
         recommendations={recommendations}
         onClose={() => setShowRecs(false)}
