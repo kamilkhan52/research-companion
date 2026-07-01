@@ -49,6 +49,11 @@ def _extract_pdf(data: bytes) -> str:
     return _clean(raw)
 
 
+def extract_pdf_bytes(data: bytes) -> str:
+    """Public wrapper: extract cleaned text from raw PDF bytes (for user-uploaded PDFs)."""
+    return _extract_pdf(data)
+
+
 def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
     params = {"search_query": f'ti:"{title}"', "start": 0, "max_results": max_results}
     try:
@@ -96,8 +101,16 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         m = _ARXIV_ID_RE.search(arxiv_id)
         aid = m.group(0) if m else arxiv_id
         url = f"https://arxiv.org/pdf/{aid}"
-        return {"full_text": _extract_pdf(_fetch(url)), "arxiv_id": aid,
-                "source": f"https://arxiv.org/abs/{aid}", "matched_title": title, "score": 1.0}
+        try:
+            return {"full_text": _extract_pdf(_fetch(url)), "arxiv_id": aid,
+                    "source": f"https://arxiv.org/abs/{aid}", "matched_title": title, "score": 1.0}
+        except RetrievalError:
+            # A supplied arXiv id can be wrong — especially ids extracted from a bibliography by
+            # the graph pipeline (often malformed or hallucinated). Rather than hard-fail, fall
+            # back to a title search so the paper can still be found. Re-raise only if we have no
+            # title to search on.
+            if not title:
+                raise
 
     candidates = search_arxiv(title)
     if not candidates:

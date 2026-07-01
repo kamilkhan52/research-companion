@@ -210,28 +210,40 @@ function ComposeFirst({
   const [prompt, setPrompt] = useState('');
   const [starting, setStarting] = useState(false);
   const [retrieveError, setRetrieveError] = useState<string | null>(null);
+  // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
+  // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
+  const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
+  const [manualSource, setManualSource] = useState('');
 
   useEffect(() => {
     if (opening.data?.prompt && !prompt) setPrompt(opening.data.prompt);
   }, [opening.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function start() {
+  async function start(source?: { arxiv_id?: string; pdf_url?: string }) {
     setStarting(true);
     setRetrieveError(null);
     try {
-      const res = await api.startPaper(pid, slug);
+      const res = await api.startPaper(pid, slug, source);
       if (res.needs_confirmation) {
-        setRetrieveError(
-          'Multiple source matches found — please start this paper once on the web client to pick the right source.',
-        );
+        setCandidates((res.candidates as SourceCandidate[]) ?? []);
+        setRetrieveError('Couldn’t confidently match this paper. Pick a source below, or paste a PDF/arXiv link.');
         return;
       }
+      setCandidates(null);
       await stream.run(chatStartPath, { slug, prompt, model: opening.data?.model ?? undefined });
     } catch (e) {
       setRetrieveError((e as Error).message ?? 'Could not fetch the paper.');
     } finally {
       setStarting(false);
     }
+  }
+
+  // Interpret a pasted source: a URL (http…) is treated as a direct PDF link, anything else as
+  // an arXiv id. This is the "provide a PDF link" fallback when auto-retrieval can't find it.
+  function startFromManual() {
+    const s = manualSource.trim();
+    if (!s) return;
+    start(/^https?:\/\//i.test(s) ? { pdf_url: s } : { arxiv_id: s });
   }
 
   if (opening.isLoading) return <Centered loading />;
@@ -271,14 +283,61 @@ function ComposeFirst({
         ) : null}
         <Button
           title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={start}
+          onPress={() => start()}
           loading={starting}
           disabled={!prompt.trim()}
           style={{ marginTop: space.lg }}
         />
+
+        {candidates && candidates.length ? (
+          <View style={{ marginTop: space.lg, gap: space.sm }}>
+            <Text variant="label">CANDIDATE SOURCES</Text>
+            {candidates.map((c) => (
+              <Pressable
+                key={c.arxiv_id}
+                onPress={() => start({ arxiv_id: c.arxiv_id })}
+                disabled={starting}
+                style={styles.candidate}>
+                <Text variant="body" numberOfLines={2}>{c.title}</Text>
+                <Text variant="caption" color={colors.muted}>arXiv:{c.arxiv_id}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Manual source fallback — always available, in case auto-retrieval picks wrong or
+            the paper isn't on arXiv. */}
+        <View style={{ marginTop: space.lg }}>
+          <Text variant="label">PROVIDE A SOURCE</Text>
+          <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
+            Paste a PDF link or an arXiv id if the paper can’t be found automatically.
+          </Text>
+          <TextInput
+            value={manualSource}
+            onChangeText={setManualSource}
+            style={styles.searchInput}
+            placeholder="https://…/paper.pdf  or  2501.01005"
+            placeholderTextColor={colors.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Button
+            title="Fetch from this source"
+            variant="ghost"
+            onPress={startFromManual}
+            disabled={!manualSource.trim() || !prompt.trim() || starting}
+            style={{ marginTop: space.sm }}
+          />
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
+}
+
+interface SourceCandidate {
+  arxiv_id: string;
+  title: string;
+  score?: number;
 }
 
 // ---------- composer (state-dependent input + actions) ----------
@@ -577,6 +636,25 @@ const styles = StyleSheet.create({
   thread: { padding: space.md, paddingBottom: space.xl, gap: space.md },
   composeFirst: { padding: space.md },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
+  candidate: {
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    borderRadius: radius.md,
+    padding: space.md,
+    gap: 2,
+  },
+  searchInput: {
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    color: colors.text,
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 15,
+  },
   promptInput: {
     backgroundColor: colors.panel,
     borderWidth: 1,

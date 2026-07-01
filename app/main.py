@@ -10,7 +10,7 @@ import os
 import re
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -519,6 +519,27 @@ def start_paper(req: StartReq):
     store.write_full_text(req.slug, paper.title, res["full_text"], {
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
     })
+    return {"ok": True, "retrieved": True}
+
+
+@project_router.post("/upload_paper")
+async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
+    """Last-resort source: the user uploads the paper's PDF directly (when it isn't on arXiv and
+    there's no public PDF link). Extract its text and cache it like a normal retrieval."""
+    paper = store.get_paper(slug)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Unknown paper")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    try:
+        full_text = retriever.extract_pdf_bytes(data)
+    except RetrievalError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not full_text.strip():
+        raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
+    store.write_full_text(slug, paper.title, full_text,
+                          {"slug": slug, "source": f"upload:{file.filename}"})
     return {"ok": True, "retrieved": True}
 
 
