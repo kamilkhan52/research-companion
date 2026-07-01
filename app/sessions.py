@@ -188,6 +188,28 @@ def truncate_before_assistant(slug: str, n: int) -> None:
     set_state(slug, IN_DISCUSSION)
 
 
+def edit_reply(slug: str, reply_index: int, new_text: str) -> bool:
+    """Replace the text of the reply_index-th user *reply* (0-based, matching the UI transcript
+    which only surfaces kind=="reply" user turns) and drop every turn after it, so a fresh
+    assistant response can be regenerated from the edited message. This is a destructive edit:
+    the old response and any turns that followed are discarded (no branch is kept). Returns
+    False if there is no such reply. Resets state to in_discussion."""
+    records = read_records(slug)
+    count, pos = -1, None
+    for i, r in enumerate(records):
+        if r["role"] == "user" and r.get("kind") == "reply":
+            count += 1
+            if count == reply_index:
+                pos = i
+                break
+    if pos is None:
+        return False
+    records[pos]["text"] = new_text
+    _rewrite(slug, records[: pos + 1])  # keep the edited reply, drop everything after it
+    set_state(slug, IN_DISCUSSION)
+    return True
+
+
 def reopen_discussion(slug: str) -> None:
     """Return a NotesDrafted session to InDiscussion: drop the rejected draft turns (the
     finish/revision prompt and the assistant draft it produced) so a redo is clean, then

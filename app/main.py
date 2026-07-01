@@ -133,6 +133,12 @@ class RetryReq(BaseModel):
     model: str | None = None
 
 
+class EditReq(BaseModel):
+    slug: str
+    reply_index: int
+    text: str
+
+
 class ProjectReq(BaseModel):
     name: str
     method: str | None = None   # optional starting reading-method; defaults to the template
@@ -528,6 +534,20 @@ def retry_stream(req: RetryReq):
     if req.model:
         config.save_settings({"model": req.model})
     sessions.truncate_before_assistant(req.slug, req.assistant_index)
+    return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
+
+
+@project_router.post("/edit_stream")
+def edit_stream(req: EditReq):
+    """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
+    old response and everything after it, then stream a fresh answer to the edited message."""
+    if not sessions.get_state(req.slug):
+        raise HTTPException(status_code=409, detail="No active session for this paper.")
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Edited message cannot be empty.")
+    if not sessions.edit_reply(req.slug, req.reply_index, req.text.strip()):
+        raise HTTPException(status_code=404, detail="No such message to edit.")
     return StreamingResponse(_turn_stream(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 

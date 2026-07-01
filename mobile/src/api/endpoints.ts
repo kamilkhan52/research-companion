@@ -77,6 +77,7 @@ export const streamPaths = (pid: string) => ({
   reply: `${P(pid)}/reply_stream`,
   continue: `${P(pid)}/continue_stream`,
   retry: `${P(pid)}/retry_stream`,
+  edit: `${P(pid)}/edit_stream`,
   finish: `${P(pid)}/finish_stream`,
 });
 

@@ -5,9 +5,10 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   Pressable,
   ScrollView,
@@ -31,7 +32,7 @@ import { IconButton, TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export default function DiscussionScreen() {
   const router = useRouter();
@@ -48,6 +49,42 @@ export default function DiscussionScreen() {
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
   const paths = pid ? streamPaths(pid) : null;
+
+  // Message editing: which user reply is being edited + its draft. reply_index counts only
+  // user turns (matching the backend, whose transcript surfaces only kind=="reply" users), so
+  // precompute each transcript row's reply index (-1 for assistant rows).
+  const [editing, setEditing] = useState<{ replyIndex: number; draft: string } | null>(null);
+  const replyIndices = useMemo(() => {
+    let c = -1;
+    return transcript.map((e) => (e.role === 'user' ? ++c : -1));
+  }, [transcript]);
+
+  function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
+    const begin = () => setEditing({ replyIndex, draft: currentText });
+    // Editing regenerates from this point, discarding later turns (no branch is kept). The
+    // immediate answer is always redone; warn only when more work than that would be lost.
+    if (transcript.length > transcriptPos + 2) {
+      Alert.alert(
+        'Edit and regenerate?',
+        'This replaces your message and removes the responses after it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Edit', style: 'destructive', onPress: begin },
+        ],
+      );
+    } else {
+      begin();
+    }
+  }
+
+  function submitEdit() {
+    if (!editing || !paths || !slug) return;
+    const text = editing.draft.trim();
+    if (!text) return;
+    const replyIndex = editing.replyIndex;
+    setEditing(null);
+    void stream.run(paths.edit, { slug, reply_index: replyIndex, text }, text);
+  }
 
   // Keep the conversation pinned to the latest content.
   useEffect(() => {
@@ -94,14 +131,28 @@ export default function DiscussionScreen() {
             ref={scrollRef}
             contentContainerStyle={styles.thread}
             keyboardShouldPersistTaps="handled">
-            {transcript.map((entry, i) => (
-              <Message
-                key={i}
-                entry={entry}
-                audioId={`${slug}:${i}`}
-                title={session.data?.paper.title ?? 'Narration'}
-              />
-            ))}
+            {transcript.map((entry, i) =>
+              entry.role === 'user' ? (
+                <UserBubble
+                  key={i}
+                  text={entry.text}
+                  canEdit={!stream.streaming && !editing}
+                  editing={editing?.replyIndex === replyIndices[i]}
+                  draft={editing?.draft ?? ''}
+                  onChangeDraft={(t) => setEditing((e) => (e ? { ...e, draft: t } : e))}
+                  onStartEdit={() => startEdit(replyIndices[i], entry.text, i)}
+                  onCancelEdit={() => setEditing(null)}
+                  onSubmitEdit={submitEdit}
+                />
+              ) : (
+                <Message
+                  key={i}
+                  entry={entry}
+                  audioId={`${slug}:${i}`}
+                  title={session.data?.paper.title ?? 'Narration'}
+                />
+              ),
+            )}
 
             {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
             {stream.streaming ? <StreamingBubble text={stream.liveText} /> : null}
@@ -406,11 +457,64 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
   );
 }
 
-function UserBubble({ text }: { text: string }) {
+function UserBubble({
+  text,
+  canEdit,
+  editing,
+  draft,
+  onChangeDraft,
+  onStartEdit,
+  onCancelEdit,
+  onSubmitEdit,
+}: {
+  text: string;
+  canEdit?: boolean;
+  editing?: boolean;
+  draft?: string;
+  onChangeDraft?: (t: string) => void;
+  onStartEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSubmitEdit?: () => void;
+}) {
+  if (editing) {
+    return (
+      <View style={styles.userRow}>
+        <View style={[styles.userBubble, styles.userBubbleEditing]}>
+          <TextInput
+            value={draft}
+            onChangeText={onChangeDraft}
+            multiline
+            autoFocus
+            style={styles.editInput}
+            selectionColor={colors.cyan}
+          />
+          <View style={styles.editActions}>
+            <Pressable onPress={onCancelEdit} style={styles.msgBtn} accessibilityLabel="Cancel edit">
+              <Text variant="caption" color={colors.muted}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onSubmitEdit}
+              disabled={!draft?.trim()}
+              style={({ pressed }) => [styles.msgBtn, pressed && styles.msgBtnActive]}
+              accessibilityLabel="Save edit and regenerate">
+              <Text variant="caption" color={draft?.trim() ? colors.cyan : colors.muted}>
+                ↻ Save & regenerate
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
   return (
     <View style={styles.userRow}>
       <View style={styles.userBubble}>
         <Text selectable variant="body">{text}</Text>
+        {canEdit ? (
+          <Pressable onPress={onStartEdit} hitSlop={8} style={styles.editHint} accessibilityLabel="Edit this message">
+            <Text variant="caption" color={colors.muted}>✎ Edit</Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
@@ -480,6 +584,22 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
     maxWidth: '88%',
   },
+  userBubbleEditing: { borderColor: colors.cyan, maxWidth: '92%', minWidth: '70%' },
+  editInput: {
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 15.5,
+    lineHeight: 24,
+    padding: 0,
+    minHeight: 24,
+  },
+  editActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: space.sm,
+    marginTop: space.sm,
+  },
+  editHint: { marginTop: space.xs, alignSelf: 'flex-end' },
   errorCard: { borderColor: colors.danger },
   composerBar: {
     borderTopWidth: 1,
