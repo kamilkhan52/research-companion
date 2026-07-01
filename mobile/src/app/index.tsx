@@ -61,6 +61,7 @@ export default function LibraryScreen() {
             : 'Tap to choose or create'
         }
         onPress={() => setSwitcherOpen(true)}
+        onGraphPress={activePid ? () => router.push('/graph') : undefined}
       />
 
       <ScrollView
@@ -118,22 +119,45 @@ export default function LibraryScreen() {
   );
 }
 
-function ProjectBar({ name, subtitle, onPress }: { name: string; subtitle: string; onPress: () => void }) {
+function ProjectBar({
+  name,
+  subtitle,
+  onPress,
+  onGraphPress,
+}: {
+  name: string;
+  subtitle: string;
+  onPress: () => void;
+  onGraphPress?: () => void;
+}) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.projectBar, pressed && { opacity: 0.85 }]}>
-      <View style={{ flex: 1 }}>
-        <Text variant="caption" color={colors.muted}>
-          PROJECT
-        </Text>
-        <Text variant="heading" color={colors.violet} numberOfLines={1}>
-          {name}
-        </Text>
-        <Text variant="caption" style={{ marginTop: 1 }}>
-          {subtitle}
-        </Text>
-      </View>
-      <Text style={{ color: colors.muted, fontSize: 18 }}>⌄</Text>
-    </Pressable>
+    <View style={styles.projectBarRow}>
+      <Pressable onPress={onPress} style={({ pressed }) => [styles.projectBar, pressed && { opacity: 0.85 }]}>
+        <View style={{ flex: 1 }}>
+          <Text variant="caption" color={colors.muted}>
+            PROJECT
+          </Text>
+          <Text variant="heading" color={colors.violet} numberOfLines={1}>
+            {name}
+          </Text>
+          <Text variant="caption" style={{ marginTop: 1 }}>
+            {subtitle}
+          </Text>
+        </View>
+        <Text style={{ color: colors.muted, fontSize: 18 }}>⌄</Text>
+      </Pressable>
+      {onGraphPress ? (
+        <Pressable
+          onPress={onGraphPress}
+          style={({ pressed }) => [styles.graphBtn, pressed && { opacity: 0.85 }]}
+          accessibilityLabel="View reference graph">
+          <Text style={{ fontSize: 20 }}>✦</Text>
+          <Text variant="caption" style={{ marginTop: 2 }}>
+            Graph
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -185,12 +209,26 @@ function groupPapers(papers: Paper[]): Group[] {
 }
 
 const styles = StyleSheet.create({
-  projectBar: {
+  projectBarRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    gap: space.sm,
     marginHorizontal: space.md,
     marginTop: space.md,
+  },
+  projectBar: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
     padding: space.md,
+    backgroundColor: colors.panel,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.line2,
+  },
+  graphBtn: {
+    width: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: colors.panel,
     borderRadius: radius.md,
     borderWidth: 1,

@@ -26,7 +26,7 @@ import { keys } from '@/api/queries';
 import type { TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
-import { TopBar } from '@/components/TopBar';
+import { IconButton, TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
@@ -68,6 +68,9 @@ export default function DiscussionScreen() {
         title={session.data?.paper.title ?? 'Discussion'}
         subtitle={state ? STATE_LABEL[state] : undefined}
         onBack={() => router.back()}
+        right={
+          <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
+        }
       />
 
       {!pid ? (
