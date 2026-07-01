@@ -10,6 +10,10 @@ background (lock-screen controls) for listening on a walk.
 - **Library** — project switcher + papers, project-scoped (`/api/projects/{pid}/…`).
 - **Discussion** — compose-first opening prompt → streaming chat → draft notes → approve.
 - **Audio** — per-message *Listen*; background + lock-screen playback via `react-native-track-player`.
+- **Reference graph** (`src/app/graph.tsx`) — pan/zoom citation graph over the project's own
+  papers + external references, search/filter, recommendations with one-tap "add to project."
+  Pure JS (no new native dependency — `react-native-gesture-handler` + `react-native-reanimated`
+  were already linked into the build); reachable from the Library and Discussion screens.
 - **Settings** — server URL (stored on device) + analysis/narration models, keys, speech (server-side).
 
 ## Important: this needs a custom dev/standalone build, not Expo Go

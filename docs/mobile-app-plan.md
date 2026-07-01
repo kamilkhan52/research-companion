@@ -1,7 +1,10 @@
 # Mobile app plan (Android-first, iOS-ready)
 
-> Status: **planning**, with Phase A (backend prerequisites) implemented. This captures the
-> agreed direction so the build can proceed in stages.
+> Status: **Phase A and Phase B shipped** (`mobile/` is a working Expo app — Library, project
+> switcher, streaming Discussion, background audio, Settings — plus a reference-graph feature
+> that wasn't in the original phase plan, added later; see "Reference graph" below). Phase C/D
+> are still ahead. This doc captures the agreed direction so the remaining build proceeds in
+> stages.
 
 ## Decisions (locked)
 
@@ -60,12 +63,23 @@ research-companion/
 
 ## Build order (after Phase A)
 
-- **Phase B (MVP):** Expo app — Library + project switcher, Compose-first, streaming Discussion,
-  Settings. Nail the listen loop: `react-native-track-player` background audio + lock-screen
-  controls, narration mp3 from `/api/speak`. State via TanStack Query (optimistic stream,
-  authoritative refetch of `/session/{slug}` on reconnect — the server records every turn).
-- **Phase C:** Review/approve, Working-Notes-Review, prompt editor, favorites, offline note
-  cache, push-on-completion (Expo push when a long opening/turn finishes).
+- **Phase B (MVP) — DONE.** Expo app — Library + project switcher, Compose-first, streaming
+  Discussion, Settings. The listen loop: `react-native-track-player` background audio +
+  lock-screen controls, narration mp3 from `/api/speak`. State via TanStack Query (optimistic
+  stream, authoritative refetch of `/session/{slug}` on reconnect — the server records every
+  turn). Also shipped along the way: message copy-to-clipboard, proper keyboard handling
+  (`react-native-keyboard-controller`), and three New-Architecture compatibility fixes for
+  `react-native-track-player` (see `mobile/scripts/patch-react-native-track-player.js`).
+- **Reference graph — DONE** (not originally in this plan; added once Phase B was stable).
+  Per-project citation graph over the project's own papers plus external cited works, with a
+  recommendation ranking and a one-tap "add to project." See the README's "Reference graph"
+  section and `app/graph.py` for the backend pipeline; `mobile/src/app/graph.tsx` +
+  `mobile/src/components/graph/` for the mobile UI (pan/zoom canvas, detail sheet,
+  recommendations panel). Reached from the Library's project bar and the Discussion screen.
+- **Phase C (next):** Review/approve, Working-Notes-Review, prompt editor, favorites, offline
+  note cache, push-on-completion (Expo push when a long opening/turn finishes). Also still
+  open from user feedback: edit-a-past-message + fork/versioning in Discussion (edit a user
+  message, reset the thread from there, recover the prior branch via a version switcher).
 - **Phase D:** polish, Sentry on app + backend, EAS Build → Play internal testing, OTA.
 
 ## Open decisions (when we get there)
