@@ -224,7 +224,11 @@ function Field(props: React.ComponentProps<typeof TextInput>) {
 
 function Toggle({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.toggle, active && styles.toggleActive]}>
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: active }}
+      style={[styles.toggle, active && styles.toggleActive]}>
       <Text variant="heading" color={active ? colors.cyanInk : colors.text}>
         {label}
       </Text>
@@ -247,7 +251,13 @@ function ModelChips({
       {models.map((m) => {
         const active = m.id === selected;
         return (
-          <Pressable key={m.id} onPress={() => onPick(m.id)} style={[styles.modelChip, active && styles.modelChipActive]}>
+          <Pressable
+            key={m.id}
+            onPress={() => onPick(m.id)}
+            hitSlop={6}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: active }}
+            style={[styles.modelChip, active && styles.modelChipActive]}>
             <Text variant="caption" color={active ? colors.cyan : colors.muted}>
               {m.label}
             </Text>

@@ -54,10 +54,18 @@ export function NowPlaying() {
           </Text>
         </View>
 
-        <Pressable onPress={() => TrackPlayer.seekBy(-SKIP_SECONDS)} hitSlop={8} style={styles.skipBtn}>
+        <Pressable
+          onPress={() => TrackPlayer.seekBy(-SKIP_SECONDS)}
+          hitSlop={8}
+          style={styles.skipBtn}
+          accessibilityLabel={`Back ${SKIP_SECONDS} seconds`}>
           <Text style={styles.skipGlyph}>«{SKIP_SECONDS}</Text>
         </Pressable>
-        <Pressable onPress={() => TrackPlayer.seekBy(SKIP_SECONDS)} hitSlop={8} style={styles.skipBtn}>
+        <Pressable
+          onPress={() => TrackPlayer.seekBy(SKIP_SECONDS)}
+          hitSlop={8}
+          style={styles.skipBtn}
+          accessibilityLabel={`Forward ${SKIP_SECONDS} seconds`}>
           <Text style={styles.skipGlyph}>{SKIP_SECONDS}»</Text>
         </Pressable>
       </View>

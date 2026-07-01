@@ -65,8 +65,8 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.line,
     gap: space.sm,
   },
-  side: { width: 44, justifyContent: 'center' },
-  sideRight: { alignItems: 'flex-end' },
+  side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
+  sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, alignItems: 'center' },
   iconBtn: {
     width: 40,

@@ -91,7 +91,14 @@ export default function GraphScreen() {
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
         onBack={() => router.back()}
         right={
-          <IconButton glyph="✦" onPress={() => setShowRecs(true)} accessibilityLabel="Recommendations" />
+          <>
+            <IconButton
+              glyph="↻"
+              onPress={() => graphQuery.refetch()}
+              accessibilityLabel="Refresh graph"
+            />
+            <IconButton glyph="✦" onPress={() => setShowRecs(true)} accessibilityLabel="Recommendations" />
+          </>
         }
       />
 
@@ -265,6 +272,10 @@ function FilterBar({
               <Pressable
                 key={f.key}
                 onPress={() => onFilterChange(f.key)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Filter: ${f.label}`}
+                accessibilityState={{ selected: active }}
                 style={[styles.filterChip, active && styles.filterChipActive]}>
                 <Text variant="caption" color={active ? colors.cyan : colors.muted}>
                   {f.label}

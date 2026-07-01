@@ -12,7 +12,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from . import assembler, config, prompts, store
+from . import config, prompts, store
 from .models import IN_DISCUSSION, NOTES_DRAFTED, COMMITTED, REVIEW_SLUG, Turn
 
 def _sessions_dir():
