@@ -72,20 +72,26 @@
 > `/tmp/rc-fable-overhaul/server-opus.log`. NOTE: it will need a restart to pick up
 > `research_tools`/`agent_harness`, and `pip install -r requirements.txt` for pydantic-ai.
 >
-> **Remaining for D (spec):**
-> - **D2b — async streaming path.** `_turn_stream`/`agent.stream_tokens` are sync generators;
->   Pydantic AI is async (`agent.iter()` / `run_stream`). Add an async agentic stream that emits
->   the same `delta` events for canonical text PLUS new `tool` SSE events (name + short detail)
->   as tools run, then `done`. Wire it behind `RC_AGENTIC` in `_turn_stream` (keep the sync path
->   as fallback). Tools are sync → Pydantic AI runs them in a threadpool (fine).
-> - **D3 — mobile.** Render `tool` SSE events during streaming (e.g. "🔎 Searching…",
->   "📄 Reading Paper X"); add a Brave API key field in Settings (backend already persists
->   `brave_api_key`). Add `tool` to the `StreamEvent` union in `mobile/src/api/types.ts`.
-> - Then live-enable (`RC_AGENTIC=1`), test a real turn, watch for DeepSeek's plain-text
->   tool-call quirk (pydantic-ai retries should absorb it; if not, pin OpenRouter provider
->   routing / consider a more reliable tool-calling model for the analyst).
+> - **D2b DONE** — commit `a0a9c8f`: `agent_harness.stream_agentic_events` (async over
+>   `agent.iter()`) + `main._agentic_turn_stream` + `_stream_for` dispatcher on all 6 stream
+>   routes. Same client contract (`delta`→`done`) plus `tool` SSE events. Hermetic streaming
+>   test via FunctionModel stream_function.
+> - **D3 DONE** — commit `9995bf8`: mobile `StreamEvent` gains `tool`; `useStreamingTurn`
+>   exposes `tools`; paper screen shows a live `ToolActivityTrail` ("🔎 Searching…", "📄 Reading
+>   paper…"); Settings has a Brave key field; backend settings GET/POST carry `brave_api_key`.
+> - **LIVE-VERIFIED (read-only, real DeepSeek call):** against the real `orca` session, the
+>   agent autonomously called `read_paper_notes(distserve)` + `read_working_notes()` and wrote a
+>   grounded 3057-char comparison. Tools + loop + streaming + parse all work live; DeepSeek's
+>   tool-call flakiness did not bite. **Priority D is DONE and proven.**
 >
-> **Everything else this session is DONE:** #23, #24, #25, #26, #27, #10, D1, D2-core.
+> **To turn the agent ON in the app:** set `RC_AGENTIC=1` in the server env (and
+> `pip install -r requirements.txt` for pydantic-ai). Off by default — the single-shot turn is
+> unchanged until then. Web search additionally needs a Brave key in Settings; local cross-paper
+> tools work with no key. If DeepSeek ever emits tool calls as plain text under load, pin
+> OpenRouter provider routing or use a sturdier tool-calling analyst model.
+>
+> **ALL priorities this session are DONE:** #23, #24, #25, #26, #27/#10, #28 (D1+D2+D2b+D3).
+> Only non-code item left: `git push` (auth blocker above).
 >
 > ---
 
