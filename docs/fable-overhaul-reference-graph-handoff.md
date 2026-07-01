@@ -298,6 +298,19 @@ debugging (see bug #5's fix).
    separately (via `babel-preset-expo`'s source): the reanimated/worklets Babel plugin *is*
    auto-configured for this project despite no visible `babel.config.js`, so gesture-callback
    worklet compilation specifically is not expected to be the failure mode if something's off.
+   (A web-preview shortcut was attempted instead of a phone, to get *some* visual confirmation
+   without physical device access — it doesn't work out of the box, `react-native-track-
+   player`'s web build needs the `shaka-player` package which isn't installed, and installing
+   it just for a diagnostic preview felt like unwarranted scope creep for an approach that
+   wouldn't even be fully representative of native gesture/layout behavior anyway. Not pursued.)
+   **You may not need to set anything up to check this**: the existing Metro dev server +
+   tunnel from earlier in this session are both still running and pointed at this exact
+   working tree (currently checked out on this branch, not `main`) — `exp://
+   u5oe7w0-anonymous-8081.exp.direct` for the dev client, backend at
+   `https://loving-marijuana-mpegs-handy.trycloudflare.com` (both confirmed reachable as of
+   this checkpoint). If your phone's dev-client app still has that URL from earlier, opening
+   it should hot-reload straight into tonight's Graph screen. Both are quick-tunnel URLs that
+   change if either process gets restarted — if they've gone stale, restart per `mobile/README.md`.
 2. **Let (or resume) the full 18-paper build finish** for `llm-inference-serving` (running now
    as of this checkpoint — see "Live backend validation" above). **Restart the uvicorn server
    once more before or after it finishes** (see the "Important gotcha" note above) and re-POST
