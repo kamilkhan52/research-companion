@@ -8,6 +8,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -51,6 +52,14 @@ export default function DiscussionScreen() {
     const id = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
     return () => clearTimeout(id);
   }, [transcript.length, stream.liveText, stream.pendingUser]);
+
+  // When the keyboard opens, scroll to the end so the composer + latest turn stay visible.
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () =>
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50),
+    );
+    return () => sub.remove();
+  }, []);
 
   return (
     <Screen edges={['top']}>
@@ -371,7 +380,7 @@ function UserBubble({ text }: { text: string }) {
   return (
     <View style={styles.userRow}>
       <View style={styles.userBubble}>
-        <Text variant="body">{text}</Text>
+        <Text selectable variant="body">{text}</Text>
       </View>
     </View>
   );

@@ -110,6 +110,7 @@ function Block({ block }: { block: Block }) {
     case 'heading':
       return (
         <Text
+          selectable
           style={{
             fontFamily: fonts.display,
             fontSize: HEADING_SIZE[block.level] ?? 15.5,
@@ -121,14 +122,14 @@ function Block({ block }: { block: Block }) {
       );
     case 'paragraph':
       return (
-        <Text variant="body">
+        <Text selectable variant="body">
           <Inline text={block.text} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
+          <Text selectable variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
             <Inline text={block.text} />
           </Text>
         </View>
@@ -136,7 +137,7 @@ function Block({ block }: { block: Block }) {
     case 'code':
       return (
         <View style={styles.code}>
-          <Text style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
+          <Text selectable style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
     case 'list':
@@ -147,7 +148,7 @@ function Block({ block }: { block: Block }) {
               <Text variant="body" color={colors.cyan} style={{ width: 22 }}>
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
-              <Text variant="body" style={{ flex: 1 }}>
+              <Text selectable variant="body" style={{ flex: 1 }}>
                 <Inline text={item} />
               </Text>
             </View>
