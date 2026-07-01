@@ -7,7 +7,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { StreamEvent, ToolActivity, Turn } from '@/api/types';
+import type { StreamEvent, StreamItem, Turn } from '@/api/types';
 
 export interface StreamingTurn {
   liveText: string;
@@ -15,8 +15,8 @@ export interface StreamingTurn {
   error: string | null;
   /** Optional optimistic user text shown while the turn streams (cleared on settle). */
   pendingUser: string | null;
-  /** Research tools the agent has invoked during the current turn (agentic path only). */
-  tools: ToolActivity[];
+  /** The turn's text and tool invocations in arrival order, so the UI can interleave them. */
+  items: StreamItem[];
   run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
   cancel: () => void;
   clearError: () => void;
@@ -28,7 +28,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
-  const [tools, setTools] = useState<ToolActivity[]>([]);
+  const [items, setItems] = useState<StreamItem[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   // A ref guard (not the `streaming` state) so back-to-back calls in the same tick — e.g. a
   // fast double-tap before React re-renders with the disabled button — can't both slip past
@@ -43,7 +43,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
     setLiveText('');
     setPendingUser(null);
     setStreaming(false);
-    setTools([]);
+    setItems([]);
   }, [pid, slug, qc]);
 
   const run = useCallback(
@@ -56,7 +56,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
       setLiveText('');
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
-      setTools([]);
+      setItems([]);
 
       let acc = '';
       try {
@@ -66,8 +66,16 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
             if (event.type === 'delta') {
               acc += event.text;
               setLiveText(acc);
+              // Merge consecutive text into the trailing text item; otherwise start a new one.
+              setItems((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.kind === 'text') {
+                  return [...prev.slice(0, -1), { kind: 'text', text: last.text + event.text }];
+                }
+                return [...prev, { kind: 'text', text: event.text }];
+              });
             } else if (event.type === 'tool') {
-              setTools((prev) => [...prev, { name: event.name, detail: event.detail }]);
+              setItems((prev) => [...prev, { kind: 'tool', name: event.name, detail: event.detail }]);
             } else if (event.type === 'error') {
               setError(event.detail);
             } else if (event.type === 'done') {
@@ -99,5 +107,5 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
 
   const clearError = useCallback(() => setError(null), []);
 
-  return { liveText, streaming, error, pendingUser, tools, run, cancel, clearError };
+  return { liveText, streaming, error, pendingUser, items, run, cancel, clearError };
 }

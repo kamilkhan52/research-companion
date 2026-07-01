@@ -24,7 +24,7 @@ import * as api from '@/api/endpoints';
 import { streamPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
-import type { ToolActivity, TranscriptEntry } from '@/api/types';
+import type { StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
@@ -155,8 +155,7 @@ export default function DiscussionScreen() {
             )}
 
             {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
-            {stream.streaming && stream.tools.length ? <ToolActivityTrail tools={stream.tools} /> : null}
-            {stream.streaming ? <StreamingBubble text={stream.liveText} /> : null}
+            {stream.streaming ? <StreamingAgentBubble items={stream.items} /> : null}
 
             {stream.error ? (
               <Card style={styles.errorCard}>
@@ -251,7 +250,7 @@ function ComposeFirst({
   if (stream.streaming) {
     return (
       <ScrollView contentContainerStyle={styles.thread}>
-        <StreamingBubble text={stream.liveText} />
+        <StreamingAgentBubble items={stream.items} />
       </ScrollView>
     );
   }
@@ -580,21 +579,6 @@ function UserBubble({
   );
 }
 
-function StreamingBubble({ text }: { text: string }) {
-  return (
-    <Card style={styles.assistant}>
-      {text ? (
-        <Markdown text={text} />
-      ) : (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <ActivityIndicator color={colors.cyan} />
-          <Text variant="caption">Thinking…</Text>
-        </View>
-      )}
-    </Card>
-  );
-}
-
 // Friendly label + glyph for each research tool the agent can call (agentic path).
 const TOOL_META: Record<string, { glyph: string; label: string }> = {
   web_search: { glyph: '🔎', label: 'Searching the web' },
@@ -604,23 +588,43 @@ const TOOL_META: Record<string, { glyph: string; label: string }> = {
   list_project_papers: { glyph: '📚', label: 'Scanning the project' },
 };
 
-function ToolActivityTrail({ tools }: { tools: ToolActivity[] }) {
+function ToolLine({ name, detail }: { name: string; detail: string }) {
+  const meta = TOOL_META[name] ?? { glyph: '🔧', label: name };
   return (
-    <View style={styles.toolTrail}>
-      {tools.map((t, i) => {
-        const meta = TOOL_META[t.name] ?? { glyph: '🔧', label: t.name };
-        return (
-          <View key={i} style={styles.toolRow}>
-            <Text variant="caption" color={colors.cyan}>{meta.glyph} {meta.label}</Text>
-            {t.detail ? (
-              <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
-                {t.detail}
-              </Text>
-            ) : null}
-          </View>
-        );
-      })}
+    <View style={styles.toolRow}>
+      <Text variant="caption" color={colors.cyan}>{meta.glyph} {meta.label}</Text>
+      {detail ? (
+        <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
+          {detail}
+        </Text>
+      ) : null}
     </View>
+  );
+}
+
+// The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
+// activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
+// agent UIs conventionally show it — rather than pinning all tools above all text.
+function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
+  return (
+    <Card style={styles.assistant}>
+      {items.length === 0 ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <ActivityIndicator color={colors.cyan} />
+          <Text variant="caption">Thinking…</Text>
+        </View>
+      ) : (
+        items.map((it, i) =>
+          it.kind === 'text' ? (
+            <Markdown key={i} text={it.text} />
+          ) : (
+            <View key={i} style={styles.toolTrail}>
+              <ToolLine name={it.name} detail={it.detail} />
+            </View>
+          ),
+        )
+      )}
+    </Card>
   );
 }
 

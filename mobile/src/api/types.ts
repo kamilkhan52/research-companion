@@ -136,6 +136,13 @@ export interface ToolActivity {
   detail: string;
 }
 
+/** One item in the ordered live stream of an agentic turn — a run of assistant text or a tool
+ *  invocation — kept in arrival order so the UI can interleave them ("…thinking… → 🔎 search →
+ *  …answer") the way agent UIs conventionally do. */
+export type StreamItem =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; name: string; detail: string };
+
 // ---------- reference graph (app/graph.py) ----------
 
 /** One node in the reference graph: an in-project paper, or an external cited work. */
