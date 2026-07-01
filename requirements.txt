@@ -5,3 +5,4 @@ pyjwt[crypto]>=2.8
 pypdf>=4.2
 feedparser>=6.0
 python-dotenv>=1.0
+pydantic-ai-slim[openai]>=2.2,<3   # agentic analyst tool loop (app/agent_harness.py)
