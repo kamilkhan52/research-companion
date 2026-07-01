@@ -1,14 +1,15 @@
-// SSE streaming for the *_stream endpoints (POST with a JSON body). EventSource can't do
-// POST, so we use expo/fetch — the only fetch in RN with real ReadableStream support — and
-// parse the `data: {json}\n\n` frames ourselves into typed StreamEvents.
+// SSE streaming for POST-based streaming endpoints (chat turns, graph builds). EventSource
+// can't do POST, so we use expo/fetch — the only fetch in RN with real ReadableStream support
+// — and parse the `data: {json}\n\n` frames ourselves into typed events. Generic over the
+// event type so both the chat turn stream and the graph-build progress stream share one
+// SSE parser instead of duplicating the framing logic.
 
 import { fetch as expoFetch } from 'expo/fetch';
 
 import { ApiError, apiUrl, authHeaders } from './client';
-import type { StreamEvent } from './types';
 
-export interface StreamHandlers {
-  onEvent: (event: StreamEvent) => void;
+export interface StreamHandlers<T> {
+  onEvent: (event: T) => void;
   signal?: AbortSignal;
 }
 
@@ -16,10 +17,10 @@ export interface StreamHandlers {
  * POST to an SSE endpoint and invoke onEvent for each frame. Resolves when the stream ends.
  * Rejects on transport/HTTP failure; backend-level errors arrive as {type:'error'} events.
  */
-export async function streamPost(
+export async function streamPost<T>(
   path: string,
   body: unknown,
-  { onEvent, signal }: StreamHandlers,
+  { onEvent, signal }: StreamHandlers<T>,
 ): Promise<void> {
   const res = await expoFetch(apiUrl(path), {
     method: 'POST',
@@ -55,7 +56,7 @@ export async function streamPost(
       while ((sep = buffer.indexOf('\n\n')) !== -1) {
         const frame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        const event = parseFrame(frame);
+        const event = parseFrame<T>(frame);
         if (event) onEvent(event);
       }
     }
@@ -65,7 +66,7 @@ export async function streamPost(
 }
 
 /** Extract the JSON payload from the `data:` line(s) of one SSE frame. */
-function parseFrame(frame: string): StreamEvent | null {
+function parseFrame<T>(frame: string): T | null {
   const data = frame
     .split('\n')
     .filter((line) => line.startsWith('data:'))
@@ -73,7 +74,7 @@ function parseFrame(frame: string): StreamEvent | null {
     .join('\n');
   if (!data) return null;
   try {
-    return JSON.parse(data) as StreamEvent;
+    return JSON.parse(data) as T;
   } catch {
     return null;
   }

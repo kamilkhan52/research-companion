@@ -2,9 +2,11 @@
 No network calls — these operate purely on strings/dicts."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from app.graph import GraphError, _clean_reference, _extract_json
+from app.graph import GraphError, _clean_reference, _extract_json, _salvage_references
 
 
 def test_extract_json_plain():
@@ -60,3 +62,56 @@ def test_clean_reference_rejects_non_dict():
 def test_clean_reference_coerces_bad_year_to_none():
     assert _clean_reference({"year": "2024"}, 1)["year"] is None  # not an int -> dropped, not guessed
     assert _clean_reference({"year": 2024}, 1)["year"] == 2024
+
+
+# ---------- salvage: recovering references from truncated/malformed JSON ----------
+
+def test_salvage_recovers_complete_objects_before_truncation():
+    # Simulates hitting max_tokens mid-array: two complete objects, then a cut-off third.
+    content = (
+        '{"references": ['
+        '{"index": 1, "title": "Paper One", "significant": true},'
+        '{"index": 2, "title": "Paper Two", "significant": false},'
+        '{"index": 3, "title": "Paper Thr'  # truncated mid-string
+    )
+    refs = _salvage_references(content)
+    assert [r["title"] for r in refs] == ["Paper One", "Paper Two"]
+
+
+def test_salvage_handles_a_full_well_formed_array_too():
+    payload = {"references": [{"title": "A"}, {"title": "B"}]}
+    refs = _salvage_references(json.dumps(payload))
+    assert [r["title"] for r in refs] == ["A", "B"]
+
+
+def test_salvage_skips_one_malformed_object_but_keeps_the_rest():
+    # A comma-corrupted middle object shouldn't sink the well-formed ones around it.
+    content = (
+        '{"references": ['
+        '{"title": "Good One"},'
+        '{"title": "Bad" "missing_comma": true},'
+        '{"title": "Good Two"}'
+        ']}'
+    )
+    refs = _salvage_references(content)
+    titles = [r["title"] for r in refs]
+    assert "Good One" in titles
+    assert "Good Two" in titles
+    assert "Bad" not in titles
+
+
+def test_salvage_returns_empty_list_when_no_references_key_present():
+    assert _salvage_references('{"something_else": []}') == []
+    assert _salvage_references("not json at all") == []
+
+
+def test_salvage_handles_quotes_and_braces_inside_string_values():
+    # A context excerpt containing literal braces/quotes must not confuse the brace matcher.
+    content = (
+        '{"references": ['
+        '{"title": "X", "contexts": ["as shown in {Figure 2} they say \\"it works\\""]}'
+        ']}'
+    )
+    refs = _salvage_references(content)
+    assert len(refs) == 1
+    assert refs[0]["contexts"][0].startswith("as shown in {Figure 2}")

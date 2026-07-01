@@ -5,6 +5,7 @@ import { apiGet, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AuthConfig,
   FavoriteModel,
+  GraphResponse,
   ModelOption,
   OpeningDraft,
   Project,
@@ -72,6 +73,12 @@ export const streamPaths = (pid: string) => ({
   retry: `${P(pid)}/retry_stream`,
   finish: `${P(pid)}/finish_stream`,
 });
+
+// ---------- reference graph ----------
+
+export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
+/** SSE path for streamPost<GraphBuildEvent>; body: { force: boolean }. */
+export const graphBuildPath = (pid: string) => `${P(pid)}/graph/build`;
 
 /** Absolute URL for a media path (relative like "/api/audio/<hash>.mp3"), with ?token for
  *  the audio player which can't send an Authorization header. */

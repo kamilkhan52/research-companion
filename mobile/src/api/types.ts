@@ -123,3 +123,75 @@ export type StreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'error'; detail: string }
   | { type: 'done'; turn: Turn; state: SessionState };
+
+// ---------- reference graph (app/graph.py) ----------
+
+/** One node in the reference graph: an in-project paper, or an external cited work. */
+export interface GraphNode {
+  id: string;                    // project paper: its slug. external: "ext:<dedupe key>"
+  kind: 'project' | 'external';
+  slug: string | null;           // set only for kind === 'project'; links to Discussion
+  title: string;
+  authors: string[];
+  venue: string;
+  year: number | null;
+  arxiv_id: string | null;
+  doi: string | null;
+  url: string | null;
+  group: string | null;          // project papers only (reading-list section)
+  list_status: 'unread' | 'read' | null;
+  cited_by_project_count: number;
+  significant_cited_by_count: number;
+  cites_count: number;
+}
+
+/** A recommended external node, with its score + human-readable reasons. */
+export interface GraphRecommendation extends GraphNode {
+  recommend_score: number;
+  recommend_reasons: string[];
+}
+
+/** A directed citation edge: source (always a project paper) -> target (project or external). */
+export interface GraphEdge {
+  source: string;
+  target: string;
+  significant: boolean;
+  reason: string;
+  contexts: string[];
+  confidence: number;
+  raw_text: string;
+}
+
+export interface ReferenceGraph {
+  built_at: string;
+  model: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+/** Cheap, no-LLM status check: which papers still need (re)extraction. */
+export interface GraphStatus {
+  has_graph: boolean;
+  built_at: string | null;
+  model: string | null;
+  total_papers: number;
+  retrievable_papers: number;
+  stale_papers: string[];
+  missing_text_papers: string[];
+}
+
+/** GET /api/projects/{pid}/graph */
+export interface GraphResponse {
+  graph: ReferenceGraph | null;
+  recommendations: GraphRecommendation[];
+  status: GraphStatus;
+}
+
+/** SSE events emitted by POST /api/projects/{pid}/graph/build (app/graph.py build_graph). */
+export type GraphBuildEvent =
+  | { type: 'start'; total: number; model: string }
+  | { type: 'extracting'; slug: string; title: string }
+  | { type: 'progress'; done: number; total: number; slug: string; status: 'done' | 'error';
+      cached: boolean; error: string | null }
+  | { type: 'done'; graph: ReferenceGraph; recommendations: GraphRecommendation[] }
+  | { type: 'error'; detail: string };

@@ -19,6 +19,7 @@ export const keys = {
   opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
   settings: ['settings'] as const,
   favoriteModels: ['favoriteModels'] as const,
+  graph: (pid: string) => ['project', pid, 'graph'] as const,
 };
 
 export function useProjects() {
@@ -90,5 +91,14 @@ export function useSaveSettings() {
   return useMutation({
     mutationFn: (body: Record<string, unknown>) => api.saveSettings(body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.settings }),
+  });
+}
+
+export function useGraph(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
+    queryFn: () => api.getGraph(pid as string),
+    enabled: !!pid && hasUrl,
   });
 }

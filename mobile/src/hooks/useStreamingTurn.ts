@@ -50,9 +50,9 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
 
       let acc = '';
       try {
-        await streamPost(path, body, {
+        await streamPost<StreamEvent>(path, body, {
           signal: controller.signal,
-          onEvent: (event: StreamEvent) => {
+          onEvent: (event) => {
             if (event.type === 'delta') {
               acc += event.text;
               setLiveText(acc);

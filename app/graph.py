@@ -42,6 +42,12 @@ _GRAPH_MODEL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", "oc
                     "guard", "moderation", "rerank", ":free", "distill", "chat", "lite"]
 
 MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus's paper sizes
+# Generous on purpose: a 40-60 reference bibliography with contexts can run well past 8k
+# output tokens, and reasoning-capable models spend additional tokens before the answer
+# (same reasoning as agent.py's 16k budget for its analysis calls). DeepSeek V4 Pro supports
+# up to 384k completion tokens, so this is nowhere near its ceiling. _salvage_references is
+# the safety net for the rare case a response is still truncated or malformed.
+EXTRACTION_MAX_TOKENS = 32_000
 
 
 class GraphError(Exception):
@@ -131,6 +137,59 @@ def _extract_json(content: str) -> dict:
     raise GraphError("The extraction model did not return valid JSON.")
 
 
+def _salvage_references(content: str) -> list[dict]:
+    """Best-effort recovery when the model's JSON is truncated (hit max_tokens mid-array) or
+    has one malformed entry: scan for top-level objects inside the "references" array and
+    json.loads each independently, keeping whatever parses and dropping only the broken
+    tail/entry. Turns a would-be total loss of an already-paid-for response into a partial
+    but usable result. String/escape-aware brace matching, same technique as elsewhere in
+    this repo's tooling for scanning code without a real parser."""
+    m = re.search(r'"references"\s*:\s*\[', content)
+    if not m:
+        return []
+    i, n = m.end(), len(content)
+    out: list[dict] = []
+    while i < n:
+        while i < n and content[i] not in "{]":
+            i += 1
+        if i >= n or content[i] == "]":
+            break
+        start = i
+        depth = 0
+        in_string = False
+        escape = False
+        closed = False
+        while i < n:
+            c = content[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_string = False
+            elif c == '"':
+                in_string = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    closed = True
+                    break
+            i += 1
+        if not closed:
+            break  # ran off the end mid-object: genuinely truncated, nothing more to salvage
+        try:
+            obj = json.loads(content[start:i])
+            if isinstance(obj, dict):
+                out.append(obj)
+        except json.JSONDecodeError:
+            pass  # one malformed entry shouldn't sink the rest
+    return out
+
+
 def _clean_reference(ref: dict, fallback_index: int) -> dict | None:
     if not isinstance(ref, dict):
         return None
@@ -179,11 +238,11 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
             {"role": "user", "content": f"Paper title: {title}\n\nFull text:\n\n{text[:MAX_FULL_TEXT_CHARS]}"},
         ],
         "temperature": 0.1,
-        "max_tokens": 8000,
+        "max_tokens": EXTRACTION_MAX_TOKENS,
     }
     try:
         r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
-                       headers=headers, json=body, timeout=180)
+                       headers=headers, json=body, timeout=300)
     except httpx.HTTPError as e:
         return _result("error", [], f"OpenRouter request failed: {e}"[:400])
     if r.status_code != 200:
@@ -197,13 +256,27 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         if not content or not str(content).strip():
             raise GraphError(f"Empty response (finish_reason={choice.get('finish_reason')}).")
-        parsed = _extract_json(content)
-        refs = parsed.get("references", [])
-        if not isinstance(refs, list):
-            raise GraphError("'references' was not a list.")
+
+        note = ""
+        try:
+            parsed = _extract_json(content)
+            refs = parsed.get("references", [])
+            if not isinstance(refs, list):
+                raise GraphError("'references' was not a list.")
+        except (GraphError, json.JSONDecodeError):
+            # A bibliography can run to 60+ references with several body-text contexts each,
+            # occasionally overrunning even a generous token budget mid-object. Salvage
+            # whichever leading references parsed cleanly rather than losing the whole call.
+            refs = _salvage_references(content)
+            if not refs:
+                raise
+            note = f"Response was malformed/truncated; recovered {len(refs)} reference(s) via salvage."
+
         cleaned = [c for i, r0 in enumerate(refs, 1)
                    if (c := _clean_reference(r0, i)) is not None]
-        return _result("done", cleaned)
+        if not cleaned:
+            raise GraphError("No parseable references in the model's response.")
+        return _result("done", cleaned, note)
     except (GraphError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as e:
         return _result("error", [], str(e)[:400])
 
