@@ -18,19 +18,31 @@ interface PlayRequest {
   text: string; // canonical assistant text
 }
 
+/** Which stage of preparation an in-flight request is at. narrate (adapt text for listening)
+ *  runs first, then speak (synthesize mp3); neither exposes a real percentage, so the UI shows
+ *  a staged/indeterminate indicator rather than a fake progress number. */
+export type LoadingStage = 'narrating' | 'synthesizing' | null;
+
 interface AudioContextValue {
   playText: (req: PlayRequest) => Promise<void>;
   /** id currently being prepared (narrate+speak in flight), or null. */
   loadingId: string | null;
+  /** stage of the in-flight preparation (only meaningful while loadingId is set). */
+  loadingStage: LoadingStage;
   /** id of the track currently loaded in the player, or null. */
   currentId: string | null;
+  /** Listening transcript (the narrated adaptation) per message id, once generated. Kept so
+   *  the message can show the transcript and follow along during playback. */
+  narrationById: Record<string, string>;
 }
 
 const AudioContext = createContext<AudioContextValue | undefined>(undefined);
 
 export function AudioProvider({ children }: { children: ReactNode }) {
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [narrationById, setNarrationById] = useState<Record<string, string>>({});
   const inFlight = useRef(false);
 
   useEffect(() => {
@@ -41,9 +53,12 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     if (inFlight.current) return;
     inFlight.current = true;
     setLoadingId(id);
+    setLoadingStage('narrating');
     try {
       await setupPlayer();
       const { narration } = await api.narrate(text);
+      setNarrationById((m) => (m[id] === narration ? m : { ...m, [id]: narration }));
+      setLoadingStage('synthesizing');
       const { url } = await api.speak(narration);
       await TrackPlayer.reset();
       await TrackPlayer.add({
@@ -59,12 +74,15 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       Alert.alert('Audio unavailable', (e as Error).message ?? 'Could not synthesize audio.');
     } finally {
       setLoadingId(null);
+      setLoadingStage(null);
       inFlight.current = false;
     }
   }, []);
 
   return (
-    <AudioContext.Provider value={{ playText, loadingId, currentId }}>{children}</AudioContext.Provider>
+    <AudioContext.Provider value={{ playText, loadingId, loadingStage, currentId, narrationById }}>
+      {children}
+    </AudioContext.Provider>
   );
 }
 

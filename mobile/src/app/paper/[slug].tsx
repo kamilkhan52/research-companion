@@ -26,6 +26,7 @@ import { keys } from '@/api/queries';
 import type { TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
+import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
 import { IconButton, TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
@@ -360,6 +361,10 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
 
   const loading = audio.loadingId === audioId;
   const current = audio.currentId === audioId;
+  const narration = audio.narrationById[audioId];
+  // Show the transcript once we have it: live while this message is the current track (with the
+  // follow-along highlight), and it stays available afterward for re-reading.
+  const showTranscript = !!narration && (current || !loading);
   const [copied, setCopied] = useState(false);
   const canonical = entry.canonical;
 
@@ -372,6 +377,8 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
   return (
     <Card style={styles.assistant}>
       <Markdown text={canonical} />
+      {loading && audio.loadingStage ? <GeneratingBar stage={audio.loadingStage} /> : null}
+      {showTranscript ? <NarrationTranscript narration={narration} /> : null}
       <View style={styles.msgActions}>
         <Pressable
           onPress={() => audio.playText({ id: audioId, title, text: canonical })}
