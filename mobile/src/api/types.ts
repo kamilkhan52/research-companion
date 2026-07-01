@@ -89,6 +89,8 @@ export interface Settings {
   tts_model: string | null;
   tts_voice: string | null;
   voices: string[];
+  has_brave_key: boolean;
+  brave_key_hint: string;
 }
 
 /** GET /api/auth/config */
@@ -118,11 +120,19 @@ export interface Turn {
   ts: string;
 }
 
-/** SSE events emitted by the *_stream endpoints (app/main.py _turn_stream). */
+/** SSE events emitted by the *_stream endpoints (app/main.py _turn_stream /
+ *  _agentic_turn_stream). 'tool' events appear only on the agentic path (RC_AGENTIC). */
 export type StreamEvent =
   | { type: 'delta'; text: string }
+  | { type: 'tool'; name: string; detail: string }
   | { type: 'error'; detail: string }
   | { type: 'done'; turn: Turn; state: SessionState };
+
+/** A research tool the agent invoked mid-turn, surfaced for live "what it's doing" UI. */
+export interface ToolActivity {
+  name: string;
+  detail: string;
+}
 
 // ---------- reference graph (app/graph.py) ----------
 

@@ -37,6 +37,7 @@ export default function SettingsScreen() {
   const [model, setModel] = useState('');
   const [narrationModel, setNarrationModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
+  const [braveKey, setBraveKey] = useState('');
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
 
@@ -75,6 +76,7 @@ export default function SettingsScreen() {
     };
     if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
     if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
+    if (braveKey.trim()) payload.brave_api_key = braveKey.trim();
     await saveSettings.mutateAsync(payload);
     setApiKey('');
     setOpenaiKey('');
@@ -177,6 +179,25 @@ export default function SettingsScreen() {
                     />
                   </>
                 ) : null}
+              </Section>
+
+              {/* Research agent — web search key for the analyst's tools */}
+              <Section title="Research agent">
+                <Label
+                  text="Brave Search API key"
+                  hint={settings.data?.has_brave_key ? `set (${settings.data.brave_key_hint})` : 'not set'}
+                />
+                <Field
+                  value={braveKey}
+                  onChangeText={setBraveKey}
+                  placeholder={settings.data?.has_brave_key ? 'Replace key…' : 'BSA…'}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                  Lets the analyst search the web mid-discussion. Reading your project's papers
+                  and notes needs no key.
+                </Text>
               </Section>
 
               <Button

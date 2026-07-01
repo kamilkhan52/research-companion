@@ -24,7 +24,7 @@ import * as api from '@/api/endpoints';
 import { streamPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
-import type { TranscriptEntry } from '@/api/types';
+import type { ToolActivity, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
@@ -155,6 +155,7 @@ export default function DiscussionScreen() {
             )}
 
             {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
+            {stream.streaming && stream.tools.length ? <ToolActivityTrail tools={stream.tools} /> : null}
             {stream.streaming ? <StreamingBubble text={stream.liveText} /> : null}
 
             {stream.error ? (
@@ -535,6 +536,39 @@ function StreamingBubble({ text }: { text: string }) {
   );
 }
 
+// Friendly label + glyph for each research tool the agent can call (agentic path).
+const TOOL_META: Record<string, { glyph: string; label: string }> = {
+  web_search: { glyph: '🔎', label: 'Searching the web' },
+  _tool_web_search: { glyph: '🔎', label: 'Searching the web' },
+  fetch_url: { glyph: '🌐', label: 'Reading a page' },
+  _tool_fetch_url: { glyph: '🌐', label: 'Reading a page' },
+  read_paper_text: { glyph: '📄', label: 'Reading paper' },
+  read_paper_notes: { glyph: '🗒', label: 'Reading notes' },
+  related_papers: { glyph: '🕸', label: 'Finding related papers' },
+  list_project_papers: { glyph: '📚', label: 'Scanning the project' },
+  read_working_notes: { glyph: '🗂', label: 'Reading working notes' },
+};
+
+function ToolActivityTrail({ tools }: { tools: ToolActivity[] }) {
+  return (
+    <View style={styles.toolTrail}>
+      {tools.map((t, i) => {
+        const meta = TOOL_META[t.name] ?? { glyph: '🔧', label: t.name };
+        return (
+          <View key={i} style={styles.toolRow}>
+            <Text variant="caption" color={colors.cyan}>{meta.glyph} {meta.label}</Text>
+            {t.detail ? (
+              <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
+                {t.detail}
+              </Text>
+            ) : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   return (
     <View style={styles.centered}>
@@ -600,6 +634,18 @@ const styles = StyleSheet.create({
     marginTop: space.sm,
   },
   editHint: { marginTop: space.xs, alignSelf: 'flex-end' },
+  toolTrail: {
+    gap: space.xs,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    marginBottom: space.sm,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panel2,
+  },
+  toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  toolDetail: { flex: 1 },
   errorCard: { borderColor: colors.danger },
   composerBar: {
     borderTopWidth: 1,

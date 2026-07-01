@@ -7,7 +7,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { StreamEvent, Turn } from '@/api/types';
+import type { StreamEvent, ToolActivity, Turn } from '@/api/types';
 
 export interface StreamingTurn {
   liveText: string;
@@ -15,6 +15,8 @@ export interface StreamingTurn {
   error: string | null;
   /** Optional optimistic user text shown while the turn streams (cleared on settle). */
   pendingUser: string | null;
+  /** Research tools the agent has invoked during the current turn (agentic path only). */
+  tools: ToolActivity[];
   run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
   cancel: () => void;
   clearError: () => void;
@@ -26,6 +28,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
+  const [tools, setTools] = useState<ToolActivity[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   // A ref guard (not the `streaming` state) so back-to-back calls in the same tick — e.g. a
   // fast double-tap before React re-renders with the disabled button — can't both slip past
@@ -40,6 +43,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
     setLiveText('');
     setPendingUser(null);
     setStreaming(false);
+    setTools([]);
   }, [pid, slug, qc]);
 
   const run = useCallback(
@@ -52,6 +56,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
       setLiveText('');
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
+      setTools([]);
 
       let acc = '';
       try {
@@ -61,6 +66,8 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
             if (event.type === 'delta') {
               acc += event.text;
               setLiveText(acc);
+            } else if (event.type === 'tool') {
+              setTools((prev) => [...prev, { name: event.name, detail: event.detail }]);
             } else if (event.type === 'error') {
               setError(event.detail);
             } else if (event.type === 'done') {
@@ -92,5 +99,5 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
 
   const clearError = useCallback(() => setError(null), []);
 
-  return { liveText, streaming, error, pendingUser, run, cancel, clearError };
+  return { liveText, streaming, error, pendingUser, tools, run, cancel, clearError };
 }
