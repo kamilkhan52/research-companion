@@ -42,21 +42,50 @@
 >   (+3 tests), mobile '✎ Edit' affordance → inline TextInput → '↻ Save & regenerate', with a
 >   confirm when >immediate-answer of work would be discarded. Full version/branch history was
 >   deliberately scoped OUT as a future feature. 91 backend tests pass, pyflakes/tsc/export clean.
-> - **Build (#24):** the live build kept advancing across the compaction (6→9/18 and counting);
->   fix proven in practice. Still running; just poll to `done` (command above).
+> - **Build (#24) DONE + VERIFIED LIVE:** the build ran to completion server-side while the app
+>   held no connection (6→18/18 across the compaction). `GET /graph` now returns a persisted
+>   graph: **716 nodes (18 project + 698 external), 874 edges, 698 recommendations** (top:
+>   FlashAttention, FasterTransformer, "Attention is all you need"). This is exactly what used
+>   to vanish — priority #1 is conclusively proven.
+> - **Priority D (agentic) — decisions made + first two phases DONE:**
+>   - Researched harnesses. "Pi" (earendil-works) is a strong agent harness but **TypeScript**
+>     (would need a Node sidecar for our Python backend). DeepSeek V4 Pro supports native
+>     tool-calling but intermittently emits tool calls as plain text (GitHub deepseek-ai#1244)
+>     and OpenRouter rate-limits it — so a harness with built-in validation/retry matters.
+>   - **Kamil chose: Pydantic AI, in-process, BOTH local + web tools.**
+>   - **D1 DONE** — commit `5f75840`: `app/research_tools.py`, read-only tools
+>     (list/read paper text+notes, related_papers, working notes; web `fetch_url` with per-hop
+>     SSRF guard + caps; `web_search` via Brave key). `brave_api_key` added to config. 10 tests.
+>   - **D2 core DONE** — commit `b8250f5`: `app/agent_harness.py`, Pydantic AI tool loop
+>     (`pydantic-ai-slim[openai]` added to requirements), **feature-flagged `RC_AGENTIC`, OFF by
+>     default** — the existing single-shot `agent.py` turn is untouched. Keeps the text protocol
+>     (parsed by `agent._parse`); Pydantic AI does only the tool loop. 3 FunctionModel tests
+>     drive the full loop with zero network. 104 backend tests pass, pyflakes clean.
 >
 > **🚧 BLOCKER: `git push` is failing** — `could not read Username for github.com` (osxkeychain
 > can't prompt non-interactively; `gh`'s token is invalid, no GH_TOKEN/GITHUB_TOKEN in env).
-> **4 commits are LOCAL ONLY, not on origin:** `589e4a2` (mobile poll), `e72a59a` (handoff),
-> `ba14c11` (audio), `e9c5c54` (edit). First resume step from an interactive shell:
+> **8 commits are LOCAL ONLY, not on origin** (`589e4a2`→`b8250f5`): mobile poll, 2×handoff,
+> audio, edit, D1 tools, D2 harness. First resume step from an interactive shell:
 > `gh auth login -h github.com` then `git push`. origin tip is still `8dc68eb`.
 >
-> **Server:** running detached on new code, logs at `/tmp/rc-fable-overhaul/server-opus.log`.
+> **Server:** running detached on new code (has the graph), logs at
+> `/tmp/rc-fable-overhaul/server-opus.log`. NOTE: it will need a restart to pick up
+> `research_tools`/`agent_harness`, and `pip install -r requirements.txt` for pydantic-ai.
 >
-> **Remaining priority:** #28 agentic research behavior (web / project files / cross-paper
-> reading). NOT started — needs a design decision (the agent is currently single-shot with a
-> text protocol; adding a tool loop is architectural). Awaiting Kamil's pick of first increment.
-> Priorities #23/#25/#26/#27 + #10 all DONE this session.
+> **Remaining for D (spec):**
+> - **D2b — async streaming path.** `_turn_stream`/`agent.stream_tokens` are sync generators;
+>   Pydantic AI is async (`agent.iter()` / `run_stream`). Add an async agentic stream that emits
+>   the same `delta` events for canonical text PLUS new `tool` SSE events (name + short detail)
+>   as tools run, then `done`. Wire it behind `RC_AGENTIC` in `_turn_stream` (keep the sync path
+>   as fallback). Tools are sync → Pydantic AI runs them in a threadpool (fine).
+> - **D3 — mobile.** Render `tool` SSE events during streaming (e.g. "🔎 Searching…",
+>   "📄 Reading Paper X"); add a Brave API key field in Settings (backend already persists
+>   `brave_api_key`). Add `tool` to the `StreamEvent` union in `mobile/src/api/types.ts`.
+> - Then live-enable (`RC_AGENTIC=1`), test a real turn, watch for DeepSeek's plain-text
+>   tool-call quirk (pydantic-ai retries should absorb it; if not, pin OpenRouter provider
+>   routing / consider a more reliable tool-calling model for the analyst).
+>
+> **Everything else this session is DONE:** #23, #24, #25, #26, #27, #10, D1, D2-core.
 >
 > ---
 
