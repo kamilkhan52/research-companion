@@ -183,18 +183,44 @@ export interface GraphStatus {
   missing_text_papers: string[];
 }
 
+/** Per-paper status within an in-flight or finished build job. */
+export interface GraphBuildPaperStatus {
+  status: 'extracting' | 'cached' | 'done' | 'error';
+  error: string | null;
+}
+
+/** A reference-graph build job (app/graph_jobs.py BuildJob). Runs server-side in a background
+ * thread, independent of any request — the client polls for this rather than holding a
+ * connection open, so it survives the app being backgrounded/reconnected/relaunched. */
+export interface GraphBuildJob {
+  status: 'running' | 'done' | 'error';
+  total: number;
+  done: number;
+  current_slug: string | null;
+  current_title: string | null;
+  per_paper: Record<string, GraphBuildPaperStatus>;
+  graph: ReferenceGraph | null;
+  recommendations: GraphRecommendation[] | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
 /** GET /api/projects/{pid}/graph */
 export interface GraphResponse {
   graph: ReferenceGraph | null;
   recommendations: GraphRecommendation[];
   status: GraphStatus;
+  /** Snapshot of the current/most-recent build job for this project, if any has ever run. */
+  build: GraphBuildJob | null;
 }
 
-/** SSE events emitted by POST /api/projects/{pid}/graph/build (app/graph.py build_graph). */
-export type GraphBuildEvent =
-  | { type: 'start'; total: number; model: string }
-  | { type: 'extracting'; slug: string; title: string }
-  | { type: 'progress'; done: number; total: number; slug: string; status: 'done' | 'error';
-      cached: boolean; error: string | null }
-  | { type: 'done'; graph: ReferenceGraph; recommendations: GraphRecommendation[] }
-  | { type: 'error'; detail: string };
+/** GET /api/projects/{pid}/graph/build/status */
+export interface GraphBuildStatusResponse {
+  build: GraphBuildJob | null;
+}
+
+/** POST /api/projects/{pid}/graph/build */
+export interface GraphBuildStartResponse {
+  build: GraphBuildJob;
+}

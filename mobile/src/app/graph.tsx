@@ -3,7 +3,7 @@
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
@@ -41,6 +41,15 @@ export default function GraphScreen() {
   const graph = data?.graph ?? null;
   const recommendations = data?.recommendations ?? [];
   const status = data?.status ?? null;
+
+  // Recover in-progress builds on (re)open: if loading the graph reveals a build still running
+  // server-side (e.g. the app was minimized during it), re-attach to it so the progress UI
+  // shows live status again instead of the "no graph yet" state. resume() is a no-op unless
+  // the job is actually running, and is idempotent if we're already polling it.
+  const resumeBuild = build.resume;
+  useEffect(() => {
+    resumeBuild(data?.build);
+  }, [data?.build, resumeBuild]);
 
   const nodesById = useMemo(() => {
     const m: Record<string, GraphNode> = {};

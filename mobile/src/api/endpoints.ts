@@ -5,6 +5,8 @@ import { apiGet, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AuthConfig,
   FavoriteModel,
+  GraphBuildStartResponse,
+  GraphBuildStatusResponse,
   GraphResponse,
   ModelOption,
   OpeningDraft,
@@ -81,8 +83,13 @@ export const streamPaths = (pid: string) => ({
 // ---------- reference graph ----------
 
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
-/** SSE path for streamPost<GraphBuildEvent>; body: { force: boolean }. */
-export const graphBuildPath = (pid: string) => `${P(pid)}/graph/build`;
+/** Start (or join) a server-side background build. Returns immediately with the job snapshot;
+ *  the build keeps running regardless of what the client does. Poll getGraphBuildStatus. */
+export const startGraphBuild = (pid: string, force = false) =>
+  apiPost<GraphBuildStartResponse>(`${P(pid)}/graph/build`, { force });
+/** Poll for the current/most-recent build job's progress. Cheap; safe to call every ~1.5s. */
+export const getGraphBuildStatus = (pid: string) =>
+  apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`);
 
 /** Absolute URL for a media path (relative like "/api/audio/<hash>.mp3"), with ?token for
  *  the audio player which can't send an Authorization header. */
