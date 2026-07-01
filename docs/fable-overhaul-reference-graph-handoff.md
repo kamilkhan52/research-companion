@@ -41,6 +41,12 @@ feature any project can (re)build from its own screen.
 - API: `GET /api/projects/{pid}/graph` (graph + recommendations + a no-LLM status check),
   `GET /api/projects/{pid}/graph/recommendations`, `POST /api/projects/{pid}/graph/build`
   (SSE progress via the existing `_sse`/`StreamingResponse` pattern, `{force: bool}` body).
+- **Closes the loop the brief implies but doesn't spell out:** recommending papers is only
+  useful if you can act on one, so `POST /api/projects/{pid}/papers` (`app/store.add_entry`)
+  adds a recommended external paper to the project's reading list in one tap (unread; full
+  text stays lazily retrieved like any other paper, nothing auto-committed — same "agent
+  proposes, human commits" principle as the rest of the app). Wired into both the
+  Recommendations panel and the node detail sheet on mobile.
 
 **Model config:**
 
@@ -89,7 +95,7 @@ bridge-score math, JSON parsing/salvage robustness, the store's persistence roun
 full pipeline test proving the incremental cache and the interrupted-build resumability.
 `requirements-dev.txt` added (pytest; not bundled into the runtime `requirements.txt`).
 
-#### Five real bugs found via live testing + careful self-review — all fixed
+#### Seven real bugs found via live testing + careful self-review — all fixed
 
 The brief said to test on a small subset before scaling; doing that (plus a deliberate,
 from-scratch review of the untested layout math before calling the mobile UI "done") surfaced
@@ -139,18 +145,36 @@ real issues a mocked test suite alone would never have caught:
    module-level executor is never explicitly shut down, and `max_workers=8` so one abandoned
    thread can't also block submitting the *next* paper's request.
 
-A sixth thing worth naming even though it's not a "bug": `_bridge_score`'s co-citation
+6. **Settings screen could silently clobber in-progress edits.** The effect that syncs local
+   form fields from `settings.data` re-ran on every reference change to that object — including
+   the refetch that follows `saveSettings`' own `invalidateQueries` call. If the user started
+   typing a new model/voice change in the brief window before that refetch resolved, the effect
+   would overwrite it with the just-saved (now stale-to-the-user) values. Fixed to sync exactly
+   once, on first successful load, via a ref guard.
+7. **Two hooks' "already running?" guards checked React state, not a ref.** `useStreamingTurn`
+   and `useGraphBuild` both had `if (streaming/building) return;` at the top of `run()` —  but
+   state only updates on the *next* render, so a fast double-tap in the same tick (before that
+   render) could slip two calls past the check. For the graph build specifically, that means
+   two concurrent builds racing to load-mutate-save the *same* per-project graph-store file
+   (last-write-wins, so the loser's progress on other papers could be silently lost). Fixed
+   both with a ref set synchronously before any `await`, so back-to-back synchronous calls
+   can't both pass.
+
+An eighth thing worth naming even though it's not a "bug": `_bridge_score`'s co-citation
 overlap originally included the node itself in every citer's "other citations" set, which
 trivially inflates overlap and suppresses genuine bridge scores for nodes with few other
 citations. Found while writing tests (two failed against a reasonable-looking implementation),
 fixed by excluding the node from that set.
 
-**Pattern worth noting for future sessions:** every one of these six issues survived a clean
+**Pattern worth noting for future sessions:** every one of these eight issues survived a clean
 `tsc`/`pytest`/`expo export`/`expo-doctor` pass — none of them are things static checks or
 mocked tests catch. Three came from actually calling the real API on real (messy, large)
-papers instead of stopping at a small happy-path sample; one came from deliberately re-deriving
-the math in new, untested UI code rather than trusting that "it compiles" means "it's correct."
-Both are worth treating as standard practice, not optional extras, for this kind of feature.
+papers instead of stopping at a small happy-path sample; the rest came from deliberately
+re-deriving math/control-flow by hand in new or adjacent code rather than trusting that "it
+compiles" means "it's correct" — the settings-clobber and race-guard bugs in particular came
+from asking "what happens if this fires twice in a row" about code that looked fine on a first
+read. All of this is worth treating as standard practice, not optional extra diligence, for
+async/stateful UI code and any pipeline that calls a real external API.
 
 ### Part A — polish (a start, not exhaustive — see "Remaining Part A" below)
 
@@ -173,7 +197,7 @@ Both are worth treating as standard practice, not optional extras, for this kind
 ```
 # Backend
 source .venv/bin/activate
-python -m pytest tests/ -q                    # 55 passed
+python -m pytest tests/ -q                    # 68 passed
 python -m pyflakes app/*.py                   # clean
 python -c "from app import main; print('OK')" # imports fine
 
@@ -186,25 +210,33 @@ npx expo-doctor@latest                        # 21/21 checks passed
 
 No mobile native build was performed or queued this session (no new native dependency was
 added — see the GraphCanvas note above). **The graph feature has not yet been tested inside
-the actual dev-client app on-device**; it has been validated via tsc/bundle/doctor and via
-direct backend calls (see below), but no one has tapped through the Graph screen on a phone
-yet. That's the top item for the next session.
+the actual dev-client app on-device**; it has been validated via tsc/bundle/doctor and a
+from-scratch numeric re-derivation of the pan/zoom centering math (which caught and fixed a
+real bug — see bug #4 above), but no one has physically tapped through the Graph screen on a
+phone yet. That's the top item for the next session.
 
 ## Live backend validation (real OpenRouter calls, real project data)
 
 Ran against the real `llm-inference-serving` project (18 papers) on the live dev server
-(`./.venv/bin/uvicorn app.main:app --port 8000`, restarted twice tonight to pick up code
-changes — currently running the latest commit).
+(`./.venv/bin/uvicorn app.main:app --port 8000`), restarted three times tonight to pick up
+code changes as bugs #1-5 were found and fixed — currently running the latest commit
+(`dc96463` at last check).
 
 - Bounded single-paper test (`punica`, smallest corpus file) → `status: done`, 37 references,
   15 flagged significant, real contexts and reasonable significance rationale.
-- Full-project build (`POST /api/projects/llm-inference-serving/graph/build`, `force=false`)
-  was started, and **is likely still running or partially complete** — each paper's
-  extraction call is genuinely slow (multiple minutes for a large/complex paper even at
-  `reasoning.effort=low`), so an 18-paper build could take well over an hour end-to-end.
-  This is running as a detached background process (see below) and is **safe to leave
-  running or to interrupt at any time** — the incremental-save fix means whatever completes
-  is kept, and a future build only pays for what's left.
+- Two earlier full-project build attempts hit bugs #2 (reasoning-token runaway on `distserve`)
+  and #5 (the httpx hang on `splitwise`) respectively — both fixed, both re-verified live.
+  Both builds were killed at various points during debugging; **the incremental-save fix
+  (bug #3) was proven not just by its own test but by real chaos**: `distserve` and
+  `splitwise` both ended up safely persisted (`status: "done"`, 60 and 85 references) despite
+  multiple kills and a full server restart in between — a server-side worker thread appears
+  to have kept running independently of a killed client connection and saved its result
+  before the eventual server restart reaped it.
+- **A third full-project build is running now** (started ~02:10 PDT, after all five fixes
+  landed), confirmed via its own first events to correctly skip both already-cached papers
+  (`"cached": true` for `distserve` and `splitwise`) and proceed straight to paper 3
+  (`mooncake`) — i.e., the resumability guarantee is working as designed, not just in tests.
+  This is a detached background process; **safe to leave running or interrupt at any time.**
 
 **To check its status right now:**
 ```
@@ -216,7 +248,12 @@ curl -s http://localhost:8000/api/projects/llm-inference-serving/graph | \
 If the backend server isn't running: `cd /Users/kamil/research-companion && \
 ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 &` (or `./run.sh`).
 If it stopped mid-build, just POST to `/graph/build` again with `{"force": false}` — it
-resumes from whatever's cached, no wasted tokens on already-done papers.
+resumes from whatever's cached, no wasted tokens on already-done papers. Expect the
+occasional per-paper `status: "error"` (e.g. a genuine JSON-malformation edge case like the
+one hit on `splitwise`'s first attempt) — those are automatically retried on the next build,
+by design; they don't need manual intervention unless the SAME paper keeps failing every
+rebuild, in which case the stored `error` message now includes a content snippet for
+debugging (see bug #5's fix).
 
 ## Remaining TODOs / next-step checklist
 
@@ -224,17 +261,21 @@ resumes from whatever's cached, no wasted tokens on already-done papers.
 
 1. **On-device smoke test of the Graph screen** — nothing has confirmed the pan/zoom
    `GestureDetector` + `GestureHandlerRootView` combination actually works at runtime on the
-   phone (only tsc/bundle/doctor validated it). Open the app, go to a project with a built
-   graph, and check: does pan/pinch work, do nodes/edges render sanely, does the detail
-   sheet open, does tapping a project-paper node navigate to Discussion correctly. If
-   something's off, the likely suspects are in `GraphCanvas.tsx`'s gesture composition or
-   the edge-line rotation math (`EdgeLine`).
-2. **Let (or resume) the full 18-paper build finish** for `llm-inference-serving`, then
-   actually look at the resulting graph/recommendations for quality (do the significance
-   calls feel right, are the recommended papers sensible) — this is the first real-world
-   quality check beyond the single-paper spot check.
+   phone (only tsc/bundle/doctor + careful math review validated it — see bug #4, already
+   fixed once via that review). Open the app, go to a project with a built graph, and check:
+   is the graph centered on open, does pan/pinch work, do nodes/edges render sanely, does the
+   detail sheet open, does tapping a project-paper node navigate to Discussion correctly, does
+   "Add to project" from a recommendation actually show up in the Library afterward. Confirmed
+   separately (via `babel-preset-expo`'s source): the reanimated/worklets Babel plugin *is*
+   auto-configured for this project despite no visible `babel.config.js`, so gesture-callback
+   worklet compilation specifically is not expected to be the failure mode if something's off.
+2. **Let (or resume) the full 18-paper build finish** for `llm-inference-serving` (running now
+   as of this checkpoint — see "Live backend validation" above), then actually look at the
+   resulting graph/recommendations for quality (do the significance calls feel right, are the
+   recommended papers sensible, try "Add to project" on a real recommendation) — the first
+   real-world quality check beyond the single-paper spot checks done so far.
 3. **Merge this branch to `main`** once (1) and (2) look good — it's currently sitting
-   unmerged on `fable-overhaul-graph-references`.
+   unmerged on `fable-overhaul-graph-references`, 10 commits ahead of where it branched.
 
 **Deferred/lower-priority:**
 
@@ -267,10 +308,17 @@ sufficient confidence to proceed without babysitting the full run to completion.
 ## Commit log this session (newest first)
 
 ```
+dc96463 Harden re-entrancy guards + improve extraction error diagnostics
+f80b2e0 Fix Settings: sync-from-server effect could clobber in-progress edits
+b5ba329 Fix two real bugs found via careful review + live re-testing
+db718d9 Docs: mention the reference graph in README + mobile-app-plan
+12f2a06 Close the recommendation loop: add a paper to the project in one tap
+96e9bf8 Add handoff/checkpoint doc for the overnight overhaul session
 8596b83 Part A polish: accessibility labels, touch targets, dead import
 c3cfab5 Mobile: Reference Graph screen + navigation entry points
 905ff55 Fix reasoning-token runaway + make graph builds actually resumable
 76af973 Fix extraction truncation: bump token budget + add JSON salvage
 f4830e1 Backend: reference graph pipeline (extraction, matching, analysis, API)
 ```
-All pushed to `origin/fable-overhaul-graph-references`.
+All pushed to `origin/fable-overhaul-graph-references`. 11 commits, 68 backend tests (up from
+0 at the start of this session — first test suite in this repo).
