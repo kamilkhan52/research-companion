@@ -93,12 +93,14 @@ feature any project can (re)build from its own screen.
   progress tracking; `stream.ts`'s `streamPost` was generalized to `streamPost<T>` (was
   hardcoded to chat's `StreamEvent`) so both streams share one SSE parser.
 
-**Tests:** `tests/` (new — first backend test suite in this repo), 55 tests, **zero network
+**Tests:** `tests/` (new — first backend test suite in this repo), 80 tests, **zero network
 calls** (extraction is always dependency-injected in tests via `extract_fn`). Covers title
-matching/dedup, graph construction from fixture extractions, recommendation ranking + the
-bridge-score math, JSON parsing/salvage robustness, the store's persistence round-trip, and a
-full pipeline test proving the incremental cache and the interrupted-build resumability.
-`requirements-dev.txt` added (pytest; not bundled into the runtime `requirements.txt`).
+matching/dedup, graph construction from fixture extractions (including edge dedup), betweenness
+centrality (verified against textbook ground-truth graphs), recommendation ranking + the
+bridge-score math, JSON parsing/salvage robustness, the wall-clock deadline mechanism, the
+store's persistence round-trip, and a full pipeline test proving the incremental cache and the
+interrupted-build resumability. `requirements-dev.txt` added (pytest; not bundled into the
+runtime `requirements.txt`).
 
 #### Seven real bugs found via live testing + careful self-review — all fixed
 
@@ -165,13 +167,22 @@ real issues a mocked test suite alone would never have caught:
    both with a ref set synchronously before any `await`, so back-to-back synchronous calls
    can't both pass.
 
-An eighth thing worth naming even though it's not a "bug": `_bridge_score`'s co-citation
-overlap originally included the node itself in every citer's "other citations" set, which
-trivially inflates overlap and suppresses genuine bridge scores for nodes with few other
-citations. Found while writing tests (two failed against a reasonable-looking implementation),
-fixed by excluding the node from that set.
+8. **Duplicate edges when a paper cites the same target twice.** Found by inspecting real
+   output from the live build (free — `build_nodes_and_edges` is a pure function over already-
+   cached extractions, no new LLM cost to check): `distserve`'s bibliography produced two
+   separate reference entries that both fuzzy-matched `vllm-pagedattention`, becoming two
+   separate edges — one of which carried `significant=False`, silently at risk of shadowing
+   the correct significant verdict depending on iteration order. Fixed by keying edges on
+   (source, target) and merging (OR significance, union contexts, max confidence); counts are
+   now derived from the deduped edge list. Re-verified against the same real project data.
 
-**Pattern worth noting for future sessions:** every one of these eight issues survived a clean
+An unnumbered ninth thing worth naming even though it's not a "bug" in the same sense:
+`_bridge_score`'s co-citation overlap originally included the node itself in every citer's
+"other citations" set, which trivially inflates overlap and suppresses genuine bridge scores
+for nodes with few other citations. Found while writing tests (two failed against a
+reasonable-looking implementation), fixed by excluding the node from that set.
+
+**Pattern worth noting for future sessions:** every one of these issues survived a clean
 `tsc`/`pytest`/`expo export`/`expo-doctor` pass — none of them are things static checks or
 mocked tests catch. Three came from actually calling the real API on real (messy, large)
 papers instead of stopping at a small happy-path sample; the rest came from deliberately
@@ -237,11 +248,24 @@ code changes as bugs #1-5 were found and fixed — currently running the latest 
   multiple kills and a full server restart in between — a server-side worker thread appears
   to have kept running independently of a killed client connection and saved its result
   before the eventual server restart reaped it.
-- **A third full-project build is running now** (started ~02:10 PDT, after all five fixes
+- **A third full-project build is running now** (started ~02:10 PDT, after fixes #1-5
   landed), confirmed via its own first events to correctly skip both already-cached papers
   (`"cached": true` for `distserve` and `splitwise`) and proceed straight to paper 3
   (`mooncake`) — i.e., the resumability guarantee is working as designed, not just in tests.
   This is a detached background process; **safe to leave running or interrupt at any time.**
+  `mooncake` itself hit the 480s hard deadline live and the build correctly moved on to
+  `memserve` rather than stalling — bug #5's fix proving itself for real, unprompted, during
+  this very run.
+- **Important gotcha for whoever picks this up:** bugs #8 (duplicate edges) and the
+  betweenness-centrality addition were committed *after* this third build's server process
+  was started, and Python doesn't hot-reload changed source into a running process (no
+  `--reload` flag). The build's expensive part — per-paper extraction — is unaffected (that
+  code didn't change), but the *final* graph-construction/scoring step it runs once at the end
+  will use the pre-fix logic in this particular run. **Fix: after this build finishes (or
+  whenever convenient), restart the uvicorn server once more, then POST `/graph/build` again
+  with `{"force": false}`.** That costs zero new LLM calls (every paper's extraction is
+  already cached) and just re-runs the free graph-construction step with the latest code,
+  refreshing `nodes`/`edges`/`recommendations` with the dedup fix and centrality scores.
 
 **To check its status right now:**
 ```
@@ -275,21 +299,27 @@ debugging (see bug #5's fix).
    auto-configured for this project despite no visible `babel.config.js`, so gesture-callback
    worklet compilation specifically is not expected to be the failure mode if something's off.
 2. **Let (or resume) the full 18-paper build finish** for `llm-inference-serving` (running now
-   as of this checkpoint — see "Live backend validation" above), then actually look at the
-   resulting graph/recommendations for quality (do the significance calls feel right, are the
+   as of this checkpoint — see "Live backend validation" above). **Restart the uvicorn server
+   once more before or after it finishes** (see the "Important gotcha" note above) and re-POST
+   `/graph/build` with `force: false` — free, since everything's cached — to pick up the
+   duplicate-edge fix and betweenness centrality in the final graph/recommendations. Then
+   actually look at the results for quality (do the significance calls feel right, are the
    recommended papers sensible, try "Add to project" on a real recommendation) — the first
-   real-world quality check beyond the single-paper spot checks done so far.
+   real-world quality check beyond the spot checks done so far (which were promising: see
+   the distserve/splitwise significance calls quoted in this session's transcript, matching
+   real, independently-known facts about those papers).
 3. **Merge this branch to `main`** once (1) and (2) look good — it's currently sitting
-   unmerged on `fable-overhaul-graph-references`, 10 commits ahead of where it branched.
+   unmerged on `fable-overhaul-graph-references`.
 
 **Deferred/lower-priority:**
 
-- `docs/mobile-app-plan.md` / other docs weren't updated to mention the graph feature —
-  worth a pass once the feature is confirmed working on-device.
+- `README.md` and `docs/mobile-app-plan.md` were already updated to mention the graph feature
+  this session (see the commit log) — a follow-up pass after on-device confirmation would just
+  be to sanity-check those descriptions still match reality, not write them from scratch.
 - Part A is intentionally not exhaustive. Given the scope of Part B (a full new pipeline,
-  three real production bugs found and fixed via live testing, plus its complete mobile UI),
-  I prioritized landing that coherently over spreading thin across every polish item in the
-  brief. Reasonable further Part A candidates, roughly in priority order: a deeper visual
+  nine real bugs found and fixed via live testing and code review, plus its complete mobile
+  UI), I prioritized landing that coherently over spreading thin across every polish item in
+  the brief. Reasonable further Part A candidates, roughly in priority order: a deeper visual
   pass on the Settings screen; `@shopify/flash-list` for the chat transcript if it ever gets
   long (currently plain `ScrollView`, fine at today's scale); reviewing `web/app.js` (the
   legacy web client) for parity now that the backend has new graph routes it doesn't use —
@@ -304,11 +334,14 @@ debugging (see bug #5's fix).
 ## Quota/blocker notes
 
 No hard blocker was hit. The main constraint was **time cost of live LLM calls** during
-development (each real extraction call takes minutes), which is why the full 18-paper
-project build was left running in the background rather than blocking the rest of the work
-on it — the pipeline's correctness was established via the 55-test suite plus three separate
-live spot-checks (one of which deliberately tested the failure/kill path), which felt like
-sufficient confidence to proceed without babysitting the full run to completion.
+development — each real extraction call takes anywhere from ~1 to 8 minutes (the hard deadline
+is 480s), so the full 18-paper project build runs for a long time and was left running in the
+background rather than blocking the rest of the work on it. The pipeline's correctness was
+established via the 80-test suite plus several live spot-checks against real papers and real
+failure modes (including deliberately observing the kill/interrupt path and the deadline path
+fire for real), which felt like sufficient confidence to keep building on top of it rather than
+babysit the full run to completion — time better spent finding and fixing bugs 6-9 than
+watching a progress log.
 
 ## Commit log this session (newest first)
 
