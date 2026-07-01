@@ -30,18 +30,33 @@
 > (cached papers cost nothing). Expect some papers to hit the 480s deadline → `error`; those
 > just retry on the next build, by design.
 >
+> **UPDATE — post-compaction, same session, work continued on Opus:**
+> - **Priority B (audio) DONE** — commit `ba14c11` (local only). The narrate transcript was
+>   being discarded; now `AudioProvider` keeps `narrationById` + a `loadingStage`, a new
+>   `NarrationTranscript` component shows the transcript with a follow-along sentence highlight
+>   (approximate: OpenAI TTS returns NO timings, so playback position/duration is mapped
+>   proportionally onto sentence char-offsets), and a `GeneratingBar` shows staged
+>   indeterminate progress while audio generates. tsc + expo export clean.
+> - **Priority C (edit user messages) DONE** — commit `e9c5c54` (local only). Destructive
+>   edit-and-regenerate (no branch kept): backend `sessions.edit_reply` + `POST /edit_stream`
+>   (+3 tests), mobile '✎ Edit' affordance → inline TextInput → '↻ Save & regenerate', with a
+>   confirm when >immediate-answer of work would be discarded. Full version/branch history was
+>   deliberately scoped OUT as a future feature. 91 backend tests pass, pyflakes/tsc/export clean.
+> - **Build (#24):** the live build kept advancing across the compaction (6→9/18 and counting);
+>   fix proven in practice. Still running; just poll to `done` (command above).
+>
 > **🚧 BLOCKER: `git push` is failing** — `could not read Username for github.com` (osxkeychain
-> can't prompt in this non-interactive context; earlier interactive pushes worked). Commit
-> `589e4a2` is safe in **local** git but **NOT on origin**. First resume step: `git push` from
-> an interactive shell. Local is 1 commit ahead of `origin/fable-overhaul-graph-references`.
+> can't prompt non-interactively; `gh`'s token is invalid, no GH_TOKEN/GITHUB_TOKEN in env).
+> **4 commits are LOCAL ONLY, not on origin:** `589e4a2` (mobile poll), `e72a59a` (handoff),
+> `ba14c11` (audio), `e9c5c54` (edit). First resume step from an interactive shell:
+> `gh auth login -h github.com` then `git push`. origin tip is still `8dc68eb`.
 >
 > **Server:** running detached on new code, logs at `/tmp/rc-fable-overhaul/server-opus.log`.
-> Metro + cloudflared tunnel from earlier were still up at last check (see older notes for URLs;
-> they rotate on restart).
 >
-> **Remaining priorities (not started this window):** #25 audio transcript + sentence
-> highlighting, #26 audio-gen progress UI, #27 user-message editing status/impl, #28 agentic
-> capabilities. Task list (TaskCreate #23-#28) tracks these.
+> **Remaining priority:** #28 agentic research behavior (web / project files / cross-paper
+> reading). NOT started — needs a design decision (the agent is currently single-shot with a
+> text protocol; adding a tool loop is architectural). Awaiting Kamil's pick of first increment.
+> Priorities #23/#25/#26/#27 + #10 all DONE this session.
 >
 > ---
 
