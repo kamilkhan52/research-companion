@@ -104,3 +104,43 @@ def test_cites_count_and_cited_by_count_are_consistent():
     assert by_id["c"]["significant_cited_by_count"] == 1
     assert by_id["b"]["cited_by_project_count"] == 1
     assert len(edges) == 3
+
+
+def test_same_paper_citing_the_same_target_twice_merges_into_one_edge():
+    # Observed live on a real paper: two separate bibliography entries (e.g. an arXiv preprint
+    # + its conference version) can both fuzzy-match the same in-project paper. That must not
+    # show up as the citing paper "citing itself twice" in the graph.
+    papers = [paper("distserve", "DistServe"), paper("vllm", "vLLM: PagedAttention")]
+    extractions = {
+        "distserve": done([
+            {"title": "vLLM: PagedAttention", "significant": False, "contexts": ["mentioned once"]},
+            {"title": "vLLM: PagedAttention", "significant": True,
+             "significance_reason": "used as the primary baseline", "contexts": ["used as baseline"]},
+        ]),
+    }
+    nodes, edges = build_nodes_and_edges(papers, extractions)
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge["significant"] is True  # either mention being significant wins
+    assert edge["reason"] == "used as the primary baseline"
+    assert "mentioned once" in edge["contexts"] and "used as baseline" in edge["contexts"]
+    by_id = {n["id"]: n for n in nodes}
+    assert by_id["distserve"]["cites_count"] == 1  # one relationship, not two
+    assert by_id["vllm"]["cited_by_project_count"] == 1
+    assert by_id["vllm"]["significant_cited_by_count"] == 1
+
+
+def test_duplicate_citations_to_an_external_node_also_merge():
+    papers = [paper("a", "Paper A")]
+    extractions = {
+        "a": done([
+            {"title": "Some External Work", "arxiv_id": "1234.5678", "significant": False},
+            {"title": "some external work.", "arxiv_id": "1234.5678", "significant": True},
+        ]),
+    }
+    nodes, edges = build_nodes_and_edges(papers, extractions)
+    assert len(edges) == 1
+    assert edges[0]["significant"] is True
+    ext = next(n for n in nodes if n["kind"] == "external")
+    assert ext["cited_by_project_count"] == 1
+    assert ext["significant_cited_by_count"] == 1

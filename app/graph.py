@@ -393,7 +393,13 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
             "cited_by_project_count": 0, "significant_cited_by_count": 0, "cites_count": 0,
         }
 
-    edges: list[dict] = []
+    # Keyed by (source, target): a paper occasionally cites the same work via two separate
+    # bibliography entries (e.g. an arXiv preprint listed alongside its conference version,
+    # or just noisy extraction) that both resolve to the same target via fuzzy matching. Two
+    # raw references shouldn't become two edges in the graph — merge them into one citation
+    # relationship, OR-ing significance and unioning contexts, so the visualization doesn't
+    # show a paper "citing itself twice" and the citation counts reflect distinct relationships.
+    edge_by_pair: dict[tuple[str, str], dict] = {}
     external_key_to_id: dict[str, str] = {}
 
     for slug, extraction in extractions.items():
@@ -428,18 +434,39 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
 
             if target_id == slug:
                 continue  # a paper "citing itself" via a fuzzy-matched title glitch — skip
-            edges.append({
-                "source": slug, "target": target_id,
-                "significant": bool(ref.get("significant")),
-                "reason": ref.get("significance_reason", ""),
-                "contexts": ref.get("contexts", []),
-                "confidence": ref.get("confidence", 0.5),
-                "raw_text": ref.get("raw_text", ""),
-            })
-            nodes[slug]["cites_count"] += 1
-            nodes[target_id]["cited_by_project_count"] += 1
-            if ref.get("significant"):
-                nodes[target_id]["significant_cited_by_count"] += 1
+
+            pair = (slug, target_id)
+            significant = bool(ref.get("significant"))
+            reason = ref.get("significance_reason", "")
+            contexts = ref.get("contexts", [])
+            existing = edge_by_pair.get(pair)
+            if existing is None:
+                edge_by_pair[pair] = {
+                    "source": slug, "target": target_id,
+                    "significant": significant,
+                    "reason": reason,
+                    "contexts": list(contexts),
+                    "confidence": ref.get("confidence", 0.5),
+                    "raw_text": ref.get("raw_text", ""),
+                }
+            else:
+                # Prefer the significant verdict/reason if either mention was significant;
+                # union contexts (deduped, capped) rather than picking one arbitrarily.
+                if significant and not existing["significant"]:
+                    existing["reason"] = reason
+                existing["significant"] = existing["significant"] or significant
+                existing["confidence"] = max(existing["confidence"], ref.get("confidence", 0.5))
+                for c in contexts:
+                    if c not in existing["contexts"]:
+                        existing["contexts"].append(c)
+                existing["contexts"] = existing["contexts"][:4]
+
+    edges = list(edge_by_pair.values())
+    for e in edges:
+        nodes[e["source"]]["cites_count"] += 1
+        nodes[e["target"]]["cited_by_project_count"] += 1
+        if e["significant"]:
+            nodes[e["target"]]["significant_cited_by_count"] += 1
 
     return list(nodes.values()), edges
 
