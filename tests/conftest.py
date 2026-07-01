@@ -1,0 +1,44 @@
+"""Shared pytest fixtures. The graph pipeline is tested against a real temp project dir
+(not mocks of the store layer) so tests exercise the actual file formats, but with
+config.PROJECTS_ROOT monkeypatched to a tmp_path and no network calls ever made — extraction
+is always driven through an injected fake in tests (see graph.build_graph's extract_fn param).
+"""
+from __future__ import annotations
+
+import pytest
+
+from app import config, projects
+
+
+@pytest.fixture
+def temp_project(tmp_path, monkeypatch):
+    """Yields a project id with an empty reading-list, active for the duration of the test."""
+    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path)
+    pid = "test-project"
+    root = projects.project_path(pid)
+    root.mkdir(parents=True)
+    (root / "corpus").mkdir()
+    (root / "sessions").mkdir()
+    (root / ".state").mkdir()
+    (root / "reading-list.md").write_text("# Reading list\n\n## Group\n\n", encoding="utf-8")
+    (root / "reading-method.md").write_text("", encoding="utf-8")
+    (root / "working-notes.md").write_text("", encoding="utf-8")
+
+    token = config.set_active_project(pid)
+    try:
+        yield pid
+    finally:
+        config.reset_active_project(token)
+
+
+def add_paper(pid: str, slug: str, title: str, group: str = "Group", full_text: str = "full text") -> None:
+    """Append a reading-list entry and write cached full text for it, using the real store
+    module so parsing/slugging behavior matches production."""
+    from app import store
+    rl = store._reading_list()
+    text = rl.read_text(encoding="utf-8")
+    if f"## {group}" not in text:
+        text += f"\n## {group}\n\n"
+    text += f"\n**{title}** — *unread*\n<!-- slug: {slug} -->\n"
+    rl.write_text(text, encoding="utf-8")
+    store.write_full_text(slug, title, full_text, {"slug": slug})

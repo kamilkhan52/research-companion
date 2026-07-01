@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, auth, committer, config, projects, prompts, retriever, sessions, store, tts
+from . import agent, auth, committer, config, graph, graph_store, projects, prompts, retriever, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -136,6 +136,10 @@ class RetryReq(BaseModel):
 class ProjectReq(BaseModel):
     name: str
     method: str | None = None   # optional starting reading-method; defaults to the template
+
+
+class GraphBuildReq(BaseModel):
+    force: bool = False   # re-extract every retrievable paper, ignoring the content-hash cache
 
 
 # ---------- helpers ----------
@@ -589,6 +593,49 @@ def approve(req: ApproveReq):
     except CommitError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"result": result, "paper": _paper_dict(req.slug)}
+
+
+# ---------- reference graph ----------
+# Builds a citation graph over the project's papers (see app/graph.py): in-project citation
+# edges, external cited papers, and a recommendation ranking for which external papers to
+# add. Extraction is the only step that calls an LLM (OpenRouter, DeepSeek V4 Pro by default)
+# and is cached per paper by content hash, so rebuilds only spend tokens on changed papers.
+
+@project_router.get("/graph")
+def get_graph(pid: str):
+    papers = store.list_papers(sessions.session_states())
+    data = graph_store.load()
+    return {
+        "graph": data.get("graph"),
+        "recommendations": data.get("recommendations") or [],
+        "status": graph.status(papers),
+    }
+
+
+@project_router.get("/graph/recommendations")
+def get_graph_recommendations(pid: str):
+    data = graph_store.load()
+    return {"recommendations": data.get("recommendations") or []}
+
+
+def _graph_build_stream(force: bool):
+    papers = store.list_papers(sessions.session_states())
+    try:
+        for event in graph.build_graph(papers, force=force):
+            yield _sse(event)
+    except Exception as e:
+        # Outermost boundary for a multi-call pipeline: per-paper LLM/network failures are
+        # already caught inside graph.extract_references_for_paper (and surfaced via each
+        # paper's own 'error' field in 'progress' events), so reaching here means something
+        # unexpected (e.g. a bug, or the papers list itself failing to load) — keep the SSE
+        # stream alive with an error event rather than a bare 500 mid-stream.
+        yield _sse({"type": "error", "detail": str(e)[:400]})
+
+
+@project_router.post("/graph/build")
+def build_graph_stream(req: GraphBuildReq):
+    return StreamingResponse(_graph_build_stream(req.force), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
 
 
 app.include_router(project_router)
