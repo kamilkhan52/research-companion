@@ -27,6 +27,10 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // A ref guard (not the `streaming` state) so back-to-back calls in the same tick — e.g. a
+  // fast double-tap before React re-renders with the disabled button — can't both slip past
+  // the check; state only updates on the next render, a ref updates immediately.
+  const streamingRef = useRef(false);
 
   const settle = useCallback(async () => {
     if (pid && slug) {
@@ -40,7 +44,8 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
 
   const run = useCallback(
     async (path: string, body: unknown, optimisticUser?: string) => {
-      if (streaming) return;
+      if (streamingRef.current) return;
+      streamingRef.current = true;
       const controller = new AbortController();
       abortRef.current = controller;
       setError(null);
@@ -74,10 +79,11 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
         setError((e as Error).message ?? 'Stream failed.');
         setStreaming(false);
       } finally {
+        streamingRef.current = false;
         abortRef.current = null;
       }
     },
-    [streaming, settle],
+    [settle],
   );
 
   const cancel = useCallback(() => {

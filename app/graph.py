@@ -307,13 +307,21 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
             refs = parsed.get("references", [])
             if not isinstance(refs, list):
                 raise GraphError("'references' was not a list.")
-        except (GraphError, json.JSONDecodeError):
+        except (GraphError, json.JSONDecodeError) as parse_err:
             # A bibliography can run to 60+ references with several body-text contexts each,
             # occasionally overrunning even a generous token budget mid-object. Salvage
             # whichever leading references parsed cleanly rather than losing the whole call.
             refs = _salvage_references(content)
             if not refs:
-                raise
+                # Both strict parsing and salvage failed — a genuine data-quality edge case
+                # (observed live: some responses are malformed in ways neither handles, e.g.
+                # a structural issue before any complete reference object). Attach a content
+                # snippet around the reported failure position so this is debuggable from the
+                # stored error alone, without needing to re-spend tokens reproducing it.
+                pos = getattr(parse_err, "pos", None)
+                snippet = (f" | near char {pos}: ...{content[max(0, pos - 80):pos + 80]!r}..."
+                          if isinstance(pos, int) else f" | content starts: {content[:200]!r}")
+                raise GraphError(f"{parse_err}{snippet}") from parse_err
             note = f"Response was malformed/truncated; recovered {len(refs)} reference(s) via salvage."
 
         cleaned = [c for i, r0 in enumerate(refs, 1)

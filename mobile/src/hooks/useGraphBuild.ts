@@ -35,10 +35,16 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   const [progress, setProgress] = useState<GraphBuildProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // A ref guard (not the `building` state) so back-to-back calls in the same tick — e.g. a
+  // fast double-tap on "Build graph" before React re-renders with the disabled button — can't
+  // both slip past the check and start two concurrent builds racing to write the same
+  // per-project graph-store file.
+  const buildingRef = useRef(false);
 
   const run = useCallback(
     async (force = false) => {
-      if (!pid || building) return;
+      if (!pid || buildingRef.current) return;
+      buildingRef.current = true;
       const controller = new AbortController();
       abortRef.current = controller;
       setError(null);
@@ -99,11 +105,12 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
           setError((e as Error).message ?? 'Graph build failed.');
         }
       } finally {
+        buildingRef.current = false;
         setBuilding(false);
         abortRef.current = null;
       }
     },
-    [pid, building, qc],
+    [pid, qc],
   );
 
   const cancel = useCallback(() => abortRef.current?.abort(), []);
