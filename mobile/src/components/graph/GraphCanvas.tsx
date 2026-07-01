@@ -42,8 +42,13 @@ export function GraphCanvas({
 
   const centerView = useCallback(
     (w: number, h: number, animated: boolean) => {
-      const tx = w / 2 - (width / 2) * INITIAL_SCALE;
-      const ty = h / 2 - (height / 2) * INITIAL_SCALE;
+      // RN scales a transformed view around its OWN center, so the canvas's center point
+      // doesn't move under `scale` alone — centering it on the viewport only depends on the
+      // translate, not the scale factor. (Multiplying by scale here — an earlier version of
+      // this code did — puts the translate destination in the wrong coordinate space and
+      // visibly mis-centers the graph on load/reset.)
+      const tx = w / 2 - width / 2;
+      const ty = h / 2 - height / 2;
       translateX.value = animated ? withTiming(tx) : tx;
       translateY.value = animated ? withTiming(ty) : ty;
       scale.value = animated ? withTiming(INITIAL_SCALE) : INITIAL_SCALE;

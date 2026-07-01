@@ -21,6 +21,7 @@ paper; everything else is served from the cache.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -53,6 +54,31 @@ MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus'
 # for a response that's still truncated or malformed despite both.
 EXTRACTION_MAX_TOKENS = 48_000
 REASONING_EFFORT = "low"
+
+# httpx's `timeout=N` is a PER-PHASE budget (connect/read/write/pool each up to N seconds), not
+# a total wall-clock cap — and it's measured per socket read, not cumulatively. Observed live:
+# a real extraction call ran past its 300s httpx timeout without erroring (some LLM API
+# gateways send sparse keep-alive bytes on long-running completions specifically to avoid
+# tripping a client's per-read timeout, which resets that clock indefinitely). A single stuck
+# paper would otherwise stall an entire project's build. EXTRACTION_HARD_DEADLINE enforces a
+# real wall-clock cap via a background thread: if the call hasn't returned by the deadline, we
+# give up on it and move on — the abandoned request keeps running in its own thread until it
+# finishes (Python can't force-kill a thread) but nothing waits on its result, so it can't
+# block the pipeline. max_workers > 1 so one stuck paper's orphaned thread doesn't also block
+# submitting the NEXT paper's request while it's still occupying a worker slot.
+EXTRACTION_HARD_DEADLINE = 480  # seconds; generous — real successful calls have taken minutes
+_EXTRACT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="graph-extract")
+
+
+def _call_with_deadline(fn: Callable[[], object], deadline: float):
+    """Run fn() in a background thread, bounded by a real wall-clock deadline regardless of
+    what any timeout inside fn itself does. Raises concurrent.futures.TimeoutError past the
+    deadline; fn keeps running in its thread until it naturally finishes, but nothing waits
+    on it. A plain callable (not hardcoded to httpx.post) so this is unit-testable with a
+    simple slow/fast function, no network mocking needed."""
+    future = _EXTRACT_EXECUTOR.submit(fn)
+    return future.result(timeout=deadline)
 
 
 class GraphError(Exception):
@@ -247,8 +273,15 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
         "reasoning": {"effort": REASONING_EFFORT},
     }
     try:
-        r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
-                       headers=headers, json=body, timeout=300)
+        r = _call_with_deadline(
+            lambda: httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
+                               headers=headers, json=body, timeout=300),
+            deadline=EXTRACTION_HARD_DEADLINE)
+    except concurrent.futures.TimeoutError:
+        return _result("error", [],
+                       f"No response after {EXTRACTION_HARD_DEADLINE}s (hard deadline) — the "
+                       "request may still be running upstream but this paper is being skipped "
+                       "for now; retry later or on the next rebuild.")
     except httpx.HTTPError as e:
         return _result("error", [], f"OpenRouter request failed: {e}"[:400])
     if r.status_code != 200:
