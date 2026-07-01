@@ -42,12 +42,17 @@ _GRAPH_MODEL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", "oc
                     "guard", "moderation", "rerank", ":free", "distill", "chat", "lite"]
 
 MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus's paper sizes
-# Generous on purpose: a 40-60 reference bibliography with contexts can run well past 8k
-# output tokens, and reasoning-capable models spend additional tokens before the answer
-# (same reasoning as agent.py's 16k budget for its analysis calls). DeepSeek V4 Pro supports
-# up to 384k completion tokens, so this is nowhere near its ceiling. _salvage_references is
-# the safety net for the rare case a response is still truncated or malformed.
-EXTRACTION_MAX_TOKENS = 32_000
+# DeepSeek V4 Pro is a reasoning model: OpenRouter's response carries a separate
+# message.reasoning field, and usage.completion_tokens_details.reasoning_tokens confirms
+# those tokens count against max_tokens right alongside the visible content. On a large,
+# complex paper this can consume the ENTIRE budget on hidden reasoning with zero content
+# emitted (finish_reason="length", empty content) — observed live on a 90KB paper at the
+# original 8k cap. Two defenses: cap reasoning effort (extraction is a retrieval/formatting
+# task, not one that benefits from deep chain-of-thought) via REASONING_EFFORT, and keep a
+# generous max_tokens as a safety net regardless. _salvage_references is the last-resort net
+# for a response that's still truncated or malformed despite both.
+EXTRACTION_MAX_TOKENS = 48_000
+REASONING_EFFORT = "low"
 
 
 class GraphError(Exception):
@@ -239,6 +244,7 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
         ],
         "temperature": 0.1,
         "max_tokens": EXTRACTION_MAX_TOKENS,
+        "reasoning": {"effort": REASONING_EFFORT},
     }
     try:
         r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
@@ -255,7 +261,12 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
         if isinstance(content, list):
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         if not content or not str(content).strip():
-            raise GraphError(f"Empty response (finish_reason={choice.get('finish_reason')}).")
+            reasoning_tokens = ((data.get("usage") or {}).get("completion_tokens_details") or {}).get(
+                "reasoning_tokens")
+            hint = (f" (spent {reasoning_tokens} tokens on reasoning before running out — "
+                    "try raising EXTRACTION_MAX_TOKENS or lowering REASONING_EFFORT further)"
+                    if reasoning_tokens else "")
+            raise GraphError(f"Empty response (finish_reason={choice.get('finish_reason')}){hint}.")
 
         note = ""
         try:
@@ -501,6 +512,13 @@ def build_graph(papers: list[Paper], force: bool = False,
             yield {"type": "extracting", "slug": p.slug, "title": p.title}
             extraction = extract_fn(p.slug, p.title, full_text, model)
             graph_store.set_paper_extraction(data, p.slug, extraction)
+            # Persist after EACH paper, not just once at the end: a project can have dozens
+            # of papers and each extraction is a real (paid) network call taking tens of
+            # seconds, so this is a genuinely long-running operation. Saving incrementally
+            # means an interrupted build (client disconnect, server restart, a killed
+            # request) keeps every paper completed so far — the next build only re-spends
+            # tokens on whatever's left, which is the whole point of "resumable".
+            graph_store.save(data)
         else:
             extraction = cached
         done += 1

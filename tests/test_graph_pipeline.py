@@ -103,6 +103,36 @@ def test_errored_extraction_is_retried_on_next_build(temp_project):
     assert calls == ["a"]  # a prior error is not treated as a valid cache hit
 
 
+def test_interrupted_build_persists_completed_papers(temp_project):
+    # Extraction is a real, possibly slow network call per paper; a build over many papers
+    # can be interrupted (client disconnect, server restart, killed request) partway through.
+    # Only consuming part of the generator simulates that -- the "done" event (and its final
+    # save) is never reached, so this proves per-paper saves are what persisted, not the
+    # final one.
+    add_paper(temp_project, "a", "Paper A", full_text="Text A.")
+    add_paper(temp_project, "b", "Paper B", full_text="Text B.")
+    add_paper(temp_project, "c", "Paper C", full_text="Text C.")
+    papers = store.list_papers(sessions.session_states())
+
+    calls: list[str] = []
+    gen = graph.build_graph(papers, extract_fn=fake_extractor(calls))
+    # start, extracting(a), progress(a) -> stop right after the first paper completes.
+    for _ in range(3):
+        next(gen)
+    gen.close()
+
+    assert calls == ["a"]
+    reloaded = graph_store.load()
+    assert reloaded["papers"]["a"]["status"] == "done"
+    assert "b" not in reloaded["papers"]
+    assert reloaded["graph"] is None  # the final graph/recommendations step never ran
+
+    # Resuming should pick up right where it left off: 'a' is cached, 'b' and 'c' still run.
+    resume_calls: list[str] = []
+    list(graph.build_graph(papers, extract_fn=fake_extractor(resume_calls)))
+    assert sorted(resume_calls) == ["b", "c"]
+
+
 def test_status_reports_stale_and_missing_text(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="Text.")
     papers = store.list_papers(sessions.session_states())

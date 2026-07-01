@@ -17,6 +17,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { loadConfig } from '@/api/config';
@@ -52,30 +53,37 @@ export default function RootLayout() {
   if (!ready) return null;
 
   return (
-    <SafeAreaProvider>
-      <KeyboardProvider>
-        <QueryClientProvider client={queryClient}>
-          <ProjectProvider>
-            <AudioProvider>
-              <StatusBar style="light" />
-              <View style={{ flex: 1, backgroundColor: colors.bg }}>
-                <View style={{ flex: 1 }}>
-                  <Stack
-                    screenOptions={{
-                      headerShown: false,
-                      contentStyle: { backgroundColor: colors.bg },
-                      animation: 'slide_from_right',
-                    }}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-                  </Stack>
+    // Wrapped explicitly at the true app root (rather than relying on expo-router's internal
+    // stack-swipe wrapper, which only covers its own screen transitions) so any screen can use
+    // the modern Gesture API (GestureDetector) safely — needed by the reference-graph's
+    // pan/zoom canvas. Pure JS: react-native-gesture-handler is already linked into the build.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <KeyboardProvider>
+          <QueryClientProvider client={queryClient}>
+            <ProjectProvider>
+              <AudioProvider>
+                <StatusBar style="light" />
+                <View style={{ flex: 1, backgroundColor: colors.bg }}>
+                  <View style={{ flex: 1 }}>
+                    <Stack
+                      screenOptions={{
+                        headerShown: false,
+                        contentStyle: { backgroundColor: colors.bg },
+                        animation: 'slide_from_right',
+                      }}>
+                      <Stack.Screen name="index" />
+                      <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+                      <Stack.Screen name="graph" />
+                    </Stack>
+                  </View>
+                  <NowPlaying />
                 </View>
-                <NowPlaying />
-              </View>
-            </AudioProvider>
-          </ProjectProvider>
-        </QueryClientProvider>
-      </KeyboardProvider>
-    </SafeAreaProvider>
+              </AudioProvider>
+            </ProjectProvider>
+          </QueryClientProvider>
+        </KeyboardProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
