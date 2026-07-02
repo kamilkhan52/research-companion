@@ -162,6 +162,8 @@ export interface GraphNode {
   cited_by_project_count: number;
   significant_cited_by_count: number;
   cites_count: number;
+  /** Global citation count (Semantic Scholar), when known; null/absent when not found. */
+  citation_count?: number | null;
   // Server-precomputed layout position (temporal Y: recent toward the bottom). Present on
   // graphs built after layout was added; absent ones fall back to a client-side sim.
   x?: number;

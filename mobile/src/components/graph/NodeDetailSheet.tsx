@@ -116,6 +116,9 @@ function SheetContent({
           <Stat label="Cited by" value={String(node.cited_by_project_count)} />
           <Stat label="Significant in" value={String(node.significant_cited_by_count)} />
           {node.kind === 'project' ? <Stat label="Cites" value={String(node.cites_count)} /> : null}
+          {typeof node.citation_count === 'number' ? (
+            <Stat label="Citations overall" value={node.citation_count.toLocaleString()} />
+          ) : null}
         </View>
 
         {link ? (

@@ -21,18 +21,34 @@ export function useGraphLayout(
   // Fast path: the server precomputed positions (temporal layout). Use them directly — no
   // client-side O(n²) simulation, so the screen renders instantly at any size. Only kicks in
   // when every rendered node has coordinates; otherwise we fall back to the client sim below.
+  //
+  // The visible set is often a SUBSET of the graph the server laid out (focused view, filter
+  // tabs), scattered across the full canvas — which reads as absurdly long edges on a phone.
+  // So rescale the visible nodes' bounding box to a phone-sized canvas. The rescale is
+  // monotonic per axis, so relative positions — including the temporal top-to-bottom order —
+  // are preserved exactly.
   const serverLayout = useMemo<LayoutResult | null>(() => {
     if (!nodes.length || !nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
       return null;
     }
+    const MARGIN = 80;
+    const W = 1500;
+    const H = Math.min(2200, serverBounds?.height ?? 2200);
+    const xs = nodes.map((n) => n.x as number);
+    const ys = nodes.map((n) => n.y as number);
+    const xmin = Math.min(...xs);
+    const xspan = Math.max(1, Math.max(...xs) - xmin);
+    const ymin = Math.min(...ys);
+    const yspan = Math.max(1, Math.max(...ys) - ymin);
     const positions: Record<string, { x: number; y: number }> = {};
-    for (const n of nodes) positions[n.id] = { x: n.x as number, y: n.y as number };
-    return {
-      positions,
-      width: serverBounds?.width ?? 2200,
-      height: serverBounds?.height ?? 2200,
-    };
-  }, [nodes, serverBounds?.width, serverBounds?.height]);
+    for (const n of nodes) {
+      positions[n.id] = {
+        x: MARGIN + (((n.x as number) - xmin) / xspan) * (W - 2 * MARGIN),
+        y: MARGIN + (((n.y as number) - ymin) / yspan) * (H - 2 * MARGIN),
+      };
+    }
+    return { positions, width: W, height: H };
+  }, [nodes, serverBounds?.height]);
 
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
   const edgeInputs = useMemo(

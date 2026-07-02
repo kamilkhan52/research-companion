@@ -213,6 +213,7 @@ function ComposeFirst({
   // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
   const [manualSource, setManualSource] = useState('');
+  const [showCustomize, setShowCustomize] = useState(false);
 
   useEffect(() => {
     if (opening.data?.prompt && !prompt) setPrompt(opening.data.prompt);
@@ -258,23 +259,11 @@ function ComposeFirst({
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <ScrollView contentContainerStyle={styles.composeFirst} keyboardShouldPersistTaps="handled">
-        <Text variant="label">OPENING PROMPT</Text>
-        <Text variant="caption" style={{ marginBottom: space.sm }}>
-          Edit how the analyst should begin. The paper text is fetched when you start.
+        {/* Default path stays clean: just Start. The opening prompt is editable, but hidden
+            behind Customize so most sessions don't open on a wall of prompt text. */}
+        <Text variant="body" color={colors.muted}>
+          The analyst will fetch the paper and open with a comprehensive first read.
         </Text>
-        <TextInput
-          value={prompt}
-          onChangeText={setPrompt}
-          multiline
-          style={styles.promptInput}
-          placeholder="Opening prompt…"
-          placeholderTextColor={colors.muted}
-        />
-        {opening.data?.model ? (
-          <Text variant="mono" style={{ marginTop: space.sm }}>
-            model: {opening.data.model}
-          </Text>
-        ) : null}
         {retrieveError ? (
           <Text variant="body" color={colors.danger} style={{ marginTop: space.md }}>
             {retrieveError}
@@ -287,6 +276,34 @@ function ComposeFirst({
           disabled={!prompt.trim()}
           style={{ marginTop: space.lg }}
         />
+        <Button
+          title={showCustomize ? 'Hide customization' : 'Customize opening prompt'}
+          variant="ghost"
+          onPress={() => setShowCustomize((v) => !v)}
+          style={{ marginTop: space.sm }}
+        />
+
+        {showCustomize ? (
+          <View style={{ marginTop: space.md }}>
+            <Text variant="label">OPENING PROMPT</Text>
+            <Text variant="caption" style={{ marginBottom: space.sm, marginTop: space.xs }}>
+              Edit how the analyst should begin. The paper text is fetched when you start.
+            </Text>
+            <TextInput
+              value={prompt}
+              onChangeText={setPrompt}
+              multiline
+              style={styles.promptInput}
+              placeholder="Opening prompt…"
+              placeholderTextColor={colors.muted}
+            />
+            {opening.data?.model ? (
+              <Text variant="mono" style={{ marginTop: space.sm }}>
+                model: {opening.data.model}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
 
         {candidates && candidates.length ? (
           <View style={{ marginTop: space.lg, gap: space.sm }}>
@@ -304,8 +321,9 @@ function ComposeFirst({
           </View>
         ) : null}
 
-        {/* Manual source fallback — always available, in case auto-retrieval picks wrong or
-            the paper isn't on arXiv. */}
+        {/* Manual source fallback — surfaced when retrieval needs help (error/candidates) or
+            the user opened customization; hidden on the clean default path. */}
+        {retrieveError || candidates?.length || showCustomize ? (
         <View style={{ marginTop: space.lg }}>
           <Text variant="label">PROVIDE A SOURCE</Text>
           <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
@@ -328,6 +346,7 @@ function ComposeFirst({
             style={{ marginTop: space.sm }}
           />
         </View>
+        ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
