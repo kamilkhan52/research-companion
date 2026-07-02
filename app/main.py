@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import agent, agent_harness, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, sessions, store, tts
+import asyncio
+
+from . import agent, agent_harness, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -520,6 +522,60 @@ def start_paper(req: StartReq):
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
     })
     return {"ok": True, "retrieved": True}
+
+
+@project_router.post("/start_stream")
+async def start_paper_stream(req: StartReq):
+    """Streaming variant of /start: emits 'step' events (deterministic stages + the PDF-hunt
+    agent's tool calls) so the client can show what retrieval is doing, then 'done' /
+    'needs_confirmation' / 'error'. Escalation: deterministic retriever first (fast, free);
+    if it fails, an agentic web hunt for the PDF (papers not on arXiv, throttled APIs...)."""
+    paper = store.get_paper(req.slug)
+
+    async def gen():
+        if not paper:
+            yield _sse({"type": "error", "detail": "Unknown paper"})
+            return
+        if paper.retrieved and not req.arxiv_id and not req.pdf_url:
+            yield _sse({"type": "done", "retrieved": True})
+            return
+        yield _sse({"type": "step", "name": "arxiv", "detail": req.arxiv_id or req.pdf_url or paper.title[:60]})
+        first_error = None
+        try:
+            res = await asyncio.to_thread(retriever.retrieve, paper.title, req.arxiv_id, req.pdf_url)
+        except RetrievalError as e:
+            res, first_error = None, str(e)
+        if res and res.get("needs_confirmation"):
+            yield _sse({"type": "needs_confirmation", "candidates": res["candidates"]})
+            return
+        if res:
+            store.write_full_text(req.slug, paper.title, res["full_text"], {
+                "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source")})
+            yield _sse({"type": "done", "retrieved": True})
+            return
+        # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
+        if not config.has_api_key():
+            yield _sse({"type": "error", "detail": first_error})
+            return
+        try:
+            async for ev in retrieval_agent.stream_hunt(paper.title):
+                if ev["type"] == "tool":
+                    yield _sse({"type": "step", "name": ev["name"], "detail": ev.get("detail", "")})
+                elif ev["type"] == "result":
+                    if ev.get("ok"):
+                        store.write_full_text(req.slug, paper.title, ev["full_text"], {
+                            "slug": req.slug, "source": ev.get("source")})
+                        yield _sse({"type": "done", "retrieved": True})
+                    else:
+                        yield _sse({"type": "error", "detail":
+                                    (first_error or "Retrieval failed.") + " The PDF hunt also "
+                                    "came up empty — paste a PDF link in 'Provide a source'."})
+                    return
+        except Exception as e:
+            yield _sse({"type": "error", "detail": f"{first_error or 'Retrieval failed.'} "
+                        f"(hunt error: {str(e)[:150]})"})
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @project_router.post("/upload_paper")

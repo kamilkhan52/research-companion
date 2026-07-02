@@ -24,7 +24,8 @@ import * as api from '@/api/endpoints';
 import { streamPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
-import type { StreamItem, TranscriptEntry } from '@/api/types';
+import { streamPost } from '@/api/stream';
+import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
@@ -214,6 +215,9 @@ function ComposeFirst({
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
   const [manualSource, setManualSource] = useState('');
   const [showCustomize, setShowCustomize] = useState(false);
+  // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
+  // sees what's happening during a fetch instead of an opaque spinner.
+  const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
 
   useEffect(() => {
     if (opening.data?.prompt && !prompt) setPrompt(opening.data.prompt);
@@ -222,19 +226,31 @@ function ComposeFirst({
   async function start(source?: { arxiv_id?: string; pdf_url?: string }) {
     setStarting(true);
     setRetrieveError(null);
+    setSteps([]);
     try {
-      const res = await api.startPaper(pid, slug, source);
-      if (res.needs_confirmation) {
-        setCandidates((res.candidates as SourceCandidate[]) ?? []);
-        setRetrieveError('Couldn’t confidently match this paper. Pick a source below, or paste a PDF/arXiv link.');
-        return;
-      }
+      let ok = false;
+      await streamPost<StartStreamEvent>(streamPaths(pid).paperStart, { slug, ...source }, {
+        onEvent: (ev) => {
+          if (ev.type === 'step') {
+            setSteps((prev) => [...prev, { name: ev.name, detail: ev.detail }]);
+          } else if (ev.type === 'needs_confirmation') {
+            setCandidates((ev.candidates as SourceCandidate[]) ?? []);
+            setRetrieveError('Couldn’t confidently match this paper. Pick a source below, or paste a PDF/arXiv link.');
+          } else if (ev.type === 'error') {
+            setRetrieveError(ev.detail);
+          } else if (ev.type === 'done') {
+            ok = true;
+          }
+        },
+      });
+      if (!ok) return;
       setCandidates(null);
       await stream.run(chatStartPath, { slug, prompt, model: opening.data?.model ?? undefined });
     } catch (e) {
       setRetrieveError((e as Error).message ?? 'Could not fetch the paper.');
     } finally {
       setStarting(false);
+      setSteps([]);
     }
   }
 
@@ -276,6 +292,13 @@ function ComposeFirst({
           disabled={!prompt.trim()}
           style={{ marginTop: space.lg }}
         />
+        {starting && steps.length ? (
+          <View style={[styles.toolTrail, { marginTop: space.md }]}>
+            {steps.map((s, i) => (
+              <ToolLine key={i} name={s.name} detail={s.detail} />
+            ))}
+          </View>
+        ) : null}
         <Button
           title={showCustomize ? 'Hide customization' : 'Customize opening prompt'}
           variant="ghost"
@@ -605,6 +628,9 @@ const TOOL_META: Record<string, { glyph: string; label: string }> = {
   read_paper_text: { glyph: '📄', label: 'Reading a paper' },
   related_papers: { glyph: '🕸', label: 'Finding related papers' },
   list_project_papers: { glyph: '📚', label: 'Scanning the project' },
+  // retrieval (/start_stream) steps
+  arxiv: { glyph: '📚', label: 'Resolving on arXiv' },
+  fetch_pdf: { glyph: '📥', label: 'Trying a PDF' },
 };
 
 function ToolLine({ name, detail }: { name: string; detail: string }) {

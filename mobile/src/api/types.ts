@@ -143,6 +143,14 @@ export type StreamItem =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; detail: string };
 
+/** SSE events from POST /start_stream (paper retrieval with live steps: deterministic stages
+ *  plus the PDF-hunt agent's tool calls). */
+export type StartStreamEvent =
+  | { type: 'step'; name: string; detail: string }
+  | { type: 'needs_confirmation'; candidates: unknown[] }
+  | { type: 'done'; retrieved: boolean }
+  | { type: 'error'; detail: string };
+
 // ---------- reference graph (app/graph.py) ----------
 
 /** One node in the reference graph: an in-project paper, or an external cited work. */

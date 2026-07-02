@@ -74,6 +74,7 @@ export const addPaper = (pid: string, title: string, group?: string, arxiv_id?: 
 // Stream endpoint paths (used with streamPost from stream.ts).
 export const streamPaths = (pid: string) => ({
   chatStart: `${P(pid)}/chat/start_stream`,
+  paperStart: `${P(pid)}/start_stream`,
   reply: `${P(pid)}/reply_stream`,
   continue: `${P(pid)}/continue_stream`,
   retry: `${P(pid)}/retry_stream`,
