@@ -29,6 +29,7 @@ import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types'
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
+import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { IconButton, TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
@@ -50,6 +51,8 @@ export default function DiscussionScreen() {
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
   const paths = pid ? streamPaths(pid) : null;
+
+  const [showRelated, setShowRelated] = useState(false);
 
   // Message editing: which user reply is being edited + its draft. reply_index counts only
   // user turns (matching the backend, whose transcript surfaces only kind=="reply" users), so
@@ -108,8 +111,22 @@ export default function DiscussionScreen() {
         subtitle={state ? STATE_LABEL[state] : undefined}
         onBack={() => router.back()}
         right={
-          <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
+          <>
+            <IconButton glyph="❖" onPress={() => setShowRelated(true)} accessibilityLabel="Related works" />
+            <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
+          </>
         }
+      />
+
+      <RelatedWorksSheet
+        pid={pid}
+        slug={slug ?? null}
+        visible={showRelated}
+        onClose={() => setShowRelated(false)}
+        onOpenPaper={(target) => {
+          setShowRelated(false);
+          router.push(`/paper/${encodeURIComponent(target)}`);
+        }}
       />
 
       {!pid ? (

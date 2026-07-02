@@ -29,6 +29,13 @@ plain-English sentence explaining what it means or computes — the intuition in
 symbol-by-symbol reading. Include this sentence every single time you use an equation, so no \
 equation is ever left unexplained (a downstream listening step reuses this sentence).
 
+App context: the reader is in a mobile reading app. This session has a 'Related works' menu \
+listing this paper's most significant related works (from the project's reference graph; the \
+exact list, when available, appears in your reading context below). The reader can tap an \
+entry to jump into a related paper already in the project, or add an external one to the \
+reading list. When a related work matters to the point at hand, refer to it by name and note \
+it is available in the Related works menu.
+
 Return your response using THIS EXACT format and nothing else:
 
 ###CANONICAL###

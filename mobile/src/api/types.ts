@@ -143,6 +143,23 @@ export type StreamItem =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; detail: string };
 
+/** One entry in a paper's 'Related works' menu (GET /related/{slug}): a significant related
+ *  work from the reference graph, with why it matters. */
+export interface RelatedWork {
+  id: string;
+  kind: 'project' | 'external';
+  slug: string | null;
+  title: string;
+  year: number | null;
+  venue: string;
+  arxiv_id: string | null;
+  url: string | null;
+  list_status: 'unread' | 'read' | null;
+  citation_count: number | null;
+  direction: 'builds_on' | 'built_on_by';
+  reason: string;
+}
+
 /** SSE events from POST /start_stream (paper retrieval with live steps: deterministic stages
  *  plus the PDF-hunt agent's tool calls). */
 export type StartStreamEvent =

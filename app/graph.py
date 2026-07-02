@@ -601,6 +601,43 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
     return out
 
 
+def related_works_for(slug: str, limit: int = 7) -> list[dict]:
+    """The most significant related works for one paper, from the stored graph: works it
+    builds on / compares against (its significant outgoing citations) and project papers that
+    build on it (significant incoming). Ranked by how load-bearing the work is (in-project
+    citation breadth, then global citation count), capped small — this backs the reading
+    session's 'Related works' menu and the matching context section the analyst sees.
+    Cheap: reads the stored graph, no LLM."""
+    g = graph_store.load().get("graph")
+    if not g:
+        return []
+    nodes = {n["id"]: n for n in g["nodes"]}
+    items: list[dict] = []
+    for e in g["edges"]:
+        if not e.get("significant"):
+            continue
+        if e["source"] == slug and e["target"] in nodes:
+            other, direction = nodes[e["target"]], "builds_on"
+        elif e["target"] == slug and e["source"] in nodes:
+            other, direction = nodes[e["source"]], "built_on_by"
+        else:
+            continue
+        items.append({
+            "id": other["id"], "kind": other["kind"], "slug": other.get("slug"),
+            "title": other["title"], "year": other.get("year"), "venue": other.get("venue", ""),
+            "arxiv_id": other.get("arxiv_id"), "url": other.get("url"),
+            "list_status": other.get("list_status"),
+            "citation_count": other.get("citation_count"),
+            "direction": direction, "reason": e.get("reason", ""),
+        })
+    # "Builds on" first (the prior work the paper stands on), then citers; within each group
+    # the most load-bearing works first.
+    items.sort(key=lambda r: (r["direction"] != "builds_on",
+                              -(nodes[r["id"]].get("cited_by_project_count", 0)),
+                              -(r.get("citation_count") or 0)))
+    return items[:limit]
+
+
 # ---------- status (cheap, no LLM) ----------
 
 def status(papers: list[Paper]) -> dict:

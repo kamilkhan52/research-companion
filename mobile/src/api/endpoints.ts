@@ -8,6 +8,7 @@ import type {
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
   GraphResponse,
+  RelatedWork,
   ModelOption,
   OpeningDraft,
   Paper,
@@ -85,6 +86,8 @@ export const streamPaths = (pid: string) => ({
 // ---------- reference graph ----------
 
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
+export const getRelated = (pid: string, slug: string) =>
+  apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 /** Start (or join) a server-side background build. Returns immediately with the job snapshot;
  *  the build keeps running regardless of what the client does. Poll getGraphBuildStatus. */
 export const startGraphBuild = (pid: string, force = false) =>

@@ -524,6 +524,13 @@ def start_paper(req: StartReq):
     return {"ok": True, "retrieved": True}
 
 
+@project_router.get("/related/{slug}")
+def related_works(slug: str):
+    """The paper's most significant related works (from the stored reference graph), backing
+    the reading session's 'Related works' menu."""
+    return {"related": graph.related_works_for(slug)}
+
+
 @project_router.post("/start_stream")
 async def start_paper_stream(req: StartReq):
     """Streaming variant of /start: emits 'step' events (deterministic stages + the PDF-hunt
