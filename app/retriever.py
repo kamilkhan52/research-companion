@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import io
 import re
+import threading
+import time
 from difflib import SequenceMatcher
 
 import feedparser
@@ -15,9 +17,57 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 _UA = {"User-Agent": "ResearchReadingCompanion/0.1 (+local)"}
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?")
 
+# arXiv asks clients to stay around 1 request / 3 seconds and 429s bursts (which starting a few
+# papers in a row — each possibly making an id fetch AND a title search — easily triggers).
+# Serialize + pace our arXiv calls, and retry 429/5xx with backoff instead of failing instantly.
+_ARXIV_MIN_INTERVAL_S = 3.0
+_RETRIES = 3
+_arxiv_lock = threading.Lock()
+_last_arxiv_call = 0.0
+
 
 class RetrievalError(Exception):
     pass
+
+
+def _arxiv_get(url: str, params: dict | None = None, timeout: float = 30) -> httpx.Response:
+    """GET against arXiv with pacing + 429/5xx retry. Raises RetrievalError when still throttled
+    after retries, with guidance the UI can show verbatim."""
+    global _last_arxiv_call
+    last_status = None
+    for attempt in range(_RETRIES):
+        with _arxiv_lock:
+            wait = _ARXIV_MIN_INTERVAL_S - (time.time() - _last_arxiv_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_arxiv_call = time.time()
+        try:
+            r = httpx.get(url, params=params, headers=_UA, timeout=timeout, follow_redirects=True)
+        except httpx.TimeoutException:
+            # When arXiv throttles an IP it often just stalls the connection rather than
+            # returning 429 — treat a timeout as retryable, same as an explicit 429.
+            last_status = "timeout"
+            time.sleep(3.0 * (attempt + 1))
+            continue
+        except httpx.HTTPError as e:
+            raise RetrievalError(f"arXiv request failed: {e}") from e
+        if r.status_code == 429 or r.status_code >= 500:
+            last_status = r.status_code
+            retry_after = r.headers.get("retry-after")
+            try:
+                delay = min(float(retry_after), 30.0) if retry_after else 3.0 * (attempt + 1)
+            except ValueError:
+                delay = 3.0 * (attempt + 1)
+            time.sleep(delay)
+            continue
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RetrievalError(f"arXiv request failed: {e}") from e
+        return r
+    raise RetrievalError(
+        f"arXiv is rate-limiting requests right now (HTTP {last_status}). "
+        "Wait a minute and try again, or paste the paper's PDF link in 'Provide a source'.")
 
 
 def _similar(a: str, b: str) -> float:
@@ -56,11 +106,7 @@ def extract_pdf_bytes(data: bytes) -> str:
 
 def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
     params = {"search_query": f'ti:"{title}"', "start": 0, "max_results": max_results}
-    try:
-        r = httpx.get(ARXIV_API, params=params, headers=_UA, timeout=30, follow_redirects=True)
-        r.raise_for_status()
-    except httpx.HTTPError as e:
-        raise RetrievalError(f"arXiv query failed: {e}") from e
+    r = _arxiv_get(ARXIV_API, params=params)
     feed = feedparser.parse(r.text)
     results = []
     for entry in feed.entries:
@@ -77,12 +123,30 @@ def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
 
 
 def _fetch(url: str) -> bytes:
+    # arXiv PDF downloads share the same throttling as the query API, so route them through the
+    # paced/retrying getter; other hosts get a plain fetch.
+    if "arxiv.org" in url:
+        return _arxiv_get(url, timeout=60).content
     try:
         r = httpx.get(url, headers=_UA, timeout=60, follow_redirects=True)
         r.raise_for_status()
         return r.content
     except httpx.HTTPError as e:
         raise RetrievalError(f"Download failed for {url}: {e}") from e
+
+
+def _arxiv_id_via_web(title: str) -> str | None:
+    """Rate-limit fallback: when the arXiv query API is throttled, find the paper's arXiv id
+    with the web-search chain instead (research_tools; Firecrawl et al.). The PDF host
+    (arxiv.org) is separate infrastructure from the query API (export.arxiv.org) and is
+    typically still reachable, so an id is all we need to proceed."""
+    try:
+        from . import research_tools  # lazy: keeps retriever free of the tools layer otherwise
+        out = research_tools.web_search(f"arXiv page for the paper: {title}", [f"{title} arxiv"])
+    except Exception:
+        return None
+    m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})", out)
+    return m.group(1) if m else None
 
 
 def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None,
@@ -112,7 +176,17 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
             if not title:
                 raise
 
-    candidates = search_arxiv(title)
+    try:
+        candidates = search_arxiv(title)
+    except RetrievalError:
+        # Query API throttled/down — try to locate the id via web search and go straight to
+        # the (separately-hosted) PDF. Re-raise the original, actionable error if that fails.
+        aid = _arxiv_id_via_web(title)
+        if not aid:
+            raise
+        return {"full_text": _extract_pdf(_fetch(f"https://arxiv.org/pdf/{aid}")),
+                "arxiv_id": aid, "source": f"https://arxiv.org/abs/{aid}",
+                "matched_title": title, "score": 0.9}
     if not candidates:
         raise RetrievalError(
             "No arXiv match. This paper may not be on arXiv (e.g. an OSDI/SOSP-only paper). "

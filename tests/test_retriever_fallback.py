@@ -34,3 +34,59 @@ def test_bad_arxiv_id_with_no_title_still_raises(monkeypatch):
     import pytest
     with pytest.raises(retriever.RetrievalError):
         retriever.retrieve("", arxiv_id="bad-id")
+
+
+def test_throttled_search_falls_back_to_web_search_for_id(monkeypatch):
+    # arXiv query API throttled -> id found via the web-search chain -> PDF fetched directly.
+    monkeypatch.setattr(retriever, "search_arxiv",
+                        lambda title, max_results=6: (_ for _ in ()).throw(
+                            retriever.RetrievalError("arXiv is rate-limiting requests")))
+    monkeypatch.setattr(retriever, "_arxiv_id_via_web", lambda title: "2205.14135")
+    monkeypatch.setattr(retriever, "_fetch", lambda url: b"%PDF")
+    monkeypatch.setattr(retriever, "_extract_pdf", lambda data: "Attention text. " * 40)
+
+    res = retriever.retrieve("FlashAttention")
+    assert res["arxiv_id"] == "2205.14135"
+    assert res["full_text"].startswith("Attention text.")
+
+
+def test_throttled_search_with_no_web_hit_reraises_actionable_error(monkeypatch):
+    monkeypatch.setattr(retriever, "search_arxiv",
+                        lambda title, max_results=6: (_ for _ in ()).throw(
+                            retriever.RetrievalError("arXiv is rate-limiting requests right now")))
+    monkeypatch.setattr(retriever, "_arxiv_id_via_web", lambda title: None)
+    import pytest
+    with pytest.raises(retriever.RetrievalError) as e:
+        retriever.retrieve("Some Unfindable Paper")
+    assert "rate-limiting" in str(e.value)
+
+
+def _resp(status: int, headers: dict | None = None):
+    import httpx
+    return httpx.Response(status, headers=headers or {}, content=b"ok",
+                          request=httpx.Request("GET", "https://export.arxiv.org/api/query"))
+
+
+def test_arxiv_get_retries_429_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_get(url, **kw):
+        calls["n"] += 1
+        return _resp(429) if calls["n"] == 1 else _resp(200)
+
+    monkeypatch.setattr(retriever.httpx, "get", fake_get)
+    monkeypatch.setattr(retriever.time, "sleep", lambda s: None)  # no real waiting in tests
+    r = retriever._arxiv_get("https://export.arxiv.org/api/query")
+    assert r.status_code == 200
+    assert calls["n"] == 2  # one 429, one retry that succeeded
+
+
+def test_arxiv_get_exhausted_429s_raise_actionable_error(monkeypatch):
+    monkeypatch.setattr(retriever.httpx, "get", lambda url, **kw: _resp(429))
+    monkeypatch.setattr(retriever.time, "sleep", lambda s: None)
+    import pytest
+    with pytest.raises(retriever.RetrievalError) as e:
+        retriever._arxiv_get("https://export.arxiv.org/api/query")
+    # The message must tell the user what to do, not just echo an HTTP code.
+    assert "rate-limiting" in str(e.value)
+    assert "Provide a source" in str(e.value)
