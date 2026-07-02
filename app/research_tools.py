@@ -180,7 +180,9 @@ def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Clien
                            json={"query": queries[0] if queries else objective, "limit": 5})
         if resp.status_code != 200:
             raise ToolError(f"firecrawl {resp.status_code}: {resp.text[:120]}")
-        results = (resp.json() or {}).get("data") or []
+        data = (resp.json() or {}).get("data") or []
+        # v2 groups results by source ({"web": [...], "news": [...]}); v1 returned a flat list.
+        results = data.get("web") or data.get("news") or [] if isinstance(data, dict) else data
         if not results:
             raise ToolError("firecrawl returned no results")
         out = [f"Web results for \"{objective}\":"]
