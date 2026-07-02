@@ -12,6 +12,16 @@ import pytest
 from app import config, projects
 
 
+@pytest.fixture(autouse=True)
+def _offline_citations(monkeypatch):
+    """Citation-count enrichment calls Semantic Scholar inside build_graph; tests must never
+    touch the network. Stub only the fetch step — annotate_nodes still runs for real, applying
+    whatever counts a test seeded into the cache. Tests of the fetch itself call _fetch_missing
+    directly with a fake client (bypassing this stub)."""
+    from app import citations
+    monkeypatch.setattr(citations, "_fetch_missing", lambda nodes, cache, client, sleep: None)
+
+
 @pytest.fixture
 def temp_project(tmp_path, monkeypatch):
     """Yields a project id with an empty reading-list, active for the duration of the test.

@@ -45,28 +45,49 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
     rnd = random.Random(seed)
     idx = {nd["id"]: i for i, nd in enumerate(nodes)}
 
-    # --- Y = time. Map [minYear, maxYear] -> [top, bottom]; undated nodes go in a band just
-    #     above the timeline so they read as "unknown date", not as the oldest.
+    # --- Y = time, by year RANK rather than linear year value: distinct years get evenly
+    #     spaced bands. Linear mapping made edge lengths wildly uneven — a citation graph's
+    #     years cluster hard (most papers within a few years, a few from decades back), so
+    #     linear left huge empty stretches that stretched some edges across half the canvas
+    #     while packing recent years (and their edges) into a sliver. Rank spacing keeps the
+    #     old->new reading while bounding how long a cross-year edge can get.
+    #     Undated nodes go in a band just above the timeline so they read as "unknown date".
     years = [_year_of(nd) for nd in nodes]
-    known = [y for y in years if y is not None]
-    ymin, ymax = (min(known), max(known)) if known else (0, 1)
-    span = max(1, ymax - ymin)
+    year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
+    n_ranks = max(1, len(year_rank) - 1)
     top, bottom = _MARGIN, HEIGHT - _MARGIN
     undated_y = top * 0.6
 
     def target_y(y: int | None) -> float:
-        return undated_y if y is None else top + (y - ymin) / span * (bottom - top)
+        return undated_y if y is None else top + year_rank[y] / n_ranks * (bottom - top)
 
     ty = [target_y(y) for y in years]
-    px = [rnd.uniform(_MARGIN, WIDTH - _MARGIN) for _ in range(n)]
-    py = [ty[i] + rnd.uniform(-15, 15) for i in range(n)]
 
     adj = [(idx[e["source"]], idx[e["target"]]) for e in edges
            if e.get("source") in idx and e.get("target") in idx]
 
+    # --- X init: project papers evenly spaced; every other node starts at the average X of its
+    #     graph neighbors (+ jitter). Starting connected nodes together matters more than the
+    #     springs: with random init the springs have to drag nodes across the whole canvas and
+    #     never fully converge, leaving most edges enormously long.
+    px = [WIDTH / 2.0] * n
+    projects = [i for i, nd in enumerate(nodes) if nd.get("kind") == "project"]
+    for k, i in enumerate(projects):
+        px[i] = _MARGIN + (k + 0.5) / max(1, len(projects)) * (WIDTH - 2 * _MARGIN)
+    neighbor_x: dict[int, list[float]] = {}
+    for a, b in adj:
+        neighbor_x.setdefault(b, []).append(px[a])
+        neighbor_x.setdefault(a, []).append(px[b])
+    for i in range(n):
+        if i in neighbor_x and nodes[i].get("kind") != "project":
+            px[i] = sum(neighbor_x[i]) / len(neighbor_x[i]) + rnd.uniform(-90, 90)
+        elif nodes[i].get("kind") != "project":
+            px[i] = rnd.uniform(_MARGIN, WIDTH - _MARGIN)
+    py = [ty[i] + rnd.uniform(-15, 15) for i in range(n)]
+
     cell = 140.0            # repulsion neighborhood radius
-    k_rep = 9000.0          # repulsion strength
-    ideal = 120.0           # spring rest length
+    k_rep = 5000.0          # repulsion strength
+    ideal = 110.0           # spring rest length
     for it in range(_ITERATIONS):
         cool = 1.0 - it / _ITERATIONS
         fx = [0.0] * n
@@ -96,22 +117,57 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
             ddx = px[a] - px[b]
             ddy = py[a] - py[b]
             d = math.sqrt(ddx * ddx + ddy * ddy) + 0.01
-            f = (d - ideal) * 0.08
+            f = (d - ideal) * 0.2
             fxi, fyi = f * ddx / d, f * ddy / d
             fx[a] -= fxi; fy[a] -= fyi
             fx[b] += fxi; fy[b] += fyi
 
-        # Integrate: X moves freely (with cooling + a step cap); Y is a spring toward the node's
-        # time position, so the temporal axis is preserved while X resolves clustering/overlap.
+        # Integrate: X moves freely (with cooling + a step cap); Y is pulled SOFTLY toward the
+        # node's time band. Soft (not hard) pinning matters: a hard pin flattens each year into
+        # a 1D line, which forces crowded years to spread enormously wide in X (very long
+        # edges). A gentle pull keeps old->new reading top->bottom while letting clusters form
+        # as compact 2D blobs.
         max_step = 45.0 * cool
         for i in range(n):
             px[i] += max(-max_step, min(max_step, fx[i] * 0.02))
             py[i] += max(-max_step, min(max_step, fy[i] * 0.02))
-            py[i] += (ty[i] - py[i]) * 0.2
+            py[i] += (ty[i] - py[i]) * 0.06
 
+    # Minimum-separation pass: the sim reduces crowding but the Y-pin can leave same-year
+    # neighbors nearly on top of each other (edges "too short" to read). Push any pair closer
+    # than MIN_SEP apart along X only (preserving the temporal Y), a few sweeps until settled.
+    MIN_SEP = 60.0
+    for _ in range(24):
+        moved = False
+        grid: dict[tuple[int, int], list[int]] = {}
+        for i in range(n):
+            grid.setdefault((int(px[i] // MIN_SEP), int(py[i] // MIN_SEP)), []).append(i)
+        for (cx, cy), members in grid.items():
+            neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                         for m in grid.get((cx + dx, cy + dy), [])]
+            for i in members:
+                for j in neighbors:
+                    if j <= i:
+                        continue
+                    ddx = px[i] - px[j]
+                    ddy = py[i] - py[j]
+                    d = math.sqrt(ddx * ddx + ddy * ddy)
+                    if d < MIN_SEP:
+                        push = (MIN_SEP - d) / 2 + 0.5
+                        direction = 1.0 if (ddx > 0 or (ddx == 0 and i > j)) else -1.0
+                        px[i] += direction * push
+                        px[j] -= direction * push
+                        moved = True
+        if not moved:
+            break
+
+    # Translate X to start at the margin, growing the canvas if needed rather than rescaling —
+    # squeezing back into a fixed width would undo the minimum separation in dense year bands.
     xmin = min(px)
-    xspan = max(1.0, max(px) - xmin)
+    xspan = max(px) - xmin
+    width = max(WIDTH, xspan + 2 * _MARGIN)
+    offset = _MARGIN + (width - 2 * _MARGIN - xspan) / 2  # center when narrower than the canvas
     for i, nd in enumerate(nodes):
-        nd["x"] = round(_MARGIN + (px[i] - xmin) / xspan * (WIDTH - 2 * _MARGIN), 1)
+        nd["x"] = round(offset + px[i] - xmin, 1)
         nd["y"] = round(py[i], 1)
-    return {"width": WIDTH, "height": HEIGHT}
+    return {"width": round(width, 1), "height": HEIGHT}

@@ -35,6 +35,7 @@ def _empty() -> dict:
         "papers": {},        # slug -> PaperExtraction dict (see graph.extract_references_for_paper)
         "graph": None,       # last computed {built_at, model, nodes, edges}
         "recommendations": None,
+        "citations": {},     # node id -> global citation count (Semantic Scholar cache)
     }
 
 
@@ -51,6 +52,7 @@ def load() -> dict:
     data.setdefault("papers", {})
     data.setdefault("graph", None)
     data.setdefault("recommendations", None)
+    data.setdefault("citations", {})  # node id -> global citation count (Semantic Scholar cache)
     return data
 
 

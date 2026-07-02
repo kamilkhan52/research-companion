@@ -32,7 +32,9 @@ from typing import Callable, Iterator
 
 import httpx
 
-from . import config, graph_layout, graph_store, store
+import math
+
+from . import citations, config, graph_layout, graph_store, store
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -570,7 +572,13 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
         bridge = _bridge_score(n["id"], edges)
         centrality = betweenness.get(n["id"], 0.0) / max_betweenness
         coverage = cited / max(project_paper_count, 1)
-        score = round(sig * 3.0 + cited * 1.0 + coverage * 2.0 + bridge * 1.5 + centrality * 3.0, 3)
+        # Global standing (Semantic Scholar count, when known): log-scaled so a 5,000-citation
+        # landmark gets a solid boost without letting raw fame swamp the in-project signals —
+        # caps at 3.0 (the weight of one significant in-project citation).
+        global_cites = n.get("citation_count") or 0
+        global_term = min(3.0, 0.75 * math.log10(1 + global_cites))
+        score = round(sig * 3.0 + cited * 1.0 + coverage * 2.0 + bridge * 1.5 + centrality * 3.0
+                      + global_term, 3)
         reasons = []
         if cited >= 2:
             reasons.append(f"Cited by {cited} of {project_paper_count} papers in this project")
@@ -579,6 +587,8 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
         if sig > 0:
             reasons.append(
                 f"Used significantly (baseline/extension/dependency) in {sig} paper{'s' if sig != 1 else ''}")
+        if global_cites >= 100:
+            reasons.append(f"~{global_cites:,} citations overall — a well-established work")
         if bridge >= 1.0:
             reasons.append("Bridges papers that don't otherwise overlap much — likely connects distinct sub-threads")
         if centrality >= 0.3:
@@ -666,6 +676,7 @@ def build_graph(papers: list[Paper], force: bool = False,
     extractions = {slug: ext for slug, ext in data["papers"].items()
                    if slug in {p.slug for p in papers}}
     nodes, edges = build_nodes_and_edges(papers, extractions)
+    citations.annotate_nodes(nodes, data["citations"])  # global counts; best-effort, cached
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)  # adds x/y to each node (temporal Y)
     graph_payload = {"built_at": _now(), "model": model, "nodes": nodes, "edges": edges,
