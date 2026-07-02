@@ -6,7 +6,7 @@ are assembled once at session start rather than rebuilt here every turn.
 """
 from __future__ import annotations
 
-from . import graph, prompts, store
+from . import config, graph, prompts, store
 from .models import REVIEW_SLUG
 
 
@@ -38,16 +38,29 @@ def build_context(slug: str) -> str:
     parts.append("# Working notes — the running cross-paper synthesis so far\n\n"
                  + store.read_synthesis().strip())
 
-    prior = store.selected_prior_notes(slug)
+    # Which prior per-paper Notes to include: the citation-related selection (compact, the
+    # default), or every paper read so far (prior_notes_scope="all" — richer cross-paper
+    # grounding for a single-project workflow, at the cost of a larger context per turn).
+    scope = (config.load_settings().get("prior_notes_scope") or "related").strip().lower()
+    if scope == "all":
+        prior = [(p.title, store.read_notes(p.slug))
+                 for p in store.list_papers() if p.slug != slug and store.has_notes(p.slug)]
+        header = ["# Prior Notes from every paper read so far in this project",
+                  "(All committed per-paper Notes; lean on these to situate the current paper.)"]
+        empty = "# Prior Notes\n\nNone yet — no paper on the list has been read in full."
+    else:
+        prior = store.selected_prior_notes(slug)
+        header = ["# Prior Notes from related papers already read",
+                  "(Selected via the citation graph; lean on these to situate the current paper.)"]
+        empty = ("# Prior Notes from related papers\n\n"
+                 "None yet — no related paper on the list has been read in full.")
     if prior:
-        block = ["# Prior Notes from related papers already read",
-                 "(Selected via the citation graph; lean on these to situate the current paper.)"]
+        block = list(header)
         for title, notes in prior:
             block.append(f"\n## {title}\n\n{notes.strip()}")
         parts.append("\n".join(block))
     else:
-        parts.append("# Prior Notes from related papers\n\n"
-                     "None yet — no related paper on the list has been read in full.")
+        parts.append(empty)
 
     related = graph.related_works_for(slug)
     if related:

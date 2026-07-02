@@ -97,6 +97,10 @@ _ENV_DEFAULTS = {
     # -> keyless DuckDuckGo). Keys optional; also read from env at call time (see research_tools).
     "parallel_api_key": os.environ.get("PARALLEL_API_KEY", "") or os.environ.get("PARALLEL_SEARCH_API_KEY", ""),
     "firecrawl_api_key": os.environ.get("FIRECRAWL_API_KEY", ""),
+    # which prior per-paper Notes go into every paper turn's context:
+    #   "related" = only citation-related papers (compact); "all" = every paper read so far
+    #   (richer cross-paper grounding for a single-project workflow; larger context per turn)
+    "prior_notes_scope": os.environ.get("RC_PRIOR_NOTES_SCOPE", "related"),
 }
 
 
@@ -121,7 +125,7 @@ def save_settings(patch: dict) -> dict:
             current = {}
     for key in ("openrouter_api_key", "model", "narration_model", "openai_api_key",
                 "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
-                "firecrawl_api_key"):
+                "firecrawl_api_key", "prior_notes_scope"):
         if key in patch and patch[key] is not None:
             current[key] = patch[key]
     SETTINGS_FILE.write_text(json.dumps(current, indent=2))
