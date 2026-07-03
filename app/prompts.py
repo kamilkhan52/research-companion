@@ -90,11 +90,15 @@ naturally ("60" -> "sixty", "100" -> "one hundred").
 PERIOD, so the speech engine pauses clearly after it before continuing. For example a \
 "Methodology" heading becomes "Methodology." standing alone, and "Key results" becomes "Key \
 results.".
-- If an uppercase abbreviation would be wrongly pronounced as one word but is meant to be \
-read letter by letter, separate the letters with periods so it is spelled out aloud, e.g. \
-"OPT" -> "O.P.T". Leave acronyms that are meant to be spoken as a word unchanged (for example \
-LoRA, ReLU, Orca, BERT), and you may leave well-known initialisms that already read correctly \
-as letters unchanged (LLM, GPU, API, KV cache, FLOPs).
+- Leave abbreviations and acronyms exactly as written by default — speech engines pronounce \
+recognized ones correctly, whether spoken as a word (NVIDIA, CUDA, DRAM, LoRA, ReLU, Orca, \
+BERT, RAG) or read as letters (LLM, GPU, API, KV cache, FLOPs). Separate letters with periods \
+("OPT" -> "O.P.T") ONLY when an uppercase abbreviation is meant to be read letter by letter \
+yet would plausibly be voiced as a made-up word — typically an obscure, paper-specific model, \
+method, or dataset name that is not established vocabulary. Never split a term that \
+practitioners say as a word or that a speech engine already handles. When unsure, leave it \
+unchanged: an unsplit abbreviation is at worst slightly odd to the ear, while a wrongly split \
+word ("C.U.D.A") is jarring.
 - Remove markdown formatting, code fences, and bare URLs (keep a link's visible words). \
 Remove inline citation markers like "[12]" or "(Vaswani et al., 2017)" only if they are pure \
 reference tags; keep author/work names that are part of a sentence.

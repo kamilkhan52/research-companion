@@ -41,6 +41,7 @@ export default function SettingsScreen() {
   const [firecrawlKey, setFirecrawlKey] = useState('');
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
+  const [priorScope, setPriorScope] = useState<'related' | 'all'>('related');
 
   // Sync local fields from the server exactly once, on first successful load — NOT on every
   // settings.data change. A background refetch (e.g. right after saveSettings invalidates the
@@ -53,6 +54,7 @@ export default function SettingsScreen() {
       setNarrationModel(settings.data.narration_model ?? '');
       setVoice(settings.data.tts_voice ?? '');
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
+      setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
       initializedRef.current = true;
     }
   }, [settings.data]);
@@ -74,6 +76,7 @@ export default function SettingsScreen() {
       narration_model: narrationModel || null,
       speech_provider: speechProvider,
       tts_voice: voice || null,
+      prior_notes_scope: priorScope,
     };
     if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
     if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
@@ -153,6 +156,17 @@ export default function SettingsScreen() {
                   selected={narrationModel}
                   onPick={setNarrationModel}
                 />
+
+                <Label text="Prior notes in paper context" />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => setPriorScope('related')} />
+                  <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => setPriorScope('all')} />
+                </View>
+                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                  Which per-paper Notes the analyst sees during a discussion. "All read papers"
+                  gives the fullest cross-paper grounding for a single project; "Related" keeps
+                  the context smaller by including only citation-related papers.
+                </Text>
               </Section>
 
               {/* Audio */}

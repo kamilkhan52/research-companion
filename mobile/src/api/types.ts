@@ -93,6 +93,8 @@ export interface Settings {
   parallel_key_hint: string;
   has_firecrawl_key: boolean;
   firecrawl_key_hint: string;
+  /** Which prior per-paper Notes go into each paper turn's context. */
+  prior_notes_scope: 'related' | 'all';
 }
 
 /** GET /api/auth/config */
@@ -142,6 +144,22 @@ export interface ToolActivity {
 export type StreamItem =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; name: string; detail: string };
+
+/** Snapshot of a server-side chat turn job (app/chat_jobs.py). The turn runs in a backend
+ *  thread and is recorded to the session the moment it completes, regardless of what any
+ *  client does; we poll this snapshot for live progress and can reattach after navigating
+ *  away, backgrounding, or a dropped connection. */
+export interface ChatJob {
+  id: string;
+  slug: string;
+  status: 'running' | 'done' | 'error';
+  items: StreamItem[];
+  turn: Turn | null;
+  state: SessionState | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
 
 /** One entry in a paper's 'Related works' menu (GET /related/{slug}): a significant related
  *  work from the reference graph, with why it matters. */
@@ -275,4 +293,20 @@ export interface GraphBuildStatusResponse {
 /** POST /api/projects/{pid}/graph/build */
 export interface GraphBuildStartResponse {
   build: GraphBuildJob;
+}
+
+/** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running
+ * server-side in a background thread. The client polls — same pattern as GraphBuildJob —
+ * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */
+export interface AudioJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  stage: 'narrating' | 'synthesizing';
+  segments_done: number;
+  segments_total: number;
+  narration: string | null;
+  url: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
 }

@@ -1,18 +1,23 @@
-// Global mini-player: a slim bar that appears whenever a narration track is loaded. Play/pause,
-// 15s skips, and a scrubber — reflecting TrackPlayer state so it stays in sync with lock-screen
-// and background playback. Rendered in the root layout so audio persists across navigation.
+// Global mini-player: a slim bar that appears whenever audio is being PREPARED or a narration
+// track is loaded, so the user always knows what the audio system is doing from anywhere in
+// the app. Deliberately minimal — play/pause, title + status, a hairline progress strip, and
+// dismiss; tapping the bar expands into the full-screen player (app/player.tsx), which owns
+// the rolling transcript, scrubber, and skips. Rendered in the root layout so audio persists
+// across navigation.
 
-import Slider from '@react-native-community/slider';
-import { useState } from 'react';
+import { router } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, {
+  State,
   useActiveTrack,
   useIsPlaying,
+  usePlaybackState,
   useProgress,
 } from 'react-native-track-player';
 
-import { SKIP_SECONDS } from '@/audio/setup';
+import { useAudio } from '@/audio/AudioProvider';
+import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -23,68 +28,101 @@ function fmt(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+const openPlayer = () => router.push('/player');
+
 export function NowPlaying() {
   const insets = useSafeAreaInsets();
+  const audio = useAudio();
   const track = useActiveTrack();
   const { playing } = useIsPlaying();
+  const { state } = usePlaybackState();
   const { position, duration } = useProgress(500);
-  const [scrubbing, setScrubbing] = useState<number | null>(null);
 
-  if (!track) return null;
+  const bottomPad = { paddingBottom: Math.max(insets.bottom, space.sm) };
 
-  const value = scrubbing ?? position;
+  // Preparing (nothing loaded yet): announce the stage + real progress; tap for the big view.
+  if (!track) {
+    if (!audio.prep) return null;
+    const { stage, done, total, title } = audio.prep;
+    const determinate = stage === 'synthesizing' && total > 0;
+    return (
+      <Pressable onPress={openPlayer} style={[styles.bar, bottomPad]} accessibilityLabel="Open player">
+        <View style={styles.progressStrip}>
+          <View
+            style={[
+              styles.progressFill,
+              { width: determinate ? `${Math.round((done / total) * 100)}%` : '8%' },
+            ]}
+          />
+        </View>
+        <View style={styles.row}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text variant="heading" numberOfLines={1}>{title}</Text>
+            <Text variant="caption" color={colors.cyan}>{prepLabel(stage, done, total)}</Text>
+          </View>
+          <Pressable
+            onPress={audio.cancelPrep}
+            hitSlop={8}
+            style={styles.sideBtn}
+            accessibilityLabel="Cancel audio preparation">
+            <Text style={styles.sideGlyph}>✕</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    );
+  }
+
+  const buffering = state === State.Buffering || state === State.Loading;
+  const status = buffering
+    ? 'Buffering…'
+    : `${fmt(position)} ${duration ? `/ ${fmt(duration)}` : ''}${playing ? '' : ' · paused'}`;
 
   return (
-    <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, space.sm) }]}>
+    <Pressable onPress={openPlayer} style={[styles.bar, bottomPad]} accessibilityLabel="Open player">
+      <View style={styles.progressStrip}>
+        <View
+          style={[
+            styles.progressFill,
+            { width: duration ? `${Math.min(100, (position / duration) * 100)}%` : '0%' },
+          ]}
+        />
+      </View>
       <View style={styles.row}>
         <Pressable
-          onPress={() => playing ? TrackPlayer.pause() : TrackPlayer.play()}
+          onPress={async () => {
+            if (playing) {
+              await TrackPlayer.pause();
+            } else {
+              const { state: s } = await TrackPlayer.getPlaybackState();
+              if (s === State.Ended) await TrackPlayer.seekTo(0);
+              await TrackPlayer.play();
+            }
+          }}
           hitSlop={8}
           style={styles.playBtn}
           accessibilityLabel={playing ? 'Pause' : 'Play'}>
-          <Text style={styles.playGlyph}>{playing ? '❚❚' : '►'}</Text>
+          <Text style={styles.playGlyph}>{playing ? '❚❚' : '▶︎'}</Text>
         </Pressable>
 
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text variant="heading" numberOfLines={1}>
             {track.title ?? 'Narration'}
           </Text>
-          <Text variant="caption">
-            {fmt(value)} {duration ? `/ ${fmt(duration)}` : ''}
+          <Text variant="caption" color={buffering ? colors.cyan : undefined}>
+            {status}
           </Text>
         </View>
 
+        <Text style={styles.expandGlyph}>⌃</Text>
         <Pressable
-          onPress={() => TrackPlayer.seekBy(-SKIP_SECONDS)}
+          onPress={() => void audio.dismiss()}
           hitSlop={8}
-          style={styles.skipBtn}
-          accessibilityLabel={`Back ${SKIP_SECONDS} seconds`}>
-          <Text style={styles.skipGlyph}>«{SKIP_SECONDS}</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => TrackPlayer.seekBy(SKIP_SECONDS)}
-          hitSlop={8}
-          style={styles.skipBtn}
-          accessibilityLabel={`Forward ${SKIP_SECONDS} seconds`}>
-          <Text style={styles.skipGlyph}>{SKIP_SECONDS}»</Text>
+          style={styles.sideBtn}
+          accessibilityLabel="Close player">
+          <Text style={styles.sideGlyph}>✕</Text>
         </Pressable>
       </View>
-
-      <Slider
-        style={styles.slider}
-        minimumValue={0}
-        maximumValue={duration || 1}
-        value={value}
-        minimumTrackTintColor={colors.cyan}
-        maximumTrackTintColor={colors.line2}
-        thumbTintColor={colors.cyan}
-        onValueChange={(v) => setScrubbing(v)}
-        onSlidingComplete={(v) => {
-          TrackPlayer.seekTo(v);
-          setScrubbing(null);
-        }}
-      />
-    </View>
+    </Pressable>
   );
 }
 
@@ -94,9 +132,15 @@ const styles = StyleSheet.create({
     borderTopColor: colors.line,
     backgroundColor: colors.bg2,
     paddingHorizontal: space.md,
-    paddingTop: space.sm,
   },
-  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  progressStrip: {
+    height: 2,
+    marginHorizontal: -space.md, // full-bleed across the bar
+    backgroundColor: colors.line,
+    overflow: 'hidden',
+  },
+  progressFill: { height: '100%', backgroundColor: colors.cyan },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingTop: space.sm },
   playBtn: {
     width: 44,
     height: 44,
@@ -106,7 +150,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   playGlyph: { color: colors.cyanInk, fontSize: 16, fontFamily: 'Manrope_700Bold' },
-  skipBtn: {
+  expandGlyph: { color: colors.muted, fontSize: 16, paddingHorizontal: 2 },
+  sideBtn: {
     height: 40,
     paddingHorizontal: 10,
     borderRadius: radius.sm,
@@ -116,6 +161,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  skipGlyph: { color: colors.text, fontSize: 12, fontFamily: 'Manrope_600SemiBold' },
-  slider: { width: '100%', height: 32 },
+  sideGlyph: { color: colors.text, fontSize: 12, fontFamily: 'Manrope_600SemiBold' },
 });

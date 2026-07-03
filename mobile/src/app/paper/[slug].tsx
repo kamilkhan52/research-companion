@@ -1,7 +1,9 @@
 // Discussion — the streaming chat with the analyst over one paper (or the working-notes review).
 // Compose-first: edit the opening prompt, then start. Mid-discussion: reply with streaming
-// responses. Wrap-up: draft notes, then approve / request changes. The server records every
-// turn, so after each stream we refetch the canonical transcript.
+// responses. Wrap-up: draft notes, then approve / request changes. Turns run as server-side
+// background jobs (polled, not held open), so a turn survives leaving this screen, the app
+// backgrounding, or the tunnel dropping — on entry we reattach to any turn still in flight,
+// and after each turn we refetch the canonical transcript the server recorded.
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -17,18 +19,19 @@ import {
   View,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { useIsPlaying } from 'react-native-track-player';
 
 import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
-import { streamPaths } from '@/api/endpoints';
+import { streamPaths, turnJobPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
 import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
-import { GeneratingBar, NarrationTranscript } from '@/components/NarrationTranscript';
+import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { IconButton, TopBar } from '@/components/TopBar';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
@@ -50,7 +53,14 @@ export default function DiscussionScreen() {
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
-  const paths = pid ? streamPaths(pid) : null;
+  const paths = pid ? turnJobPaths(pid) : null;
+
+  // Reattach to a turn that's still generating for this paper (we navigated away mid-turn,
+  // the app was backgrounded, the connection dropped…). The job kept running server-side.
+  useEffect(() => {
+    void stream.resume();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, slug]);
 
   const [showRelated, setShowRelated] = useState(false);
 
@@ -412,7 +422,7 @@ function Composer({
   slug: string;
   state: string | null;
   stream: ReturnType<typeof useStreamingTurn>;
-  paths: ReturnType<typeof streamPaths>;
+  paths: ReturnType<typeof turnJobPaths>;
   onMutated: () => void;
 }) {
   const [text, setText] = useState('');
@@ -526,16 +536,18 @@ function Composer({
 
 function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: string; title: string }) {
   const audio = useAudio();
+  const { playing } = useIsPlaying();
   if (entry.role === 'user') return <UserBubble text={entry.text} />;
 
-  const loading = audio.loadingId === audioId;
+  const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
-  const narration = audio.narrationById[audioId];
-  // Show the transcript once we have it: live while this message is the current track (with the
-  // follow-along highlight), and it stays available afterward for re-reading.
-  const showTranscript = !!narration && (current || !loading);
+  const audioError = audio.errorById[audioId];
   const [copied, setCopied] = useState(false);
   const canonical = entry.canonical;
+
+  // Listen -> prepare + play; on the loaded track it's a pause/resume toggle; after a
+  // failure it retries (playText clears this message's error).
+  const listenLabel = current ? (playing ? '❚❚ Pause' : '▶︎ Resume') : audioError ? '↻ Retry' : '▶︎ Listen';
 
   async function copy() {
     await Clipboard.setStringAsync(canonical);
@@ -546,19 +558,23 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
   return (
     <Card style={styles.assistant}>
       <Markdown text={canonical} />
-      {loading && audio.loadingStage ? <GeneratingBar stage={audio.loadingStage} /> : null}
-      {showTranscript ? <NarrationTranscript narration={narration} /> : null}
+      {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
+      {audioError ? (
+        <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+          Audio failed: {audioError}
+        </Text>
+      ) : null}
       <View style={styles.msgActions}>
         <Pressable
           onPress={() => audio.playText({ id: audioId, title, text: canonical })}
-          disabled={loading}
+          disabled={!!prep}
           style={({ pressed }) => [styles.msgBtn, (pressed || current) && styles.msgBtnActive]}
-          accessibilityLabel="Listen to this response">
-          {loading ? (
+          accessibilityLabel={current ? 'Pause or resume this narration' : 'Listen to this response'}>
+          {prep ? (
             <ActivityIndicator color={colors.cyan} size="small" />
           ) : (
             <Text variant="caption" color={current ? colors.cyan : colors.muted}>
-              {current ? '♪ Playing' : '► Listen'}
+              {listenLabel}
             </Text>
           )}
         </Pressable>
@@ -666,26 +682,35 @@ function ToolLine({ name, detail }: { name: string; detail: string }) {
 
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
-// agent UIs conventionally show it — rather than pinning all tools above all text.
+// agent UIs conventionally show it — rather than pinning all tools above all text. A status
+// row keeps naming what's happening right now (thinking / which tool / writing), so quiet
+// stretches read as work in progress rather than a stall, and a one-line note says the turn
+// survives leaving the screen.
 function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
+  const last = items[items.length - 1];
+  const status = !last
+    ? 'Thinking…'
+    : last.kind === 'tool'
+      ? `${(TOOL_META[last.name]?.label ?? 'Researching')}…`
+      : 'Writing…';
   return (
     <Card style={styles.assistant}>
-      {items.length === 0 ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <ActivityIndicator color={colors.cyan} />
-          <Text variant="caption">Thinking…</Text>
-        </View>
-      ) : (
-        items.map((it, i) =>
-          it.kind === 'text' ? (
-            <Markdown key={i} text={it.text} />
-          ) : (
-            <View key={i} style={styles.toolTrail}>
-              <ToolLine name={it.name} detail={it.detail} />
-            </View>
-          ),
-        )
+      {items.map((it, i) =>
+        it.kind === 'text' ? (
+          <Markdown key={i} text={it.text} />
+        ) : (
+          <View key={i} style={styles.toolTrail}>
+            <ToolLine name={it.name} detail={it.detail} />
+          </View>
+        ),
       )}
+      <View style={styles.liveStatus}>
+        <ActivityIndicator color={colors.cyan} size="small" />
+        <Text variant="caption">{status}</Text>
+      </View>
+      <Text variant="caption" color={colors.muted}>
+        Keeps going in the background — safe to leave this screen.
+      </Text>
     </Card>
   );
 }
@@ -786,6 +811,13 @@ const styles = StyleSheet.create({
   },
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
+  liveStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: space.xs,
+    marginBottom: space.xs,
+  },
   errorCard: { borderColor: colors.danger },
   composerBar: {
     borderTopWidth: 1,

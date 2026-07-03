@@ -75,6 +75,10 @@ export default function RootLayout() {
                       <Stack.Screen name="index" />
                       <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
                       <Stack.Screen name="graph" />
+                      <Stack.Screen
+                        name="player"
+                        options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+                      />
                     </Stack>
                   </View>
                   <NowPlaying />

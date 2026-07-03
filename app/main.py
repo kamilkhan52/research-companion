@@ -4,7 +4,6 @@ and a desktop hit one backend.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -18,7 +17,7 @@ from pydantic import BaseModel
 
 import asyncio
 
-from . import agent, agent_harness, auth, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
+from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -71,8 +70,7 @@ async def authenticate(request: Request, call_next):
 project_router = APIRouter(prefix="/api/projects/{pid}",
                            dependencies=[Depends(projects.use_project)], tags=["project"])
 
-AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (TTS cache shared across projects)
-AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_DIR = audio_jobs.AUDIO_DIR  # app-global (TTS cache shared across projects)
 
 
 # ---------- request models ----------
@@ -120,6 +118,7 @@ class SettingsReq(BaseModel):
     tts_voice: str | None = None
     parallel_api_key: str | None = None    # web search provider (agent tools)
     firecrawl_api_key: str | None = None   # web search/fetch provider (agent tools)
+    prior_notes_scope: str | None = None   # "related" | "all" — prior Notes in paper context
 
 
 class NarrateReq(BaseModel):
@@ -329,6 +328,7 @@ def read_settings():
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
         "has_parallel_key": bool(pkey), "parallel_key_hint": (pkey[:6] + "…") if pkey else "",
         "has_firecrawl_key": bool(fkey), "firecrawl_key_hint": (fkey[:6] + "…") if fkey else "",
+        "prior_notes_scope": s.get("prior_notes_scope") or "related",
     }
 
 
@@ -343,24 +343,47 @@ def write_settings(req: SettingsReq):
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),
         "has_parallel_key": bool(merged.get("parallel_api_key")),
         "has_firecrawl_key": bool(merged.get("firecrawl_api_key")),
+        "prior_notes_scope": merged.get("prior_notes_scope") or "related",
     }
 
 
 @app.post("/api/speak")
 def speak(req: NarrateReq):
-    """Synthesize one passage to mp3 (OpenAI), cached on disk; returns its URL."""
+    """Synthesize one passage to mp3 (OpenAI), cached on disk; returns its URL. Blocking —
+    long passages can outlive proxy timeouts; prefer the /api/audio/jobs flow for those."""
     s = config.load_settings()
     if s.get("speech_provider") != "openai":
         raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
-    cache_key = f"openai|{s.get('tts_model')}|{s.get('tts_voice')}|{req.text}"
-    name = hashlib.sha1(cache_key.encode("utf-8")).hexdigest() + ".mp3"
-    path = AUDIO_DIR / name
+    path = audio_jobs.audio_cache_path(req.text)
     if not path.exists():
         try:
             path.write_bytes(tts.synthesize_long(req.text))
         except TTSError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    return {"url": f"/api/audio/{name}"}
+    return {"url": f"/api/audio/{path.name}"}
+
+
+@app.post("/api/audio/jobs")
+def start_audio_job(req: NarrateReq):
+    """Start (or join) a background narrate→synthesize job for one canonical message and
+    return its snapshot immediately; instant 'done' when the result is already cached. The
+    client polls /api/audio/jobs/{id} — nothing here depends on a long-lived connection, so
+    tunnels/proxy timeouts and app backgrounding can't kill a preparation in flight."""
+    s = config.load_settings()
+    if s.get("speech_provider") != "openai":
+        raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Nothing to narrate.")
+    return {"job": audio_jobs.start_job(req.text).to_dict()}
+
+
+@app.get("/api/audio/jobs/{job_id}")
+def get_audio_job(job_id: str):
+    """Cheap poll for a preparation job's live progress (stage + segments done/total)."""
+    job = audio_jobs.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown audio job")
+    return {"job": job.to_dict()}
 
 
 @app.get("/api/audio/{name}")
@@ -606,10 +629,16 @@ async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
     return {"ok": True, "retrieved": True}
 
 
-@project_router.post("/chat/start_stream")
-def chat_start_stream(req: ChatStartReq):
-    """Fire the first response for any chat (paper or review) with the edited opening prompt
-    and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
+# ---- turn setup, shared by the SSE endpoints (web) and the job endpoints (mobile).
+#      Each _prep_* validates and mutates the session exactly as its endpoint always did;
+#      what differs is only how the resulting turn is delivered. ----
+
+def _require_session(slug: str) -> None:
+    if not sessions.get_state(slug):
+        raise HTTPException(status_code=409, detail="No active session for this paper.")
+
+
+def _prep_chat_start(req: ChatStartReq) -> None:
     if not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
     if req.model:
@@ -626,6 +655,47 @@ def chat_start_stream(req: ChatStartReq):
         title = p.title
     sessions.start_session(req.slug, title, kind=("review" if is_review else "paper"),
                            opening=(req.prompt or None))
+
+
+def _prep_reply(req: ReplyReq) -> None:
+    _require_session(req.slug)
+    sessions.record_user(req.slug, req.text, kind="reply")
+
+
+def _prep_continue(req: FinishReq) -> None:
+    _require_session(req.slug)
+    records = sessions.read_records(req.slug)
+    if not records or records[-1]["role"] != "user":
+        raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
+
+
+def _prep_retry(req: RetryReq) -> None:
+    _require_session(req.slug)
+    if req.model:
+        config.save_settings({"model": req.model})
+    sessions.truncate_before_assistant(req.slug, req.assistant_index)
+
+
+def _prep_edit(req: EditReq) -> None:
+    _require_session(req.slug)
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Edited message cannot be empty.")
+    if not sessions.edit_reply(req.slug, req.reply_index, req.text.strip()):
+        raise HTTPException(status_code=404, detail="No such message to edit.")
+
+
+def _prep_finish(req: FinishReq) -> None:
+    _require_session(req.slug)
+    # The review chat folds the discussion into the working notes; a paper drafts its Notes.
+    key = "review_finish" if req.slug == REVIEW_SLUG else "finish_instruction"
+    sessions.record_user(req.slug, prompts.get(key), kind="finish")
+
+
+@project_router.post("/chat/start_stream")
+def chat_start_stream(req: ChatStartReq):
+    """Fire the first response for any chat (paper or review) with the edited opening prompt
+    and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
+    _prep_chat_start(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -641,20 +711,14 @@ def reply(req: ReplyReq):
 
 @project_router.post("/reply_stream")
 def reply_stream(req: ReplyReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    sessions.record_user(req.slug, req.text, kind="reply")
+    _prep_reply(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/continue_stream")
 def continue_stream(req: FinishReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    records = sessions.read_records(req.slug)
-    if not records or records[-1]["role"] != "user":
-        raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
+    _prep_continue(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -663,11 +727,7 @@ def continue_stream(req: FinishReq):
 def retry_stream(req: RetryReq):
     """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
     response to the preceding user message."""
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    if req.model:
-        config.save_settings({"model": req.model})
-    sessions.truncate_before_assistant(req.slug, req.assistant_index)
+    _prep_retry(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -676,25 +736,91 @@ def retry_stream(req: RetryReq):
 def edit_stream(req: EditReq):
     """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
     old response and everything after it, then stream a fresh answer to the edited message."""
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    if not req.text.strip():
-        raise HTTPException(status_code=400, detail="Edited message cannot be empty.")
-    if not sessions.edit_reply(req.slug, req.reply_index, req.text.strip()):
-        raise HTTPException(status_code=404, detail="No such message to edit.")
+    _prep_edit(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    # The review chat folds the discussion into the working notes; a paper drafts its Notes.
-    key = "review_finish" if req.slug == REVIEW_SLUG else "finish_instruction"
-    sessions.record_user(req.slug, prompts.get(key), kind="finish")
+    _prep_finish(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
+
+
+# ---- job-based turns (mobile): the turn runs in a background thread that records the result
+#      regardless of what any client does, and clients poll short-lived snapshot requests. This
+#      is the same job+poll pattern as audio/graph builds — a live SSE across the tunnel gets
+#      killed on long turns and takes the un-persisted response with it (see chat_jobs). ----
+
+def _no_turn_in_flight(slug: str) -> None:
+    """Job starts mutate the session first (record/truncate/edit), so refuse while a turn is
+    already generating — the client should reattach to it instead."""
+    if chat_jobs.active_for(slug):
+        raise HTTPException(status_code=409,
+                            detail="A response is already being generated for this paper.")
+
+
+def _started_job(slug: str) -> dict:
+    return {"job": chat_jobs.snapshot(chat_jobs.start_turn(slug).id)}
+
+
+@project_router.post("/chat/start_job")
+def chat_start_job(req: ChatStartReq):
+    _no_turn_in_flight(req.slug)
+    _prep_chat_start(req)
+    return _started_job(req.slug)
+
+
+@project_router.post("/reply_job")
+def reply_job(req: ReplyReq):
+    _no_turn_in_flight(req.slug)
+    _prep_reply(req)
+    return _started_job(req.slug)
+
+
+@project_router.post("/continue_job")
+def continue_job(req: FinishReq):
+    _no_turn_in_flight(req.slug)
+    _prep_continue(req)
+    return _started_job(req.slug)
+
+
+@project_router.post("/retry_job")
+def retry_job(req: RetryReq):
+    _no_turn_in_flight(req.slug)
+    _prep_retry(req)
+    return _started_job(req.slug)
+
+
+@project_router.post("/edit_job")
+def edit_job(req: EditReq):
+    _no_turn_in_flight(req.slug)
+    _prep_edit(req)
+    return _started_job(req.slug)
+
+
+@project_router.post("/finish_job")
+def finish_job(req: FinishReq):
+    _no_turn_in_flight(req.slug)
+    _prep_finish(req)
+    return _started_job(req.slug)
+
+
+@project_router.get("/chat/jobs/active/{slug}")
+def chat_job_active(slug: str):
+    """The running turn job for a session, if any — lets a client that navigated away (or got
+    disconnected) reattach to the live turn instead of finding a silent screen."""
+    job = chat_jobs.active_for(slug)
+    return {"job": chat_jobs.snapshot(job.id) if job else None}
+
+
+@project_router.get("/chat/jobs/{job_id}")
+def chat_job_status(job_id: str):
+    snap = chat_jobs.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown chat job")
+    return {"job": snap}
 
 
 @project_router.post("/continue")

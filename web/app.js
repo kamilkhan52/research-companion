@@ -188,7 +188,7 @@ const TTS = {
     if (opts && opts.onDone) opts.onDone();
   },
   _setBtn(on) {
-    document.querySelectorAll(".listen").forEach((b) => { b.classList.remove("playing"); b.textContent = "▶ Listen"; });
+    document.querySelectorAll(".listen").forEach((b) => { b.classList.remove("playing"); b.textContent = "▶︎ Listen"; });
     if (on && this.btn) { this.btn.classList.add("playing"); this.btn.textContent = "■ Stop"; }
   },
 };
@@ -345,7 +345,7 @@ async function openComposeFirst(slug) {
     '<label class="field"><span>First prompt</span><textarea id="firstPrompt" class="prompt-text">' +
     escapeHtml(draft.prompt) + "</textarea></label>" +
     '<label class="field"><span>Model for first response</span><select id="firstModel"></select></label>' +
-    '<div class="btn-row"><button class="primary" id="fireBtn">▶ Generate first response</button></div></div>';
+    '<div class="btn-row"><button class="primary" id="fireBtn">▶︎ Generate first response</button></div></div>';
   fillModelSelect(document.getElementById("firstModel"), await getFavs(), draft.model);
   document.getElementById("fireBtn").onclick = () => startChat(slug);
 }
@@ -406,7 +406,7 @@ function turnHtml(t, idx) {
   return '<div class="turn"><div class="who">' +
     '<span>Companion' + (t.state_signal === "ready_to_draft_notes" ? ' · <span class="rd">ready to draft notes</span>' : "") + "</span></div>" +
     '<div class="bubble assistant">' + mdToHtml(t.canonical || "") +
-    '<div class="audio-row"><button class="listen" data-idx="' + idx + '">▶ Listen</button>' +
+    '<div class="audio-row"><button class="listen" data-idx="' + idx + '">▶︎ Listen</button>' +
     '<button class="transcript-toggle" data-idx="' + idx + '">Transcript</button></div>' +
     '<div class="transcript hidden" id="tr-' + idx + '"></div></div>' +
     '<div class="turn-actions"><button class="iconbtn menu" data-idx="' + idx + '" title="Retry / more" aria-label="Retry / more">⋯</button></div>' +
@@ -431,7 +431,7 @@ async function ensureNarration(idx) {
 function setBtnLoading(btn, on) {
   if (!btn) return;
   if (on) { btn._t = btn.textContent; btn.textContent = "Preparing…"; btn.disabled = true; }
-  else { btn.textContent = btn._t || "▶ Listen"; btn.disabled = false; }
+  else { btn.textContent = btn._t || "▶︎ Listen"; btn.disabled = false; }
 }
 
 function renderChunks(cont, narration) {
@@ -466,16 +466,40 @@ async function listen(idx, btn) {
   TTS.speak(narration, btn, { onChunk: (i) => highlightChunk(idx, i), onDone: () => clearHighlight(idx) });
 }
 
-// OpenAI: synthesize the whole narration into one mp3 server-side, then play it in a native
-// <audio> element (robust; play/pause/resume/seek; downloadable). No mid-stream cut-outs.
+// OpenAI: narrate + synthesize as a server-side background job we POLL (see app/audio_jobs.py)
+// rather than one blocking request a tunnel/proxy timeout can 524 mid-synthesis; the button
+// shows the live stage and real segment progress. Result plays in a native <audio> element
+// (robust; play/pause/resume/seek; downloadable). No mid-stream cut-outs.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function audioStageLabel(job) {
+  if (job.stage === "narrating") return "Adapting for listening…";
+  if (job.segments_total > 1)
+    return "Synthesizing " + Math.min(job.segments_done + 1, job.segments_total) + "/" + job.segments_total + "…";
+  return "Synthesizing…";
+}
+
 async function listenOpenAI(idx, btn) {
   const turnEl = btn.closest(".turn");
   if (turnEl.querySelector("audio.tts-audio")) return;  // player already present
   setBtnLoading(btn, true);
   let narration, url;
   try {
-    narration = await ensureNarration(idx);
-    url = (await api("/api/speak", "POST", { text: narration })).url;
+    let job = (await api("/api/audio/jobs", "POST", { text: S.turns[idx].canonical })).job;
+    let blips = 0;
+    while (job.status === "running") {
+      if (btn) btn.textContent = audioStageLabel(job);
+      await sleep(1000);
+      try { job = (await api("/api/audio/jobs/" + job.id)).job; blips = 0; }
+      catch (e) {
+        // Tolerate brief network drops — the job keeps running server-side regardless.
+        if (++blips >= 8) throw e;
+      }
+    }
+    if (job.status !== "done" || !job.url) throw new Error(job.error || "Could not prepare audio.");
+    narration = job.narration;
+    url = job.url;
+    S.turns[idx].narration = narration;
   } catch (e) { toast(e.message); setBtnLoading(btn, false); return; }
   const cont = document.getElementById("tr-" + idx);
   cont.textContent = narration; cont.classList.remove("hidden");

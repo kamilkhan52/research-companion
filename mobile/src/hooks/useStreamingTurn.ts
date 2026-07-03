@@ -1,13 +1,25 @@
-// Drives a streaming assistant turn: runs an SSE endpoint, accumulates delta text into
-// `liveText`, and on completion refetches the authoritative session (the server records every
-// turn) so the UI converges on the canonical transcript rather than the optimistic stream.
+// Drives a streaming assistant turn as a server-side background job: the POST starts (or
+// joins) a job that generates and RECORDS the turn no matter what this client does, and the
+// hook polls the job's snapshot to render live progress (interleaved text + tool calls).
+// Compared to the old single SSE connection, nothing is lost when the tunnel drops the
+// request, the user navigates away, or the app is backgrounded — resume() reattaches to a
+// turn still in flight, and a turn that finished while we were gone is already in the
+// transcript when the session refetches.
 
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { apiPost, ApiError } from '@/api/client';
+import { getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
-import { streamPost } from '@/api/stream';
-import type { StreamEvent, StreamItem, Turn } from '@/api/types';
+import type { ChatJob, StreamItem } from '@/api/types';
+
+const POLL_MS = 900;
+// Consecutive failed polls before we surface a connection warning (the job itself is safe
+// server-side, so we keep polling behind the warning).
+const OFFLINE_AFTER = 6;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface StreamingTurn {
   liveText: string;
@@ -18,94 +30,144 @@ export interface StreamingTurn {
   /** The turn's text and tool invocations in arrival order, so the UI can interleave them. */
   items: StreamItem[];
   run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
+  /** Reattach to a turn already generating for this session (call on screen entry). */
+  resume: () => Promise<void>;
+  /** Stop watching. The job keeps running server-side and lands in the transcript. */
   cancel: () => void;
   clearError: () => void;
 }
 
 export function useStreamingTurn(pid: string | null, slug: string | null): StreamingTurn {
   const qc = useQueryClient();
-  const [liveText, setLiveText] = useState('');
+  const [items, setItems] = useState<StreamItem[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
-  const [items, setItems] = useState<StreamItem[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
+  // Job id currently being watched; also the loop-exit signal (cancel/unmount nulls it).
+  const watchRef = useRef<string | null>(null);
+  const aliveRef = useRef(true);
   // A ref guard (not the `streaming` state) so back-to-back calls in the same tick — e.g. a
   // fast double-tap before React re-renders with the disabled button — can't both slip past
   // the check; state only updates on the next render, a ref updates immediately.
-  const streamingRef = useRef(false);
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      watchRef.current = null;
+    };
+  }, []);
 
   const settle = useCallback(async () => {
     if (pid && slug) {
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     }
-    setLiveText('');
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
   }, [pid, slug, qc]);
 
-  const run = useCallback(
-    async (path: string, body: unknown, optimisticUser?: string) => {
-      if (streamingRef.current) return;
-      streamingRef.current = true;
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setError(null);
-      setLiveText('');
-      setPendingUser(optimisticUser ?? null);
+  /** Poll one job until it settles (or we stop watching). */
+  const watch = useCallback(
+    async (job: ChatJob) => {
+      watchRef.current = job.id;
       setStreaming(true);
-      setItems([]);
-
-      let acc = '';
-      try {
-        await streamPost<StreamEvent>(path, body, {
-          signal: controller.signal,
-          onEvent: (event) => {
-            if (event.type === 'delta') {
-              acc += event.text;
-              setLiveText(acc);
-              // Merge consecutive text into the trailing text item; otherwise start a new one.
-              setItems((prev) => {
-                const last = prev[prev.length - 1];
-                if (last && last.kind === 'text') {
-                  return [...prev.slice(0, -1), { kind: 'text', text: last.text + event.text }];
-                }
-                return [...prev, { kind: 'text', text: event.text }];
-              });
-            } else if (event.type === 'tool') {
-              setItems((prev) => [...prev, { kind: 'tool', name: event.name, detail: event.detail }]);
-            } else if (event.type === 'error') {
-              setError(event.detail);
-            } else if (event.type === 'done') {
-              // turn is recorded server-side; settle() will pull the canonical version.
-              void (event.turn as Turn);
-            }
-          },
-        });
-        await settle();
-      } catch (e) {
-        if ((e as Error)?.name === 'AbortError') {
+      setItems(job.items);
+      let misses = 0;
+      while (aliveRef.current && watchRef.current === job.id) {
+        await sleep(POLL_MS);
+        if (!aliveRef.current || watchRef.current !== job.id) return;
+        let snap: ChatJob;
+        try {
+          snap = (await getChatJob(pid!, job.id)).job;
+          misses = 0;
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) {
+            // Server restarted and forgot the job; whatever completed is in the session.
+            watchRef.current = null;
+            await settle();
+            return;
+          }
+          // Transient network blip: the turn is safe server-side, so keep polling and only
+          // warn (without giving up) if the connection stays down.
+          if (++misses >= OFFLINE_AFTER) {
+            setError('Connection lost — the response is still being generated and will appear once you’re back online.');
+          }
+          continue;
+        }
+        if (!aliveRef.current || watchRef.current !== job.id) return;
+        setItems(snap.items);
+        if (snap.status === 'done') {
+          watchRef.current = null;
+          await settle();
+          return;
+        }
+        if (snap.status === 'error') {
+          watchRef.current = null;
+          setError(snap.error ?? 'The response failed.');
           setStreaming(false);
           setPendingUser(null);
           return;
         }
-        setError((e as Error).message ?? 'Stream failed.');
-        setStreaming(false);
-      } finally {
-        streamingRef.current = false;
-        abortRef.current = null;
       }
     },
-    [settle],
+    [pid, settle],
   );
 
+  const run = useCallback(
+    async (path: string, body: unknown, optimisticUser?: string) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
+      setError(null);
+      setItems([]);
+      setPendingUser(optimisticUser ?? null);
+      setStreaming(true);
+      try {
+        const { job } = await apiPost<{ job: ChatJob }>(path, body);
+        await watch(job);
+      } catch (e) {
+        setError((e as Error).message ?? 'Could not start the response.');
+        setStreaming(false);
+        setPendingUser(null);
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [watch],
+  );
+
+  const resume = useCallback(async () => {
+    if (!pid || !slug || busyRef.current) return;
+    busyRef.current = true;
+    try {
+      const { job } = await getActiveChatJob(pid, slug);
+      if (!job || !aliveRef.current) return;
+      // The message that started this turn is already recorded server-side; refresh the
+      // transcript so it shows while we reattach to the live turn.
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await watch(job);
+    } catch {
+      // Can't reach the server right now; the session refetch will catch us up later.
+    } finally {
+      busyRef.current = false;
+    }
+  }, [pid, slug, qc, watch]);
+
   const cancel = useCallback(() => {
-    abortRef.current?.abort();
+    watchRef.current = null;
+    setStreaming(false);
+    setPendingUser(null);
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
 
-  return { liveText, streaming, error, pendingUser, items, run, cancel, clearError };
+  const liveText = useMemo(
+    () => items.filter((it): it is Extract<StreamItem, { kind: 'text' }> => it.kind === 'text')
+      .map((it) => it.text).join(''),
+    [items],
+  );
+
+  return { liveText, streaming, error, pendingUser, items, run, resume, cancel, clearError };
 }

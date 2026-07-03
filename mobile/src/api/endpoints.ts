@@ -3,7 +3,9 @@
 
 import { apiGet, apiPost, authHeaders, apiUrl } from './client';
 import type {
+  AudioJob,
   AuthConfig,
+  ChatJob,
   FavoriteModel,
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
@@ -33,6 +35,13 @@ export const speak = (text: string) => apiPost<{ url: string }>('/api/speak', { 
 /** Stage-2 narration: adapt canonical text into a spoken transcript (cached server-side). */
 export const narrate = (text: string) =>
   apiPost<{ narration: string; cached: boolean }>('/api/narrate', { text });
+/** Start (or join) a background narrate→synthesize job for one message; returns immediately
+ *  with the job snapshot ('done' instantly when fully cached). Poll getAudioJob until settled. */
+export const startAudioJob = (text: string) =>
+  apiPost<{ job: AudioJob }>('/api/audio/jobs', { text });
+/** Poll a preparation job's live progress. Cheap; safe to call every second. */
+export const getAudioJob = (id: string) =>
+  apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}`);
 
 // ---------- projects (management) ----------
 
@@ -82,6 +91,24 @@ export const streamPaths = (pid: string) => ({
   edit: `${P(pid)}/edit_stream`,
   finish: `${P(pid)}/finish_stream`,
 });
+
+// Job-based turn endpoints (used with useStreamingTurn). The POST starts (or joins) a
+// server-side background job that records the turn even if this client disappears; progress
+// arrives via cheap polls instead of one long-lived connection the tunnel can kill.
+export const turnJobPaths = (pid: string) => ({
+  chatStart: `${P(pid)}/chat/start_job`,
+  reply: `${P(pid)}/reply_job`,
+  continue: `${P(pid)}/continue_job`,
+  retry: `${P(pid)}/retry_job`,
+  edit: `${P(pid)}/edit_job`,
+  finish: `${P(pid)}/finish_job`,
+});
+/** Poll a turn job's live snapshot (interleaved text/tool items). Cheap; safe every ~1s. */
+export const getChatJob = (pid: string, id: string) =>
+  apiGet<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}`);
+/** The turn job currently generating for a session, if any — for reattaching on screen entry. */
+export const getActiveChatJob = (pid: string, slug: string) =>
+  apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
 
 // ---------- reference graph ----------
 
