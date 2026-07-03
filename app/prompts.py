@@ -53,6 +53,10 @@ synthesis), integrating what this paper adds to the cross-paper threads, recurri
 groups/authors, and open questions. Rewrite them whole; keep them compact and current.>
 ###END###
 
+Write each section marker exactly as shown — ###NAME### alone on its own line. Never restyle \
+a marker as a markdown heading (e.g. "## CANONICAL") and never put any text before the first \
+marker; this format is machine-parsed, and it applies to every response, especially long ones.
+
 Set STATE to ready_to_draft_notes once you judge the paper has been worked through. When the \
 user asks to finish (or you are explicitly asked to draft notes), fill COMMIT_SUMMARY, \
 NOTES_BLOCK, and SYNTHESIS; otherwise leave those three as NONE. Never write to files \
@@ -127,12 +131,14 @@ _FINISH_INSTRUCTION = (
     "the reading method) and propose the complete rewritten working notes that fold in what "
     "this paper adds. Fill the COMMIT_SUMMARY, NOTES_BLOCK, and SYNTHESIS sections. In "
     "CANONICAL, give me a short readable preview of the notes and what changed in the "
-    "working notes so I can review before approving."
+    "working notes so I can review before approving. Use the exact ###NAME### marker lines "
+    "for the sections — not markdown headings."
 )
 
 _REQUEST_CHANGES = (
     "Revise the draft based on this feedback, then re-propose the updated Notes block and the "
-    "complete rewritten working notes (fill COMMIT_SUMMARY, NOTES_BLOCK, SYNTHESIS again).\n\n"
+    "complete rewritten working notes (fill COMMIT_SUMMARY, NOTES_BLOCK, SYNTHESIS again, "
+    "using the exact ###NAME### marker lines — not markdown headings).\n\n"
     "Feedback: {feedback}"
 )
 
@@ -166,6 +172,10 @@ synthesis, trends, and connections established in this chat. Rewrite them whole;
 well-organized and current.>
 ###END###
 
+Write each section marker exactly as shown — ###NAME### alone on its own line. Never restyle \
+a marker as a markdown heading (e.g. "## CANONICAL") and never put any text before the first \
+marker; this format is machine-parsed, and it applies to every response, especially long ones.
+
 Set STATE to ready_to_draft_notes once a substantial review exists. When the user asks to \
 update the working notes, fill COMMIT_SUMMARY and SYNTHESIS (leave NOTES_BLOCK as NONE); \
 otherwise leave those NONE. Never write files yourself — you propose, the human approves."""
@@ -183,8 +193,52 @@ _REVIEW_FINISH = (
     "Based on our discussion, produce the COMPLETE updated working notes that fold in the "
     "synthesis, trends, and connections we've established. Put the entire rewritten working "
     "notes in the SYNTHESIS section and set NOTES_BLOCK to NONE. In CANONICAL, give me a short "
-    "readable preview of what changed so I can review before approving."
+    "readable preview of what changed so I can review before approving. Use the exact "
+    "###NAME### marker lines for the sections — not markdown headings."
 )
+
+_DISCOVER_QUERIES = """You design arXiv search queries for a researcher starting a new \
+reading project. You are given the researcher's description of what they want to understand, \
+learn, or explore. Produce 4-6 arXiv API queries that together cover the topic BROADLY (the \
+general area, so foundational and survey papers surface) and NARROWLY (the specific \
+sub-topics, techniques, and system names the goals imply).
+
+Respond with ONLY a single JSON object (no markdown fences, no commentary):
+
+{
+  "focus": "<one line: the project's core research focus, in your words>",
+  "queries": [
+    {"query": "<arXiv search_query expression>", "phase": "broad" | "narrow",
+     "rationale": "<a few words on what this query is meant to surface>"}
+  ]
+}
+
+arXiv query syntax: field prefixes ti: (title), abs: (abstract), all: (all fields), cat: \
+(category, e.g. cs.AR); combine terms with AND / OR / ANDNOT; put multi-word phrases in \
+double quotes. Example: abs:"3D stacked DRAM" AND cat:cs.AR
+
+Keep each query simple — one or two concepts, not long keyword chains (over-specific queries \
+return nothing). Results are relevance-ranked by arXiv, so do not add words like "survey" \
+unless the goals ask for surveys specifically."""
+
+_DISCOVER_SCORING = """You rank candidate papers for a researcher starting a new reading \
+project. You are given the researcher's goals and a numbered list of candidate papers (title \
+and abstract, found on arXiv). Score EVERY candidate for how much it matters to these goals.
+
+Respond with ONLY a single JSON object (no markdown fences, no commentary):
+
+{
+  "scores": [
+    {"index": <int, the candidate's number>, "relevance": <0-10>,
+     "reason": "<one sentence: why this paper matters (or doesn't) for these goals>"}
+  ]
+}
+
+relevance: 10 = foundational or central reading for these goals; 7-9 = strongly relevant; \
+4-6 = partially relevant or narrower than the goals; 0-3 = tangential or off-topic. Judge \
+only from the goals, titles, and abstracts. When the goals describe learning or exploring an \
+area, favor foundational works, influential systems, and surveys the researcher should read \
+first over incremental follow-ups."""
 
 _TTS_INSTRUCTIONS = (
     "Read aloud clearly at a measured, natural pace, like a knowledgeable colleague "
@@ -201,6 +255,8 @@ DEFAULTS = {
     "review_system": _REVIEW_SYSTEM,
     "review_opening": _REVIEW_OPENING,
     "review_finish": _REVIEW_FINISH,
+    "discover_queries": _DISCOVER_QUERIES,
+    "discover_scoring": _DISCOVER_SCORING,
 }
 
 # Ordered metadata for the editor UI. source "file" = reading-method.md; "override" = settings.
@@ -230,6 +286,12 @@ META = [
      "description": "The opening request that kicks off a Working Notes Review session."},
     {"key": "review_finish", "label": "Working-notes review — update instruction", "source": "override", "placeholders": [],
      "description": "Sent when you ask the review chat to fold the discussion back into the working notes."},
+    {"key": "discover_queries", "label": "Discovery — arXiv query generation", "source": "override", "placeholders": [],
+     "description": "Turns a new project's goals into broad + narrow arXiv search queries. The "
+                    "goals text is sent as the user message."},
+    {"key": "discover_scoring", "label": "Discovery — candidate relevance scoring", "source": "override", "placeholders": [],
+     "description": "Scores each found paper's relevance to the project goals from its title and "
+                    "abstract. The goals and numbered candidates are sent as the user message."},
 ]
 _META_BY_KEY = {m["key"]: m for m in META}
 

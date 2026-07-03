@@ -122,6 +122,37 @@ def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
     return results
 
 
+def search_arxiv_raw(query: str, max_results: int = 25, sort_by: str = "relevance") -> list[dict]:
+    """Broad arXiv search for discovery: takes a raw search_query expression (all:/abs:/ti:/
+    cat: terms, AND/OR, quoted phrases) rather than an exact title, and returns richer entries
+    (authors, year, category) than search_arxiv. Same paced/retrying transport."""
+    params = {"search_query": query, "start": 0, "max_results": max_results,
+              "sortBy": sort_by, "sortOrder": "descending"}
+    r = _arxiv_get(ARXIV_API, params=params)
+    feed = feedparser.parse(r.text)
+    results = []
+    for entry in feed.entries:
+        raw_id = entry.id.split("/abs/")[-1]
+        m = _ARXIV_ID_RE.search(raw_id)
+        arxiv_id = m.group(1) if m else raw_id  # versionless, so dedupe across queries works
+        year = None
+        published = getattr(entry, "published", "")
+        if len(published) >= 4 and published[:4].isdigit():
+            year = int(published[:4])
+        primary = getattr(entry, "arxiv_primary_category", None) or {}
+        results.append({
+            "arxiv_id": arxiv_id,
+            "title": re.sub(r"\s+", " ", entry.title).strip(),
+            "abstract": re.sub(r"\s+", " ", getattr(entry, "summary", "")).strip(),
+            "authors": [a.get("name", "") for a in getattr(entry, "authors", []) if a.get("name")],
+            "year": year,
+            "category": primary.get("term") or "",
+            "url": f"https://arxiv.org/abs/{arxiv_id}",
+            "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+        })
+    return results
+
+
 def _fetch(url: str) -> bytes:
     # arXiv PDF downloads share the same throttling as the query API, so route them through the
     # paced/retrying getter; other hosts get a plain fetch.

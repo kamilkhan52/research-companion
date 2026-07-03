@@ -295,6 +295,71 @@ export interface GraphBuildStartResponse {
   build: GraphBuildJob;
 }
 
+// ---------- discovery (app/discovery.py — goals -> suggested readings) ----------
+
+/** One ranked candidate paper from a discovery run. */
+export interface PaperSuggestion {
+  arxiv_id: string;
+  title: string;
+  abstract: string;
+  authors: string[];
+  year: number | null;
+  category: string;
+  url: string;
+  pdf_url: string;
+  citation_count: number | null;
+  /** LLM-scored fit to the project goals, 0-10. */
+  relevance: number;
+  /** Blended rank score: relevance + a log-scaled, capped global-citations term. */
+  score: number;
+  reasons: string[];
+}
+
+export interface DiscoveryQuery {
+  query: string;
+  phase: string; // 'broad' | 'narrow'
+  rationale: string;
+}
+
+/** The persisted result of a discovery run (.state/discovery.json). `suggestions` is the
+ * FULL ranked list — the UI leads with `top_n` and offers the rest behind "show more". */
+export interface DiscoveryResult {
+  goals: string;
+  focus: string;
+  model: string;
+  queries: DiscoveryQuery[];
+  candidate_count: number;
+  top_n: number;
+  suggestions: PaperSuggestion[];
+  generated_at: string;
+}
+
+/** A discovery job (app/discovery_jobs.py DiscoveryJob). Runs server-side in a background
+ * thread — two LLM calls plus paced arXiv searches take minutes — and the client polls,
+ * same pattern as GraphBuildJob. */
+export interface DiscoveryJob {
+  status: 'running' | 'done' | 'error';
+  phase: 'queries' | 'searching' | 'citations' | 'scoring' | 'done';
+  goals: string;
+  focus: string;
+  queries: DiscoveryQuery[];
+  searched: number;
+  total_queries: number;
+  found: number;
+  result: DiscoveryResult | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+/** GET /api/projects/{pid}/discover */
+export interface DiscoveryResponse {
+  job: DiscoveryJob | null;
+  result: DiscoveryResult | null;
+  /** The project's saved goals (project.json), for prefilling the field. */
+  goals: string;
+}
+
 /** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running
  * server-side in a background thread. The client polls — same pattern as GraphBuildJob —
  * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */

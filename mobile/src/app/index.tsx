@@ -62,6 +62,7 @@ export default function LibraryScreen() {
         }
         onPress={() => setSwitcherOpen(true)}
         onGraphPress={activePid ? () => router.push('/graph') : undefined}
+        onDiscoverPress={activePid ? () => router.push('/discover') : undefined}
       />
 
       <ScrollView
@@ -88,7 +89,11 @@ export default function LibraryScreen() {
             action={<Button title="Retry" onPress={() => stateQuery.refetch()} />}
           />
         ) : grouped.length === 0 ? (
-          <Empty heading="No papers yet" body="This project's reading list is empty." />
+          <Empty
+            heading="Start this project"
+            body="Describe your research goals to get suggested foundational readings from arXiv — or bring a specific paper by name or link."
+            action={<Button title="Find foundational papers" onPress={() => router.push('/discover')} />}
+          />
         ) : (
           grouped.map(({ group, papers }) => (
             <View key={group} style={{ marginBottom: space.lg }}>
@@ -124,11 +129,13 @@ function ProjectBar({
   subtitle,
   onPress,
   onGraphPress,
+  onDiscoverPress,
 }: {
   name: string;
   subtitle: string;
   onPress: () => void;
   onGraphPress?: () => void;
+  onDiscoverPress?: () => void;
 }) {
   return (
     <View style={styles.projectBarRow}>
@@ -146,6 +153,17 @@ function ProjectBar({
         </View>
         <Text style={{ color: colors.muted, fontSize: 18 }}>⌄</Text>
       </Pressable>
+      {onDiscoverPress ? (
+        <Pressable
+          onPress={onDiscoverPress}
+          style={({ pressed }) => [styles.graphBtn, pressed && { opacity: 0.85 }]}
+          accessibilityLabel="Discover readings">
+          <Text style={{ fontSize: 20 }}>⌕</Text>
+          <Text variant="caption" style={{ marginTop: 2 }}>
+            Discover
+          </Text>
+        </Pressable>
+      ) : null}
       {onGraphPress ? (
         <Pressable
           onPress={onGraphPress}

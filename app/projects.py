@@ -172,6 +172,17 @@ def create_project(name: str, method: str | None = None) -> dict:
     return meta
 
 
+def update_meta(pid: str, **fields) -> dict:
+    """Merge non-None fields into project.json (e.g. the saved discovery goals)."""
+    if not exists(pid):
+        raise ProjectError(f"Unknown project: {pid}")
+    meta = _read_meta(pid)
+    meta.update({k: v for k, v in fields.items() if v is not None})
+    meta.setdefault("id", pid)
+    _write_meta(pid, meta)
+    return meta
+
+
 def rename_project(pid: str, name: str) -> dict:
     if not exists(pid):
         raise ProjectError(f"Unknown project: {pid}")

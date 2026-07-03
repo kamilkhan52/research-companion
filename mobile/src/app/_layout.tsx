@@ -73,6 +73,7 @@ export default function RootLayout() {
                         animation: 'slide_from_right',
                       }}>
                       <Stack.Screen name="index" />
+                      <Stack.Screen name="discover" />
                       <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
                       <Stack.Screen name="graph" />
                       <Stack.Screen

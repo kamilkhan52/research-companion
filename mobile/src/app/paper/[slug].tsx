@@ -42,7 +42,9 @@ import { colors, fonts, radius, space } from '@/theme/tokens';
 export default function DiscussionScreen() {
   const router = useRouter();
   const qc = useQueryClient();
-  const { slug } = useLocalSearchParams<{ slug: string }>();
+  // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
+  // "specific paper" box, so the first fetch uses exactly that source.
+  const { slug, source } = useLocalSearchParams<{ slug: string; source?: string }>();
   const { activePid } = useActiveProject();
   const pid = activePid;
 
@@ -149,6 +151,7 @@ export default function DiscussionScreen() {
           slug={slug!}
           stream={stream}
           chatStartPath={paths!.chatStart}
+          initialSource={typeof source === 'string' && source ? source : undefined}
         />
       ) : (
         <KeyboardAvoidingView
@@ -222,16 +225,27 @@ const STATE_LABEL: Record<string, string> = {
 
 // ---------- compose-first ----------
 
+// Interpret a pasted source string: an arXiv link or bare id resolves by id (an /abs/ page
+// isn't a PDF, so never fetch it as one); any other URL is treated as a direct PDF link.
+function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
+  const arxiv = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i);
+  if (arxiv) return { arxiv_id: arxiv[1] };
+  if (/^https?:\/\//i.test(s)) return { pdf_url: s };
+  return { arxiv_id: s };
+}
+
 function ComposeFirst({
   pid,
   slug,
   stream,
   chatStartPath,
+  initialSource,
 }: {
   pid: string;
   slug: string;
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
+  initialSource?: string;
 }) {
   const opening = useOpeningDraft(pid, slug);
   const [prompt, setPrompt] = useState('');
@@ -240,7 +254,7 @@ function ComposeFirst({
   // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
   // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
-  const [manualSource, setManualSource] = useState('');
+  const [manualSource, setManualSource] = useState(initialSource ?? '');
   const [showCustomize, setShowCustomize] = useState(false);
   // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
   // sees what's happening during a fetch instead of an opaque spinner.
@@ -281,12 +295,11 @@ function ComposeFirst({
     }
   }
 
-  // Interpret a pasted source: a URL (http…) is treated as a direct PDF link, anything else as
-  // an arXiv id. This is the "provide a PDF link" fallback when auto-retrieval can't find it.
+  // The "provide a PDF link / arXiv id" fallback when auto-retrieval can't find the paper.
   function startFromManual() {
     const s = manualSource.trim();
     if (!s) return;
-    start(/^https?:\/\//i.test(s) ? { pdf_url: s } : { arxiv_id: s });
+    start(parseSource(s));
   }
 
   if (opening.isLoading) return <Centered loading />;
@@ -314,7 +327,7 @@ function ComposeFirst({
         ) : null}
         <Button
           title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={() => start()}
+          onPress={() => start(initialSource ? parseSource(initialSource) : undefined)}
           loading={starting}
           disabled={!prompt.trim()}
           style={{ marginTop: space.lg }}

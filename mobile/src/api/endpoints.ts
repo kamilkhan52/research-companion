@@ -6,6 +6,8 @@ import type {
   AudioJob,
   AuthConfig,
   ChatJob,
+  DiscoveryJob,
+  DiscoveryResponse,
   FavoriteModel,
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
@@ -105,6 +107,15 @@ export const getChatJob = (pid: string, id: string) =>
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string) =>
   apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+
+// ---------- discovery (goals -> suggested readings) ----------
+
+/** Start (or join) a background discovery run for the project's goals. Returns immediately
+ *  with the job snapshot; the run keeps going regardless of the client. Poll getDiscovery. */
+export const startDiscovery = (pid: string, goals: string) =>
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
+/** Live job snapshot + the last persisted result + saved goals. Cheap; safe every ~1.5s. */
+export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)}/discover`);
 
 // ---------- reference graph ----------
 

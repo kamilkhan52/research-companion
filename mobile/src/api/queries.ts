@@ -21,6 +21,7 @@ export const keys = {
   favoriteModels: ['favoriteModels'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
+  discovery: (pid: string) => ['project', pid, 'discovery'] as const,
 };
 
 export function useProjects() {
@@ -112,6 +113,16 @@ export function useRelatedWorks(pid: string | null, slug: string | null, enabled
     queryKey: pid && slug ? keys.related(pid, slug) : ['project', 'none', 'related'],
     queryFn: async () => (await api.getRelated(pid as string, slug as string)).related,
     enabled: !!pid && !!slug && hasUrl && enabled,
+  });
+}
+
+/** The project's discovery state: live job (if any), last persisted result, saved goals. */
+export function useDiscovery(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid ? keys.discovery(pid) : ['project', 'none', 'discovery'],
+    queryFn: () => api.getDiscovery(pid as string),
+    enabled: !!pid && hasUrl,
   });
 }
 

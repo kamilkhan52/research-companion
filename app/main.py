@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import asyncio
 
-from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
+from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, discovery, discovery_jobs, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -155,6 +155,10 @@ class AddPaperReq(BaseModel):
     title: str
     group: str | None = None
     arxiv_id: str | None = None   # provenance only (e.g. from a graph node); not auto-retrieved
+
+
+class DiscoverReq(BaseModel):
+    goals: str
 
 
 # ---------- helpers ----------
@@ -913,6 +917,34 @@ def add_paper(pid: str, req: AddPaperReq):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"paper": _paper_dict(slug)}
+
+
+# ---------- discovery (goals -> suggested readings) ----------
+# For a fresh project with no papers: the researcher describes their goals, a background job
+# (app/discovery_jobs.py) turns them into arXiv searches and ranks up to 50 candidates by
+# LLM-scored relevance + global citation counts (app/discovery.py). Job + poll like every
+# other long operation here; the ranked list persists in the project's .state/discovery.json.
+
+@project_router.post("/discover")
+def start_discovery(pid: str, req: DiscoverReq):
+    """Start (or join) a discovery run for this project's goals and return its snapshot
+    immediately. Saves the goals into project.json so the field is prefilled on return."""
+    goals = req.goals.strip()
+    if not goals:
+        raise HTTPException(status_code=400, detail="Describe the project's goals first.")
+    if not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
+    projects.update_meta(pid, goals=goals)
+    discovery_jobs.start_discovery(pid, goals)
+    return {"job": discovery_jobs.snapshot(pid)}
+
+
+@project_router.get("/discover")
+def get_discovery(pid: str):
+    """Live job snapshot (poll every ~1.5s while running) plus the last persisted result, so
+    the screen shows previous suggestions on re-entry."""
+    return {"job": discovery_jobs.snapshot(pid), "result": discovery.load_result(),
+            "goals": (projects._read_meta(pid) or {}).get("goals") or ""}
 
 
 # ---------- reference graph ----------
