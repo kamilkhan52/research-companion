@@ -691,6 +691,12 @@ def _prep_finish(req: FinishReq) -> None:
     sessions.record_user(req.slug, prompts.get(key), kind="finish")
 
 
+def _prep_request_changes(req: RequestChangesReq) -> None:
+    _require_session(req.slug)
+    sessions.record_user(req.slug, prompts.render("request_changes", feedback=req.text),
+                         kind="revision")
+
+
 @project_router.post("/chat/start_stream")
 def chat_start_stream(req: ChatStartReq):
     """Fire the first response for any chat (paper or review) with the edited opening prompt
@@ -744,6 +750,13 @@ def edit_stream(req: EditReq):
 @project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
     _prep_finish(req)
+    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
+
+
+@project_router.post("/request_changes_stream")
+def request_changes_stream(req: RequestChangesReq):
+    _prep_request_changes(req)
     return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -807,6 +820,13 @@ def finish_job(req: FinishReq):
     return _started_job(req.slug)
 
 
+@project_router.post("/request_changes_job")
+def request_changes_job(req: RequestChangesReq):
+    _no_turn_in_flight(req.slug)
+    _prep_request_changes(req)
+    return _started_job(req.slug)
+
+
 @project_router.get("/chat/jobs/active/{slug}")
 def chat_job_active(slug: str):
     """The running turn job for a session, if any — lets a client that navigated away (or got
@@ -847,8 +867,7 @@ def finish(req: FinishReq):
 
 @project_router.post("/request_changes")
 def request_changes(req: RequestChangesReq):
-    instruction = prompts.render("request_changes", feedback=req.text)
-    sessions.record_user(req.slug, instruction, kind="revision")
+    _prep_request_changes(req)
     turn = _run_and_record(req.slug)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 

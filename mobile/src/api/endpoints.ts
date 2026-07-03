@@ -18,7 +18,6 @@ import type {
   ProjectState,
   Session,
   Settings,
-  Turn,
 } from './types';
 
 // ---------- global ----------
@@ -66,13 +65,9 @@ export const startPaper = (pid: string, slug: string, opts?: { arxiv_id?: string
     { slug, ...opts },
   );
 
-// Non-streaming turn endpoints (the *_stream variants live in stream usage in screens).
-export const reply = (pid: string, slug: string, text: string) =>
-  apiPost<{ state: string | null; turn: Turn }>(`${P(pid)}/reply`, { slug, text });
-export const finish = (pid: string, slug: string) =>
-  apiPost<{ state: string | null; turn: Turn }>(`${P(pid)}/finish`, { slug });
-export const requestChanges = (pid: string, slug: string, text: string) =>
-  apiPost<{ state: string | null; turn: Turn }>(`${P(pid)}/request_changes`, { slug, text });
+// NOTE: every LLM turn must go through turnJobPaths below — a blocking POST holds the
+// request open for the whole generation and the tunnel kills it at ~100s (524). Only quick
+// non-generating actions (approve/reopen/addPaper) may use plain apiPost.
 export const reopen = (pid: string, slug: string) =>
   apiPost<{ state: string | null; transcript: unknown[] }>(`${P(pid)}/reopen`, { slug });
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
@@ -102,6 +97,7 @@ export const turnJobPaths = (pid: string) => ({
   retry: `${P(pid)}/retry_job`,
   edit: `${P(pid)}/edit_job`,
   finish: `${P(pid)}/finish_job`,
+  requestChanges: `${P(pid)}/request_changes_job`,
 });
 /** Poll a turn job's live snapshot (interleaved text/tool items). Cheap; safe every ~1s. */
 export const getChatJob = (pid: string, id: string) =>

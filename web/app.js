@@ -794,11 +794,11 @@ async function approve(slug) {
 async function requestChanges(slug) {
   const text = prompt("What should change in the notes / synthesis?");
   if (!text) return;
-  const msg = document.getElementById("reviewMsg");
-  msg.innerHTML = '<div class="loading-row"><span class="spinner"></span> Revising…</div>';
-  try { const res = await api(pp("/request_changes"), "POST", { slug, text });
-    if (res.turn.proposed_commit) renderReview(slug); else openPaper(slug); }
-  catch (e) { toast(e.message); msg.innerHTML = ""; }
+  // Streamed like every other turn: a blocking POST sends no bytes until the revision is
+  // done, and the tunnel kills responseless requests at ~100s (524).
+  const turn = await streamTurn(pp("/request_changes_stream"), { slug, text });
+  if (!turn) return;
+  if (turn.proposed_commit) renderReview(slug); else openPaper(slug);
 }
 
 /* ---------------- settings ---------------- */

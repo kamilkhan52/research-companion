@@ -427,6 +427,7 @@ function Composer({
 }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const disabled = stream.streaming || busy;
 
   async function send() {
@@ -442,32 +443,33 @@ function Composer({
 
   async function approve() {
     setBusy(true);
+    setActionError(null);
     try {
       await api.approve(pid, slug);
       onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not commit the notes.');
     } finally {
       setBusy(false);
     }
   }
 
-  async function requestChanges() {
+  function requestChanges() {
     const t = text.trim();
     if (!t) return;
-    setBusy(true);
     setText('');
-    try {
-      await api.requestChanges(pid, slug, t);
-      onMutated();
-    } finally {
-      setBusy(false);
-    }
+    setActionError(null);
+    void stream.run(paths.requestChanges, { slug, text: t });
   }
 
   async function reopen() {
     setBusy(true);
+    setActionError(null);
     try {
       await api.reopen(pid, slug);
       onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
     } finally {
       setBusy(false);
     }
@@ -486,6 +488,11 @@ function Composer({
   if (state === 'notes_drafted') {
     return (
       <View style={styles.composerBar}>
+        {actionError ? (
+          <Text variant="caption" color={colors.danger} style={{ marginBottom: space.sm }}>
+            {actionError}
+          </Text>
+        ) : null}
         <TextInput
           value={text}
           onChangeText={setText}
@@ -493,14 +500,15 @@ function Composer({
           placeholderTextColor={colors.muted}
           style={styles.input}
           multiline
+          editable={!disabled}
         />
         <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
           {text.trim() ? (
-            <Button title="Request changes" variant="ghost" onPress={requestChanges} loading={busy} style={{ flex: 1 }} />
+            <Button title="Request changes" variant="ghost" onPress={requestChanges} disabled={disabled} style={{ flex: 1 }} />
           ) : (
-            <Button title="Reopen" variant="ghost" onPress={reopen} loading={busy} style={{ flex: 1 }} />
+            <Button title="Reopen" variant="ghost" onPress={reopen} loading={busy} disabled={disabled} style={{ flex: 1 }} />
           )}
-          <Button title="Approve & commit" onPress={approve} loading={busy} disabled={!!text.trim()} style={{ flex: 1 }} />
+          <Button title="Approve & commit" onPress={approve} loading={busy} disabled={disabled || !!text.trim()} style={{ flex: 1 }} />
         </View>
       </View>
     );
