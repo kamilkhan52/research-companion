@@ -112,7 +112,7 @@ def test_job_resolves_the_correct_project_context_from_its_own_thread(temp_proje
     # silently read/write some other project's (or no project's) data.
     add_paper(temp_project, "a", "Paper A", full_text="Distinctive text for project isolation.")
     job = graph_jobs.start_build(temp_project, extract_fn=fake_extractor())
-    finished = _wait_until_done(job.pid)
+    finished = _wait_until_done(job.id)  # job id is the pid for this pid-keyed build
 
     data = graph_store.load()  # graph_store resolves via config.project_dir() too
     assert "a" in data["papers"]
