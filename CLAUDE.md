@@ -92,6 +92,11 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 ## Conventions
 
 - Env vars are prefixed `RC_`. Feature flags: `RC_AGENTIC` routes turns through the tool loop.
+- Commits into a project's git store are made by the app with a pinned author
+  (`config.git_identity_args()`, from `RC_GIT_AUTHOR_NAME` / `RC_GIT_AUTHOR_EMAIL`), so they
+  never depend on the host's global git config. New commit paths must go through
+  `committer._git` / `projects._git` (or otherwise include those `-c` args), not a bare
+  `git commit`.
 - Errors surface to clients as `HTTPException(detail=...)`; each domain layer raises its own
   exception type (`AgentError`, `RetrievalError`, `CommitError`, `ProjectError`, `GraphError`,
   `NotesError`, `TTSError`, `AuthError`) which `main.py` maps to HTTP status codes.

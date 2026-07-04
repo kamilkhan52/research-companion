@@ -113,7 +113,9 @@ def _write_meta(pid: str, meta: dict) -> None:
 
 
 def _git(pid: str, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(project_path(pid)),
+    # Pin the author (config.git_identity_args) so create_project's baseline commit succeeds even
+    # on a host with no global git identity, instead of silently no-opping (check=False).
+    subprocess.run(["git", *config.git_identity_args(), *args], cwd=str(project_path(pid)),
                    capture_output=True, text=True, check=False)
 
 
