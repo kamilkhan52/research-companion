@@ -34,6 +34,7 @@ extraction records several papers at once into the same file).
 from __future__ import annotations
 
 import json
+import math
 import threading
 from datetime import UTC, datetime
 
@@ -177,18 +178,31 @@ def record_pending(operation: str, model: str | None, generation_id: str | None)
         log.warning("usage.record_pending failed (op=%s model=%s): %s", operation, model, e)
 
 
+def _authoritative_cost(usage) -> bool:
+    """True only for a genuine, ledger-usable cost value: a finite, non-negative real number.
+    Explicit numeric 0 / 0.0 (a free model) qualifies; None, "", booleans, NaN/Infinity,
+    negatives, and non-numeric strings do NOT — folding any of those in would clear a pending
+    record as a zero-cost 'exact' call and under-count real spend."""
+    if not isinstance(usage, dict) or "cost" not in usage:
+        return False
+    cost = usage["cost"]
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return False
+    return math.isfinite(cost) and cost >= 0
+
+
 def reconcile(generation_id: str, usage: dict | None) -> bool:
     """Resolve a previously-pending stream: if a pending record with this generation id exists in
     the active scope, drop it and fold its now-known usage into the aggregate. Returns True if a
     pending record was cleared. This is the hook a future OpenRouter generation-stats poller uses
     to turn estimates into exact spend.
 
-    Requires AUTHORITATIVE cost data — `usage` must be a dict carrying a `cost` key (even 0.0 is
-    fine; absence is not). Without it we don't touch the pending record: marking a generation
-    'exact' on unknown/absent cost would clear the estimate flag while under-counting spend."""
+    Requires AUTHORITATIVE cost — `usage["cost"]` must be a finite, non-negative number
+    (see `_authoritative_cost`). Without it we don't touch the pending record: marking a
+    generation 'exact' on unknown cost would clear the estimate flag while under-counting spend."""
     if not generation_id or not config.active_project_id():
         return False
-    if not isinstance(usage, dict) or "cost" not in usage:
+    if not _authoritative_cost(usage):
         return False  # no authoritative cost -> leave it pending, keep totals flagged estimated
     try:
         with _lock:

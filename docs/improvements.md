@@ -293,8 +293,9 @@ to check) and cost awareness.
     `X-Generation-Id`). `summary()` flags totals `estimated`. Evictions past the cap are
     tombstoned (`dropped_pending`) so estimates can't silently go exact; `resolve_dropped()` is
     the explicit administrative clear. `usage.reconcile(generation_id, usage)` folds a resolved
-    generation in — but only with **authoritative** cost (a `cost` key present; absent data is
-    refused so an unknown generation is never marked exact) — the hook a future OpenRouter
+    generation in — but only with **authoritative** cost (`cost` must be a finite, non-negative
+    number; explicit `0` is fine, but `None`/`""`/bool/NaN/Inf/negative/non-numeric are refused,
+    so an unknown generation is never marked exact) — the hook a future OpenRouter
     generation-stats poller uses.
   Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
   extraction executor threads so their spend attributes correctly (invariant 2). Recording is

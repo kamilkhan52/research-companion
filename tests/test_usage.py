@@ -145,14 +145,15 @@ def test_reconcile_unknown_generation_is_a_noop(temp_project):
 
 def test_reconcile_requires_authoritative_cost(temp_project):
     usage.record_pending("analysis", "m", "gen-1")
-    # No authoritative cost -> must NOT clear the pending as a zero-cost completed call.
-    assert usage.reconcile("gen-1", None) is False
-    assert usage.reconcile("gen-1", {}) is False
-    assert usage.reconcile("gen-1", {"prompt_tokens": 5}) is False
+    # Non-authoritative cost values must NOT clear the pending as a zero-cost completed call —
+    # not a missing key, and not a present-but-junk value (null/empty/bool/NaN/Inf/neg/string).
+    for bad in [None, {}, {"prompt_tokens": 5}, {"cost": None}, {"cost": ""}, {"cost": "0.01"},
+                {"cost": True}, {"cost": float("nan")}, {"cost": float("inf")}, {"cost": -0.5}]:
+        assert usage.reconcile("gen-1", bad) is False
     s = usage.summary()
-    assert s["pending_count"] == 1 and s["estimated"] is True   # untouched
-    # A genuine 0.0 cost (free model) IS authoritative — the `cost` key is present.
-    assert usage.reconcile("gen-1", {"cost": 0.0}) is True
+    assert s["pending_count"] == 1 and s["estimated"] is True   # untouched by every bad input
+    # Genuine finite non-negative numbers ARE authoritative, including an explicit 0.
+    assert usage.reconcile("gen-1", {"cost": 0}) is True
     assert usage.summary()["pending_count"] == 0
 
 
