@@ -52,8 +52,19 @@ APP_TITLE = os.environ.get("RC_APP_TITLE", "Research Reading Companion")
 # so commits always succeed and are attributed consistently regardless of host config. Default
 # matches the identity the existing project repos already use. Once projects are scoped per user
 # this is the natural hook for per-user attribution (pass the authenticated user through).
-GIT_AUTHOR_NAME = os.environ.get("RC_GIT_AUTHOR_NAME", "Research Companion")
-GIT_AUTHOR_EMAIL = os.environ.get("RC_GIT_AUTHOR_EMAIL", "companion@local")
+DEFAULT_GIT_AUTHOR_NAME = "Research Companion"
+DEFAULT_GIT_AUTHOR_EMAIL = "companion@local"
+
+
+def git_author_name() -> str:
+    # Resolve at call time and treat a present-but-empty/whitespace env var as unset — an
+    # empty `user.name=` would re-create the very "empty ident name" failure this guards against
+    # (`.env` templates routinely leave a var declared but blank).
+    return os.environ.get("RC_GIT_AUTHOR_NAME", "").strip() or DEFAULT_GIT_AUTHOR_NAME
+
+
+def git_author_email() -> str:
+    return os.environ.get("RC_GIT_AUTHOR_EMAIL", "").strip() or DEFAULT_GIT_AUTHOR_EMAIL
 
 
 def git_identity_args() -> list[str]:
@@ -62,8 +73,8 @@ def git_identity_args() -> list[str]:
     host's global git config. `-c` takes precedence over repo/global config, so authorship is
     deterministic."""
     return [
-        "-c", f"user.name={GIT_AUTHOR_NAME}",
-        "-c", f"user.email={GIT_AUTHOR_EMAIL}",
+        "-c", f"user.name={git_author_name()}",
+        "-c", f"user.email={git_author_email()}",
     ]
 
 # ---- active project (per-request) ----

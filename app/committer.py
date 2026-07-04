@@ -16,7 +16,7 @@ class CommitError(Exception):
 
 def _git(*args: str) -> str:
     # config.git_identity_args() pins the author so a commit never fails for a missing global
-    # git identity (fresh server/container) — see config.GIT_AUTHOR_NAME.
+    # git identity (fresh server/container) — see config.git_author_name().
     proc = subprocess.run(
         ["git", *config.git_identity_args(), *args], cwd=str(config.project_dir()),
         capture_output=True, text=True,

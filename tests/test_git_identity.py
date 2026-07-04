@@ -58,9 +58,30 @@ def test_committer_commit_succeeds_without_ambient_identity(projects_root, no_am
 
 
 def test_env_override_changes_commit_author(projects_root, no_ambient_git_identity, monkeypatch):
-    monkeypatch.setattr(config, "GIT_AUTHOR_NAME", "Alice Researcher")
-    monkeypatch.setattr(config, "GIT_AUTHOR_EMAIL", "alice@example.com")
+    monkeypatch.setenv("RC_GIT_AUTHOR_NAME", "Alice Researcher")
+    monkeypatch.setenv("RC_GIT_AUTHOR_EMAIL", "alice@example.com")
     meta = projects.create_project("Env Project")
     repo = projects.project_path(meta["id"])
     assert _log(repo, "%an") == "Alice Researcher"
     assert _log(repo, "%ae") == "alice@example.com"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_env_falls_back_to_default(projects_root, no_ambient_git_identity, monkeypatch, blank):
+    # A present-but-empty/whitespace env var must NOT produce an empty `user.name=` — that would
+    # re-create the exact "empty ident name" failure this hardening prevents.
+    monkeypatch.setenv("RC_GIT_AUTHOR_NAME", blank)
+    monkeypatch.setenv("RC_GIT_AUTHOR_EMAIL", blank)
+    assert config.git_author_name() == "Research Companion"
+    assert config.git_author_email() == "companion@local"
+    meta = projects.create_project("Blank Env Project")
+    repo = projects.project_path(meta["id"])
+    assert _log(repo, "%ae") == "companion@local"
+
+
+def test_projects_git_surfaces_failure(projects_root, no_ambient_git_identity):
+    # projects._git must not swallow non-zero exits (previously check=False), so create_project /
+    # adopt_existing can't "succeed" while git actually failed. A bad git subcommand exits non-zero.
+    meta = projects.create_project("Fail Project")
+    with pytest.raises(projects.ProjectError):
+        projects._git(meta["id"], "config", "--get", "no.such.key")
