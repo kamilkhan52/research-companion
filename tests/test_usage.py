@@ -316,9 +316,9 @@ def test_stream_failed_billed_attempt_then_successful_retry_records_both(temp_pr
 
 
 def test_usage_endpoint_returns_presentation_form(temp_project):
-    from app import main
+    from app.routers import usage as usage_routes
     usage.record("analysis", "m", {"prompt_tokens": 10, "cost": 0.001})
-    out = main.get_usage(temp_project)
+    out = usage_routes.get_usage(temp_project)
     assert out["total"]["calls"] == 1
     assert out["by_operation"]["analysis"]["prompt_tokens"] == 10
     assert abs(out["total"]["cost_usd"] - 0.001) < 1e-12

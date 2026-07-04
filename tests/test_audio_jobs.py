@@ -185,37 +185,41 @@ def _route_env(monkeypatch):
 
 
 def test_route_valid_project_bills_it(temp_project, monkeypatch):
-    from app import main, usage
+    from app import usage
+    from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    resp = main.start_audio_job(main.NarrateReq(text="Hello route.", project=temp_project))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Hello route.", project=temp_project))
     _wait_until_settled(resp["job"]["id"])
     assert usage.load()["by_operation"]["narration"]["calls"] == 1
 
 
 def test_route_missing_project_bills_unattributed(temp_project, monkeypatch):
-    from app import main, usage
+    from app import usage
+    from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    resp = main.start_audio_job(main.NarrateReq(text="No project route.", project=None))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="No project route.", project=None))
     _wait_until_settled(resp["job"]["id"])
     assert usage.unattributed_summary()["by_operation"]["narration"]["calls"] == 1
     assert usage.load()["total"]["calls"] == 0
 
 
 def test_route_invalid_project_is_rejected_400(temp_project, monkeypatch):
-    from app import main
+    from app.routers import audio as audio_routes
+    from fastapi import HTTPException
     _route_env(monkeypatch)
-    with pytest.raises(main.HTTPException) as ei:
-        main.start_audio_job(main.NarrateReq(text="x", project="../etc"))
+    with pytest.raises(HTTPException) as ei:
+        audio_routes.start_audio_job(audio_routes.NarrateReq(text="x", project="../etc"))
     assert ei.value.status_code == 400  # traversal/unknown id -> client error, not silent None
 
 
 def test_route_cached_result_bills_no_one(temp_project, monkeypatch):
-    from app import main, usage
+    from app import usage
+    from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    first = main.start_audio_job(main.NarrateReq(text="Cached route.", project=temp_project))
+    first = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=temp_project))
     _wait_until_settled(first["job"]["id"])
     audio_jobs._jobs.clear()
     before = usage.load()["by_operation"]["narration"]["calls"]
-    resp = main.start_audio_job(main.NarrateReq(text="Cached route.", project=None))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=None))
     assert resp["job"]["status"] == "done"  # cache hit, no thread
     assert usage.load()["by_operation"]["narration"]["calls"] == before  # nothing re-billed

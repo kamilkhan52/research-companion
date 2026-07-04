@@ -57,7 +57,16 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 
 ## Module map (`app/`)
 
-- `main.py` — FastAPI app: auth middleware, request models, all routes, SSE + job endpoints.
+- `main.py` — FastAPI **app assembly only**: auth middleware, router registration, static SPA
+  mount. The routes themselves live in `routers/` (below).
+- `routers/` — HTTP routes, one module per feature area, each owning its routes + the request
+  models + helpers they use. App-global routes hang off a plain `router`; per-project routes
+  hang off `routers.make_project_router()`, which pre-binds the `/api/projects/{pid}` prefix and
+  the `use_project` dependency in one place (a module may expose both). Modules: `system` (health/
+  auth-config), `settings`, `catalogue` (models/favorites), `projects_api` (project mgmt + state),
+  `usage`, `audio`, `session` (retrieval + all turn-delivery paths: SSE/job/plain), `notes`
+  (notes + review/approve + add-paper), `discovery`, `graph`. Add a new route to its feature
+  module (or a new module + `include_router` in main.py), not to main.py.
 - `config.py` — settings (app-global) + the active-project contextvar + path resolution.
 - `projects.py` — multi-project registry; `use_project` dependency binds the contextvar.
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
@@ -117,7 +126,8 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
   `git commit`.
 - Errors surface to clients as `HTTPException(detail=...)`; each domain layer raises its own
   exception type (`AgentError`, `RetrievalError`, `CommitError`, `ProjectError`, `GraphError`,
-  `NotesError`, `TTSError`, `AuthError`) which `main.py` maps to HTTP status codes.
+  `NotesError`, `TTSError`, `AuthError`) which the route handlers in `routers/` catch and map to
+  HTTP status codes.
 - Client-facing "quick" actions (approve, reopen, add paper) may be plain POSTs; anything that
   generates or runs minutes-long must be a job (invariant 1). See `mobile/src/api/endpoints.ts`
   — the `turnJobPaths` comment spells this out.
