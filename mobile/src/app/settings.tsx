@@ -17,8 +17,10 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
-import { useFavoriteModels, useSaveSettings, useSettings } from '@/api/queries';
+import { useFavoriteModels, useSaveSettings, useSettings, useUsage } from '@/api/queries';
+import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
+import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -130,6 +132,9 @@ export default function SettingsScreen() {
             </Text>
           ) : (
             <>
+              {/* Usage / cost for the active project */}
+              <UsageSection />
+
               {/* Analysis */}
               <Section title="Analysis">
                 <Label text="OpenRouter API key" hint={settings.data?.has_key ? `set (${settings.data.key_hint})` : 'not set'} />
@@ -245,6 +250,82 @@ export default function SettingsScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
     </Screen>
+  );
+}
+
+function fmtUsd(n: number): string {
+  if (!n) return '$0.00';
+  if (n < 0.01) return `$${n.toFixed(5)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+const fmtNum = (n: number) => n.toLocaleString();
+
+/** The active project's accumulated LLM spend (GET /api/projects/{pid}/usage). Read-only. */
+function UsageSection() {
+  const { activePid } = useActiveProject();
+  const usage = useUsage(activePid);
+
+  if (!activePid) {
+    return (
+      <Section title="Usage">
+        <Text variant="caption" color={colors.muted}>Open a project to see its LLM usage.</Text>
+      </Section>
+    );
+  }
+  return (
+    <Section title="Usage (this project)">
+      {usage.isLoading ? (
+        <ActivityIndicator color={colors.cyan} />
+      ) : usage.isError || !usage.data ? (
+        <Text variant="caption" color={colors.muted}>Usage unavailable.</Text>
+      ) : (
+        <UsageBody data={usage.data} />
+      )}
+    </Section>
+  );
+}
+
+function UsageBody({ data }: { data: UsageSummary }) {
+  const t = data.total;
+  const ops = Object.entries(data.by_operation).sort(
+    (a, b) => b[1].cost_nanousd - a[1].cost_nanousd,
+  );
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.sm }}>
+        <Text variant="heading" style={{ fontSize: 22 }}>
+          {fmtUsd(t.cost_usd)}
+        </Text>
+        {data.estimated ? (
+          <Text variant="caption" color={colors.muted}>
+            estimated{data.pending_count ? ` · ${data.pending_count} pending` : ''}
+          </Text>
+        ) : null}
+      </View>
+      <Text variant="caption" color={colors.muted} style={{ marginTop: 2 }}>
+        {fmtNum(t.total_tokens)} tokens · {fmtNum(t.calls)} calls
+      </Text>
+
+      {ops.length ? (
+        <View style={{ marginTop: space.md, gap: 6 }}>
+          {ops.map(([op, b]) => (
+            <View key={op} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text variant="caption">{op.replace(/_/g, ' ')}</Text>
+              <Text variant="caption" color={colors.muted}>
+                {fmtNum(b.total_tokens)} tok · {fmtUsd(b.cost_usd)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {data.estimated ? (
+        <Text variant="caption" color={colors.muted} style={{ marginTop: space.sm }}>
+          Some billed streams ended before reporting cost, so the total is a lower bound.
+        </Text>
+      ) : null}
+    </View>
   );
 }
 
