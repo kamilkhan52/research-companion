@@ -148,6 +148,7 @@ class SettingsReq(BaseModel):
 
 class NarrateReq(BaseModel):
     text: str
+    project: str | None = None   # initiating project, for usage attribution (audio is app-global)
 
 
 class PromptReq(BaseModel):
@@ -354,8 +355,9 @@ def get_state(pid: str):
 @project_router.get("/usage")
 def get_usage(pid: str):
     """This project's accumulated LLM token/cost usage (lifetime aggregate + per-model /
-    per-operation breakdowns). Cheap read of .state/usage.json; no LLM call."""
-    return usage.load()
+    per-operation breakdowns, cost in USD + exact nano-USD). `estimated` is true when some
+    billed streams dropped before their final usage chunk. Cheap read of .state/usage.json."""
+    return usage.summary()
 
 
 @app.get("/api/settings")
@@ -419,7 +421,10 @@ def start_audio_job(req: NarrateReq):
         raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Nothing to narrate.")
-    return {"job": audio_jobs.start_job(req.text).to_dict()}
+    # Audio is an app-global job, but the narration LLM spend is billed to the initiating
+    # project (validated; an unknown/absent one just means the narration isn't attributed).
+    billing = req.project if (req.project and projects.exists(req.project)) else None
+    return {"job": audio_jobs.start_job(req.text, billing_project=billing).to_dict()}
 
 
 @app.get("/api/audio/jobs/{job_id}")

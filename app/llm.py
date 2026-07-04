@@ -226,6 +226,9 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             if emitted:  # mid-stream: a retry would duplicate text, so fail fast
                 log.error("openrouter stream dropped after first token (model=%s): %s",
                           body.get("model"), last)
+                # Upstream was billed but we never got the final usage chunk — flag it so totals
+                # are honestly marked as estimates rather than silently understating spend.
+                usage.record_incomplete(operation, body.get("model"))
                 raise LLMError(last) from e
             continue  # transport failure before any content — retry
     log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",

@@ -115,3 +115,51 @@ def test_synthesis_failure_surfaces_as_an_error_job():
     # A retry after the failure starts a fresh job rather than returning the dead one.
     retry = audio_jobs.start_job("Will fail.", narrate_fn=fake_narrate, synth_fn=fake_synth)
     assert _wait_until_settled(retry.id).status == "done"
+
+
+# ---- narration cost attribution (audio is app-global, but spend bills the initiating project) ----
+
+def _billing_narrate(text: str) -> str:
+    """Stand-in for agent.narrate: records usage against the ACTIVE project, exactly as
+    llm.complete does, so the test sees whether the worker bound the right project."""
+    from app import usage
+    usage.record("narration", "narr-model", {"prompt_tokens": 5, "cost": 0.02})
+    return f"narrated: {text}"
+
+
+def test_narration_bills_the_initiating_project_not_another(temp_project):
+    from app import config, usage
+    # temp_project is the ambient "other" project; the audio was initiated from proj-A.
+    job = audio_jobs.start_job("Bill A.", billing_project="proj-A",
+                               narrate_fn=_billing_narrate, synth_fn=fake_synth)
+    assert _wait_until_settled(job.id).status == "done"
+
+    tok = config.set_active_project("proj-A")
+    try:
+        billed = usage.load()
+    finally:
+        config.reset_active_project(tok)
+    assert billed["by_operation"]["narration"]["calls"] == 1
+    assert billed["by_operation"]["narration"]["cost_nanousd"] == 20_000_000  # 0.02 USD
+
+    # The ambient project (temp_project) is NOT charged for A's narration.
+    assert usage.load()["total"]["calls"] == 0
+
+
+def test_cached_narration_costs_nothing(temp_project):
+    from app import config, usage
+    # First run under proj-A narrates and bills.
+    first = audio_jobs.start_job("Reused text.", billing_project="proj-A",
+                                 narrate_fn=_billing_narrate, synth_fn=fake_synth)
+    _wait_until_settled(first.id)
+    audio_jobs._jobs.clear()
+
+    # A later request from proj-B hits the narration+mp3 cache: no LLM call, so no one is billed.
+    job = audio_jobs.start_job("Reused text.", billing_project="proj-B",
+                               narrate_fn=_billing_narrate, synth_fn=fake_synth)
+    assert job.status == "done"
+    tok = config.set_active_project("proj-B")
+    try:
+        assert usage.load()["total"]["calls"] == 0  # cache hit -> unbilled
+    finally:
+        config.reset_active_project(tok)

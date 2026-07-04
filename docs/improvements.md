@@ -273,12 +273,22 @@ to check) and cost awareness.
   omits cost. Aggregated per project into `.state/usage.json`: a lifetime total plus by-model
   and by-operation (analysis / narration / graph_extraction / discovery / notes) breakdowns —
   the shape the eventual **credits model** reuses (per-user is one more key, not a redesign).
-  Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
-  extraction executor threads so their spend attributes correctly (invariant 2). Recording is
-  best-effort (never fails the turn) and no-ops without an active project. `test_usage` covers
-  accumulation, breakdowns, missing-cost, corruption tolerance, and the complete/stream feeds.
-  *Follow-up:* a Settings readout in the mobile client (`quality/usage-mobile`), and — when the
-  agentic path (`agent_harness`, Pydantic AI's own client) is used — routing its usage here too.
+  Ledger-grade details, after review: **cost is stored as integer nano-USD** (summed exactly;
+  a float rounded per-add silently zeroes sub-micro-dollar calls) and surfaced as USD only for
+  presentation (`summary()`); **narration spend on the app-global audio path bills the
+  initiating project** (`audio_jobs` binds it around the narration call, leaving the shared
+  cache/dedup untouched — a cache hit costs nothing); and a **billed stream that drops after its
+  first token** (no final usage chunk) increments `incomplete_streams` so totals are honestly
+  flagged `estimated` rather than silently understated. Exposed at
+  `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its extraction
+  executor threads so their spend attributes correctly (invariant 2). Recording is best-effort
+  (never fails the turn) and no-ops without an active project. `test_usage` covers accumulation,
+  breakdowns, missing-cost, sub-micro precision, incomplete-stream flagging, and the
+  complete/stream feeds; `test_audio_jobs` proves narration bills the initiating project (and a
+  cache hit bills no one). *Follow-ups:* the mobile Settings readout (`quality/usage-mobile`,
+  which also sends the initiating `project` on the audio request); reconciling incomplete
+  streams by OpenRouter generation id; and routing the agentic path (`agent_harness`, Pydantic
+  AI's own client) through here too.
 
 ### 3.4 Prompt management
 

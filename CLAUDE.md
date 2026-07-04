@@ -75,8 +75,10 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
   + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
   lifecycle, LLM boundaries, and commits — not in the deterministic store.
 - `usage.py` — per-project LLM token/cost accounting (`.state/usage.json`), fed by `llm.py`
-  (cost from OpenRouter's `usage.cost`). Records against the active project (invariant 2);
-  best-effort, never fails a turn. `GET /api/projects/{pid}/usage`. Foundation for credits.
+  (cost from OpenRouter's `usage.cost`, stored as exact integer nano-USD). Records against the
+  active project (invariant 2); best-effort, never fails a turn. Audio narration bills the
+  initiating project; a dropped stream flags totals `estimated`. `GET /api/projects/{pid}/usage`
+  (`summary()`). Foundation for credits.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
 - `committer.py` — the one component that writes approved changes + git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.
