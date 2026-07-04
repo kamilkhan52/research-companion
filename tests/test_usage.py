@@ -13,7 +13,7 @@ def test_load_blank_when_absent(temp_project):
     data = usage.load()
     assert data["total"]["calls"] == 0
     assert data["by_model"] == {} and data["by_operation"] == {}
-    assert data["pending"] == []
+    assert data["pending"] == [] and data["dropped_pending"] == 0
 
 
 def test_record_accumulates_tokens_and_cost(temp_project):
@@ -102,12 +102,28 @@ def test_record_pending_flags_estimate(temp_project):
     assert s["estimated"] is True  # totals are estimates while a billed stream is unreconciled
 
 
-def test_pending_records_are_bounded(temp_project):
-    for i in range(usage._PENDING_CAP + 25):
+def test_pending_records_are_bounded_and_evictions_are_tombstoned(temp_project, monkeypatch):
+    monkeypatch.setattr(usage, "_PENDING_CAP", 5)
+    for i in range(8):
         usage.record_pending("analysis", "m", f"gen-{i}")
-    pending = usage.load()["pending"]
-    assert len(pending) == usage._PENDING_CAP           # capped
-    assert pending[-1]["generation_id"] == f"gen-{usage._PENDING_CAP + 24}"  # newest kept
+    data = usage.load()
+    assert len(data["pending"]) == 5                      # capped
+    assert data["pending"][-1]["generation_id"] == "gen-7"  # newest kept
+    assert data["dropped_pending"] == 3                   # oldest 3 tombstoned, not forgotten
+
+
+def test_dropped_pending_keeps_estimated_true_even_after_reconciling_retained(temp_project, monkeypatch):
+    monkeypatch.setattr(usage, "_PENDING_CAP", 5)
+    for i in range(8):
+        usage.record_pending("analysis", "m", f"gen-{i}")
+    for p in list(usage.load()["pending"]):               # resolve every RETAINED record
+        assert usage.reconcile(p["generation_id"], {"cost": 0.0}) is True
+    s = usage.summary()
+    assert s["pending_count"] == 0
+    assert s["dropped_pending"] == 3
+    assert s["estimated"] is True   # evicted billed generations can never round up to 'exact'
+    usage.resolve_dropped()         # explicit administrative acknowledgement
+    assert usage.summary()["estimated"] is False
 
 
 def test_reconcile_clears_pending_and_folds_in_cost(temp_project):
@@ -125,6 +141,19 @@ def test_reconcile_unknown_generation_is_a_noop(temp_project):
     usage.record_pending("analysis", "m", "gen-1")
     assert usage.reconcile("does-not-exist", {"cost": 0.01}) is False
     assert usage.summary()["pending_count"] == 1
+
+
+def test_reconcile_requires_authoritative_cost(temp_project):
+    usage.record_pending("analysis", "m", "gen-1")
+    # No authoritative cost -> must NOT clear the pending as a zero-cost completed call.
+    assert usage.reconcile("gen-1", None) is False
+    assert usage.reconcile("gen-1", {}) is False
+    assert usage.reconcile("gen-1", {"prompt_tokens": 5}) is False
+    s = usage.summary()
+    assert s["pending_count"] == 1 and s["estimated"] is True   # untouched
+    # A genuine 0.0 cost (free model) IS authoritative — the `cost` key is present.
+    assert usage.reconcile("gen-1", {"cost": 0.0}) is True
+    assert usage.summary()["pending_count"] == 0
 
 
 # ---- unattributed ledger (app-global) ----
@@ -228,6 +257,61 @@ def test_stream_mid_drop_marks_pending_not_costed(temp_project, monkeypatch):
     assert data["pending"][0]["generation_id"] == "gen-drop"
     assert data["total"]["cost_nanousd"] == 0
     assert usage.summary()["estimated"] is True
+
+
+def test_stream_pre_token_billed_200_attempts_are_all_pending(temp_project, monkeypatch):
+    # Two HTTP-200 attempts, each exposes a generation id then drops BEFORE any token/usage.
+    # Both were billed (hidden reasoning), so both must be pending — not silently dropped.
+    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    monkeypatch.setattr(llm.time, "sleep", lambda *_: None)
+    state = {"n": 0}
+
+    def fake_stream(*a, **k):
+        state["n"] += 1
+        return _FakeStream([], raise_at_end=True, headers={"x-generation-id": f"gen-{state['n']}"})
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "x"}], operation="analysis", tries=2))
+    data = usage.load()
+    assert len(data["pending"]) == 2
+    assert {p["generation_id"] for p in data["pending"]} == {"gen-1", "gen-2"}
+    assert data["total"]["cost_nanousd"] == 0
+
+
+def test_stream_empty_clean_eof_is_pending(temp_project, monkeypatch):
+    # 200 that ends cleanly ([DONE]) with no content and no usage: still a billed generation.
+    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    monkeypatch.setattr(httpx, "stream",
+                        lambda *a, **k: _FakeStream(["data: [DONE]"], headers={"x-generation-id": "gen-empty"}))
+    assert list(llm.stream([{"role": "user", "content": "x"}], operation="analysis")) == []
+    data = usage.load()
+    assert data["total"]["calls"] == 0
+    assert len(data["pending"]) == 1 and data["pending"][0]["generation_id"] == "gen-empty"
+
+
+def test_stream_failed_billed_attempt_then_successful_retry_records_both(temp_project, monkeypatch):
+    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    monkeypatch.setattr(llm.time, "sleep", lambda *_: None)
+    responses = [
+        _FakeStream([], raise_at_end=True, headers={"x-generation-id": "gen-fail"}),  # pre-token drop
+        _FakeStream(["data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}),
+                     "data: " + json.dumps({"choices": [], "usage": {"prompt_tokens": 3, "cost": 0.005}}),
+                     "data: [DONE]"]),  # success with exact usage
+    ]
+    state = {"n": 0}
+
+    def fake_stream(*a, **k):
+        r = responses[min(state["n"], len(responses) - 1)]
+        state["n"] += 1
+        return r
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    assert list(llm.stream([{"role": "user", "content": "x"}], operation="analysis")) == ["ok"]
+    data = usage.load()
+    assert len(data["pending"]) == 1 and data["pending"][0]["generation_id"] == "gen-fail"  # 1st, billed
+    assert data["total"]["cost_nanousd"] == 5_000_000       # 2nd, exact
+    assert usage.summary()["estimated"] is True             # the failed generation is still unresolved
 
 
 def test_usage_endpoint_returns_presentation_form(temp_project):

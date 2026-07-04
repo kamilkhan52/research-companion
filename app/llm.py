@@ -165,6 +165,16 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
     return content
 
 
+def _account_stream(operation: str, model: str | None, seen_usage: dict | None,
+                    gen_id: str | None) -> None:
+    """Account one accepted (200) streaming generation: exact usage if its final usage chunk
+    arrived, else a pending record (billed, cost unknown, reconcilable by gen_id)."""
+    if seen_usage is not None:
+        usage.record(operation, model, seen_usage)
+    else:
+        usage.record_pending(operation, model, gen_id)
+
+
 def stream(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
            max_tokens: int = 16000, reasoning: dict | None = None,
            timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES,
@@ -191,6 +201,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
         attempts = attempt + 1
         seen_usage: dict | None = None
         gen_id: str | None = None
+        got_200 = False
         try:
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
@@ -198,9 +209,10 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                     detail = r.read().decode("utf-8", "ignore")[:400]
                     last = f"OpenRouter error {r.status_code}: {detail}"
                     if r.status_code in _RETRY_STATUS:
-                        continue  # nothing emitted yet — safe to retry
+                        continue  # not billed — safe to retry, nothing to account
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
                     raise LLMError(last)
+                got_200 = True
                 gen_id = r.headers.get("x-generation-id") or None
                 for line in r.iter_lines():
                     if not line or line.startswith(":"):
@@ -222,24 +234,20 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                     if piece:
                         emitted = True
                         yield piece
-            if seen_usage is not None:
-                usage.record(operation, body.get("model"), seen_usage)
-            elif emitted:
-                # Clean EOF but no final usage chunk (proxy/provider truncation): content was
-                # billed, cost unknown — record as pending so totals read as estimates, not a
-                # silent zero-cost completed call.
-                usage.record_pending(operation, body.get("model"), gen_id)
+            _account_stream(operation, body.get("model"), seen_usage, gen_id)  # exact or pending
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"
+            # A 200 generation is billed the moment OpenRouter accepts it (it can spend on hidden
+            # reasoning before any content), so account it even if it dropped before a token — as
+            # exact usage if the final chunk arrived, else pending. A non-200 attempt wasn't billed.
+            if got_200:
+                _account_stream(operation, body.get("model"), seen_usage, gen_id)
             if emitted:  # mid-stream: a retry would duplicate text, so fail fast
                 log.error("openrouter stream dropped after first token (model=%s): %s",
                           body.get("model"), last)
-                # Billed upstream but no final usage chunk — flag it (with the generation id) so
-                # totals are honest estimates and this can be reconciled later.
-                usage.record_pending(operation, body.get("model"), gen_id)
                 raise LLMError(last) from e
-            continue  # transport failure before any content — retry
+            continue  # transport failure before any content — retry a fresh generation
     log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",
               attempts, body.get("model"), last)
     raise LLMError(last)

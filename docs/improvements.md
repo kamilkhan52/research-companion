@@ -286,12 +286,16 @@ to check) and cost awareness.
     segment (`_safe_pid` + a resolved-containment check) — before this, an absolute/`..` value
     could have made `usage.record` write outside `PROJECTS_ROOT`. An invalid billing project is a
     400, not a silent misattribution.
-  - **Billed-but-unknown streams are reconcilable, not silently lost.** A stream that drops after
-    its first token *or* ends cleanly without a final usage chunk records a bounded **pending**
-    record (`{operation, model, generation_id}`, generation id captured from the chunk/header),
-    and `summary()` flags totals `estimated`. `usage.reconcile(generation_id, usage)` folds a
-    resolved generation into the aggregate — the hook a future OpenRouter generation-stats poller
-    uses.
+  - **Billed-but-unknown streams are reconcilable, not silently lost.** *Any* accepted (200)
+    generation that ends without a final usage chunk — a mid-stream drop, a clean EOF, or even a
+    disconnect before the first token (a 200 is billed the moment OpenRouter accepts it) — records
+    a bounded **pending** record (`{operation, model, generation_id}`, id from the chunk `id` /
+    `X-Generation-Id`). `summary()` flags totals `estimated`. Evictions past the cap are
+    tombstoned (`dropped_pending`) so estimates can't silently go exact; `resolve_dropped()` is
+    the explicit administrative clear. `usage.reconcile(generation_id, usage)` folds a resolved
+    generation in — but only with **authoritative** cost (a `cost` key present; absent data is
+    refused so an unknown generation is never marked exact) — the hook a future OpenRouter
+    generation-stats poller uses.
   Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
   extraction executor threads so their spend attributes correctly (invariant 2). Recording is
   best-effort (never fails the turn). `test_usage` covers exact accumulation, sub-micro
@@ -410,6 +414,12 @@ nobody, one shared audio/narration cache. If Supabase auth is a prelude to multi
   `project.json`, checked in `use_project`),
 - move job registries to a persistent queue as in 1.4,
 - rate-limit/queue LLM spend per user.
+- **Derive the usage/credits billing scope from authenticated project *ownership*, not from a
+  client-supplied project id.** The §3.3 audio `project` (and any billing hint) is currently
+  trusted as long as the project *exists* — fine for a single-household deployment, but before a
+  credits launch it must be checked against `request.state.user` owning that project, or one user
+  could bill another's credits. The trust-boundary validation (`projects._safe_pid`) is in place;
+  the ownership check is the multi-user addition.
 
 If it is *not* a goal — write that down in CLAUDE.md too. Half of the "is this OK?"
 questions in this codebase (in-memory jobs, file locks, global settings) are answered by

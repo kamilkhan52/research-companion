@@ -67,7 +67,7 @@ def _empty_bucket() -> dict:
 
 def _blank() -> dict:
     return {"total": _empty_bucket(), "by_model": {}, "by_operation": {},
-            "pending": [], "first_at": None, "updated_at": None}
+            "pending": [], "dropped_pending": 0, "first_at": None, "updated_at": None}
 
 
 def load() -> dict:
@@ -94,14 +94,17 @@ def _present_bucket(bucket: dict) -> dict:
 def summary() -> dict:
     """Presentation form of the aggregate: every bucket gains a derived `cost_usd`, `pending` is
     reduced to a `pending_count`, and `estimated` is true while any billed-but-unreconciled
-    streams remain (so the total is never silently presented as authoritative)."""
+    stream remains — including `dropped_pending` generations evicted past the cap, which keep the
+    total flagged as an estimate until an explicit administrative resolution, so forgotten spend
+    can never round up to 'exact'."""
     data = load()
     pending = data.pop("pending", [])
+    dropped = data.get("dropped_pending", 0)
     data["total"] = _present_bucket(data["total"])
     data["by_model"] = {k: _present_bucket(v) for k, v in data["by_model"].items()}
     data["by_operation"] = {k: _present_bucket(v) for k, v in data["by_operation"].items()}
     data["pending_count"] = len(pending)
-    data["estimated"] = len(pending) > 0
+    data["estimated"] = len(pending) > 0 or dropped > 0
     return data
 
 
@@ -161,7 +164,12 @@ def record_pending(operation: str, model: str | None, generation_id: str | None)
             data = load()
             data["pending"].append({"operation": operation or "llm", "model": model or "unknown",
                                      "generation_id": generation_id, "at": _now()})
-            if len(data["pending"]) > _PENDING_CAP:
+            overflow = len(data["pending"]) - _PENDING_CAP
+            if overflow > 0:
+                # Evicting the oldest pending records past the cap would otherwise let totals go
+                # `estimated=false` even though those billed generations were never resolved. Keep
+                # a tombstone count so they still flag the aggregate as an estimate.
+                data["dropped_pending"] = data.get("dropped_pending", 0) + overflow
                 data["pending"] = data["pending"][-_PENDING_CAP:]
             data["updated_at"] = _now()
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
@@ -173,9 +181,15 @@ def reconcile(generation_id: str, usage: dict | None) -> bool:
     """Resolve a previously-pending stream: if a pending record with this generation id exists in
     the active scope, drop it and fold its now-known usage into the aggregate. Returns True if a
     pending record was cleared. This is the hook a future OpenRouter generation-stats poller uses
-    to turn estimates into exact spend."""
+    to turn estimates into exact spend.
+
+    Requires AUTHORITATIVE cost data — `usage` must be a dict carrying a `cost` key (even 0.0 is
+    fine; absence is not). Without it we don't touch the pending record: marking a generation
+    'exact' on unknown/absent cost would clear the estimate flag while under-counting spend."""
     if not generation_id or not config.active_project_id():
         return False
+    if not isinstance(usage, dict) or "cost" not in usage:
+        return False  # no authoritative cost -> leave it pending, keep totals flagged estimated
     try:
         with _lock:
             data = load()
@@ -183,12 +197,29 @@ def reconcile(generation_id: str, usage: dict | None) -> bool:
             if match is None:
                 return False
             data["pending"] = [p for p in data["pending"] if p is not match]
-            _apply(data, match.get("operation"), match.get("model"), usage or {})
+            _apply(data, match.get("operation"), match.get("model"), usage)
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
             return True
     except Exception as e:
         log.warning("usage.reconcile failed (gen=%s): %s", generation_id, e)
         return False
+
+
+def resolve_dropped(count: int | None = None) -> None:
+    """Administratively acknowledge evicted (dropped) pending records as accounted-for out of
+    band, so `estimated` can return to false. With no `count`, clears the whole tombstone; else
+    decrements by that many (floored at 0). Best-effort, never raises."""
+    if not config.active_project_id():
+        return
+    try:
+        with _lock:
+            data = load()
+            current = data.get("dropped_pending", 0)
+            data["dropped_pending"] = 0 if count is None else max(0, current - count)
+            data["updated_at"] = _now()
+            atomic_write_text(_usage_file(), json.dumps(data, indent=2))
+    except Exception as e:
+        log.warning("usage.resolve_dropped failed: %s", e)
 
 
 def unattributed_summary() -> dict:
