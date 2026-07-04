@@ -113,6 +113,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       }
       const gen = ++generation.current;
       const live = () => generation.current === gen;
+      // Capture the initiating project ONCE, up front: this preparation bills whichever project
+      // started it, even if the user switches projects before the POST (or a restart re-POST)
+      // fires. Reading the ref again later would misattribute the spend to the new project.
+      const billingProject = activePidRef.current;
       setErrorById((m) => {
         if (!(id in m)) return m;
         const { [id]: _drop, ...rest } = m;
@@ -128,7 +132,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
       try {
         await setupPlayer();
-        let { job } = await api.startAudioJob(text, activePidRef.current);
+        let { job } = await api.startAudioJob(text, billingProject);
         if (!live()) return;
         applyJob(id, title, job);
 
@@ -145,7 +149,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             if (status === 404 && restarts < MAX_RESTARTS) {
               // Server restarted and lost the in-memory job; re-POST picks up from its caches.
               restarts += 1;
-              job = (await api.startAudioJob(text, activePidRef.current)).job;
+              job = (await api.startAudioJob(text, billingProject)).job;
             } else if (status === undefined && ++pollFailures < MAX_POLL_FAILURES) {
               continue; // network blip — the job is still running server-side; keep polling
             } else {
