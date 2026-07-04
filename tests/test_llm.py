@@ -313,3 +313,62 @@ def test_catalogue_is_single_flight_under_concurrency(monkeypatch):
     assert calls["n"] == 1                       # exactly one upstream fetch for 8 callers
     assert len(results) == 8
     assert all(r == CATALOGUE for r in results)  # everyone got the same catalogue
+
+
+def _counting_failing_get(calls, lock):
+    def fn(*a, **k):
+        with lock:
+            calls["n"] += 1
+        time.sleep(0.03)  # widen the window so the wave genuinely overlaps
+        raise httpx.ConnectError("upstream down")
+    return fn
+
+
+def test_catalogue_stale_failure_is_single_flight(monkeypatch):
+    # Populate a cache, then have every refresh fail. A wave of callers that all see the cache as
+    # stale must produce ONE upstream attempt (not one per caller) and all be served the stale copy.
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: FakeResp(200, {"data": CATALOGUE}))
+    llm.catalogue()
+
+    calls = {"n": 0}
+    monkeypatch.setattr(httpx, "get", _counting_failing_get(calls, threading.Lock()))
+    results, rlock = [], threading.Lock()
+
+    def worker():
+        r = llm.catalogue(ttl=0)  # ttl=0 forces the cache to be treated as stale
+        with rlock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1                       # one shared upstream attempt for the whole wave
+    assert len(results) == 6
+    assert all(r == CATALOGUE for r in results)  # all six served the stale catalogue
+
+
+def test_catalogue_cold_failure_is_single_flight(monkeypatch):
+    # Cold cache + every refresh fails: one shared upstream attempt, and all callers get the same
+    # error outcome rather than each hammering upstream.
+    calls = {"n": 0}
+    monkeypatch.setattr(httpx, "get", _counting_failing_get(calls, threading.Lock()))
+    errors, elock = [], threading.Lock()
+
+    def worker():
+        try:
+            llm.catalogue()
+        except llm.LLMError as e:
+            with elock:
+                errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1     # one shared upstream attempt for the whole wave
+    assert len(errors) == 6    # every caller received the shared error outcome
