@@ -5,6 +5,7 @@ re-"extracted" on a second build."""
 from __future__ import annotations
 
 from app import graph, graph_store, sessions, store
+
 from tests.conftest import add_paper
 
 

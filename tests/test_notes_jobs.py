@@ -9,8 +9,8 @@ import threading
 import time
 
 import pytest
+from app import notes_jobs, projects, store
 
-from app import config, notes_jobs, projects, store
 from tests.conftest import add_paper
 
 

@@ -23,16 +23,15 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import math
 import os
 import re
-from datetime import datetime, timezone
 from collections import deque
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
-from typing import Callable, Iterator
 
 import httpx
-
-import math
 
 from . import citations, config, graph_layout, graph_store, store
 from .models import Paper
@@ -89,7 +88,7 @@ class GraphError(Exception):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def resolve_model() -> str:
@@ -496,13 +495,13 @@ def betweenness_centrality(node_ids: list[str], edges: list[tuple[str, str]]) ->
         adj[a].append(b)
         adj[b].append(a)
 
-    betweenness = {n: 0.0 for n in node_ids}
+    betweenness = dict.fromkeys(node_ids, 0.0)
     for s in node_ids:
         stack: list[str] = []
         pred: dict[str, list[str]] = {n: [] for n in node_ids}
-        sigma = {n: 0.0 for n in node_ids}
+        sigma = dict.fromkeys(node_ids, 0.0)
         sigma[s] = 1.0
-        dist = {n: -1 for n in node_ids}
+        dist = dict.fromkeys(node_ids, -1)
         dist[s] = 0
         queue = deque([s])
         while queue:
@@ -515,7 +514,7 @@ def betweenness_centrality(node_ids: list[str], edges: list[tuple[str, str]]) ->
                 if dist[w] == dist[v] + 1:
                     sigma[w] += sigma[v]
                     pred[w].append(v)
-        delta = {n: 0.0 for n in node_ids}
+        delta = dict.fromkeys(node_ids, 0.0)
         while stack:
             w = stack.pop()
             for v in pred[w]:

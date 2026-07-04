@@ -7,7 +7,6 @@ import concurrent.futures
 import time
 
 import pytest
-
 from app.graph import _call_with_deadline
 
 

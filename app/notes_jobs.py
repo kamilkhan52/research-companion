@@ -15,9 +15,9 @@ import asyncio
 import re
 import threading
 import uuid
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import AsyncIterator, Callable, Iterable
+from datetime import UTC, datetime
 
 from . import agent, agent_harness, committer, config, prompts, store
 
@@ -98,7 +98,7 @@ _lock = threading.Lock()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def get_job(job_id: str) -> NotesJob | None:

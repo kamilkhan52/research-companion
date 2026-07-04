@@ -95,13 +95,15 @@ def split_for_tts(text: str, limit: int = MAX_TTS_CHARS) -> list[str]:
     out, cur = [], ""
     for s in re.split(r"(?<=[.!?])\s+", text):
         while len(s) > limit:                      # pathological single sentence
-            out.append(s[:limit]); s = s[limit:]
+            out.append(s[:limit])
+            s = s[limit:]
         if not cur:
             cur = s
         elif len(cur) + 1 + len(s) <= limit:
             cur += " " + s
         else:
-            out.append(cur); cur = s
+            out.append(cur)
+            cur = s
     if cur:
         out.append(cur)
     return out

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import config, prompts, store
-from .models import IN_DISCUSSION, NOTES_DRAFTED, COMMITTED, REVIEW_SLUG, Turn
+from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
+
 
 def _sessions_dir():
     return config.project_dir() / "sessions"
@@ -24,7 +25,7 @@ def _index_file():
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _load_index() -> dict:

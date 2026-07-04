@@ -7,11 +7,12 @@ module never calls an LLM and never makes network calls — it is pure spine.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config
 from .models import Paper
+
 
 # Per-project file locations resolve against the active project (config.project_dir()), so
 # the same store functions serve every project. The aggregate cross-paper notes (the "working
@@ -70,7 +71,7 @@ CITATION_GRAPH: dict[str, list[str]] = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def derive_slug(title: str) -> str:
@@ -329,7 +330,7 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
         block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")  # provenance only; not parsed
     block.append("")
 
-    heading_idx = next((i for i, l in enumerate(lines) if l.strip() == heading), None)
+    heading_idx = next((i for i, line in enumerate(lines) if line.strip() == heading), None)
     if heading_idx is not None:
         end = len(lines)
         for j in range(heading_idx + 1, len(lines)):

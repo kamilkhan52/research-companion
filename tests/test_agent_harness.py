@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import asyncio
 
+from app import agent, agent_harness
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
-from app import agent, agent_harness
 from tests.conftest import add_paper
 
 _CANON = ("### CANONICAL ###\n"

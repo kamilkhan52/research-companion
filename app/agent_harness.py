@@ -34,7 +34,8 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from . import agent as agent_mod, config, prompts, research_tools
+from . import agent as agent_mod
+from . import config, prompts, research_tools
 from .models import Turn
 
 # Off by default; set RC_AGENTIC=1 to route turns through the tool-using agent.

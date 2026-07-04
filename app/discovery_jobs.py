@@ -10,9 +10,9 @@ project's .state/discovery.json the moment it exists, whether or not anyone is p
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import Callable, Iterator
+from datetime import UTC, datetime
 
 from . import config, discovery
 
@@ -46,7 +46,7 @@ _lock = threading.Lock()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def get_job(pid: str) -> DiscoveryJob | None:

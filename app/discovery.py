@@ -29,9 +29,9 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterator
 
 import httpx
 
@@ -64,7 +64,7 @@ class DiscoveryError(Exception):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # ---------- persistence (per project, survives restarts) ----------

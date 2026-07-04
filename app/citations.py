@@ -76,7 +76,7 @@ def _fetch_missing(nodes: list[dict], cache: dict, client: httpx.Client, sleep) 
                            headers=_headers(), json={"ids": [eid for _, eid in chunk]})
         if resp.status_code != 200:
             break
-        for (n, _eid), row in zip(chunk, resp.json()):
+        for (n, _eid), row in zip(chunk, resp.json(), strict=False):
             # null row = S2 doesn't know this id: record the miss so we don't retry every build.
             cache[n["id"]] = row.get("citationCount") if isinstance(row, dict) else None
 

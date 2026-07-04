@@ -4,7 +4,6 @@ fake httpx client — zero network."""
 from __future__ import annotations
 
 import httpx
-
 from app import citations
 from app.citations import _fetch_missing as real_fetch_missing
 
