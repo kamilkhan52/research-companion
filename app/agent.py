@@ -14,12 +14,9 @@ prose with equations/quotes/links breaks JSON string escaping.
 """
 from __future__ import annotations
 
-import json
 import re
 
-import httpx
-
-from . import assembler, config, prompts
+from . import assembler, config, llm, prompts
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
@@ -80,47 +77,15 @@ def _parse(content: str) -> Turn:
     )
 
 
-def _call_openrouter(messages: list[dict], model: str | None = None,
-                     temperature: float = 0.3, max_tokens: int = 8000) -> str:
-    settings = config.load_settings()
-    key = settings.get("openrouter_api_key")
-    if not key:
-        raise AgentError("No OpenRouter API key set. Add it in Settings.")
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "HTTP-Referer": "http://localhost",
-        "X-Title": config.APP_TITLE,
-    }
-    body = {
-        "model": model or settings.get("model"),
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
+def _complete(messages: list[dict], model: str | None = None,
+              temperature: float = 0.3, max_tokens: int = 8000) -> str:
+    """Non-streaming analysis/narration call via the shared llm client, translating its
+    LLMError into this module's AgentError so main.py maps it to HTTP as before."""
     try:
-        r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
-                       headers=headers, json=body, timeout=300)
-    except httpx.HTTPError as e:
-        raise AgentError(f"OpenRouter request failed: {e}") from e
-    if r.status_code != 200:
-        raise AgentError(f"OpenRouter error {r.status_code}: {r.text[:400]}")
-    data = r.json()
-    try:
-        choice = data["choices"][0]
-        message = choice.get("message", {}) or {}
-    except (KeyError, IndexError, TypeError) as e:
-        raise AgentError(f"Unexpected OpenRouter response: {str(data)[:400]}") from e
-    content = message.get("content")
-    if isinstance(content, list):  # some providers return content as a list of parts
-        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    if not content or not str(content).strip():
-        fr = choice.get("finish_reason")
-        hint = (" — it ran out of output tokens"
-                if fr == "length" else "")
-        raise AgentError(
-            f"The model returned an empty response (finish_reason={fr}){hint}. "
-            "Try again, or pick a different analysis model in Settings.")
-    return content
+        return llm.complete(messages, model=model, temperature=temperature,
+                            max_tokens=max_tokens)
+    except llm.LLMError as e:
+        raise AgentError(str(e)) from e
 
 
 def parse(content: str) -> Turn:
@@ -133,7 +98,7 @@ def run_turn(slug: str, history: list[dict]) -> Turn:
     Returns the parsed analysis Turn (narration is filled later by `narrate`). The analysis
     model gets a large output budget because reasoning models spend tokens before the answer."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    return _parse(_call_openrouter(messages, max_tokens=16000))
+    return _parse(_complete(messages, max_tokens=16000))
 
 
 # ---- streaming (Stage 1) ----
@@ -164,53 +129,20 @@ def canonical_prefix(raw: str) -> str:
     return rest.strip()
 
 
-def _stream_openrouter(messages: list[dict], model: str | None = None,
-                       temperature: float = 0.3, max_tokens: int = 16000):
-    settings = config.load_settings()
-    key = settings.get("openrouter_api_key")
-    if not key:
-        raise AgentError("No OpenRouter API key set. Add it in Settings.")
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "HTTP-Referer": "http://localhost",
-        "X-Title": config.APP_TITLE,
-    }
-    body = {
-        "model": model or settings.get("model"),
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": True,
-    }
+def stream_messages(messages: list[dict], max_tokens: int = 16000):
+    """Yield raw content pieces of a streaming completion, translating the llm client's
+    LLMError into AgentError. Public seam so callers (notes_jobs' single-shot editor) don't
+    reach into module privates for a plain streamed completion."""
     try:
-        with httpx.stream("POST", f"{config.OPENROUTER_BASE}/chat/completions",
-                          headers=headers, json=body, timeout=300) as r:
-            if r.status_code != 200:
-                detail = r.read().decode("utf-8", "ignore")[:400]
-                raise AgentError(f"OpenRouter error {r.status_code}: {detail}")
-            for line in r.iter_lines():
-                if not line or line.startswith(":"):
-                    continue
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if line == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(line)
-                    delta = chunk["choices"][0].get("delta", {}) or {}
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-                piece = delta.get("content")
-                if piece:
-                    yield piece
-    except httpx.HTTPError as e:
-        raise AgentError(f"OpenRouter stream failed: {e}") from e
+        yield from llm.stream(messages, max_tokens=max_tokens)
+    except llm.LLMError as e:
+        raise AgentError(str(e)) from e
 
 
 def stream_tokens(slug: str, history: list[dict]):
     """Yield raw content pieces of the analysis response as they arrive."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    yield from _stream_openrouter(messages, max_tokens=16000)
+    yield from stream_messages(messages, max_tokens=16000)
 
 
 def narrate(canonical_text: str) -> str:
@@ -224,4 +156,4 @@ def narrate(canonical_text: str) -> str:
         {"role": "system", "content": prompts.get("narration_system")},
         {"role": "user", "content": canonical_text},
     ]
-    return _call_openrouter(messages, model=model, temperature=0.2).strip()
+    return _complete(messages, model=model, temperature=0.2).strip()

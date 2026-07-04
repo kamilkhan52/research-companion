@@ -65,6 +65,10 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 - `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
 - `agent.py` — analysis turn (single-shot + streaming) and stage-2 narration; the marker parser.
 - `agent_harness.py` — agentic tool-loop turn via Pydantic AI (behind `RC_AGENTIC`).
+- `llm.py` — the one raw-HTTP OpenRouter client: `complete`/`stream` (auth, retries+backoff,
+  empty-response diagnostics, `LLMError`) + a TTL-cached model `catalogue()`. Every raw LLM
+  call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
+  `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
 - `prompts.py` — every workflow prompt, centralized + user-overridable.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
