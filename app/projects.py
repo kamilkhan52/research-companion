@@ -112,9 +112,16 @@ def _write_meta(pid: str, meta: dict) -> None:
     atomic_write_text(project_path(pid) / META, json.dumps(meta, indent=2))
 
 
-def _git(pid: str, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(project_path(pid)),
-                   capture_output=True, text=True, check=False)
+def _git(pid: str, *args: str) -> str:
+    # Pin the author (config.git_identity_args) so create_project's baseline commit succeeds even
+    # on a host with no global git identity. Surface non-zero exits as ProjectError rather than
+    # swallowing them (check=False), so scaffolding a project can't silently "succeed" with no
+    # baseline commit — e.g. a missing git binary, no write permission, or a corrupt repo.
+    proc = subprocess.run(["git", *config.git_identity_args(), *args],
+                          cwd=str(project_path(pid)), capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ProjectError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
 
 
 def _unique_id(base: str) -> str:

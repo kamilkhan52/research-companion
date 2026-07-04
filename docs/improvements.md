@@ -306,7 +306,16 @@ Smaller, concrete issues found while reading; none are crashing today, all are w
    `DuplicatePaperError`) but two hand-edited reading-list entries with colliding derived
    slugs silently alias to one corpus file. Cheap fix: detect duplicates in `_parse_entries`
    and surface a warning in `/state`.
-10. **Git commits assume an ambient git identity — a fresh deploy breaks.** Every write to the
+10. **Git commits assume an ambient git identity — a fresh deploy breaks.** ✅ **FIXED**
+    (branch `quality/phase-2-medium`): `config.git_identity_args()` pins the author via
+    `git -c user.name=… -c user.email=…` (env-configurable `RC_GIT_AUTHOR_NAME` /
+    `RC_GIT_AUTHOR_EMAIL`, default `Research Companion` / `companion@local`), applied in both
+    `committer._git` and `projects._git`, so every app-issued commit succeeds regardless of
+    host git config. `test_git_identity` proves create_project's baseline commit and a
+    committer note-commit both succeed and are correctly attributed with no ambient identity.
+    Original description below.
+
+    Every write to the
     record shells out to `git commit` (`committer.commit`, `notes_jobs.save` via
     `committer._git`, and `projects.create_project` / `adopt_existing`) with no author
     configured, so it relies on the machine having a global `user.name` / `user.email`. On a
@@ -378,11 +387,9 @@ locking instead of dropping per-turn model persistence (4.2, revised) · ✅ chm
 index, `store.add_entry`).
 
 **Production-readiness (do before serving users on clean infrastructure):**
-Git-identity hardening (4.10) — set a repo-local / env-configured commit author so a fresh
-deploy or container can commit the record without a global git config; today it fails on
-note approval and silently skips a new project's baseline commit. Small and self-contained;
-pull it forward into the first Medium batch since it's a real user-facing break, not a
-nicety.
+✅ Git-identity hardening (4.10) — done on `quality/phase-2-medium`: the app pins an
+env-configurable commit author, so a fresh deploy/container commits the record without a
+global git config.
 
 **Medium (a day or two each):**
 Generic job framework + project-context helper (1.1, 1.2) · `llm.py` with retries + cached
