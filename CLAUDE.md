@@ -71,8 +71,11 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 - `committer.py` — the one component that writes approved changes + git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.
 - `discovery.py` — goals → ranked arXiv reading suggestions.
-- `*_jobs.py` (`audio`, `chat`, `graph`, `discovery`, `notes`) — background-job runners (see
-  invariant 1). These are near-duplicates today; `docs/improvements.md` §1.1 plans a merge.
+- `jobs.py` — the shared `JobRegistry` behind every background job (dict+lock, pruning, thread
+  spawn, the contextvar rebind of invariant 2, error capture, persist-before-done finalize).
+- `*_jobs.py` (`audio`, `chat`, `graph`, `discovery`, `notes`) — background-job modules (see
+  invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
+  function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
 - `tts.py` — OpenAI TTS behind a swappable interface. `auth.py` — Supabase/token/open auth.
 
 ## Dev workflow
