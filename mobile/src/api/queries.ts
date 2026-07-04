@@ -23,6 +23,7 @@ export const keys = {
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
   notes: (pid: string, target: string) => ['project', pid, 'notes', target] as const,
+  usage: (pid: string) => ['project', pid, 'usage'] as const,
 };
 
 export function useProjects() {
@@ -39,6 +40,15 @@ export function useProjectState(pid: string | null) {
   return useQuery({
     queryKey: pid ? keys.projectState(pid) : ['project', 'none', 'state'],
     queryFn: () => api.getProjectState(pid as string),
+    enabled: !!pid && hasUrl,
+  });
+}
+
+export function useUsage(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid ? keys.usage(pid) : ['project', 'none', 'usage'],
+    queryFn: () => api.getUsage(pid as string),
     enabled: !!pid && hasUrl,
   });
 }

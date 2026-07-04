@@ -12,6 +12,7 @@ import { apiUrl, authHeaders } from '@/api/client';
 import * as api from '@/api/endpoints';
 import type { AudioJob } from '@/api/types';
 import { setupPlayer } from '@/audio/setup';
+import { useActiveProject } from '@/store/project';
 
 interface PlayRequest {
   id: string; // stable key for the message (e.g. `${slug}:${index}`)
@@ -68,6 +69,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
+  // The initiating project, for billing the narration LLM spend (audio itself is app-global).
+  // Held in a ref so playText keeps a stable identity as the active project changes.
+  const { activePid } = useActiveProject();
+  const activePidRef = useRef(activePid);
+  activePidRef.current = activePid;
 
   useEffect(() => {
     setupPlayer().catch(() => {});
@@ -107,6 +113,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       }
       const gen = ++generation.current;
       const live = () => generation.current === gen;
+      // Capture the initiating project ONCE, up front: this preparation bills whichever project
+      // started it, even if the user switches projects before the POST (or a restart re-POST)
+      // fires. Reading the ref again later would misattribute the spend to the new project.
+      const billingProject = activePidRef.current;
       setErrorById((m) => {
         if (!(id in m)) return m;
         const { [id]: _drop, ...rest } = m;
@@ -122,7 +132,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
       try {
         await setupPlayer();
-        let { job } = await api.startAudioJob(text);
+        let { job } = await api.startAudioJob(text, billingProject);
         if (!live()) return;
         applyJob(id, title, job);
 
@@ -139,7 +149,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             if (status === 404 && restarts < MAX_RESTARTS) {
               // Server restarted and lost the in-memory job; re-POST picks up from its caches.
               restarts += 1;
-              job = (await api.startAudioJob(text)).job;
+              job = (await api.startAudioJob(text, billingProject)).job;
             } else if (status === undefined && ++pollFailures < MAX_POLL_FAILURES) {
               continue; // network blip — the job is still running server-side; keep polling
             } else {

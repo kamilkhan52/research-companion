@@ -303,9 +303,12 @@ to check) and cost awareness.
   precision, pending/reconcile, clean-EOF-without-usage, and the unattributed ledger;
   `test_audio_jobs` proves narration bills the initiating project (route-level: missing / invalid
   / valid / cached) and a cache hit bills no one; `test_projects_security` covers traversal.
-  *Follow-ups:* the mobile Settings readout (`quality/usage-mobile`, which also sends the
-  initiating `project`); wiring the generation-stats poller to `reconcile`; and routing the
-  agentic path (`agent_harness`, Pydantic AI's own client) through here too.
+  ✅ **Mobile** (`quality/usage-mobile`): a read-only Usage section in Settings shows the active
+  project's spend (total USD + tokens/calls, per-operation breakdown, `estimated` badge when
+  billed streams are unreconciled), and `AudioProvider` now sends the initiating `project` on the
+  audio job — so narration spend lands on the project instead of the unattributed ledger.
+  *Follow-ups:* wiring the generation-stats poller to `reconcile`; and routing the agentic path
+  (`agent_harness`, Pydantic AI's own client) through here too.
 
 ### 3.4 Prompt management
 

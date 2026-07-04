@@ -22,6 +22,7 @@ import type {
   ProjectState,
   Session,
   Settings,
+  UsageSummary,
 } from './types';
 
 // ---------- global ----------
@@ -39,9 +40,11 @@ export const speak = (text: string) => apiPost<{ url: string }>('/api/speak', { 
 export const narrate = (text: string) =>
   apiPost<{ narration: string; cached: boolean }>('/api/narrate', { text });
 /** Start (or join) a background narrate→synthesize job for one message; returns immediately
- *  with the job snapshot ('done' instantly when fully cached). Poll getAudioJob until settled. */
-export const startAudioJob = (text: string) =>
-  apiPost<{ job: AudioJob }>('/api/audio/jobs', { text });
+ *  with the job snapshot ('done' instantly when fully cached). Poll getAudioJob until settled.
+ *  `project` is the initiating project — audio is app-global (shared cache), but the narration
+ *  LLM spend is billed to that project's usage ledger (unattributed if omitted). */
+export const startAudioJob = (text: string, project?: string | null) =>
+  apiPost<{ job: AudioJob }>('/api/audio/jobs', project ? { text, project } : { text });
 /** Poll a preparation job's live progress. Cheap; safe to call every second. */
 export const getAudioJob = (id: string) =>
   apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}`);
@@ -57,6 +60,8 @@ export const createProject = (name: string, method?: string) =>
 const P = (pid: string) => `/api/projects/${encodeURIComponent(pid)}`;
 
 export const getProjectState = (pid: string) => apiGet<ProjectState>(`${P(pid)}/state`);
+/** This project's accumulated LLM token/cost usage (lifetime total + per-model/per-operation). */
+export const getUsage = (pid: string) => apiGet<UsageSummary>(`${P(pid)}/usage`);
 export const getSession = (pid: string, slug: string) =>
   apiGet<Session>(`${P(pid)}/session/${encodeURIComponent(slug)}`);
 export const getOpeningDraft = (pid: string, slug: string) =>

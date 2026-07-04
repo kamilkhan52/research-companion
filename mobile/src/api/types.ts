@@ -398,3 +398,29 @@ export interface AudioJob {
   started_at: string;
   finished_at: string | null;
 }
+
+/** One aggregate bucket in the usage ledger (app/usage.py). Cost is stored exactly as integer
+ * nano-USD; `cost_usd` is the derived dollars figure for display. */
+export interface UsageBucket {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_nanousd: number;
+  cost_usd: number;
+}
+
+/** A project's LLM usage/cost aggregate (app/usage.py summary()): lifetime total plus per-model
+ * and per-operation breakdowns. `estimated` is true when some billed streams dropped before
+ * their final usage chunk (pending_count) or were evicted past the cap (dropped_pending), so the
+ * total is a lower bound until reconciliation. */
+export interface UsageSummary {
+  total: UsageBucket;
+  by_model: Record<string, UsageBucket>;
+  by_operation: Record<string, UsageBucket>;
+  pending_count: number;
+  dropped_pending: number;
+  estimated: boolean;
+  first_at: string | null;
+  updated_at: string | null;
+}
