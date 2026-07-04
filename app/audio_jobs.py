@@ -20,48 +20,34 @@ instantly from the narration/mp3 caches without a thread.
 from __future__ import annotations
 
 import hashlib
-import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import agent, config, sessions, tts
 from .fileio import atomic_write_bytes
+from .jobs import Job, JobRegistry, now_iso
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (shared with the /api/audio route)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-
-# Finished jobs kept for late polls; pruned oldest-first past this cap.
-_MAX_FINISHED = 50
 
 NarrateFn = Callable[[str], str]
 SynthFn = Callable[[str], bytes]
 
 
 @dataclass
-class AudioJob:
-    id: str
-    status: str = "running"          # running | done | error
+class AudioJob(Job):
     stage: str = "narrating"         # narrating | synthesizing
     segments_done: int = 0
     segments_total: int = 0
     narration: str | None = None     # available once the narrating stage finishes
     url: str | None = None           # /api/audio/<hash>.mp3, once done
-    error: str | None = None
-    started_at: str = ""
-    finished_at: str | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 
-_jobs: dict[str, AudioJob] = {}
-_lock = threading.Lock()
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+# Keyed by content hash (voice settings + text); `_jobs` aliases the registry dict so tests can
+# clear() it to reset. Higher finished cap than the others — audio jobs are small and re-listened.
+_registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50)
+_jobs = _registry.jobs
 
 
 def _voice_key() -> str:
@@ -81,8 +67,7 @@ def audio_cache_path(narration: str) -> Path:
 
 
 def get_job(job_id: str) -> AudioJob | None:
-    with _lock:
-        return _jobs.get(job_id)
+    return _registry.get(job_id)
 
 
 def start_job(text: str, narrate_fn: NarrateFn | None = None,
@@ -94,45 +79,24 @@ def start_job(text: str, narrate_fn: NarrateFn | None = None,
     narrate_fn = narrate_fn or agent.narrate
     synth_fn = synth_fn or tts.openai_speech
     jid = job_id_for(text)
-    with _lock:
-        existing = _jobs.get(jid)
-        if existing and existing.status == "running":
-            return existing
 
-        # Fully cached (narration text + synthesized mp3): done without spawning a thread.
-        narration = sessions.get_cached_narration(text)
-        if narration is not None and audio_cache_path(narration).exists():
-            job = AudioJob(id=jid, status="done", stage="synthesizing", narration=narration,
-                           url=f"/api/audio/{audio_cache_path(narration).name}",
-                           started_at=_now(), finished_at=_now())
-            _register(job)
-            return job
+    existing = _registry.active_for(jid)
+    if existing:
+        return existing
 
-        job = AudioJob(id=jid, started_at=_now())
-        _register(job)
+    # Fully cached (narration text + synthesized mp3): register a done job, no thread.
+    narration = sessions.get_cached_narration(text)
+    if narration is not None and audio_cache_path(narration).exists():
+        return _registry.put(jid, AudioJob(
+            id=jid, status="done", stage="synthesizing", narration=narration,
+            url=f"/api/audio/{audio_cache_path(narration).name}", finished_at=now_iso()))
 
-    thread = threading.Thread(target=_run, args=(job, text, narrate_fn, synth_fn),
-                              daemon=True, name=f"audio-{jid[:8]}")
-    thread.start()
-    return job
-
-
-def _register(job: AudioJob) -> None:
-    """Store the job (caller holds the lock) and prune the oldest finished ones."""
-    _jobs[job.id] = job
-    finished = [j for j in _jobs.values() if j.status != "running"]
-    if len(finished) > _MAX_FINISHED:
-        for stale in sorted(finished, key=lambda j: j.started_at)[:len(finished) - _MAX_FINISHED]:
-            _jobs.pop(stale.id, None)
-
-
-def _run(job: AudioJob, text: str, narrate_fn: NarrateFn, synth_fn: SynthFn) -> None:
-    try:
+    def work(job: AudioJob) -> None:
         narration = sessions.get_cached_narration(text)
         if narration is None:
             narration = narrate_fn(text)
             sessions.cache_narration(text, narration)
-        with _lock:
+        with _registry.lock:
             job.narration = narration
             job.stage = "synthesizing"
 
@@ -141,21 +105,16 @@ def _run(job: AudioJob, text: str, narrate_fn: NarrateFn, synth_fn: SynthFn) -> 
             parts = tts.split_for_tts(narration)
             if not parts:
                 raise tts.TTSError("Nothing to synthesize.")
-            with _lock:
+            with _registry.lock:
                 job.segments_total = len(parts)
             chunks: list[bytes] = []
             for part in parts:
                 chunks.append(synth_fn(part))
-                with _lock:
+                with _registry.lock:
                     job.segments_done += 1
             atomic_write_bytes(path, b"".join(chunks))
 
-        with _lock:
-            job.status = "done"
+        with _registry.lock:
             job.url = f"/api/audio/{path.name}"
-            job.finished_at = _now()
-    except Exception as e:
-        with _lock:
-            job.status = "error"
-            job.error = str(e)[:400]
-            job.finished_at = _now()
+
+    return _registry.start_or_join(jid, lambda: AudioJob(id=jid), work)
