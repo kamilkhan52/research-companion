@@ -161,6 +161,29 @@ export interface ChatJob {
   finished_at: string | null;
 }
 
+/** A committed notes document (GET /notes/{target}): one paper's Notes block, or the
+ *  cross-paper working notes when target === 'working'. markdown is '' when none exist yet. */
+export interface NotesDoc {
+  target: string;
+  title: string;
+  markdown: string;
+}
+
+/** Snapshot of a server-side notes-edit job (app/notes_jobs.py): the notes-editor agent
+ *  revising a document from a natural-language instruction. `result` is a PROPOSAL — the
+ *  client previews it and applies it via saveNotes; nothing is written until then. */
+export interface NotesJob {
+  id: string;
+  target: string;
+  instruction: string;
+  status: 'running' | 'done' | 'error';
+  items: StreamItem[];
+  result: string | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
 /** One entry in a paper's 'Related works' menu (GET /related/{slug}): a significant related
  *  work from the reference graph, with why it matters. */
 export interface RelatedWork {

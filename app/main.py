@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import asyncio
 
-from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, discovery, discovery_jobs, graph, graph_jobs, graph_store, projects, prompts, retriever, retrieval_agent, sessions, store, tts
+from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, discovery, discovery_jobs, graph, graph_jobs, graph_store, notes_jobs, projects, prompts, retriever, retrieval_agent, sessions, store, tts
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -159,6 +159,15 @@ class AddPaperReq(BaseModel):
 
 class DiscoverReq(BaseModel):
     goals: str
+
+
+class NotesSaveReq(BaseModel):
+    markdown: str
+    summary: str | None = None   # optional commit message override
+
+
+class NotesAgentReq(BaseModel):
+    instruction: str
 
 
 # ---------- helpers ----------
@@ -884,6 +893,62 @@ def reopen(req: FinishReq):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.reopen_discussion(req.slug)
     return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
+
+
+# ---------- committed notes: view / edit / agent-assisted edit ----------
+# `target` is a paper slug, or "working" for the cross-paper working notes. Reading and
+# saving are quick, plain requests (a save git-commits, like every change to the record);
+# the agent edit is a background job (job + poll) whose result is a PROPOSAL the client
+# applies explicitly via the save endpoint. Job routes are declared before /notes/{target}
+# so "jobs" is never captured as a target.
+
+@project_router.get("/notes/jobs/active/{target}")
+def notes_job_active(target: str):
+    """The running notes-edit job for a target, if any — lets a client that navigated away
+    reattach instead of finding a silent screen."""
+    job = notes_jobs.active_for(target)
+    return {"job": notes_jobs.snapshot(job.id) if job else None}
+
+
+@project_router.get("/notes/jobs/{job_id}")
+def notes_job_status(job_id: str):
+    snap = notes_jobs.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown notes job")
+    return {"job": snap}
+
+
+@project_router.get("/notes/{target}")
+def get_notes(target: str):
+    try:
+        markdown = notes_jobs.read(target)
+    except notes_jobs.NotesError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"target": target, "title": notes_jobs.title_for(target), "markdown": markdown}
+
+
+@project_router.post("/notes/{target}")
+def save_notes(target: str, req: NotesSaveReq):
+    """Persist a human-approved notes document (a manual edit, or an applied agent proposal)
+    and git-commit it."""
+    try:
+        result = notes_jobs.save(target, req.markdown, req.summary or "")
+    except notes_jobs.NotesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {**result, "target": target}
+
+
+@project_router.post("/notes/{target}/agent_job")
+def notes_agent_job(target: str, req: NotesAgentReq):
+    """Start (or join) a background agent revision of the target's notes from a natural-
+    language instruction. Poll /notes/jobs/{id}; the result is applied via POST /notes/{target}."""
+    if not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
+    try:
+        job = notes_jobs.start_edit(target, req.instruction)
+    except notes_jobs.NotesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"job": notes_jobs.snapshot(job.id)}
 
 
 @project_router.get("/review/{slug}")

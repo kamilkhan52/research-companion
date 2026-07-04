@@ -12,6 +12,8 @@ import type {
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
   GraphResponse,
+  NotesDoc,
+  NotesJob,
   RelatedWork,
   ModelOption,
   OpeningDraft,
@@ -107,6 +109,29 @@ export const getChatJob = (pid: string, id: string) =>
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string) =>
   apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+
+// ---------- committed notes (view / edit / agent-assisted edit) ----------
+// target = a paper slug, or 'working' for the cross-paper working notes.
+
+export const getNotes = (pid: string, target: string) =>
+  apiGet<NotesDoc>(`${P(pid)}/notes/${encodeURIComponent(target)}`);
+/** Persist a human-approved document (manual edit or applied agent proposal); git-commits. */
+export const saveNotes = (pid: string, target: string, markdown: string, summary?: string) =>
+  apiPost<{ ok: boolean; rev: string; target: string }>(
+    `${P(pid)}/notes/${encodeURIComponent(target)}`,
+    { markdown, summary },
+  );
+/** Start (or join) a background agent revision from a natural-language instruction. The
+ *  result is a proposal — preview it, then apply via saveNotes. Poll getNotesJob. */
+export const startNotesAgent = (pid: string, target: string, instruction: string) =>
+  apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/agent_job`, {
+    instruction,
+  });
+export const getNotesJob = (pid: string, id: string) =>
+  apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}`);
+/** The notes-edit job currently running for a target, if any — for reattaching on entry. */
+export const getActiveNotesJob = (pid: string, target: string) =>
+  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/active/${encodeURIComponent(target)}`);
 
 // ---------- discovery (goals -> suggested readings) ----------
 

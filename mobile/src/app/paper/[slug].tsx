@@ -34,6 +34,7 @@ import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { IconButton, TopBar } from '@/components/TopBar';
+import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
@@ -74,6 +75,14 @@ export default function DiscussionScreen() {
     let c = -1;
     return transcript.map((e) => (e.role === 'user' ? ++c : -1));
   }, [transcript]);
+  // Mirrored into refs for the keyboard listener (registered once): whether an edit is in
+  // progress, and the edited bubble's y within the scroll content (from its onLayout).
+  const editingRef = useRef(false);
+  const editRowYRef = useRef<number | null>(null);
+  useEffect(() => {
+    editingRef.current = !!editing;
+    if (!editing) editRowYRef.current = null;
+  }, [editing]);
 
   function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
     const begin = () => setEditing({ replyIndex, draft: currentText });
@@ -108,10 +117,19 @@ export default function DiscussionScreen() {
     return () => clearTimeout(id);
   }, [transcript.length, stream.liveText, stream.pendingUser]);
 
-  // When the keyboard opens, scroll to the end so the composer + latest turn stay visible.
+  // When the keyboard opens for the composer, scroll to the end so the composer + latest
+  // turn stay visible. When it opens for an in-place message edit, stay on (and reveal)
+  // the message being edited instead of jumping to the bottom.
   useEffect(() => {
     const sub = Keyboard.addListener('keyboardDidShow', () =>
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50),
+      setTimeout(() => {
+        if (editingRef.current) {
+          const y = editRowYRef.current;
+          if (y != null) scrollRef.current?.scrollTo({ y: Math.max(y - space.md, 0), animated: true });
+        } else {
+          scrollRef.current?.scrollToEnd({ animated: true });
+        }
+      }, 50),
     );
     return () => sub.remove();
   }, []);
@@ -124,6 +142,13 @@ export default function DiscussionScreen() {
         onBack={() => router.back()}
         right={
           <>
+            {session.data?.paper.has_notes ? (
+              <IconButton
+                glyph="✎"
+                onPress={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
+                accessibilityLabel="View notes"
+              />
+            ) : null}
             <IconButton glyph="❖" onPress={() => setShowRelated(true)} accessibilityLabel="Related works" />
             <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
           </>
@@ -174,6 +199,9 @@ export default function DiscussionScreen() {
                   onStartEdit={() => startEdit(replyIndices[i], entry.text, i)}
                   onCancelEdit={() => setEditing(null)}
                   onSubmitEdit={submitEdit}
+                  onEditLayout={(y) => {
+                    editRowYRef.current = y;
+                  }}
                 />
               ) : (
                 <Message
@@ -621,6 +649,7 @@ function UserBubble({
   onStartEdit,
   onCancelEdit,
   onSubmitEdit,
+  onEditLayout,
 }: {
   text: string;
   canEdit?: boolean;
@@ -630,10 +659,11 @@ function UserBubble({
   onStartEdit?: () => void;
   onCancelEdit?: () => void;
   onSubmitEdit?: () => void;
+  onEditLayout?: (y: number) => void;
 }) {
   if (editing) {
     return (
-      <View style={styles.userRow}>
+      <View style={styles.userRow} onLayout={(e) => onEditLayout?.(e.nativeEvent.layout.y)}>
         <View style={[styles.userBubble, styles.userBubbleEditing]}>
           <TextInput
             value={draft}
@@ -701,6 +731,12 @@ function ToolLine({ name, detail }: { name: string; detail: string }) {
   );
 }
 
+// A streamed text run revealed through the smoothing buffer (useSmoothText): the job poller
+// delivers ~900ms snapshots, and this types them out continuously instead of in lumps.
+function SmoothMarkdown({ text }: { text: string }) {
+  return <Markdown text={useSmoothText(text)} />;
+}
+
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
 // agent UIs conventionally show it — rather than pinning all tools above all text. A status
@@ -718,7 +754,7 @@ function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
     <Card style={styles.assistant}>
       {items.map((it, i) =>
         it.kind === 'text' ? (
-          <Markdown key={i} text={it.text} />
+          <SmoothMarkdown key={i} text={it.text} />
         ) : (
           <View key={i} style={styles.toolTrail}>
             <ToolLine name={it.name} detail={it.detail} />

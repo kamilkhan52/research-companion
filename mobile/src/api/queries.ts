@@ -22,6 +22,7 @@ export const keys = {
   graph: (pid: string) => ['project', pid, 'graph'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
+  notes: (pid: string, target: string) => ['project', pid, 'notes', target] as const,
 };
 
 export function useProjects() {
@@ -123,6 +124,16 @@ export function useDiscovery(pid: string | null) {
     queryKey: pid ? keys.discovery(pid) : ['project', 'none', 'discovery'],
     queryFn: () => api.getDiscovery(pid as string),
     enabled: !!pid && hasUrl,
+  });
+}
+
+/** A committed notes document — one paper's Notes block, or 'working' for the working notes. */
+export function useNotes(pid: string | null, target: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && target ? keys.notes(pid, target) : ['project', 'none', 'notes'],
+    queryFn: () => api.getNotes(pid as string, target as string),
+    enabled: !!pid && !!target && hasUrl,
   });
 }
 

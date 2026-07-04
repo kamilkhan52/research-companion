@@ -63,6 +63,7 @@ export default function LibraryScreen() {
         onPress={() => setSwitcherOpen(true)}
         onGraphPress={activePid ? () => router.push('/graph') : undefined}
         onDiscoverPress={activePid ? () => router.push('/discover') : undefined}
+        onNotesPress={activePid ? () => router.push('/notes/working') : undefined}
       />
 
       <ScrollView
@@ -130,12 +131,14 @@ function ProjectBar({
   onPress,
   onGraphPress,
   onDiscoverPress,
+  onNotesPress,
 }: {
   name: string;
   subtitle: string;
   onPress: () => void;
   onGraphPress?: () => void;
   onDiscoverPress?: () => void;
+  onNotesPress?: () => void;
 }) {
   return (
     <View style={styles.projectBarRow}>
@@ -161,6 +164,17 @@ function ProjectBar({
           <Text style={{ fontSize: 20 }}>⌕</Text>
           <Text variant="caption" style={{ marginTop: 2 }}>
             Discover
+          </Text>
+        </Pressable>
+      ) : null}
+      {onNotesPress ? (
+        <Pressable
+          onPress={onNotesPress}
+          style={({ pressed }) => [styles.graphBtn, pressed && { opacity: 0.85 }]}
+          accessibilityLabel="Working notes">
+          <Text style={{ fontSize: 20 }}>✎</Text>
+          <Text variant="caption" style={{ marginTop: 2 }}>
+            Notes
           </Text>
         </Pressable>
       ) : null}

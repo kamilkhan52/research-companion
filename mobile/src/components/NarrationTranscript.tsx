@@ -6,10 +6,11 @@
 // neighbors are dimmed for orientation; tapping a sentence seeks to (approximately) its start.
 // Also home to GeneratingBar/prepLabel, the audio-preparation progress UI.
 
-import { useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import TrackPlayer, { useProgress } from 'react-native-track-player';
+import TrackPlayer from 'react-native-track-player';
 
+import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -62,10 +63,54 @@ function splitSentences(text: string): Sentence[] {
 
 /** How long a manual scroll suspends auto-follow, so the roll never fights the user's thumb. */
 const FOLLOW_RESUME_MS = 4000;
+/** Highlight slightly AHEAD of the estimated position. The proportional mapping plus the eye's
+ *  reaction time both make a "exact" highlight feel late; a small preemptive lead reads right. */
+const LEAD_S = 0.35;
+
+/** One transcript sentence. Memoized (with stable handlers) so the 10Hz position clock in the
+ *  parent only re-renders the two lines whose active state actually changed; the highlight
+ *  crossfades instead of snapping. */
+const TranscriptLine = memo(function TranscriptLine({
+  index,
+  text,
+  active,
+  onPress,
+  onLayout,
+}: {
+  index: number;
+  text: string;
+  active: boolean;
+  onPress: (i: number) => void;
+  onLayout: (i: number, y: number, h: number) => void;
+}) {
+  const glow = useRef(new Animated.Value(active ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(glow, {
+      toValue: active ? 1 : 0,
+      duration: 200,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [active, glow]);
+
+  return (
+    <Pressable
+      onPress={() => onPress(index)}
+      onLayout={(e) => onLayout(index, e.nativeEvent.layout.y, e.nativeEvent.layout.height)}>
+      <Animated.Text
+        style={[
+          styles.line,
+          { opacity: glow.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) },
+        ]}>
+        {text}
+      </Animated.Text>
+    </Pressable>
+  );
+});
 
 export function RollingTranscript({ narration }: { narration: string }) {
-  // Poll ~4x/sec: smooth enough for sentence-level following, cheap enough to ignore.
-  const { position, duration } = useProgress(250);
+  // Smooth, dead-reckoned playback clock (see useSmoothPosition) instead of raw coarse polls.
+  const { position, duration } = useSmoothPosition();
   const sentences = useMemo(() => splitSentences(narration), [narration]);
 
   const scrollRef = useRef<ScrollView>(null);
@@ -77,7 +122,7 @@ export function RollingTranscript({ narration }: { narration: string }) {
 
   // Only highlight once playback has actually started and we know the duration; before that
   // (duration 0) show the plain roll rather than pinning the first sentence.
-  const frac = duration > 0 ? Math.min(1, position / duration) : -1;
+  const frac = duration > 0 ? Math.min(1, (position + LEAD_S) / duration) : -1;
   const activeIdx =
     frac < 0 ? -1 : sentences.findIndex((s) => frac >= s.startFrac && frac < s.endFrac);
 
@@ -93,13 +138,20 @@ export function RollingTranscript({ narration }: { narration: string }) {
     });
   }, [activeIdx]);
 
-  function seekToSentence(i: number) {
-    if (duration > 0) {
-      void TrackPlayer.seekTo(sentences[i].startFrac * duration);
+  // Stable handlers (reading live values through refs) so TranscriptLine's memo holds.
+  const stateRef = useRef({ sentences, duration });
+  stateRef.current = { sentences, duration };
+  const handlePress = useCallback((i: number) => {
+    const { sentences: ss, duration: d } = stateRef.current;
+    if (d > 0) {
+      void TrackPlayer.seekTo(ss[i].startFrac * d);
       followPausedUntil.current = 0; // jumping is an explicit "take me there" — resume follow
       lastCentered.current = -1;
     }
-  }
+  }, []);
+  const handleLayout = useCallback((i: number, y: number, h: number) => {
+    offsets.current[i] = { y, h };
+  }, []);
 
   // Pad half a viewport top and bottom so the first/last sentences can still center.
   const pad = viewportH.current / 2;
@@ -117,14 +169,14 @@ export function RollingTranscript({ narration }: { narration: string }) {
         followPausedUntil.current = Date.now() + FOLLOW_RESUME_MS;
       }}>
       {sentences.map((s, i) => (
-        <Pressable
+        <TranscriptLine
           key={i}
-          onPress={() => seekToSentence(i)}
-          onLayout={(e) => {
-            offsets.current[i] = { y: e.nativeEvent.layout.y, h: e.nativeEvent.layout.height };
-          }}>
-          <Text style={[styles.line, i === activeIdx && styles.lineActive]}>{s.text}</Text>
-        </Pressable>
+          index={i}
+          text={s.text}
+          active={i === activeIdx}
+          onPress={handlePress}
+          onLayout={handleLayout}
+        />
       ))}
     </ScrollView>
   );
@@ -190,13 +242,8 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemiBold,
     fontSize: 21,
     lineHeight: 32,
-    color: colors.muted,
-    opacity: 0.45,
+    color: colors.text, // dimming is the animated opacity, so inactive lines still read muted
     paddingVertical: space.sm,
-  },
-  lineActive: {
-    color: colors.text,
-    opacity: 1,
   },
   genWrap: {
     marginTop: space.md,

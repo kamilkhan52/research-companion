@@ -23,7 +23,11 @@ from . import assembler, config, prompts
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
-_SECTION_RE = re.compile(r"^###\s*(" + "|".join(SECTIONS) + r")\s*###\s*$", re.M)
+# A marker is a whole line naming one section. The protocol says "###NAME###", but on long
+# turns models drift into markdown headings ("## NAME", "# NAME"), so accept any heading
+# depth with an optional trailing hash run rather than losing the draft.
+_SECTION_RE = re.compile(
+    r"^#{1,6}\s*(" + "|".join(SECTIONS) + r")\s*#{0,6}\s*$", re.M)
 
 
 def _system_for(slug: str) -> str:
@@ -51,7 +55,7 @@ def _parse(content: str) -> Turn:
         name = m.group(1)
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
         body = content[m.end():end].strip()
-        body = re.sub(r"###\s*END\s*###\s*$", "", body).strip()
+        body = re.sub(r"#{1,6}\s*END\s*#{0,6}\s*$", "", body).strip()
         sections[name] = body
 
     def val(key: str) -> str:
@@ -134,8 +138,9 @@ def run_turn(slug: str, history: list[dict]) -> Turn:
 
 # ---- streaming (Stage 1) ----
 
-_CANON_START_RE = re.compile(r"###\s*CANONICAL\s*###")
-_NEXT_SECTION_RE = re.compile(r"###\s*(STATE|COMMIT_SUMMARY|NOTES_BLOCK|SYNTHESIS|END)\s*###")
+_CANON_START_RE = re.compile(r"^#{1,6}\s*CANONICAL\s*#{0,6}\s*$", re.M)
+_NEXT_SECTION_RE = re.compile(
+    r"^#{1,6}\s*(STATE|COMMIT_SUMMARY|NOTES_BLOCK|SYNTHESIS|END)\s*#{0,6}\s*$", re.M)
 
 
 def canonical_prefix(raw: str) -> str:
@@ -145,13 +150,17 @@ def canonical_prefix(raw: str) -> str:
     marker (e.g. '###STA' while '###STATE###' is still arriving)."""
     m = _CANON_START_RE.search(raw)
     if not m:
-        return "" if "###" in raw else raw.strip()
+        # Another section arrived first (or protocol scaffolding is present): show nothing
+        # rather than the scaffolding. Plain prose with no markers streams as-is.
+        if "###" in raw or _NEXT_SECTION_RE.search(raw):
+            return ""
+        return re.sub(r"\s*#{1,6}\s*[A-Z_]*\s*$", "", raw).strip()
     rest = raw[m.end():]
     nxt = _NEXT_SECTION_RE.search(rest)
     if nxt:
         rest = rest[:nxt.start()]
     else:
-        rest = re.sub(r"\s*#{1,3}[A-Z_]*$", "", rest)  # a forming next-section marker
+        rest = re.sub(r"\s*#{1,6}\s*[A-Z_]*\s*$", "", rest)  # a forming next-section marker
     return rest.strip()
 
 

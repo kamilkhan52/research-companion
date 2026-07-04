@@ -1,0 +1,343 @@
+// Notes — view and edit one committed notes document: a paper's Notes block, or the
+// cross-paper working notes (target === 'working'). Three ways in, one focused screen:
+//   view  — the markdown rendered for reading (the default; this is a reading surface first)
+//   edit  — the raw markdown in a plain editor; Save commits it to the project's git record
+//   agent — a natural-language instruction runs server-side as a background job (job+poll,
+//           reusing the analyst's research tools); the revision comes back as a PROPOSAL
+//           rendered for review, applied only on explicit Apply. Agent proposes, human commits.
+
+import { useQueryClient } from '@tanstack/react-query';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+
+import { saveNotes } from '@/api/endpoints';
+import { keys, useNotes } from '@/api/queries';
+import type { StreamItem } from '@/api/types';
+import { Markdown } from '@/components/Markdown';
+import { TopBar } from '@/components/TopBar';
+import { useNotesAgent } from '@/hooks/useNotesAgent';
+import { useActiveProject } from '@/store/project';
+import { Button, Card, Screen, Text } from '@/ui';
+import { colors, fonts, radius, space } from '@/theme/tokens';
+
+type Mode = 'view' | 'edit';
+
+export default function NotesScreen() {
+  const router = useRouter();
+  const qc = useQueryClient();
+  const { target } = useLocalSearchParams<{ target: string }>();
+  const { activePid: pid } = useActiveProject();
+
+  const notes = useNotes(pid, target ?? null);
+  const agent = useNotesAgent(pid, target ?? null);
+
+  const [mode, setMode] = useState<Mode>('view');
+  const [draft, setDraft] = useState<string | null>(null); // non-null while editing
+  const [asking, setAsking] = useState(false);              // instruction composer open
+  const [instruction, setInstruction] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const markdown = notes.data?.markdown ?? '';
+  const title = notes.data?.title ?? (target === 'working' ? 'Working notes' : 'Notes');
+
+  // Reattach to an agent edit already in flight for this document (navigated away and back).
+  useEffect(() => {
+    void agent.resume();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, target]);
+
+  async function persist(text: string, summary?: string) {
+    if (!pid || !target) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveNotes(pid, target, text, summary);
+      qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
+      qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+      setMode('view');
+      setDraft(null);
+      agent.dismissProposal();
+    } catch (e) {
+      setSaveError((e as Error).message ?? 'Save failed.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function startEdit(from: string) {
+    setDraft(from);
+    setMode('edit');
+    agent.dismissProposal();
+  }
+
+  function cancelEdit() {
+    const dirty = draft !== null && draft !== markdown;
+    const close = () => {
+      setMode('view');
+      setDraft(null);
+    };
+    if (dirty) {
+      Alert.alert('Discard changes?', 'Your edits to these notes will be lost.', [
+        { text: 'Keep editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: close },
+      ]);
+    } else {
+      close();
+    }
+  }
+
+  function submitInstruction() {
+    const text = instruction.trim();
+    if (!text) return;
+    setAsking(false);
+    setInstruction('');
+    void agent.run(text);
+  }
+
+  const showProposal = agent.proposal !== null && mode === 'view';
+
+  return (
+    <Screen edges={['top']}>
+      <TopBar
+        title={title}
+        subtitle={showProposal ? 'Proposed revision — review before applying' : 'Notes'}
+        onBack={() => router.back()}
+      />
+
+      {!pid || !target ? (
+        <Centered text="No active project." />
+      ) : notes.isLoading ? (
+        <Centered loading />
+      ) : notes.isError ? (
+        <Centered text={(notes.error as Error)?.message ?? 'Could not load notes.'} />
+      ) : mode === 'edit' ? (
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={8}>
+          <TextInput
+            value={draft ?? ''}
+            onChangeText={setDraft}
+            multiline
+            autoFocus
+            textAlignVertical="top"
+            style={styles.editor}
+            selectionColor={colors.cyan}
+          />
+          {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
+          <View style={styles.footerRow}>
+            <Button title="Cancel" variant="ghost" onPress={cancelEdit} style={{ flex: 1 }} />
+            <Button
+              title="Save"
+              onPress={() => draft !== null && void persist(draft)}
+              loading={saving}
+              disabled={draft === null || !draft.trim() || draft === markdown}
+              style={{ flex: 2 }}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      ) : (
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={8}>
+          <ScrollView contentContainerStyle={styles.body}>
+            {showProposal ? (
+              <Card style={styles.proposalCard}>
+                <Text variant="label" color={colors.cyan}>
+                  PROPOSED REVISION
+                </Text>
+                <Text variant="caption" color={colors.muted} style={{ marginTop: 2 }}>
+                  “{agent.job?.instruction}”
+                </Text>
+              </Card>
+            ) : null}
+
+            {showProposal ? (
+              <Markdown text={agent.proposal!} />
+            ) : markdown.trim() ? (
+              <Markdown text={markdown} />
+            ) : (
+              <View style={styles.empty}>
+                <Text variant="body" color={colors.muted} style={{ textAlign: 'center' }}>
+                  No notes yet{target === 'working' ? ' — the working notes grow as you read.' : ' for this paper.'}
+                </Text>
+              </View>
+            )}
+
+            {agent.running ? <AgentProgress items={agent.job?.items ?? []} /> : null}
+            {agent.error ? <ErrorCard text={agent.error} onDismiss={agent.clearError} /> : null}
+            {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
+          </ScrollView>
+
+          {showProposal ? (
+            <View style={styles.footerRow}>
+              <Button title="Discard" variant="ghost" onPress={agent.dismissProposal} style={{ flex: 1 }} />
+              <Button
+                title="Edit first"
+                variant="ghost"
+                onPress={() => startEdit(agent.proposal!)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Apply"
+                onPress={() =>
+                  void persist(agent.proposal!, `Notes edit (agent): ${agent.job?.instruction ?? ''}`.trim())
+                }
+                loading={saving}
+                style={{ flex: 1.4 }}
+              />
+            </View>
+          ) : asking ? (
+            <View style={styles.askBar}>
+              <TextInput
+                value={instruction}
+                onChangeText={setInstruction}
+                placeholder="Tell the analyst what to change…"
+                placeholderTextColor={colors.muted}
+                multiline
+                autoFocus
+                style={styles.askInput}
+                selectionColor={colors.cyan}
+              />
+              <View style={styles.footerRow}>
+                <Button
+                  title="Cancel"
+                  variant="ghost"
+                  onPress={() => {
+                    setAsking(false);
+                    setInstruction('');
+                  }}
+                  style={{ flex: 1 }}
+                />
+                <Button
+                  title="Revise"
+                  onPress={submitInstruction}
+                  disabled={!instruction.trim()}
+                  style={{ flex: 2 }}
+                />
+              </View>
+            </View>
+          ) : (
+            <View style={styles.footerRow}>
+              <Button
+                title="✎ Edit"
+                variant="ghost"
+                onPress={() => startEdit(markdown)}
+                disabled={agent.running}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="✦ Revise with AI"
+                variant="ghost"
+                onPress={() => setAsking(true)}
+                disabled={agent.running || !markdown.trim()}
+                style={{ flex: 1 }}
+              />
+            </View>
+          )}
+        </KeyboardAvoidingView>
+      )}
+    </Screen>
+  );
+}
+
+/** Live progress of the server-side edit: tool calls as a compact trail, plus a character
+ *  count of the revision streamed so far (the text itself is reviewed at the end). */
+function AgentProgress({ items }: { items: StreamItem[] }) {
+  const tools = items.filter((it) => it.kind === 'tool') as Extract<StreamItem, { kind: 'tool' }>[];
+  const chars = useMemo(
+    () => items.reduce((n, it) => (it.kind === 'text' ? n + it.text.length : n), 0),
+    [items],
+  );
+  return (
+    <Card style={styles.progressCard}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <ActivityIndicator color={colors.cyan} size="small" />
+        <Text variant="caption" color={colors.muted}>
+          {chars > 0 ? `Revising… ${chars} characters drafted` : 'The analyst is working on it…'}
+        </Text>
+      </View>
+      {tools.slice(-3).map((t, i) => (
+        <Text key={i} variant="caption" color={colors.cyan} numberOfLines={1} style={{ marginTop: 4 }}>
+          ⚒ {t.name}
+          {t.detail ? ` — ${t.detail}` : ''}
+        </Text>
+      ))}
+    </Card>
+  );
+}
+
+function ErrorCard({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  return (
+    <Card style={styles.errorCard}>
+      <Text variant="body" color={colors.danger}>
+        {text}
+      </Text>
+      <Button title="Dismiss" variant="ghost" onPress={onDismiss} style={{ marginTop: space.sm }} />
+    </Card>
+  );
+}
+
+function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+  return (
+    <View style={styles.centered}>
+      {loading ? (
+        <ActivityIndicator color={colors.cyan} />
+      ) : (
+        <Text variant="body" color={colors.muted} style={{ textAlign: 'center' }}>
+          {text}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  body: { padding: space.md, paddingBottom: space.xl, gap: space.md },
+  empty: { paddingVertical: space.xxl, paddingHorizontal: space.lg },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.lg },
+  editor: {
+    flex: 1,
+    margin: space.md,
+    padding: space.md,
+    backgroundColor: colors.panel,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    color: colors.text,
+    fontFamily: fonts.mono,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  footerRow: {
+    flexDirection: 'row',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingBottom: space.md,
+    paddingTop: space.xs,
+  },
+  askBar: { paddingTop: space.xs },
+  askInput: {
+    marginHorizontal: space.md,
+    marginBottom: space.sm,
+    padding: space.md,
+    minHeight: 64,
+    maxHeight: 140,
+    backgroundColor: colors.panel,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 14,
+  },
+  proposalCard: { borderColor: colors.cyan, borderWidth: 1 },
+  progressCard: { marginTop: space.sm },
+  errorCard: { borderColor: colors.danger, borderWidth: 1, marginTop: space.sm },
+  centeredText: { textAlign: 'center' },
+});

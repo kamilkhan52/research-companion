@@ -238,7 +238,11 @@ def read_notes(slug: str) -> str:
         return ""
     text = p.read_text(encoding="utf-8")
     if "\n## Notes" in text:
-        return "## Notes" + text.split("\n## Notes", 1)[1].strip()
+        # The remainder starts mid-heading-line (e.g. "\n\nbody…"); reattach the heading on
+        # its own line so the block is well-formed markdown.
+        rest = text.split("\n## Notes", 1)[1]
+        head, _, body = rest.partition("\n")
+        return ("## Notes" + head).rstrip() + "\n\n" + body.strip()
     return ""
 
 
