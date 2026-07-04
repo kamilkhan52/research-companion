@@ -306,6 +306,29 @@ Smaller, concrete issues found while reading; none are crashing today, all are w
    `DuplicatePaperError`) but two hand-edited reading-list entries with colliding derived
    slugs silently alias to one corpus file. Cheap fix: detect duplicates in `_parse_entries`
    and surface a warning in `/state`.
+10. **Git commits assume an ambient git identity — a fresh deploy breaks.** Every write to the
+    record shells out to `git commit` (`committer.commit`, `notes_jobs.save` via
+    `committer._git`, and `projects.create_project` / `adopt_existing`) with no author
+    configured, so it relies on the machine having a global `user.name` / `user.email`. On a
+    fresh server, container, or CI runner that never ran `git config --global`, this fails:
+    `committer._git` raises `CommitError` ("empty ident name") so **approving notes errors
+    out**, and `create_project`'s initial commit silently no-ops (its `_git` uses
+    `check=False`), leaving a project with no baseline commit. Surfaced live as 8 CI failures
+    (fixed *in the tests* by giving the `temp_project` fixture a repo-local identity — but the
+    production paths are still exposed). This must be fixed before serving users on clean
+    infrastructure. **Fix (spec):**
+    - Set a repo-local identity in `create_project` / `adopt_existing` right after `git init`
+      (`git config user.email …` / `user.name …`), so every project repo can commit from
+      birth regardless of global config. Default to a configurable app identity via env, e.g.
+      `RC_GIT_AUTHOR_NAME` / `RC_GIT_AUTHOR_EMAIL` (default `Research Companion` /
+      `companion@local`, matching what the existing project repos already use).
+    - Make `committer._git` / `projects._git` commit with a `-c user.email=… -c user.name=…`
+      fallback (from the same env) so *pre-existing* repos that lack an identity are also
+      covered defensively, not just newly created ones.
+    - This deliberately changes commit authorship for new project repos to the app identity
+      rather than the operator's personal global git config — which is the *correct* behavior
+      for a hosted app, and the natural hook for per-user attribution once projects are scoped
+      per user (see §5: use the authenticated user's name/email as the commit author).
 
 ---
 
@@ -353,6 +376,13 @@ locking instead of dropping per-turn model persistence (4.2, revised) · ✅ chm
 ✅ deleted hardcoded `CITATION_GRAPH`/`_SLUG_SPECIALS` after migrating into the project file
 (1.7). Still open from 1.5: read caching and the remaining read-modify-write locks (sessions
 index, `store.add_entry`).
+
+**Production-readiness (do before serving users on clean infrastructure):**
+Git-identity hardening (4.10) — set a repo-local / env-configured commit author so a fresh
+deploy or container can commit the record without a global git config; today it fails on
+note approval and silently skips a new project's baseline commit. Small and self-contained;
+pull it forward into the first Medium batch since it's a real user-facing break, not a
+nicety.
 
 **Medium (a day or two each):**
 Generic job framework + project-context helper (1.1, 1.2) · `llm.py` with retries + cached
