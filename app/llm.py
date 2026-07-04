@@ -153,67 +153,98 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
 
 def stream(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
            max_tokens: int = 16000, reasoning: dict | None = None,
-           timeout: float = STREAM_TIMEOUT) -> Iterator[str]:
-    """Yield content pieces of one streaming completion as they arrive. Not retried — a
-    mid-stream reconnect can't resume cleanly, matching the previous behavior. Raises LLMError
-    on a non-200 or a transport error."""
+           timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES) -> Iterator[str]:
+    """Yield content pieces of one streaming completion as they arrive. Retries transient
+    failures (a retryable status or a transport error) with backoff **only until the first
+    content token is emitted** — before any output, a failed attempt is safe to restart; once
+    the client has seen a token, a reconnect would duplicate text, so from there it fails fast.
+    Raises LLMError on a fatal status, an exhausted retry, or a post-first-token failure."""
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=True)
-    try:
-        with httpx.stream("POST", f"{config.OPENROUTER_BASE}/chat/completions",
-                          headers=_headers(key), json=body, timeout=timeout) as r:
-            if r.status_code != 200:
-                detail = r.read().decode("utf-8", "ignore")[:400]
-                raise LLMError(f"OpenRouter error {r.status_code}: {detail}")
-            for line in r.iter_lines():
-                if not line or line.startswith(":"):
-                    continue
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if line == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(line)
-                    delta = chunk["choices"][0].get("delta", {}) or {}
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-                piece = delta.get("content")
-                if piece:
-                    yield piece
-    except httpx.HTTPError as e:
-        raise LLMError(f"OpenRouter stream failed: {e}") from e
+    url = f"{config.OPENROUTER_BASE}/chat/completions"
+    emitted = False
+    last = "unknown error"
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(_BACKOFF_BASE * attempt)
+        try:
+            with httpx.stream("POST", url, headers=_headers(key), json=body,
+                              timeout=timeout) as r:
+                if r.status_code != 200:
+                    detail = r.read().decode("utf-8", "ignore")[:400]
+                    last = f"OpenRouter error {r.status_code}: {detail}"
+                    if r.status_code in _RETRY_STATUS:
+                        continue  # nothing emitted yet — safe to retry
+                    raise LLMError(last)
+                for line in r.iter_lines():
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                        delta = chunk["choices"][0].get("delta", {}) or {}
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+                    piece = delta.get("content")
+                    if piece:
+                        emitted = True
+                        yield piece
+            return  # stream finished cleanly
+        except httpx.HTTPError as e:
+            last = f"OpenRouter stream failed: {e}"
+            if emitted:
+                raise LLMError(last) from e  # mid-stream: a retry would duplicate text
+            continue  # transport failure before any content — retry
+    raise LLMError(last)
 
 
 # ---------- model catalogue (TTL-cached; shared by three callers) ----------
 
 _CATALOGUE_TTL = 300  # seconds
-_catalogue_lock = threading.Lock()
+_catalogue_lock = threading.Lock()          # guards reads/writes of the cache tuple (never held over I/O)
+_catalogue_fetch_lock = threading.Lock()    # single-flight: at most one refresh in flight at a time
 _catalogue_cache: tuple[float, list[dict]] | None = None
+
+
+def _fresh(ttl: float) -> list[dict] | None:
+    with _catalogue_lock:
+        if _catalogue_cache and time.monotonic() - _catalogue_cache[0] < ttl:
+            return _catalogue_cache[1]
+    return None
 
 
 def catalogue(*, timeout: float = 30, ttl: float = _CATALOGUE_TTL) -> list[dict]:
     """OpenRouter's public model catalogue (the raw `data` list of model dicts), TTL-cached so
-    /api/models, /api/favorite_models, and graph.resolve_model() share one fetch. On a fetch
-    failure a cached (even stale) copy is served rather than erroring; if nothing is cached,
-    raises LLMError."""
+    /api/models, /api/favorite_models, and graph.resolve_model() share one fetch. Refreshes are
+    single-flight: simultaneous callers on a cold/stale cache serialize on a dedicated fetch
+    lock (the cache lock is never held across network I/O), so exactly one OpenRouter request
+    goes out and the rest consume its result. On a fetch failure a cached (even stale) copy is
+    served rather than erroring; if nothing is cached, raises LLMError."""
     global _catalogue_cache
-    now = time.monotonic()
-    with _catalogue_lock:
-        if _catalogue_cache and now - _catalogue_cache[0] < ttl:
-            return _catalogue_cache[1]
-    try:
-        r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=timeout)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-    except (httpx.HTTPError, ValueError) as e:
+    cached = _fresh(ttl)
+    if cached is not None:
+        return cached
+    with _catalogue_fetch_lock:
+        # Re-check: a caller that held this lock just before us may have refreshed the cache.
+        cached = _fresh(ttl)
+        if cached is not None:
+            return cached
+        try:
+            r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=timeout)
+            r.raise_for_status()
+            data = r.json().get("data", [])
+        except (httpx.HTTPError, ValueError) as e:
+            with _catalogue_lock:
+                if _catalogue_cache:
+                    return _catalogue_cache[1]  # serve stale rather than fail the caller
+            raise LLMError(f"Could not reach OpenRouter: {e}") from e
         with _catalogue_lock:
-            if _catalogue_cache:
-                return _catalogue_cache[1]  # serve stale rather than fail the caller
-        raise LLMError(f"Could not reach OpenRouter: {e}") from e
-    with _catalogue_lock:
-        _catalogue_cache = (now, data)
-    return data
+            _catalogue_cache = (time.monotonic(), data)
+        return data
 
 
 def newest_matching(inc: list[str], exc: list[str], *,

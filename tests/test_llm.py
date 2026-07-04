@@ -1,6 +1,10 @@
 """The shared OpenRouter client (app/llm.py): retry/backoff, content flattening, empty-response
 diagnostics, error normalization, and the TTL-cached catalogue + family matcher. All network is
 faked — no real httpx calls."""
+import json
+import threading
+import time
+
 import httpx
 import pytest
 from app import config, llm
@@ -178,3 +182,134 @@ def test_newest_matching_picks_latest_and_respects_exclusions(monkeypatch):
 
 def test_newest_matching_returns_none_when_no_match():
     assert llm.newest_matching(["nonexistent"], [], models=CATALOGUE) is None
+
+
+# ---- stream ----
+
+def _sse(content):
+    return "data: " + json.dumps({"choices": [{"delta": {"content": content}}]})
+
+
+_DONE = "data: [DONE]"
+
+
+class FakeStream:
+    """Context manager mimicking the object httpx.stream(...) returns."""
+
+    def __init__(self, status_code=200, lines=None, body="", raise_at=None):
+        self.status_code = status_code
+        self._lines = lines or []
+        self._body = body
+        self._raise_at = raise_at  # int index, or "end", at which iter_lines drops the connection
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._body.encode()
+
+    def iter_lines(self):
+        for i, ln in enumerate(self._lines):
+            if self._raise_at == i:
+                raise httpx.ReadError("connection dropped")
+            yield ln
+        if self._raise_at == "end":
+            raise httpx.ReadError("connection dropped")
+
+
+def _scripted(*responses):
+    """A fake httpx.stream: returns/raises each scripted response in turn (last one repeats)."""
+    state = {"n": 0}
+
+    def fn(*a, **k):
+        r = responses[min(state["n"], len(responses) - 1)]
+        state["n"] += 1
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    fn.state = state
+    return fn
+
+
+def test_stream_yields_content(key, monkeypatch):
+    monkeypatch.setattr(httpx, "stream",
+                        _scripted(FakeStream(200, [_sse("hel"), _sse("lo"), _DONE])))
+    assert list(llm.stream([{"role": "user", "content": "hi"}])) == ["hel", "lo"]
+
+
+def test_stream_retries_initial_502_then_succeeds(key, monkeypatch):
+    fn = _scripted(FakeStream(502, body="bad gateway"),
+                   FakeStream(200, [_sse("ok"), _DONE]))
+    monkeypatch.setattr(httpx, "stream", fn)
+    assert list(llm.stream([{"role": "user", "content": "hi"}])) == ["ok"]
+    assert fn.state["n"] == 2  # retried once after the 502
+
+
+def test_stream_retries_connect_error_then_succeeds(key, monkeypatch):
+    fn = _scripted(httpx.ConnectError("no route"),
+                   FakeStream(200, [_sse("ok"), _DONE]))
+    monkeypatch.setattr(httpx, "stream", fn)
+    assert list(llm.stream([{"role": "user", "content": "hi"}])) == ["ok"]
+    assert fn.state["n"] == 2
+
+
+def test_stream_fatal_4xx_not_retried(key, monkeypatch):
+    fn = _scripted(FakeStream(400, body="bad request"))
+    monkeypatch.setattr(httpx, "stream", fn)
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "hi"}]))
+    assert fn.state["n"] == 1  # 400 is fatal, not retried
+
+
+def test_stream_mid_stream_failure_is_not_retried(key, monkeypatch):
+    # A drop AFTER the first token must not restart the stream (that would duplicate text).
+    fn = _scripted(FakeStream(200, [_sse("part1")], raise_at="end"),
+                   FakeStream(200, [_sse("would-duplicate"), _DONE]))
+    monkeypatch.setattr(httpx, "stream", fn)
+    out = []
+    with pytest.raises(llm.LLMError):
+        for piece in llm.stream([{"role": "user", "content": "hi"}]):
+            out.append(piece)
+    assert out == ["part1"]     # got the first token
+    assert fn.state["n"] == 1   # no retry once content had been emitted
+
+
+def test_stream_exhausts_retries_and_raises(key, monkeypatch):
+    fn = _scripted(FakeStream(503, body="unavailable"))
+    monkeypatch.setattr(httpx, "stream", fn)
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "hi"}], tries=3))
+    assert fn.state["n"] == 3  # all attempts used
+
+
+# ---- catalogue single-flight ----
+
+def test_catalogue_is_single_flight_under_concurrency(monkeypatch):
+    calls = {"n": 0}
+
+    def slow_get(*a, **k):
+        calls["n"] += 1
+        time.sleep(0.05)  # widen the window so threads genuinely overlap
+        return FakeResp(200, {"data": CATALOGUE})
+
+    monkeypatch.setattr(httpx, "get", slow_get)
+    results, lock = [], threading.Lock()
+
+    def worker():
+        r = llm.catalogue()
+        with lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1                       # exactly one upstream fetch for 8 callers
+    assert len(results) == 8
+    assert all(r == CATALOGUE for r in results)  # everyone got the same catalogue
