@@ -266,10 +266,19 @@ to check) and cost awareness.
   all five job types at once), `llm` (retry warnings + final failure + catalogue-refresh
   failure), and `committer.commit` (slug/rev/message). `test_logging` covers the setup, the
   filter, and that the registry emits lifecycle lines.
-- Record token usage per LLM call (OpenRouter returns `usage` in every response — it's
-  currently read only for an error hint in `graph.py`). Accumulate per project into
-  `.state/usage.json` and expose it in Settings. "This graph build cost $1.40" is a feature,
-  not just telemetry.
+- ✅ **DONE (backend)** (branch `quality/usage-tracking`): `app/usage.py` records every LLM
+  call's usage from the one seam that sees them all (`llm.complete`/`llm.stream`). Cost is
+  requested from OpenRouter directly (`usage.include` → `usage.cost`) rather than a local
+  pricing table, so it stays correct as prices change; tokens are still recorded if a provider
+  omits cost. Aggregated per project into `.state/usage.json`: a lifetime total plus by-model
+  and by-operation (analysis / narration / graph_extraction / discovery / notes) breakdowns —
+  the shape the eventual **credits model** reuses (per-user is one more key, not a redesign).
+  Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
+  extraction executor threads so their spend attributes correctly (invariant 2). Recording is
+  best-effort (never fails the turn) and no-ops without an active project. `test_usage` covers
+  accumulation, breakdowns, missing-cost, corruption tolerance, and the complete/stream feeds.
+  *Follow-up:* a Settings readout in the mobile client (`quality/usage-mobile`), and — when the
+  agentic path (`agent_harness`, Pydantic AI's own client) is used — routing its usage here too.
 
 ### 3.4 Prompt management
 

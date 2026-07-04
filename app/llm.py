@@ -36,7 +36,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from . import config, logging_config
+from . import config, logging_config, usage
 
 log = logging_config.get("llm")
 
@@ -98,6 +98,9 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        # Ask OpenRouter to return authoritative token counts + dollar cost in `usage` (for
+        # streaming it arrives in a final usage-only chunk). See app/usage.py.
+        "usage": {"include": True},
     }
     if reasoning is not None:
         body["reasoning"] = reasoning
@@ -140,15 +143,17 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
 def complete(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
              max_tokens: int = 8000, reasoning: dict | None = None,
              timeout: float = DEFAULT_TIMEOUT, tries: int = _DEFAULT_TRIES,
-             allow_empty: bool = False) -> str:
+             allow_empty: bool = False, operation: str = "llm") -> str:
     """One non-streaming chat completion, returning the model's content string. `model` falls
-    back to the settings default. Retries transient failures. Raises LLMError on transport /
-    HTTP / malformed-response errors and (unless allow_empty) on an empty completion, with a
-    diagnostic that surfaces reasoning-token exhaustion."""
+    back to the settings default. Retries transient failures. Records token/cost usage against
+    the active project under `operation` (a billed response is recorded even when empty). Raises
+    LLMError on transport / HTTP / malformed-response errors and (unless allow_empty) on an empty
+    completion, with a diagnostic that surfaces reasoning-token exhaustion."""
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=False)
     data = _post_with_retry(body, key, timeout, tries)
+    usage.record(operation, body.get("model"), data.get("usage"))  # any 200 was billed
     try:
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
@@ -162,12 +167,15 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
 
 def stream(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
            max_tokens: int = 16000, reasoning: dict | None = None,
-           timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES) -> Iterator[str]:
+           timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES,
+           operation: str = "llm") -> Iterator[str]:
     """Yield content pieces of one streaming completion as they arrive. Retries transient
     failures (a retryable status or a transport error) with backoff **only until the first
     content token is emitted** — before any output, a failed attempt is safe to restart; once
     the client has seen a token, a reconnect would duplicate text, so from there it fails fast.
-    Raises LLMError on a fatal status, an exhausted retry, or a post-first-token failure."""
+    Records token/cost usage (from the final usage chunk) against the active project under
+    `operation` once the stream completes. Raises LLMError on a fatal status, an exhausted retry,
+    or a post-first-token failure."""
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=True)
@@ -181,6 +189,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         attempt + 1, tries, body.get("model"), last)
             time.sleep(_BACKOFF_BASE * attempt)
         attempts = attempt + 1
+        seen_usage: dict | None = None
         try:
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
@@ -200,13 +209,17 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         break
                     try:
                         chunk = json.loads(line)
-                        delta = chunk["choices"][0].get("delta", {}) or {}
-                    except (json.JSONDecodeError, KeyError, IndexError):
+                    except json.JSONDecodeError:
                         continue
+                    if chunk.get("usage"):  # final usage-only chunk (choices empty)
+                        seen_usage = chunk["usage"]
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta", {}) or {} if choices else {}
                     piece = delta.get("content")
                     if piece:
                         emitted = True
                         yield piece
+            usage.record(operation, body.get("model"), seen_usage)
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"

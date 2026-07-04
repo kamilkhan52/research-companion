@@ -148,7 +148,7 @@ def _default_events(target: str, prompt: str):
         messages = [{"role": "system", "content": prompts.get("notes_editor")},
                     {"role": "user", "content": prompt}]
         pieces: list[str] = []
-        for piece in agent.stream_messages(messages, max_tokens=16000):
+        for piece in agent.stream_messages(messages, max_tokens=16000, operation="notes"):
             pieces.append(piece)
             yield {"type": "text", "text": piece}
         yield {"type": "final", "text": "".join(pieces)}

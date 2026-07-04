@@ -39,6 +39,7 @@ from . import (
     sessions,
     store,
     tts,
+    usage,
 )
 from .agent import AgentError
 from .auth import AuthError
@@ -348,6 +349,13 @@ def get_state(pid: str):
         "has_openai_key": bool(settings.get("openai_api_key")),
         "papers": papers,
     }
+
+
+@project_router.get("/usage")
+def get_usage(pid: str):
+    """This project's accumulated LLM token/cost usage (lifetime aggregate + per-model /
+    per-operation breakdowns). Cheap read of .state/usage.json; no LLM call."""
+    return usage.load()
 
 
 @app.get("/api/settings")

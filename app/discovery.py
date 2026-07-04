@@ -97,7 +97,8 @@ def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         return llm.complete(messages, model=model, temperature=0.1, max_tokens=max_tokens,
-                            reasoning={"effort": "low"}, timeout=LLM_TIMEOUT_S)
+                            reasoning={"effort": "low"}, timeout=LLM_TIMEOUT_S,
+                            operation="discovery")
     except llm.LLMError as e:
         raise DiscoveryError(str(e)) from e
 
