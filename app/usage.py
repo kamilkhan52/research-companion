@@ -12,19 +12,21 @@ Design notes:
 - **Cost is stored as an integer count of nano-USD** (1e-9 dollars), not a float. This is a
   credits-ledger foundation: summing integers is exact, so a million sub-micro-dollar calls add
   up correctly, whereas rounding each float addition to a few decimals silently discards them.
-  The USD figure (`cost` / `cost_usd`) is derived only for presentation.
-- **Aggregates, not a per-call log** — enough for a spend view and monthly credit accounting,
-  and it can't grow without bound. Individual-call history can be added later if needed.
-- **Totals are estimates while `incomplete_streams > 0`.** A streaming turn that drops after its
-  first token (client/tunnel disconnect) is billed upstream but never delivers its final usage
-  chunk, so its cost is unknown here. We count those separately rather than silently understating;
-  reconciling them by OpenRouter generation id is a future step (see llm.stream).
+  The USD figure (`cost_usd`) is derived only for presentation.
+- **Nothing is silently dropped.** Two honesty mechanisms:
+  * A billed stream that ends without its final usage chunk (a mid-stream disconnect, or a clean
+    EOF that a proxy/provider truncated) is recorded as a **pending** record — `{operation,
+    model, generation_id, at}` — not as a zero-cost completed call. `summary()` flags the
+    aggregate `estimated` while any pending exist. Keeping the generation id means these can be
+    reconciled later against OpenRouter's generation-stats endpoint (see `reconcile`).
+  * Narration on the app-global audio path with no initiating project is billed to an explicit
+    **unattributed** ledger (a sentinel scope stored in app-global state), so no spend vanishes.
 - **Foundation for the credits model.** When projects become per-user, attribution is one more
   key on the aggregate (a `by_user` breakdown), not a redesign. Recording is keyed off the
   active project, so — like every other background write — a job worker must have rebound the
   project contextvar first (invariant 2); llm.py's graph path rebinds it into the extraction
-  executor thread, and audio_jobs binds the initiating project around its narration call, for
-  exactly this reason.
+  executor thread, and audio_jobs binds the initiating (or unattributed) scope around its
+  narration call, for exactly this reason.
 
 Reads/writes are serialized on a lock and persisted with an atomic write (concurrent graph
 extraction records several papers at once into the same file).
@@ -43,12 +45,19 @@ log = logging_config.get("usage")
 _lock = threading.Lock()
 
 _NANO_USD = 1_000_000_000  # cost is stored as integer nano-USD so accumulation is exact
+_PENDING_CAP = 500         # bounded: drop the oldest pending records past this many
+
+# A sentinel "project" whose ledger lives in app-global state — where narration (and any other
+# call) with no real project to attribute to is recorded, rather than being dropped.
+UNATTRIBUTED = "__unattributed__"
 
 # Every aggregate bucket carries these integer counters (cost as nano-USD; see module docstring).
 _FIELDS = ("calls", "prompt_tokens", "completion_tokens", "total_tokens", "cost_nanousd")
 
 
 def _usage_file():
+    if config.active_project_id() == UNATTRIBUTED:
+        return config.APP_STATE_DIR / "usage-unattributed.json"
     return config.state_dir() / "usage.json"
 
 
@@ -58,12 +67,12 @@ def _empty_bucket() -> dict:
 
 def _blank() -> dict:
     return {"total": _empty_bucket(), "by_model": {}, "by_operation": {},
-            "incomplete_streams": 0, "first_at": None, "updated_at": None}
+            "pending": [], "first_at": None, "updated_at": None}
 
 
 def load() -> dict:
-    """The raw stored aggregate for the active project (integer nano-USD cost), or a blank shape.
-    Internal/round-trip form — use `summary()` for presentation."""
+    """The raw stored aggregate for the active scope (integer nano-USD cost, pending records), or
+    a blank shape. Internal/round-trip form — use `summary()` for presentation."""
     p = _usage_file()
     if not p.exists():
         return _blank()
@@ -79,18 +88,20 @@ def load() -> dict:
 def _present_bucket(bucket: dict) -> dict:
     """A copy of a stored bucket with cost surfaced in USD (derived; the exact integer nano-USD
     is kept alongside for a ledger)."""
-    nano = bucket.get("cost_nanousd", 0)
-    return {**bucket, "cost_usd": nano / _NANO_USD}
+    return {**bucket, "cost_usd": bucket.get("cost_nanousd", 0) / _NANO_USD}
 
 
 def summary() -> dict:
-    """Presentation form of the aggregate: every bucket gains a derived `cost_usd`, and a
-    top-level `estimated` flag flips true while some billed streams are unreconciled."""
+    """Presentation form of the aggregate: every bucket gains a derived `cost_usd`, `pending` is
+    reduced to a `pending_count`, and `estimated` is true while any billed-but-unreconciled
+    streams remain (so the total is never silently presented as authoritative)."""
     data = load()
+    pending = data.pop("pending", [])
     data["total"] = _present_bucket(data["total"])
     data["by_model"] = {k: _present_bucket(v) for k, v in data["by_model"].items()}
     data["by_operation"] = {k: _present_bucket(v) for k, v in data["by_operation"].items()}
-    data["estimated"] = data.get("incomplete_streams", 0) > 0
+    data["pending_count"] = len(pending)
+    data["estimated"] = len(pending) > 0
     return data
 
 
@@ -106,47 +117,84 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _apply(data: dict, operation: str, model: str | None, usage: dict) -> None:
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    total = int(usage.get("total_tokens") or (prompt + completion))
+    # Preserve full source precision: convert dollars to integer nano-USD once, then only ever
+    # sum integers. round() here quantizes to 1e-9, far finer than any real per-call cost.
+    cost_nanousd = round(float(usage.get("cost") or 0.0) * _NANO_USD)
+    model = model or "unknown"
+    operation = operation or "llm"
+    _add(data["total"], prompt, completion, total, cost_nanousd)
+    _add(data["by_model"].setdefault(model, _empty_bucket()), prompt, completion, total, cost_nanousd)
+    _add(data["by_operation"].setdefault(operation, _empty_bucket()),
+         prompt, completion, total, cost_nanousd)
+    data["first_at"] = data["first_at"] or _now()
+    data["updated_at"] = _now()
+
+
 def record(operation: str, model: str | None, usage: dict | None) -> None:
-    """Accumulate one call's usage into the active project's aggregate. No-ops when there is no
-    active project to attribute to (so app-global calls and unit tests don't write anything).
-    Never raises — accounting must not break the call it is measuring."""
+    """Accumulate one call's usage into the active scope's aggregate. No-ops when there is no
+    active project (or unattributed scope) to attribute to, so app-global calls and unit tests
+    don't write anything. Never raises — accounting must not break the call it is measuring."""
     if not config.active_project_id():
         return
-    usage = usage or {}
     try:
-        prompt = int(usage.get("prompt_tokens") or 0)
-        completion = int(usage.get("completion_tokens") or 0)
-        total = int(usage.get("total_tokens") or (prompt + completion))
-        # Preserve full source precision: convert dollars to integer nano-USD once, then only
-        # ever sum integers. round() here quantizes to 1e-9, far finer than any real per-call cost.
-        cost_nanousd = round(float(usage.get("cost") or 0.0) * _NANO_USD)
-        model = model or "unknown"
-        operation = operation or "llm"
         with _lock:
             data = load()
-            _add(data["total"], prompt, completion, total, cost_nanousd)
-            _add(data["by_model"].setdefault(model, _empty_bucket()),
-                 prompt, completion, total, cost_nanousd)
-            _add(data["by_operation"].setdefault(operation, _empty_bucket()),
-                 prompt, completion, total, cost_nanousd)
-            data["first_at"] = data["first_at"] or _now()
-            data["updated_at"] = _now()
+            _apply(data, operation, model, usage or {})
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
     except Exception as e:  # accounting is best-effort; a bad usage dict must not fail the turn
         log.warning("usage.record failed (op=%s model=%s): %s", operation, model, e)
 
 
-def record_incomplete(operation: str, model: str | None) -> None:
-    """Mark that a streaming call was billed upstream but its cost is unknown here (it dropped
-    after the first token, before the final usage chunk). Bumps a counter so totals are honestly
-    flagged as estimates rather than silently understated; the call itself is not costed."""
+def record_pending(operation: str, model: str | None, generation_id: str | None) -> None:
+    """Record that a streaming call was billed upstream but its cost is unknown here (it ended —
+    by disconnect or truncation — without the final usage chunk). Stores a bounded pending
+    record with the generation id so it can be reconciled later; `summary()` flags totals as
+    estimates meanwhile. Best-effort, never raises."""
     if not config.active_project_id():
         return
     try:
         with _lock:
             data = load()
-            data["incomplete_streams"] = data.get("incomplete_streams", 0) + 1
+            data["pending"].append({"operation": operation or "llm", "model": model or "unknown",
+                                     "generation_id": generation_id, "at": _now()})
+            if len(data["pending"]) > _PENDING_CAP:
+                data["pending"] = data["pending"][-_PENDING_CAP:]
             data["updated_at"] = _now()
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
     except Exception as e:
-        log.warning("usage.record_incomplete failed (op=%s model=%s): %s", operation, model, e)
+        log.warning("usage.record_pending failed (op=%s model=%s): %s", operation, model, e)
+
+
+def reconcile(generation_id: str, usage: dict | None) -> bool:
+    """Resolve a previously-pending stream: if a pending record with this generation id exists in
+    the active scope, drop it and fold its now-known usage into the aggregate. Returns True if a
+    pending record was cleared. This is the hook a future OpenRouter generation-stats poller uses
+    to turn estimates into exact spend."""
+    if not generation_id or not config.active_project_id():
+        return False
+    try:
+        with _lock:
+            data = load()
+            match = next((p for p in data["pending"] if p.get("generation_id") == generation_id), None)
+            if match is None:
+                return False
+            data["pending"] = [p for p in data["pending"] if p is not match]
+            _apply(data, match.get("operation"), match.get("model"), usage or {})
+            atomic_write_text(_usage_file(), json.dumps(data, indent=2))
+            return True
+    except Exception as e:
+        log.warning("usage.reconcile failed (gen=%s): %s", generation_id, e)
+        return False
+
+
+def unattributed_summary() -> dict:
+    """Presentation form of the app-global unattributed ledger (spend that had no project)."""
+    token = config.set_active_project(UNATTRIBUTED)
+    try:
+        return summary()
+    finally:
+        config.reset_active_project(token)

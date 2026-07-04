@@ -190,6 +190,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             time.sleep(_BACKOFF_BASE * attempt)
         attempts = attempt + 1
         seen_usage: dict | None = None
+        gen_id: str | None = None
         try:
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
@@ -200,6 +201,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         continue  # nothing emitted yet — safe to retry
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
                     raise LLMError(last)
+                gen_id = r.headers.get("x-generation-id") or None
                 for line in r.iter_lines():
                     if not line or line.startswith(":"):
                         continue
@@ -211,6 +213,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         chunk = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    gen_id = chunk.get("id") or gen_id  # generation id, for later reconciliation
                     if chunk.get("usage"):  # final usage-only chunk (choices empty)
                         seen_usage = chunk["usage"]
                     choices = chunk.get("choices") or []
@@ -219,16 +222,22 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                     if piece:
                         emitted = True
                         yield piece
-            usage.record(operation, body.get("model"), seen_usage)
+            if seen_usage is not None:
+                usage.record(operation, body.get("model"), seen_usage)
+            elif emitted:
+                # Clean EOF but no final usage chunk (proxy/provider truncation): content was
+                # billed, cost unknown — record as pending so totals read as estimates, not a
+                # silent zero-cost completed call.
+                usage.record_pending(operation, body.get("model"), gen_id)
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"
             if emitted:  # mid-stream: a retry would duplicate text, so fail fast
                 log.error("openrouter stream dropped after first token (model=%s): %s",
                           body.get("model"), last)
-                # Upstream was billed but we never got the final usage chunk — flag it so totals
-                # are honestly marked as estimates rather than silently understating spend.
-                usage.record_incomplete(operation, body.get("model"))
+                # Billed upstream but no final usage chunk — flag it (with the generation id) so
+                # totals are honest estimates and this can be reconciled later.
+                usage.record_pending(operation, body.get("model"), gen_id)
                 raise LLMError(last) from e
             continue  # transport failure before any content — retry
     log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",

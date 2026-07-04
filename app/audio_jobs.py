@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import agent, config, sessions, tts
+from . import agent, config, sessions, tts, usage
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, now_iso
 
@@ -103,17 +103,15 @@ def start_job(text: str, billing_project: str | None = None,
     def work(job: AudioJob) -> None:
         narration = sessions.get_cached_narration(text)
         if narration is None:
-            # Bind the initiating project ONLY around the narration call, so its LLM spend
-            # attributes there (usage.record reads the active project) while the surrounding
-            # job — and the app-global narration/mp3 caches it writes — stay project-agnostic.
-            if billing_project:
-                token = config.set_active_project(billing_project)
-                try:
-                    narration = narrate_fn(text)
-                finally:
-                    config.reset_active_project(token)
-            else:
+            # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
+            # there (usage.record reads the active project) while the surrounding job — and the
+            # app-global narration/mp3 caches it writes — stay project-agnostic. With no
+            # initiating project, bill the explicit unattributed ledger rather than dropping it.
+            token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
+            try:
                 narration = narrate_fn(text)
+            finally:
+                config.reset_active_project(token)
             sessions.cache_narration(text, narration)
         with _registry.lock:
             job.narration = narration

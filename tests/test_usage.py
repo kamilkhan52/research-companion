@@ -1,5 +1,6 @@
 """Per-project usage/cost accounting (app/usage.py): exact integer nano-USD accumulation,
-presentation, incomplete-stream flagging, and that llm.complete/stream feed it."""
+presentation, reconcilable pending records for billed-but-unknown streams, the unattributed
+ledger, and that llm.complete/stream feed it."""
 import json
 
 import httpx
@@ -12,7 +13,7 @@ def test_load_blank_when_absent(temp_project):
     data = usage.load()
     assert data["total"]["calls"] == 0
     assert data["by_model"] == {} and data["by_operation"] == {}
-    assert data["incomplete_streams"] == 0
+    assert data["pending"] == []
 
 
 def test_record_accumulates_tokens_and_cost(temp_project):
@@ -82,22 +83,62 @@ def test_mixed_costs_are_exact_across_buckets(temp_project):
     assert data["by_model"]["m1"]["cost_nanousd"] == 400
 
 
-# ---- presentation + incomplete-stream flagging ----
+# ---- presentation + pending/reconcile ----
 
 def test_summary_surfaces_cost_usd_and_not_estimated_when_complete(temp_project):
     usage.record("analysis", "m", {"cost": 0.01})
     s = usage.summary()
     assert abs(s["total"]["cost_usd"] - 0.01) < 1e-12
     assert s["by_operation"]["analysis"]["cost_usd"] == 0.01
-    assert s["estimated"] is False
+    assert s["estimated"] is False and s["pending_count"] == 0
+    assert "pending" not in s  # summary reduces the raw list to a count
 
 
-def test_record_incomplete_flags_estimate(temp_project):
+def test_record_pending_flags_estimate(temp_project):
     usage.record("analysis", "m", {"cost": 0.01})
-    usage.record_incomplete("analysis", "m")
+    usage.record_pending("analysis", "m", "gen-123")
     s = usage.summary()
-    assert s["incomplete_streams"] == 1
-    assert s["estimated"] is True  # totals are estimates while some billed streams are unreconciled
+    assert s["pending_count"] == 1
+    assert s["estimated"] is True  # totals are estimates while a billed stream is unreconciled
+
+
+def test_pending_records_are_bounded(temp_project):
+    for i in range(usage._PENDING_CAP + 25):
+        usage.record_pending("analysis", "m", f"gen-{i}")
+    pending = usage.load()["pending"]
+    assert len(pending) == usage._PENDING_CAP           # capped
+    assert pending[-1]["generation_id"] == f"gen-{usage._PENDING_CAP + 24}"  # newest kept
+
+
+def test_reconcile_clears_pending_and_folds_in_cost(temp_project):
+    usage.record_pending("analysis", "gpt", "gen-xyz")
+    ok = usage.reconcile("gen-xyz", {"prompt_tokens": 5, "completion_tokens": 3, "cost": 0.004})
+    assert ok is True
+    s = usage.summary()
+    assert s["pending_count"] == 0 and s["estimated"] is False
+    assert s["total"]["cost_nanousd"] == 4_000_000          # folded in
+    assert s["by_operation"]["analysis"]["calls"] == 1      # attributed to the pending op/model
+    assert s["by_model"]["gpt"]["calls"] == 1
+
+
+def test_reconcile_unknown_generation_is_a_noop(temp_project):
+    usage.record_pending("analysis", "m", "gen-1")
+    assert usage.reconcile("does-not-exist", {"cost": 0.01}) is False
+    assert usage.summary()["pending_count"] == 1
+
+
+# ---- unattributed ledger (app-global) ----
+
+def test_unattributed_ledger_is_app_global(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "APP_STATE_DIR", tmp_path)
+    token = config.set_active_project(usage.UNATTRIBUTED)
+    try:
+        usage.record("narration", "m", {"cost": 0.02})
+    finally:
+        config.reset_active_project(token)
+    assert (tmp_path / "usage-unattributed.json").exists()  # written to app-global, not a project
+    s = usage.unattributed_summary()
+    assert s["by_operation"]["narration"]["cost_nanousd"] == 20_000_000
 
 
 # ---- llm.complete / stream feed usage ----
@@ -125,9 +166,10 @@ def test_complete_records_usage(temp_project, monkeypatch):
 
 
 class _FakeStream:
-    def __init__(self, lines, raise_at_end=False):
+    def __init__(self, lines, raise_at_end=False, headers=None):
         self._lines = lines
         self._raise_at_end = raise_at_end
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -156,18 +198,35 @@ def test_stream_records_usage_from_final_chunk(temp_project, monkeypatch):
     data = usage.load()
     assert data["total"]["total_tokens"] == 6
     assert data["total"]["cost_nanousd"] == 3_000_000  # 0.003 USD
+    assert data["pending"] == []
 
 
-def test_stream_mid_drop_marks_incomplete_not_costed(temp_project, monkeypatch):
+def test_stream_clean_eof_without_usage_is_pending(temp_project, monkeypatch):
+    # Emits content then a clean [DONE], but NO final usage chunk (proxy/provider truncation):
+    # the content was billed, so it's pending — not a silent zero-cost completed call.
+    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    lines = ["data: " + json.dumps({"id": "gen-eof", "choices": [{"delta": {"content": "hi"}}]}),
+             "data: [DONE]"]
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStream(lines))
+    assert list(llm.stream([{"role": "user", "content": "x"}], operation="analysis")) == ["hi"]
+    data = usage.load()
+    assert data["total"]["calls"] == 0                       # not costed as complete
+    assert len(data["pending"]) == 1
+    assert data["pending"][0]["generation_id"] == "gen-eof"  # captured for reconciliation
+    assert usage.summary()["estimated"] is True
+
+
+def test_stream_mid_drop_marks_pending_not_costed(temp_project, monkeypatch):
     monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
     monkeypatch.setattr(llm.time, "sleep", lambda *_: None)
-    lines = ["data: " + json.dumps({"choices": [{"delta": {"content": "part"}}]})]
+    lines = ["data: " + json.dumps({"id": "gen-drop", "choices": [{"delta": {"content": "part"}}]})]
     monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeStream(lines, raise_at_end=True))
     with pytest.raises(llm.LLMError):
         list(llm.stream([{"role": "user", "content": "x"}], operation="analysis"))
     data = usage.load()
-    assert data["incomplete_streams"] == 1      # billed-but-unknown stream is flagged
-    assert data["total"]["cost_nanousd"] == 0   # and not silently costed as 0-and-complete
+    assert len(data["pending"]) == 1
+    assert data["pending"][0]["generation_id"] == "gen-drop"
+    assert data["total"]["cost_nanousd"] == 0
     assert usage.summary()["estimated"] is True
 
 

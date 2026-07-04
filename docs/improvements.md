@@ -273,22 +273,34 @@ to check) and cost awareness.
   omits cost. Aggregated per project into `.state/usage.json`: a lifetime total plus by-model
   and by-operation (analysis / narration / graph_extraction / discovery / notes) breakdowns —
   the shape the eventual **credits model** reuses (per-user is one more key, not a redesign).
-  Ledger-grade details, after review: **cost is stored as integer nano-USD** (summed exactly;
-  a float rounded per-add silently zeroes sub-micro-dollar calls) and surfaced as USD only for
-  presentation (`summary()`); **narration spend on the app-global audio path bills the
-  initiating project** (`audio_jobs` binds it around the narration call, leaving the shared
-  cache/dedup untouched — a cache hit costs nothing); and a **billed stream that drops after its
-  first token** (no final usage chunk) increments `incomplete_streams` so totals are honestly
-  flagged `estimated` rather than silently understated. Exposed at
-  `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its extraction
-  executor threads so their spend attributes correctly (invariant 2). Recording is best-effort
-  (never fails the turn) and no-ops without an active project. `test_usage` covers accumulation,
-  breakdowns, missing-cost, sub-micro precision, incomplete-stream flagging, and the
-  complete/stream feeds; `test_audio_jobs` proves narration bills the initiating project (and a
-  cache hit bills no one). *Follow-ups:* the mobile Settings readout (`quality/usage-mobile`,
-  which also sends the initiating `project` on the audio request); reconciling incomplete
-  streams by OpenRouter generation id; and routing the agentic path (`agent_harness`, Pydantic
-  AI's own client) through here too.
+  Ledger-grade details, after two review rounds:
+  - **Cost is stored as integer nano-USD** (summed exactly; a float rounded per-add silently
+    zeroes sub-micro-dollar calls) and surfaced as USD only for presentation (`summary()`).
+  - **Narration spend on the app-global audio path bills the initiating project** — `audio_jobs`
+    binds it around the narration call, leaving the shared cache/dedup untouched (a cache hit
+    costs nothing). Both `/api/audio/jobs` and `/api/narrate` accept a validated `project`; with
+    none, spend goes to an explicit **unattributed** app-global ledger (`GET
+    /api/usage/unattributed`) so nothing is silently dropped for the currently-shipped clients.
+  - **Path-traversal hardening (security):** the billing `project` (and the route pid) flow
+    through `projects.project_path`, which now rejects any id that isn't a contained single
+    segment (`_safe_pid` + a resolved-containment check) — before this, an absolute/`..` value
+    could have made `usage.record` write outside `PROJECTS_ROOT`. An invalid billing project is a
+    400, not a silent misattribution.
+  - **Billed-but-unknown streams are reconcilable, not silently lost.** A stream that drops after
+    its first token *or* ends cleanly without a final usage chunk records a bounded **pending**
+    record (`{operation, model, generation_id}`, generation id captured from the chunk/header),
+    and `summary()` flags totals `estimated`. `usage.reconcile(generation_id, usage)` folds a
+    resolved generation into the aggregate — the hook a future OpenRouter generation-stats poller
+    uses.
+  Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
+  extraction executor threads so their spend attributes correctly (invariant 2). Recording is
+  best-effort (never fails the turn). `test_usage` covers exact accumulation, sub-micro
+  precision, pending/reconcile, clean-EOF-without-usage, and the unattributed ledger;
+  `test_audio_jobs` proves narration bills the initiating project (route-level: missing / invalid
+  / valid / cached) and a cache hit bills no one; `test_projects_security` covers traversal.
+  *Follow-ups:* the mobile Settings readout (`quality/usage-mobile`, which also sends the
+  initiating `project`); wiring the generation-stats poller to `reconcile`; and routing the
+  agentic path (`agent_harness`, Pydantic AI's own client) through here too.
 
 ### 3.4 Prompt management
 

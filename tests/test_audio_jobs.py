@@ -163,3 +163,59 @@ def test_cached_narration_costs_nothing(temp_project):
         assert usage.load()["total"]["calls"] == 0  # cache hit -> unbilled
     finally:
         config.reset_active_project(tok)
+
+
+def test_narration_without_a_project_bills_the_unattributed_ledger(temp_project):
+    from app import usage
+    job = audio_jobs.start_job("No project direct.", billing_project=None,
+                               narrate_fn=_billing_narrate, synth_fn=fake_synth)
+    assert _wait_until_settled(job.id).status == "done"
+    assert usage.unattributed_summary()["by_operation"]["narration"]["calls"] == 1
+    assert usage.load()["total"]["calls"] == 0  # the ambient project isn't charged for it
+
+
+# ---- route-level: /api/audio/jobs validates the billing project and attributes correctly ----
+
+def _route_env(monkeypatch):
+    from app import agent, config, tts
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"speech_provider": "openai", "tts_model": "m", "tts_voice": "v"})
+    monkeypatch.setattr(agent, "narrate", _billing_narrate)  # records usage under the active project
+    monkeypatch.setattr(tts, "openai_speech", lambda part: b"mp3")
+
+
+def test_route_valid_project_bills_it(temp_project, monkeypatch):
+    from app import main, usage
+    _route_env(monkeypatch)
+    resp = main.start_audio_job(main.NarrateReq(text="Hello route.", project=temp_project))
+    _wait_until_settled(resp["job"]["id"])
+    assert usage.load()["by_operation"]["narration"]["calls"] == 1
+
+
+def test_route_missing_project_bills_unattributed(temp_project, monkeypatch):
+    from app import main, usage
+    _route_env(monkeypatch)
+    resp = main.start_audio_job(main.NarrateReq(text="No project route.", project=None))
+    _wait_until_settled(resp["job"]["id"])
+    assert usage.unattributed_summary()["by_operation"]["narration"]["calls"] == 1
+    assert usage.load()["total"]["calls"] == 0
+
+
+def test_route_invalid_project_is_rejected_400(temp_project, monkeypatch):
+    from app import main
+    _route_env(monkeypatch)
+    with pytest.raises(main.HTTPException) as ei:
+        main.start_audio_job(main.NarrateReq(text="x", project="../etc"))
+    assert ei.value.status_code == 400  # traversal/unknown id -> client error, not silent None
+
+
+def test_route_cached_result_bills_no_one(temp_project, monkeypatch):
+    from app import main, usage
+    _route_env(monkeypatch)
+    first = main.start_audio_job(main.NarrateReq(text="Cached route.", project=temp_project))
+    _wait_until_settled(first["job"]["id"])
+    audio_jobs._jobs.clear()
+    before = usage.load()["by_operation"]["narration"]["calls"]
+    resp = main.start_audio_job(main.NarrateReq(text="Cached route.", project=None))
+    assert resp["job"]["status"] == "done"  # cache hit, no thread
+    assert usage.load()["by_operation"]["narration"]["calls"] == before  # nothing re-billed
