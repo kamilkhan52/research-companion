@@ -13,18 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import re
-import threading
-import uuid
 from collections.abc import AsyncIterator, Callable, Iterable
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
 
-from . import agent, agent_harness, committer, config, prompts, store
+from . import agent, agent_harness, committer, prompts, store
+from .jobs import Job, JobRegistry, new_id
 
 # The pseudo-target for the cross-paper working notes; anything else is a paper slug.
 WORKING = "working"
-
-_MAX_FINISHED = 20
 
 # runner(target, prompt) yields the same {'text'|'tool'|'final'} events as the agentic turn
 # stream. Injectable for tests.
@@ -76,48 +72,30 @@ def save(target: str, markdown: str, summary: str = "") -> dict:
 # ---- agent-assisted edit (background job) ----
 
 @dataclass
-class NotesJob:
-    id: str
-    target: str
-    instruction: str
-    status: str = "running"          # running | done | error
+class NotesJob(Job):
+    target: str = ""                 # notes document being edited (also the registry dedup key)
+    instruction: str = ""
     # Live progress as the client renders it: merged text runs + tool calls, arrival order
     # ({kind:'text', text} | {kind:'tool', name, detail}) — same shape as chat job items.
     items: list = field(default_factory=list)
     result: str | None = None        # the proposed revised markdown, once done
-    error: str | None = None
-    started_at: str = ""
-    finished_at: str | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 
-_jobs: dict[str, NotesJob] = {}
-_lock = threading.Lock()
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+# `_jobs` aliases the registry dict so tests can clear() it to reset.
+_registry: JobRegistry[NotesJob] = JobRegistry("notes", max_finished=20)
+_jobs = _registry.jobs
 
 
 def get_job(job_id: str) -> NotesJob | None:
-    with _lock:
-        return _jobs.get(job_id)
+    return _registry.get(job_id)
 
 
 def snapshot(job_id: str) -> dict | None:
-    with _lock:
-        job = _jobs.get(job_id)
-        return job.to_dict() if job else None
+    return _registry.snapshot(job_id)
 
 
 def active_for(target: str) -> NotesJob | None:
-    with _lock:
-        for job in _jobs.values():
-            if job.target == target and job.status == "running":
-                return job
-    return None
+    return _registry.active_for(target)
 
 
 def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) -> NotesJob:
@@ -130,28 +108,25 @@ def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) ->
         raise NotesError("No notes to edit yet for this target.")
     if not instruction.strip():
         raise NotesError("Instruction cannot be empty.")
-    with _lock:
-        for job in _jobs.values():
-            if job.target == target and job.status == "running":
-                return job
-        job = NotesJob(id=uuid.uuid4().hex, target=target,
-                       instruction=instruction.strip(), started_at=_now())
-        _register(job)
+    instruction = instruction.strip()
+    runner = runner or _default_events
+    prompt = _edit_prompt(target, current, instruction)
 
-    prompt = _edit_prompt(target, current, instruction.strip())
-    pid = config.active_project_id()
-    thread = threading.Thread(target=_run, args=(job, pid, prompt, runner or _default_events),
-                              daemon=True, name=f"notes-{job.id[:8]}")
-    thread.start()
-    return job
+    def work(job: NotesJob) -> None:
+        events = runner(job.target, prompt)
+        if hasattr(events, "__aiter__"):
+            final_text = asyncio.run(_consume_async(job, events))
+        else:
+            final_text = _consume_sync(job, events)
+        result = _strip_fences(final_text)
+        if not result:
+            raise agent.AgentError("The model returned an empty revision. Try again, or "
+                                   "switch the analysis model in Settings.")
+        with _registry.lock:
+            job.result = result
 
-
-def _register(job: NotesJob) -> None:
-    _jobs[job.id] = job
-    finished = [j for j in _jobs.values() if j.status != "running"]
-    if len(finished) > _MAX_FINISHED:
-        for stale in sorted(finished, key=lambda j: j.started_at)[:len(finished) - _MAX_FINISHED]:
-            _jobs.pop(stale.id, None)
+    return _registry.start_or_join(
+        target, lambda: NotesJob(id=new_id(), target=target, instruction=instruction), work)
 
 
 def _edit_prompt(target: str, current: str, instruction: str) -> str:
@@ -189,29 +164,6 @@ def _strip_fences(text: str) -> str:
     return m.group(1).strip() if m else text.strip()
 
 
-def _run(job: NotesJob, pid: str | None, prompt: str, runner: RunnerFn) -> None:
-    config.set_active_project(pid)
-    try:
-        events = runner(job.target, prompt)
-        if hasattr(events, "__aiter__"):
-            final_text = asyncio.run(_consume_async(job, events))
-        else:
-            final_text = _consume_sync(job, events)
-        result = _strip_fences(final_text)
-        if not result:
-            raise agent.AgentError("The model returned an empty revision. Try again, or "
-                                   "switch the analysis model in Settings.")
-        with _lock:
-            job.result = result
-            job.status = "done"
-            job.finished_at = _now()
-    except Exception as e:
-        with _lock:
-            job.status = "error"
-            job.error = str(e)[:400]
-            job.finished_at = _now()
-
-
 async def _consume_async(job: NotesJob, events: AsyncIterator[dict]) -> str:
     pieces: list[str] = []
     final_text = ""
@@ -237,11 +189,11 @@ def _apply(job: NotesJob, ev: dict, pieces: list[str]) -> None:
     protocol to strip — the output IS the document — so text deltas append directly."""
     if ev["type"] == "text" and ev.get("text"):
         pieces.append(ev["text"])
-        with _lock:
+        with _registry.lock:
             if job.items and job.items[-1]["kind"] == "text":
                 job.items[-1] = {"kind": "text", "text": job.items[-1]["text"] + ev["text"]}
             else:
                 job.items.append({"kind": "text", "text": ev["text"]})
     elif ev["type"] == "tool":
-        with _lock:
+        with _registry.lock:
             job.items.append({"kind": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
