@@ -78,12 +78,13 @@ def _parse(content: str) -> Turn:
 
 
 def _complete(messages: list[dict], model: str | None = None,
-              temperature: float = 0.3, max_tokens: int = 8000) -> str:
+              temperature: float = 0.3, max_tokens: int = 8000,
+              operation: str = "analysis") -> str:
     """Non-streaming analysis/narration call via the shared llm client, translating its
     LLMError into this module's AgentError so main.py maps it to HTTP as before."""
     try:
         return llm.complete(messages, model=model, temperature=temperature,
-                            max_tokens=max_tokens)
+                            max_tokens=max_tokens, operation=operation)
     except llm.LLMError as e:
         raise AgentError(str(e)) from e
 
@@ -129,12 +130,12 @@ def canonical_prefix(raw: str) -> str:
     return rest.strip()
 
 
-def stream_messages(messages: list[dict], max_tokens: int = 16000):
+def stream_messages(messages: list[dict], max_tokens: int = 16000, operation: str = "analysis"):
     """Yield raw content pieces of a streaming completion, translating the llm client's
     LLMError into AgentError. Public seam so callers (notes_jobs' single-shot editor) don't
     reach into module privates for a plain streamed completion."""
     try:
-        yield from llm.stream(messages, max_tokens=max_tokens)
+        yield from llm.stream(messages, max_tokens=max_tokens, operation=operation)
     except llm.LLMError as e:
         raise AgentError(str(e)) from e
 
@@ -142,7 +143,7 @@ def stream_messages(messages: list[dict], max_tokens: int = 16000):
 def stream_tokens(slug: str, history: list[dict]):
     """Yield raw content pieces of the analysis response as they arrive."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    yield from stream_messages(messages, max_tokens=16000)
+    yield from stream_messages(messages, max_tokens=16000, operation="analysis")
 
 
 def narrate(canonical_text: str) -> str:
@@ -156,4 +157,4 @@ def narrate(canonical_text: str) -> str:
         {"role": "system", "content": prompts.get("narration_system")},
         {"role": "user", "content": canonical_text},
     ]
-    return _complete(messages, model=model, temperature=0.2).strip()
+    return _complete(messages, model=model, temperature=0.2, operation="narration").strip()

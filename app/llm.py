@@ -36,7 +36,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from . import config, logging_config
+from . import config, logging_config, usage
 
 log = logging_config.get("llm")
 
@@ -98,6 +98,9 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        # Ask OpenRouter to return authoritative token counts + dollar cost in `usage` (for
+        # streaming it arrives in a final usage-only chunk). See app/usage.py.
+        "usage": {"include": True},
     }
     if reasoning is not None:
         body["reasoning"] = reasoning
@@ -140,15 +143,17 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
 def complete(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
              max_tokens: int = 8000, reasoning: dict | None = None,
              timeout: float = DEFAULT_TIMEOUT, tries: int = _DEFAULT_TRIES,
-             allow_empty: bool = False) -> str:
+             allow_empty: bool = False, operation: str = "llm") -> str:
     """One non-streaming chat completion, returning the model's content string. `model` falls
-    back to the settings default. Retries transient failures. Raises LLMError on transport /
-    HTTP / malformed-response errors and (unless allow_empty) on an empty completion, with a
-    diagnostic that surfaces reasoning-token exhaustion."""
+    back to the settings default. Retries transient failures. Records token/cost usage against
+    the active project under `operation` (a billed response is recorded even when empty). Raises
+    LLMError on transport / HTTP / malformed-response errors and (unless allow_empty) on an empty
+    completion, with a diagnostic that surfaces reasoning-token exhaustion."""
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=False)
     data = _post_with_retry(body, key, timeout, tries)
+    usage.record(operation, body.get("model"), data.get("usage"))  # any 200 was billed
     try:
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
@@ -160,14 +165,27 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
     return content
 
 
+def _account_stream(operation: str, model: str | None, seen_usage: dict | None,
+                    gen_id: str | None) -> None:
+    """Account one accepted (200) streaming generation: exact usage if its final usage chunk
+    arrived, else a pending record (billed, cost unknown, reconcilable by gen_id)."""
+    if seen_usage is not None:
+        usage.record(operation, model, seen_usage)
+    else:
+        usage.record_pending(operation, model, gen_id)
+
+
 def stream(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
            max_tokens: int = 16000, reasoning: dict | None = None,
-           timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES) -> Iterator[str]:
+           timeout: float = STREAM_TIMEOUT, tries: int = _DEFAULT_TRIES,
+           operation: str = "llm") -> Iterator[str]:
     """Yield content pieces of one streaming completion as they arrive. Retries transient
     failures (a retryable status or a transport error) with backoff **only until the first
     content token is emitted** — before any output, a failed attempt is safe to restart; once
     the client has seen a token, a reconnect would duplicate text, so from there it fails fast.
-    Raises LLMError on a fatal status, an exhausted retry, or a post-first-token failure."""
+    Records token/cost usage (from the final usage chunk) against the active project under
+    `operation` once the stream completes. Raises LLMError on a fatal status, an exhausted retry,
+    or a post-first-token failure."""
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=True)
@@ -181,6 +199,9 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         attempt + 1, tries, body.get("model"), last)
             time.sleep(_BACKOFF_BASE * attempt)
         attempts = attempt + 1
+        seen_usage: dict | None = None
+        gen_id: str | None = None
+        got_200 = False
         try:
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
@@ -188,9 +209,11 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                     detail = r.read().decode("utf-8", "ignore")[:400]
                     last = f"OpenRouter error {r.status_code}: {detail}"
                     if r.status_code in _RETRY_STATUS:
-                        continue  # nothing emitted yet — safe to retry
+                        continue  # not billed — safe to retry, nothing to account
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
                     raise LLMError(last)
+                got_200 = True
+                gen_id = r.headers.get("x-generation-id") or None
                 for line in r.iter_lines():
                     if not line or line.startswith(":"):
                         continue
@@ -200,21 +223,31 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         break
                     try:
                         chunk = json.loads(line)
-                        delta = chunk["choices"][0].get("delta", {}) or {}
-                    except (json.JSONDecodeError, KeyError, IndexError):
+                    except json.JSONDecodeError:
                         continue
+                    gen_id = chunk.get("id") or gen_id  # generation id, for later reconciliation
+                    if chunk.get("usage"):  # final usage-only chunk (choices empty)
+                        seen_usage = chunk["usage"]
+                    choices = chunk.get("choices") or []
+                    delta = choices[0].get("delta", {}) or {} if choices else {}
                     piece = delta.get("content")
                     if piece:
                         emitted = True
                         yield piece
+            _account_stream(operation, body.get("model"), seen_usage, gen_id)  # exact or pending
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"
+            # A 200 generation is billed the moment OpenRouter accepts it (it can spend on hidden
+            # reasoning before any content), so account it even if it dropped before a token — as
+            # exact usage if the final chunk arrived, else pending. A non-200 attempt wasn't billed.
+            if got_200:
+                _account_stream(operation, body.get("model"), seen_usage, gen_id)
             if emitted:  # mid-stream: a retry would duplicate text, so fail fast
                 log.error("openrouter stream dropped after first token (model=%s): %s",
                           body.get("model"), last)
                 raise LLMError(last) from e
-            continue  # transport failure before any content — retry
+            continue  # transport failure before any content — retry a fresh generation
     log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",
               attempts, body.get("model"), last)
     raise LLMError(last)

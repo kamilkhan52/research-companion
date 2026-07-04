@@ -266,10 +266,46 @@ to check) and cost awareness.
   all five job types at once), `llm` (retry warnings + final failure + catalogue-refresh
   failure), and `committer.commit` (slug/rev/message). `test_logging` covers the setup, the
   filter, and that the registry emits lifecycle lines.
-- Record token usage per LLM call (OpenRouter returns `usage` in every response — it's
-  currently read only for an error hint in `graph.py`). Accumulate per project into
-  `.state/usage.json` and expose it in Settings. "This graph build cost $1.40" is a feature,
-  not just telemetry.
+- ✅ **DONE (backend)** (branch `quality/usage-tracking`): `app/usage.py` records every LLM
+  call's usage from the one seam that sees them all (`llm.complete`/`llm.stream`). Cost is
+  requested from OpenRouter directly (`usage.include` → `usage.cost`) rather than a local
+  pricing table, so it stays correct as prices change; tokens are still recorded if a provider
+  omits cost. Aggregated per project into `.state/usage.json`: a lifetime total plus by-model
+  and by-operation (analysis / narration / graph_extraction / discovery / notes) breakdowns —
+  the shape the eventual **credits model** reuses (per-user is one more key, not a redesign).
+  Ledger-grade details, after two review rounds:
+  - **Cost is stored as integer nano-USD** (summed exactly; a float rounded per-add silently
+    zeroes sub-micro-dollar calls) and surfaced as USD only for presentation (`summary()`).
+  - **Narration spend on the app-global audio path bills the initiating project** — `audio_jobs`
+    binds it around the narration call, leaving the shared cache/dedup untouched (a cache hit
+    costs nothing). Both `/api/audio/jobs` and `/api/narrate` accept a validated `project`; with
+    none, spend goes to an explicit **unattributed** app-global ledger (`GET
+    /api/usage/unattributed`) so nothing is silently dropped for the currently-shipped clients.
+  - **Path-traversal hardening (security):** the billing `project` (and the route pid) flow
+    through `projects.project_path`, which now rejects any id that isn't a contained single
+    segment (`_safe_pid` + a resolved-containment check) — before this, an absolute/`..` value
+    could have made `usage.record` write outside `PROJECTS_ROOT`. An invalid billing project is a
+    400, not a silent misattribution.
+  - **Billed-but-unknown streams are reconcilable, not silently lost.** *Any* accepted (200)
+    generation that ends without a final usage chunk — a mid-stream drop, a clean EOF, or even a
+    disconnect before the first token (a 200 is billed the moment OpenRouter accepts it) — records
+    a bounded **pending** record (`{operation, model, generation_id}`, id from the chunk `id` /
+    `X-Generation-Id`). `summary()` flags totals `estimated`. Evictions past the cap are
+    tombstoned (`dropped_pending`) so estimates can't silently go exact; `resolve_dropped()` is
+    the explicit administrative clear. `usage.reconcile(generation_id, usage)` folds a resolved
+    generation in — but only with **authoritative** cost (`cost` must be a finite, non-negative
+    number; explicit `0` is fine, but `None`/`""`/bool/NaN/Inf/negative/non-numeric are refused,
+    so an unknown generation is never marked exact) — the hook a future OpenRouter
+    generation-stats poller uses.
+  Exposed at `GET /api/projects/{pid}/usage`; graph rebinds the project contextvar into its
+  extraction executor threads so their spend attributes correctly (invariant 2). Recording is
+  best-effort (never fails the turn). `test_usage` covers exact accumulation, sub-micro
+  precision, pending/reconcile, clean-EOF-without-usage, and the unattributed ledger;
+  `test_audio_jobs` proves narration bills the initiating project (route-level: missing / invalid
+  / valid / cached) and a cache hit bills no one; `test_projects_security` covers traversal.
+  *Follow-ups:* the mobile Settings readout (`quality/usage-mobile`, which also sends the
+  initiating `project`); wiring the generation-stats poller to `reconcile`; and routing the
+  agentic path (`agent_harness`, Pydantic AI's own client) through here too.
 
 ### 3.4 Prompt management
 
@@ -379,6 +415,12 @@ nobody, one shared audio/narration cache. If Supabase auth is a prelude to multi
   `project.json`, checked in `use_project`),
 - move job registries to a persistent queue as in 1.4,
 - rate-limit/queue LLM spend per user.
+- **Derive the usage/credits billing scope from authenticated project *ownership*, not from a
+  client-supplied project id.** The §3.3 audio `project` (and any billing hint) is currently
+  trusted as long as the project *exists* — fine for a single-household deployment, but before a
+  credits launch it must be checked against `request.state.user` owning that project, or one user
+  could bill another's credits. The trust-boundary validation (`projects._safe_pid`) is in place;
+  the ownership check is the multi-user addition.
 
 If it is *not* a goal — write that down in CLAUDE.md too. Half of the "is this OK?"
 questions in this codebase (in-memory jobs, file locks, global settings) are answered by

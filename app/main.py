@@ -39,6 +39,7 @@ from . import (
     sessions,
     store,
     tts,
+    usage,
 )
 from .agent import AgentError
 from .auth import AuthError
@@ -147,6 +148,7 @@ class SettingsReq(BaseModel):
 
 class NarrateReq(BaseModel):
     text: str
+    project: str | None = None   # initiating project, for usage attribution (audio is app-global)
 
 
 class PromptReq(BaseModel):
@@ -350,6 +352,14 @@ def get_state(pid: str):
     }
 
 
+@project_router.get("/usage")
+def get_usage(pid: str):
+    """This project's accumulated LLM token/cost usage (lifetime aggregate + per-model /
+    per-operation breakdowns, cost in USD + exact nano-USD). `estimated` is true when some
+    billed streams dropped before their final usage chunk. Cheap read of .state/usage.json."""
+    return usage.summary()
+
+
 @app.get("/api/settings")
 def read_settings():
     s = config.load_settings()
@@ -400,6 +410,18 @@ def speak(req: NarrateReq):
     return {"url": f"/api/audio/{path.name}"}
 
 
+def _billing_scope(project: str | None) -> str:
+    """Resolve the usage-billing scope for an app-global narration request: the validated
+    initiating project, or the explicit unattributed ledger when none was sent. A provided-but-
+    unknown/invalid project is a client error (400), not a silent misattribution — and
+    projects.exists() rejects any traversal/absolute id centrally (see projects._safe_pid)."""
+    if project is None:
+        return usage.UNATTRIBUTED
+    if not projects.exists(project):
+        raise HTTPException(status_code=400, detail=f"Unknown billing project: {project}")
+    return project
+
+
 @app.post("/api/audio/jobs")
 def start_audio_job(req: NarrateReq):
     """Start (or join) a background narrate→synthesize job for one canonical message and
@@ -411,7 +433,14 @@ def start_audio_job(req: NarrateReq):
         raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Nothing to narrate.")
-    return {"job": audio_jobs.start_job(req.text).to_dict()}
+    return {"job": audio_jobs.start_job(req.text, billing_project=_billing_scope(req.project)).to_dict()}
+
+
+@app.get("/api/usage/unattributed")
+def get_unattributed_usage():
+    """App-global ledger of LLM spend with no project to attribute to (e.g. narration requested
+    without an initiating project). Kept explicit so nothing is silently dropped."""
+    return usage.unattributed_summary()
 
 
 @app.get("/api/audio/jobs/{job_id}")
@@ -460,14 +489,18 @@ def reset_prompt(req: PromptReq):
 
 @app.post("/api/narrate")
 def narrate(req: NarrateReq):
-    """Stage 2: adapt one canonical response into a TTS transcript (cached by text hash)."""
+    """Stage 2: adapt one canonical response into a TTS transcript (cached by text hash). Uncached
+    narration bills the initiating project (validated) or the unattributed ledger."""
     cached = sessions.get_cached_narration(req.text)
     if cached is not None:
         return {"narration": cached, "cached": True}
+    token = config.set_active_project(_billing_scope(req.project))  # validates project (400)
     try:
         narration = agent.narrate(req.text)
     except AgentError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        config.reset_active_project(token)
     sessions.cache_narration(req.text, narration)
     return {"narration": narration, "cached": False}
 

@@ -10,6 +10,7 @@ config's active-project contextvar so the store/sessions layers resolve the righ
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import UTC, datetime
@@ -90,12 +91,38 @@ def slugify(name: str) -> str:
     return s or "project"
 
 
+# A project id is a single path segment: slugify() output (`[a-z0-9-]`) plus optional `-N`
+# uniqueness suffixes (underscores tolerated for env-configured ids). No separators, no `.`
+# (so no `..`), never absolute — so `PROJECTS_ROOT / pid` can never escape the root. This is the
+# trust boundary for EVERY caller that turns an untrusted id into a path: `use_project` (the
+# route pid) and the audio billing `project` both flow through here.
+_PID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _safe_pid(pid: str) -> str:
+    if not isinstance(pid, str) or not _PID_RE.match(pid):
+        raise ProjectError(f"Invalid project id: {pid!r}")
+    return pid
+
+
 def project_path(pid: str) -> Path:
-    return config.PROJECTS_ROOT / pid
+    """The directory for `pid`, guaranteed to be inside PROJECTS_ROOT. Raises ProjectError for
+    any id that isn't a plain contained segment (traversal, absolute, separators)."""
+    safe = _safe_pid(pid)
+    root = config.PROJECTS_ROOT
+    p = root / safe
+    # Defense in depth: even if the charset check ever drifts, the path must stay under the root.
+    # abspath (not resolve) so this is a pure lexical check — no symlink chasing, no FS access.
+    if os.path.commonpath((os.path.abspath(p), os.path.abspath(root))) != os.path.abspath(root):
+        raise ProjectError(f"Invalid project id: {pid!r}")
+    return p
 
 
 def exists(pid: str) -> bool:
-    return project_path(pid).is_dir()
+    try:
+        return project_path(pid).is_dir()
+    except ProjectError:
+        return False
 
 
 def _read_meta(pid: str) -> dict:

@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import agent, config, sessions, tts
+from . import agent, config, sessions, tts, usage
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, now_iso
 
@@ -72,12 +72,18 @@ def get_job(job_id: str) -> AudioJob | None:
     return _registry.get(job_id, project_id=None)
 
 
-def start_job(text: str, narrate_fn: NarrateFn | None = None,
+def start_job(text: str, billing_project: str | None = None,
+              narrate_fn: NarrateFn | None = None,
               synth_fn: SynthFn | None = None) -> AudioJob:
     """Start preparing audio for `text` in a background thread, join the identical job if one
     is already running, or answer instantly from the caches if the result already exists.
     Returns the job snapshot either way — callers just poll get_job(id) until it settles.
-    narrate_fn/synth_fn are injectable for tests; resolved late so patching agent/tts works."""
+
+    The job itself is app-global (project_id=None) so the mp3/narration caches and dedup are
+    shared across projects, but the narration LLM call is billed to `billing_project` — the
+    project that initiated this uncached narration. A cache hit does no LLM work and so costs
+    nothing (no one is billed), matching the intended policy. `billing_project` must already be
+    validated by the caller. narrate_fn/synth_fn are injectable for tests."""
     narrate_fn = narrate_fn or agent.narrate
     synth_fn = synth_fn or tts.openai_speech
     jid = job_id_for(text)
@@ -97,7 +103,15 @@ def start_job(text: str, narrate_fn: NarrateFn | None = None,
     def work(job: AudioJob) -> None:
         narration = sessions.get_cached_narration(text)
         if narration is None:
-            narration = narrate_fn(text)
+            # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
+            # there (usage.record reads the active project) while the surrounding job — and the
+            # app-global narration/mp3 caches it writes — stay project-agnostic. With no
+            # initiating project, bill the explicit unattributed ledger rather than dropping it.
+            token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
+            try:
+                narration = narrate_fn(text)
+            finally:
+                config.reset_active_project(token)
             sessions.cache_narration(text, narration)
         with _registry.lock:
             job.narration = narration

@@ -262,12 +262,23 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
     # client raises LLMError on an empty completion, with the reasoning-token exhaustion hint
     # baked in — caught here and turned into this paper's error record (one paper's failure
     # never aborts the whole rebuild).
+    # The call runs in _EXTRACT_EXECUTOR (a separate pool), whose threads don't inherit the job's
+    # active-project contextvar — so rebind it inside the worker (invariant 2) so llm's usage
+    # accounting attributes this paper's spend to the right project.
+    pid = config.active_project_id()
+
+    def _do_extract():
+        token = config.set_active_project(pid)
+        try:
+            return llm.complete(messages, model=model, temperature=0.1,
+                                max_tokens=EXTRACTION_MAX_TOKENS,
+                                reasoning={"effort": REASONING_EFFORT}, timeout=300, tries=2,
+                                operation="graph_extraction")
+        finally:
+            config.reset_active_project(token)
+
     try:
-        content = _call_with_deadline(
-            lambda: llm.complete(messages, model=model, temperature=0.1,
-                                 max_tokens=EXTRACTION_MAX_TOKENS,
-                                 reasoning={"effort": REASONING_EFFORT}, timeout=300, tries=2),
-            deadline=EXTRACTION_HARD_DEADLINE)
+        content = _call_with_deadline(_do_extract, deadline=EXTRACTION_HARD_DEADLINE)
     except concurrent.futures.TimeoutError:
         return _result("error", [],
                        f"No response after {EXTRACTION_HARD_DEADLINE}s (hard deadline) — the "

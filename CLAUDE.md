@@ -60,6 +60,8 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 - `main.py` — FastAPI app: auth middleware, request models, all routes, SSE + job endpoints.
 - `config.py` — settings (app-global) + the active-project contextvar + path resolution.
 - `projects.py` — multi-project registry; `use_project` dependency binds the contextvar.
+  `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
+  path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
 - `sessions.py` — per-paper session state + transcript JSONL + narration cache.
 - `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
@@ -74,6 +76,12 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
   + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
   lifecycle, LLM boundaries, and commits — not in the deterministic store.
+- `usage.py` — per-project LLM token/cost accounting (`.state/usage.json`), fed by `llm.py`
+  (cost from OpenRouter's `usage.cost`, stored as exact integer nano-USD). Records against the
+  active project (invariant 2); best-effort, never fails a turn. Audio narration bills the
+  initiating project (or an app-global `UNATTRIBUTED` ledger); a billed-but-unknown stream stores
+  a reconcilable `pending` record and flags totals `estimated`. `GET /api/projects/{pid}/usage`
+  (`summary()`). Foundation for credits.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
 - `committer.py` — the one component that writes approved changes + git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.

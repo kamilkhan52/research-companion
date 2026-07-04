@@ -218,6 +218,7 @@ class FakeStream:
         self._lines = lines or []
         self._body = body
         self._raise_at = raise_at  # int index, or "end", at which iter_lines drops the connection
+        self.headers = {}
 
     def __enter__(self):
         return self
