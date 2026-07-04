@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import asyncio
 
+from app import retrieval_agent, retriever
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
-
-from app import retrieval_agent, retriever
 
 
 def _collect(title, model):

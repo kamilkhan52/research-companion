@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 from . import agent, config, sessions, tts
+from .fileio import atomic_write_bytes
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (shared with the /api/audio route)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -60,7 +61,7 @@ _lock = threading.Lock()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _voice_key() -> str:
@@ -69,13 +70,13 @@ def _voice_key() -> str:
 
 
 def job_id_for(text: str) -> str:
-    return hashlib.sha1(f"{_voice_key()}|{text}".encode("utf-8")).hexdigest()
+    return hashlib.sha1(f"{_voice_key()}|{text}".encode()).hexdigest()
 
 
 def audio_cache_path(narration: str) -> Path:
     """Cache file for a narration under the current voice settings. Same key scheme
     /api/speak has always used, so both entry points share one cache."""
-    name = hashlib.sha1(f"{_voice_key()}|{narration}".encode("utf-8")).hexdigest() + ".mp3"
+    name = hashlib.sha1(f"{_voice_key()}|{narration}".encode()).hexdigest() + ".mp3"
     return AUDIO_DIR / name
 
 
@@ -147,7 +148,7 @@ def _run(job: AudioJob, text: str, narrate_fn: NarrateFn, synth_fn: SynthFn) -> 
                 chunks.append(synth_fn(part))
                 with _lock:
                     job.segments_done += 1
-            path.write_bytes(b"".join(chunks))
+            atomic_write_bytes(path, b"".join(chunks))
 
         with _lock:
             job.status = "done"

@@ -109,8 +109,10 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
                     d2 = ddx * ddx + ddy * ddy + 0.01
                     f = k_rep / d2
                     fxi, fyi = f * ddx, f * ddy
-                    fx[i] += fxi; fy[i] += fyi
-                    fx[j] -= fxi; fy[j] -= fyi
+                    fx[i] += fxi
+                    fy[i] += fyi
+                    fx[j] -= fxi
+                    fy[j] -= fyi
 
         # Edge springs pull citing/cited papers together.
         for a, b in adj:
@@ -119,8 +121,10 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
             d = math.sqrt(ddx * ddx + ddy * ddy) + 0.01
             f = (d - ideal) * 0.2
             fxi, fyi = f * ddx / d, f * ddy / d
-            fx[a] -= fxi; fy[a] -= fyi
-            fx[b] += fxi; fy[b] += fyi
+            fx[a] -= fxi
+            fy[a] -= fyi
+            fx[b] += fxi
+            fy[b] += fyi
 
         # Integrate: X moves freely (with cooling + a step cap); Y is pulled SOFTLY toward the
         # node's time band. Soft (not hard) pinning matters: a hard pin flattens each year into

@@ -12,12 +12,13 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from . import config, store
+from .fileio import atomic_write_text
 
 META = "project.json"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -81,7 +82,7 @@ papers are read.*
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def slugify(name: str) -> str:
@@ -108,7 +109,7 @@ def _read_meta(pid: str) -> dict:
 
 
 def _write_meta(pid: str, meta: dict) -> None:
-    (project_path(pid) / META).write_text(json.dumps(meta, indent=2))
+    atomic_write_text(project_path(pid) / META, json.dumps(meta, indent=2))
 
 
 def _git(pid: str, *args: str) -> None:

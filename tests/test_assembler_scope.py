@@ -3,6 +3,7 @@ Notes; 'all' includes every read paper's Notes — the single-project mode Kamil
 from __future__ import annotations
 
 from app import assembler, config, store
+
 from tests.conftest import add_paper
 
 

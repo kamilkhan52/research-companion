@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from app.graph import GraphError, _clean_reference, _extract_json, _salvage_references
 
 

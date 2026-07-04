@@ -77,7 +77,7 @@ def verify(token: str) -> dict:
     except AuthError:
         raise
     except Exception as e:  # PyJWKClientError / InvalidTokenError / network
-        raise AuthError(f"Invalid token: {e}")
+        raise AuthError(f"Invalid token: {e}") from e
 
 
 def check(token: str) -> dict | None:

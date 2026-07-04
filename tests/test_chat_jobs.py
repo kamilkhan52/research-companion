@@ -12,7 +12,6 @@ import threading
 import time
 
 import pytest
-
 from app import chat_jobs, sessions
 
 PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"

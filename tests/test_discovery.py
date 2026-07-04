@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from app import config, discovery, prompts, retriever
 from app.discovery import DiscoveryError
 

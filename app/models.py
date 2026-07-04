@@ -3,7 +3,6 @@ these in pydantic request/response models."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Optional
 
 # Paper lifecycle states (Section 2 of the architecture).
 # Reserved "paper" for the cross-paper working-notes review chat (not a real list paper).
@@ -26,7 +25,7 @@ class Paper:
     cites: list[str] = field(default_factory=list)
     retrieved: bool = False
     has_notes: bool = False
-    session_state: Optional[str] = None  # transient working state if a session exists
+    session_state: str | None = None  # transient working state if a session exists
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -49,7 +48,7 @@ class Turn:
     canonical: str               # scholarly version (the record)
     narration: str = ""          # spoken-word script (the ear)
     state_signal: str = ""       # "in_discussion" | "ready_to_draft_notes"
-    proposed_commit: Optional[dict] = None
+    proposed_commit: dict | None = None
     ts: str = ""
 
     def to_dict(self) -> dict:

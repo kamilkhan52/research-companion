@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from . import config, graph, sessions, store
 
@@ -53,7 +53,7 @@ _lock = threading.Lock()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def get_job(pid: str) -> BuildJob | None:

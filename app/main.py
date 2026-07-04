@@ -4,6 +4,7 @@ and a desktop hit one backend.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -15,9 +16,29 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import asyncio
-
-from . import agent, agent_harness, audio_jobs, auth, chat_jobs, committer, config, discovery, discovery_jobs, graph, graph_jobs, graph_store, notes_jobs, projects, prompts, retriever, retrieval_agent, sessions, store, tts
+from . import (
+    agent,
+    agent_harness,
+    audio_jobs,
+    auth,
+    chat_jobs,
+    committer,
+    config,
+    discovery,
+    discovery_jobs,
+    fileio,
+    graph,
+    graph_jobs,
+    graph_store,
+    notes_jobs,
+    projects,
+    prompts,
+    retrieval_agent,
+    retriever,
+    sessions,
+    store,
+    tts,
+)
 from .agent import AgentError
 from .auth import AuthError
 from .committer import CommitError
@@ -182,7 +203,7 @@ def _run_and_record(slug: str) -> dict:
     try:
         turn = agent.run_turn(slug, history)
     except AgentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     sessions.record_assistant(slug, turn)
     return turn.to_dict()
 
@@ -288,7 +309,7 @@ def create_project(req: ProjectReq):
     try:
         meta = projects.create_project(req.name, req.method)
     except ProjectError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"project": meta}
 
 
@@ -304,7 +325,7 @@ def rename_project(pid: str, req: ProjectReq):
     try:
         meta = projects.rename_project(pid, req.name)
     except ProjectError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"project": meta}
 
 
@@ -370,9 +391,9 @@ def speak(req: NarrateReq):
     path = audio_jobs.audio_cache_path(req.text)
     if not path.exists():
         try:
-            path.write_bytes(tts.synthesize_long(req.text))
+            fileio.atomic_write_bytes(path, tts.synthesize_long(req.text))
         except TTSError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
     return {"url": f"/api/audio/{path.name}"}
 
 
@@ -421,7 +442,7 @@ def save_prompt(req: PromptReq):
     try:
         prompts.set_prompt(req.key, req.value or "")
     except PromptError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"key": req.key, "value": prompts.get(req.key), "is_overridden": prompts.is_overridden(req.key)}
 
 
@@ -430,7 +451,7 @@ def reset_prompt(req: PromptReq):
     try:
         prompts.reset(req.key)
     except PromptError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"key": req.key, "value": prompts.get(req.key), "is_overridden": prompts.is_overridden(req.key)}
 
 
@@ -443,7 +464,7 @@ def narrate(req: NarrateReq):
     try:
         narration = agent.narrate(req.text)
     except AgentError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     sessions.cache_narration(req.text, narration)
     return {"narration": narration, "cached": False}
 
@@ -456,7 +477,7 @@ def list_models():
         r.raise_for_status()
         data = r.json().get("data", [])
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}")
+        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}") from e
     models = [{"id": m.get("id"), "name": m.get("name", m.get("id"))} for m in data if m.get("id")]
     models.sort(key=lambda m: m["id"])
     return {"models": models}
@@ -491,7 +512,7 @@ def favorite_models():
         r.raise_for_status()
         data = r.json().get("data", [])
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}")
+        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}") from e
     out = []
     for fam in FAVORITE_FAMILIES:
         exc = fam["exc"] + FAVORITE_GLOBAL_EXC
@@ -551,7 +572,7 @@ def start_paper(req: StartReq):
     try:
         res = retriever.retrieve(paper.title, req.arxiv_id, req.pdf_url)
     except RetrievalError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     if res.get("needs_confirmation"):
         return {"needs_confirmation": True, "candidates": res["candidates"], "slug": req.slug}
     store.write_full_text(req.slug, paper.title, res["full_text"], {
@@ -634,7 +655,7 @@ async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
     try:
         full_text = retriever.extract_pdf_bytes(data)
     except RetrievalError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     if not full_text.strip():
         raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
     store.write_full_text(slug, paper.title, full_text,
@@ -923,7 +944,7 @@ def get_notes(target: str):
     try:
         markdown = notes_jobs.read(target)
     except notes_jobs.NotesError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return {"target": target, "title": notes_jobs.title_for(target), "markdown": markdown}
 
 
@@ -934,7 +955,7 @@ def save_notes(target: str, req: NotesSaveReq):
     try:
         result = notes_jobs.save(target, req.markdown, req.summary or "")
     except notes_jobs.NotesError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {**result, "target": target}
 
 
@@ -947,7 +968,7 @@ def notes_agent_job(target: str, req: NotesAgentReq):
     try:
         job = notes_jobs.start_edit(target, req.instruction)
     except notes_jobs.NotesError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"job": notes_jobs.snapshot(job.id)}
 
 
@@ -965,7 +986,7 @@ def approve(req: ApproveReq):
     try:
         result = committer.commit(req.slug, notes, synth, summary)
     except CommitError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"result": result, "paper": _paper_dict(req.slug)}
 
 
@@ -978,9 +999,9 @@ def add_paper(pid: str, req: AddPaperReq):
     try:
         slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id)
     except store.DuplicatePaperError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"paper": _paper_dict(slug)}
 
 

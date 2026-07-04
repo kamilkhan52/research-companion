@@ -29,13 +29,14 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import datetime, timezone
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterator
 
 import httpx
 
 from . import citations, config, graph, prompts, retriever
+from .fileio import atomic_write_text
 
 MAX_QUERIES = 6
 PER_QUERY_RESULTS = 25
@@ -64,7 +65,7 @@ class DiscoveryError(Exception):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # ---------- persistence (per project, survives restarts) ----------
@@ -84,7 +85,7 @@ def load_result() -> dict | None:
 
 
 def save_result(result: dict) -> None:
-    _result_path().write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(_result_path(), json.dumps(result, indent=2, ensure_ascii=False))
 
 
 # ---------- LLM plumbing ----------

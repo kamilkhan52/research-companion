@@ -354,8 +354,8 @@ def _assert_public_url(url: str) -> None:
         raise ToolError("url has no host")
     try:
         infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise ToolError(f"could not resolve {host}")
+    except socket.gaierror as e:
+        raise ToolError(f"could not resolve {host}") from e
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved

@@ -7,11 +7,13 @@ module never calls an LLM and never makes network calls — it is pure spine.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config
+from .fileio import atomic_write_text
 from .models import Paper
+
 
 # Per-project file locations resolve against the active project (config.project_dir()), so
 # the same store functions serve every project. The aggregate cross-paper notes (the "working
@@ -37,50 +39,25 @@ _H2_RE = re.compile(r"^##\s+(?P<group>.+?)\s*$")
 _SLUG_COMMENT_RE = re.compile(r"<!--\s*slug:\s*(?P<slug>[a-z0-9-]+)\s*-->", re.I)
 _CITES_COMMENT_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
 
-# Slugs for the three titles whose system name isn't the prefix before a colon.
-_SLUG_SPECIALS = [
-    ("pagedattention", "vllm-pagedattention"),
-    ("sarathi-serve", "sarathi-serve"),
-    ("flashattention-2 and flashdecoding", "flashattention-2-flashdecoding"),
-]
-
-# Best-effort citation links among list papers (which prior Notes to auto-load). The file
-# may override per entry via `<!-- cites: a, b -->`; see the architecture's machine-readable
-# citation field. These only influence context selection, so being approximate is safe.
-CITATION_GRAPH: dict[str, list[str]] = {
-    "distserve": ["vllm-pagedattention", "orca", "sarathi-serve"],
-    "splitwise": ["vllm-pagedattention", "orca"],
-    "mooncake": ["vllm-pagedattention", "orca", "distserve", "splitwise"],
-    "memserve": ["distserve", "splitwise", "vllm-pagedattention"],
-    "sarathi-serve": ["orca", "vllm-pagedattention"],
-    "vllm-pagedattention": ["orca"],
-    "orca": [],
-    "flashattention-2-flashdecoding": [],
-    "awq": [],
-    "cxl-speckv": ["vllm-pagedattention", "distserve", "mooncake", "pond"],
-    "banaserve": ["vllm-pagedattention", "distserve", "mooncake", "splitwise"],
-    "pond": [],
-    "decima": [],
-    "park": ["decima"],
-    "torta": ["vllm-pagedattention", "distserve", "decima", "park"],
-    "flashinfer": ["vllm-pagedattention", "orca", "flashattention-2-flashdecoding", "punica"],
-    "punica": ["vllm-pagedattention", "orca"],
-    "helix": ["vllm-pagedattention", "orca", "distserve"],
-}
+# Slug derivation and citation links (which prior Notes to auto-load) are BOTH per-project
+# content authored in reading-list.md, not application data: pin a non-obvious slug with an
+# entry's `<!-- slug: my-slug -->` comment, and declare its citations with `<!-- cites: a, b -->`
+# (see the machine-readable note at the top of any project's reading-list.md). Nothing about a
+# specific project's papers is hardcoded here — a project whose slugs happen to collide with
+# another's can't inherit the wrong citations. `scripts/migrate_citation_annotations.py` moved
+# the original llm-inference-serving constants into that project's file.
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def derive_slug(title: str) -> str:
-    low = title.lower()
-    for needle, slug in _SLUG_SPECIALS:
-        if needle in low:
-            return slug
+    """The system name before the first colon, slugified (e.g. 'Orca: A ...' -> 'orca'). When a
+    title's slug can't be derived this way, pin it in reading-list.md with `<!-- slug: ... -->`."""
     head = title.split(":")[0]
     slug = re.sub(r"[^a-z0-9]+", "-", head.lower()).strip("-")
-    return slug or re.sub(r"[^a-z0-9]+", "-", low).strip("-")[:48]
+    return slug or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48]
 
 
 def read_method() -> str:
@@ -89,7 +66,7 @@ def read_method() -> str:
 
 
 def write_method(content: str) -> None:
-    _reading_method().write_text(content.rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(_reading_method(), content.rstrip() + "\n")
 
 
 def read_synthesis() -> str:
@@ -98,7 +75,7 @@ def read_synthesis() -> str:
 
 
 def write_synthesis(content: str) -> None:
-    _synthesis().write_text(content.rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(_synthesis(), content.rstrip() + "\n")
 
 
 def corpus_path(slug: str) -> Path:
@@ -144,7 +121,7 @@ def _parse_entries() -> list[dict]:
         if cites_override:
             e["cites"] = [c.strip() for c in cites_override.group("cites").split(",") if c.strip()]
         else:
-            e["cites"] = CITATION_GRAPH.get(e["slug"], [])
+            e["cites"] = []
     return entries
 
 
@@ -214,7 +191,7 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     lines.append(f"- retrieved: {_now()}")
     lines += ["", "## Full text", "", full_text.strip(), ""]
     p = corpus_path(slug)
-    p.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines))
     return p
 
 
@@ -281,7 +258,7 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
     body = notes_block.strip()
     if not body.lower().startswith("## notes"):
         body = "## Notes\n\n" + body
-    p.write_text(text.rstrip() + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    atomic_write_text(p, text.rstrip() + "\n\n" + body.strip() + "\n")
 
 
 def set_status_read(slug: str) -> bool:
@@ -294,7 +271,7 @@ def set_status_read(slug: str) -> bool:
     lines = rl.read_text(encoding="utf-8").splitlines()
     i = target["line_index"]
     lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
-    rl.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(rl, "\n".join(lines) + "\n")
     return True
 
 
@@ -329,7 +306,7 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
         block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")  # provenance only; not parsed
     block.append("")
 
-    heading_idx = next((i for i, l in enumerate(lines) if l.strip() == heading), None)
+    heading_idx = next((i for i, line in enumerate(lines) if line.strip() == heading), None)
     if heading_idx is not None:
         end = len(lines)
         for j in range(heading_idx + 1, len(lines)):
@@ -340,5 +317,5 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
     else:
         new_lines = lines + ["", heading, ""] + block
 
-    rl.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(rl, "\n".join(new_lines).rstrip() + "\n")
     return slug

@@ -5,7 +5,6 @@ parse silently strands the paper in in_discussion (the exact bug seen with Orca 
 DeepSpeed-Inference finish turns)."""
 from app import agent
 
-
 PROTOCOL = """###CANONICAL###
 The scholarly answer.
 ###STATE###

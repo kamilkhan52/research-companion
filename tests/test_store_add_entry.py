@@ -3,7 +3,6 @@ No LLM, no network -- pure markdown editing, exercised against a real temp proje
 from __future__ import annotations
 
 import pytest
-
 from app import sessions, store
 from app.store import DuplicatePaperError
 
@@ -65,6 +64,7 @@ def test_add_entry_does_not_retrieve_or_commit(temp_project):
     slug = store.add_entry("Not Yet Retrieved")
     assert not store.corpus_path(slug).exists()
     import subprocess
+
     from app import config
     status = subprocess.run(["git", "status", "--porcelain"], cwd=str(config.project_dir()),
                             capture_output=True, text=True).stdout

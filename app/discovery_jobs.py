@@ -10,9 +10,9 @@ project's .state/discovery.json the moment it exists, whether or not anyone is p
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from typing import Callable, Iterator
+from datetime import UTC, datetime
 
 from . import config, discovery
 
@@ -46,7 +46,7 @@ _lock = threading.Lock()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def get_job(pid: str) -> DiscoveryJob | None:
@@ -86,10 +86,14 @@ def _run(job: DiscoveryJob, run_fn: RunFn, **run_kwargs) -> None:
     token = config.set_active_project(job.pid)
     try:
         for event in run_fn(job.goals, **run_kwargs):
+            # Persist the result BEFORE the job becomes observable as done, so a client that
+            # polls, sees "done", and then reads load_result() always finds the file on disk.
+            # (_apply_event sets status="done" on this event; saving after the loop left a window
+            # where "done" was visible but the file wasn't written yet — a real poll race.)
+            if event["type"] == "done":
+                discovery.save_result(event["result"])
             with _lock:
                 _apply_event(job, event)
-        if job.result is not None:
-            discovery.save_result(job.result)
     except Exception as e:  # DiscoveryError and anything unexpected end the run the same way
         with _lock:
             job.status = "error"

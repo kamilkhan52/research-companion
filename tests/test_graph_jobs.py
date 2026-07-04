@@ -7,8 +7,8 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from app import graph_jobs, graph_store
+
 from tests.conftest import add_paper
 
 
