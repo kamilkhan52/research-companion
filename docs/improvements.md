@@ -258,9 +258,14 @@ app whose core operations are paid, minutes-long LLM calls this hurts twice: deb
 graph module's elaborate error-snippet embedding exists precisely because there are no logs
 to check) and cost awareness.
 
-- Add stdlib `logging` (structured-ish: project id, slug, job id) at the job lifecycle
-  points, LLM call boundaries, and git commits. Uvicorn already gives request logs; this
-  adds the background-thread story, which is where everything interesting happens.
+- ✅ **DONE** (branch `quality/logging`): added `app/logging_config.py` — stdlib `logging`
+  under the `rc.*` namespace, one handler installed by `configure()` (called in `main.py`),
+  level via `RC_LOG_LEVEL`. A contextvar filter stamps the active project id on every line, so
+  a background-thread log is attributable without threading the id through. Log points at the
+  single highest-leverage seams: `jobs.JobRegistry` (start/join/done/error + duration — covers
+  all five job types at once), `llm` (retry warnings + final failure + catalogue-refresh
+  failure), and `committer.commit` (slug/rev/message). `test_logging` covers the setup, the
+  filter, and that the registry emits lifecycle lines.
 - Record token usage per LLM call (OpenRouter returns `usage` in every response — it's
   currently read only for an error hint in `graph.py`). Accumulate per project into
   `.state/usage.json` and expose it in Settings. "This graph build cost $1.40" is a feature,

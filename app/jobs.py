@@ -19,13 +19,16 @@ Two things this makes structural rather than per-module discipline:
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
-from . import config
+from . import config, logging_config
+
+log = logging_config.get("jobs")
 
 
 def now_iso() -> str:
@@ -149,12 +152,14 @@ class JobRegistry(Generic[J]):
         with self._lock:
             existing = self._running_for(key, pid)
             if existing:
+                log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key)
                 return existing
             job = factory()
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
             self._prune()
+        log.info("start %s job=%s key=%s", self.name, job.id[:8], key)
         thread = threading.Thread(target=self._run, args=(job, work, pid),
                                   daemon=True, name=f"{self.name}-{job.id[:8]}")
         thread.start()
@@ -162,17 +167,27 @@ class JobRegistry(Generic[J]):
 
     def _run(self, job: J, work: Callable[[J], None], pid: str | None) -> None:
         token = config.set_active_project(pid)
+        t0 = time.monotonic()
         try:
             work(job)
             with self._lock:
                 if job.status == "running":   # worker didn't set a terminal status itself
                     job.status = "done"
                     job.finished_at = now_iso()
+                final = job.status
+            dur = time.monotonic() - t0
+            if final == "error":  # the worker recorded its own error (e.g. graph per-paper)
+                log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8], dur,
+                            (job.error or "")[:200])
+            else:
+                log.info("done %s job=%s in %.1fs", self.name, job.id[:8], dur)
         except Exception as e:
             with self._lock:
                 job.status = "error"
                 job.error = str(e)[:400]
                 job.finished_at = now_iso()
+            log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
+                        time.monotonic() - t0, str(e)[:200])
         finally:
             config.reset_active_project(token)
 

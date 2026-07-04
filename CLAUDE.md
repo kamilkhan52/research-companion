@@ -71,6 +71,9 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
   `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
 - `prompts.py` — every workflow prompt, centralized + user-overridable.
+- `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
+  + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
+  lifecycle, LLM boundaries, and commits — not in the deterministic store.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
 - `committer.py` — the one component that writes approved changes + git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.

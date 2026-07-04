@@ -30,6 +30,7 @@ from . import (
     graph_jobs,
     graph_store,
     llm,
+    logging_config,
     notes_jobs,
     projects,
     prompts,
@@ -47,6 +48,8 @@ from .projects import ProjectError
 from .prompts import PromptError
 from .retriever import RetrievalError
 from .tts import TTSError
+
+logging_config.configure()  # install the rc.* log handler before any job/LLM/commit runs
 
 app = FastAPI(title=config.APP_TITLE)
 

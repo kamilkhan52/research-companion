@@ -36,7 +36,9 @@ from collections.abc import Iterator
 
 import httpx
 
-from . import config
+from . import config, logging_config
+
+log = logging_config.get("llm")
 
 
 class LLMError(Exception):
@@ -110,6 +112,8 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
     last = "unknown error"
     for attempt in range(tries):
         if attempt:
+            log.warning("openrouter retry %d/%d (model=%s): %s",
+                        attempt + 1, tries, body.get("model"), last)
             time.sleep(_BACKOFF_BASE * attempt)
         try:
             r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
@@ -125,6 +129,7 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
         last = f"OpenRouter error {r.status_code}: {r.text[:400]}"
         if r.status_code not in _RETRY_STATUS:
             break
+    log.error("openrouter failed after %d attempt(s) (model=%s): %s", tries, body.get("model"), last)
     raise LLMError(last)
 
 
@@ -259,8 +264,12 @@ def catalogue(*, timeout: float = 30, ttl: float = _CATALOGUE_TTL) -> list[dict]
             with _catalogue_lock:
                 _catalogue_cooldown_until = time.monotonic() + _CATALOGUE_ERROR_COOLDOWN
                 _catalogue_last_error = msg
-                if _catalogue_cache:
-                    return _catalogue_cache[1]  # serve stale rather than fail the caller
+                have_stale = _catalogue_cache is not None
+                stale_data = _catalogue_cache[1] if _catalogue_cache else None
+            log.warning("catalogue refresh failed, serving %s: %s",
+                        "stale" if have_stale else "error", e)
+            if have_stale:
+                return stale_data  # serve stale rather than fail the caller
             raise LLMError(msg) from e
         with _catalogue_lock:
             _catalogue_cache = (time.monotonic(), data)
