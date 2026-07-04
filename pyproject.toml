@@ -1,0 +1,42 @@
+[project]
+name = "research-companion"
+version = "0.1.0"
+description = "Read a paper corpus with an LLM: scholarly discussion, listen-friendly audio, compounding notes, and a per-project reference graph."
+requires-python = ">=3.11"
+readme = "README.md"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+optional-dependencies.dev = { file = ["requirements-dev.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+# The backend is the linted surface; the client has its own tsc/expo lint.
+src = ["app", "tests"]
+extend-exclude = ["mobile", "web", "projects", ".app-state", ".venv"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# A pragmatic, low-churn baseline over an already-consistent codebase: real bugs (pyflakes),
+# import hygiene, and common pitfalls (bugbear/comprehensions/pyupgrade), without style
+# opinions that would rewrite the whole tree.
+select = ["E", "F", "I", "B", "C4", "UP", "W"]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+    "B008",  # FastAPI's Depends()/File()/Form() defaults are the framework's idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private module internals deliberately.
+"tests/*" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
