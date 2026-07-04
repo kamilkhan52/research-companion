@@ -37,8 +37,14 @@ def temp_project(tmp_path, monkeypatch):
     (root / "reading-method.md").write_text("", encoding="utf-8")
     (root / "working-notes.md").write_text("", encoding="utf-8")
     _git(root, "init", "-q", "-b", "main")
-    _git(root, "-c", "user.email=test@test", "-c", "user.name=test", "add", "-A")
-    _git(root, "-c", "user.email=test@test", "-c", "user.name=test", "commit", "-q", "-m", "init")
+    # Repo-LOCAL identity so every commit into this repo inherits it — including the ones the
+    # code under test makes (committer.commit, notes_jobs.save). Without this the suite depends
+    # on the machine having a global git identity, which a fresh CI runner does not (the commit
+    # paths then fail with "empty ident name"). Repo-local keeps the suite hermetic.
+    _git(root, "config", "user.email", "test@test")
+    _git(root, "config", "user.name", "test")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "init")
 
     token = config.set_active_project(pid)
     try:
