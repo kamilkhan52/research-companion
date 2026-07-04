@@ -39,36 +39,13 @@ _H2_RE = re.compile(r"^##\s+(?P<group>.+?)\s*$")
 _SLUG_COMMENT_RE = re.compile(r"<!--\s*slug:\s*(?P<slug>[a-z0-9-]+)\s*-->", re.I)
 _CITES_COMMENT_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
 
-# Slugs for the three titles whose system name isn't the prefix before a colon.
-_SLUG_SPECIALS = [
-    ("pagedattention", "vllm-pagedattention"),
-    ("sarathi-serve", "sarathi-serve"),
-    ("flashattention-2 and flashdecoding", "flashattention-2-flashdecoding"),
-]
-
-# Best-effort citation links among list papers (which prior Notes to auto-load). The file
-# may override per entry via `<!-- cites: a, b -->`; see the architecture's machine-readable
-# citation field. These only influence context selection, so being approximate is safe.
-CITATION_GRAPH: dict[str, list[str]] = {
-    "distserve": ["vllm-pagedattention", "orca", "sarathi-serve"],
-    "splitwise": ["vllm-pagedattention", "orca"],
-    "mooncake": ["vllm-pagedattention", "orca", "distserve", "splitwise"],
-    "memserve": ["distserve", "splitwise", "vllm-pagedattention"],
-    "sarathi-serve": ["orca", "vllm-pagedattention"],
-    "vllm-pagedattention": ["orca"],
-    "orca": [],
-    "flashattention-2-flashdecoding": [],
-    "awq": [],
-    "cxl-speckv": ["vllm-pagedattention", "distserve", "mooncake", "pond"],
-    "banaserve": ["vllm-pagedattention", "distserve", "mooncake", "splitwise"],
-    "pond": [],
-    "decima": [],
-    "park": ["decima"],
-    "torta": ["vllm-pagedattention", "distserve", "decima", "park"],
-    "flashinfer": ["vllm-pagedattention", "orca", "flashattention-2-flashdecoding", "punica"],
-    "punica": ["vllm-pagedattention", "orca"],
-    "helix": ["vllm-pagedattention", "orca", "distserve"],
-}
+# Slug derivation and citation links (which prior Notes to auto-load) are BOTH per-project
+# content authored in reading-list.md, not application data: pin a non-obvious slug with an
+# entry's `<!-- slug: my-slug -->` comment, and declare its citations with `<!-- cites: a, b -->`
+# (see the machine-readable note at the top of any project's reading-list.md). Nothing about a
+# specific project's papers is hardcoded here — a project whose slugs happen to collide with
+# another's can't inherit the wrong citations. `scripts/migrate_citation_annotations.py` moved
+# the original llm-inference-serving constants into that project's file.
 
 
 def _now() -> str:
@@ -76,13 +53,11 @@ def _now() -> str:
 
 
 def derive_slug(title: str) -> str:
-    low = title.lower()
-    for needle, slug in _SLUG_SPECIALS:
-        if needle in low:
-            return slug
+    """The system name before the first colon, slugified (e.g. 'Orca: A ...' -> 'orca'). When a
+    title's slug can't be derived this way, pin it in reading-list.md with `<!-- slug: ... -->`."""
     head = title.split(":")[0]
     slug = re.sub(r"[^a-z0-9]+", "-", head.lower()).strip("-")
-    return slug or re.sub(r"[^a-z0-9]+", "-", low).strip("-")[:48]
+    return slug or re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48]
 
 
 def read_method() -> str:
@@ -146,7 +121,7 @@ def _parse_entries() -> list[dict]:
         if cites_override:
             e["cites"] = [c.strip() for c in cites_override.group("cites").split(",") if c.strip()]
         else:
-            e["cites"] = CITATION_GRAPH.get(e["slug"], [])
+            e["cites"] = []
     return entries
 
 
