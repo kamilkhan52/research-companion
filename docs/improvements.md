@@ -346,11 +346,13 @@ mirror the server pattern well). Gaps:
 
 ## Suggested sequencing
 
-**Quick wins (hours):**
-CLAUDE.md (3.1) · pyproject + ruff + CI running the existing tests (3.2) · atomic writes
-(1.5) · settings unset bug (4.1) · stop persisting per-turn model choice (4.2) · chmod 600
-settings · delete hardcoded `CITATION_GRAPH`/`_SLUG_SPECIALS` after migrating into the
-project file (1.7).
+**Quick wins (hours) — DONE (branch `quality/phase-1-quick-wins`):**
+✅ CLAUDE.md (3.1) · ✅ pyproject + ruff + CI running the existing tests (3.2) · ✅ atomic
+writes (1.5, the write-atomicity slice) · ✅ settings unset bug (4.1) · ✅ settings-write
+locking instead of dropping per-turn model persistence (4.2, revised) · ✅ chmod 600 settings ·
+✅ deleted hardcoded `CITATION_GRAPH`/`_SLUG_SPECIALS` after migrating into the project file
+(1.7). Still open from 1.5: read caching and the remaining read-modify-write locks (sessions
+index, `store.add_entry`).
 
 **Medium (a day or two each):**
 Generic job framework + project-context helper (1.1, 1.2) · `llm.py` with retries + cached
