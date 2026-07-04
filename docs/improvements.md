@@ -257,14 +257,23 @@ and version everything a model is told.
 
 Smaller, concrete issues found while reading; none are crashing today, all are worth fixing:
 
-1. **Settings can never be un-set.** `config.load_settings` filters falsy file values
+1. **Settings can never be un-set.** ~~`config.load_settings` filters falsy file values
    (`if v`), so writing an empty string via the UI persists it but it's ignored on load —
    the env default silently comes back. Deleting an API key or reverting `prior_notes_scope`
-   is impossible from the UI. Distinguish "absent" from "explicitly empty".
+   is impossible from the UI.~~ **Fixed:** `save_settings` now treats `""` as an explicit
+   unset (clears the override, reverting to the env default) distinct from an absent key
+   (`None`, unchanged), and `load_settings` honors stored values without the falsy filter.
+   Note the *mobile* client still omits blank fields rather than sending `""`, so a "clear
+   key" affordance in the UI is a small follow-up to expose this from the app.
 2. **Per-request writes to global settings.** `_prep_chat_start` and `_prep_retry` persist
-   the request's `model` via `config.save_settings` — a per-turn UI choice mutates app-global
-   state (and races with concurrent saves; see 1.5). Pass the model through to the turn
-   instead of round-tripping it through settings.
+   the request's `model` via `config.save_settings`. On closer reading this is *intended*
+   sticky-model UX (the compose-screen / retry picker becomes the new default, which
+   `opening_draft` reads back) — the real hazard was the unlocked read-modify-write racing
+   with a concurrent settings save and silently dropping a change. **Fixed:** `save_settings`
+   and `set_prompt_override` now serialize on a shared lock; the sticky behavior is preserved.
+   If cross-project model bleed (a turn in project A changing the global default for project
+   B) is ever unwanted, thread the model through the turn instead — but that's a UX decision,
+   not a bug.
 3. **TOCTOU on turn start.** `_no_turn_in_flight(slug)` → `_prep_*` (mutates the session
    file) → `start_turn`. Two near-simultaneous requests can both pass the check, both record
    a user message, then one joins the other's job — leaving a duplicated user turn in the

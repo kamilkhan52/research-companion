@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -106,32 +107,44 @@ _ENV_DEFAULTS = {
 }
 
 
+_SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "openai_api_key",
+                 "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
+                 "firecrawl_api_key", "prior_notes_scope")
+
+# Serializes the read-modify-write of the shared settings file. A turn persisting its model
+# choice, a UI settings save, and a prompt-override edit all mutate the same file; without this
+# two concurrent saves race and one silently drops the other's change (single-process app, so a
+# threading.Lock is sufficient — see CLAUDE.md on the single-worker assumption).
+_settings_lock = threading.Lock()
+
+
 def load_settings() -> dict:
-    """File settings (UI-set) layered over env defaults."""
+    """File settings (UI-set) layered over env defaults. A stored key is honored even when its
+    value is empty — an explicit "" is a deliberate unset (revert to no value), distinct from a
+    key being absent (use the env default)."""
     data = dict(_ENV_DEFAULTS)
-    if SETTINGS_FILE.exists():
-        try:
-            data.update({k: v for k, v in json.loads(SETTINGS_FILE.read_text()).items() if v})
-        except (json.JSONDecodeError, OSError):
-            pass
+    stored = _read_settings_file()
+    for key in _SETTING_KEYS:
+        if key in stored:
+            data[key] = stored[key]
     return data
 
 
 def save_settings(patch: dict) -> dict:
-    """Persist non-empty keys; returns the merged settings."""
-    current = {}
-    if SETTINGS_FILE.exists():
-        try:
-            current = json.loads(SETTINGS_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            current = {}
-    for key in ("openrouter_api_key", "model", "narration_model", "openai_api_key",
-                "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
-                "firecrawl_api_key", "prior_notes_scope"):
-        if key in patch and patch[key] is not None:
-            current[key] = patch[key]
-    # 0o600: this file holds API keys.
-    atomic_write_text(SETTINGS_FILE, json.dumps(current, indent=2), mode=0o600)
+    """Merge a patch into the settings file and return the merged settings. Per key:
+    absent or None => leave unchanged; "" => clear the override (falls back to the env default);
+    any other value => set it. Serialized under _settings_lock so concurrent saves don't clobber."""
+    with _settings_lock:
+        current = _read_settings_file()
+        for key in _SETTING_KEYS:
+            if key not in patch or patch[key] is None:
+                continue
+            if patch[key] == "":
+                current.pop(key, None)  # explicit unset -> revert to env default / absent
+            else:
+                current[key] = patch[key]
+        # 0o600: this file holds API keys.
+        atomic_write_text(SETTINGS_FILE, json.dumps(current, indent=2), mode=0o600)
     return load_settings()
 
 
@@ -154,12 +167,14 @@ def get_prompt_override(key: str) -> str | None:
 
 
 def set_prompt_override(key: str, value: str | None) -> None:
-    """Persist a prompt override; value None/empty removes it (reverts to default)."""
-    data = _read_settings_file()
-    overrides = data.get("prompts") or {}
-    if value:
-        overrides[key] = value
-    else:
-        overrides.pop(key, None)
-    data["prompts"] = overrides
-    atomic_write_text(SETTINGS_FILE, json.dumps(data, indent=2), mode=0o600)
+    """Persist a prompt override; value None/empty removes it (reverts to default). Shares
+    _settings_lock with save_settings since both read-modify-write the same file."""
+    with _settings_lock:
+        data = _read_settings_file()
+        overrides = data.get("prompts") or {}
+        if value:
+            overrides[key] = value
+        else:
+            overrides.pop(key, None)
+        data["prompts"] = overrides
+        atomic_write_text(SETTINGS_FILE, json.dumps(data, indent=2), mode=0o600)
