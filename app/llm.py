@@ -205,9 +205,16 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
 # ---------- model catalogue (TTL-cached; shared by three callers) ----------
 
 _CATALOGUE_TTL = 300  # seconds
-_catalogue_lock = threading.Lock()          # guards reads/writes of the cache tuple (never held over I/O)
+# After a failed refresh, don't re-hit upstream for this long: serve stale (or, cold, share the
+# error) instead. This makes the FAILURE path single-flight too — without it, a wave of callers
+# on a stale/cold cache would each acquire the fetch lock, still see an expired cache, and repeat
+# the same failing request. Short relative to the TTL so recovery is quick once upstream is back.
+_CATALOGUE_ERROR_COOLDOWN = 30  # seconds
+_catalogue_lock = threading.Lock()          # guards the cache/cooldown state (never held over I/O)
 _catalogue_fetch_lock = threading.Lock()    # single-flight: at most one refresh in flight at a time
 _catalogue_cache: tuple[float, list[dict]] | None = None
+_catalogue_cooldown_until: float = 0.0      # monotonic deadline; within it, skip the upstream fetch
+_catalogue_last_error: str = ""             # error shared with waiters during a cold-cache cooldown
 
 
 def _fresh(ttl: float) -> list[dict] | None:
@@ -220,30 +227,45 @@ def _fresh(ttl: float) -> list[dict] | None:
 def catalogue(*, timeout: float = 30, ttl: float = _CATALOGUE_TTL) -> list[dict]:
     """OpenRouter's public model catalogue (the raw `data` list of model dicts), TTL-cached so
     /api/models, /api/favorite_models, and graph.resolve_model() share one fetch. Refreshes are
-    single-flight: simultaneous callers on a cold/stale cache serialize on a dedicated fetch
-    lock (the cache lock is never held across network I/O), so exactly one OpenRouter request
-    goes out and the rest consume its result. On a fetch failure a cached (even stale) copy is
-    served rather than erroring; if nothing is cached, raises LLMError."""
-    global _catalogue_cache
+    single-flight: simultaneous callers on a cold/stale cache serialize on a dedicated fetch lock
+    (the cache lock is never held across network I/O), so exactly one OpenRouter request goes out
+    and the rest consume its result. This holds on the FAILURE path too — a failed refresh starts
+    a short cooldown during which waiters serve stale (or, cold, share the same error) instead of
+    each repeating the failing request. If nothing is cached, raises LLMError."""
+    global _catalogue_cache, _catalogue_cooldown_until, _catalogue_last_error
     cached = _fresh(ttl)
     if cached is not None:
         return cached
     with _catalogue_fetch_lock:
-        # Re-check: a caller that held this lock just before us may have refreshed the cache.
+        # Re-check under the fetch lock: a caller just ahead of us may have refreshed the cache,
+        # or failed and opened a cooldown we should honor rather than re-hitting upstream.
         cached = _fresh(ttl)
         if cached is not None:
             return cached
+        with _catalogue_lock:
+            in_cooldown = time.monotonic() < _catalogue_cooldown_until
+            stale = _catalogue_cache[1] if _catalogue_cache else None
+            last_error = _catalogue_last_error
+        if in_cooldown:
+            if stale is not None:
+                return stale
+            raise LLMError(last_error or "OpenRouter catalogue is unavailable.")
         try:
             r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=timeout)
             r.raise_for_status()
             data = r.json().get("data", [])
         except (httpx.HTTPError, ValueError) as e:
+            msg = f"Could not reach OpenRouter: {e}"
             with _catalogue_lock:
+                _catalogue_cooldown_until = time.monotonic() + _CATALOGUE_ERROR_COOLDOWN
+                _catalogue_last_error = msg
                 if _catalogue_cache:
                     return _catalogue_cache[1]  # serve stale rather than fail the caller
-            raise LLMError(f"Could not reach OpenRouter: {e}") from e
+            raise LLMError(msg) from e
         with _catalogue_lock:
             _catalogue_cache = (time.monotonic(), data)
+            _catalogue_cooldown_until = 0.0
+            _catalogue_last_error = ""
         return data
 
 
@@ -263,7 +285,9 @@ def newest_matching(inc: list[str], exc: list[str], *,
 
 
 def _reset_catalogue_cache() -> None:
-    """Test hook: drop the cached catalogue so a test controls the next fetch."""
-    global _catalogue_cache
+    """Test hook: drop the cached catalogue + any error cooldown so a test controls the next fetch."""
+    global _catalogue_cache, _catalogue_cooldown_until, _catalogue_last_error
     with _catalogue_lock:
         _catalogue_cache = None
+        _catalogue_cooldown_until = 0.0
+        _catalogue_last_error = ""
