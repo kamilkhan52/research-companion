@@ -44,6 +44,39 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENAI_BASE = "https://api.openai.com/v1"
 APP_TITLE = os.environ.get("RC_APP_TITLE", "Research Reading Companion")
 
+# Author for the commits the app makes into a project's git store (committer.commit,
+# notes_jobs.save, projects.create_project). The store shells out to `git commit`, which needs
+# an author; relying on the host's global git identity means a fresh server/container/CI runner
+# with no `git config --global` fails ("empty ident name") on note approval and silently skips a
+# new project's baseline commit. We pin the author explicitly instead (see git_identity_args),
+# so commits always succeed and are attributed consistently regardless of host config. Default
+# matches the identity the existing project repos already use. Once projects are scoped per user
+# this is the natural hook for per-user attribution (pass the authenticated user through).
+DEFAULT_GIT_AUTHOR_NAME = "Research Companion"
+DEFAULT_GIT_AUTHOR_EMAIL = "companion@local"
+
+
+def git_author_name() -> str:
+    # Resolve at call time and treat a present-but-empty/whitespace env var as unset — an
+    # empty `user.name=` would re-create the very "empty ident name" failure this guards against
+    # (`.env` templates routinely leave a var declared but blank).
+    return os.environ.get("RC_GIT_AUTHOR_NAME", "").strip() or DEFAULT_GIT_AUTHOR_NAME
+
+
+def git_author_email() -> str:
+    return os.environ.get("RC_GIT_AUTHOR_EMAIL", "").strip() or DEFAULT_GIT_AUTHOR_EMAIL
+
+
+def git_identity_args() -> list[str]:
+    """`git -c` flags pinning the commit author/committer to the app identity. Prepended to every
+    app-issued git invocation so a commit never depends on (or is broken by the absence of) the
+    host's global git config. `-c` takes precedence over repo/global config, so authorship is
+    deterministic."""
+    return [
+        "-c", f"user.name={git_author_name()}",
+        "-c", f"user.email={git_author_email()}",
+    ]
+
 # ---- active project (per-request) ----
 
 _active_project: contextvars.ContextVar[str | None] = contextvars.ContextVar(

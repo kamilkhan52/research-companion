@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import subprocess
 
-from . import sessions, store
+from . import config, sessions, store
 
 
 class CommitError(Exception):
@@ -15,8 +15,10 @@ class CommitError(Exception):
 
 
 def _git(*args: str) -> str:
+    # config.git_identity_args() pins the author so a commit never fails for a missing global
+    # git identity (fresh server/container) — see config.git_author_name().
     proc = subprocess.run(
-        ["git", *args], cwd=str(store.config.project_dir()),
+        ["git", *config.git_identity_args(), *args], cwd=str(config.project_dir()),
         capture_output=True, text=True,
     )
     if proc.returncode != 0:
