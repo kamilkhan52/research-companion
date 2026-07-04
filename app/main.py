@@ -9,7 +9,6 @@ import json
 import os
 import re
 
-import httpx
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -30,6 +29,7 @@ from . import (
     graph,
     graph_jobs,
     graph_store,
+    llm,
     notes_jobs,
     projects,
     prompts,
@@ -471,13 +471,11 @@ def narrate(req: NarrateReq):
 
 @app.get("/api/models")
 def list_models():
-    """Proxy OpenRouter's public model catalogue so the UI can offer a switcher."""
+    """Proxy OpenRouter's public model catalogue (TTL-cached in llm) so the UI can offer a switcher."""
     try:
-        r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=30)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}") from e
+        data = llm.catalogue()
+    except llm.LLMError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     models = [{"id": m.get("id"), "name": m.get("name", m.get("id"))} for m in data if m.get("id")]
     models.sort(key=lambda m: m["id"])
     return {"models": models}
@@ -508,21 +506,14 @@ FAVORITE_FAMILIES = [
 def favorite_models():
     """Resolve each favorite family to its latest chat model id from the OpenRouter catalogue."""
     try:
-        r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=30)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach OpenRouter: {e}") from e
+        data = llm.catalogue()
+    except llm.LLMError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     out = []
     for fam in FAVORITE_FAMILIES:
-        exc = fam["exc"] + FAVORITE_GLOBAL_EXC
-        matches = [m for m in data if m.get("id") and m["id"][:1].isalnum()
-                   and all(s in m["id"].lower() for s in fam["inc"])
-                   and not any(s in m["id"].lower() for s in exc)]
-        if not matches:
-            continue
-        best = max(matches, key=lambda m: m.get("created", 0))  # newest = latest version
-        out.append({"label": fam["label"], "id": best["id"]})
+        best = llm.newest_matching(fam["inc"], fam["exc"] + FAVORITE_GLOBAL_EXC, models=data)
+        if best:
+            out.append({"label": fam["label"], "id": best["id"]})
     return {"models": out}
 
 

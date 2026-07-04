@@ -73,6 +73,21 @@ the invariant becomes impossible to violate from feature code.
 
 ### 1.3 Extract a single LLM client module
 
+✅ **DONE** (branch `quality/llm-client`). Added `app/llm.py` with `complete()` / `stream()`
+owning auth headers, content-list flattening, empty/`finish_reason` (+ reasoning-token
+exhaustion) diagnostics, error normalization to one `LLMError`, and **retry-with-backoff on
+transient failures** (connect/read errors, 429/5xx) — so a single 502/timeout no longer kills a
+whole paid turn or build. All four raw-HTTP callers migrated onto it: `agent` (analysis +
+narration + streaming, translating `LLMError`→`AgentError`), `discovery._default_llm`
+(→`DiscoveryError`), `graph.extract_references_for_paper` (→ per-paper error dict, still wrapped
+in its wall-clock hard deadline). The Pydantic AI path in `agent_harness` keeps its framework
+client by design. The model catalogue is now fetched once through a TTL-cached `llm.catalogue()`
+(with `newest_matching()` for family resolution), shared by `/api/models`,
+`/api/favorite_models`, and `graph.resolve_model()` instead of three separate uncached fetches;
+a fetch failure serves the last-good catalogue rather than erroring. `test_llm` covers it in
+isolation (network faked). This is also the single seam where token/cost accounting (§3.3) will
+attach. Original description below.
+
 OpenRouter is called through four separate hand-rolled paths:
 
 - `agent._call_openrouter` / `agent._stream_openrouter` (headers, error normalization,
@@ -401,8 +416,9 @@ global git config.
 
 **Medium (a day or two each):**
 ✅ Generic job framework + project-context helper (1.1, 1.2) — done on `quality/job-framework`.
-Remaining: `llm.py` with retries + cached catalogue (1.3) · logging + token accounting (3.3) ·
-router split of `main.py` (1.6) · pyright clean-up (3.2) · store read caching (1.5).
+✅ `llm.py` with retries + cached catalogue (1.3) — done on `quality/llm-client`.
+Remaining: logging + token accounting (3.3) · router split of `main.py` (1.6) · pyright
+clean-up (3.2) · store read caching (1.5).
 
 **Larger / when the need is real:**
 Typed response models + generated client types in CI (2.1) · retire SSE turn endpoints and

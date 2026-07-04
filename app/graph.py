@@ -31,9 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-import httpx
-
-from . import citations, config, graph_layout, graph_store, store
+from . import citations, config, graph_layout, graph_store, llm, store
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -101,17 +99,10 @@ def resolve_model() -> str:
     if override:
         return override
     try:
-        r = httpx.get(f"{config.OPENROUTER_BASE}/models", timeout=15)
-        r.raise_for_status()
-        data = r.json().get("data", [])
-    except (httpx.HTTPError, ValueError):
+        best = llm.newest_matching(_GRAPH_MODEL_INC, _GRAPH_MODEL_EXC)
+    except llm.LLMError:
         return DEFAULT_GRAPH_MODEL
-    matches = [m for m in data if m.get("id") and m["id"][:1].isalnum()
-               and all(s in m["id"].lower() for s in _GRAPH_MODEL_INC)
-               and not any(s in m["id"].lower() for s in _GRAPH_MODEL_EXC)]
-    if not matches:
-        return DEFAULT_GRAPH_MODEL
-    return max(matches, key=lambda m: m.get("created", 0))["id"]
+    return best["id"] if best else DEFAULT_GRAPH_MODEL
 
 
 # ---------- extraction (the one LLM-calling step) ----------
@@ -262,47 +253,30 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
     if not text:
         return _result("error", [], "No cached full text for this paper.")
 
-    headers = {"Authorization": f"Bearer {key}", "HTTP-Referer": "http://localhost",
-               "X-Title": config.APP_TITLE}
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _EXTRACTION_SYSTEM},
-            {"role": "user", "content": f"Paper title: {title}\n\nFull text:\n\n{text[:MAX_FULL_TEXT_CHARS]}"},
-        ],
-        "temperature": 0.1,
-        "max_tokens": EXTRACTION_MAX_TOKENS,
-        "reasoning": {"effort": REASONING_EFFORT},
-    }
+    messages = [
+        {"role": "system", "content": _EXTRACTION_SYSTEM},
+        {"role": "user", "content": f"Paper title: {title}\n\nFull text:\n\n{text[:MAX_FULL_TEXT_CHARS]}"},
+    ]
+    # One retry (tries=2) for a transient blip; the hard deadline below bounds total wall-clock
+    # regardless, so a stuck call can't consume more than EXTRACTION_HARD_DEADLINE. The llm
+    # client raises LLMError on an empty completion, with the reasoning-token exhaustion hint
+    # baked in — caught here and turned into this paper's error record (one paper's failure
+    # never aborts the whole rebuild).
     try:
-        r = _call_with_deadline(
-            lambda: httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
-                               headers=headers, json=body, timeout=300),
+        content = _call_with_deadline(
+            lambda: llm.complete(messages, model=model, temperature=0.1,
+                                 max_tokens=EXTRACTION_MAX_TOKENS,
+                                 reasoning={"effort": REASONING_EFFORT}, timeout=300, tries=2),
             deadline=EXTRACTION_HARD_DEADLINE)
     except concurrent.futures.TimeoutError:
         return _result("error", [],
                        f"No response after {EXTRACTION_HARD_DEADLINE}s (hard deadline) — the "
                        "request may still be running upstream but this paper is being skipped "
                        "for now; retry later or on the next rebuild.")
-    except httpx.HTTPError as e:
-        return _result("error", [], f"OpenRouter request failed: {e}"[:400])
-    if r.status_code != 200:
-        return _result("error", [], f"OpenRouter error {r.status_code}: {r.text[:300]}")
+    except llm.LLMError as e:
+        return _result("error", [], str(e)[:400])
 
     try:
-        data = r.json()
-        choice = data["choices"][0]
-        content = (choice.get("message") or {}).get("content")
-        if isinstance(content, list):
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        if not content or not str(content).strip():
-            reasoning_tokens = ((data.get("usage") or {}).get("completion_tokens_details") or {}).get(
-                "reasoning_tokens")
-            hint = (f" (spent {reasoning_tokens} tokens on reasoning before running out — "
-                    "try raising EXTRACTION_MAX_TOKENS or lowering REASONING_EFFORT further)"
-                    if reasoning_tokens else "")
-            raise GraphError(f"Empty response (finish_reason={choice.get('finish_reason')}){hint}.")
-
         note = ""
         try:
             parsed = _extract_json(content)

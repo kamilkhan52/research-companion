@@ -33,9 +33,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
-
-from . import citations, config, graph, prompts, retriever
+from . import citations, config, graph, llm, prompts, retriever
 from .fileio import atomic_write_text
 
 MAX_QUERIES = 6
@@ -91,39 +89,17 @@ def save_result(result: dict) -> None:
 # ---------- LLM plumbing ----------
 
 def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:
-    """One OpenRouter chat call, returning the raw content string. Raises DiscoveryError on
-    anything unusable — unlike graph extraction there is no per-paper isolation to preserve;
-    if a step fails the whole run fails and the job surfaces the error."""
-    key = config.load_settings().get("openrouter_api_key")
-    if not key:
-        raise DiscoveryError("No OpenRouter API key set. Open Settings.")
-    headers = {"Authorization": f"Bearer {key}", "HTTP-Referer": "http://localhost",
-               "X-Title": config.APP_TITLE}
-    body = {
-        "model": model,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0.1,
-        "max_tokens": max_tokens,
-        "reasoning": {"effort": "low"},
-    }
+    """One OpenRouter chat call via the shared llm client, returning the raw content string.
+    Translates the client's LLMError into DiscoveryError — unlike graph extraction there is no
+    per-paper isolation to preserve; if a step fails the whole run fails and the job surfaces
+    the error. Low reasoning effort: query generation and scoring are extraction/formatting
+    work, not deep chain-of-thought."""
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
-        r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
-                       headers=headers, json=body, timeout=LLM_TIMEOUT_S)
-    except httpx.HTTPError as e:
-        raise DiscoveryError(f"OpenRouter request failed: {e}"[:300]) from e
-    if r.status_code != 200:
-        raise DiscoveryError(f"OpenRouter error {r.status_code}: {r.text[:200]}")
-    try:
-        choice = r.json()["choices"][0]
-        content = (choice.get("message") or {}).get("content")
-        if isinstance(content, list):
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise DiscoveryError(f"Malformed OpenRouter response: {e}") from e
-    if not content or not str(content).strip():
-        raise DiscoveryError(f"Empty model response (finish_reason="
-                             f"{choice.get('finish_reason')}). Try again.")
-    return str(content)
+        return llm.complete(messages, model=model, temperature=0.1, max_tokens=max_tokens,
+                            reasoning={"effort": "low"}, timeout=LLM_TIMEOUT_S)
+    except llm.LLMError as e:
+        raise DiscoveryError(str(e)) from e
 
 
 def _parse_json(content: str) -> dict:
