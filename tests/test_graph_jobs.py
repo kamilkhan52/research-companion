@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from app import graph_jobs, graph_store
+from app import config, graph_jobs, graph_store, projects
 
 from tests.conftest import add_paper
 
@@ -145,3 +145,46 @@ def test_to_dict_excludes_internal_pid_field(temp_project):
     d = graph_jobs.get_job(temp_project).to_dict()
     assert "pid" not in d
     assert d["status"] == "done"
+
+
+def _scaffold_project(pid: str) -> None:
+    root = projects.project_path(pid)
+    (root / "corpus").mkdir(parents=True)
+    (root / ".state").mkdir()
+    (root / "reading-list.md").write_text("# Reading list\n\n## G\n\n", encoding="utf-8")
+    (root / "reading-method.md").write_text("", encoding="utf-8")
+    (root / "working-notes.md").write_text("", encoding="utf-8")
+
+
+def test_build_binds_the_requested_project_not_the_ambient_one(tmp_path, monkeypatch):
+    # Regression: a build requested for project B must run bound to B, even if a different
+    # project (A) is the ambient active project at the call site. Previously the worker rebound
+    # the requested pid explicitly; the shared-registry version must preserve that (it passes
+    # project_id=pid rather than trusting the ambient context).
+    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path)
+    _scaffold_project("proj-a")
+    _scaffold_project("proj-b")
+
+    tok = config.set_active_project("proj-b")
+    try:
+        add_paper("proj-b", "b1", "Paper B1", full_text="Distinctive body of B1.")
+    finally:
+        config.reset_active_project(tok)
+
+    # Start the build for B while A is the ambient project.
+    tok = config.set_active_project("proj-a")
+    try:
+        job = graph_jobs.start_build("proj-b", extract_fn=fake_extractor())
+        finished = _wait_until_done(job.id)
+    finally:
+        config.reset_active_project(tok)
+
+    assert finished.status == "done"
+    # The graph landed in B's store (the requested project), and A's store stayed empty.
+    for pid, expect_graph in (("proj-b", True), ("proj-a", False)):
+        tok = config.set_active_project(pid)
+        try:
+            has_graph = graph_store.load().get("graph") is not None
+        finally:
+            config.reset_active_project(tok)
+        assert has_graph is expect_graph, f"{pid}: graph present={has_graph}, expected {expect_graph}"

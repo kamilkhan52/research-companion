@@ -16,9 +16,11 @@ class SampleJob(Job):
 
 
 def _settle(reg: JobRegistry, job_id: str, timeout: float = 5.0) -> Job:
+    # Read the raw registry dict (not get(), which is project-scoped) so the helper can settle a
+    # job regardless of which project it belongs to.
     deadline = time.time() + timeout
     while time.time() < deadline:
-        job = reg.get(job_id)
+        job = reg.jobs.get(job_id)
         if job and job.status != "running":
             return job
         time.sleep(0.01)
@@ -101,6 +103,7 @@ def test_snapshot_excludes_internal_dedup_key():
     snap = reg.snapshot("fixed")
     assert "secret-key" not in snap.values()
     assert "_rc_dedup_key" not in snap
+    assert "_rc_project_id" not in snap        # the owning-project attr never leaks either
     assert snap["id"] == "fixed"
 
 
@@ -131,3 +134,49 @@ def test_put_registers_a_terminal_job_without_a_thread():
     reg.put("k", job)
     assert reg.get("cached").value == 7
     assert reg.active_for("k") is None        # a done job isn't "running"
+
+
+# ---- project isolation ----
+
+def test_dedup_is_scoped_by_project():
+    # The same dedup key in two different projects must NOT join the same job (e.g. a paper slug
+    # that happens to exist in two projects).
+    reg: JobRegistry[SampleJob] = JobRegistry("t")
+    release = threading.Event()
+    a = reg.start_or_join("slug", lambda: SampleJob(id=new_id()), lambda j: release.wait(2.0),
+                          project_id="proj-a")
+    b = reg.start_or_join("slug", lambda: SampleJob(id=new_id()), lambda j: release.wait(2.0),
+                          project_id="proj-b")
+    assert a.id != b.id                                  # independent jobs, not joined
+    assert reg.active_for("slug", project_id="proj-a") is a
+    assert reg.active_for("slug", project_id="proj-b") is b
+    release.set()
+    _settle(reg, a.id)
+    _settle(reg, b.id)
+
+
+def test_get_and_snapshot_are_project_authorized():
+    reg: JobRegistry[SampleJob] = JobRegistry("t")
+    job = reg.start_or_join("k", lambda: SampleJob(id="j1"), lambda j: None, project_id="proj-a")
+    _settle(reg, job.id)
+    # The owning project sees it; another project cannot read it by its (opaque) id.
+    assert reg.get("j1", project_id="proj-a") is not None
+    assert reg.get("j1", project_id="proj-b") is None
+    assert reg.snapshot("j1", project_id="proj-a") is not None
+    assert reg.snapshot("j1", project_id="proj-b") is None
+
+
+def test_explicit_project_id_overrides_ambient_for_the_worker(monkeypatch):
+    # A job requested for project B while project A is ambient must run bound to B, not A —
+    # the worker binds the explicit project_id, not whatever happened to be active at the call.
+    reg: JobRegistry[SampleJob] = JobRegistry("t")
+    token = config.set_active_project("proj-a")
+    try:
+        seen: dict = {}
+        job = reg.start_or_join("k", lambda: SampleJob(id=new_id()),
+                                lambda j: seen.update(pid=config.active_project_id()),
+                                project_id="proj-b")
+        _settle(reg, job.id)
+        assert seen["pid"] == "proj-b"
+    finally:
+        config.reset_active_project(token)

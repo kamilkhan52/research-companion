@@ -66,8 +66,10 @@ def audio_cache_path(narration: str) -> Path:
     return AUDIO_DIR / name
 
 
+# Audio is app-global (the mp3 cache is shared across projects), so its jobs live under the
+# None project scope explicitly — identical audio requested from any project shares one job.
 def get_job(job_id: str) -> AudioJob | None:
-    return _registry.get(job_id)
+    return _registry.get(job_id, project_id=None)
 
 
 def start_job(text: str, narrate_fn: NarrateFn | None = None,
@@ -80,7 +82,7 @@ def start_job(text: str, narrate_fn: NarrateFn | None = None,
     synth_fn = synth_fn or tts.openai_speech
     jid = job_id_for(text)
 
-    existing = _registry.active_for(jid)
+    existing = _registry.active_for(jid, project_id=None)
     if existing:
         return existing
 
@@ -89,7 +91,8 @@ def start_job(text: str, narrate_fn: NarrateFn | None = None,
     if narration is not None and audio_cache_path(narration).exists():
         return _registry.put(jid, AudioJob(
             id=jid, status="done", stage="synthesizing", narration=narration,
-            url=f"/api/audio/{audio_cache_path(narration).name}", finished_at=now_iso()))
+            url=f"/api/audio/{audio_cache_path(narration).name}", finished_at=now_iso()),
+            project_id=None)
 
     def work(job: AudioJob) -> None:
         narration = sessions.get_cached_narration(text)
@@ -117,4 +120,4 @@ def start_job(text: str, narrate_fn: NarrateFn | None = None,
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"
 
-    return _registry.start_or_join(jid, lambda: AudioJob(id=jid), work)
+    return _registry.start_or_join(jid, lambda: AudioJob(id=jid), work, project_id=None)

@@ -43,7 +43,7 @@ _jobs = _registry.jobs
 
 
 def get_job(pid: str) -> BuildJob | None:
-    return _registry.get(pid)
+    return _registry.get(pid, project_id=pid)
 
 
 def is_running(pid: str) -> bool:
@@ -62,7 +62,9 @@ def start_build(pid: str, force: bool = False,
             with _registry.lock:
                 _apply_event(job, event)
 
-    return _registry.start_or_join(pid, lambda: BuildJob(id=pid), work)
+    # Pass project_id explicitly (not the ambient default): the worker must bind THIS pid's
+    # project even if a caller's ambient context is absent or different (scheduler/test/batch).
+    return _registry.start_or_join(pid, lambda: BuildJob(id=pid), work, project_id=pid)
 
 
 def _apply_event(job: BuildJob, event: dict) -> None:

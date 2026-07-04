@@ -52,10 +52,20 @@ class Job:
 
 J = TypeVar("J", bound=Job)
 
-# The dedup key is stashed on the job instance under this attribute (not a dataclass field, so it
-# never leaks into to_dict()). Keeping it on the job means the registry's single _jobs dict is the
-# whole of its state — clearing it (as tests do) is a complete reset.
+# The dedup key and owning project are stashed on the job instance under these attributes (not
+# dataclass fields, so they never leak into to_dict()). Keeping them on the job means the
+# registry's single _jobs dict is the whole of its state — clearing it (as tests do) is a
+# complete reset.
 _KEY_ATTR = "_rc_dedup_key"
+_PID_ATTR = "_rc_project_id"
+
+# Sentinel default for the project_id argument: "capture the ambient active project at call
+# time". Distinct from an explicit None (which means the app-global scope, e.g. audio).
+_AMBIENT: str | None = object()  # type: ignore[assignment]
+
+
+def _resolve_pid(project_id):
+    return config.active_project_id() if project_id is _AMBIENT else project_id
 
 
 class JobRegistry(Generic[J]):
@@ -80,48 +90,69 @@ class JobRegistry(Generic[J]):
         serializes a half-written field."""
         return self._lock
 
-    def get(self, job_id: str) -> J | None:
-        with self._lock:
-            return self._jobs.get(job_id)
-
-    def snapshot(self, job_id: str) -> dict | None:
-        """A poll-safe serialized copy, taken under the lock so the worker can't be mid-mutation."""
+    def get(self, job_id: str, *, project_id=_AMBIENT) -> J | None:
+        """The job with this id, but only if it belongs to `project_id` (the ambient project by
+        default) — so one project can't read another's job by guessing/leaking its opaque id."""
+        pid = _resolve_pid(project_id)
         with self._lock:
             job = self._jobs.get(job_id)
-            return job.to_dict() if job else None
+            if job is None or getattr(job, _PID_ATTR, None) != pid:
+                return None
+            return job
 
-    def active_for(self, key: str) -> J | None:
-        """The running job for a dedup key, if any — how a client that navigated away reattaches."""
+    def snapshot(self, job_id: str, *, project_id=_AMBIENT) -> dict | None:
+        """A poll-safe serialized copy (project-scoped like get()), taken under the lock so the
+        worker can't be mid-mutation."""
+        pid = _resolve_pid(project_id)
         with self._lock:
-            return self._running_for(key)
+            job = self._jobs.get(job_id)
+            if job is None or getattr(job, _PID_ATTR, None) != pid:
+                return None
+            return job.to_dict()
 
-    def _running_for(self, key: str) -> J | None:  # caller holds the lock
+    def active_for(self, key: str, *, project_id=_AMBIENT) -> J | None:
+        """The running job for a dedup key within a project — how a client that navigated away
+        reattaches. Scoped by project so identical keys (e.g. a slug shared across projects) don't
+        join each other's jobs."""
+        pid = _resolve_pid(project_id)
+        with self._lock:
+            return self._running_for(key, pid)
+
+    def _running_for(self, key: str, pid: str | None) -> J | None:  # caller holds the lock
         for job in self._jobs.values():
-            if getattr(job, _KEY_ATTR, None) == key and job.status == "running":
+            if (getattr(job, _KEY_ATTR, None) == key
+                    and getattr(job, _PID_ATTR, None) == pid
+                    and job.status == "running"):
                 return job
         return None
 
-    def put(self, key: str, job: J) -> J:
+    def put(self, key: str, job: J, *, project_id=_AMBIENT) -> J:
         """Register an already-terminal job (e.g. a result served straight from cache) with no
         worker thread. Returns it."""
+        pid = _resolve_pid(project_id)
         with self._lock:
             setattr(job, _KEY_ATTR, key)
+            setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
             self._prune()
         return job
 
-    def start_or_join(self, key: str, factory: Callable[[], J], work: Callable[[J], None]) -> J:
-        """Return the running job for `key`, or create one via `factory()` and run `work(job)` in
-        a daemon thread. The thread rebinds whatever project is active *now* (captured here, since
-        threads don't inherit it). `work` populates the job's fields and returns; the registry
-        then marks it done (or error, if `work` raised)."""
-        pid = config.active_project_id()
+    def start_or_join(self, key: str, factory: Callable[[], J], work: Callable[[J], None],
+                      *, project_id=_AMBIENT) -> J:
+        """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
+        `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
+        active project (correct for request-scoped callers like chat/notes); a pid-keyed caller
+        (graph/discovery) passes it explicitly so the worker binds the right project even if the
+        ambient context is absent or different. `work` populates the job's fields and returns; the
+        registry then marks it done (or error, if `work` raised)."""
+        pid = _resolve_pid(project_id)
         with self._lock:
-            existing = self._running_for(key)
+            existing = self._running_for(key, pid)
             if existing:
                 return existing
             job = factory()
             setattr(job, _KEY_ATTR, key)
+            setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
             self._prune()
         thread = threading.Thread(target=self._run, args=(job, work, pid),

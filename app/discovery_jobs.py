@@ -43,11 +43,11 @@ _jobs = _registry.jobs
 
 
 def get_job(pid: str) -> DiscoveryJob | None:
-    return _registry.get(pid)
+    return _registry.get(pid, project_id=pid)
 
 
 def snapshot(pid: str) -> dict | None:
-    return _registry.snapshot(pid)
+    return _registry.snapshot(pid, project_id=pid)
 
 
 def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discovery,
@@ -63,7 +63,10 @@ def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discover
             with _registry.lock:
                 _apply_event(job, event)
 
-    return _registry.start_or_join(pid, lambda: DiscoveryJob(id=pid, goals=goals), work)
+    # Pass project_id explicitly (not the ambient default): the worker must bind THIS pid's
+    # project even if a caller's ambient context is absent or different (scheduler/test/batch).
+    return _registry.start_or_join(pid, lambda: DiscoveryJob(id=pid, goals=goals), work,
+                                   project_id=pid)
 
 
 def _apply_event(job: DiscoveryJob, event: dict) -> None:
