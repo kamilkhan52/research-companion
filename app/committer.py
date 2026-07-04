@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import subprocess
 
-from . import config, sessions, store
+from . import config, logging_config, sessions, store
+
+log = logging_config.get("committer")
 
 
 class CommitError(Exception):
@@ -69,4 +71,6 @@ def commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> di
         if "nothing to commit" not in str(e):
             raise
     sessions.mark_committed(slug)
-    return {"committed": True, "rev": _git("rev-parse", "--short", "HEAD"), "message": msg}
+    rev = _git("rev-parse", "--short", "HEAD")
+    log.info("commit slug=%s rev=%s: %s", slug, rev, msg)
+    return {"committed": True, "rev": rev, "message": msg}
