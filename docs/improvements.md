@@ -31,19 +31,27 @@ has drifted slightly (e.g. `graph_jobs`/`discovery_jobs` key jobs by `pid` while
 use UUIDs; `chat_jobs._run` calls `config.set_active_project(pid)` without keeping the token
 to reset, while `graph_jobs._run` does it correctly with `try/finally`).
 
-Extract a generic `jobs.py`:
+✅ **DONE** (branch `quality/job-framework`). Extracted `app/jobs.py`:
 
 ```python
 class Job:            # id, status, error, timestamps, to_dict()
-class JobRegistry:    # start_or_join(key, runner), snapshot(id), active_for(key), pruning
+class JobRegistry:    # start_or_join(key, factory, work), get/snapshot(id), active_for(key),
+                      # put(key, job) for cache-hit results, pruning
 ```
 
-with the registry owning the lock, the pruning, the thread spawn, **and the project-context
-rebind** (see 1.2). Each feature module then only defines its progress fields and its runner.
-This is also the precondition for job persistence (see 1.4) — you fix restart-amnesia once
-instead of five times.
+The registry owns the lock, the pruning, the thread spawn, the project-context rebind (1.2),
+error capture, and a **persist-before-done** finalize (status flips to done only after `work`
+returns, so a poller that sees "done" has always seen the side effects — this also structurally
+fixed the discovery save/done race from Phase 1). All five modules migrated; each now defines
+only its payload dataclass (a `Job` subclass) + a `work(job)` function. Public APIs and wire
+shapes preserved; `test_jobs` covers the registry in isolation. This is also the precondition
+for job persistence (1.4) — restart-amnesia can now be fixed once instead of five times.
 
 ### 1.2 Centralize the "carry the active project into a thread" invariant
+
+✅ **DONE** (folded into 1.1): `JobRegistry.start_or_join` captures `active_project_id()` at
+call time and rebinds it inside the worker thread, so feature code can no longer forget it. The
+paragraph below is the original description.
 
 The active-project contextvar (`config._active_project`) is the load-bearing piece of the
 multi-project design, and every background thread must manually rebind it. The docstrings in
@@ -392,9 +400,9 @@ env-configurable commit author, so a fresh deploy/container commits the record w
 global git config.
 
 **Medium (a day or two each):**
-Generic job framework + project-context helper (1.1, 1.2) · `llm.py` with retries + cached
-catalogue (1.3) · logging + token accounting (3.3) · router split of `main.py` (1.6) ·
-pyright clean-up (3.2) · store read caching (1.5).
+✅ Generic job framework + project-context helper (1.1, 1.2) — done on `quality/job-framework`.
+Remaining: `llm.py` with retries + cached catalogue (1.3) · logging + token accounting (3.3) ·
+router split of `main.py` (1.6) · pyright clean-up (3.2) · store read caching (1.5).
 
 **Larger / when the need is real:**
 Typed response models + generated client types in CI (2.1) · retire SSE turn endpoints and
