@@ -88,3 +88,37 @@ def test_registry_logs_error_on_worker_exception(caplog):
 
     reg.start_or_join("k2", lambda: jobs.Job(id=jobs.new_id()), boom)
     _wait_for_log(caplog, lambda m: m.startswith("error demo") and "kaboom" in m)
+
+
+def _rec(caplog, predicate):
+    return next(r for r in caplog.records if r.name == "rc.jobs" and predicate(r.getMessage()))
+
+
+def test_lifecycle_lines_tagged_with_explicit_project_not_ambient(caplog):
+    # Project A starts a job explicitly for project B: every lifecycle line must read B, even the
+    # start line, which is emitted on A's request thread.
+    _capture(caplog)
+    reg = jobs.JobRegistry("demo")
+    token = config.set_active_project("ambient-A")
+    try:
+        reg.start_or_join("k", lambda: jobs.Job(id=jobs.new_id()), lambda j: None,
+                          project_id="proj-B")
+        _wait_for_log(caplog, lambda m: m.startswith("done demo"))
+    finally:
+        config.reset_active_project(token)
+    assert _rec(caplog, lambda m: m.startswith("start demo")).project == "proj-B"
+    assert _rec(caplog, lambda m: m.startswith("done demo")).project == "proj-B"
+
+
+def test_app_global_job_tagged_dash_even_from_a_project_request(caplog):
+    # An app-global job (project_id=None, e.g. audio) started from within a project request must
+    # be tagged '-', not the requesting project.
+    _capture(caplog)
+    reg = jobs.JobRegistry("audio")
+    token = config.set_active_project("ambient-A")
+    try:
+        reg.start_or_join("k", lambda: jobs.Job(id=jobs.new_id()), lambda j: None, project_id=None)
+        _wait_for_log(caplog, lambda m: m.startswith("done audio"))
+    finally:
+        config.reset_active_project(token)
+    assert _rec(caplog, lambda m: m.startswith("start audio")).project == "-"

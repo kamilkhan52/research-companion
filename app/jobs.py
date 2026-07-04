@@ -71,6 +71,12 @@ def _resolve_pid(project_id):
     return config.active_project_id() if project_id is _AMBIENT else project_id
 
 
+def _log_tag(pid: str | None) -> dict:
+    """`extra=` payload pinning a log line to an explicit project (app-global -> '-'), so the
+    line isn't mistagged by the emitting thread's ambient context. See logging_config."""
+    return {"project": pid or "-"}
+
+
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
@@ -149,17 +155,22 @@ class JobRegistry(Generic[J]):
         ambient context is absent or different. `work` populates the job's fields and returns; the
         registry then marks it done (or error, if `work` raised)."""
         pid = _resolve_pid(project_id)
+        # The lifecycle lines carry the job's AUTHORITATIVE project (the resolved pid), passed
+        # explicitly so they aren't mistagged by the emitting thread's ambient context — the
+        # start/join lines run on the caller thread (which may have a different project bound, or
+        # none for an app-global job), while done/error run on the worker thread.
+        tag = _log_tag(pid)
         with self._lock:
             existing = self._running_for(key, pid)
             if existing:
-                log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key)
+                log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag)
                 return existing
             job = factory()
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
             self._prune()
-        log.info("start %s job=%s key=%s", self.name, job.id[:8], key)
+        log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
         thread = threading.Thread(target=self._run, args=(job, work, pid),
                                   daemon=True, name=f"{self.name}-{job.id[:8]}")
         thread.start()
@@ -167,6 +178,7 @@ class JobRegistry(Generic[J]):
 
     def _run(self, job: J, work: Callable[[J], None], pid: str | None) -> None:
         token = config.set_active_project(pid)
+        tag = _log_tag(pid)
         t0 = time.monotonic()
         try:
             work(job)
@@ -178,16 +190,16 @@ class JobRegistry(Generic[J]):
             dur = time.monotonic() - t0
             if final == "error":  # the worker recorded its own error (e.g. graph per-paper)
                 log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8], dur,
-                            (job.error or "")[:200])
+                            (job.error or "")[:200], extra=tag)
             else:
-                log.info("done %s job=%s in %.1fs", self.name, job.id[:8], dur)
+                log.info("done %s job=%s in %.1fs", self.name, job.id[:8], dur, extra=tag)
         except Exception as e:
             with self._lock:
                 job.status = "error"
                 job.error = str(e)[:400]
                 job.finished_at = now_iso()
             log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
-                        time.monotonic() - t0, str(e)[:200])
+                        time.monotonic() - t0, str(e)[:200], extra=tag)
         finally:
             config.reset_active_project(token)
 

@@ -27,13 +27,17 @@ _ROOT = "rc"
 
 
 class _ProjectFilter(logging.Filter):
-    """Inject the active project id (or '-') onto every record so the formatter can show it."""
+    """Stamp the active project id (or '-') onto every record so the formatter can show it. A
+    caller that knows the authoritative project can pass `extra={"project": ...}` (e.g. a job's
+    resolved pid, which may differ from the emitting thread's ambient context); that explicit
+    value is preserved rather than overwritten with the ambient one."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            record.project = config.active_project_id() or "-"
-        except Exception:
-            record.project = "-"
+        if not hasattr(record, "project"):
+            try:
+                record.project = config.active_project_id() or "-"
+            except Exception:
+                record.project = "-"
         return True
 
 

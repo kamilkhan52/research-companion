@@ -110,11 +110,13 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
     """POST the chat-completions body, retrying transient failures with backoff. Returns the
     parsed JSON response; raises LLMError once retries are exhausted or the error is fatal."""
     last = "unknown error"
+    attempts = 0
     for attempt in range(tries):
         if attempt:
             log.warning("openrouter retry %d/%d (model=%s): %s",
                         attempt + 1, tries, body.get("model"), last)
             time.sleep(_BACKOFF_BASE * attempt)
+        attempts = attempt + 1
         try:
             r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
                            headers=_headers(key), json=body, timeout=timeout)
@@ -128,8 +130,10 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
                 raise LLMError(f"OpenRouter returned a non-JSON 200: {r.text[:400]}") from e
         last = f"OpenRouter error {r.status_code}: {r.text[:400]}"
         if r.status_code not in _RETRY_STATUS:
-            break
-    log.error("openrouter failed after %d attempt(s) (model=%s): %s", tries, body.get("model"), last)
+            break  # fatal: don't count attempts we never made
+    # `attempts` is what we actually tried (1 for a fatal first response, `tries` if exhausted).
+    log.error("openrouter failed after %d attempt(s) (model=%s): %s",
+              attempts, body.get("model"), last)
     raise LLMError(last)
 
 
@@ -170,9 +174,13 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
     url = f"{config.OPENROUTER_BASE}/chat/completions"
     emitted = False
     last = "unknown error"
+    attempts = 0
     for attempt in range(tries):
         if attempt:
+            log.warning("openrouter stream retry %d/%d (model=%s): %s",
+                        attempt + 1, tries, body.get("model"), last)
             time.sleep(_BACKOFF_BASE * attempt)
+        attempts = attempt + 1
         try:
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
@@ -181,6 +189,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                     last = f"OpenRouter error {r.status_code}: {detail}"
                     if r.status_code in _RETRY_STATUS:
                         continue  # nothing emitted yet — safe to retry
+                    log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
                     raise LLMError(last)
                 for line in r.iter_lines():
                     if not line or line.startswith(":"):
@@ -201,9 +210,13 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"
-            if emitted:
-                raise LLMError(last) from e  # mid-stream: a retry would duplicate text
+            if emitted:  # mid-stream: a retry would duplicate text, so fail fast
+                log.error("openrouter stream dropped after first token (model=%s): %s",
+                          body.get("model"), last)
+                raise LLMError(last) from e
             continue  # transport failure before any content — retry
+    log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",
+              attempts, body.get("model"), last)
     raise LLMError(last)
 
 

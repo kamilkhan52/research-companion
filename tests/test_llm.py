@@ -2,12 +2,29 @@
 diagnostics, error normalization, and the TTL-cached catalogue + family matcher. All network is
 faked — no real httpx calls."""
 import json
+import logging
 import threading
 import time
 
 import httpx
 import pytest
 from app import config, llm
+
+
+@pytest.fixture
+def rc_logs(caplog):
+    """Capture rc.* records: force propagation on (configure() sets it off elsewhere in the
+    suite) so caplog's root handler sees them, and restore afterwards."""
+    rc = logging.getLogger("rc")
+    prev = rc.propagate
+    rc.propagate = True
+    caplog.set_level(logging.WARNING, logger="rc")
+    yield caplog
+    rc.propagate = prev
+
+
+def _llm_msgs(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "rc.llm"]
 
 
 class FakeResp:
@@ -284,6 +301,52 @@ def test_stream_exhausts_retries_and_raises(key, monkeypatch):
     with pytest.raises(llm.LLMError):
         list(llm.stream([{"role": "user", "content": "hi"}], tries=3))
     assert fn.state["n"] == 3  # all attempts used
+
+
+# ---- LLM-layer logging (retries + failures are visible, for streaming too) ----
+
+def test_stream_logs_retry_before_recovery(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "stream",
+                        _scripted(FakeStream(502, body="bad"), FakeStream(200, [_sse("ok"), _DONE])))
+    list(llm.stream([{"role": "user", "content": "hi"}]))
+    assert any("stream retry" in m for m in _llm_msgs(rc_logs))
+
+
+def test_stream_logs_exhaustion_with_actual_attempts(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "stream", _scripted(FakeStream(503, body="down")))
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "hi"}], tries=2))
+    assert any("stream failed after 2 attempt" in m for m in _llm_msgs(rc_logs))
+
+
+def test_stream_logs_fatal_status(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "stream", _scripted(FakeStream(400, body="bad request")))
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "hi"}]))
+    assert any("stream fatal" in m for m in _llm_msgs(rc_logs))
+
+
+def test_stream_logs_mid_stream_drop(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "stream",
+                        _scripted(FakeStream(200, [_sse("part1")], raise_at="end")))
+    with pytest.raises(llm.LLMError):
+        list(llm.stream([{"role": "user", "content": "hi"}]))
+    assert any("dropped after first token" in m for m in _llm_msgs(rc_logs))
+
+
+def test_complete_logs_actual_attempts_on_fatal(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(400, text="bad request"))
+    with pytest.raises(llm.LLMError):
+        llm.complete([{"role": "user", "content": "hi"}])
+    # a non-retryable 400 breaks after ONE attempt — the log must say so, not "after 3"
+    assert any("failed after 1 attempt" in m for m in _llm_msgs(rc_logs))
+
+
+def test_complete_logs_exhausted_attempts(key, monkeypatch, rc_logs):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(503, text="down"))
+    with pytest.raises(llm.LLMError):
+        llm.complete([{"role": "user", "content": "hi"}], tries=3)
+    assert any("failed after 3 attempt" in m for m in _llm_msgs(rc_logs))
 
 
 # ---- catalogue single-flight ----
