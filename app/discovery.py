@@ -36,6 +36,7 @@ from pathlib import Path
 import httpx
 
 from . import citations, config, graph, prompts, retriever
+from .fileio import atomic_write_text
 
 MAX_QUERIES = 6
 PER_QUERY_RESULTS = 25
@@ -84,7 +85,7 @@ def load_result() -> dict | None:
 
 
 def save_result(result: dict) -> None:
-    _result_path().write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(_result_path(), json.dumps(result, indent=2, ensure_ascii=False))
 
 
 # ---------- LLM plumbing ----------

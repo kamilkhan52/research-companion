@@ -13,6 +13,7 @@ import json
 from datetime import UTC, datetime
 
 from . import config, prompts, store
+from .fileio import atomic_write_text
 from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
 
 
@@ -39,7 +40,7 @@ def _load_index() -> dict:
 
 
 def _save_index(idx: dict) -> None:
-    _index_file().write_text(json.dumps(idx, indent=2))
+    atomic_write_text(_index_file(), json.dumps(idx, indent=2))
 
 
 def session_states() -> dict[str, str]:
@@ -167,9 +168,8 @@ def mark_committed(slug: str) -> None:
 
 
 def _rewrite(slug: str, records: list[dict]) -> None:
-    with _jsonl(slug).open("w", encoding="utf-8") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+    atomic_write_text(_jsonl(slug), body)
 
 
 def truncate_before_assistant(slug: str, n: int) -> None:
@@ -254,4 +254,4 @@ def get_cached_narration(text: str) -> str | None:
 def cache_narration(text: str, narration: str) -> None:
     cache = _load_ncache()
     cache[_ncache_key(text)] = narration
-    _narration_cache_file().write_text(json.dumps(cache, ensure_ascii=False, indent=0))
+    atomic_write_text(_narration_cache_file(), json.dumps(cache, ensure_ascii=False, indent=0))

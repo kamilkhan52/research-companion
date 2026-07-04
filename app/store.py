@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import config
+from .fileio import atomic_write_text
 from .models import Paper
 
 
@@ -90,7 +91,7 @@ def read_method() -> str:
 
 
 def write_method(content: str) -> None:
-    _reading_method().write_text(content.rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(_reading_method(), content.rstrip() + "\n")
 
 
 def read_synthesis() -> str:
@@ -99,7 +100,7 @@ def read_synthesis() -> str:
 
 
 def write_synthesis(content: str) -> None:
-    _synthesis().write_text(content.rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(_synthesis(), content.rstrip() + "\n")
 
 
 def corpus_path(slug: str) -> Path:
@@ -215,7 +216,7 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     lines.append(f"- retrieved: {_now()}")
     lines += ["", "## Full text", "", full_text.strip(), ""]
     p = corpus_path(slug)
-    p.write_text("\n".join(lines), encoding="utf-8")
+    atomic_write_text(p, "\n".join(lines))
     return p
 
 
@@ -282,7 +283,7 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
     body = notes_block.strip()
     if not body.lower().startswith("## notes"):
         body = "## Notes\n\n" + body
-    p.write_text(text.rstrip() + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    atomic_write_text(p, text.rstrip() + "\n\n" + body.strip() + "\n")
 
 
 def set_status_read(slug: str) -> bool:
@@ -295,7 +296,7 @@ def set_status_read(slug: str) -> bool:
     lines = rl.read_text(encoding="utf-8").splitlines()
     i = target["line_index"]
     lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
-    rl.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(rl, "\n".join(lines) + "\n")
     return True
 
 
@@ -341,5 +342,5 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
     else:
         new_lines = lines + ["", heading, ""] + block
 
-    rl.write_text("\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
+    atomic_write_text(rl, "\n".join(new_lines).rstrip() + "\n")
     return slug

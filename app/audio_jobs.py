@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import agent, config, sessions, tts
+from .fileio import atomic_write_bytes
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (shared with the /api/audio route)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -147,7 +148,7 @@ def _run(job: AudioJob, text: str, narrate_fn: NarrateFn, synth_fn: SynthFn) -> 
                 chunks.append(synth_fn(part))
                 with _lock:
                     job.segments_done += 1
-            path.write_bytes(b"".join(chunks))
+            atomic_write_bytes(path, b"".join(chunks))
 
         with _lock:
             job.status = "done"

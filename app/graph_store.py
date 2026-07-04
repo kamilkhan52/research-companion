@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from . import config
+from .fileio import atomic_write_text
 
 # Bump when the stored shape changes incompatibly. A version mismatch drops the cache
 # (including extractions) rather than risk feeding a new analysis stage malformed records —
@@ -58,7 +59,7 @@ def load() -> dict:
 
 def save(data: dict) -> None:
     data["version"] = GRAPH_VERSION
-    _file().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(_file(), json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def get_paper_extraction(data: dict, slug: str) -> dict | None:

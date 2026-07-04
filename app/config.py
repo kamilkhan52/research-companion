@@ -19,6 +19,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .fileio import atomic_write_text
+
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -128,7 +130,8 @@ def save_settings(patch: dict) -> dict:
                 "firecrawl_api_key", "prior_notes_scope"):
         if key in patch and patch[key] is not None:
             current[key] = patch[key]
-    SETTINGS_FILE.write_text(json.dumps(current, indent=2))
+    # 0o600: this file holds API keys.
+    atomic_write_text(SETTINGS_FILE, json.dumps(current, indent=2), mode=0o600)
     return load_settings()
 
 
@@ -159,4 +162,4 @@ def set_prompt_override(key: str, value: str | None) -> None:
     else:
         overrides.pop(key, None)
     data["prompts"] = overrides
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    atomic_write_text(SETTINGS_FILE, json.dumps(data, indent=2), mode=0o600)

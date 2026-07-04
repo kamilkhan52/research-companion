@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from . import config, store
+from .fileio import atomic_write_text
 
 META = "project.json"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -108,7 +109,7 @@ def _read_meta(pid: str) -> dict:
 
 
 def _write_meta(pid: str, meta: dict) -> None:
-    (project_path(pid) / META).write_text(json.dumps(meta, indent=2))
+    atomic_write_text(project_path(pid) / META, json.dumps(meta, indent=2))
 
 
 def _git(pid: str, *args: str) -> None:

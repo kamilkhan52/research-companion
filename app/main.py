@@ -26,6 +26,7 @@ from . import (
     config,
     discovery,
     discovery_jobs,
+    fileio,
     graph,
     graph_jobs,
     graph_store,
@@ -390,7 +391,7 @@ def speak(req: NarrateReq):
     path = audio_jobs.audio_cache_path(req.text)
     if not path.exists():
         try:
-            path.write_bytes(tts.synthesize_long(req.text))
+            fileio.atomic_write_bytes(path, tts.synthesize_long(req.text))
         except TTSError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
     return {"url": f"/api/audio/{path.name}"}
