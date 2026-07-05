@@ -59,6 +59,17 @@ npx expo run:android   # prebuilds + compiles + installs on a connected device/e
 - **Audio requires the OpenAI speech provider** on the backend (Settings → Audio → OpenAI + key);
   there's no browser TTS on a phone.
 
+## Tests
+
+Tests use `jest-expo`, React Native Testing Library, and Expo Router's in-memory router. Native
+storage, TrackPlayer, SecureStore, and backend calls are deterministic mocks, so no device or live
+server is required.
+
+```bash
+npm test
+npx tsc --noEmit
+```
+
 ## Notes / known risks to verify on-device
 
 - `react-native-track-player` (v4.1.2) predates the New Architecture and runs via RN's bridgeless
