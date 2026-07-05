@@ -95,6 +95,22 @@ def test_has_notes_scans_at_most_once_until_corpus_changes(temp_project, monkeyp
     assert calls["n"] == 2
 
 
+def test_has_notes_passes_actual_file_size_to_scanner(temp_project, monkeypatch):
+    add_paper(temp_project, "large", "Large Paper", full_text="word " * 40_000)
+    path = store.corpus_path("large")
+    observed: list[int] = []
+    original = store._scan_for_notes
+
+    def capture_size(p, size):
+        observed.append(size)
+        return original(p, size)
+
+    monkeypatch.setattr(store, "_scan_for_notes", capture_size)
+
+    assert store.has_notes("large") is False
+    assert observed == [path.stat().st_size]
+
+
 def test_has_notes_correct_across_the_tail_boundary(temp_project):
     big = "word " * 40_000   # ~200 KB, comfortably larger than the 64 KiB tail window
 

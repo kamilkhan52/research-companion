@@ -9,10 +9,12 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from . import config
 from .fileio import atomic_write_text
 from .models import Paper
+
 
 # ---- cheap-read caches (see §1.5) ---------------------------------------------------------
 # store.py is on the hot path: list_papers()/get_paper() run several times per request and
@@ -26,7 +28,14 @@ from .models import Paper
 # rewrite with a restored mtime. Keyed by absolute path, so distinct projects (and their distinct
 # reading-list/corpus paths) never collide. Single-process by design (CLAUDE.md invariant 6): a
 # concurrent cache miss may recompute redundantly, but the key is checked again on the next read.
-_FileKey = tuple[int, int, int, int, int]
+class _FileKey(NamedTuple):
+    device: int
+    inode: int
+    mtime_ns: int
+    ctime_ns: int
+    size: int
+
+
 _parse_cache: dict[str, tuple[_FileKey, list[dict]]] = {}
 _notes_cache: dict[str, tuple[_FileKey, bool]] = {}
 
@@ -37,7 +46,7 @@ def _file_key(p: Path) -> _FileKey | None:
         st = p.stat()
     except OSError:
         return None
-    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+    return _FileKey(st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
 
 # Per-project file locations resolve against the active project (config.project_dir()), so
@@ -182,7 +191,7 @@ def has_notes(slug: str) -> bool:
     hit = _notes_cache.get(str(p))
     if hit is not None and hit[0] == key:
         return hit[1]
-    result = _scan_for_notes(p, key[1])
+    result = _scan_for_notes(p, key.size)
     _notes_cache[str(p)] = (key, result)
     return result
 
