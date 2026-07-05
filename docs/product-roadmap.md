@@ -18,7 +18,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 
 | Order | Workstream | PR | Status |
 |---:|---|---|---|
-| 0.1 | Persist this roadmap | — | In progress |
+| 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | In review |
 | 0.2 | Mobile Jest/Router test foundation + CI gate | — | Planned |
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | — | Planned |
 | 1.2 | Centralize every model prompt + prompt status UI | — | Planned |
