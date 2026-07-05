@@ -24,7 +24,7 @@ jobs:
         run: python -m pytest
 
   mobile:
-    name: Mobile (tsc)
+    name: Mobile (Jest + tsc)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -38,5 +38,7 @@ jobs:
           cache-dependency-path: mobile/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Test
+        run: npm run test:ci
       - name: Typecheck
         run: npx tsc --noEmit
