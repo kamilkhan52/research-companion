@@ -456,8 +456,9 @@ mirror the server pattern well). Gaps:
 writes (1.5, the write-atomicity slice) · ✅ settings unset bug (4.1) · ✅ settings-write
 locking instead of dropping per-turn model persistence (4.2, revised) · ✅ chmod 600 settings ·
 ✅ deleted hardcoded `CITATION_GRAPH`/`_SLUG_SPECIALS` after migrating into the project file
-(1.7). Still open from 1.5: read caching and the remaining read-modify-write locks (sessions
-index, `store.add_entry`).
+(1.7) · ✅ filesystem-version-keyed reading-list and corpus Notes read caches (1.5, on
+`quality/store-read-cache`). Still open from 1.5: the remaining read-modify-write locks
+(sessions index, `store.add_entry`) and narration-cache growth.
 
 **Production-readiness (do before serving users on clean infrastructure):**
 ✅ Git-identity hardening (4.10) — done on `quality/phase-2-medium`: the app pins an
@@ -467,8 +468,8 @@ global git config.
 **Medium (a day or two each):**
 ✅ Generic job framework + project-context helper (1.1, 1.2) — done on `quality/job-framework`.
 ✅ `llm.py` with retries + cached catalogue (1.3) — done on `quality/llm-client`.
-Remaining: logging + token accounting (3.3) · router split of `main.py` (1.6) · pyright
-clean-up (3.2) · store read caching (1.5).
+✅ logging + token accounting (3.3) · ✅ router split of `main.py` (1.6) · ✅ store read caching
+(1.5, on `quality/store-read-cache`). Remaining: pyright clean-up (3.2).
 
 **Larger / when the need is real:**
 Typed response models + generated client types in CI (2.1) · retire SSE turn endpoints and

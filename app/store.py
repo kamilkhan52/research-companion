@@ -9,10 +9,44 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from . import config
 from .fileio import atomic_write_text
 from .models import Paper
+
+
+# ---- cheap-read caches (see §1.5) ---------------------------------------------------------
+# store.py is on the hot path: list_papers()/get_paper() run several times per request and
+# projects.list_projects() runs list_papers() once per project. Re-parsing reading-list.md and
+# re-reading every (often hundreds-of-KB) corpus file on *every* call — has_notes() read the
+# whole paper text just to find a trailing "## Notes" marker — is a visible tax at 200 papers ×
+# several projects. We memoize by filesystem identity/version metadata. Writers in this module
+# also invalidate the affected entry explicitly, so a read-after-write within the same request
+# is never stale even where the filesystem's mtime granularity is coarse. Device+inode catch an
+# atomic replacement whose size and mtime were preserved; ctime catches an in-place same-size
+# rewrite with a restored mtime. Keyed by absolute path, so distinct projects (and their distinct
+# reading-list/corpus paths) never collide. Single-process by design (CLAUDE.md invariant 6): a
+# concurrent cache miss may recompute redundantly, but the key is checked again on the next read.
+class _FileKey(NamedTuple):
+    device: int
+    inode: int
+    mtime_ns: int
+    ctime_ns: int
+    size: int
+
+
+_parse_cache: dict[str, tuple[_FileKey, list[dict]]] = {}
+_notes_cache: dict[str, tuple[_FileKey, bool]] = {}
+
+
+def _file_key(p: Path) -> _FileKey | None:
+    """Filesystem identity/version signal for a file, or None if it doesn't exist."""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return _FileKey(st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
 
 
 # Per-project file locations resolve against the active project (config.project_dir()), so
@@ -83,8 +117,24 @@ def corpus_path(slug: str) -> Path:
 
 
 def _parse_entries() -> list[dict]:
-    """Return entries with title, status, group, slug, cites, and the raw text block."""
+    """Reading-list entries (title, status, group, slug, cites, raw block), memoized by the
+    file's identity/version key so repeated list_papers()/get_paper() calls in a request
+    re-parse at most once. The returned list is treated as read-only by all callers (they build
+    Paper objects or read fields); do not mutate it, as it is shared with the cache."""
     rl = _reading_list()
+    key = _file_key(rl)
+    if key is not None:
+        hit = _parse_cache.get(str(rl))
+        if hit is not None and hit[0] == key:
+            return hit[1]
+    entries = _parse_entries_uncached(rl)
+    if key is not None:
+        _parse_cache[str(rl)] = (key, entries)
+    return entries
+
+
+def _parse_entries_uncached(rl: Path) -> list[dict]:
+    """Return entries with title, status, group, slug, cites, and the raw text block."""
     text = rl.read_text(encoding="utf-8") if rl.exists() else ""
     lines = text.splitlines()
     entries: list[dict] = []
@@ -125,9 +175,40 @@ def _parse_entries() -> list[dict]:
     return entries
 
 
+_NOTES_MARKER = b"\n## Notes"
+_NOTES_TAIL = 64 * 1024   # notes are appended last, so this tail almost always catches the marker
+
+
 def has_notes(slug: str) -> bool:
+    """Whether a paper's corpus file carries a committed Notes block, memoized by the file's
+    (mtime, size). The former implementation read the *entire* corpus file (the full paper
+    text, often hundreds of KB) on every call, once per paper inside list_papers()."""
     p = corpus_path(slug)
-    return p.exists() and "\n## Notes" in p.read_text(encoding="utf-8")
+    key = _file_key(p)
+    if key is None:
+        _notes_cache.pop(str(p), None)
+        return False
+    hit = _notes_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    result = _scan_for_notes(p, key.size)
+    _notes_cache[str(p)] = (key, result)
+    return result
+
+
+def _scan_for_notes(p: Path, size: int) -> bool:
+    """Look for the trailing "## Notes" marker. The notes block is always the final section
+    (append_notes_block writes it after the full text), so its marker sits in the file tail:
+    scanning the last _NOTES_TAIL bytes finds it in the common case. A present marker there is
+    conclusive; absence is only conclusive once we've scanned the whole file, so on a tail miss
+    of a larger file we fall back to a full read (rare, and cached thereafter)."""
+    with p.open("rb") as f:
+        if size > _NOTES_TAIL:
+            f.seek(size - _NOTES_TAIL)
+            if _NOTES_MARKER in f.read():
+                return True
+            f.seek(0)   # tail miss on a large file: confirm absence with a full scan
+        return _NOTES_MARKER in f.read()
 
 
 def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
@@ -192,6 +273,7 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     lines += ["", "## Full text", "", full_text.strip(), ""]
     p = corpus_path(slug)
     atomic_write_text(p, "\n".join(lines))
+    _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
     return p
 
 
@@ -259,6 +341,7 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
     if not body.lower().startswith("## notes"):
         body = "## Notes\n\n" + body
     atomic_write_text(p, text.rstrip() + "\n\n" + body.strip() + "\n")
+    _notes_cache.pop(str(p), None)   # a Notes block was just added/replaced
 
 
 def set_status_read(slug: str) -> bool:
@@ -272,6 +355,7 @@ def set_status_read(slug: str) -> bool:
     i = target["line_index"]
     lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
     atomic_write_text(rl, "\n".join(lines) + "\n")
+    _parse_cache.pop(str(rl), None)   # status changed — drop the stale parse
     return True
 
 
@@ -318,4 +402,5 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
         new_lines = lines + ["", heading, ""] + block
 
     atomic_write_text(rl, "\n".join(new_lines).rstrip() + "\n")
+    _parse_cache.pop(str(rl), None)   # a new entry was appended
     return slug
