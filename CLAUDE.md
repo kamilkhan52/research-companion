@@ -3,7 +3,8 @@
 Guidance for coding agents (and humans) working on the Research Reading Companion. Read this
 before making changes; it encodes invariants that are load-bearing but not obvious from any
 single file. `README.md` is the product overview; `docs/improvements.md` is the standing
-improvement plan.
+code-quality plan; `docs/product-roadmap.md` is the execution ledger for the current product
+experience work. Update its PR/status table as each phase is reviewed and merged.
 
 ## What this is
 
