@@ -16,13 +16,15 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 - Status values in this file are authoritative only on merged `main`. Before merge, GitHub is the
   authority for live review and CI state. A PR's final pre-merge commit sets its own row to
   `Complete`, so the ledger becomes correct atomically when that commit lands.
+- Post every actionable review finding directly on its PR. When review finds no actionable issue
+  and CI passes, mark the PR ready and merge it without waiting for a separate merge request.
 
 ## Status
 
 | Order | Workstream | PR | Status |
 |---:|---|---|---|
 | 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | Complete |
-| 0.2 | Mobile Jest/Router test foundation + CI gate | — | Planned |
+| 0.2 | Mobile Jest/Router test foundation + CI gate | [#13](https://github.com/kamilkhan52/research-companion/pull/13) | Complete |
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | — | Planned |
 | 1.2 | Centralize every model prompt + prompt status UI | — | Planned |
 | 1.3 | Self-contained figure/table/section descriptions | — | Planned |
@@ -82,6 +84,13 @@ Initial tests must prove:
 - AsyncStorage-backed stores can load, persist, and clear values;
 - TrackPlayer and API modules have reusable deterministic mocks;
 - one existing query/hook and one screen interaction run without native services.
+
+Verification record ([PR #13](https://github.com/kamilkhan52/research-companion/pull/13)):
+
+- clean `npm ci`, four Jest suites/four tests, and `tsc --noEmit` pass;
+- Expo's dependency check reports the installed test packages aligned with SDK 56;
+- no device pass is required because this phase changes only test and CI infrastructure, not
+  runtime mobile behavior or native configuration.
 
 ## Phase 1 — Obsidian prompt foundation
 
