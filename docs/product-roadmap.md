@@ -13,12 +13,15 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 - Backend tests are network-free. Mobile changes require automated tests, TypeScript, and a real
   Android/iOS acceptance pass where native audio, gestures, or rendering are involved.
 - Update the table below and the relevant acceptance record in the same PR that completes work.
+- Status values in this file are authoritative only on merged `main`. Before merge, GitHub is the
+  authority for live review and CI state. A PR's final pre-merge commit sets its own row to
+  `Complete`, so the ledger becomes correct atomically when that commit lands.
 
 ## Status
 
 | Order | Workstream | PR | Status |
 |---:|---|---|---|
-| 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | In review |
+| 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | Complete |
 | 0.2 | Mobile Jest/Router test foundation + CI gate | — | Planned |
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | — | Planned |
 | 1.2 | Centralize every model prompt + prompt status UI | — | Planned |
@@ -26,8 +29,10 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.1 | Device Listening mode + automatic queued audio | — | Planned |
 | 2.2 | Grounded preview cues from the live response | — | Planned |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
-| 3.1 | Draft safety, recent sessions, and playback restoration | — | Planned |
-| 3.2 | Responsive drawer and project/navigation layout | — | Planned |
+| 3.1 | Recent sessions and activity timestamps | — | Planned |
+| 3.2 | Authored-draft safety and reconciliation | — | Planned |
+| 3.3 | Playback position restoration | — | Planned |
+| 3.4 | Responsive drawer and project/navigation layout | — | Planned |
 | 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
@@ -62,7 +67,8 @@ Add this document and reference it from the agent guidance. No product behavior 
 Acceptance:
 
 - The roadmap contains the agreed scope, PR sequence, public contracts, defaults, and tests.
-- A new session can identify the next item and the latest merged item from this file alone.
+- From the copy on `main`, a new session can identify the next item and latest merged item without
+  consulting feature branches.
 
 ### 0.2 Mobile automated tests
 
@@ -157,23 +163,27 @@ last segment finishes.
 
 ## Phase 3 — continuity and navigation
 
-### 3.1 Never lose user work or listening position
+### 3.1 Recent sessions and activity timestamps
 
 Serialize session-index read/modify/write operations and update `updated_at` for every user and
 assistant record. Add a cross-project recent-sessions endpoint containing project, paper, state,
 and activity time.
+
+### 3.2 Authored-draft safety and reconciliation
 
 Persist reply, request-changes, message-edit, opening/source, notes, and discovery drafts under
 project/screen-specific AsyncStorage keys. Debounce writes and clear only after server acceptance or
 save. If a POST response is lost, reconcile the draft against the refetched transcript before
 offering another send.
 
+### 3.3 Playback position restoration
+
 Use project ID + paper slug + assistant index as the stable audio identity. Save progress from the
 TrackPlayer playback service so background listening is captured, following
 [TrackPlayer's background-progress guidance](https://rntp.dev/docs/3.1/guides/saving-progress).
 Restore the item and position; autoplay only when Listening mode is active.
 
-### 3.2 Responsive navigation shell
+### 3.4 Responsive navigation shell
 
 Use [Expo Router's SDK 56 Drawer](https://docs.expo.dev/router/advanced/drawer/): overlay/swipe
 drawer on phones, permanent rail on wider layouts. Contents: Continue, projects, current project's
