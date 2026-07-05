@@ -11,9 +11,10 @@ experience work. Update its PR/status table as each phase is reviewed and merged
 A FastAPI backend (`app/`) plus an Expo/React Native client (`mobile/`, the active client;
 `web/` is legacy). You read a corpus of papers *with* an LLM: scholarly discussion, listen-
 friendly audio, reading notes that compound into context for the next paper, and a per-project
-reference graph. Data is markdown-in-git: each project under `projects/<id>/` is its own git
-repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) lives in
-`.app-state/`. Both directories are gitignored by this repo.
+reference graph. Data is markdown-in-git: each project under the effective Projects root is its
+own git repo. `RC_VAULT_ROOT` can place the actual `Projects/` and authoritative `Prompts/`
+inside an Obsidian vault. App-global state (keys, model/TTS picks, legacy prompt overrides,
+last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are gitignored.
 
 ## The invariants (do not break these)
 
@@ -68,7 +69,7 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
   `usage`, `audio`, `session` (retrieval + all turn-delivery paths: SSE/job/plain), `notes`
   (notes + review/approve + add-paper), `discovery`, `graph`. Add a new route to its feature
   module (or a new module + `include_router` in main.py), not to main.py.
-- `config.py` — settings (app-global) + the active-project contextvar + path resolution.
+- `config.py` — settings (app-global) + the active-project contextvar + vault/path precedence.
 - `projects.py` — multi-project registry; `use_project` dependency binds the contextvar.
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
@@ -82,7 +83,7 @@ repo. App-global state (API keys, model/TTS picks, prompt overrides, caches) liv
   call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
   `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
-- `prompts.py` — every workflow prompt, centralized + user-overridable.
+- `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
   + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
   lifecycle, LLM boundaries, and commits — not in the deterministic store.
