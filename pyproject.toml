@@ -6,8 +6,11 @@ requires-python = ">=3.11"
 readme = "README.md"
 dynamic = ["dependencies", "optional-dependencies"]
 
-[tool.setuptools]
-packages = ["app"]
+# Discover `app` and every subpackage under it (app.routers, and any future ones) rather than
+# hand-listing them — an explicit `packages = ["app"]` silently omits subpackages, so an
+# installed wheel/sdist would ship `app` without `app.routers` and `import app.main` would fail.
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
