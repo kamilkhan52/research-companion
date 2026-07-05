@@ -1,8 +1,9 @@
 """Runtime configuration.
 
 Two scopes:
-- **App-global** (one OpenRouter key, model picks, TTS settings, prompt overrides, audio +
-  narration caches) live in APP_STATE_DIR, shared across every research project.
+- **App-global** (one OpenRouter key, model picks, TTS settings, legacy prompt overrides,
+  prompt last-valid state, audio + narration caches) live in APP_STATE_DIR, shared across every
+  research project. Authoritative prompt Markdown can instead live in PROMPTS_DIR.
 - **Per-project** data (reading list, method, corpus, sessions, notes, session-state index)
   lives under PROJECTS_ROOT/<project-id>/, each its own git repo.
 
@@ -16,6 +17,8 @@ import contextvars
 import json
 import os
 import threading
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,9 +30,60 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = BASE_DIR / "web"
 
+
+@dataclass(frozen=True)
+class DataPaths:
+    """Resolved app data locations after applying explicit-path and vault precedence."""
+
+    vault_root: Path | None
+    prompts_dir: Path | None
+    projects_root: Path
+
+
+def resolve_data_paths(environ: Mapping[str, str] | None = None,
+                       base_dir: Path | None = None) -> DataPaths:
+    """Resolve storage paths without touching the filesystem.
+
+    Explicit per-directory variables win over ``RC_VAULT_ROOT``. With no vault or explicit
+    prompt directory, ``prompts_dir`` remains ``None`` so prompt behavior stays exactly as it was
+    before vault support (settings override, then bundled default).
+    """
+    env = os.environ if environ is None else environ
+    base = (base_dir or BASE_DIR).resolve()
+
+    def configured(name: str) -> str | None:
+        value = env.get(name, "").strip()
+        return value or None
+
+    vault_value = configured("RC_VAULT_ROOT")
+    vault_root = Path(vault_value).expanduser().resolve() if vault_value else None
+
+    projects_value = configured("RC_PROJECTS_ROOT")
+    if projects_value:
+        projects_root = Path(projects_value).expanduser().resolve()
+    elif vault_root:
+        projects_root = (vault_root / "Projects").resolve()
+    else:
+        projects_root = (base / "projects").resolve()
+
+    prompts_value = configured("RC_PROMPTS_DIR")
+    if prompts_value:
+        prompts_dir = Path(prompts_value).expanduser().resolve()
+    elif vault_root:
+        prompts_dir = (vault_root / "Prompts").resolve()
+    else:
+        prompts_dir = None
+
+    return DataPaths(vault_root=vault_root, prompts_dir=prompts_dir,
+                     projects_root=projects_root)
+
+
+_DATA_PATHS = resolve_data_paths()
+VAULT_ROOT = _DATA_PATHS.vault_root
+PROMPTS_DIR = _DATA_PATHS.prompts_dir
 # Where all projects live (each subdir is one project, its own git repo). Gitignored.
-PROJECTS_ROOT = Path(os.environ.get("RC_PROJECTS_ROOT", str(BASE_DIR / "projects"))).resolve()
-# App-global state (settings, prompt overrides, audio + narration caches). Gitignored.
+PROJECTS_ROOT = _DATA_PATHS.projects_root
+# App-global state (settings, legacy prompt overrides, last-valid prompts, derived caches).
 APP_STATE_DIR = Path(os.environ.get("RC_APP_STATE_DIR", str(BASE_DIR / ".app-state"))).resolve()
 APP_STATE_DIR.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE = APP_STATE_DIR / "settings.json"

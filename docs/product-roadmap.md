@@ -25,7 +25,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 |---:|---|---|---|
 | 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | Complete |
 | 0.2 | Mobile Jest/Router test foundation + CI gate | [#13](https://github.com/kamilkhan52/research-companion/pull/13) | Complete |
-| 1.1 | Obsidian vault configuration, migration, and prompt loader | — | Planned |
+| 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | — | Planned |
 | 1.3 | Self-contained figure/table/section descriptions | — | Planned |
 | 2.1 | Device Listening mode + automatic queued audio | — | Planned |
@@ -111,6 +111,14 @@ frontmatter is injected into model input.
 On access, check filesystem version metadata and load changed files immediately. Persist the last
 valid content under app state. Invalid files use that last-valid value (or legacy/default if none),
 log the validation error, and report it through the API.
+
+Verification record ([PR #14](https://github.com/kamilkhan52/research-companion/pull/14)):
+
+- full Ruff and 320-test backend suites pass;
+- tests cover path precedence, exact live edits, placeholder/literal rejection, persisted restart
+  fallback, corrupted-cache rejection, concurrent reads, dry-run behavior, source preservation,
+  prompt seeding, non-overwrite behavior, project counts, and copied Git HEADs;
+- remaining embedded prompt inventory and the developer-facing status UI stay scoped to Phase 1.2.
 
 ### 1.2 Complete prompt inventory and developer status
 

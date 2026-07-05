@@ -1,16 +1,32 @@
-"""Every prompt/instruction used in the workflow, centralized so it can be viewed and
-edited from the app. Built-in defaults live here. User overrides are stored in settings
-(project/.state/settings.json under "prompts"), except the reading method, which is backed
-by reading-method.md in the git store. `render()` substitutes {placeholders} via plain
-string replacement so braces in the substituted values (e.g. LaTeX) are never reparsed.
+"""Central prompt registry and live filesystem loader.
+
+Bundled defaults live here. When a prompt directory is configured, its Markdown files are
+authoritative and are checked for changes on every access. Invalid edits never reach a model:
+the loader keeps the persisted last-valid value active and reports the path-specific error.
+Without a configured prompt directory, behavior remains the legacy settings override followed by
+the bundled default. ``render()`` uses plain replacement so braces inside substituted paper text
+(for example LaTeX) are never reparsed.
 """
 from __future__ import annotations
 
-from . import config, store
+import hashlib
+import json
+import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal, NamedTuple
+
+from . import config, projects, store
+from .fileio import atomic_write_text
+from .logging_config import get as get_logger
 
 
 class PromptError(Exception):
     pass
+
+
+log = get_logger("prompts")
 
 
 _ANALYSIS_SYSTEM = """You are a research reading partner. We read a corpus of papers together \
@@ -261,107 +277,411 @@ _TTS_INSTRUCTIONS = (
     "explaining a research paper to a peer. Keep technical terms crisp and unhurried."
 )
 
-DEFAULTS = {
-    "analysis_system": _ANALYSIS_SYSTEM,
-    "narration_system": _NARRATION_SYSTEM,
-    "opening_message": _OPENING_MESSAGE,
-    "finish_instruction": _FINISH_INSTRUCTION,
-    "request_changes": _REQUEST_CHANGES,
-    "notes_editor": _NOTES_EDITOR,
-    "tts_instructions": _TTS_INSTRUCTIONS,
-    "review_system": _REVIEW_SYSTEM,
-    "review_opening": _REVIEW_OPENING,
-    "review_finish": _REVIEW_FINISH,
-    "discover_queries": _DISCOVER_QUERIES,
-    "discover_scoring": _DISCOVER_SCORING,
-}
+_SECTION_PROTOCOL = (
+    "###CANONICAL###",
+    "###STATE###",
+    "###COMMIT_SUMMARY###",
+    "###NOTES_BLOCK###",
+    "###SYNTHESIS###",
+    "###END###",
+)
 
-# Ordered metadata for the editor UI. source "file" = reading-method.md; "override" = settings.
+PromptScope = Literal["global", "project"]
+
+
+@dataclass(frozen=True)
+class PromptSpec:
+    key: str
+    label: str
+    relative_path: str
+    bundled_default: str
+    required_placeholders: tuple[str, ...] = ()
+    required_literals: tuple[str, ...] = ()
+    scope: PromptScope = "global"
+    description: str = ""
+    # Legacy editor contract: reading_method is a direct project file; all others were settings
+    # overrides. Kept until Phase 1.2 replaces the legacy editor with path/status UI.
+    editor_source: Literal["file", "override"] = "override"
+
+
+REGISTRY = (
+    PromptSpec(
+        key="reading_method",
+        label="Reading method",
+        relative_path="reading-method.md",
+        bundled_default=projects.DEFAULT_READING_METHOD,
+        scope="project",
+        editor_source="file",
+        description="How papers are read. Stored in each project's reading-method.md.",
+    ),
+    PromptSpec(
+        key="analysis_system",
+        label="Analysis system prompt",
+        relative_path="Analysis/System.md",
+        bundled_default=_ANALYSIS_SYSTEM,
+        required_literals=_SECTION_PROTOCOL,
+        description="Governs the analysis model and its machine-parsed section protocol.",
+    ),
+    PromptSpec(
+        key="narration_system",
+        label="Narration (TTS transcript) prompt",
+        relative_path="Listening/Narration System.md",
+        bundled_default=_NARRATION_SYSTEM,
+        description="Governs the stage-2 rewrite of analysis text for listening.",
+    ),
+    PromptSpec(
+        key="opening_message",
+        label="Opening-summary instruction",
+        relative_path="Analysis/Opening Message.md",
+        bundled_default=_OPENING_MESSAGE,
+        required_placeholders=("title", "full_text"),
+        description="The first user message when a paper starts.",
+    ),
+    PromptSpec(
+        key="finish_instruction",
+        label="Finish / draft-notes instruction",
+        relative_path="Analysis/Finish Instruction.md",
+        bundled_default=_FINISH_INSTRUCTION,
+        required_literals=("COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"),
+        description="Requests the final Notes block and cross-paper synthesis.",
+    ),
+    PromptSpec(
+        key="request_changes",
+        label="Request-changes instruction",
+        relative_path="Analysis/Request Changes.md",
+        bundled_default=_REQUEST_CHANGES,
+        required_placeholders=("feedback",),
+        required_literals=("COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"),
+        description="Revises a notes proposal from explicit user feedback.",
+    ),
+    PromptSpec(
+        key="notes_editor",
+        label="Notes editor (agent) prompt",
+        relative_path="Notes/Editor.md",
+        bundled_default=_NOTES_EDITOR,
+        description="Governs proposed edits to committed research notes.",
+    ),
+    PromptSpec(
+        key="tts_instructions",
+        label="OpenAI voice instructions",
+        relative_path="Listening/TTS Instructions.md",
+        bundled_default=_TTS_INSTRUCTIONS,
+        description="Delivery style passed to the OpenAI TTS voice.",
+    ),
+    PromptSpec(
+        key="review_system",
+        label="Working-notes review — system prompt",
+        relative_path="Review/System.md",
+        bundled_default=_REVIEW_SYSTEM,
+        required_literals=_SECTION_PROTOCOL,
+        description="Governs cross-paper Working Notes Review chat.",
+    ),
+    PromptSpec(
+        key="review_opening",
+        label="Working-notes review — first message",
+        relative_path="Review/Opening Message.md",
+        bundled_default=_REVIEW_OPENING,
+        description="Starts a Working Notes Review session.",
+    ),
+    PromptSpec(
+        key="review_finish",
+        label="Working-notes review — update instruction",
+        relative_path="Review/Finish Instruction.md",
+        bundled_default=_REVIEW_FINISH,
+        required_literals=("SYNTHESIS", "NOTES_BLOCK"),
+        description="Folds a review discussion back into the working notes.",
+    ),
+    PromptSpec(
+        key="discover_queries",
+        label="Discovery — arXiv query generation",
+        relative_path="Discovery/Query Generation.md",
+        bundled_default=_DISCOVER_QUERIES,
+        required_literals=('"focus"', '"queries"'),
+        description="Turns project goals into broad and narrow arXiv searches.",
+    ),
+    PromptSpec(
+        key="discover_scoring",
+        label="Discovery — candidate relevance scoring",
+        relative_path="Discovery/Candidate Scoring.md",
+        bundled_default=_DISCOVER_SCORING,
+        required_literals=('"scores"', '"index"', '"relevance"', '"reason"'),
+        description="Scores discovered papers against the project goals.",
+    ),
+)
+REGISTRY_BY_KEY = {spec.key: spec for spec in REGISTRY}
+DEFAULTS = {spec.key: spec.bundled_default for spec in REGISTRY if spec.scope == "global"}
+# Compatibility for the legacy web prompt editor. Phase 1.2 replaces this surface.
 META = [
-    {"key": "reading_method", "label": "Reading method", "source": "file", "placeholders": [],
-     "description": "How papers are read. Injected into the analysis system prompt as reading "
-                    "context. Stored in reading-method.md and versioned with your notes."},
-    {"key": "analysis_system", "label": "Analysis system prompt", "source": "override", "placeholders": [],
-     "description": "Governs the analysis model: the section protocol and scholarly behaviour. "
-                    "The reading method and the assembled reading context are appended automatically."},
-    {"key": "narration_system", "label": "Narration (TTS transcript) prompt", "source": "override", "placeholders": [],
-     "description": "Governs the stage-2 model that faithfully rewrites the analysis text for listening."},
-    {"key": "opening_message", "label": "Opening-summary instruction", "source": "override",
-     "placeholders": ["title", "full_text"],
-     "description": "The first user message when a paper starts. Must keep {title} and {full_text}."},
-    {"key": "finish_instruction", "label": "Finish / draft-notes instruction", "source": "override", "placeholders": [],
-     "description": "Sent when you tap “We’re done” — asks the agent to draft the Notes block and synthesis."},
-    {"key": "request_changes", "label": "Request-changes instruction", "source": "override",
-     "placeholders": ["feedback"],
-     "description": "Sent when you request changes on the review screen. Must keep {feedback}."},
-    {"key": "notes_editor", "label": "Notes editor (agent) prompt", "source": "override", "placeholders": [],
-     "description": "Governs the agent that revises committed notes (a paper's Notes or the working "
-                    "notes) from your natural-language instruction. The revision is a proposal you "
-                    "review before it is applied."},
-    {"key": "tts_instructions", "label": "OpenAI voice instructions", "source": "override", "placeholders": [],
-     "description": "Delivery style passed to the OpenAI TTS voice (used by gpt-4o-mini-tts only)."},
-    {"key": "review_system", "label": "Working-notes review — system prompt", "source": "override", "placeholders": [],
-     "description": "Governs the cross-paper Working Notes Review chat. The reading method, working "
-                    "notes, and all per-paper Notes are appended automatically as context."},
-    {"key": "review_opening", "label": "Working-notes review — first message", "source": "override", "placeholders": [],
-     "description": "The opening request that kicks off a Working Notes Review session."},
-    {"key": "review_finish", "label": "Working-notes review — update instruction", "source": "override", "placeholders": [],
-     "description": "Sent when you ask the review chat to fold the discussion back into the working notes."},
-    {"key": "discover_queries", "label": "Discovery — arXiv query generation", "source": "override", "placeholders": [],
-     "description": "Turns a new project's goals into broad + narrow arXiv search queries. The "
-                    "goals text is sent as the user message."},
-    {"key": "discover_scoring", "label": "Discovery — candidate relevance scoring", "source": "override", "placeholders": [],
-     "description": "Scores each found paper's relevance to the project goals from its title and "
-                    "abstract. The goals and numbered candidates are sent as the user message."},
+    {
+        "key": spec.key,
+        "label": spec.label,
+        "source": spec.editor_source,
+        "placeholders": list(spec.required_placeholders),
+        "required_literals": list(spec.required_literals),
+        "scope": spec.scope,
+        "relative_path": spec.relative_path,
+        "description": spec.description,
+    }
+    for spec in REGISTRY
 ]
-_META_BY_KEY = {m["key"]: m for m in META}
+
+
+class _FileVersion(NamedTuple):
+    device: int
+    inode: int
+    mtime_ns: int
+    ctime_ns: int
+    size: int
+
+
+@dataclass(frozen=True)
+class PromptResolution:
+    value: str
+    effective_source: str
+    path: str | None
+    valid: bool
+    error: str | None
+    modified_at: str | None
+    effective_hash: str
+
+
+@dataclass(frozen=True)
+class _CachedResolution:
+    path: str
+    version: _FileVersion
+    resolution: PromptResolution
+
+
+_loader_lock = threading.RLock()
+_runtime_cache: dict[str, _CachedResolution] = {}
+
+
+def _hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _modified_at(version: _FileVersion | None) -> str | None:
+    if version is None:
+        return None
+    return datetime.fromtimestamp(version.mtime_ns / 1_000_000_000, tz=UTC).isoformat()
+
+
+def _file_version(path: Path) -> _FileVersion | None:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PromptError(f"Cannot inspect prompt file {path}: {exc}") from exc
+    return _FileVersion(st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+
+
+def _read_stable(path: Path, expected: _FileVersion) -> tuple[str, _FileVersion]:
+    """Read one coherent file version, retrying atomic or in-place changes during the read."""
+    version = expected
+    for _ in range(3):
+        try:
+            value = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PromptError(f"Cannot read prompt file {path}: {exc}") from exc
+        after = _file_version(path)
+        if after is None:
+            raise PromptError(f"Prompt file disappeared while being read: {path}")
+        if after == version:
+            return value, after
+        version = after
+    raise PromptError(f"Prompt file kept changing while being read: {path}")
+
+
+def _validate(spec: PromptSpec, value: str) -> None:
+    if not value.strip():
+        raise PromptError("Prompt cannot be empty.")
+    for placeholder in spec.required_placeholders:
+        marker = "{" + placeholder + "}"
+        if marker not in value:
+            raise PromptError(f"This prompt must keep the placeholder {marker}.")
+    for literal in spec.required_literals:
+        if literal not in value:
+            raise PromptError(f"This prompt must keep the protocol literal {literal!r}.")
+
+
+def _last_valid_file() -> Path:
+    return config.APP_STATE_DIR / "prompt-last-valid.json"
+
+
+def _read_last_valid() -> dict:
+    path = _last_valid_file()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    prompts = data.get("prompts")
+    return prompts if isinstance(prompts, dict) else {}
+
+
+def _persist_last_valid(spec: PromptSpec, value: str) -> None:
+    prompts = _read_last_valid()
+    prompts[spec.key] = {
+        "value": value,
+        "effective_hash": _hash(value),
+        "saved_at": datetime.now(UTC).isoformat(),
+    }
+    body = json.dumps({"version": 1, "prompts": prompts}, ensure_ascii=False, indent=2)
+    atomic_write_text(_last_valid_file(), body, mode=0o600)
+
+
+def _fallback(spec: PromptSpec) -> tuple[str, str]:
+    legacy = config.get_prompt_override(spec.key)
+    if legacy is not None:
+        try:
+            _validate(spec, legacy)
+        except PromptError as exc:
+            log.warning("legacy prompt override rejected key=%s error=%s", spec.key, exc)
+        else:
+            return legacy, "legacy_override"
+    return spec.bundled_default, "bundled_default"
+
+
+def _resolution(value: str, source: str, path: Path | None, *, valid: bool = True,
+                error: str | None = None,
+                version: _FileVersion | None = None) -> PromptResolution:
+    return PromptResolution(
+        value=value,
+        effective_source=source,
+        path=str(path) if path else None,
+        valid=valid,
+        error=error,
+        modified_at=_modified_at(version),
+        effective_hash=_hash(value),
+    )
+
+
+def _invalid_resolution(spec: PromptSpec, path: Path, error: str,
+                        version: _FileVersion | None) -> PromptResolution:
+    last_valid = _read_last_valid().get(spec.key)
+    value, source = _fallback(spec)
+    if isinstance(last_valid, dict) and isinstance(last_valid.get("value"), str):
+        candidate = last_valid["value"]
+        hash_matches = last_valid.get("effective_hash") == _hash(candidate)
+        try:
+            _validate(spec, candidate)
+        except PromptError:
+            pass
+        else:
+            if hash_matches:
+                value, source = candidate, "last_valid"
+    full_error = f"Invalid prompt file {path}: {error}"
+    log.warning("prompt file rejected key=%s path=%s error=%s", spec.key, path, error)
+    return _resolution(value, source, path, valid=False, error=full_error, version=version)
+
+
+def _resolve_global(spec: PromptSpec) -> PromptResolution:
+    if config.PROMPTS_DIR is None:
+        value, source = _fallback(spec)
+        return _resolution(value, source, None)
+
+    path = config.PROMPTS_DIR / spec.relative_path
+    try:
+        version = _file_version(path)
+    except PromptError as exc:
+        return _invalid_resolution(spec, path, str(exc), None)
+    if version is None:
+        value, source = _fallback(spec)
+        return _resolution(value, source, path)
+
+    cached = _runtime_cache.get(spec.key)
+    if cached and cached.path == str(path) and cached.version == version:
+        return cached.resolution
+
+    try:
+        value, stable_version = _read_stable(path, version)
+        _validate(spec, value)
+    except PromptError as exc:
+        result = _invalid_resolution(spec, path, str(exc), version)
+        _runtime_cache[spec.key] = _CachedResolution(str(path), version, result)
+        return result
+
+    _persist_last_valid(spec, value)
+    result = _resolution(value, "vault", path, version=stable_version)
+    _runtime_cache[spec.key] = _CachedResolution(str(path), stable_version, result)
+    return result
+
+
+def resolve(key: str) -> PromptResolution:
+    spec = REGISTRY_BY_KEY.get(key)
+    if not spec:
+        raise PromptError(f"Unknown prompt: {key}")
+    if spec.scope == "project":
+        value = store.read_method()
+        return _resolution(value, "project", config.project_dir() / spec.relative_path)
+    with _loader_lock:
+        return _resolve_global(spec)
 
 
 def get(key: str) -> str:
-    meta = _META_BY_KEY.get(key)
-    if not meta:
-        raise PromptError(f"Unknown prompt: {key}")
-    if meta["source"] == "file":
-        return store.read_method()
-    return config.get_prompt_override(key) or DEFAULTS[key]
+    return resolve(key).value
 
 
 def is_overridden(key: str) -> bool:
-    meta = _META_BY_KEY.get(key)
-    return bool(meta and meta["source"] == "override" and config.get_prompt_override(key) is not None)
+    spec = REGISTRY_BY_KEY.get(key)
+    if not spec or spec.scope == "project":
+        return False
+    if config.PROMPTS_DIR is not None and (config.PROMPTS_DIR / spec.relative_path).exists():
+        return True
+    return config.get_prompt_override(key) is not None
 
 
 def set_prompt(key: str, value: str) -> None:
-    meta = _META_BY_KEY.get(key)
-    if not meta:
+    spec = REGISTRY_BY_KEY.get(key)
+    if not spec:
         raise PromptError(f"Unknown prompt: {key}")
     value = (value or "").strip()
-    if not value:
-        raise PromptError("Prompt cannot be empty.")
-    for ph in meta["placeholders"]:
-        if "{" + ph + "}" not in value:
-            raise PromptError(f"This prompt must keep the placeholder {{{ph}}}.")
-    if meta["source"] == "file":
+    _validate(spec, value)
+    if spec.scope == "project":
         store.write_method(value)
-    else:
-        config.set_prompt_override(key, value)
+        return
+    if config.PROMPTS_DIR is not None:
+        raise PromptError(f"Prompt is managed by file: {config.PROMPTS_DIR / spec.relative_path}")
+    config.set_prompt_override(key, value)
 
 
 def reset(key: str) -> None:
-    meta = _META_BY_KEY.get(key)
-    if not meta:
+    spec = REGISTRY_BY_KEY.get(key)
+    if not spec:
         raise PromptError(f"Unknown prompt: {key}")
-    if meta["source"] == "file":
-        raise PromptError("The reading method has no built-in default; edit it directly.")
+    if spec.scope == "project":
+        raise PromptError("The reading method is a project file; edit it directly.")
+    if config.PROMPTS_DIR is not None:
+        raise PromptError(f"Prompt is managed by file: {config.PROMPTS_DIR / spec.relative_path}")
     config.set_prompt_override(key, None)
 
 
 def render(key: str, **subs: str) -> str:
     text = get(key)
-    for k, v in subs.items():
-        text = text.replace("{" + k + "}", v)
+    for name, value in subs.items():
+        text = text.replace("{" + name + "}", value)
     return text
 
 
 def listing() -> list[dict]:
-    return [{**m, "value": get(m["key"]), "is_overridden": is_overridden(m["key"])} for m in META]
+    out = []
+    for meta in META:
+        result = resolve(meta["key"])
+        out.append({
+            **meta,
+            "value": result.value,
+            "is_overridden": is_overridden(meta["key"]),
+            "effective_source": result.effective_source,
+            "path": result.path,
+            "valid": result.valid,
+            "error": result.error,
+            "modified_at": result.modified_at,
+            "effective_hash": result.effective_hash,
+        })
+    return out
+
+
+def _reset_runtime_cache() -> None:
+    """Clear only process-local loader state (used to simulate restart in tests)."""
+    with _loader_lock:
+        _runtime_cache.clear()
