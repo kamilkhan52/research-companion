@@ -26,7 +26,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 0.1 | Persist this roadmap | [#12](https://github.com/kamilkhan52/research-companion/pull/12) | Complete |
 | 0.2 | Mobile Jest/Router test foundation + CI gate | [#13](https://github.com/kamilkhan52/research-companion/pull/13) | Complete |
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
-| 1.2 | Centralize every model prompt + prompt status UI | — | Planned |
+| 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | — | Planned |
 | 2.1 | Device Listening mode + automatic queued audio | — | Planned |
 | 2.2 | Grounded preview cues from the live response | — | Planned |
@@ -129,6 +129,15 @@ interfaces, not editable prose.
 Extend prompt status with `source`, `path`, `valid`, `error`, `modified_at`, and `effective_hash`.
 When a vault is configured, API writes to vault-managed prompts return HTTP 409. Developer Settings
 shows the exact server path and validation state and can refresh status; it does not edit files.
+
+Verification record ([PR #16](https://github.com/kamilkhan52/research-companion/pull/16)):
+
+- full Ruff and 327-test backend suites pass; all five mobile Jest suites and TypeScript pass;
+- tests prove graph, retrieval, analyst, and notes prompts resolve through the registry, vault API
+  writes return HTTP 409, status reports the active-project path and effective version, and
+  prompt-only reseeding preserves existing projects and hand-edited files;
+- the mobile Developer Settings surface is read-only and displays live source, exact server path,
+  validation state/error, modified time, and effective hash with explicit refresh.
 
 ### 1.3 Self-contained research responses
 
