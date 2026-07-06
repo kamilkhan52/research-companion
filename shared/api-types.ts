@@ -561,6 +561,8 @@ export interface components {
         };
         /** ChatStartReq */
         ChatStartReq: {
+            /** Delivery Mode */
+            delivery_mode?: "reading" | "listening";
             /** Slug */
             slug: string;
             /** Prompt */
@@ -570,6 +572,8 @@ export interface components {
         };
         /** FinishReq */
         FinishReq: {
+            /** Delivery Mode */
+            delivery_mode?: "reading" | "listening";
             /** Slug */
             slug: string;
         };
@@ -599,6 +603,8 @@ export interface components {
         };
         /** ReplyReq */
         ReplyReq: {
+            /** Delivery Mode */
+            delivery_mode?: "reading" | "listening";
             /** Slug */
             slug: string;
             /** Text */
@@ -606,6 +612,8 @@ export interface components {
         };
         /** RequestChangesReq */
         RequestChangesReq: {
+            /** Delivery Mode */
+            delivery_mode?: "reading" | "listening";
             /** Slug */
             slug: string;
             /** Text */
@@ -613,6 +621,8 @@ export interface components {
         };
         /** RetryReq */
         RetryReq: {
+            /** Delivery Mode */
+            delivery_mode?: "reading" | "listening";
             /** Slug */
             slug: string;
             /** Assistant Index */

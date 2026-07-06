@@ -7,7 +7,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -28,7 +28,7 @@ import { streamPaths, turnJobPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
@@ -37,6 +37,7 @@ import { IconButton, TopBar } from '@/components/TopBar';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
+import { useListeningMode } from '@/store/listening';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -50,7 +51,29 @@ export default function DiscussionScreen() {
   const pid = activePid;
 
   const session = useSession(pid, slug ?? null);
-  const stream = useStreamingTurn(pid, slug ?? null);
+  const audio = useAudio();
+  const { listeningMode, setListeningMode } = useListeningMode();
+  const handleTurnDone = useCallback(async (job: ChatJob) => {
+    if (!listeningMode || job.delivery_mode !== 'listening') return;
+    if (job.audio_error) throw new Error(job.audio_error);
+    const canonical = job.turn?.canonical;
+    if (!job.audio_job_id || !canonical) return;
+    audio.enqueueJob(
+      {
+        id: `chat:${job.id}`,
+        title: session.data?.paper.title ?? 'Narration',
+        text: canonical,
+      },
+      job.audio_job_id,
+      pid,
+    );
+  }, [audio, listeningMode, pid, session.data?.paper.title]);
+  const stream = useStreamingTurn(
+    pid,
+    slug ?? null,
+    listeningMode ? 'listening' : 'reading',
+    handleTurnDone,
+  );
   const scrollRef = useRef<ScrollView>(null);
 
   const state = session.data?.state ?? null;
@@ -142,6 +165,15 @@ export default function DiscussionScreen() {
         onBack={() => router.back()}
         right={
           <>
+            <IconButton
+              glyph="♫"
+              active={listeningMode}
+              onPress={() => {
+                if (listeningMode) audio.cancelPrep();
+                setListeningMode(!listeningMode);
+              }}
+              accessibilityLabel={listeningMode ? 'Turn off Listening mode' : 'Turn on Listening mode'}
+            />
             {session.data?.paper.has_notes ? (
               <IconButton
                 glyph="✎"

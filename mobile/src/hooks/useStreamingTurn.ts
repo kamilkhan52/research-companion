@@ -37,7 +37,12 @@ export interface StreamingTurn {
   clearError: () => void;
 }
 
-export function useStreamingTurn(pid: string | null, slug: string | null): StreamingTurn {
+export function useStreamingTurn(
+  pid: string | null,
+  slug: string | null,
+  deliveryMode: 'reading' | 'listening' = 'reading',
+  onDone?: (job: ChatJob) => void | Promise<void>,
+): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -50,6 +55,8 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
   // fast double-tap before React re-renders with the disabled button — can't both slip past
   // the check; state only updates on the next render, a ref updates immediately.
   const busyRef = useRef(false);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
     aliveRef.current = true;
@@ -101,6 +108,11 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
         setItems(snap.items);
         if (snap.status === 'done') {
           watchRef.current = null;
+          try {
+            await onDoneRef.current?.(snap);
+          } catch (e) {
+            setError((e as Error).message ?? 'The response finished, but audio could not start.');
+          }
           await settle();
           return;
         }
@@ -125,7 +137,10 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
       try {
-        const { job } = await apiPost<{ job: ChatJob }>(path, body);
+        const payload = body && typeof body === 'object' && !Array.isArray(body)
+          ? { ...(body as Record<string, unknown>), delivery_mode: deliveryMode }
+          : body;
+        const { job } = await apiPost<{ job: ChatJob }>(path, payload);
         await watch(job);
       } catch (e) {
         setError((e as Error).message ?? 'Could not start the response.');
@@ -135,7 +150,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
         busyRef.current = false;
       }
     },
-    [watch],
+    [deliveryMode, watch],
   );
 
   const resume = useCallback(async () => {

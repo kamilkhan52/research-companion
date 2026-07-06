@@ -25,6 +25,7 @@ import { queryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { NowPlaying } from '@/components/NowPlaying';
 import { ProjectProvider } from '@/store/project';
+import { ListeningProvider } from '@/store/listening';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -62,7 +63,8 @@ export default function RootLayout() {
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <ProjectProvider>
-              <AudioProvider>
+              <ListeningProvider>
+                <AudioProvider>
                 <StatusBar style="light" />
                 <View style={{ flex: 1, backgroundColor: colors.bg }}>
                   <View style={{ flex: 1 }}>
@@ -84,7 +86,8 @@ export default function RootLayout() {
                   </View>
                   <NowPlaying />
                 </View>
-              </AudioProvider>
+                </AudioProvider>
+              </ListeningProvider>
             </ProjectProvider>
           </QueryClientProvider>
         </KeyboardProvider>

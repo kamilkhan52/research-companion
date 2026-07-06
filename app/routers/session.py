@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -40,33 +41,37 @@ class StartReq(BaseModel):
     pdf_url: str | None = None
 
 
-class ChatStartReq(BaseModel):
+class DeliveryReq(BaseModel):
+    delivery_mode: Literal["reading", "listening"] = "reading"
+
+
+class ChatStartReq(DeliveryReq):
     slug: str
     prompt: str | None = None   # edited first-prompt template for this session
     model: str | None = None    # model for the first response
 
 
-class ReplyReq(BaseModel):
+class ReplyReq(DeliveryReq):
     slug: str
     text: str
 
 
-class FinishReq(BaseModel):
+class FinishReq(DeliveryReq):
     slug: str
 
 
-class RequestChangesReq(BaseModel):
+class RequestChangesReq(DeliveryReq):
     slug: str
     text: str
 
 
-class RetryReq(BaseModel):
+class RetryReq(DeliveryReq):
     slug: str
     assistant_index: int
     model: str | None = None
 
 
-class EditReq(BaseModel):
+class EditReq(DeliveryReq):
     slug: str
     reply_index: int
     text: str
@@ -441,57 +446,58 @@ def _no_turn_in_flight(slug: str) -> None:
                             detail="A response is already being generated for this paper.")
 
 
-def _started_job(slug: str) -> dict:
-    return {"job": chat_jobs.snapshot(chat_jobs.start_turn(slug).id)}
+def _started_job(slug: str, delivery_mode: str) -> dict:
+    job = chat_jobs.start_turn(slug, delivery_mode=delivery_mode)
+    return {"job": chat_jobs.snapshot(job.id)}
 
 
 @project_router.post("/chat/start_job")
 def chat_start_job(req: ChatStartReq):
     _no_turn_in_flight(req.slug)
     _prep_chat_start(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/reply_job")
 def reply_job(req: ReplyReq):
     _no_turn_in_flight(req.slug)
     _prep_reply(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/continue_job")
 def continue_job(req: FinishReq):
     _no_turn_in_flight(req.slug)
     _prep_continue(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/retry_job")
 def retry_job(req: RetryReq):
     _no_turn_in_flight(req.slug)
     _prep_retry(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/edit_job")
 def edit_job(req: EditReq):
     _no_turn_in_flight(req.slug)
     _prep_edit(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/finish_job")
 def finish_job(req: FinishReq):
     _no_turn_in_flight(req.slug)
     _prep_finish(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.post("/request_changes_job")
 def request_changes_job(req: RequestChangesReq):
     _no_turn_in_flight(req.slug)
     _prep_request_changes(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode)
 
 
 @project_router.get("/chat/jobs/active/{slug}")

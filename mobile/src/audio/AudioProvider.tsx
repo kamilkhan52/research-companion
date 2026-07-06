@@ -6,7 +6,7 @@
 // backgrounded, and gives real progress (stage + synthesized segments) instead of a spinner.
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import TrackPlayer, { State } from 'react-native-track-player';
+import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-track-player';
 
 import { apiUrl, authHeaders } from '@/api/client';
 import * as api from '@/api/endpoints';
@@ -35,6 +35,9 @@ interface AudioContextValue {
    *  pause/resume; tapping a different message switches to it (abandoning any other prep —
    *  the server job keeps running and lands in the cache for next time). */
   playText: (req: PlayRequest) => Promise<void>;
+  /** Queue audio already started by a listening-mode chat job. Preparation may overlap current
+   * playback; the resulting track is appended and never interrupts what is playing. */
+  enqueueJob: (req: PlayRequest, audioJobId: string, billingProject: string | null) => void;
   /** The in-flight preparation, or null. Global, so the mini player can show it anywhere. */
   prep: PrepState | null;
   /** Stop watching the in-flight preparation (the server job continues and caches). */
@@ -69,6 +72,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
+  const queueGeneration = useRef(0);
+  const queueTail = useRef<Promise<void>>(Promise.resolve());
+  const queuedIds = useRef(new Set<string>());
   // The initiating project, for billing the narration LLM spend (audio itself is app-global).
   // Held in a ref so playText keeps a stable identity as the active project changes.
   const { activePid } = useActiveProject();
@@ -79,9 +85,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     setupPlayer().catch(() => {});
   }, []);
 
+  useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
+    const track = event.track;
+    setCurrentId(track?.id != null ? String(track.id) : null);
+    setCurrentTitle(track?.title != null ? String(track.title) : null);
+  });
+
   const cancelPrep = useCallback(() => {
     generation.current += 1;
+    queueGeneration.current += 1;
+    queuedIds.current.clear();
     setPrep(null);
+    void TrackPlayer.removeUpcomingTracks().catch(() => {});
   }, []);
 
   const applyJob = useCallback((id: string, title: string, job: AudioJob) => {
@@ -188,15 +203,101 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     [currentId, applyJob],
   );
 
+  const enqueueJob = useCallback((request: PlayRequest, audioJobId: string,
+                                  billingProject: string | null) => {
+    if (queuedIds.current.has(request.id)) return;
+    queuedIds.current.add(request.id);
+    const queueGen = queueGeneration.current;
+
+    queueTail.current = queueTail.current.then(async () => {
+      if (queueGeneration.current !== queueGen) return;
+      const live = () => queueGeneration.current === queueGen;
+      setErrorById((errors) => {
+        if (!(request.id in errors)) return errors;
+        const { [request.id]: _drop, ...rest } = errors;
+        return rest;
+      });
+      setPrep({ id: request.id, title: request.title, stage: 'starting', done: 0, total: 0 });
+
+      try {
+        await setupPlayer();
+        let job: AudioJob;
+        try {
+          job = (await api.getAudioJob(audioJobId)).job;
+        } catch (e) {
+          if ((e as { status?: number }).status !== 404) throw e;
+          job = (await api.startAudioJob(request.text, billingProject)).job;
+        }
+        if (!live()) return;
+        applyJob(request.id, request.title, job);
+
+        let pollFailures = 0;
+        while (job.status === 'running') {
+          await sleep(POLL_MS);
+          if (!live()) return;
+          try {
+            job = (await api.getAudioJob(job.id)).job;
+            pollFailures = 0;
+          } catch (e) {
+            if ((e as { status?: number }).status === undefined
+                && ++pollFailures < MAX_POLL_FAILURES) continue;
+            throw e;
+          }
+          if (!live()) return;
+          applyJob(request.id, request.title, job);
+        }
+        if (job.status === 'error' || !job.url) {
+          throw new Error(job.error ?? 'Could not prepare queued audio.');
+        }
+
+        const existingTrack = await TrackPlayer.getActiveTrack();
+        await TrackPlayer.add({
+          id: request.id,
+          url: apiUrl(job.url),
+          title: request.title,
+          artist: 'Reading Companion',
+          headers: authHeaders(),
+        });
+        if (!live()) return;
+        setPrep(null);
+        const { state } = await TrackPlayer.getPlaybackState();
+        if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {
+          setCurrentId(request.id);
+          setCurrentTitle(request.title);
+          await TrackPlayer.play();
+        }
+      } catch (e) {
+        if (!live()) return;
+        queuedIds.current.delete(request.id);
+        setErrorById((errors) => ({
+          ...errors,
+          [request.id]: (e as Error).message ?? 'Could not prepare queued audio.',
+        }));
+        setPrep(null);
+      }
+    });
+  }, [applyJob]);
+
   const dismiss = useCallback(async () => {
+    cancelPrep();
     setCurrentId(null);
     setCurrentTitle(null);
     await TrackPlayer.reset().catch(() => {});
-  }, []);
+  }, [cancelPrep]);
 
   return (
     <AudioContext.Provider
-      value={{ playText, prep, cancelPrep, currentId, currentTitle, dismiss, narrationById, errorById }}>
+      value={{
+        playText,
+        enqueueJob,
+        prep,
+        cancelPrep,
+        currentId,
+        currentTitle,
+        dismiss,
+        narrationById,
+        errorById,
+      }}>
       {children}
     </AudioContext.Provider>
   );

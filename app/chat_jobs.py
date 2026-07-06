@@ -23,7 +23,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import agent, agent_harness, sessions
+from . import agent, agent_harness, audio_jobs, config, sessions
 from .agent import AgentError
 from .jobs import Job, JobRegistry, new_id
 
@@ -41,6 +41,9 @@ class ChatJob(Job):
     items: list = field(default_factory=list)
     turn: dict | None = None         # parsed+recorded Turn.to_dict(), once done
     state: str | None = None         # session state after the turn, once done
+    delivery_mode: str = "reading"  # reading | listening
+    audio_job_id: str | None = None
+    audio_error: str | None = None
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -63,11 +66,14 @@ def active_for(slug: str) -> ChatJob | None:
     return _registry.active_for(slug)
 
 
-def start_turn(slug: str, runner: RunnerFn | None = None) -> ChatJob:
+def start_turn(slug: str, runner: RunnerFn | None = None,
+               delivery_mode: str = "reading") -> ChatJob:
     """Start generating the assistant turn for `slug` in a background thread, or join the job
     already running for it. The user message must already be recorded (history is rebuilt from
     the session file inside the thread). Callers poll get_job(id) until it settles; the turn is
     recorded to the session the moment it completes, whether or not anyone is polling."""
+    if delivery_mode not in ("reading", "listening"):
+        raise ValueError(f"Unknown delivery mode: {delivery_mode}")
     runner = runner or _default_events
 
     def work(job: ChatJob) -> None:
@@ -84,11 +90,32 @@ def start_turn(slug: str, runner: RunnerFn | None = None) -> ChatJob:
         # Record to the session before the registry marks the job done, so a client that sees
         # "done" and refetches the transcript always finds the turn.
         sessions.record_assistant(job.slug, turn)
+        audio_job_id = None
+        audio_error = None
+        if job.delivery_mode == "listening":
+            if config.load_settings().get("speech_provider") != "openai":
+                audio_error = "Listening mode requires the OpenAI speech provider."
+            else:
+                try:
+                    audio_job_id = audio_jobs.start_job(
+                        turn.canonical,
+                        billing_project=config.active_project_id(),
+                    ).id
+                except Exception as exc:
+                    # The scholarly turn is already safely recorded. Audio setup must never
+                    # turn that successful response into an error job.
+                    audio_error = f"Could not start listening audio: {str(exc)[:240]}"
         with _registry.lock:
             job.turn = turn.to_dict()
             job.state = sessions.get_state(job.slug)
+            job.audio_job_id = audio_job_id
+            job.audio_error = audio_error
 
-    return _registry.start_or_join(slug, lambda: ChatJob(id=new_id(), slug=slug), work)
+    return _registry.start_or_join(
+        slug,
+        lambda: ChatJob(id=new_id(), slug=slug, delivery_mode=delivery_mode),
+        work,
+    )
 
 
 def _default_events(slug: str, history: list):

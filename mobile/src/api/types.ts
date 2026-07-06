@@ -181,6 +181,9 @@ export interface ChatJob {
   error: string | null;
   started_at: string;
   finished_at: string | null;
+  delivery_mode: 'reading' | 'listening';
+  audio_job_id: string | null;
+  audio_error: string | null;
 }
 
 /** A committed notes document (GET /notes/{target}): one paper's Notes block, or the
