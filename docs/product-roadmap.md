@@ -176,10 +176,11 @@ narrations and never interrupts a playing track.
 
 Automated verification ([PR #19](https://github.com/kamilkhan52/research-companion/pull/19)):
 
-- full Ruff and 336-test backend suites pass; all eight mobile Jest suites (nine tests) and
+- full Ruff and 336-test backend suites pass; all nine mobile Jest suites (eleven tests) and
   TypeScript pass;
 - tests cover persisted device state, request delivery mode, record-before-audio ordering,
-  audio-start failure isolation, first-track autoplay, and non-interrupting queue append;
+  audio-start failure isolation, first-track autoplay, non-interrupting queue append, recoverable
+  handoffs after navigation, stable message identity, and cancellation during native queue add;
 - native acceptance remains required for relaunch persistence, background/resume, automatic
   playback, queue advancement, and disabling Listening mode with a track active.
 

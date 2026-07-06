@@ -44,6 +44,7 @@ class ChatJob(Job):
     delivery_mode: str = "reading"  # reading | listening
     audio_job_id: str | None = None
     audio_error: str | None = None
+    assistant_index: int | None = None
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -87,9 +88,6 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
-        # Record to the session before the registry marks the job done, so a client that sees
-        # "done" and refetches the transcript always finds the turn.
-        sessions.record_assistant(job.slug, turn)
         audio_job_id = None
         audio_error = None
         if job.delivery_mode == "listening":
@@ -97,19 +95,49 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                 audio_error = "Listening mode requires the OpenAI speech provider."
             else:
                 try:
-                    audio_job_id = audio_jobs.start_job(
-                        turn.canonical,
-                        billing_project=config.active_project_id(),
-                    ).id
+                    # Deterministic and side-effect free: persist the recoverable handoff before
+                    # starting audio, so a restart can re-POST the same canonical text by id.
+                    audio_job_id = audio_jobs.job_id_for(turn.canonical)
                 except Exception as exc:
-                    # The scholarly turn is already safely recorded. Audio setup must never
-                    # turn that successful response into an error job.
                     audio_error = f"Could not start listening audio: {str(exc)[:240]}"
+        # Record before audio starts. A client that sees a completed chat job or refetches after
+        # navigation always finds both the canonical response and its recoverable handoff.
+        assistant_ts, assistant_index = sessions.record_assistant(
+            job.slug,
+            turn,
+            delivery_mode=job.delivery_mode,
+            audio_job_id=audio_job_id,
+            audio_error=audio_error,
+        )
+        if audio_job_id:
+            try:
+                started_audio_id = audio_jobs.start_job(
+                    turn.canonical,
+                    billing_project=config.active_project_id(),
+                ).id
+                if started_audio_id != audio_job_id:
+                    audio_job_id = started_audio_id
+                    sessions.update_assistant_audio(
+                        job.slug,
+                        assistant_ts,
+                        audio_job_id=audio_job_id,
+                        audio_error=None,
+                    )
+            except Exception as exc:
+                audio_job_id = None
+                audio_error = f"Could not start listening audio: {str(exc)[:240]}"
+                sessions.update_assistant_audio(
+                    job.slug,
+                    assistant_ts,
+                    audio_job_id=None,
+                    audio_error=audio_error,
+                )
         with _registry.lock:
             job.turn = turn.to_dict()
             job.state = sessions.get_state(job.slug)
             job.audio_job_id = audio_job_id
             job.audio_error = audio_error
+            job.assistant_index = assistant_index
 
     return _registry.start_or_join(
         slug,

@@ -6,6 +6,7 @@
 // backgrounded, and gives real progress (stage + synthesized segments) instead of a spinner.
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-track-player';
 
 import { apiUrl, authHeaders } from '@/api/client';
@@ -59,10 +60,34 @@ const MAX_POLL_FAILURES = 8;
 // A server restart loses the in-memory job (poll 404s); re-POST resumes from the server
 // caches. Capped so a persistently broken server can't loop forever.
 const MAX_RESTARTS = 2;
+const HANDLED_HANDOFFS_KEY = 'rc.handledAudioHandoffs';
+const MAX_HANDLED_HANDOFFS = 200;
 
 const AudioContext = createContext<AudioContextValue | undefined>(undefined);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function handledHandoffs(): Promise<string[]> {
+  try {
+    const value = JSON.parse(await AsyncStorage.getItem(HANDLED_HANDOFFS_KEY) ?? '[]');
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function markHandoffHandled(id: string): Promise<void> {
+  try {
+    const ids = (await handledHandoffs()).filter((item) => item !== id);
+    ids.push(id);
+    await AsyncStorage.setItem(
+      HANDLED_HANDOFFS_KEY,
+      JSON.stringify(ids.slice(-MAX_HANDLED_HANDOFFS)),
+    );
+  } catch {
+    // Playback is more important than dedup persistence; keep the in-memory id regardless.
+  }
+}
 
 export function AudioProvider({ children }: { children: ReactNode }) {
   const [prep, setPrep] = useState<PrepState | null>(null);
@@ -96,7 +121,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     queueGeneration.current += 1;
     queuedIds.current.clear();
     setPrep(null);
-    void TrackPlayer.removeUpcomingTracks().catch(() => {});
+    const removeUpcoming = () => TrackPlayer.removeUpcomingTracks().catch(() => {});
+    void removeUpcoming();
+    // Serialize a second cleanup after any in-flight add. If cancellation wins while native
+    // TrackPlayer.add() is pending, that stale add completes before this removal runs.
+    queueTail.current = queueTail.current.then(removeUpcoming, removeUpcoming);
   }, []);
 
   const applyJob = useCallback((id: string, title: string, job: AudioJob) => {
@@ -211,6 +240,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
     queueTail.current = queueTail.current.then(async () => {
       if (queueGeneration.current !== queueGen) return;
+      if ((await handledHandoffs()).includes(request.id)) return;
       const live = () => queueGeneration.current === queueGen;
       setErrorById((errors) => {
         if (!(request.id in errors)) return errors;
@@ -259,6 +289,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           headers: authHeaders(),
         });
         if (!live()) return;
+        await markHandoffHandled(request.id);
         setPrep(null);
         const { state } = await TrackPlayer.getPlaybackState();
         if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {

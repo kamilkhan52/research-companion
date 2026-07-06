@@ -24,14 +24,17 @@ const doneJob: AudioJob = {
 function QueueProbe() {
   const audio = useAudio();
   return (
-    <Pressable
-      accessibilityLabel="Queue response"
-      onPress={() => audio.enqueueJob(
-        { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
-        'audio-job',
-        'project-a',
-      )}
-    />
+    <>
+      <Pressable
+        accessibilityLabel="Queue response"
+        onPress={() => audio.enqueueJob(
+          { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
+          'audio-job',
+          'project-a',
+        )}
+      />
+      <Pressable accessibilityLabel="Cancel queue" onPress={audio.cancelPrep} />
+    </>
   );
 }
 
@@ -70,4 +73,25 @@ test('the first queued listening track starts automatically', async () => {
 
   await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
   expect(TrackPlayer.reset).not.toHaveBeenCalled();
+});
+
+test('cancellation removes a track whose add finishes after the queue was cleared', async () => {
+  let finishAdd!: () => void;
+  const deferredAdd = new Promise<void>((resolve) => { finishAdd = resolve; });
+  jest.mocked(api.getAudioJob).mockResolvedValueOnce({ job: doneJob });
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({ id: 'current-track' } as never);
+  jest.mocked(TrackPlayer.add).mockImplementationOnce(async () => deferredAdd);
+
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><QueueProbe /></AudioProvider>
+    </ProjectProvider>,
+  );
+  await fireEventAsync.press(screen.getByLabelText('Queue response'));
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
+  await fireEventAsync.press(screen.getByLabelText('Cancel queue'));
+  finishAdd();
+
+  await waitFor(() => expect(TrackPlayer.removeUpcomingTracks).toHaveBeenCalledTimes(2));
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
 });

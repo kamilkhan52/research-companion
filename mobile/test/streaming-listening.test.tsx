@@ -31,6 +31,7 @@ const baseJob: ChatJob = {
   delivery_mode: 'listening',
   audio_job_id: null,
   audio_error: null,
+  assistant_index: null,
 };
 
 test('listening turns send delivery mode and hand the completed audio job to the queue', async () => {
@@ -47,6 +48,7 @@ test('listening turns send delivery mode and hand the completed audio job to the
     },
     state: 'in_discussion',
     audio_job_id: 'audio-job',
+    assistant_index: 0,
     finished_at: '2026-07-06T00:00:01Z',
   };
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });

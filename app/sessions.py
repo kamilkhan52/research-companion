@@ -64,11 +64,12 @@ def _jsonl(slug: str):
     return _sessions_dir() / f"{slug}.jsonl"
 
 
-def _append_record(slug: str, record: dict) -> None:
+def _append_record(slug: str, record: dict) -> dict:
     _sessions_dir().mkdir(parents=True, exist_ok=True)
     record["ts"] = _now()
     with _jsonl(slug).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
 
 
 def read_records(slug: str) -> list[dict]:
@@ -111,10 +112,32 @@ def record_user(slug: str, text: str, kind: str = "reply") -> None:
     _append_record(slug, {"role": "user", "kind": kind, "text": text})
 
 
-def record_assistant(slug: str, turn: Turn) -> None:
-    _append_record(slug, {"role": "assistant", **turn.to_dict()})
+def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
+                     audio_job_id: str | None = None,
+                     audio_error: str | None = None) -> tuple[str, int]:
+    assistant_index = sum(r.get("role") == "assistant" for r in read_records(slug))
+    record = _append_record(slug, {
+        "role": "assistant",
+        **turn.to_dict(),
+        "delivery_mode": delivery_mode,
+        "audio_job_id": audio_job_id,
+        "audio_error": audio_error,
+    })
     if turn.proposed_commit:
         set_state(slug, NOTES_DRAFTED)
+    return record["ts"], assistant_index
+
+
+def update_assistant_audio(slug: str, timestamp: str, *, audio_job_id: str | None,
+                           audio_error: str | None) -> None:
+    """Update only the listening handoff on one already-recorded assistant turn."""
+    records = read_records(slug)
+    for record in reversed(records):
+        if record.get("role") == "assistant" and record.get("ts") == timestamp:
+            record["audio_job_id"] = audio_job_id
+            record["audio_error"] = audio_error
+            _rewrite(slug, records)
+            return
 
 
 def build_history(slug: str) -> list[dict]:
@@ -141,17 +164,23 @@ def build_history(slug: str) -> list[dict]:
 def transcript(slug: str) -> list[dict]:
     """UI-facing transcript (excludes the regenerated opening message)."""
     out = []
+    assistant_index = -1
     for rec in read_records(slug):
         if rec["role"] == "user":
             if rec.get("kind") == "reply":  # hide internal finish/revision prompts
                 out.append({"role": "user", "text": rec["text"]})
         else:
+            assistant_index += 1
             out.append({
                 "role": "assistant",
+                "assistant_index": assistant_index,
                 "canonical": rec.get("canonical", ""),
                 "narration": rec.get("narration", ""),
                 "state_signal": rec.get("state_signal", ""),
                 "proposed_commit": rec.get("proposed_commit"),
+                "delivery_mode": rec.get("delivery_mode", "reading"),
+                "audio_job_id": rec.get("audio_job_id"),
+                "audio_error": rec.get("audio_error"),
             })
     return out
 

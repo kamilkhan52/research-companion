@@ -172,7 +172,12 @@ def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
 
     assert finished.audio_job_id == "audio-job"
     assert finished.audio_error is None
+    assert finished.assistant_index == 0
     assert captured == {"text": "The answer.", "billing_project": temp_project}
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["assistant_index"] == 0
+    assert transcript[-1]["delivery_mode"] == "listening"
+    assert transcript[-1]["audio_job_id"] == "audio-job"
 
 
 def test_reading_turn_does_not_start_audio(temp_project, monkeypatch):
@@ -208,6 +213,9 @@ def test_audio_start_failure_does_not_fail_recorded_listening_turn(temp_project,
     assert finished.audio_job_id is None
     assert "TTS unavailable" in (finished.audio_error or "")
     assert sessions.read_records(slug)[-1]["canonical"] == "The answer."
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["audio_job_id"] is None
+    assert "TTS unavailable" in transcript[-1]["audio_error"]
 
 
 def test_job_route_passes_listening_delivery_mode(temp_project, monkeypatch):

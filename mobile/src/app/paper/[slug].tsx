@@ -30,6 +30,7 @@ import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
 import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
@@ -57,10 +58,10 @@ export default function DiscussionScreen() {
     if (!listeningMode || job.delivery_mode !== 'listening') return;
     if (job.audio_error) throw new Error(job.audio_error);
     const canonical = job.turn?.canonical;
-    if (!job.audio_job_id || !canonical) return;
+    if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
     audio.enqueueJob(
       {
-        id: `chat:${job.id}`,
+        id: messageAudioId(pid, slug, job.assistant_index),
         title: session.data?.paper.title ?? 'Narration',
         text: canonical,
       },
@@ -80,6 +81,14 @@ export default function DiscussionScreen() {
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
   const paths = pid ? turnJobPaths(pid) : null;
+  useListeningHandoffRecovery({
+    enabled: listeningMode,
+    project: pid,
+    slug: slug ?? null,
+    title: session.data?.paper.title ?? 'Narration',
+    transcript,
+    enqueueJob: audio.enqueueJob,
+  });
 
   // Reattach to a turn that's still generating for this paper (we navigated away mid-turn,
   // the app was backgrounded, the connection dropped…). The job kept running server-side.
@@ -239,7 +248,7 @@ export default function DiscussionScreen() {
                 <Message
                   key={i}
                   entry={entry}
-                  audioId={`${slug}:${i}`}
+                  audioId={messageAudioId(pid, slug!, entry.assistant_index)}
                   title={session.data?.paper.title ?? 'Narration'}
                 />
               ),
@@ -622,7 +631,7 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
-  const audioError = audio.errorById[audioId];
+  const audioError = audio.errorById[audioId] ?? entry.audio_error;
   const [copied, setCopied] = useState(false);
   const canonical = entry.canonical;
 
