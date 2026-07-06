@@ -217,6 +217,27 @@ def test_prompt_api_rejects_vault_managed_writes_with_conflict(prompt_environmen
     assert exc_info.value.status_code == 409
 
 
+def test_project_prompt_api_is_read_only_and_never_writes_default_project(
+    prompt_environment, tmp_path, monkeypatch,
+):
+    project_root = tmp_path / "projects"
+    monkeypatch.setattr(config, "PROJECTS_ROOT", project_root)
+    req = settings_router.PromptReq(key="reading_method", value="unsafe write")
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.save_prompt(req)
+    assert exc_info.value.status_code == 409
+    assert "managed by project file" in exc_info.value.detail
+    assert not (project_root / config.DEFAULT_PROJECT_ID / "reading-method.md").exists()
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.reset_prompt(settings_router.PromptReq(key="reading_method"))
+    assert exc_info.value.status_code == 409
+
+    status = next(item for item in prompts.listing() if item["key"] == "reading_method")
+    assert status["managed"] is True
+
+
 def test_prompt_inventory_scopes_project_file_path(prompt_environment, tmp_path, monkeypatch):
     project_root = tmp_path / "projects"
     project = project_root / "three-d-dram"

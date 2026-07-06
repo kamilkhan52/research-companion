@@ -17,6 +17,7 @@ from app import config  # noqa: E402
 from app.vault_migration import (  # noqa: E402
     VaultMigrationError,
     migrate_to_vault,
+    prompt_destination,
     seed_prompt_files,
 )
 
@@ -60,8 +61,8 @@ def main() -> int:
         return 2
     try:
         if args.prompts_only:
-            prompt_destination = args.prompts_dir or args.vault / "Prompts"
-            prompt_result = seed_prompt_files(prompt_destination, apply=args.apply)
+            destination = prompt_destination(args.vault, args.prompts_dir)
+            prompt_result = seed_prompt_files(destination, apply=args.apply)
             mode = "APPLIED" if args.apply else "DRY RUN — no files changed"
             print(mode)
             print(f"Prompt directory: {prompt_result.destination_prompts}")

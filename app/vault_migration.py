@@ -39,6 +39,12 @@ class PromptSeedResult:
     prompt_files: tuple[Path, ...]
 
 
+def prompt_destination(vault_root: Path, override: Path | None = None) -> Path:
+    """Effective prompt target: explicit argument, configured override, then vault default."""
+    destination = override or config.PROMPTS_DIR or vault_root / "Prompts"
+    return destination.expanduser().resolve()
+
+
 def seed_prompt_files(destination_prompts: Path, *, apply: bool = False) -> PromptSeedResult:
     """Plan or seed missing global prompt files without touching projects or existing files."""
     destination = destination_prompts.expanduser().resolve()
@@ -116,7 +122,7 @@ def migrate_to_vault(vault_root: Path, *, source_projects: Path | None = None,
     vault = vault_root.expanduser().resolve()
     source = (source_projects or config.PROJECTS_ROOT).expanduser().resolve()
     destination_projects = (vault / "Projects").resolve()
-    destination_prompts = (prompts_dir or vault / "Prompts").expanduser().resolve()
+    destination_prompts = prompt_destination(vault, prompts_dir)
 
     if source == destination_projects:
         raise VaultMigrationError("Source and destination Projects directories are the same.")

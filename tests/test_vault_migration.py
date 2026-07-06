@@ -5,7 +5,12 @@ import subprocess
 
 import pytest
 from app import config, prompts
-from app.vault_migration import VaultMigrationError, migrate_to_vault, seed_prompt_files
+from app.vault_migration import (
+    VaultMigrationError,
+    migrate_to_vault,
+    prompt_destination,
+    seed_prompt_files,
+)
 
 
 def _git(repo, *args: str) -> str:
@@ -116,6 +121,29 @@ def test_prompt_only_reseed_works_with_existing_projects_and_preserves_edits(
     graph = prompt_root / prompts.REGISTRY_BY_KEY["graph_extraction"].relative_path
     assert graph.read_text() == prompts.REGISTRY_BY_KEY["graph_extraction"].bundled_default
     assert (projects / "existing-project.txt").read_text() == "untouched"
+
+
+def test_prompt_destination_precedence(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    configured = tmp_path / "configured-prompts"
+    explicit = tmp_path / "explicit-prompts"
+
+    monkeypatch.setattr(config, "PROMPTS_DIR", configured)
+    assert prompt_destination(vault, explicit) == explicit.resolve()
+    assert prompt_destination(vault) == configured.resolve()
+
+    monkeypatch.setattr(config, "PROMPTS_DIR", None)
+    assert prompt_destination(vault) == (vault / "Prompts").resolve()
+
+
+def test_full_migration_uses_configured_prompt_destination(migration_environment, monkeypatch):
+    source, _, _, vault = migration_environment
+    configured = vault.parent / "configured-prompts"
+    monkeypatch.setattr(config, "PROMPTS_DIR", configured)
+
+    result = migrate_to_vault(vault, source_projects=source)
+    assert result.destination_prompts == configured.resolve()
+    assert all(path.is_relative_to(configured) for path in result.prompt_files)
 
 
 def test_nonempty_projects_destination_is_refused(migration_environment):
