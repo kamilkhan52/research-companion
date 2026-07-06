@@ -31,6 +31,7 @@ import { streamPost } from '@/api/stream';
 import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
+import { isHandoffEligible } from '@/audio/handoffState';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
@@ -56,6 +57,7 @@ export default function DiscussionScreen() {
   const { listeningMode, setListeningMode } = useListeningMode();
   const handleTurnDone = useCallback(async (job: ChatJob) => {
     if (!listeningMode || job.delivery_mode !== 'listening') return;
+    if (!(await isHandoffEligible(job.id))) return;
     if (job.audio_error) throw new Error(job.audio_error);
     const canonical = job.turn?.canonical;
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
@@ -67,8 +69,9 @@ export default function DiscussionScreen() {
       },
       job.audio_job_id,
       pid,
+      job.id,
     );
-  }, [audio, listeningMode, pid, session.data?.paper.title]);
+  }, [audio, listeningMode, pid, session.data?.paper.title, slug]);
   const stream = useStreamingTurn(
     pid,
     slug ?? null,

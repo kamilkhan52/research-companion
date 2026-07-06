@@ -177,6 +177,7 @@ def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
     transcript = sessions.transcript(slug)
     assert transcript[-1]["assistant_index"] == 0
     assert transcript[-1]["delivery_mode"] == "listening"
+    assert transcript[-1]["chat_job_id"] == finished.id
     assert transcript[-1]["audio_job_id"] == "audio-job"
 
 

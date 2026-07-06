@@ -13,6 +13,7 @@ import { apiUrl, authHeaders } from '@/api/client';
 import * as api from '@/api/endpoints';
 import type { AudioJob } from '@/api/types';
 import { setupPlayer } from '@/audio/setup';
+import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
 
 interface PlayRequest {
@@ -38,7 +39,12 @@ interface AudioContextValue {
   playText: (req: PlayRequest) => Promise<void>;
   /** Queue audio already started by a listening-mode chat job. Preparation may overlap current
    * playback; the resulting track is appended and never interrupts what is playing. */
-  enqueueJob: (req: PlayRequest, audioJobId: string, billingProject: string | null) => void;
+  enqueueJob: (
+    req: PlayRequest,
+    audioJobId: string,
+    billingProject: string | null,
+    chatJobId?: string | null,
+  ) => void;
   /** The in-flight preparation, or null. Global, so the mini player can show it anywhere. */
   prep: PrepState | null;
   /** Stop watching the in-flight preparation (the server job continues and caches). */
@@ -99,7 +105,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const generation = useRef(0);
   const queueGeneration = useRef(0);
   const queueTail = useRef<Promise<void>>(Promise.resolve());
-  const queuedIds = useRef(new Set<string>());
+  const queuedHandoffs = useRef(new Set<string>());
   // The initiating project, for billing the narration LLM spend (audio itself is app-global).
   // Held in a ref so playText keeps a stable identity as the active project changes.
   const { activePid } = useActiveProject();
@@ -119,8 +125,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const cancelPrep = useCallback(() => {
     generation.current += 1;
     queueGeneration.current += 1;
-    queuedIds.current.clear();
+    queuedHandoffs.current.clear();
     setPrep(null);
+    void dismissEligibleHandoffs();
     const removeUpcoming = () => TrackPlayer.removeUpcomingTracks().catch(() => {});
     void removeUpcoming();
     // Serialize a second cleanup after any in-flight add. If cancellation wins while native
@@ -233,14 +240,20 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   );
 
   const enqueueJob = useCallback((request: PlayRequest, audioJobId: string,
-                                  billingProject: string | null) => {
-    if (queuedIds.current.has(request.id)) return;
-    queuedIds.current.add(request.id);
+                                  billingProject: string | null,
+                                  chatJobId?: string | null) => {
+    const handoffKey = `${request.id}|${chatJobId ?? audioJobId}|${audioJobId}`;
+    if (queuedHandoffs.current.has(handoffKey)) return;
+    queuedHandoffs.current.add(handoffKey);
     const queueGen = queueGeneration.current;
 
     queueTail.current = queueTail.current.then(async () => {
       if (queueGeneration.current !== queueGen) return;
-      if ((await handledHandoffs()).includes(request.id)) return;
+      if ((await handledHandoffs()).includes(handoffKey)) {
+        if (chatJobId) await consumeEligibleHandoff(chatJobId);
+        return;
+      }
+      if (queueGeneration.current !== queueGen) return;
       const live = () => queueGeneration.current === queueGen;
       setErrorById((errors) => {
         if (!(request.id in errors)) return errors;
@@ -280,6 +293,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           throw new Error(job.error ?? 'Could not prepare queued audio.');
         }
 
+        const queue = await TrackPlayer.getQueue();
+        const staleIndexes = queue
+          .map((track, index) => String(track.id) === request.id ? index : -1)
+          .filter((index) => index >= 0);
+        if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
         const existingTrack = await TrackPlayer.getActiveTrack();
         await TrackPlayer.add({
           id: request.id,
@@ -289,7 +307,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           headers: authHeaders(),
         });
         if (!live()) return;
-        await markHandoffHandled(request.id);
+        await markHandoffHandled(handoffKey);
+        if (chatJobId) await consumeEligibleHandoff(chatJobId);
         setPrep(null);
         const { state } = await TrackPlayer.getPlaybackState();
         if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {
@@ -299,7 +318,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         }
       } catch (e) {
         if (!live()) return;
-        queuedIds.current.delete(request.id);
+        queuedHandoffs.current.delete(handoffKey);
+        if (chatJobId) await consumeEligibleHandoff(chatJobId);
         setErrorById((errors) => ({
           ...errors,
           [request.id]: (e as Error).message ?? 'Could not prepare queued audio.',

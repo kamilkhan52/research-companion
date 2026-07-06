@@ -95,3 +95,44 @@ test('cancellation removes a track whose add finishes after the queue was cleare
   await waitFor(() => expect(TrackPlayer.removeUpcomingTracks).toHaveBeenCalledTimes(2));
   expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
+
+test('regeneration replaces stale slot audio and queues the new handoff version', async () => {
+  const replacement = { ...doneJob, id: 'audio-job-2', url: '/api/audio/def.mp3' };
+  jest.mocked(api.getAudioJob)
+    .mockResolvedValueOnce({ job: doneJob })
+    .mockResolvedValueOnce({ job: replacement });
+  jest.mocked(TrackPlayer.getQueue)
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ id: 'turn-1' }] as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-1', title: 'Paper', text: 'First response.' },
+    'audio-job',
+    'project-a',
+    'chat-job-1',
+  );
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
+
+  audio.enqueueJob(
+    { id: 'turn-1', title: 'Paper', text: 'Replacement response.' },
+    'audio-job-2',
+    'project-a',
+    'chat-job-2',
+  );
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(2));
+
+  expect(api.getAudioJob).toHaveBeenNthCalledWith(2, 'audio-job-2');
+  expect(TrackPlayer.remove).toHaveBeenCalledWith([0]);
+});

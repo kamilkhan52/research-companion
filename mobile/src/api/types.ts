@@ -52,6 +52,7 @@ export type TranscriptEntry =
       proposed_commit: ProposedCommit | null;
       assistant_index: number;
       delivery_mode: 'reading' | 'listening';
+      chat_job_id: string | null;
       audio_job_id: string | null;
       audio_error: string | null;
     };

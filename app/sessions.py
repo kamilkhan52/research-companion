@@ -113,6 +113,7 @@ def record_user(slug: str, text: str, kind: str = "reply") -> None:
 
 
 def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
+                     chat_job_id: str | None = None,
                      audio_job_id: str | None = None,
                      audio_error: str | None = None) -> tuple[str, int]:
     assistant_index = sum(r.get("role") == "assistant" for r in read_records(slug))
@@ -120,6 +121,7 @@ def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
         "role": "assistant",
         **turn.to_dict(),
         "delivery_mode": delivery_mode,
+        "chat_job_id": chat_job_id,
         "audio_job_id": audio_job_id,
         "audio_error": audio_error,
     })
@@ -179,6 +181,7 @@ def transcript(slug: str) -> list[dict]:
                 "state_signal": rec.get("state_signal", ""),
                 "proposed_commit": rec.get("proposed_commit"),
                 "delivery_mode": rec.get("delivery_mode", "reading"),
+                "chat_job_id": rec.get("chat_job_id"),
                 "audio_job_id": rec.get("audio_job_id"),
                 "audio_error": rec.get("audio_error"),
             })

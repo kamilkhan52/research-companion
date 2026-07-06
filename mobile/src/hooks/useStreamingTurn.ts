@@ -13,6 +13,11 @@ import { apiPost, ApiError } from '@/api/client';
 import { getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
+import {
+  consumeEligibleHandoff,
+  currentHandoffEligibilityEpoch,
+  registerEligibleHandoff,
+} from '@/audio/handoffState';
 
 const POLL_MS = 900;
 // Consecutive failed polls before we surface a connection warning (the job itself is safe
@@ -118,6 +123,9 @@ export function useStreamingTurn(
         }
         if (snap.status === 'error') {
           watchRef.current = null;
+          if (snap.delivery_mode === 'listening') {
+            await consumeEligibleHandoff(snap.id);
+          }
           setError(snap.error ?? 'The response failed.');
           setStreaming(false);
           setPendingUser(null);
@@ -136,11 +144,15 @@ export function useStreamingTurn(
       setItems([]);
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
+      const handoffEpoch = currentHandoffEligibilityEpoch();
       try {
         const payload = body && typeof body === 'object' && !Array.isArray(body)
           ? { ...(body as Record<string, unknown>), delivery_mode: deliveryMode }
           : body;
         const { job } = await apiPost<{ job: ChatJob }>(path, payload);
+        if (job.delivery_mode === 'listening') {
+          await registerEligibleHandoff(job.id, handoffEpoch);
+        }
         await watch(job);
       } catch (e) {
         setError((e as Error).message ?? 'Could not start the response.');
@@ -156,9 +168,13 @@ export function useStreamingTurn(
   const resume = useCallback(async () => {
     if (!pid || !slug || busyRef.current) return;
     busyRef.current = true;
+    const handoffEpoch = currentHandoffEligibilityEpoch();
     try {
       const { job } = await getActiveChatJob(pid, slug);
       if (!job || !aliveRef.current) return;
+      if (job.delivery_mode === 'listening' && deliveryMode === 'listening') {
+        await registerEligibleHandoff(job.id, handoffEpoch);
+      }
       // The message that started this turn is already recorded server-side; refresh the
       // transcript so it shows while we reattach to the live turn.
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
@@ -168,7 +184,7 @@ export function useStreamingTurn(
     } finally {
       busyRef.current = false;
     }
-  }, [pid, slug, qc, watch]);
+  }, [deliveryMode, pid, slug, qc, watch]);
 
   const cancel = useCallback(() => {
     watchRef.current = null;

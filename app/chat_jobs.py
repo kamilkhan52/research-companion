@@ -106,6 +106,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             job.slug,
             turn,
             delivery_mode=job.delivery_mode,
+            chat_job_id=job.id,
             audio_job_id=audio_job_id,
             audio_error=audio_error,
         )
