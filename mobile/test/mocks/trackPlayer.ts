@@ -37,6 +37,7 @@ export const trackPlayerMock = {
   updateOptions: jest.fn(async () => undefined),
   getPlaybackState: jest.fn(async () => ({ state: State.None })),
   getActiveTrack: jest.fn(async () => undefined),
+  getActiveTrackIndex: jest.fn(async () => undefined),
   getQueue: jest.fn(async () => []),
   reset: jest.fn(async () => undefined),
   removeUpcomingTracks: jest.fn(async () => undefined),

@@ -4,8 +4,10 @@ import TrackPlayer, { State } from 'react-native-track-player';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
-import type { AudioJob } from '@/api/types';
+import type { AudioJob, TranscriptEntry } from '@/api/types';
 import { AudioProvider, useAudio } from '@/audio/AudioProvider';
+import { isHandoffEligible, registerEligibleHandoff } from '@/audio/handoffState';
+import { useListeningHandoffRecovery } from '@/audio/identity';
 import { ProjectProvider } from '@/store/project';
 
 const doneJob: AudioJob = {
@@ -135,4 +137,97 @@ test('regeneration replaces stale slot audio and queues the new handoff version'
 
   expect(api.getAudioJob).toHaveBeenNthCalledWith(2, 'audio-job-2');
   expect(TrackPlayer.remove).toHaveBeenCalledWith([0]);
+});
+
+test('regeneration keeps the active slot playing and appends its replacement', async () => {
+  const replacement = { ...doneJob, id: 'audio-job-2', url: '/api/audio/def.mp3' };
+  jest.mocked(api.getAudioJob).mockResolvedValueOnce({ job: replacement });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(0);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([{ id: 'turn-1' }] as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({ id: 'turn-1' } as never);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Playing });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-1', title: 'Paper', text: 'Replacement response.' },
+    'audio-job-2',
+    'project-a',
+    'chat-job-2',
+  );
+
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
+  expect(TrackPlayer.remove).not.toHaveBeenCalled();
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
+});
+
+test('polling failure retains eligibility and recovers automatically after provider remount', async () => {
+  const runningJob: AudioJob = {
+    ...doneJob,
+    status: 'running',
+    url: null,
+    finished_at: null,
+  };
+  const pollError = Object.assign(new Error('Temporarily offline'), { status: 503 });
+  jest.mocked(api.getAudioJob)
+    .mockResolvedValueOnce({ job: runningJob })
+    .mockRejectedValueOnce(pollError)
+    .mockResolvedValueOnce({ job: doneJob });
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+  await registerEligibleHandoff('chat-job-1');
+  const transcript: TranscriptEntry[] = [{
+    role: 'assistant',
+    canonical: 'Canonical response.',
+    narration: '',
+    state_signal: '',
+    proposed_commit: null,
+    assistant_index: 0,
+    delivery_mode: 'listening',
+    chat_job_id: 'chat-job-1',
+    audio_job_id: 'audio-job',
+    audio_error: null,
+  }];
+
+  let audio!: ReturnType<typeof useAudio>;
+  function RecoveryProbe() {
+    audio = useAudio();
+    useListeningHandoffRecovery({
+      enabled: true,
+      project: 'project-a',
+      slug: 'paper-a',
+      title: 'Paper',
+      transcript,
+      enqueueJob: audio.enqueueJob,
+    });
+    return null;
+  }
+  const first = await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><RecoveryProbe /></AudioProvider>
+    </ProjectProvider>,
+  );
+  await waitFor(
+    () => expect(audio.errorById['project-a:paper-a:0']).toBe('Temporarily offline'),
+    { timeout: 2500 },
+  );
+  expect(await isHandoffEligible('chat-job-1')).toBe(true);
+  await first.unmountAsync();
+
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><RecoveryProbe /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(isHandoffEligible('chat-job-1')).resolves.toBe(false));
 });

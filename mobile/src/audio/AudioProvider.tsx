@@ -262,6 +262,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       });
       setPrep({ id: request.id, title: request.title, stage: 'starting', done: 0, total: 0 });
 
+      let terminalAudioFailure = false;
       try {
         await setupPlayer();
         let job: AudioJob;
@@ -290,12 +291,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           applyJob(request.id, request.title, job);
         }
         if (job.status === 'error' || !job.url) {
+          terminalAudioFailure = true;
           throw new Error(job.error ?? 'Could not prepare queued audio.');
         }
 
+        const activeIndex = await TrackPlayer.getActiveTrackIndex();
         const queue = await TrackPlayer.getQueue();
         const staleIndexes = queue
-          .map((track, index) => String(track.id) === request.id ? index : -1)
+          .map((track, index) => (
+            String(track.id) === request.id && index !== activeIndex ? index : -1
+          ))
           .filter((index) => index >= 0);
         if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
         const existingTrack = await TrackPlayer.getActiveTrack();
@@ -319,7 +324,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (!live()) return;
         queuedHandoffs.current.delete(handoffKey);
-        if (chatJobId) await consumeEligibleHandoff(chatJobId);
+        if (chatJobId && terminalAudioFailure) await consumeEligibleHandoff(chatJobId);
         setErrorById((errors) => ({
           ...errors,
           [request.id]: (e as Error).message ?? 'Could not prepare queued audio.',
