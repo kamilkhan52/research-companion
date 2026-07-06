@@ -27,7 +27,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 0.2 | Mobile Jest/Router test foundation + CI gate | [#13](https://github.com/kamilkhan52/research-companion/pull/13) | Complete |
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
-| 1.3 | Self-contained figure/table/section descriptions | — | Planned |
+| 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
 | 2.1 | Device Listening mode + automatic queued audio | — | Planned |
 | 2.2 | Grounded preview cues from the live response | — | Planned |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
@@ -145,6 +145,14 @@ Update analysis and narration defaults with this invariant: the researcher may n
 read the paper. A relevant figure, diagram, table, algorithm, equation, or section is described at
 the point of use from available text/captions. If visual details are unavailable, state that limit
 and explain the surrounding argument; never say to inspect it “later” and never invent content.
+
+Verification record ([PR #17](https://github.com/kamilkhan52/research-companion/pull/17)):
+
+- full Ruff and 329-test backend suites pass; all five mobile Jest suites and TypeScript pass;
+- tests prove the shared self-contained guidance is composed into both analysis and narration and
+  that the defaults cover figures, diagrams, tables, algorithms, equations, and sections;
+- an existing vault receives the new invariant through missing-file fallback immediately, while
+  prompt-only seeding can materialize the new shared Markdown file without replacing prior edits.
 
 Acceptance for Phase 1:
 

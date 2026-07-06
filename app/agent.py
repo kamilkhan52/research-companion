@@ -29,9 +29,12 @@ _SECTION_RE = re.compile(
 
 def _system_for(slug: str) -> str:
     """The system prompt + assembled context for a turn (review chat vs paper chat)."""
+    access = prompts.get("self_contained_research")
     if slug == REVIEW_SLUG:
-        return prompts.get("review_system") + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug)
-    return prompts.get("analysis_system") + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug)
+        return (prompts.get("review_system") + "\n\n" + access
+                + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug))
+    return (prompts.get("analysis_system") + "\n\n" + access
+            + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug))
 
 
 
@@ -154,7 +157,9 @@ def narrate(canonical_text: str) -> str:
     settings = config.load_settings()
     model = settings.get("narration_model") or settings.get("model")
     messages = [
-        {"role": "system", "content": prompts.get("narration_system")},
+        {"role": "system", "content": (
+            prompts.get("narration_system") + "\n\n" + prompts.get("self_contained_research")
+        )},
         {"role": "user", "content": canonical_text},
     ]
     return _complete(messages, model=model, temperature=0.2, operation="narration").strip()

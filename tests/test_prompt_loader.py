@@ -68,6 +68,20 @@ def test_registry_has_stable_file_validation_metadata():
         prompts._validate(spec, spec.bundled_default)
 
 
+def test_default_research_prompts_are_self_contained_and_never_defer_visuals():
+    analysis = prompts.DEFAULTS["analysis_system"]
+    narration = prompts.DEFAULTS["narration_system"]
+    shared = prompts.DEFAULTS["self_contained_research"]
+    reading_method = prompts.REGISTRY_BY_KEY["reading_method"].bundled_default
+
+    assert "may never separately read or open the paper" in analysis
+    assert "Never turn a reference into a reminder" in narration
+    assert "Never tell the researcher to inspect it\nlater" in shared
+    for term in ("figure", "diagram", "table", "algorithm", "equation", "section"):
+        assert term in shared
+    assert "never defer the reader\nto inspect it later or invent unseen content" in reading_method
+
+
 def test_vault_then_legacy_then_default_precedence(prompt_environment):
     config.set_prompt_override("tts_instructions", "legacy override")
     assert prompts.get("tts_instructions") == "legacy override"

@@ -50,7 +50,11 @@ We will read research papers as research academics. This involves:
 The first response after the paper is shared should be a comprehensive summary of the problem
 definition, solution/contributions, methodology, experimental setup, and evaluation.
 
-Figures: highlight any figures referenced in the section being discussed.
+Self-contained references: assume the researcher may never separately open the paper. Whenever a
+figure, diagram, table, algorithm, equation, or section matters, describe the relevant content and
+its role in the argument at that point using available text and captions. If the source does not
+expose the needed visual detail, say so and explain the surrounding claim; never defer the reader
+to inspect it later or invent unseen content.
 
 Quotes: quotes from the paper are essential in any response that refers to the paper.
 
@@ -70,10 +74,12 @@ follow it exactly (thoroughness, quoting the paper, paragraphs over bullet point
 reason-before-conclusion, figure callouts, situating each paper relative to the list).
 
 Write the best possible scholarly response — this is the written record. Use markdown, real \
-equations and notation, quotation marks for quotes from the paper, explicit figure references \
-("see Figure 5"), and links where useful. Do NOT worry about audio or text-to-speech in any \
-way: a separate downstream step adapts your text for listening, so you never simplify or \
-restructure for the ear. Just write the scholarly analysis well.
+equations and notation, quotation marks for quotes from the paper, named figure references, and \
+links where useful. Assume the researcher may never separately read or open the paper: a reference \
+must be understandable from this response itself, not merely say "see Figure 5." Do NOT worry \
+about audio or text-to-speech in any other way: a separate downstream step adapts your text for \
+listening, so you never simplify or restructure for the ear. Just write the scholarly analysis \
+well.
 
 Whenever you present a mathematical equation or formula, immediately follow it with a single \
 plain-English sentence explaining what it means or computes — the intuition in words, not a \
@@ -159,8 +165,11 @@ Remove inline citation markers like "[12]" or "(Vaswani et al., 2017)" only if t
 reference tags; keep author/work names that are part of a sentence.
 - Keep quotations word-for-word, but introduce them so they parse as speech, e.g. \
 'the authors write, quote, "we split a prefill request into equal sized chunks", end quote'.
-- Convert references to figures, tables, equations, sections, or algorithms into spoken \
-reminders, e.g. "see Figure 5" -> "make a note to look at Figure 5 later".
+- Preserve in-place descriptions of figures, diagrams, tables, algorithms, equations, and sections \
+because the listener may never separately read the paper. Never turn a reference into a reminder \
+to inspect it later. If the source passage contains only a bare reference, say that the supplied \
+passage does not describe its visual details, preserve the surrounding claim, and never invent \
+content that is not in the passage.
 - You may split an overly long sentence into two for prosody, but never merge or drop content.
 
 Output ONLY the spoken transcript text. No preamble, no markdown, no section headers."""
@@ -312,6 +321,21 @@ _TTS_INSTRUCTIONS = (
     "explaining a research paper to a peer. Keep technical terms crisp and unhurried."
 )
 
+_SELF_CONTAINED_RESEARCH = """Treat every response as the researcher's complete access to this
+part of the paper: they may never separately read or open the paper.
+
+When source context is available, do not merely point to a figure, diagram, table, algorithm,
+equation, or section. At the point where it matters, describe the relevant content and explain what
+it contributes to the argument, using only the paper text, captions, and other supplied context. If
+the available source does not expose the needed visual or structural detail, state that limitation
+and still explain the surrounding claim. Never invent unseen axes, values, shapes, relationships,
+or section content.
+
+When adapting an existing response for narration, preserve those grounded descriptions in place.
+If the supplied response contains only a bare reference, state that its details are not present in
+the supplied passage and preserve the surrounding claim. Never tell the researcher to inspect it
+later. These rules supersede any earlier instruction to turn references into later reminders."""
+
 _GRAPH_EXTRACTION = """You are a meticulous research-paper bibliography analyst. You will be \
 given the full text of one academic paper. Extract its reference list and assess how each \
 reference is actually used in the paper's body.
@@ -436,6 +460,15 @@ REGISTRY = (
         bundled_default=_ANALYSIS_SYSTEM,
         required_literals=_SECTION_PROTOCOL,
         description="Governs the analysis model and its machine-parsed section protocol.",
+    ),
+    PromptSpec(
+        key="self_contained_research",
+        label="Self-contained research references",
+        relative_path="Shared/Self-contained Research.md",
+        bundled_default=_SELF_CONTAINED_RESEARCH,
+        description=(
+            "Requires in-place, grounded descriptions when a researcher may not open the paper."
+        ),
     ),
     PromptSpec(
         key="narration_system",
