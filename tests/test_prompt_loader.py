@@ -6,6 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from app import config, prompts
+from app.routers import settings as settings_router
+from fastapi import HTTPException
 
 
 @pytest.fixture
@@ -162,7 +164,54 @@ def test_concurrent_reads_share_one_coherent_value(prompt_environment):
 
 
 def test_vault_managed_prompt_cannot_be_silently_overridden(prompt_environment):
-    with pytest.raises(prompts.PromptError, match="managed by file"):
+    with pytest.raises(prompts.PromptManagedError, match="managed by file"):
         prompts.set_prompt("tts_instructions", "ignored override")
-    with pytest.raises(prompts.PromptError, match="managed by file"):
+    with pytest.raises(prompts.PromptManagedError, match="managed by file"):
         prompts.reset("tts_instructions")
+
+
+def test_prompt_inventory_reports_exact_live_status(prompt_environment):
+    path = _path(prompt_environment, "graph_extraction")
+    path.parent.mkdir(parents=True)
+    path.write_text(prompts.DEFAULTS["graph_extraction"], encoding="utf-8")
+
+    status = next(item for item in prompts.listing() if item["key"] == "graph_extraction")
+    assert status["managed"] is True
+    assert status["source"] == "vault"
+    assert status["path"] == str(path)
+    assert status["valid"] is True
+    assert status["error"] is None
+    assert status["modified_at"]
+    assert len(status["effective_hash"]) == 64
+
+
+def test_prompt_api_rejects_vault_managed_writes_with_conflict(prompt_environment):
+    req = settings_router.PromptReq(key="tts_instructions", value="ignored override")
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.save_prompt(req)
+    assert exc_info.value.status_code == 409
+    assert str(_path(prompt_environment, "tts_instructions")) in exc_info.value.detail
+
+    # The storage conflict takes precedence over content validation: every attempted API write
+    # to an authoritative vault prompt has the same HTTP contract.
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.save_prompt(settings_router.PromptReq(key="opening_message", value=""))
+    assert exc_info.value.status_code == 409
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.reset_prompt(settings_router.PromptReq(key="tts_instructions"))
+    assert exc_info.value.status_code == 409
+
+
+def test_prompt_inventory_scopes_project_file_path(prompt_environment, tmp_path, monkeypatch):
+    project_root = tmp_path / "projects"
+    project = project_root / "three-d-dram"
+    project.mkdir(parents=True)
+    (project / "reading-method.md").write_text("project method")
+    monkeypatch.setattr(config, "PROJECTS_ROOT", project_root)
+
+    response = settings_router.get_prompts(project="three-d-dram")
+    status = next(item for item in response["prompts"] if item["key"] == "reading_method")
+    assert status["path"] == str(project / "reading-method.md")
+    assert status["value"] == "project method"
+    assert config.active_project_id() is None

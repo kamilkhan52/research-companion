@@ -4,8 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .. import config, prompts, tts
-from ..prompts import PromptError
+from .. import config, projects, prompts, tts
+from ..prompts import PromptError, PromptManagedError
 
 router = APIRouter()
 
@@ -63,15 +63,24 @@ def write_settings(req: SettingsReq):
 
 
 @router.get("/api/prompts")
-def get_prompts():
-    """All workflow prompts (built-in default or user-edited), for the in-app editor."""
-    return {"prompts": prompts.listing()}
+def get_prompts(project: str | None = None):
+    """All workflow prompts and live status, optionally scoped to one project's method file."""
+    if project and not projects.exists(project):
+        raise HTTPException(status_code=404, detail="Unknown project")
+    token = config.set_active_project(project) if project else None
+    try:
+        return {"prompts": prompts.listing()}
+    finally:
+        if token is not None:
+            config.reset_active_project(token)
 
 
 @router.post("/api/prompts")
 def save_prompt(req: PromptReq):
     try:
         prompts.set_prompt(req.key, req.value or "")
+    except PromptManagedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except PromptError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"key": req.key, "value": prompts.get(req.key), "is_overridden": prompts.is_overridden(req.key)}
@@ -81,6 +90,8 @@ def save_prompt(req: PromptReq):
 def reset_prompt(req: PromptReq):
     try:
         prompts.reset(req.key)
+    except PromptManagedError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except PromptError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"key": req.key, "value": prompts.get(req.key), "is_overridden": prompts.is_overridden(req.key)}

@@ -32,6 +32,42 @@ class VaultMigrationResult:
     prompt_files: tuple[Path, ...]
 
 
+@dataclass(frozen=True)
+class PromptSeedResult:
+    applied: bool
+    destination_prompts: Path
+    prompt_files: tuple[Path, ...]
+
+
+def seed_prompt_files(destination_prompts: Path, *, apply: bool = False) -> PromptSeedResult:
+    """Plan or seed missing global prompt files without touching projects or existing files."""
+    destination = destination_prompts.expanduser().resolve()
+    if destination.exists() and not destination.is_dir():
+        raise VaultMigrationError(f"Prompt destination is not a directory: {destination}")
+
+    global_specs = tuple(spec for spec in prompts.REGISTRY if spec.scope == "global")
+    missing_specs = tuple(
+        spec for spec in global_specs if not (destination / spec.relative_path).exists()
+    )
+    result = PromptSeedResult(
+        applied=apply,
+        destination_prompts=destination,
+        prompt_files=tuple(destination / spec.relative_path for spec in missing_specs),
+    )
+    if not apply:
+        return result
+
+    # Resolve before writing so legacy overrides can be carried into the vault. When this is
+    # already RC_PROMPTS_DIR, missing files correctly resolve to their fallback values.
+    effective_prompts = {spec.key: prompts.get(spec.key) for spec in missing_specs}
+    for spec in missing_specs:
+        path = destination / spec.relative_path
+        if path.exists():  # Never replace an edit created after the dry run.
+            continue
+        atomic_write_text(path, effective_prompts[spec.key])
+    return result
+
+
 def _project_dirs(root: Path) -> list[Path]:
     if not root.exists():
         raise VaultMigrationError(f"Project source does not exist: {root}")
@@ -96,13 +132,7 @@ def migrate_to_vault(vault_root: Path, *, source_projects: Path | None = None,
 
     source_heads = _heads(source)
     project_count = len(source_heads)
-    global_specs = tuple(spec for spec in prompts.REGISTRY if spec.scope == "global")
-    effective_prompts = {spec.key: prompts.get(spec.key) for spec in global_specs}
-    missing_prompt_files = tuple(
-        destination_prompts / spec.relative_path
-        for spec in global_specs
-        if not (destination_prompts / spec.relative_path).exists()
-    )
+    prompt_plan = seed_prompt_files(destination_prompts)
 
     result = VaultMigrationResult(
         applied=apply,
@@ -112,7 +142,7 @@ def migrate_to_vault(vault_root: Path, *, source_projects: Path | None = None,
         destination_prompts=destination_prompts,
         project_count=project_count,
         project_heads=source_heads,
-        prompt_files=missing_prompt_files,
+        prompt_files=prompt_plan.prompt_files,
     )
     if not apply:
         return result
@@ -139,11 +169,7 @@ def migrate_to_vault(vault_root: Path, *, source_projects: Path | None = None,
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    for spec in global_specs:
-        path = destination_prompts / spec.relative_path
-        if path.exists():
-            continue
-        atomic_write_text(path, effective_prompts[spec.key])
+    seed_prompt_files(destination_prompts, apply=True)
 
     # Validate the final state once more after promotion and prompt seeding.
     final_heads = _heads(destination_projects)

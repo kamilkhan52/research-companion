@@ -97,6 +97,28 @@ export interface Settings {
   prior_notes_scope: 'related' | 'all';
 }
 
+/** One effective workflow prompt and its live filesystem validation status (GET /api/prompts). */
+export interface PromptStatus {
+  key: string;
+  label: string;
+  description: string;
+  storage: 'file' | 'override';
+  scope: 'global' | 'project';
+  relative_path: string;
+  value: string;
+  placeholders: string[];
+  required_literals: string[];
+  is_overridden: boolean;
+  managed: boolean;
+  source: 'vault' | 'project' | 'last_valid' | 'legacy_override' | 'bundled_default';
+  effective_source: string;
+  path: string | null;
+  valid: boolean;
+  error: string | null;
+  modified_at: string | null;
+  effective_hash: string;
+}
+
 /** GET /api/auth/config */
 export interface AuthConfig {
   mode: 'supabase' | 'token' | 'open';

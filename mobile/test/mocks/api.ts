@@ -8,6 +8,7 @@ export const getSettings = unexpected('getSettings');
 export const saveSettings = unexpected('saveSettings');
 export const getModels = unexpected('getModels');
 export const getFavoriteModels = jest.fn(async () => ({ models: [] }));
+export const getPrompts = jest.fn(async (_project?: string | null) => ({ prompts: [] }));
 export const speak = unexpected('speak');
 export const narrate = unexpected('narrate');
 export const startAudioJob = unexpected('startAudioJob');
