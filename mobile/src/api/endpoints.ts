@@ -18,6 +18,7 @@ import type {
   ModelOption,
   OpeningDraft,
   Paper,
+  PromptStatus,
   Project,
   ProjectState,
   Session,
@@ -33,6 +34,10 @@ export const saveSettings = (body: Partial<Settings> & Record<string, unknown>) 
   apiPost<Settings>('/api/settings', body);
 export const getModels = () => apiGet<{ models: ModelOption[] }>('/api/models');
 export const getFavoriteModels = () => apiGet<{ models: FavoriteModel[] }>('/api/favorite_models');
+export const getPrompts = (project?: string | null) =>
+  apiGet<{ prompts: PromptStatus[] }>(
+    project ? `/api/prompts?project=${encodeURIComponent(project)}` : '/api/prompts',
+  );
 
 /** Synthesize a passage to mp3; returns a relative URL under /api/audio. */
 export const speak = (text: string) => apiPost<{ url: string }>('/api/speak', { text });

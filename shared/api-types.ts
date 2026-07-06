@@ -142,7 +142,7 @@ export interface paths {
         };
         /**
          * Get Prompts
-         * @description All workflow prompts (built-in default or user-edited), for the in-app editor.
+         * @description All workflow prompts and live status, optionally scoped to one project's method file.
          */
         get: operations["get_prompts_api_prompts_get"];
         put?: never;
@@ -946,7 +946,9 @@ export interface operations {
     };
     get_prompts_api_prompts_get: {
         parameters: {
-            query?: never;
+            query?: {
+                project?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -960,6 +962,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

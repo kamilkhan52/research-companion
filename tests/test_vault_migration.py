@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 from app import config, prompts
-from app.vault_migration import VaultMigrationError, migrate_to_vault
+from app.vault_migration import VaultMigrationError, migrate_to_vault, seed_prompt_files
 
 
 def _git(repo, *args: str) -> str:
@@ -92,6 +92,30 @@ def test_existing_prompt_file_is_never_overwritten(migration_environment):
 
     migrate_to_vault(vault, source_projects=source, apply=True)
     assert path.read_text() == "hand edited"
+
+
+def test_prompt_only_reseed_works_with_existing_projects_and_preserves_edits(
+    migration_environment,
+):
+    _, _, _, vault = migration_environment
+    projects = vault / "Projects"
+    projects.mkdir(parents=True)
+    (projects / "existing-project.txt").write_text("untouched")
+    prompt_root = vault / "Prompts"
+    existing = prompt_root / prompts.REGISTRY_BY_KEY["analysis_system"].relative_path
+    existing.parent.mkdir(parents=True)
+    existing.write_text("hand edited")
+
+    planned = seed_prompt_files(prompt_root)
+    assert planned.applied is False
+    assert existing not in planned.prompt_files
+
+    applied = seed_prompt_files(prompt_root, apply=True)
+    assert applied.applied is True
+    assert existing.read_text() == "hand edited"
+    graph = prompt_root / prompts.REGISTRY_BY_KEY["graph_extraction"].relative_path
+    assert graph.read_text() == prompts.REGISTRY_BY_KEY["graph_extraction"].bundled_default
+    assert (projects / "existing-project.txt").read_text() == "untouched"
 
 
 def test_nonempty_projects_destination_is_refused(migration_environment):

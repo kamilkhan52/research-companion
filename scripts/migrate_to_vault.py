@@ -14,7 +14,11 @@ if os.path.exists(_venv_py) and os.path.realpath(sys.executable) != os.path.real
 sys.path.insert(0, HERE)
 
 from app import config  # noqa: E402
-from app.vault_migration import VaultMigrationError, migrate_to_vault  # noqa: E402
+from app.vault_migration import (  # noqa: E402
+    VaultMigrationError,
+    migrate_to_vault,
+    seed_prompt_files,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -37,6 +41,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Prompt destination override (defaults to <vault>/Prompts).",
     )
     parser.add_argument(
+        "--prompts-only",
+        action="store_true",
+        help="Seed only missing prompt files; safe when vault Projects already exist.",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Perform the copy. Without this flag the command is read-only.",
@@ -50,6 +59,18 @@ def main() -> int:
         print("error: --vault or RC_VAULT_ROOT is required", file=sys.stderr)
         return 2
     try:
+        if args.prompts_only:
+            prompt_destination = args.prompts_dir or args.vault / "Prompts"
+            prompt_result = seed_prompt_files(prompt_destination, apply=args.apply)
+            mode = "APPLIED" if args.apply else "DRY RUN — no files changed"
+            print(mode)
+            print(f"Prompt directory: {prompt_result.destination_prompts}")
+            print(f"Prompt files to seed: {len(prompt_result.prompt_files)}")
+            if not args.apply:
+                print("Run again with --prompts-only --apply after reviewing this path.")
+            else:
+                print("Existing prompt files were preserved. Restart is not required.")
+            return 0
         result = migrate_to_vault(
             args.vault,
             source_projects=args.source_projects,

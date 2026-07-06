@@ -53,6 +53,10 @@ To make prompts and project files directly editable in Obsidian, configure a ded
 # Copy projects (including their nested .git histories) and seed prompt Markdown files.
 ./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --apply
 
+# After upgrades, preview and seed newly registered prompts without touching Projects or edits.
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --prompts-only
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --prompts-only --apply
+
 # Then add this to .env and restart the backend.
 RC_VAULT_ROOT="/Users/you/Documents/Research Companion"
 ```
