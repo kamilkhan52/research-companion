@@ -138,6 +138,9 @@ Verification record ([PR #16](https://github.com/kamilkhan52/research-companion/
   prompt-only reseeding preserves existing projects and hand-edited files;
 - the mobile Developer Settings surface is read-only and displays live source, exact server path,
   validation state/error, modified time, and effective hash with explicit refresh.
+- Post-merge review follow-up [#18](https://github.com/kamilkhan52/research-companion/pull/18)
+  makes project prompt API entries read-only and applies `RC_PROMPTS_DIR` precedence consistently
+  to full and prompt-only migrations.
 
 ### 1.3 Self-contained research responses
 

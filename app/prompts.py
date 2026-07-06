@@ -819,22 +819,23 @@ def is_overridden(key: str) -> bool:
 
 def is_file_managed(key: str) -> bool:
     spec = REGISTRY_BY_KEY.get(key)
-    return bool(spec and spec.scope == "global" and config.PROMPTS_DIR is not None)
+    return bool(spec and (spec.scope == "project" or config.PROMPTS_DIR is not None))
 
 
 def set_prompt(key: str, value: str) -> None:
     spec = REGISTRY_BY_KEY.get(key)
     if not spec:
         raise PromptError(f"Unknown prompt: {key}")
+    if spec.scope == "project":
+        raise PromptManagedError(
+            f"Prompt is managed by project file: {config.project_dir() / spec.relative_path}"
+        )
     if spec.scope == "global" and config.PROMPTS_DIR is not None:
         raise PromptManagedError(
             f"Prompt is managed by file: {config.PROMPTS_DIR / spec.relative_path}"
         )
     value = (value or "").strip()
     _validate(spec, value)
-    if spec.scope == "project":
-        store.write_method(value)
-        return
     config.set_prompt_override(key, value)
 
 
@@ -843,7 +844,9 @@ def reset(key: str) -> None:
     if not spec:
         raise PromptError(f"Unknown prompt: {key}")
     if spec.scope == "project":
-        raise PromptError("The reading method is a project file; edit it directly.")
+        raise PromptManagedError(
+            f"Prompt is managed by project file: {config.project_dir() / spec.relative_path}"
+        )
     if config.PROMPTS_DIR is not None:
         raise PromptManagedError(
             f"Prompt is managed by file: {config.PROMPTS_DIR / spec.relative_path}"
