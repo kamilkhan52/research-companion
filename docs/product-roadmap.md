@@ -40,7 +40,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
 | 6.1 | Native Markdown + equation rendering | — | Planned |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Planned |
-| W.1 | Web rebuild: Vite + React foundation + CI | — | In progress |
+| W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
 | W.2 | Web rebuild: Library | — | Planned |
 | W.3 | Web rebuild: Graph (high-perf canvas) | — | Planned |
 | W.4 | Web rebuild: Discussion + notes review | — | Planned |

@@ -15,7 +15,7 @@ React + Vite SPA with feature parity with the mobile app.
 
 | Phase | Branch | PR | Status |
 |---|---|---|---|
-| 1 | `web/foundation` | — | In progress |
+| 1 | `web/foundation` | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
 | 2 | `web/library` | — | Planned |
 | 3 | `web/graph` | — | Planned |
 | 4 | `web/discussion` | — | Planned |
