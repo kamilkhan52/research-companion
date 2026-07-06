@@ -1,7 +1,7 @@
 """Every model-facing behavioral instruction resolves through the live prompt registry."""
 from __future__ import annotations
 
-from app import agent_harness, graph, retrieval_agent
+from app import agent, agent_harness, graph, retrieval_agent
 
 
 def test_agent_harness_resolves_both_tool_guidance_prompts(monkeypatch):
@@ -67,3 +67,29 @@ def test_graph_extraction_resolves_registry_system_prompt(monkeypatch):
         "role": "system",
         "content": "live graph_extraction prompt",
     }
+
+
+def test_analysis_and_narration_compose_self_contained_guidance(monkeypatch):
+    values = {
+        "analysis_system": "analysis instructions",
+        "narration_system": "narration instructions",
+        "self_contained_research": "describe every referenced item in place",
+    }
+    monkeypatch.setattr(agent.prompts, "get", values.__getitem__)
+    monkeypatch.setattr(agent.assembler, "build_context", lambda slug: "paper context")
+
+    system = agent._system_for("paper")
+    assert system.startswith("analysis instructions\n\ndescribe every referenced item in place")
+
+    captured = {}
+    monkeypatch.setattr(agent.config, "load_settings", lambda: {"model": "model"})
+
+    def fake_complete(messages, **kwargs):
+        captured["messages"] = messages
+        return "spoken response"
+
+    monkeypatch.setattr(agent, "_complete", fake_complete)
+    assert agent.narrate("written response") == "spoken response"
+    assert captured["messages"][0]["content"] == (
+        "narration instructions\n\ndescribe every referenced item in place"
+    )
