@@ -9,3 +9,7 @@ projects/
 # App-global state: keys/settings, legacy prompt overrides, last-valid prompt state, caches.
 .app-state/
 *.log
+
+# Web client (Vite)
+web/node_modules/
+web/dist/

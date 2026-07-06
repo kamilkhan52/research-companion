@@ -1,0 +1,106 @@
+/* ---- top bar ---- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: max(env(safe-area-inset-top), 12px) 14px 11px;
+  background: rgba(7, 8, 14, 0.78);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(52, 231, 224, 0.5),
+    rgba(155, 123, 255, 0.5),
+    transparent
+  );
+  opacity: 0.6;
+}
+
+.topbar-title {
+  flex: 1;
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  background: linear-gradient(92deg, #d9fbf8, var(--cyan) 40%, var(--violet));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 19px;
+  cursor: pointer;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  transition: border-color 0.15s, box-shadow 0.15s, color 0.15s;
+}
+
+.icon-btn:hover {
+  border-color: var(--line2);
+  color: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(52, 231, 224, 0.45), 0 0 18px -2px rgba(52, 231, 224, 0.55);
+}
+
+.icon-btn-placeholder {
+  flex: none;
+  width: 40px;
+  height: 40px;
+}
+
+/* ---- main content ---- */
+
+.app-main {
+  padding: 16px 13px 0;
+  max-width: 860px;
+  margin: 0 auto;
+  flex: 1;
+  width: 100%;
+}
+
+/* ---- placeholder ---- */
+
+.placeholder-view {
+  background: linear-gradient(180deg, var(--panel), #0e111b);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 32px 17px;
+  text-align: center;
+}
+
+.placeholder-view h2 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 18px;
+}
+
+.muted {
+  color: var(--muted);
+}

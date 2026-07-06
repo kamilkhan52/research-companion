@@ -9,7 +9,7 @@ experience work. Update its PR/status table as each phase is reviewed and merged
 ## What this is
 
 A FastAPI backend (`app/`) plus an Expo/React Native client (`mobile/`, the active client;
-`web/` is legacy). You read a corpus of papers *with* an LLM: scholarly discussion, listen-
+`web/` is being rebuilt as a React+Vite SPA — see `docs/web-rebuild-plan.md`). You read a corpus of papers *with* an LLM: scholarly discussion, listen-
 friendly audio, reading notes that compound into context for the next paper, and a per-project
 reference graph. Data is markdown-in-git: each project under the effective Projects root is its
 own git repo. `RC_VAULT_ROOT` can place the actual `Projects/` and authoritative `Prompts/`
@@ -115,6 +115,10 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - **Tests:** `.venv/bin/python -m pytest -q`. The suite is network-free (extraction/citations
   are injected fakes; see `tests/conftest.py`) — keep it that way.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
+- **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
+  `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects
+  `web/dist/` and serves it; set `RC_WEB_DIR` to force a different directory. See
+  `docs/web-rebuild-plan.md` for the phased rebuild status.
 - **API types:** `scripts/gen-api-types.sh` regenerates `shared/api-types.ts` from the
   OpenAPI schema (offline). Run it when you change an endpoint's shape.
 
