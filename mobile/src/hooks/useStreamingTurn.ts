@@ -49,7 +49,7 @@ export function useStreamingTurn(
   slug: string | null,
   deliveryMode: 'reading' | 'listening' = 'reading',
   onDone?: (job: ChatJob) => void | Promise<void>,
-  onJobActiveChange?: (active: boolean) => void,
+  onActiveJobChange?: (jobId: string | null) => void,
 ): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
@@ -66,15 +66,15 @@ export function useStreamingTurn(
   const busyRef = useRef(false);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
-  const onJobActiveChangeRef = useRef(onJobActiveChange);
-  onJobActiveChangeRef.current = onJobActiveChange;
+  const onActiveJobChangeRef = useRef(onActiveJobChange);
+  onActiveJobChangeRef.current = onActiveJobChange;
 
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
       watchRef.current = null;
-      onJobActiveChangeRef.current?.(false);
+      onActiveJobChangeRef.current?.(null);
     };
   }, []);
 
@@ -93,7 +93,7 @@ export function useStreamingTurn(
   const watch = useCallback(
     async (job: ChatJob) => {
       watchRef.current = job.id;
-      onJobActiveChangeRef.current?.(true);
+      onActiveJobChangeRef.current?.(job.id);
       setStreaming(true);
       setItems(job.items);
       setPreviewJobIds(job.preview_job_ids);
@@ -109,7 +109,7 @@ export function useStreamingTurn(
           if (e instanceof ApiError && e.status === 404) {
             // Server restarted and forgot the job; whatever completed is in the session.
             watchRef.current = null;
-            onJobActiveChangeRef.current?.(false);
+            onActiveJobChangeRef.current?.(null);
             await settle();
             return;
           }
@@ -125,7 +125,7 @@ export function useStreamingTurn(
         setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
-          onJobActiveChangeRef.current?.(false);
+          onActiveJobChangeRef.current?.(null);
           try {
             await onDoneRef.current?.(snap);
           } catch (e) {
@@ -136,7 +136,7 @@ export function useStreamingTurn(
         }
         if (snap.status === 'error') {
           watchRef.current = null;
-          onJobActiveChangeRef.current?.(false);
+          onActiveJobChangeRef.current?.(null);
           if (snap.delivery_mode === 'listening') {
             await consumeEligibleHandoff(snap.id);
           }
@@ -171,7 +171,7 @@ export function useStreamingTurn(
         }
         await watch(job);
       } catch (e) {
-        onJobActiveChangeRef.current?.(false);
+        onActiveJobChangeRef.current?.(null);
         setError((e as Error).message ?? 'Could not start the response.');
         setStreaming(false);
         setPendingUser(null);
@@ -189,7 +189,7 @@ export function useStreamingTurn(
     try {
       const { job } = await getActiveChatJob(pid, slug);
       if (!job || !aliveRef.current) {
-        onJobActiveChangeRef.current?.(false);
+        onActiveJobChangeRef.current?.(null);
         return;
       }
       if (job.delivery_mode === 'listening' && deliveryMode === 'listening') {
@@ -200,7 +200,7 @@ export function useStreamingTurn(
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
       await watch(job);
     } catch {
-      onJobActiveChangeRef.current?.(false);
+      onActiveJobChangeRef.current?.(null);
       // Can't reach the server right now; the session refetch will catch us up later.
     } finally {
       busyRef.current = false;
@@ -209,7 +209,7 @@ export function useStreamingTurn(
 
   const cancel = useCallback(() => {
     watchRef.current = null;
-    onJobActiveChangeRef.current?.(false);
+    onActiveJobChangeRef.current?.(null);
     setStreaming(false);
     setPendingUser(null);
     setPreviewJobIds([]);

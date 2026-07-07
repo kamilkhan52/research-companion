@@ -13,14 +13,14 @@ export function usePreviewCues({
   title,
   jobIds,
   playPreview,
-  parentActiveRef,
+  parentJobRef,
 }: {
   enabled: boolean;
   project: string | null;
   title: string;
   jobIds: string[];
   playPreview: (id: string, title: string, url: string) => Promise<boolean>;
-  parentActiveRef: { readonly current: boolean };
+  parentJobRef: { readonly current: string | null };
 }) {
   const aliveRef = useRef(true);
   const enabledRef = useRef(enabled);
@@ -34,7 +34,8 @@ export function usePreviewCues({
   }, []);
 
   useEffect(() => {
-    if (!enabled || !parentActiveRef.current) {
+    const parentJobId = parentJobRef.current;
+    if (!enabled || !parentJobId) {
       for (const jobId of jobIds) handledPreviewJobs.add(jobId);
       return;
     }
@@ -45,7 +46,7 @@ export function usePreviewCues({
       void (async () => {
         let failures = 0;
         try {
-          while (aliveRef.current && enabledRef.current && parentActiveRef.current
+          while (aliveRef.current && enabledRef.current && parentJobRef.current === parentJobId
                  && projectRef.current === project) {
             try {
               const { job } = await api.getPreviewJob(project, jobId);
@@ -55,7 +56,8 @@ export function usePreviewCues({
                 continue;
               }
               handledPreviewJobs.add(jobId);
-              if (enabledRef.current && parentActiveRef.current && projectRef.current === project
+              if (enabledRef.current && parentJobRef.current === parentJobId
+                  && projectRef.current === project
                   && job.status === 'done' && !job.suppressed && job.url) {
                 await playPreview(`preview:${job.id}`, `Preview · ${title}`, job.url);
               }
@@ -70,5 +72,5 @@ export function usePreviewCues({
         }
       })();
     }
-  }, [enabled, jobIds, parentActiveRef, playPreview, project, title]);
+  }, [enabled, jobIds, parentJobRef, playPreview, project, title]);
 }

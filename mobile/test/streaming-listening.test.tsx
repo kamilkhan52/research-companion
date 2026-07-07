@@ -88,7 +88,7 @@ test('failed parent invalidates preview polling before exposing the terminal sta
   };
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: failed });
-  const onJobActiveChange = jest.fn();
+  const onActiveJobChange = jest.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
@@ -100,7 +100,7 @@ test('failed parent invalidates preview polling before exposing the terminal sta
       'paper',
       'listening',
       undefined,
-      onJobActiveChange,
+      onActiveJobChange,
     ),
     { wrapper: Wrapper },
   );
@@ -108,8 +108,8 @@ test('failed parent invalidates preview polling before exposing the terminal sta
     await result.current.run('/turn', { slug: 'paper', text: 'Question' });
   });
 
-  expect(onJobActiveChange).toHaveBeenCalledWith(true);
-  expect(onJobActiveChange).toHaveBeenLastCalledWith(false);
+  expect(onActiveJobChange).toHaveBeenCalledWith('chat-job');
+  expect(onActiveJobChange).toHaveBeenLastCalledWith(null);
   expect(result.current.previewJobIds).toEqual([]);
   expect(result.current.error).toBe('analysis failed');
   await unmountAsync();
