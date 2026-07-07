@@ -24,6 +24,7 @@ import { useAddPaper, useDiscovery } from '@/api/queries';
 import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
+import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -33,9 +34,13 @@ export default function DiscoverScreen() {
   const { activePid: pid } = useActiveProject();
   const discovery = useDiscovery(pid);
   const runState = useDiscoveryRun(pid);
+  const goalsDraft = usePersistedDraft(
+    pid ? draftKey(pid, 'discover', 'goals') : null,
+    discovery.data?.goals || discovery.data?.result?.goals || '',
+  );
 
-  const [goals, setGoals] = useState('');
-  const [seeded, setSeeded] = useState(false);
+  const goals = goalsDraft.value;
+  const setGoals = goalsDraft.setValue;
   const [showAll, setShowAll] = useState(false);
   // Focus mode: once a search is running (or results exist) the goals editor collapses to a
   // compact summary and the "specific paper" box folds behind a toggle — the ranked list is
@@ -44,14 +49,12 @@ export default function DiscoverScreen() {
   const [showSpecific, setShowSpecific] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
 
-  // Prefill the goals once from the server (saved on every run start), without clobbering
-  // what the user is typing on later refetches.
   useEffect(() => {
-    if (!seeded && discovery.data) {
-      setGoals(discovery.data.goals || discovery.data.result?.goals || '');
-      setSeeded(true);
+    const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
+    if (goalsDraft.submitted && accepted === goals.trim()) {
+      void goalsDraft.clear(goals);
     }
-  }, [seeded, discovery.data]);
+  }, [discovery.data, goals, goalsDraft.clear, goalsDraft.submitted]);
 
   // Re-attach to a run already in flight (screen reopened mid-run).
   const resume = runState.resume;
@@ -67,6 +70,15 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
+
+  async function runDiscovery() {
+    const text = goals.trim();
+    if (!text) return;
+    setShowAll(false);
+    setEditingGoals(false);
+    await goalsDraft.markSubmitted();
+    if (await runState.run(text)) await goalsDraft.clear(text);
+  }
 
   return (
     <Screen edges={['top']}>
@@ -91,11 +103,7 @@ export default function DiscoverScreen() {
               />
               <Button
                 title={runState.running ? 'Searching…' : result ? 'Search again' : 'Find foundational papers'}
-                onPress={() => {
-                  setShowAll(false);
-                  setEditingGoals(false);
-                  void runState.run(goals);
-                }}
+                onPress={runDiscovery}
                 loading={runState.running}
                 disabled={!goals.trim()}
                 style={{ marginTop: space.md }}
@@ -358,13 +366,16 @@ function SuggestionCard({
 function SpecificPaper({ pid }: { pid: string }) {
   const router = useRouter();
   const addPaper = useAddPaper(pid);
-  const [text, setText] = useState('');
+  const textDraft = usePersistedDraft(draftKey(pid, 'discover', 'specific-paper'), '');
+  const text = textDraft.value;
+  const setText = textDraft.setValue;
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
     const s = text.trim();
     if (!s) return;
     setErr(null);
+    await textDraft.markSubmitted();
     // A paper name adds it by title (retrieval resolves it on open, escalating to the agentic
     // hunt if needed). An arXiv link/id or PDF link is carried to the Discussion screen as
     // ?source= so its Start fetches from exactly that source.
@@ -383,7 +394,7 @@ function SpecificPaper({ pid }: { pid: string }) {
     }
     try {
       const { paper } = await addPaper.mutateAsync({ title, arxivId });
-      setText('');
+      await textDraft.clear('');
       router.push(
         `/paper/${encodeURIComponent(paper.slug)}${source ? `?source=${encodeURIComponent(source)}` : ''}`,
       );

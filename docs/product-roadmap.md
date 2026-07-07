@@ -33,7 +33,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.2a | Contextual cue continuity during narration prep | — | In progress |
 | 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | In review — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | [#29](https://github.com/kamilkhan52/research-companion/pull/29) | In review |
-| 3.2 | Authored-draft safety and reconciliation | — | Planned |
+| 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | In review |
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
 | 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
@@ -289,6 +289,18 @@ Persist reply, request-changes, message-edit, opening/source, notes, and discove
 project/screen-specific AsyncStorage keys. Debounce writes and clear only after server acceptance or
 save. If a POST response is lost, reconcile the draft against the refetched transcript before
 offering another send.
+
+Verification record ([PR #31](https://github.com/kamilkhan52/research-companion/pull/31)):
+
+- all planned authoring surfaces use project/screen-specific persisted keys, debounced normal
+  writes, and a submission flush before network delivery;
+- discussion replies and revision feedback reconcile against accepted human-authored transcript
+  inputs after a lost response, using a persisted acceptance baseline to avoid matching older
+  identical text;
+- notes saves, opening prompts, and discovery goals reconcile against authoritative refetched
+  server state, while message edits and source retrieval remain persisted until acceptance;
+- full Ruff and 355-test backend suites pass; all thirteen mobile Jest suites (thirty-six tests)
+  and TypeScript pass.
 
 ### 3.3 Playback position restoration
 

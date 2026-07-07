@@ -38,7 +38,12 @@ export interface StreamingTurn {
   previewJobIds: string[];
   /** Parent job whose finished snapshot may keep publishing cues during narration prep. */
   previewParentJobId: string | null;
-  run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
+  run: (
+    path: string,
+    body: unknown,
+    optimisticUser?: string,
+    onAccepted?: () => void | Promise<void>,
+  ) => Promise<void>;
   /** Reattach to a turn already generating for this session (call on screen entry). */
   resume: () => Promise<void>;
   /** Stop watching. The job keeps running server-side and lands in the transcript. */
@@ -151,7 +156,12 @@ export function useStreamingTurn(
   );
 
   const run = useCallback(
-    async (path: string, body: unknown, optimisticUser?: string) => {
+    async (
+      path: string,
+      body: unknown,
+      optimisticUser?: string,
+      onAccepted?: () => void | Promise<void>,
+    ) => {
       if (busyRef.current) return;
       busyRef.current = true;
       setError(null);
@@ -169,17 +179,40 @@ export function useStreamingTurn(
         if (job.delivery_mode === 'listening') {
           await registerEligibleHandoff(job.id, handoffEpoch);
         }
+        try {
+          await onAccepted?.();
+        } catch {
+          // Acceptance is already authoritative server-side. A local storage cleanup failure
+          // must not detach the client from the running job; reconciliation can retry later.
+        }
         await watch(job);
       } catch (e) {
         setPreviewParentJobId(null);
         setError((e as Error).message ?? 'Could not start the response.');
-        setStreaming(false);
         setPendingUser(null);
+        let recoveredActiveJob = false;
+        if (pid && slug) {
+          try {
+            // The request may have reached the server even if its response was lost. Refetching
+            // lets persisted authored drafts reconcile against accepted transcript inputs.
+            await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+            await qc.invalidateQueries({ queryKey: keys.opening(pid, slug) });
+            const { job: active } = await getActiveChatJob(pid, slug);
+            if (active) {
+              recoveredActiveJob = true;
+              setError(null);
+              await watch(active);
+            }
+          } catch {
+            // Offline: keep the persisted draft; the next mount/refetch will reconcile it.
+          }
+        }
+        if (!recoveredActiveJob) setStreaming(false);
       } finally {
         busyRef.current = false;
       }
     },
-    [deliveryMode, watch],
+    [deliveryMode, pid, qc, slug, watch],
   );
 
   const resume = useCallback(async () => {

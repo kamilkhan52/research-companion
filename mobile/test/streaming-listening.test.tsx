@@ -115,3 +115,56 @@ test('failed parent invalidates preview polling before exposing the terminal sta
   await unmountAsync();
   client.clear();
 });
+
+test('reports server acceptance before watching the background job', async () => {
+  const done: ChatJob = {
+    ...baseJob,
+    status: 'done',
+    finished_at: '2026-07-06T00:00:01Z',
+  };
+  jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
+  jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
+  const onAccepted = jest.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useStreamingTurn('project', 'paper'),
+    { wrapper: Wrapper },
+  );
+
+  await act(async () => {
+    await result.current.run('/turn', { slug: 'paper', text: 'Question' }, 'Question', onAccepted);
+  });
+
+  expect(onAccepted).toHaveBeenCalledTimes(1);
+  expect(onAccepted.mock.invocationCallOrder[0]).toBeLessThan(
+    jest.mocked(api.getChatJob).mock.invocationCallOrder[0],
+  );
+  await unmountAsync();
+  client.clear();
+});
+
+test('refetches accepted state when the start response is lost', async () => {
+  jest.mocked(apiPost).mockRejectedValueOnce(new Error('connection reset'));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = jest.spyOn(client, 'invalidateQueries');
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useStreamingTurn('project', 'paper'),
+    { wrapper: Wrapper },
+  );
+
+  await act(async () => {
+    await result.current.run('/turn', { slug: 'paper', text: 'Question' });
+  });
+
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['project', 'project', 'session', 'paper'] });
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: ['project', 'project', 'opening', 'paper'] });
+  expect(result.current.error).toBe('connection reset');
+  await unmountAsync();
+  client.clear();
+});

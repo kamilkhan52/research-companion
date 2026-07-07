@@ -86,6 +86,7 @@ export interface Session {
   paper: Paper;
   state: SessionState;
   transcript: TranscriptEntry[];
+  accepted_drafts: { kind: 'reply' | 'revision'; text: string }[];
 }
 
 /** GET /api/projects/{pid}/opening_draft/{slug} */

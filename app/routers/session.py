@@ -181,6 +181,7 @@ def get_session(slug: str):
         "paper": paper,
         "state": sessions.get_state(slug),
         "transcript": sessions.transcript(slug),
+        "accepted_drafts": sessions.accepted_drafts(slug),
     }
 
 
@@ -367,7 +368,7 @@ def _prep_finish(req: FinishReq) -> None:
 def _prep_request_changes(req: RequestChangesReq) -> None:
     _require_session(req.slug)
     sessions.record_user(req.slug, prompts.render("request_changes", feedback=req.text),
-                         kind="revision")
+                         kind="revision", authored_text=req.text)
 
 
 @project_router.post("/chat/start_stream")
