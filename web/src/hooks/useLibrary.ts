@@ -38,6 +38,7 @@ export function useLibrary(): UseLibraryState {
   // Fetch projects
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     listProjects()
       .then((r) => {
         if (!cancelled) {
@@ -61,7 +62,7 @@ export function useLibrary(): UseLibraryState {
   useEffect(() => {
     if (!activePid) { setState(null); return; }
     let cancelled = false;
-    setLoading(true);
+    setError(null);
     getProjectState(activePid)
       .then((s) => { if (!cancelled) setState(s); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })

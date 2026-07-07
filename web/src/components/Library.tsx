@@ -55,11 +55,22 @@ export function Library({ onNavigate }: Props) {
 
   if (error) {
     return (
-      <div className="lc-empty">
-        <p className="muted">{error}</p>
-        <button className="btn ghost" onClick={refetch}>
-          Retry
-        </button>
+      <div className="library">
+        {projects.length > 0 && (
+          <ProjectBar
+            projects={projects}
+            activePid={activePid || ''}
+            onSelect={setActivePid}
+            onNew={() => setShowNew(true)}
+            onNavigate={onNavigate}
+          />
+        )}
+        <div className="lc-empty">
+          <p className="muted">{error}</p>
+          <button className="btn ghost" onClick={refetch}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
