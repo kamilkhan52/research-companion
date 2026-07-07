@@ -62,6 +62,7 @@ def get_state(pid: str):
         "has_key": bool(settings.get("openrouter_api_key")),
         "model": settings.get("model"),
         "narration_model": settings.get("narration_model"),
+        "preview_model": settings.get("preview_model") or settings.get("narration_model"),
         "speech_provider": settings.get("speech_provider"),
         "has_openai_key": bool(settings.get("openai_api_key")),
         "papers": papers,

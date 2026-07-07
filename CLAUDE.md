@@ -99,7 +99,7 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `discovery.py` — goals → ranked arXiv reading suggestions.
 - `jobs.py` — the shared `JobRegistry` behind every background job (dict+lock, pruning, thread
   spawn, the contextvar rebind of invariant 2, error capture, persist-before-done finalize).
-- `*_jobs.py` (`audio`, `chat`, `graph`, `discovery`, `notes`) — background-job modules (see
+- `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
   invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
   function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
 - `tts.py` — OpenAI TTS behind a swappable interface. `auth.py` — Supabase/token/open auth.

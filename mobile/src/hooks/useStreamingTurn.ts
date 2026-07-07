@@ -34,6 +34,8 @@ export interface StreamingTurn {
   pendingUser: string | null;
   /** The turn's text and tool invocations in arrival order, so the UI can interleave them. */
   items: StreamItem[];
+  /** Grounded cue jobs published while this turn is still generating. */
+  previewJobIds: string[];
   run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
   /** Reattach to a turn already generating for this session (call on screen entry). */
   resume: () => Promise<void>;
@@ -47,9 +49,11 @@ export function useStreamingTurn(
   slug: string | null,
   deliveryMode: 'reading' | 'listening' = 'reading',
   onDone?: (job: ChatJob) => void | Promise<void>,
+  onActiveJobChange?: (jobId: string | null) => void,
 ): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
+  const [previewJobIds, setPreviewJobIds] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
@@ -62,12 +66,15 @@ export function useStreamingTurn(
   const busyRef = useRef(false);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
+  const onActiveJobChangeRef = useRef(onActiveJobChange);
+  onActiveJobChangeRef.current = onActiveJobChange;
 
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
       watchRef.current = null;
+      onActiveJobChangeRef.current?.(null);
     };
   }, []);
 
@@ -79,14 +86,17 @@ export function useStreamingTurn(
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
+    setPreviewJobIds([]);
   }, [pid, slug, qc]);
 
   /** Poll one job until it settles (or we stop watching). */
   const watch = useCallback(
     async (job: ChatJob) => {
       watchRef.current = job.id;
+      onActiveJobChangeRef.current?.(job.id);
       setStreaming(true);
       setItems(job.items);
+      setPreviewJobIds(job.preview_job_ids);
       let misses = 0;
       while (aliveRef.current && watchRef.current === job.id) {
         await sleep(POLL_MS);
@@ -99,6 +109,7 @@ export function useStreamingTurn(
           if (e instanceof ApiError && e.status === 404) {
             // Server restarted and forgot the job; whatever completed is in the session.
             watchRef.current = null;
+            onActiveJobChangeRef.current?.(null);
             await settle();
             return;
           }
@@ -111,8 +122,10 @@ export function useStreamingTurn(
         }
         if (!aliveRef.current || watchRef.current !== job.id) return;
         setItems(snap.items);
+        setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
+          onActiveJobChangeRef.current?.(null);
           try {
             await onDoneRef.current?.(snap);
           } catch (e) {
@@ -123,12 +136,14 @@ export function useStreamingTurn(
         }
         if (snap.status === 'error') {
           watchRef.current = null;
+          onActiveJobChangeRef.current?.(null);
           if (snap.delivery_mode === 'listening') {
             await consumeEligibleHandoff(snap.id);
           }
           setError(snap.error ?? 'The response failed.');
           setStreaming(false);
           setPendingUser(null);
+          setPreviewJobIds([]);
           return;
         }
       }
@@ -142,6 +157,7 @@ export function useStreamingTurn(
       busyRef.current = true;
       setError(null);
       setItems([]);
+      setPreviewJobIds([]);
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
       const handoffEpoch = currentHandoffEligibilityEpoch();
@@ -155,6 +171,7 @@ export function useStreamingTurn(
         }
         await watch(job);
       } catch (e) {
+        onActiveJobChangeRef.current?.(null);
         setError((e as Error).message ?? 'Could not start the response.');
         setStreaming(false);
         setPendingUser(null);
@@ -171,7 +188,10 @@ export function useStreamingTurn(
     const handoffEpoch = currentHandoffEligibilityEpoch();
     try {
       const { job } = await getActiveChatJob(pid, slug);
-      if (!job || !aliveRef.current) return;
+      if (!job || !aliveRef.current) {
+        onActiveJobChangeRef.current?.(null);
+        return;
+      }
       if (job.delivery_mode === 'listening' && deliveryMode === 'listening') {
         await registerEligibleHandoff(job.id, handoffEpoch);
       }
@@ -180,6 +200,7 @@ export function useStreamingTurn(
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
       await watch(job);
     } catch {
+      onActiveJobChangeRef.current?.(null);
       // Can't reach the server right now; the session refetch will catch us up later.
     } finally {
       busyRef.current = false;
@@ -188,8 +209,10 @@ export function useStreamingTurn(
 
   const cancel = useCallback(() => {
     watchRef.current = null;
+    onActiveJobChangeRef.current?.(null);
     setStreaming(false);
     setPendingUser(null);
+    setPreviewJobIds([]);
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -200,5 +223,16 @@ export function useStreamingTurn(
     [items],
   );
 
-  return { liveText, streaming, error, pendingUser, items, run, resume, cancel, clearError };
+  return {
+    liveText,
+    streaming,
+    error,
+    pendingUser,
+    items,
+    previewJobIds,
+    run,
+    resume,
+    cancel,
+    clearError,
+  };
 }

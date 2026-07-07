@@ -22,6 +22,7 @@ import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
+import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -41,6 +42,7 @@ export default function SettingsScreen() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [narrationModel, setNarrationModel] = useState('');
+  const [previewModel, setPreviewModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
   const [parallelKey, setParallelKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
@@ -57,6 +59,7 @@ export default function SettingsScreen() {
     if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
+      setPreviewModel(previewModelDraft(settings.data.preview_model));
       setVoice(settings.data.tts_voice ?? '');
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
       setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
@@ -79,6 +82,7 @@ export default function SettingsScreen() {
     const payload: Record<string, unknown> = {
       model: model || null,
       narration_model: narrationModel || null,
+      preview_model: previewModelPatch(previewModel),
       speech_provider: speechProvider,
       tts_voice: voice || null,
       prior_notes_scope: priorScope,
@@ -163,6 +167,14 @@ export default function SettingsScreen() {
                   models={favorites.data ?? []}
                   selected={narrationModel}
                   onPick={setNarrationModel}
+                />
+
+                <Label text="Listening preview model" />
+                <Field value={previewModel} onChangeText={setPreviewModel} placeholder="Defaults to narration model" autoCapitalize="none" />
+                <ModelChips
+                  models={favorites.data ?? []}
+                  selected={previewModel}
+                  onPick={setPreviewModel}
                 />
 
                 <Label text="Prior notes in paper context" />

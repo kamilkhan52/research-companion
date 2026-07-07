@@ -32,6 +32,7 @@ const baseJob: ChatJob = {
   audio_job_id: null,
   audio_error: null,
   assistant_index: null,
+  preview_job_ids: [],
 };
 
 test('listening turns send delivery mode and hand the completed audio job to the queue', async () => {
@@ -73,6 +74,44 @@ test('listening turns send delivery mode and hand the completed audio job to the
     delivery_mode: 'listening',
   });
   expect(onDone).toHaveBeenCalledWith(done);
+  await unmountAsync();
+  client.clear();
+});
+
+test('failed parent invalidates preview polling before exposing the terminal state', async () => {
+  const failed: ChatJob = {
+    ...baseJob,
+    status: 'error',
+    error: 'analysis failed',
+    preview_job_ids: ['cue-job'],
+    finished_at: '2026-07-06T00:00:01Z',
+  };
+  jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
+  jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: failed });
+  const onActiveJobChange = jest.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useStreamingTurn(
+      'project',
+      'paper',
+      'listening',
+      undefined,
+      onActiveJobChange,
+    ),
+    { wrapper: Wrapper },
+  );
+  await act(async () => {
+    await result.current.run('/turn', { slug: 'paper', text: 'Question' });
+  });
+
+  expect(onActiveJobChange).toHaveBeenCalledWith('chat-job');
+  expect(onActiveJobChange).toHaveBeenLastCalledWith(null);
+  expect(result.current.previewJobIds).toEqual([]);
+  expect(result.current.error).toBe('analysis failed');
   await unmountAsync();
   client.clear();
 });

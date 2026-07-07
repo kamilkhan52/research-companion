@@ -19,6 +19,7 @@ from .. import (
     chat_jobs,
     config,
     graph,
+    preview_jobs,
     prompts,
     retrieval_agent,
     retriever,
@@ -513,6 +514,15 @@ def chat_job_status(job_id: str):
     snap = chat_jobs.snapshot(job_id)
     if not snap:
         raise HTTPException(status_code=404, detail="Unknown chat job")
+    return {"job": snap}
+
+
+@project_router.get("/preview/jobs/{job_id}")
+def preview_job_status(job_id: str):
+    """Cheap project-scoped poll for one grounded listening cue."""
+    snap = preview_jobs.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown preview job")
     return {"job": snap}
 
 

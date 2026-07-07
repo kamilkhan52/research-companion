@@ -3,7 +3,8 @@ only touches the keys it names (no clobbering unrelated keys)."""
 from __future__ import annotations
 
 import pytest
-from app import config
+from app import config, preview_jobs
+from app.routers import settings as settings_routes
 
 
 @pytest.fixture
@@ -15,6 +16,41 @@ def settings_file(tmp_path, monkeypatch):
 def test_saved_value_roundtrips(settings_file):
     config.save_settings({"narration_model": "anthropic/claude-haiku-4.5"})
     assert config.load_settings()["narration_model"] == "anthropic/claude-haiku-4.5"
+
+
+def test_preview_model_roundtrips_independently(settings_file):
+    config.save_settings({"narration_model": "narration/model", "preview_model": "preview/model"})
+    merged = config.load_settings()
+    assert merged["narration_model"] == "narration/model"
+    assert merged["preview_model"] == "preview/model"
+
+
+def test_settings_api_preserves_dynamic_preview_fallback_and_clears_override(
+    settings_file, monkeypatch,
+):
+    monkeypatch.setitem(config._ENV_DEFAULTS, "preview_model", "")
+    monkeypatch.setitem(config._ENV_DEFAULTS, "narration_model", "narration/default")
+    assert settings_routes.read_settings()["preview_model"] == ""
+
+    first = settings_routes.write_settings(
+        settings_routes.SettingsReq(narration_model="narration/one")
+    )
+    assert first["preview_model"] == ""
+    assert preview_jobs.resolve_model(config.load_settings()) == "narration/one"
+
+    explicit = settings_routes.write_settings(
+        settings_routes.SettingsReq(preview_model="preview/explicit")
+    )
+    assert explicit["preview_model"] == "preview/explicit"
+
+    cleared = settings_routes.write_settings(settings_routes.SettingsReq(preview_model=""))
+    assert cleared["preview_model"] == ""
+    assert config.load_settings()["preview_model"] == ""
+
+    settings_routes.write_settings(
+        settings_routes.SettingsReq(narration_model="narration/two")
+    )
+    assert preview_jobs.resolve_model(config.load_settings()) == "narration/two"
 
 
 def test_none_leaves_key_unchanged(settings_file):

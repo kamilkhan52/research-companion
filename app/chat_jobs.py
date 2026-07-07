@@ -20,16 +20,19 @@ the client's double-tap guard).
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import agent, agent_harness, audio_jobs, config, sessions
+from . import agent, agent_harness, audio_jobs, config, logging_config, preview_jobs, sessions
 from .agent import AgentError
 from .jobs import Job, JobRegistry, new_id
 
 # runner(slug, history) yields the same event dicts as agent_harness.stream_agentic_events:
 # {'type': 'text'|'tool'|'final', ...}. Sync or async iterator; injectable for tests.
 RunnerFn = Callable[[str, list], "AsyncIterator[dict] | Iterable[dict]"]
+PREVIEW_CADENCE_SECONDS = 10.0
+log = logging_config.get("chat")
 
 
 @dataclass
@@ -45,6 +48,7 @@ class ChatJob(Job):
     audio_job_id: str | None = None
     audio_error: str | None = None
     assistant_index: int | None = None
+    preview_job_ids: list[str] = field(default_factory=list)
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -77,7 +81,11 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         raise ValueError(f"Unknown delivery mode: {delivery_mode}")
     runner = runner or _default_events
 
-    def work(job: ChatJob) -> None:
+    def generate(job: ChatJob) -> None:
+        job._preview_enabled = (job.delivery_mode == "listening"
+                                and config.load_settings().get("speech_provider") == "openai")
+        job._preview_last_started = time.monotonic()
+        job._preview_next_sentence = 0
         history = sessions.build_history(job.slug)
         events = runner(job.slug, history)
         if hasattr(events, "__aiter__"):
@@ -88,6 +96,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
+        _suppress_previews(job)
         audio_job_id = None
         audio_error = None
         if job.delivery_mode == "listening":
@@ -139,6 +148,14 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             job.audio_job_id = audio_job_id
             job.audio_error = audio_error
             job.assistant_index = assistant_index
+
+    def work(job: ChatJob) -> None:
+        try:
+            generate(job)
+        finally:
+            # Preview workers are independent. Suppress them before JobRegistry can publish
+            # either a successful or failed terminal parent state, including runner/parse errors.
+            _suppress_previews(job)
 
     return _registry.start_or_join(
         slug,
@@ -198,8 +215,58 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
                     job.items[-1] = {"kind": "text", "text": job.items[-1]["text"] + delta}
                 else:
                     job.items.append({"kind": "text", "text": delta})
+            _maybe_start_preview(job, canon)
             return len(canon)
     elif ev["type"] == "tool":
         with _registry.lock:
             job.items.append({"kind": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
     return sent
+
+
+def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
+    """Publish a cue job without waiting for it; any cue failure is isolated from analysis."""
+    if not getattr(job, "_preview_enabled", False):
+        return
+    if len(job.preview_job_ids) >= preview_jobs.MAX_CUES_PER_TURN:
+        return
+    completed = preview_jobs.completed_sentences(canonical)
+    next_index = getattr(job, "_preview_next_sentence", 0)
+    if len(completed) <= next_index:
+        return
+    now = time.monotonic()
+    if now - getattr(job, "_preview_last_started", now) < PREVIEW_CADENCE_SECONDS:
+        return
+
+    previous_cue = ""
+    if job.preview_job_ids:
+        previous = preview_jobs.get_job(job.preview_job_ids[-1])
+        if previous and previous.status == "running":
+            return
+        if previous and previous.status == "done" and previous.cue:
+            previous_cue = previous.cue
+
+    sentences = [
+        {"id": f"s{index + 1:04d}", "text": completed[index]}
+        for index in range(next_index, len(completed))
+    ]
+    try:
+        cue_job = preview_jobs.start_job(
+            job.id,
+            len(job.preview_job_ids) + 1,
+            sentences,
+            previous_cue,
+        )
+    except Exception as exc:
+        log.warning("could not start listening preview chat=%s: %s", job.id[:8], str(exc)[:200])
+        return
+    with _registry.lock:
+        job.preview_job_ids.append(cue_job.id)
+    job._preview_next_sentence = len(completed)
+    job._preview_last_started = now
+
+
+def _suppress_previews(job: ChatJob) -> None:
+    if job.delivery_mode != "listening" or getattr(job, "_previews_suppressed", False):
+        return
+    preview_jobs.suppress(job.preview_job_ids)
+    job._previews_suppressed = True

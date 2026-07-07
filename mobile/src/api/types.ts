@@ -63,6 +63,7 @@ export interface ProjectState {
   has_key: boolean;
   model: string | null;
   narration_model: string | null;
+  preview_model: string | null;
   speech_provider: string | null;
   has_openai_key: boolean;
   papers: Paper[];
@@ -88,6 +89,7 @@ export interface Settings {
   key_hint: string;
   model: string | null;
   narration_model: string | null;
+  preview_model: string | null;
   has_openai_key: boolean;
   openai_key_hint: string;
   speech_provider: string | null;
@@ -190,6 +192,25 @@ export interface ChatJob {
   audio_job_id: string | null;
   audio_error: string | null;
   assistant_index: number | null;
+  preview_job_ids: string[];
+}
+
+/** One short, grounded listening cue generated independently from a live chat turn. */
+export interface PreviewJob {
+  id: string;
+  chat_job_id: string;
+  ordinal: number;
+  status: 'running' | 'done' | 'error';
+  stage: 'generating' | 'synthesizing';
+  sentence_ids: string[];
+  source_sentence_ids: string[];
+  cue: string | null;
+  url: string | null;
+  model: string | null;
+  suppressed: boolean;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
 /** A committed notes document (GET /notes/{target}): one paper's Notes block, or the

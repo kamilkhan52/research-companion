@@ -28,8 +28,8 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
-| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | In review — device pass pending |
-| 2.2 | Grounded preview cues from the live response | — | Planned |
+| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Merged — device pass pending |
+| 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | In review — device pass pending |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
@@ -197,6 +197,21 @@ Reject unknown IDs, unseen numeric claims, malformed JSON, or output over 240 ch
 cue speech in a separate background job so analysis never blocks. Play cues only while otherwise
 idle; suppress late cues once final narration starts. Cap each response at three cues. Attribute
 preview LLM/TTS usage to the initiating project.
+
+Implementation verification:
+
+- preview generation and synthesis run in independent project-scoped background jobs; chat
+  snapshots publish only their opaque job ids and final narration suppresses outstanding cues;
+- strict validation rejects malformed JSON, unknown sentence ids, uncited numeric claims, and
+  cues over 240 characters; scheduling uses only newly completed sentences, the prior cue text,
+  a minimum ten-second cadence, and a three-cue cap;
+- full Ruff and 349-test backend suites pass; all eleven mobile Jest suites (twenty-five tests) and
+  TypeScript pass;
+- mobile tests cover idle-only cue playback, busy-player dropping, server suppression, polling,
+  failed-parent cancellation, cross-turn parent identity, dynamic preview-model fallback,
+  explicit override clearing, and serialization with the final-audio queue;
+- native iOS/Android acceptance remains required for audible cadence, background behavior,
+  non-interruption, lock-screen behavior, and final-narration handoff.
 
 ### 2.3 Progressive final narration
 

@@ -21,6 +21,7 @@ import type {
   PromptStatus,
   Project,
   ProjectState,
+  PreviewJob,
   Session,
   Settings,
   UsageSummary,
@@ -119,6 +120,9 @@ export const getChatJob = (pid: string, id: string) =>
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string) =>
   apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+/** Poll one independently generated grounded listening cue. */
+export const getPreviewJob = (pid: string, id: string) =>
+  apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`);
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
 // target = a paper slug, or 'working' for the cross-paper working notes.
