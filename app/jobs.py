@@ -1,8 +1,8 @@
 """Shared background-job machinery.
 
 Every long or LLM-touching operation runs as an in-process background job the client polls,
-not a blocking request (CLAUDE.md invariant 1). Five feature modules (chat, audio, notes,
-graph, discovery) each hand-rolled the same scaffolding: a `dict` of jobs + a `Lock`, finished-
+not a blocking request (CLAUDE.md invariant 1). Feature modules (chat, audio, preview, notes,
+graph, discovery) use the same scaffolding: a `dict` of jobs + a `Lock`, finished-
 job pruning, a daemon thread, the active-project contextvar rebind (invariant 2), and
 broad error capture. This centralizes all of that so a feature module only defines its payload
 dataclass (a `Job` subclass) and a `work(job)` function.

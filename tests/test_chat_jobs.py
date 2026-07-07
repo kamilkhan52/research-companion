@@ -13,7 +13,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from app import chat_jobs, sessions
+from app import chat_jobs, preview_jobs, sessions
 from app.routers import session as session_routes
 
 PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"
@@ -22,8 +22,10 @@ PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END #
 @pytest.fixture(autouse=True)
 def _clear_jobs():
     chat_jobs._jobs.clear()
+    preview_jobs._jobs.clear()
     yield
     chat_jobs._jobs.clear()
+    preview_jobs._jobs.clear()
 
 
 def _session_with_reply(slug: str = "p") -> str:
@@ -190,6 +192,93 @@ def test_reading_turn_does_not_start_audio(temp_project, monkeypatch):
     )
     job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": PROTO}]))
     assert _wait_until_settled(job.id).audio_job_id is None
+
+
+def test_listening_turn_starts_grounded_preview_without_blocking_analysis(
+    temp_project, monkeypatch,
+):
+    slug = _session_with_reply()
+    captured = {}
+    suppressed = []
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai", "tts_model": "m", "tts_voice": "v"},
+    )
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 0)
+
+    def fake_preview(chat_job_id, ordinal, sentences, previous_cue):
+        captured.update(
+            chat_job_id=chat_job_id,
+            ordinal=ordinal,
+            sentences=sentences,
+            previous_cue=previous_cue,
+        )
+        return SimpleNamespace(id="preview-job")
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_preview)
+    monkeypatch.setattr(
+        chat_jobs.preview_jobs,
+        "suppress",
+        lambda job_ids: suppressed.extend(job_ids),
+    )
+    monkeypatch.setattr(
+        chat_jobs.audio_jobs,
+        "start_job",
+        lambda *args, **kwargs: SimpleNamespace(id="audio-job"),
+    )
+    full = ("### CANONICAL ###\nThe first finding is grounded. The second finding is ready. "
+            "\n### STATE ###\nin_discussion\n### END ###")
+    events = [
+        {"type": "text", "text": "### CANONICAL ###\nThe first finding is grounded. "},
+        {"type": "text", "text": "The second finding is ready. "},
+        {"type": "final", "text": full},
+    ]
+
+    job = chat_jobs.start_turn(slug, runner=_sync_runner(events), delivery_mode="listening")
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.preview_job_ids == ["preview-job"]
+    assert captured == {
+        "chat_job_id": job.id,
+        "ordinal": 1,
+        "sentences": [{"id": "s0001", "text": "The first finding is grounded."}],
+        "previous_cue": "",
+    }
+    assert suppressed == ["preview-job"]
+
+
+def test_preview_cadence_uses_only_new_sentences_previous_cue_and_caps_at_three(monkeypatch):
+    job = chat_jobs.ChatJob(id="chat-1", delivery_mode="listening")
+    job._preview_enabled = True
+    job._preview_last_started = 0.0
+    job._preview_next_sentence = 0
+    calls = []
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 10)
+    monkeypatch.setattr(chat_jobs.time, "monotonic", lambda: 20.0 + len(calls) * 10)
+
+    def fake_start(chat_job_id, ordinal, sentences, previous_cue):
+        calls.append((chat_job_id, ordinal, sentences, previous_cue))
+        return SimpleNamespace(id=f"preview-{ordinal}")
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(
+        chat_jobs.preview_jobs,
+        "get_job",
+        lambda job_id: SimpleNamespace(status="done", cue=f"spoken {job_id}"),
+    )
+
+    chat_jobs._maybe_start_preview(job, "One. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. Three. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. Three. Four. fragment")
+
+    assert job.preview_job_ids == ["preview-1", "preview-2", "preview-3"]
+    assert calls[0][2] == [{"id": "s0001", "text": "One."}]
+    assert calls[1][2] == [{"id": "s0002", "text": "Two."}]
+    assert calls[1][3] == "spoken preview-1"
+    assert all(call[0] == "chat-1" for call in calls)
 
 
 def test_audio_start_failure_does_not_fail_recorded_listening_turn(temp_project, monkeypatch):

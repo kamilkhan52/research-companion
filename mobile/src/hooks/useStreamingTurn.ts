@@ -34,6 +34,8 @@ export interface StreamingTurn {
   pendingUser: string | null;
   /** The turn's text and tool invocations in arrival order, so the UI can interleave them. */
   items: StreamItem[];
+  /** Grounded cue jobs published while this turn is still generating. */
+  previewJobIds: string[];
   run: (path: string, body: unknown, optimisticUser?: string) => Promise<void>;
   /** Reattach to a turn already generating for this session (call on screen entry). */
   resume: () => Promise<void>;
@@ -50,6 +52,7 @@ export function useStreamingTurn(
 ): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
+  const [previewJobIds, setPreviewJobIds] = useState<string[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
@@ -79,6 +82,7 @@ export function useStreamingTurn(
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
+    setPreviewJobIds([]);
   }, [pid, slug, qc]);
 
   /** Poll one job until it settles (or we stop watching). */
@@ -87,6 +91,7 @@ export function useStreamingTurn(
       watchRef.current = job.id;
       setStreaming(true);
       setItems(job.items);
+      setPreviewJobIds(job.preview_job_ids);
       let misses = 0;
       while (aliveRef.current && watchRef.current === job.id) {
         await sleep(POLL_MS);
@@ -111,6 +116,7 @@ export function useStreamingTurn(
         }
         if (!aliveRef.current || watchRef.current !== job.id) return;
         setItems(snap.items);
+        setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
           try {
@@ -142,6 +148,7 @@ export function useStreamingTurn(
       busyRef.current = true;
       setError(null);
       setItems([]);
+      setPreviewJobIds([]);
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
       const handoffEpoch = currentHandoffEligibilityEpoch();
@@ -190,6 +197,7 @@ export function useStreamingTurn(
     watchRef.current = null;
     setStreaming(false);
     setPendingUser(null);
+    setPreviewJobIds([]);
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -200,5 +208,16 @@ export function useStreamingTurn(
     [items],
   );
 
-  return { liveText, streaming, error, pendingUser, items, run, resume, cancel, clearError };
+  return {
+    liveText,
+    streaming,
+    error,
+    pendingUser,
+    items,
+    previewJobIds,
+    run,
+    resume,
+    cancel,
+    clearError,
+  };
 }

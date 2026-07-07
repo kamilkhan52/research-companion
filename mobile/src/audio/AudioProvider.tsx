@@ -45,6 +45,8 @@ interface AudioContextValue {
     billingProject: string | null,
     chatJobId?: string | null,
   ) => void;
+  /** Play one already-generated progress cue only if playback/preparation is otherwise idle. */
+  playPreview: (id: string, title: string, url: string) => Promise<boolean>;
   /** The in-flight preparation, or null. Global, so the mini player can show it anywhere. */
   prep: PrepState | null;
   /** Stop watching the in-flight preparation (the server job continues and caches). */
@@ -101,6 +103,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [currentTitle, setCurrentTitle] = useState<string | null>(null);
   const [narrationById, setNarrationById] = useState<Record<string, string>>({});
   const [errorById, setErrorById] = useState<Record<string, string>>({});
+  const prepRef = useRef<PrepState | null>(null);
+  prepRef.current = prep;
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
   const queueGeneration = useRef(0);
@@ -239,6 +243,50 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     [currentId, applyJob],
   );
 
+  const playPreview = useCallback(async (id: string, title: string, url: string) => {
+    const queueGen = queueGeneration.current;
+    let played = false;
+    const run = async () => {
+      const live = () => queueGeneration.current === queueGen;
+      if (!live() || prepRef.current) return;
+      try {
+        await setupPlayer();
+        const [{ state }, activeIndex, queue] = await Promise.all([
+          TrackPlayer.getPlaybackState(),
+          TrackPlayer.getActiveTrackIndex(),
+          TrackPlayer.getQueue(),
+        ]);
+        if (!live() || prepRef.current) return;
+        const activeBusy = activeIndex != null
+          && state !== State.None && state !== State.Stopped && state !== State.Ended;
+        const hasUpcoming = activeIndex == null
+          ? queue.length > 0
+          : queue.length > activeIndex + 1;
+        if (activeBusy || hasUpcoming) return;
+        if (queue.length) await TrackPlayer.reset();
+        if (!live()) return;
+        await TrackPlayer.add({
+          id,
+          url: apiUrl(url),
+          title,
+          artist: 'Reading Companion',
+          headers: authHeaders(),
+        });
+        if (!live()) return;
+        setCurrentId(id);
+        setCurrentTitle(title);
+        await TrackPlayer.play();
+        played = true;
+      } catch {
+        // Preview cues are opportunistic. Final narration and manual playback remain primary.
+      }
+    };
+    const task = queueTail.current.then(run, run);
+    queueTail.current = task;
+    await task;
+    return played;
+  }, []);
+
   const enqueueJob = useCallback((request: PlayRequest, audioJobId: string,
                                   billingProject: string | null,
                                   chatJobId?: string | null) => {
@@ -346,6 +394,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       value={{
         playText,
         enqueueJob,
+        playPreview,
         prep,
         cancelPrep,
         currentId,

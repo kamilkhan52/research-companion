@@ -32,6 +32,7 @@ import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/a
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { isHandoffEligible } from '@/audio/handoffState';
+import { usePreviewCues } from '@/audio/usePreviewCues';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
@@ -78,6 +79,13 @@ export default function DiscussionScreen() {
     listeningMode ? 'listening' : 'reading',
     handleTurnDone,
   );
+  usePreviewCues({
+    enabled: listeningMode,
+    project: pid,
+    title: session.data?.paper.title ?? 'Research update',
+    jobIds: stream.previewJobIds,
+    playPreview: audio.playPreview,
+  });
   const scrollRef = useRef<ScrollView>(null);
 
   const state = session.data?.state ?? null;

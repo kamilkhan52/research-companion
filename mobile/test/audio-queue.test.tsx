@@ -1,4 +1,4 @@
-import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import { Pressable } from 'react-native';
 import TrackPlayer, { State } from 'react-native-track-player';
 
@@ -75,6 +75,54 @@ test('the first queued listening track starts automatically', async () => {
 
   await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
   expect(TrackPlayer.reset).not.toHaveBeenCalled();
+});
+
+test('a grounded preview plays when TrackPlayer is idle', async () => {
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.None });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([]);
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  let played = false;
+  await act(async () => {
+    played = await audio.playPreview('preview:1', 'Preview · Paper', '/api/audio/cue.mp3');
+  });
+  expect(played).toBe(true);
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({ id: 'preview:1' }));
+  expect(TrackPlayer.play).toHaveBeenCalledTimes(1);
+});
+
+test('a grounded preview is dropped while another track is active', async () => {
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Playing });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(0);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([{ id: 'current' }] as never);
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  let played = true;
+  await act(async () => {
+    played = await audio.playPreview('preview:1', 'Preview · Paper', '/api/audio/cue.mp3');
+  });
+  expect(played).toBe(false);
+  expect(TrackPlayer.add).not.toHaveBeenCalled();
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
 
 test('cancellation removes a track whose add finishes after the queue was cleared', async () => {

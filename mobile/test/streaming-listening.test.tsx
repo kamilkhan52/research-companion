@@ -32,6 +32,7 @@ const baseJob: ChatJob = {
   audio_job_id: null,
   audio_error: null,
   assistant_index: null,
+  preview_job_ids: [],
 };
 
 test('listening turns send delivery mode and hand the completed audio job to the queue', async () => {
