@@ -13,6 +13,11 @@ import { apiPost, ApiError } from '@/api/client';
 import { getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
+import {
+  consumeEligibleHandoff,
+  currentHandoffEligibilityEpoch,
+  registerEligibleHandoff,
+} from '@/audio/handoffState';
 
 const POLL_MS = 900;
 // Consecutive failed polls before we surface a connection warning (the job itself is safe
@@ -37,7 +42,12 @@ export interface StreamingTurn {
   clearError: () => void;
 }
 
-export function useStreamingTurn(pid: string | null, slug: string | null): StreamingTurn {
+export function useStreamingTurn(
+  pid: string | null,
+  slug: string | null,
+  deliveryMode: 'reading' | 'listening' = 'reading',
+  onDone?: (job: ChatJob) => void | Promise<void>,
+): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -50,6 +60,8 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
   // fast double-tap before React re-renders with the disabled button — can't both slip past
   // the check; state only updates on the next render, a ref updates immediately.
   const busyRef = useRef(false);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
 
   useEffect(() => {
     aliveRef.current = true;
@@ -101,11 +113,19 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
         setItems(snap.items);
         if (snap.status === 'done') {
           watchRef.current = null;
+          try {
+            await onDoneRef.current?.(snap);
+          } catch (e) {
+            setError((e as Error).message ?? 'The response finished, but audio could not start.');
+          }
           await settle();
           return;
         }
         if (snap.status === 'error') {
           watchRef.current = null;
+          if (snap.delivery_mode === 'listening') {
+            await consumeEligibleHandoff(snap.id);
+          }
           setError(snap.error ?? 'The response failed.');
           setStreaming(false);
           setPendingUser(null);
@@ -124,8 +144,15 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
       setItems([]);
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
+      const handoffEpoch = currentHandoffEligibilityEpoch();
       try {
-        const { job } = await apiPost<{ job: ChatJob }>(path, body);
+        const payload = body && typeof body === 'object' && !Array.isArray(body)
+          ? { ...(body as Record<string, unknown>), delivery_mode: deliveryMode }
+          : body;
+        const { job } = await apiPost<{ job: ChatJob }>(path, payload);
+        if (job.delivery_mode === 'listening') {
+          await registerEligibleHandoff(job.id, handoffEpoch);
+        }
         await watch(job);
       } catch (e) {
         setError((e as Error).message ?? 'Could not start the response.');
@@ -135,15 +162,19 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
         busyRef.current = false;
       }
     },
-    [watch],
+    [deliveryMode, watch],
   );
 
   const resume = useCallback(async () => {
     if (!pid || !slug || busyRef.current) return;
     busyRef.current = true;
+    const handoffEpoch = currentHandoffEligibilityEpoch();
     try {
       const { job } = await getActiveChatJob(pid, slug);
       if (!job || !aliveRef.current) return;
+      if (job.delivery_mode === 'listening' && deliveryMode === 'listening') {
+        await registerEligibleHandoff(job.id, handoffEpoch);
+      }
       // The message that started this turn is already recorded server-side; refresh the
       // transcript so it shows while we reattach to the live turn.
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
@@ -153,7 +184,7 @@ export function useStreamingTurn(pid: string | null, slug: string | null): Strea
     } finally {
       busyRef.current = false;
     }
-  }, [pid, slug, qc, watch]);
+  }, [deliveryMode, pid, slug, qc, watch]);
 
   const cancel = useCallback(() => {
     watchRef.current = null;

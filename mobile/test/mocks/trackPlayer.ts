@@ -29,13 +29,19 @@ export const Event = {
   RemoteJumpForward: 'remote-jump-forward',
   RemoteJumpBackward: 'remote-jump-backward',
   RemoteSeek: 'remote-seek',
+  PlaybackActiveTrackChanged: 'playback-active-track-changed',
 } as const;
 
 export const trackPlayerMock = {
   setupPlayer: jest.fn(async () => undefined),
   updateOptions: jest.fn(async () => undefined),
   getPlaybackState: jest.fn(async () => ({ state: State.None })),
+  getActiveTrack: jest.fn(async () => undefined),
+  getActiveTrackIndex: jest.fn(async () => undefined),
+  getQueue: jest.fn(async () => []),
   reset: jest.fn(async () => undefined),
+  removeUpcomingTracks: jest.fn(async () => undefined),
+  remove: jest.fn(async () => undefined),
   add: jest.fn(async () => undefined),
   play: jest.fn(async () => undefined),
   pause: jest.fn(async () => undefined),
@@ -50,5 +56,6 @@ export const useActiveTrack = jest.fn(() => undefined);
 export const useIsPlaying = jest.fn(() => ({ playing: false, bufferingDuringPlay: false }));
 export const usePlaybackState = jest.fn(() => ({ state: State.None }));
 export const useProgress = jest.fn(() => ({ position: 0, duration: 0, buffered: 0 }));
+export const useTrackPlayerEvents = jest.fn();
 
 export default trackPlayerMock;

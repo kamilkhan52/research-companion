@@ -7,18 +7,20 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
-export function IconButton({ glyph, onPress, accessibilityLabel }: {
+export function IconButton({ glyph, onPress, accessibilityLabel, active = false }: {
   glyph: string;
   onPress: () => void;
   accessibilityLabel: string;
+  active?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
       accessibilityLabel={accessibilityLabel}
       hitSlop={8}
-      style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-      <Text style={styles.glyph}>{glyph}</Text>
+      accessibilityState={{ selected: active }}
+      style={({ pressed }) => [styles.iconBtn, active && styles.iconBtnActive, pressed && styles.iconBtnPressed]}>
+      <Text style={[styles.glyph, active && styles.glyphActive]}>{glyph}</Text>
     </Pressable>
   );
 }
@@ -79,5 +81,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconBtnPressed: { backgroundColor: colors.panelActive },
+  iconBtnActive: { backgroundColor: colors.cyan, borderColor: colors.cyan },
   glyph: { fontSize: 24, color: colors.text, lineHeight: 28 },
+  glyphActive: { color: colors.cyanInk },
 });

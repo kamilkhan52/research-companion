@@ -28,7 +28,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
-| 2.1 | Device Listening mode + automatic queued audio | — | Planned |
+| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | In review — device pass pending |
 | 2.2 | Grounded preview cues from the live response | — | Planned |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
@@ -173,6 +173,18 @@ Persist `rc.listeningMode` on the device and expose a quick discussion-header to
 `delivery_mode: "reading" | "listening"` to turn requests. Listening turns retain canonical text
 but automatically begin server-side audio preparation after analysis. The client queues final
 narrations and never interrupts a playing track.
+
+Automated verification ([PR #19](https://github.com/kamilkhan52/research-companion/pull/19)):
+
+- full Ruff and 336-test backend suites pass; all nine mobile Jest suites (sixteen tests) and
+  TypeScript pass;
+- tests cover persisted device state, request delivery mode, record-before-audio ordering,
+  audio-start failure isolation, first-track autoplay, non-interrupting queue append, recoverable
+  handoffs after navigation, stable message identity, response regeneration, device-local handoff
+  eligibility, off/on dismissal, active-track-safe replacement, retryable handoff recovery, and
+  cancellation during native queue add;
+- native acceptance remains required for relaunch persistence, background/resume, automatic
+  playback, queue advancement, and disabling Listening mode with a track active.
 
 ### 2.2 Grounded preview cues
 

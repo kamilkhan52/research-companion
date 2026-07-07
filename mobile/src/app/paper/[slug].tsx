@@ -7,7 +7,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -28,8 +28,10 @@ import { streamPaths, turnJobPaths } from '@/api/endpoints';
 import { useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
+import { isHandoffEligible } from '@/audio/handoffState';
 import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
@@ -37,6 +39,7 @@ import { IconButton, TopBar } from '@/components/TopBar';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
+import { useListeningMode } from '@/store/listening';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -50,13 +53,45 @@ export default function DiscussionScreen() {
   const pid = activePid;
 
   const session = useSession(pid, slug ?? null);
-  const stream = useStreamingTurn(pid, slug ?? null);
+  const audio = useAudio();
+  const { listeningMode, setListeningMode } = useListeningMode();
+  const handleTurnDone = useCallback(async (job: ChatJob) => {
+    if (!listeningMode || job.delivery_mode !== 'listening') return;
+    if (!(await isHandoffEligible(job.id))) return;
+    if (job.audio_error) throw new Error(job.audio_error);
+    const canonical = job.turn?.canonical;
+    if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
+    audio.enqueueJob(
+      {
+        id: messageAudioId(pid, slug, job.assistant_index),
+        title: session.data?.paper.title ?? 'Narration',
+        text: canonical,
+      },
+      job.audio_job_id,
+      pid,
+      job.id,
+    );
+  }, [audio, listeningMode, pid, session.data?.paper.title, slug]);
+  const stream = useStreamingTurn(
+    pid,
+    slug ?? null,
+    listeningMode ? 'listening' : 'reading',
+    handleTurnDone,
+  );
   const scrollRef = useRef<ScrollView>(null);
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
   const paths = pid ? turnJobPaths(pid) : null;
+  useListeningHandoffRecovery({
+    enabled: listeningMode,
+    project: pid,
+    slug: slug ?? null,
+    title: session.data?.paper.title ?? 'Narration',
+    transcript,
+    enqueueJob: audio.enqueueJob,
+  });
 
   // Reattach to a turn that's still generating for this paper (we navigated away mid-turn,
   // the app was backgrounded, the connection dropped…). The job kept running server-side.
@@ -142,6 +177,15 @@ export default function DiscussionScreen() {
         onBack={() => router.back()}
         right={
           <>
+            <IconButton
+              glyph="♫"
+              active={listeningMode}
+              onPress={() => {
+                if (listeningMode) audio.cancelPrep();
+                setListeningMode(!listeningMode);
+              }}
+              accessibilityLabel={listeningMode ? 'Turn off Listening mode' : 'Turn on Listening mode'}
+            />
             {session.data?.paper.has_notes ? (
               <IconButton
                 glyph="✎"
@@ -207,7 +251,7 @@ export default function DiscussionScreen() {
                 <Message
                   key={i}
                   entry={entry}
-                  audioId={`${slug}:${i}`}
+                  audioId={messageAudioId(pid, slug!, entry.assistant_index)}
                   title={session.data?.paper.title ?? 'Narration'}
                 />
               ),
@@ -590,7 +634,7 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
-  const audioError = audio.errorById[audioId];
+  const audioError = audio.errorById[audioId] ?? entry.audio_error;
   const [copied, setCopied] = useState(false);
   const canonical = entry.canonical;
 

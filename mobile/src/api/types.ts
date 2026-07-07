@@ -50,6 +50,11 @@ export type TranscriptEntry =
       narration: string;
       state_signal: string;
       proposed_commit: ProposedCommit | null;
+      assistant_index: number;
+      delivery_mode: 'reading' | 'listening';
+      chat_job_id: string | null;
+      audio_job_id: string | null;
+      audio_error: string | null;
     };
 
 /** GET /api/projects/{pid}/state */
@@ -181,6 +186,10 @@ export interface ChatJob {
   error: string | null;
   started_at: string;
   finished_at: string | null;
+  delivery_mode: 'reading' | 'listening';
+  audio_job_id: string | null;
+  audio_error: string | null;
+  assistant_index: number | null;
 }
 
 /** A committed notes document (GET /notes/{target}): one paper's Notes block, or the

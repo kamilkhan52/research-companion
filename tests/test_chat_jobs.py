@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from app import chat_jobs, sessions
+from app.routers import session as session_routes
 
 PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"
 
@@ -144,3 +146,92 @@ def test_snapshot_is_a_plain_dict_safe_for_polling(temp_project):
     snap = chat_jobs.snapshot(job.id)
     assert snap and snap["status"] == "done" and snap["slug"] == slug
     assert chat_jobs.snapshot("nope") is None
+
+
+def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    captured = {}
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai"},
+    )
+
+    def fake_audio(text, billing_project=None):
+        assert sessions.read_records(slug)[-1]["role"] == "assistant"
+        captured.update(text=text, billing_project=billing_project)
+        return SimpleNamespace(id="audio-job")
+
+    monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", fake_audio)
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": PROTO}]),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.audio_job_id == "audio-job"
+    assert finished.audio_error is None
+    assert finished.assistant_index == 0
+    assert captured == {"text": "The answer.", "billing_project": temp_project}
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["assistant_index"] == 0
+    assert transcript[-1]["delivery_mode"] == "listening"
+    assert transcript[-1]["chat_job_id"] == finished.id
+    assert transcript[-1]["audio_job_id"] == "audio-job"
+
+
+def test_reading_turn_does_not_start_audio(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    monkeypatch.setattr(
+        chat_jobs.audio_jobs,
+        "start_job",
+        lambda *args, **kwargs: pytest.fail("reading turn started audio"),
+    )
+    job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": PROTO}]))
+    assert _wait_until_settled(job.id).audio_job_id is None
+
+
+def test_audio_start_failure_does_not_fail_recorded_listening_turn(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai"},
+    )
+    def fail_audio(*args, **kwargs):
+        raise RuntimeError("TTS unavailable")
+
+    monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", fail_audio)
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": PROTO}]),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.audio_job_id is None
+    assert "TTS unavailable" in (finished.audio_error or "")
+    assert sessions.read_records(slug)[-1]["canonical"] == "The answer."
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["audio_job_id"] is None
+    assert "TTS unavailable" in transcript[-1]["audio_error"]
+
+
+def test_job_route_passes_listening_delivery_mode(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    captured = {}
+
+    def fake_start(target, delivery_mode="reading"):
+        captured.update(slug=target, delivery_mode=delivery_mode)
+        return SimpleNamespace(id="chat-job")
+
+    monkeypatch.setattr(chat_jobs, "start_turn", fake_start)
+    monkeypatch.setattr(chat_jobs, "snapshot", lambda job_id: {"id": job_id})
+    response = session_routes.continue_job(
+        session_routes.FinishReq(slug=slug, delivery_mode="listening")
+    )
+
+    assert response == {"job": {"id": "chat-job"}}
+    assert captured == {"slug": slug, "delivery_mode": "listening"}
