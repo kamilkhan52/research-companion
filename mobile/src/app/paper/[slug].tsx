@@ -56,10 +56,6 @@ export default function DiscussionScreen() {
   const session = useSession(pid, slug ?? null);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
-  const previewParentJobRef = useRef<string | null>(null);
-  const handlePreviewParentJob = useCallback((jobId: string | null) => {
-    previewParentJobRef.current = jobId;
-  }, []);
   const handleTurnDone = useCallback(async (job: ChatJob) => {
     if (!listeningMode || job.delivery_mode !== 'listening') return;
     if (!(await isHandoffEligible(job.id))) return;
@@ -82,7 +78,6 @@ export default function DiscussionScreen() {
     slug ?? null,
     listeningMode ? 'listening' : 'reading',
     handleTurnDone,
-    handlePreviewParentJob,
   );
   usePreviewCues({
     enabled: listeningMode,
@@ -90,7 +85,7 @@ export default function DiscussionScreen() {
     title: session.data?.paper.title ?? 'Research update',
     jobIds: stream.previewJobIds,
     playPreview: audio.playPreview,
-    parentJobRef: previewParentJobRef,
+    parentJobId: stream.previewParentJobId,
   });
   const scrollRef = useRef<ScrollView>(null);
 

@@ -193,6 +193,10 @@ export interface ChatJob {
   audio_error: string | null;
   assistant_index: number | null;
   preview_job_ids: string[];
+  preview_coordinator_id: string | null;
+  preview_complete: boolean;
+  preview_phase: string | null;
+  preview_progress: Record<string, unknown>;
 }
 
 /** One short, grounded listening cue generated independently from a live chat turn. */

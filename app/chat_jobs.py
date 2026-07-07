@@ -31,7 +31,7 @@ from .jobs import Job, JobRegistry, new_id
 # runner(slug, history) yields the same event dicts as agent_harness.stream_agentic_events:
 # {'type': 'text'|'tool'|'final', ...}. Sync or async iterator; injectable for tests.
 RunnerFn = Callable[[str, list], "AsyncIterator[dict] | Iterable[dict]"]
-PREVIEW_CADENCE_SECONDS = 10.0
+PREVIEW_CADENCE_SECONDS = 3.0
 log = logging_config.get("chat")
 
 
@@ -49,6 +49,10 @@ class ChatJob(Job):
     audio_error: str | None = None
     assistant_index: int | None = None
     preview_job_ids: list[str] = field(default_factory=list)
+    preview_coordinator_id: str | None = None
+    preview_complete: bool = True
+    preview_phase: str | None = None
+    preview_progress: dict = field(default_factory=dict)
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -86,6 +90,20 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                                 and config.load_settings().get("speech_provider") == "openai")
         job._preview_last_started = time.monotonic()
         job._preview_next_sentence = 0
+        job._preview_context = []
+        if job._preview_enabled:
+            try:
+                job._preview_context = preview_jobs.research_sources(job.slug)
+            except Exception as exc:
+                log.warning("could not build listening preview context chat=%s: %s",
+                            job.id[:8], str(exc)[:200])
+            with _registry.lock:
+                job.preview_complete = False
+                job.preview_phase = "analysis"
+                job.preview_progress = {
+                    "phase": "analysis",
+                    "remaining_known": False,
+                }
         history = sessions.build_history(job.slug)
         events = runner(job.slug, history)
         if hasattr(events, "__aiter__"):
@@ -96,7 +114,6 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
-        _suppress_previews(job)
         audio_job_id = None
         audio_error = None
         if job.delivery_mode == "listening":
@@ -149,13 +166,46 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             job.audio_error = audio_error
             job.assistant_index = assistant_index
 
+        if getattr(job, "_preview_enabled", False) and audio_job_id:
+            sources = preview_jobs.response_sources(turn.canonical) + list(job._preview_context)
+
+            def publish(ids: list[str], phase: str, progress: dict, complete: bool) -> None:
+                with _registry.lock:
+                    job.preview_job_ids = list(ids)
+                    job.preview_phase = phase
+                    job.preview_progress = dict(progress)
+                    job.preview_complete = complete
+
+            try:
+                coordinator = preview_jobs.start_coordinator(
+                    job.id,
+                    audio_job_id,
+                    sources,
+                    job.preview_job_ids,
+                    publish,
+                    cadence_seconds=PREVIEW_CADENCE_SECONDS,
+                    last_started_at=getattr(job, "_preview_last_started", time.monotonic()),
+                )
+                with _registry.lock:
+                    job.preview_coordinator_id = coordinator.id
+            except Exception as exc:
+                log.warning("could not continue listening previews chat=%s: %s",
+                            job.id[:8], str(exc)[:200])
+                _suppress_previews(job)
+        else:
+            _suppress_previews(job)
+
     def work(job: ChatJob) -> None:
+        succeeded = False
         try:
             generate(job)
+            succeeded = True
         finally:
-            # Preview workers are independent. Suppress them before JobRegistry can publish
-            # either a successful or failed terminal parent state, including runner/parse errors.
-            _suppress_previews(job)
+            # On success, the coordinator owns suppression and runs until final narration is
+            # ready. On any runner/parse/persistence failure, suppress before JobRegistry can
+            # publish the terminal parent error.
+            if not succeeded:
+                _suppress_previews(job)
 
     return _registry.start_or_join(
         slug,
@@ -227,8 +277,6 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
     """Publish a cue job without waiting for it; any cue failure is isolated from analysis."""
     if not getattr(job, "_preview_enabled", False):
         return
-    if len(job.preview_job_ids) >= preview_jobs.MAX_CUES_PER_TURN:
-        return
     completed = preview_jobs.completed_sentences(canonical)
     next_index = getattr(job, "_preview_next_sentence", 0)
     if len(completed) <= next_index:
@@ -246,15 +294,20 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
             previous_cue = previous.cue
 
     sentences = [
-        {"id": f"s{index + 1:04d}", "text": completed[index]}
+        {"id": f"s{index + 1:04d}", "text": completed[index], "kind": "live_response"}
         for index in range(next_index, len(completed))
-    ]
+    ] + list(getattr(job, "_preview_context", []))
     try:
         cue_job = preview_jobs.start_job(
             job.id,
             len(job.preview_job_ids) + 1,
             sentences,
             previous_cue,
+            {
+                "phase": "analysis",
+                "completed_response_sentences": len(completed),
+                "remaining_known": False,
+            },
         )
     except Exception as exc:
         log.warning("could not start listening preview chat=%s: %s", job.id[:8], str(exc)[:200])
@@ -270,3 +323,6 @@ def _suppress_previews(job: ChatJob) -> None:
         return
     preview_jobs.suppress(job.preview_job_ids)
     job._previews_suppressed = True
+    with _registry.lock:
+        job.preview_complete = True
+        job.preview_phase = "complete"
