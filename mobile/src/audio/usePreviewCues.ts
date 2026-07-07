@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import * as api from '@/api/endpoints';
 
@@ -13,57 +13,85 @@ export function usePreviewCues({
   title,
   jobIds,
   playPreview,
-  parentJobRef,
+  parentJobId,
 }: {
   enabled: boolean;
   project: string | null;
   title: string;
   jobIds: string[];
   playPreview: (id: string, title: string, url: string) => Promise<boolean>;
-  parentJobRef: { readonly current: string | null };
+  parentJobId: string | null;
 }) {
-  const aliveRef = useRef(true);
-  const enabledRef = useRef(enabled);
-  const projectRef = useRef(project);
+  const [continuedJobIds, setContinuedJobIds] = useState<string[]>([]);
   const inFlightRef = useRef(new Set<string>());
-  enabledRef.current = enabled;
-  projectRef.current = project;
-
-  useEffect(() => () => {
-    aliveRef.current = false;
-  }, []);
 
   useEffect(() => {
-    const parentJobId = parentJobRef.current;
+    setContinuedJobIds((current) => (current.length ? [] : current));
+    if (!enabled || !project || !parentJobId) return;
+
+    let cancelled = false;
+    void (async () => {
+      let failures = 0;
+      while (!cancelled) {
+        try {
+          const { job } = await api.getChatJob(project, parentJobId);
+          if (cancelled) return;
+          failures = 0;
+          setContinuedJobIds((current) => (
+            current.length === job.preview_job_ids.length
+              && current.every((id, index) => id === job.preview_job_ids[index])
+              ? current
+              : job.preview_job_ids
+          ));
+          if (job.preview_complete) return;
+        } catch {
+          if (cancelled || ++failures >= MAX_POLL_FAILURES) return;
+        }
+        await sleep(POLL_MS);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, parentJobId, project]);
+
+  const allJobIds = useMemo(
+    () => Array.from(new Set([...jobIds, ...continuedJobIds])),
+    [continuedJobIds, jobIds],
+  );
+  const allJobIdsKey = allJobIds.join('\0');
+
+  useEffect(() => {
     if (!enabled || !parentJobId) {
-      for (const jobId of jobIds) handledPreviewJobs.add(jobId);
+      for (const jobId of allJobIds) handledPreviewJobs.add(jobId);
       return;
     }
     if (!project) return;
-    for (const jobId of jobIds) {
+
+    let cancelled = false;
+    for (const jobId of allJobIds) {
       if (handledPreviewJobs.has(jobId) || inFlightRef.current.has(jobId)) continue;
       inFlightRef.current.add(jobId);
       void (async () => {
         let failures = 0;
         try {
-          while (aliveRef.current && enabledRef.current && parentJobRef.current === parentJobId
-                 && projectRef.current === project) {
+          while (!cancelled) {
             try {
               const { job } = await api.getPreviewJob(project, jobId);
+              if (cancelled) return;
               failures = 0;
               if (job.status === 'running') {
                 await sleep(POLL_MS);
                 continue;
               }
               handledPreviewJobs.add(jobId);
-              if (enabledRef.current && parentJobRef.current === parentJobId
-                  && projectRef.current === project
-                  && job.status === 'done' && !job.suppressed && job.url) {
+              if (job.status === 'done' && !job.suppressed && job.url) {
                 await playPreview(`preview:${job.id}`, `Preview · ${title}`, job.url);
               }
               return;
             } catch {
-              if (++failures >= MAX_POLL_FAILURES) return;
+              if (cancelled || ++failures >= MAX_POLL_FAILURES) return;
               await sleep(POLL_MS);
             }
           }
@@ -72,5 +100,11 @@ export function usePreviewCues({
         }
       })();
     }
-  }, [enabled, jobIds, parentJobRef, playPreview, project, title]);
+
+    return () => {
+      cancelled = true;
+    };
+  // The joined key keeps polling stable when a caller recreates an equivalent ids array.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allJobIdsKey, enabled, parentJobId, playPreview, project, title]);
 }

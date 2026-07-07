@@ -125,6 +125,103 @@ test('a grounded preview is dropped while another track is active', async () => 
   expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
 
+test('preview cues keep playing while automatic final narration is preparing', async () => {
+  let resolveAudio!: (value: { job: AudioJob }) => void;
+  jest.mocked(api.getAudioJob).mockImplementationOnce(() => new Promise((resolve) => {
+    resolveAudio = resolve;
+  }));
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.None });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([]);
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  audio.enqueueJob(
+    { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
+    'audio-job',
+    'project-a',
+  );
+  await waitFor(() => expect(api.getAudioJob).toHaveBeenCalled());
+
+  let played = false;
+  await act(async () => {
+    played = await audio.playPreview('preview:wait', 'Preview · Paper', '/api/audio/cue.mp3');
+  });
+  expect(played).toBe(true);
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({ id: 'preview:wait' }));
+
+  await act(async () => {
+    audio.cancelPrep();
+    resolveAudio({ job: doneJob });
+  });
+});
+
+test('a new preview queues behind a preview already speaking', async () => {
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Playing });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(0);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([{ id: 'preview:first' }] as never);
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  let played = false;
+  await act(async () => {
+    played = await audio.playPreview('preview:second', 'Preview · Paper', '/api/audio/two.mp3');
+  });
+  expect(played).toBe(true);
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({ id: 'preview:second' }));
+  expect(TrackPlayer.reset).not.toHaveBeenCalled();
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
+});
+
+test('final narration removes queued cues but lets the active cue finish', async () => {
+  jest.mocked(api.getAudioJob).mockResolvedValueOnce({ job: doneJob });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(0);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([
+    { id: 'preview:active' },
+    { id: 'preview:queued' },
+  ] as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({ id: 'preview:active' } as never);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Playing });
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  audio.enqueueJob(
+    { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
+    'audio-job',
+    'project-a',
+  );
+
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledWith(
+    expect.objectContaining({ id: 'turn-1' }),
+  ));
+  expect(TrackPlayer.remove).toHaveBeenCalledWith([1]);
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
+});
+
 test('cancellation removes a track whose add finishes after the queue was cleared', async () => {
   let finishAdd!: () => void;
   const deferredAdd = new Promise<void>((resolve) => { finishAdd = resolve; });
@@ -142,7 +239,7 @@ test('cancellation removes a track whose add finishes after the queue was cleare
   await fireEventAsync.press(screen.getByLabelText('Cancel queue'));
   finishAdd();
 
-  await waitFor(() => expect(TrackPlayer.removeUpcomingTracks).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(TrackPlayer.removeUpcomingTracks).toHaveBeenCalledTimes(1));
   expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
 

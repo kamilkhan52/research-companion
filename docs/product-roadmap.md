@@ -28,8 +28,9 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
-| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Merged — device pass pending |
-| 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | In review — device pass pending |
+| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
+| 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
+| 2.2a | Contextual cue continuity during narration prep | — | In progress |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
@@ -52,8 +53,10 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
   extraction, PDF hunt, tool guidance, TTS, default reading method, and listening previews.
 - Listening mode is a per-device toggle and is off by default. It automatically prepares and
   plays responses in order and never interrupts current playback.
-- Preview cues are model-written but grounded only in completed source sentences from the real
-  response. Default cadence is at least 10 seconds apart, with at most three cues.
+- Preview cues are model-written from grounded source IDs: completed response text, the paper's
+  abstract/introduction, and committed project context about prior reading. Their target start
+  cadence is three seconds, they continue until final narration is playable, and they never
+  interrupt non-preview audio.
 - All user-authored text is persisted locally until server acceptance or an explicit save.
 - Composer model selection applies to one response only and never silently changes the default.
 - Navigation becomes an overlay drawer on phones and a permanent rail on wider layouts.
@@ -188,23 +191,24 @@ Automated verification ([PR #19](https://github.com/kamilkhan52/research-compani
 
 ### 2.2 Grounded preview cues
 
-While canonical text streams, assign stable IDs to completed sentences. At most every 10 seconds,
-submit only new completed sentences and previous cue text to a configurable `preview_model`
-(default: narration model). The preview prompt returns JSON with a short spoken preview and its
-source sentence IDs.
+While canonical text streams, assign stable IDs to completed sentences. At a target three-second
+start cadence, submit new completed sentences, the paper opening, committed prior-reading context,
+and previous cue text to a configurable `preview_model` (default: narration model). The preview
+prompt returns JSON with a short spoken preview and its source IDs.
 
 Reject unknown IDs, unseen numeric claims, malformed JSON, or output over 240 characters. Generate
-cue speech in a separate background job so analysis never blocks. Play cues only while otherwise
-idle; suppress late cues once final narration starts. Cap each response at three cues. Attribute
-preview LLM/TTS usage to the initiating project.
+cue speech in a separate background job so analysis never blocks. Prefer background, motivation,
+introduction framing, and relationships to papers already read; reserve detailed results for final
+narration. Play cues only while the player is idle or another cue is active, and suppress queued
+cues once final narration becomes playable. Attribute preview LLM/TTS usage to the initiating
+project.
 
 Implementation verification:
 
 - preview generation and synthesis run in independent project-scoped background jobs; chat
   snapshots publish only their opaque job ids and final narration suppresses outstanding cues;
-- strict validation rejects malformed JSON, unknown sentence ids, uncited numeric claims, and
-  cues over 240 characters; scheduling uses only newly completed sentences, the prior cue text,
-  a minimum ten-second cadence, and a three-cue cap;
+- strict validation rejects malformed JSON, unknown source ids, uncited numeric claims, and cues
+  over 240 characters;
 - full Ruff and 349-test backend suites pass; all eleven mobile Jest suites (twenty-five tests) and
   TypeScript pass;
 - mobile tests cover idle-only cue playback, busy-player dropping, server suppression, polling,
@@ -212,6 +216,28 @@ Implementation verification:
   explicit override clearing, and serialization with the final-audio queue;
 - native iOS/Android acceptance remains required for audible cadence, background behavior,
   non-interruption, lock-screen behavior, and final-narration handoff.
+
+#### 2.2a Contextual cue continuity adjustment
+
+Keep the completed chat snapshot live while its final audio job runs. A project-scoped coordinator
+continues publishing grounded cue jobs through narration adaptation and synthesis, with honest
+phase/segment progress and no invented ETA. Stop when the combined final audio is ready—or when the
+first progressive segment is published after 2.3—and remove any queued, not-yet-spoken cues before
+adding the final track. Model/TTS latency can exceed three seconds, so the cadence is a scheduling
+target rather than a fabricated delivery guarantee.
+
+Acceptance:
+
+- the model receives bounded paper-opening and committed prior-reading context plus canonical
+  response sources, and every factual/numeric claim remains source-ID validated;
+- cues continue after written analysis completes, report only real known progress, and stop when
+  final narration is playable;
+- automatic final-audio polling does not block cue playback; active user/final audio is never
+  interrupted, multiple cues queue naturally, and final readiness discards queued late cues;
+- backend and mobile tests cover context, coordinator lifecycle/progress, completed-parent polling,
+  automatic-preparation playback, cue ordering, and final handoff;
+- Android device verification covers cadence, intellectual focus, post-response continuity,
+  progress wording, non-interruption, and final handoff. iOS remains explicitly deferred.
 
 ### 2.3 Progressive final narration
 

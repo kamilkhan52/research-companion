@@ -108,7 +108,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
   const queueGeneration = useRef(0);
+  // Server polling for queued final narrations remains ordered independently from native-player
+  // mutations. Preview cues may use the player while that slow polling is in progress.
   const queueTail = useRef<Promise<void>>(Promise.resolve());
+  const playerTail = useRef<Promise<void>>(Promise.resolve());
+  const automaticPrepIdRef = useRef<string | null>(null);
   const queuedHandoffs = useRef(new Set<string>());
   // The initiating project, for billing the narration LLM spend (audio itself is app-global).
   // Held in a ref so playText keeps a stable identity as the active project changes.
@@ -129,14 +133,14 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const cancelPrep = useCallback(() => {
     generation.current += 1;
     queueGeneration.current += 1;
+    automaticPrepIdRef.current = null;
     queuedHandoffs.current.clear();
     setPrep(null);
     void dismissEligibleHandoffs();
     const removeUpcoming = () => TrackPlayer.removeUpcomingTracks().catch(() => {});
-    void removeUpcoming();
-    // Serialize a second cleanup after any in-flight add. If cancellation wins while native
-    // TrackPlayer.add() is pending, that stale add completes before this removal runs.
-    queueTail.current = queueTail.current.then(removeUpcoming, removeUpcoming);
+    // Serialize cleanup after any in-flight native add. If cancellation wins while an add is
+    // pending, that stale add completes before this removal runs.
+    playerTail.current = playerTail.current.then(removeUpcoming, removeUpcoming);
   }, []);
 
   const applyJob = useCallback((id: string, title: string, job: AudioJob) => {
@@ -248,7 +252,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     let played = false;
     const run = async () => {
       const live = () => queueGeneration.current === queueGen;
-      if (!live() || prepRef.current) return;
+      // Manual playback preparation owns the player. Automatic listening-mode preparation is
+      // different: it runs remotely for minutes, and preview cues are specifically meant to fill
+      // that wait until the final track is ready.
+      if (!live() || (prepRef.current && prepRef.current.id !== automaticPrepIdRef.current)) return;
       try {
         await setupPlayer();
         const [{ state }, activeIndex, queue] = await Promise.all([
@@ -256,13 +263,30 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           TrackPlayer.getActiveTrackIndex(),
           TrackPlayer.getQueue(),
         ]);
-        if (!live() || prepRef.current) return;
+        if (!live() || (prepRef.current && prepRef.current.id !== automaticPrepIdRef.current)) return;
         const activeBusy = activeIndex != null
           && state !== State.None && state !== State.Stopped && state !== State.Ended;
-        const hasUpcoming = activeIndex == null
-          ? queue.length > 0
-          : queue.length > activeIndex + 1;
-        if (activeBusy || hasUpcoming) return;
+        const activeTrack = activeIndex == null ? null : queue[activeIndex];
+        const activeIsPreview = String(activeTrack?.id ?? '').startsWith('preview:');
+        const upcoming = activeIndex == null ? queue : queue.slice(activeIndex + 1);
+        const upcomingOnlyPreviews = upcoming.every((track) =>
+          String(track.id).startsWith('preview:'));
+
+        // Never interrupt or queue ahead of user-selected/final audio. When a cue is already
+        // speaking, append the next cue so TrackPlayer advances naturally without a reset gap.
+        if ((activeBusy && !activeIsPreview) || !upcomingOnlyPreviews) return;
+        if (activeBusy && activeIsPreview) {
+          await TrackPlayer.add({
+            id,
+            url: apiUrl(url),
+            title,
+            artist: 'Reading Companion',
+            headers: authHeaders(),
+          });
+          played = true;
+          return;
+        }
+
         if (queue.length) await TrackPlayer.reset();
         if (!live()) return;
         await TrackPlayer.add({
@@ -281,8 +305,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         // Preview cues are opportunistic. Final narration and manual playback remain primary.
       }
     };
-    const task = queueTail.current.then(run, run);
-    queueTail.current = task;
+    const task = playerTail.current.then(run, run);
+    playerTail.current = task;
     await task;
     return played;
   }, []);
@@ -303,6 +327,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       }
       if (queueGeneration.current !== queueGen) return;
       const live = () => queueGeneration.current === queueGen;
+      automaticPrepIdRef.current = request.id;
       setErrorById((errors) => {
         if (!(request.id in errors)) return errors;
         const { [request.id]: _drop, ...rest } = errors;
@@ -343,32 +368,46 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           throw new Error(job.error ?? 'Could not prepare queued audio.');
         }
 
-        const activeIndex = await TrackPlayer.getActiveTrackIndex();
-        const queue = await TrackPlayer.getQueue();
-        const staleIndexes = queue
-          .map((track, index) => (
-            String(track.id) === request.id && index !== activeIndex ? index : -1
-          ))
-          .filter((index) => index >= 0);
-        if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
-        const existingTrack = await TrackPlayer.getActiveTrack();
-        await TrackPlayer.add({
-          id: request.id,
-          url: apiUrl(job.url),
-          title: request.title,
-          artist: 'Reading Companion',
-          headers: authHeaders(),
-        });
-        if (!live()) return;
+        // Close the cue admission gate before placing the final track. Any cue mutation already
+        // admitted finishes first; later cues see manual/final ownership and are dropped.
+        automaticPrepIdRef.current = null;
+        let added = false;
+        const addFinal = async () => {
+          if (!live()) return;
+          const activeIndex = await TrackPlayer.getActiveTrackIndex();
+          const queue = await TrackPlayer.getQueue();
+          const staleIndexes = queue
+            .map((track, index) => (
+              index !== activeIndex && (
+                String(track.id) === request.id || String(track.id).startsWith('preview:')
+              ) ? index : -1
+            ))
+            .filter((index) => index >= 0);
+          if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
+          const existingTrack = await TrackPlayer.getActiveTrack();
+          await TrackPlayer.add({
+            id: request.id,
+            url: apiUrl(job.url!),
+            title: request.title,
+            artist: 'Reading Companion',
+            headers: authHeaders(),
+          });
+          if (!live()) return;
+          const { state } = await TrackPlayer.getPlaybackState();
+          if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {
+            setCurrentId(request.id);
+            setCurrentTitle(request.title);
+            await TrackPlayer.play();
+          }
+          added = true;
+        };
+        const playerTask = playerTail.current.then(addFinal, addFinal);
+        playerTail.current = playerTask;
+        await playerTask;
+        if (!live() || !added) return;
         await markHandoffHandled(handoffKey);
         if (chatJobId) await consumeEligibleHandoff(chatJobId);
         setPrep(null);
-        const { state } = await TrackPlayer.getPlaybackState();
-        if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {
-          setCurrentId(request.id);
-          setCurrentTitle(request.title);
-          await TrackPlayer.play();
-        }
       } catch (e) {
         if (!live()) return;
         queuedHandoffs.current.delete(handoffKey);
@@ -378,6 +417,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           [request.id]: (e as Error).message ?? 'Could not prepare queued audio.',
         }));
         setPrep(null);
+      } finally {
+        automaticPrepIdRef.current = null;
       }
     });
   }, [applyJob]);
@@ -386,7 +427,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     cancelPrep();
     setCurrentId(null);
     setCurrentTitle(null);
-    await TrackPlayer.reset().catch(() => {});
+    const reset = () => TrackPlayer.reset().catch(() => {});
+    const task = playerTail.current.then(reset, reset);
+    playerTail.current = task;
+    await task;
   }, [cancelPrep]);
 
   return (

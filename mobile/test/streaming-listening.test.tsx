@@ -33,6 +33,10 @@ const baseJob: ChatJob = {
   audio_error: null,
   assistant_index: null,
   preview_job_ids: [],
+  preview_coordinator_id: null,
+  preview_complete: false,
+  preview_phase: 'analysis',
+  preview_progress: { phase: 'analysis', remaining_known: false },
 };
 
 test('listening turns send delivery mode and hand the completed audio job to the queue', async () => {
@@ -74,6 +78,7 @@ test('listening turns send delivery mode and hand the completed audio job to the
     delivery_mode: 'listening',
   });
   expect(onDone).toHaveBeenCalledWith(done);
+  expect(result.current.previewParentJobId).toBe('chat-job');
   await unmountAsync();
   client.clear();
 });
@@ -84,32 +89,26 @@ test('failed parent invalidates preview polling before exposing the terminal sta
     status: 'error',
     error: 'analysis failed',
     preview_job_ids: ['cue-job'],
+    preview_complete: true,
+    preview_phase: 'complete',
     finished_at: '2026-07-06T00:00:01Z',
   };
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: failed });
-  const onActiveJobChange = jest.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
 
   const { result, unmountAsync } = await renderHookAsync(
-    () => useStreamingTurn(
-      'project',
-      'paper',
-      'listening',
-      undefined,
-      onActiveJobChange,
-    ),
+    () => useStreamingTurn('project', 'paper', 'listening'),
     { wrapper: Wrapper },
   );
   await act(async () => {
     await result.current.run('/turn', { slug: 'paper', text: 'Question' });
   });
 
-  expect(onActiveJobChange).toHaveBeenCalledWith('chat-job');
-  expect(onActiveJobChange).toHaveBeenLastCalledWith(null);
+  expect(result.current.previewParentJobId).toBeNull();
   expect(result.current.previewJobIds).toEqual([]);
   expect(result.current.error).toBe('analysis failed');
   await unmountAsync();

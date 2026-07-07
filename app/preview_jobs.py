@@ -1,26 +1,29 @@
 """Grounded listening-preview jobs.
 
-Each cue is an independent project-scoped background job: a short LLM call grounded only in
-completed canonical sentences, followed by one TTS call. Chat generation never waits for it.
-The chat job publishes cue-job ids for the mobile client to poll and suppresses unfinished/late
-cues before final narration starts.
+Each cue is an independent project-scoped background job: a short LLM call grounded in typed
+canonical/paper/project sources, followed by one TTS call. Chat generation never waits for it.
+After written analysis completes, a second background coordinator keeps publishing cue-job ids
+until final narration becomes playable, then suppresses unfinished/queued late cues.
 """
 from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import audio_jobs, config, llm, prompts, tts
+from . import assembler, audio_jobs, config, llm, logging_config, prompts, store, tts
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id
 
 MAX_CUE_CHARS = 240
-MAX_CUES_PER_TURN = 3
+CONTINUATION_POLL_SECONDS = 0.25
+log = logging_config.get("preview")
 
 GenerateFn = Callable[[list[dict], str | None], str]
 SynthFn = Callable[[str], bytes]
+PublishFn = Callable[[list[str], str, dict, bool], None]
 
 
 class PreviewError(Exception):
@@ -40,8 +43,23 @@ class PreviewJob(Job):
     suppressed: bool = False
 
 
+@dataclass
+class PreviewCoordinator(Job):
+    """Keeps publishing contextual cues while final narration is being prepared."""
+
+    chat_job_id: str = ""
+    audio_job_id: str = ""
+    cue_job_ids: list[str] = field(default_factory=list)
+    phase: str = "narration"
+    progress: dict = field(default_factory=dict)
+
+
 _registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=60)
 _jobs = _registry.jobs
+_coordinator_registry: JobRegistry[PreviewCoordinator] = JobRegistry(
+    "preview-coordinator", max_finished=20,
+)
+_coordinator_jobs = _coordinator_registry.jobs
 
 
 def get_job(job_id: str) -> PreviewJob | None:
@@ -67,6 +85,88 @@ def completed_sentences(text: str) -> list[str]:
             out.append(sentence)
         start = match.end()
     return out
+
+
+def _source_chunks(text: str, prefix: str, kind: str, limit: int) -> list[dict]:
+    """Turn grounded prose/Markdown into bounded, citable source chunks."""
+    chunks: list[str] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        clean = re.sub(r"\s+", " ", block).strip()
+        if not clean:
+            continue
+        while len(clean) > 700:
+            split = clean.rfind(" ", 0, 700)
+            split = split if split > 300 else 700
+            chunks.append(clean[:split].strip())
+            clean = clean[split:].strip()
+        if clean:
+            chunks.append(clean)
+        if len(chunks) >= limit:
+            break
+    return [
+        {"id": f"{prefix}{index + 1:04d}", "text": chunk, "kind": kind}
+        for index, chunk in enumerate(chunks[:limit])
+    ]
+
+
+def research_sources(slug: str) -> list[dict]:
+    """Ground preview cues in the paper opening and the project's prior-reading context.
+
+    The opening slice normally covers the abstract/introduction. The assembled context supplies
+    committed notes, related works, the reading list, and the current entry. Both are bounded so
+    repeated short preview calls cannot accidentally carry the entire paper/project corpus.
+    """
+    paper = store.read_full_text(slug)[:12_000]
+    context_parts = assembler.build_context(slug).split("\n\n---\n\n")
+    # The general assembler starts with the reading method. Cues need different priorities:
+    # committed notes/relationships first, then the running synthesis and reading-list metadata.
+    headings = (
+        "# Prior Notes",
+        "# Per-paper Notes",
+        "# Significant related works",
+        "# Working notes",
+        "# This paper's reading-list entry",
+        "# The full reading list",
+    )
+    selected = [
+        part for heading in headings for part in context_parts
+        if part.lstrip().startswith(heading)
+    ]
+    project = "\n\n---\n\n".join(selected)[:18_000]
+    return (
+        _source_chunks(paper, "paper", "paper_background", 24)
+        + _source_chunks(project, "project", "prior_project_context", 32)
+    )
+
+
+def response_sources(text: str) -> list[dict]:
+    sentences = completed_sentences(text.rstrip() + " ")
+    return [
+        {"id": f"s{index + 1:04d}", "text": sentence, "kind": "live_response"}
+        for index, sentence in enumerate(sentences[:48])
+    ]
+
+
+def _progress_source(progress: dict) -> dict | None:
+    phase = progress.get("phase")
+    if phase == "analysis":
+        text = ("The written analysis is still in progress; the amount remaining is not yet "
+                "known.")
+    elif phase == "narration_adaptation":
+        text = ("The written response is complete. Its spoken adaptation is still being "
+                "prepared, and the amount remaining is not yet known.")
+    elif phase == "audio_synthesis":
+        done = int(progress.get("segments_done") or 0)
+        total = int(progress.get("segments_total") or 0)
+        if total:
+            text = (f"Final narration audio synthesis has completed {done} of {total} segments; "
+                    f"{max(total - done, 0)} segments remain before playback is ready.")
+        else:
+            text = ("Final narration audio synthesis has started; the amount remaining is not "
+                    "yet known.")
+    else:
+        return None
+    return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
 
 
 def _number_tokens(text: str) -> set[str]:
@@ -131,13 +231,25 @@ def suppress(job_ids: list[str]) -> None:
 
 
 def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cue: str = "",
+              progress: dict | None = None,
               generate_fn: GenerateFn | None = None,
               synth_fn: SynthFn | None = None) -> PreviewJob:
     if not sentences:
         raise PreviewError("No completed sentences are available for a preview.")
     generate_fn = generate_fn or _default_generate
     synth_fn = synth_fn or tts.openai_speech
-    sentence_copy = [{"id": str(item["id"]), "text": str(item["text"])} for item in sentences]
+    progress_copy = dict(progress or {})
+    sentence_copy = [
+        {
+            "id": str(item["id"]),
+            "text": str(item["text"]),
+            "kind": str(item.get("kind") or "live_response"),
+        }
+        for item in sentences
+    ]
+    progress_item = _progress_source(progress_copy)
+    if progress_item:
+        sentence_copy.append(progress_item)
     key = f"{chat_job_id}:{ordinal}"
 
     def work(job: PreviewJob) -> None:
@@ -146,10 +258,18 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
         with _registry.lock:
             job.model = model
         messages = [
-            {"role": "system", "content": prompts.get("listening_preview")},
+            {"role": "system", "content": (
+                prompts.get("listening_preview") + "\n\n"
+                + prompts.get("listening_preview_priorities")
+            )},
             {"role": "user", "content": json.dumps({
-                "completed_sentences": sentence_copy,
+                # Kept for compatibility with existing user-edited preview prompts.
+                "completed_sentences": [
+                    item for item in sentence_copy if item["kind"] == "live_response"
+                ],
+                "grounded_sources": sentence_copy,
                 "previous_cue": previous_cue,
+                "preparation_progress": progress_copy,
             }, ensure_ascii=False)},
         ]
         cue, source_ids = validate_result(generate_fn(messages, model), sentence_copy)
@@ -175,6 +295,104 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
             chat_job_id=chat_job_id,
             ordinal=ordinal,
             sentence_ids=[item["id"] for item in sentence_copy],
+        ),
+        work,
+    )
+
+
+def _audio_progress(audio_job) -> tuple[str, dict, bool]:
+    if audio_job is None:
+        return "unavailable", {"remaining_known": False}, True
+    # Phase 2.3 publishes progressive segments. Treat the first one as final narration ready,
+    # while remaining compatible with today's combined-file job.
+    segments = getattr(audio_job, "segments", None) or []
+    ready = audio_job.status in ("done", "error") or bool(segments)
+    if audio_job.stage == "synthesizing":
+        total = int(audio_job.segments_total or 0)
+        done = int(audio_job.segments_done or 0)
+        progress = {
+            "phase": "audio_synthesis",
+            "segments_done": done,
+            "segments_total": total,
+            "segments_remaining": max(total - done, 0) if total else None,
+            "remaining_known": bool(total),
+        }
+        return "audio_synthesis", progress, ready
+    return "narration_adaptation", {
+        "phase": "narration_adaptation",
+        "remaining_known": False,
+        "status": "The written response is complete; its spoken adaptation is still being prepared.",
+    }, ready
+
+
+def start_coordinator(
+    chat_job_id: str,
+    audio_job_id: str,
+    sources: list[dict],
+    existing_job_ids: list[str],
+    publish: PublishFn,
+    *,
+    cadence_seconds: float,
+    last_started_at: float,
+) -> PreviewCoordinator:
+    """Continue contextual cues until final narration can begin playback."""
+    source_copy = [dict(item) for item in sources]
+    cue_ids = list(existing_job_ids)
+
+    def work(job: PreviewCoordinator) -> None:
+        previous_cues = [
+            cue.cue for cue_id in cue_ids
+            if (cue := get_job(cue_id)) is not None and cue.status == "done" and cue.cue
+        ]
+        last_started = last_started_at
+        while True:
+            audio_job = audio_jobs.get_job(audio_job_id)
+            phase, progress, ready = _audio_progress(audio_job)
+            with _coordinator_registry.lock:
+                job.phase = phase
+                job.progress = progress
+                job.cue_job_ids = list(cue_ids)
+            if ready:
+                suppress(cue_ids)
+                publish(cue_ids, phase, progress, True)
+                return
+
+            publish(cue_ids, phase, progress, False)
+            previous = get_job(cue_ids[-1]) if cue_ids else None
+            if previous and previous.status == "running":
+                time.sleep(CONTINUATION_POLL_SECONDS)
+                continue
+            if previous and previous.status == "done" and previous.cue:
+                if not previous_cues or previous_cues[-1] != previous.cue:
+                    previous_cues.append(previous.cue)
+
+            now = time.monotonic()
+            if now - last_started >= cadence_seconds:
+                last_started = now
+                try:
+                    cue = start_job(
+                        chat_job_id,
+                        len(cue_ids) + 1,
+                        source_copy,
+                        "\n".join(previous_cues[-8:]),
+                        progress,
+                    )
+                    cue_ids.append(cue.id)
+                    publish(cue_ids, phase, progress, False)
+                except Exception as exc:
+                    # Cues are opportunistic; retry on the next cadence without failing the
+                    # coordinator or leaving the client waiting forever for completion.
+                    log.warning("could not continue preview chat=%s: %s",
+                                chat_job_id[:8], str(exc)[:200])
+            time.sleep(CONTINUATION_POLL_SECONDS)
+
+    return _coordinator_registry.start_or_join(
+        chat_job_id,
+        lambda: PreviewCoordinator(
+            id=new_id(),
+            chat_job_id=chat_job_id,
+            audio_job_id=audio_job_id,
+            cue_job_ids=list(cue_ids),
         ),
         work,
     )
