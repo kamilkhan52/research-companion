@@ -20,7 +20,7 @@ single final PR.
 | Phase | Branch | PR | Status |
 |---|---|---|---|
 | 1 | `web/foundation` | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
-| 2 | `web/library` | — | Planned |
+| 2 | `web/library` | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
 | 3 | `web/graph` | — | Planned |
 | 4 | `web/discussion` | — | Planned |
 | 5 | `web/discovery-notes` | — | Planned |

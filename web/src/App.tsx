@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { Library } from '@/components/Library';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings';
 
@@ -82,15 +83,9 @@ function ViewRouter({
   route: Route;
   navigate: (hash: string) => void;
 }) {
-  void navigate; // used by child views in later phases
   switch (route.view) {
     case 'library':
-      return (
-        <div className="placeholder-view">
-          <h2>Library</h2>
-          <p className="muted">Coming in Phase 2.</p>
-        </div>
-      );
+      return <Library onNavigate={navigate} />;
     case 'graph':
       return (
         <div className="placeholder-view">
