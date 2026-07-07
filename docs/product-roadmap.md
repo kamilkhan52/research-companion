@@ -32,7 +32,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
 | 2.2a | Contextual cue continuity during narration prep | — | In progress |
 | 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | In review — device pass pending |
-| 3.1 | Recent sessions and activity timestamps | — | Planned |
+| 3.1 | Recent sessions and activity timestamps | [#29](https://github.com/kamilkhan52/research-companion/pull/29) | In review |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
@@ -272,6 +272,16 @@ Implementation verification:
 Serialize session-index read/modify/write operations and update `updated_at` for every user and
 assistant record. Add a cross-project recent-sessions endpoint containing project, paper, state,
 and activity time.
+
+Verification record ([PR #29](https://github.com/kamilkhan52/research-companion/pull/29)):
+
+- concurrent index writers are serialized without losing session metadata, and user/assistant
+  records advance the authoritative activity timestamp;
+- recent activity is sorted across project boundaries while each project context is explicitly
+  rebound, and the home Continue card switches projects before resuming the latest unfinished
+  paper;
+- full Ruff and 353-test backend suites pass; all twelve mobile Jest suites (thirty-two tests) and
+  TypeScript pass.
 
 ### 3.2 Authored-draft safety and reconciliation
 
