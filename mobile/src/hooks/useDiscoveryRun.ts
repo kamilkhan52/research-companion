@@ -16,7 +16,7 @@ export interface DiscoveryRunState {
   running: boolean;
   job: DiscoveryJob | null;
   error: string | null;
-  run: (goals: string) => Promise<void>;
+  run: (goals: string) => Promise<boolean>;
   /** Re-attach to an already-running job (e.g. the screen just loaded a DiscoveryResponse
    *  whose `job` is still running). No-op if it isn't running. */
   resume: (job: DiscoveryJob | null | undefined) => void;
@@ -74,7 +74,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
 
   const run = useCallback(
     async (goals: string) => {
-      if (!pid || startingRef.current || running || !goals.trim()) return;
+      if (!pid || startingRef.current || running || !goals.trim()) return false;
       startingRef.current = true;
       setError(null);
       setJob(null);
@@ -86,9 +86,12 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
         qc.setQueryData<DiscoveryResponse>(keys.discovery(pid), (old) =>
           old ? { ...old, goals: goals.trim() } : old,
         );
+        return true;
       } catch (e) {
         setError((e as Error).message ?? 'Discovery failed.');
         setRunning(false);
+        await qc.invalidateQueries({ queryKey: keys.discovery(pid) });
+        return false;
       } finally {
         startingRef.current = false;
       }

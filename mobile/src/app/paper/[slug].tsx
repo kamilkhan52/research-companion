@@ -37,6 +37,7 @@ import { Markdown } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { IconButton, TopBar } from '@/components/TopBar';
+import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
@@ -114,7 +115,12 @@ export default function DiscussionScreen() {
   // Message editing: which user reply is being edited + its draft. reply_index counts only
   // user turns (matching the backend, whose transcript surfaces only kind=="reply" users), so
   // precompute each transcript row's reply index (-1 for assistant rows).
-  const [editing, setEditing] = useState<{ replyIndex: number; draft: string } | null>(null);
+  const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
+    pid && slug ? draftKey(pid, 'discussion', slug, 'message-edit') : null,
+    null,
+  );
+  const editing = editDraft.value;
+  const setEditing = editDraft.setValue;
   const replyIndices = useMemo(() => {
     let c = -1;
     return transcript.map((e) => (e.role === 'user' ? ++c : -1));
@@ -127,6 +133,15 @@ export default function DiscussionScreen() {
     editingRef.current = !!editing;
     if (!editing) editRowYRef.current = null;
   }, [editing]);
+
+  useEffect(() => {
+    if (!editDraft.submitted || !editing) return;
+    const replies = transcript.filter((entry) => entry.role === 'user');
+    const accepted = replies[editing.replyIndex];
+    if (accepted?.role === 'user' && accepted.text === editing.draft.trim()) {
+      void editDraft.clear(null);
+    }
+  }, [editDraft.clear, editDraft.submitted, editing, transcript]);
 
   function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
     const begin = () => setEditing({ replyIndex, draft: currentText });
@@ -146,13 +161,23 @@ export default function DiscussionScreen() {
     }
   }
 
-  function submitEdit() {
+  async function submitEdit() {
     if (!editing || !paths || !slug) return;
     const text = editing.draft.trim();
     if (!text) return;
     const replyIndex = editing.replyIndex;
-    setEditing(null);
-    void stream.run(paths.edit, { slug, reply_index: replyIndex, text }, text);
+    const currentReply = transcript.filter((entry) => entry.role === 'user')[replyIndex];
+    if (currentReply?.role === 'user' && currentReply.text === text) {
+      await editDraft.clear(null);
+      return;
+    }
+    await editDraft.markSubmitted();
+    await stream.run(
+      paths.edit,
+      { slug, reply_index: replyIndex, text },
+      text,
+      () => editDraft.clear(null),
+    );
   }
 
   // Keep the conversation pinned to the latest content.
@@ -230,6 +255,7 @@ export default function DiscussionScreen() {
           stream={stream}
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
+          sessionState={state}
         />
       ) : (
         <KeyboardAvoidingView
@@ -250,7 +276,7 @@ export default function DiscussionScreen() {
                   draft={editing?.draft ?? ''}
                   onChangeDraft={(t) => setEditing((e) => (e ? { ...e, draft: t } : e))}
                   onStartEdit={() => startEdit(replyIndices[i], entry.text, i)}
-                  onCancelEdit={() => setEditing(null)}
+                  onCancelEdit={() => void editDraft.clear(null)}
                   onSubmitEdit={submitEdit}
                   onEditLayout={(y) => {
                     editRowYRef.current = y;
@@ -285,6 +311,7 @@ export default function DiscussionScreen() {
             state={state}
             stream={stream}
             paths={paths!}
+            acceptedDrafts={session.data?.accepted_drafts ?? []}
             onMutated={() => {
               qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
               qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -321,35 +348,56 @@ function ComposeFirst({
   stream,
   chatStartPath,
   initialSource,
+  sessionState,
 }: {
   pid: string;
   slug: string;
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
   initialSource?: string;
+  sessionState: string | null;
 }) {
   const opening = useOpeningDraft(pid, slug);
-  const [prompt, setPrompt] = useState('');
+  const promptDraft = usePersistedDraft(
+    draftKey(pid, 'discussion', slug, 'opening'),
+    opening.data?.prompt ?? '',
+  );
+  const sourceDraft = usePersistedDraft(
+    draftKey(pid, 'discussion', slug, 'source'),
+    initialSource ?? '',
+  );
+  const prompt = promptDraft.value;
+  const setPrompt = promptDraft.setValue;
   const [starting, setStarting] = useState(false);
   const [retrieveError, setRetrieveError] = useState<string | null>(null);
   // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
   // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
-  const [manualSource, setManualSource] = useState(initialSource ?? '');
+  const manualSource = sourceDraft.value;
+  const setManualSource = sourceDraft.setValue;
   const [showCustomize, setShowCustomize] = useState(false);
   // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
   // sees what's happening during a fetch instead of an opaque spinner.
   const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
 
   useEffect(() => {
-    if (opening.data?.prompt && !prompt) setPrompt(opening.data.prompt);
-  }, [opening.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (initialSource && sourceDraft.ready && !sourceDraft.hasDraft) {
+      sourceDraft.setValue(initialSource);
+    }
+  }, [initialSource, sourceDraft.hasDraft, sourceDraft.ready, sourceDraft.setValue]);
 
-  async function start(source?: { arxiv_id?: string; pdf_url?: string }) {
+  useEffect(() => {
+    if (promptDraft.submitted && sessionState && opening.data?.prompt === promptDraft.value) {
+      void promptDraft.clear(opening.data.prompt);
+    }
+  }, [opening.data?.prompt, promptDraft.clear, promptDraft.submitted, promptDraft.value, sessionState]);
+
+  async function start(source?: { arxiv_id?: string; pdf_url?: string }, sourceText?: string) {
     setStarting(true);
     setRetrieveError(null);
     setSteps([]);
     try {
+      if (sourceText) await sourceDraft.markSubmitted();
       let ok = false;
       await streamPost<StartStreamEvent>(streamPaths(pid).paperStart, { slug, ...source }, {
         onEvent: (ev) => {
@@ -366,8 +414,18 @@ function ComposeFirst({
         },
       });
       if (!ok) return;
+      if (sourceText) await sourceDraft.clear('');
       setCandidates(null);
-      await stream.run(chatStartPath, { slug, prompt, model: opening.data?.model ?? undefined });
+      await promptDraft.markSubmitted();
+      await stream.run(
+        chatStartPath,
+        { slug, prompt, model: opening.data?.model ?? undefined },
+        undefined,
+        async () => {
+          await promptDraft.clear(opening.data?.prompt ?? '');
+          await sourceDraft.clear('');
+        },
+      );
     } catch (e) {
       setRetrieveError((e as Error).message ?? 'Could not fetch the paper.');
     } finally {
@@ -380,7 +438,7 @@ function ComposeFirst({
   function startFromManual() {
     const s = manualSource.trim();
     if (!s) return;
-    start(parseSource(s));
+    void start(parseSource(s), s);
   }
 
   if (opening.isLoading) return <Centered loading />;
@@ -408,7 +466,10 @@ function ComposeFirst({
         ) : null}
         <Button
           title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={() => start(initialSource ? parseSource(initialSource) : undefined)}
+          onPress={() => void start(
+            initialSource ? parseSource(initialSource) : undefined,
+            initialSource,
+          )}
           loading={starting}
           disabled={!prompt.trim()}
           style={{ marginTop: space.lg }}
@@ -455,7 +516,7 @@ function ComposeFirst({
             {candidates.map((c) => (
               <Pressable
                 key={c.arxiv_id}
-                onPress={() => start({ arxiv_id: c.arxiv_id })}
+                onPress={() => void start({ arxiv_id: c.arxiv_id })}
                 disabled={starting}
                 style={styles.candidate}>
                 <Text variant="body" numberOfLines={2}>{c.title}</Text>
@@ -510,6 +571,7 @@ function Composer({
   state,
   stream,
   paths,
+  acceptedDrafts,
   onMutated,
 }: {
   pid: string;
@@ -517,18 +579,39 @@ function Composer({
   state: string | null;
   stream: ReturnType<typeof useStreamingTurn>;
   paths: ReturnType<typeof turnJobPaths>;
+  acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
   onMutated: () => void;
 }) {
-  const [text, setText] = useState('');
+  // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
+  // being authored elsewhere, that reply stays recoverable when the discussion is reopened
+  // instead of being relabeled as request-changes feedback.
+  const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
+  const textDraft = usePersistedDraft(
+    draftKey(pid, 'discussion', slug, draftKind),
+    '',
+  );
+  const text = textDraft.value;
+  const setText = textDraft.setValue;
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = stream.streaming || busy;
 
+  useEffect(() => {
+    if (!textDraft.submitted || !text.trim()) return;
+    const baseline = textDraft.acceptedBaseline ?? acceptedDrafts.length;
+    const expectedKind = draftKind === 'reply' ? 'reply' : 'revision';
+    if (acceptedDrafts.slice(baseline).some(
+      (draft) => draft.kind === expectedKind && draft.text === text.trim(),
+    )) {
+      void textDraft.clear('');
+    }
+  }, [acceptedDrafts, draftKind, text, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted]);
+
   async function send() {
     const t = text.trim();
     if (!t) return;
-    setText('');
-    await stream.run(paths.reply, { slug, text: t }, t);
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(paths.reply, { slug, text: t }, t, () => textDraft.clear(''));
   }
 
   async function draftNotes() {
@@ -548,12 +631,17 @@ function Composer({
     }
   }
 
-  function requestChanges() {
+  async function requestChanges() {
     const t = text.trim();
     if (!t) return;
-    setText('');
     setActionError(null);
-    void stream.run(paths.requestChanges, { slug, text: t });
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(
+      paths.requestChanges,
+      { slug, text: t },
+      undefined,
+      () => textDraft.clear(''),
+    );
   }
 
   async function reopen() {

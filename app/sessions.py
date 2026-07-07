@@ -137,8 +137,11 @@ def get_opening(slug: str) -> str | None:
     return _load_index().get(slug, {}).get("opening")
 
 
-def record_user(slug: str, text: str, kind: str = "reply") -> None:
-    _append_record(slug, {"role": "user", "kind": kind, "text": text})
+def record_user(slug: str, text: str, kind: str = "reply", *, authored_text: str | None = None) -> None:
+    record = {"role": "user", "kind": kind, "text": text}
+    if authored_text is not None:
+        record["authored_text"] = authored_text
+    _append_record(slug, record)
 
 
 def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
@@ -214,6 +217,24 @@ def transcript(slug: str) -> list[dict]:
                 "audio_job_id": rec.get("audio_job_id"),
                 "audio_error": rec.get("audio_error"),
             })
+    return out
+
+
+def accepted_drafts(slug: str) -> list[dict]:
+    """Human-authored discussion inputs accepted into the server transcript.
+
+    Revision records contain a rendered model instruction, so preserve and expose only their
+    original feedback. Internal finish prompts are deliberately excluded.
+    """
+    out = []
+    for record in read_records(slug):
+        if record.get("role") != "user":
+            continue
+        kind = record.get("kind")
+        if kind == "reply":
+            out.append({"kind": kind, "text": record.get("text", "")})
+        elif kind == "revision" and record.get("authored_text") is not None:
+            out.append({"kind": kind, "text": record["authored_text"]})
     return out
 
 
