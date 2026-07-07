@@ -155,6 +155,13 @@ export function Graph({ onNavigate }: Props) {
 
       <canvas ref={setCanvasRef} className="graph-canvas" />
 
+      {build && build.status === 'error' && (
+        <div className="build-progress build-progress-compact" style={{ position: 'absolute', bottom: 'var(--space-md)', left: 'var(--space-md)', right: 'var(--space-md)' }}>
+          <p className="build-progress-error">{build.error || 'Build failed'}</p>
+          <button className="btn ghost" onClick={startBuild}>Rebuild</button>
+        </div>
+      )}
+
       {selectedNode && (
         <NodeDetail node={selectedNode} edges={edges} nodes={nodes} onNavigate={onNavigate} onClose={() => setSelectedNode(null)} />
       )}
