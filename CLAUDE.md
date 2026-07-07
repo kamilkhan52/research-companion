@@ -117,6 +117,27 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **API types:** `scripts/gen-api-types.sh` regenerates `shared/api-types.ts` from the
   OpenAPI schema (offline). Run it when you change an endpoint's shape.
+- **Testing on Kamil's physical phone (the normal device-verification path).** The phone is an
+  Android **Expo dev build** (not Expo Go — the project depends on `expo-dev-client`; its
+  launcher shows "Research Companion / Development Build"). The phone is usually **not on the
+  same Wi-Fi** as the dev Mac, so both the app JS *and* the backend reach the Mac over **two
+  independent public tunnels**:
+  1. **Backend tunnel** — `./tunnel.sh` runs a cloudflared *quick tunnel* to `:8000` and prints a
+     `https://<random>.trycloudflare.com` URL (this is the ~100s-timeout tunnel behind invariant
+     1). The URL changes every run. Enter it in the app under **Settings → server URL**; it is
+     persisted client-side as `rc.baseUrl` in AsyncStorage (see `mobile/src/api/config.ts`), so
+     the phone keeps the last one until you paste the new one. Not secret; can also be baked via
+     `app.json` `extra.apiBaseUrl`.
+  2. **Metro/JS-bundle tunnel** — `cd mobile && npx expo start --tunnel` (uses `@expo/ngrok`)
+     prints an `exp://<random>.exp.direct` URL. Paste that into the dev-build launcher's `exp://`
+     field (or scan its QR), and reload. Plain `npx expo start` only yields a LAN URL, which the
+     phone can't reach off-Wi-Fi. **Known gotcha:** the ngrok service Expo's `--tunnel` relies on
+     has outages ("failed to start tunnel / remote gone away" or "Cannot read properties of
+     undefined (reading 'body')") — that's ngrok-side, not the code. When it's down, fall back to
+     putting the phone and Mac on the **same network** (e.g. Mac joins the phone's hotspot) and
+     use the plain-LAN `exp://10.x.x.x:8081` URL — no ngrok needed.
+  Both tunnel URLs are ephemeral, so a device test = restart `./run.sh`, (re)start both tunnels,
+  paste the fresh backend URL in Settings, connect the fresh `exp://` in the launcher, reload.
 
 ## Conventions
 
