@@ -30,6 +30,7 @@ test('a completed grounded cue is polled and offered to idle playback once', asy
     title: 'Paper A',
     jobIds: ['cue-job-1'],
     playPreview,
+    parentActiveRef: { current: true },
   }));
 
   await waitFor(() => expect(playPreview).toHaveBeenCalledWith(
@@ -52,9 +53,35 @@ test('a server-suppressed late cue is never offered to playback', async () => {
     title: 'Paper A',
     jobIds: ['cue-job-2'],
     playPreview,
+    parentActiveRef: { current: true },
   }));
 
   await waitFor(() => expect(api.getPreviewJob).toHaveBeenCalledWith('project-a', 'cue-job-2'));
+  expect(playPreview).not.toHaveBeenCalled();
+  await rendered.unmountAsync();
+});
+
+test('terminal parent invalidation cancels a cue already being polled', async () => {
+  let resolvePoll!: (value: { job: PreviewJob }) => void;
+  jest.mocked(api.getPreviewJob).mockImplementationOnce(() => new Promise((resolve) => {
+    resolvePoll = resolve;
+  }));
+  const playPreview = jest.fn(async () => true);
+  const parentActiveRef = { current: true };
+  const rendered = await renderHookAsync(() => usePreviewCues({
+    enabled: true,
+    project: 'project-a',
+    title: 'Paper A',
+    jobIds: ['cue-job-terminal-parent'],
+    playPreview,
+    parentActiveRef,
+  }));
+  await waitFor(() => expect(api.getPreviewJob).toHaveBeenCalled());
+
+  parentActiveRef.current = false;
+  resolvePoll({ job: { ...doneJob, id: 'cue-job-terminal-parent' } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
   expect(playPreview).not.toHaveBeenCalled();
   await rendered.unmountAsync();
 });

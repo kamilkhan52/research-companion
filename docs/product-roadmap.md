@@ -205,10 +205,11 @@ Implementation verification:
 - strict validation rejects malformed JSON, unknown sentence ids, uncited numeric claims, and
   cues over 240 characters; scheduling uses only newly completed sentences, the prior cue text,
   a minimum ten-second cadence, and a three-cue cap;
-- full Ruff and 347-test backend suites pass; all ten mobile Jest suites (twenty tests) and
+- full Ruff and 349-test backend suites pass; all eleven mobile Jest suites (twenty-four tests) and
   TypeScript pass;
 - mobile tests cover idle-only cue playback, busy-player dropping, server suppression, polling,
-  and serialization with the final-audio queue;
+  failed-parent cancellation, dynamic preview-model fallback, explicit override clearing, and
+  serialization with the final-audio queue;
 - native iOS/Android acceptance remains required for audible cadence, background behavior,
   non-interruption, lock-screen behavior, and final-narration handoff.
 

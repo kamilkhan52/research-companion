@@ -39,7 +39,8 @@ def read_settings():
     return {
         "has_key": bool(key), "key_hint": (key[:6] + "…") if key else "",
         "model": s.get("model"), "narration_model": s.get("narration_model"),
-        "preview_model": s.get("preview_model") or s.get("narration_model"),
+        # Raw override, not the effective narration fallback. The editor must preserve unset.
+        "preview_model": s.get("preview_model") or "",
         "has_openai_key": bool(okey), "openai_key_hint": (okey[:6] + "…") if okey else "",
         "speech_provider": s.get("speech_provider"), "tts_model": s.get("tts_model"),
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
@@ -55,7 +56,7 @@ def write_settings(req: SettingsReq):
     return {
         "has_key": bool(merged.get("openrouter_api_key")), "model": merged.get("model"),
         "narration_model": merged.get("narration_model"),
-        "preview_model": merged.get("preview_model") or merged.get("narration_model"),
+        "preview_model": merged.get("preview_model") or "",
         "has_openai_key": bool(merged.get("openai_api_key")),
         "speech_provider": merged.get("speech_provider"),
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),

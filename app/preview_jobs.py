@@ -110,6 +110,12 @@ def _default_generate(messages: list[dict], model: str | None) -> str:
     )
 
 
+def resolve_model(settings: dict | None = None) -> str | None:
+    settings = settings or config.load_settings()
+    return (settings.get("preview_model") or settings.get("narration_model")
+            or settings.get("model"))
+
+
 def _suppressed(job: PreviewJob) -> bool:
     with _registry.lock:
         return job.suppressed
@@ -136,8 +142,7 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
 
     def work(job: PreviewJob) -> None:
         settings = config.load_settings()
-        model = (settings.get("preview_model") or settings.get("narration_model")
-                 or settings.get("model"))
+        model = resolve_model(settings)
         with _registry.lock:
             job.model = model
         messages = [

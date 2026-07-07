@@ -112,6 +112,68 @@ def test_runner_failure_is_an_error_job_and_session_is_untouched(temp_project):
     assert sessions.read_records(slug)[-1]["role"] == "user"
 
 
+def test_failed_parent_suppresses_blocked_preview_before_publishing_error(
+    temp_project, monkeypatch,
+):
+    slug = _session_with_reply()
+    preview_started = threading.Event()
+    release_preview = threading.Event()
+    synth_calls = []
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {
+            "speech_provider": "openai",
+            "preview_model": "preview/model",
+            "narration_model": "narration/model",
+            "tts_model": "tts-model",
+            "tts_voice": "voice",
+        },
+    )
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 0)
+
+    def blocked_preview(messages, model):
+        preview_started.set()
+        release_preview.wait(5)
+        return '{"cue":"Grounded cue.","source_sentence_ids":["s0001"]}'
+
+    monkeypatch.setattr(preview_jobs, "_default_generate", blocked_preview)
+    monkeypatch.setattr(
+        preview_jobs.tts,
+        "openai_speech",
+        lambda cue: synth_calls.append(cue) or b"mp3",
+    )
+
+    def failing_after_preview(slug_, history):
+        yield {"type": "text", "text": "### CANONICAL ###\nGrounded cue. "}
+        yield {"type": "text", "text": "More analysis is coming"}
+        assert preview_started.wait(5)
+        raise chat_jobs.AgentError("analysis failed after preview")
+
+    job = chat_jobs.start_turn(
+        slug,
+        runner=lambda s, h: failing_after_preview(s, h),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+    assert finished.status == "error"
+    assert finished.preview_job_ids
+
+    release_preview.set()
+    deadline = time.time() + 5
+    cue_job = None
+    while time.time() < deadline:
+        cue_job = preview_jobs.get_job(finished.preview_job_ids[0])
+        if cue_job and cue_job.status != "running":
+            break
+        time.sleep(0.02)
+    assert cue_job and cue_job.status == "done"
+    assert cue_job.suppressed is True
+    assert cue_job.url is None
+    assert synth_calls == []
+    assert sessions.read_records(slug)[-1]["role"] == "user"
+
+
 def test_empty_canonical_is_an_error_not_a_recorded_blank_turn(temp_project):
     slug = _session_with_reply()
     job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": ""}]))

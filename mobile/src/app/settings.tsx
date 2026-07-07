@@ -22,6 +22,7 @@ import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
+import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -58,7 +59,7 @@ export default function SettingsScreen() {
     if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
-      setPreviewModel(settings.data.preview_model ?? settings.data.narration_model ?? '');
+      setPreviewModel(previewModelDraft(settings.data.preview_model));
       setVoice(settings.data.tts_voice ?? '');
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
       setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
@@ -81,7 +82,7 @@ export default function SettingsScreen() {
     const payload: Record<string, unknown> = {
       model: model || null,
       narration_model: narrationModel || null,
-      preview_model: previewModel || null,
+      preview_model: previewModelPatch(previewModel),
       speech_provider: speechProvider,
       tts_voice: voice || null,
       prior_notes_scope: priorScope,

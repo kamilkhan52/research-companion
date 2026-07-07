@@ -81,7 +81,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         raise ValueError(f"Unknown delivery mode: {delivery_mode}")
     runner = runner or _default_events
 
-    def work(job: ChatJob) -> None:
+    def generate(job: ChatJob) -> None:
         job._preview_enabled = (job.delivery_mode == "listening"
                                 and config.load_settings().get("speech_provider") == "openai")
         job._preview_last_started = time.monotonic()
@@ -96,8 +96,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
-        if job.delivery_mode == "listening":
-            preview_jobs.suppress(job.preview_job_ids)
+        _suppress_previews(job)
         audio_job_id = None
         audio_error = None
         if job.delivery_mode == "listening":
@@ -149,6 +148,14 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             job.audio_job_id = audio_job_id
             job.audio_error = audio_error
             job.assistant_index = assistant_index
+
+    def work(job: ChatJob) -> None:
+        try:
+            generate(job)
+        finally:
+            # Preview workers are independent. Suppress them before JobRegistry can publish
+            # either a successful or failed terminal parent state, including runner/parse errors.
+            _suppress_previews(job)
 
     return _registry.start_or_join(
         slug,
@@ -256,3 +263,10 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
         job.preview_job_ids.append(cue_job.id)
     job._preview_next_sentence = len(completed)
     job._preview_last_started = now
+
+
+def _suppress_previews(job: ChatJob) -> None:
+    if job.delivery_mode != "listening" or getattr(job, "_previews_suppressed", False):
+        return
+    preview_jobs.suppress(job.preview_job_ids)
+    job._previews_suppressed = True
