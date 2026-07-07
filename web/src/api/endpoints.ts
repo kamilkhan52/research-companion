@@ -49,13 +49,53 @@ export function getReview(pid: string, slug: string): Promise<ReviewResponse> {
   return apiGet(`${P(pid)}/review/${encodeURIComponent(slug)}`);
 }
 
-export function streamPost(pid: string, path: string, body: unknown): Promise<Response> {
-  const t = localStorage.getItem('rc_token');
-  const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
-  if (t) headers['Authorization'] = `Bearer ${t}`;
-  return fetch(`${P(pid)}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+// Job-based turn endpoints — long/LLM operations run server-side, client polls.
+// See CLAUDE.md invariant 1: never use connection-tied SSE for minutes-long operations.
+
+export function startJob(pid: string, body: { slug: string; prompt?: string; model?: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/chat/start_job`, body);
+}
+
+export function replyJob(pid: string, body: { slug: string; text: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/reply_job`, body);
+}
+
+export function continueJob(pid: string, slug: string) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/continue_job`, { slug });
+}
+
+export function retryJob(pid: string, body: { slug: string; assistant_index: number; model?: string | null }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/retry_job`, body);
+}
+
+export function finishJob(pid: string, slug: string) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/finish_job`, { slug });
+}
+
+export function requestChangesJob(pid: string, body: { slug: string; text: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/request_changes_job`, body);
+}
+
+export interface TextItem { type: 'text'; text: string; }
+export interface ChatJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  turn: { role: string; canonical?: string; text?: string; state_signal?: string; proposed_commit?: unknown } | null;
+  items: TextItem[];
+  error: string | null;
+}
+
+export function getChatJob(pid: string, jobId: string): Promise<{ job: ChatJob }> {
+  return apiGet(`${P(pid)}/chat/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getActiveChatJob(pid: string, slug: string): Promise<{ job: ChatJob | null }> {
+  return apiGet(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+}
+
+// Paper retrieval (pre-discussion)
+export function startPaper(pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) {
+  return apiPost<{ ok?: boolean; retrieved?: boolean; needs_confirmation?: boolean; candidates?: { arxiv_id: string; title: string; score: number }[] }>(
+    `${P(pid)}/start`, { slug, ...opts },
+  );
 }
