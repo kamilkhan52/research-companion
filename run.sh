@@ -30,5 +30,19 @@ fi
 
 HOST="${RC_HOST:-0.0.0.0}"
 PORT="${RC_PORT:-8000}"
+
+# Opt-in dev auto-reload. Default off (production/tunnel deployment stays a single long-lived
+# process). RC_RELOAD=1 restarts the worker when files under app/ change so new routes don't 405
+# on a stale server. The watch is scoped to --reload-dir app on purpose: uvicorn's reloader
+# watches the CWD by default, and this repo writes to projects/ and .app-state/ constantly
+# (session index, audio cache, git commits), which would otherwise trigger an endless reload
+# loop. A reload is a full process restart, so it drops in-memory job registries and kills any
+# in-flight background job (chat/audio/graph/preview) — fine for iterating on code, but avoid
+# saving while a long job you care about is running. Still one worker (invariant 6 holds).
+EXTRA=()
+if [ "${RC_RELOAD:-}" = "1" ]; then
+  EXTRA+=(--reload --reload-dir app)
+fi
+
 echo "Serving on http://${HOST}:${PORT}  (open http://localhost:${PORT} on this machine)"
-exec ./.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT" "$@"
+exec ./.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT" "${EXTRA[@]}" "$@"

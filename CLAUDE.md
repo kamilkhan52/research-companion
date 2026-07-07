@@ -107,8 +107,15 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 ## Dev workflow
 
 - **Run backend:** `./run.sh` (boots venv, installs deps, serves `:8000`, one worker, **no
-  `--reload`**). After backend edits you must **restart** it — a stale server answers routes
-  added since startup with **405** (the static catch-all mount handles unknown POSTs).
+  `--reload`** by default). After backend edits you must **restart** it — a stale server answers
+  routes added since startup with **405** (the static catch-all mount handles unknown POSTs).
+- **Dev auto-reload (opt-in):** `RC_RELOAD=1 ./run.sh` restarts the worker on changes under
+  `app/`, so new routes stop 405-ing without a manual restart. The watch is deliberately scoped
+  to `--reload-dir app`: uvicorn's reloader watches the CWD by default, and the app writes to
+  `projects/` and `.app-state/` constantly (session index, audio cache, git commits), so an
+  unscoped `--reload` would reload-loop forever. A reload is a **full process restart** — it
+  drops the in-memory job registries and kills any in-flight background job (invariants 1/6), so
+  don't save mid-job when you care about the result. Leave it **off** for the tunnel deployment.
 - **Second instance for verification** (don't disturb the live server): `.env` pins `RC_PORT`
   and `run.sh` exports `.env` last, so bypass it — `.venv/bin/uvicorn app.main:app --host
   127.0.0.1 --port 8901`.
