@@ -3,6 +3,10 @@
 This document tracks the phased rebuild of the web client from a single vanilla JS file to a
 React + Vite SPA with feature parity with the mobile app.
 
+**Merge target:** All web rebuild PRs merge into the `web-rebuild` long-running branch.
+When all phases are complete and validated, `web-rebuild` will be merged into `main` in a
+single final PR.
+
 ## Architecture
 
 - **React 19 + TypeScript + Vite** — static output to `web/dist/`, served by FastAPI
