@@ -1,5 +1,11 @@
 import { render, screen } from '@testing-library/react';
 import { App } from '@/App';
+import { vi, afterEach } from 'vitest';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+});
 
 describe('App', () => {
   beforeEach(() => {
@@ -7,13 +13,15 @@ describe('App', () => {
   });
 
   it('renders the top bar title', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
     expect(screen.getByText('Research Companion')).toBeInTheDocument();
   });
 
-  it('renders the library placeholder by default', () => {
+  it('shows loading state on library view', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    expect(screen.getByText('Library')).toBeInTheDocument();
+    expect(screen.getByText(/loading library/i)).toBeInTheDocument();
   });
 
   it('navigates to graph view via hash', () => {
@@ -29,11 +37,13 @@ describe('App', () => {
   });
 
   it('hides back button on library view', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
     expect(screen.queryByLabelText('Back')).not.toBeInTheDocument();
   });
 
   it('shows settings gear icon', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
     expect(screen.getByLabelText('Settings')).toBeInTheDocument();
   });
