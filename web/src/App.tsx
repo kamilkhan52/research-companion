@@ -1,8 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Library } from '@/components/Library';
 import { Graph } from '@/components/Graph';
+import { Discussion } from '@/components/Discussion';
 
-type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings';
+type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
 interface Route {
   view: View;
@@ -17,7 +18,7 @@ function parseHash(): Route {
   if (raw === 'player') return { view: 'player' };
   if (raw === 'settings') return { view: 'settings' };
   if (raw.startsWith('notes/')) return { view: 'notes', param: raw.slice(6) };
-  if (raw.startsWith('paper/')) return { view: 'library', param: raw.slice(6) };
+  if (raw.startsWith('paper/')) return { view: 'paper', param: raw.slice(6) };
   return { view: 'library' };
 }
 
@@ -89,6 +90,8 @@ function ViewRouter({
       return <Library onNavigate={navigate} />;
     case 'graph':
       return <Graph onNavigate={navigate} />;
+    case 'paper':
+      return <Discussion slug={route.param ?? ''} onNavigate={navigate} />;
     case 'discover':
       return (
         <div className="placeholder-view">
