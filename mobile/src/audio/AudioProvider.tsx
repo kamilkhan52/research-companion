@@ -60,6 +60,7 @@ interface AudioContextValue {
   narrationById: Record<string, string>;
   /** Last preparation failure per message id; cleared when that message is retried. */
   errorById: Record<string, string>;
+  playbackStartedAtById: Record<string, string>;
 }
 
 const POLL_MS = 1000;
@@ -103,6 +104,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [currentTitle, setCurrentTitle] = useState<string | null>(null);
   const [narrationById, setNarrationById] = useState<Record<string, string>>({});
   const [errorById, setErrorById] = useState<Record<string, string>>({});
+  const [playbackStartedAtById, setPlaybackStartedAtById] = useState<Record<string, string>>({});
   const prepRef = useRef<PrepState | null>(null);
   prepRef.current = prep;
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
@@ -126,8 +128,14 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
     const track = event.track;
-    setCurrentId(track?.id != null ? String(track.id) : null);
+    const slotId = track?.slotId ?? track?.id;
+    setCurrentId(slotId != null ? String(slotId) : null);
     setCurrentTitle(track?.title != null ? String(track.title) : null);
+    if (slotId != null) {
+      const id = String(slotId);
+      setPlaybackStartedAtById((value) => value[id]
+        ? value : { ...value, [id]: new Date().toISOString() });
+    }
   });
 
   const cancelPrep = useCallback(() => {
@@ -191,9 +199,36 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
       try {
         await setupPlayer();
+        let addedSegments = 0;
+        const appendSegments = async (nextJob: AudioJob) => {
+          const fresh = nextJob.segments.slice(addedSegments);
+          if (!fresh.length) return;
+          if (addedSegments === 0) await TrackPlayer.reset();
+          for (const segment of fresh) {
+            await TrackPlayer.add({
+              id: `${id}|${nextJob.id}|segment:${segment.index}`,
+              slotId: id,
+              segmentIndex: segment.index,
+              sentenceText: segment.text,
+              url: apiUrl(segment.url),
+              title,
+              artist: 'Reading Companion',
+              headers: authHeaders(),
+            });
+            addedSegments += 1;
+          }
+          if (addedSegments === fresh.length && live()) {
+            setCurrentId(id);
+            setCurrentTitle(title);
+            setPlaybackStartedAtById((value) => value[id]
+              ? value : { ...value, [id]: new Date().toISOString() });
+            await TrackPlayer.play();
+          }
+        };
         let { job } = await api.startAudioJob(text, billingProject);
         if (!live()) return;
         applyJob(id, title, job);
+        await appendSegments(job);
 
         let pollFailures = 0;
         let restarts = 0;
@@ -217,10 +252,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           }
           if (!live()) return;
           applyJob(id, title, job);
+          await appendSegments(job);
         }
 
         if (job.status === 'error' || !job.url) {
           fail(job.error ?? 'Could not prepare audio.');
+          return;
+        }
+
+        if (addedSegments > 0) {
+          setPrep(null);
           return;
         }
 
@@ -239,6 +280,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         setCurrentId(id);
         setCurrentTitle(title);
         setPrep(null);
+        setPlaybackStartedAtById((value) => value[id]
+          ? value : { ...value, [id]: new Date().toISOString() });
         await TrackPlayer.play();
       } catch (e) {
         fail((e as Error).message ?? 'Could not prepare audio.');
@@ -299,6 +342,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         if (!live()) return;
         setCurrentId(id);
         setCurrentTitle(title);
+        setPlaybackStartedAtById((value) => value[id]
+          ? value : { ...value, [id]: new Date().toISOString() });
         await TrackPlayer.play();
         played = true;
       } catch {
@@ -338,6 +383,60 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       let terminalAudioFailure = false;
       try {
         await setupPlayer();
+        let addedSegments = 0;
+        let progressiveStarted = false;
+        const appendSegments = async (nextJob: AudioJob) => {
+          const fresh = nextJob.segments.slice(addedSegments);
+          if (!fresh.length) return;
+          const firstBatch = addedSegments === 0;
+          // The first playable final segment closes preview admission. Cue mutations already
+          // admitted finish first through playerTail; this task then removes queued cues and
+          // appends final segments without interrupting an active cue or final track.
+          if (firstBatch) automaticPrepIdRef.current = null;
+          const addFresh = async () => {
+            if (!live()) return;
+            const activeIndex = await TrackPlayer.getActiveTrackIndex();
+            const queue = await TrackPlayer.getQueue();
+            const staleIndexes = queue
+              .map((track, index) => {
+                const slotId = track.slotId ?? track.id;
+                const staleSlot = String(slotId) === request.id;
+                const queuedPreview = firstBatch && String(track.id).startsWith('preview:');
+                return index !== activeIndex && (staleSlot || queuedPreview) ? index : -1;
+              })
+              .filter((index) => index >= 0);
+            if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
+            const existingTrack = await TrackPlayer.getActiveTrack();
+            for (const segment of fresh) {
+              await TrackPlayer.add({
+                id: `${request.id}|${audioJobId}|segment:${segment.index}`,
+                slotId: request.id,
+                segmentIndex: segment.index,
+                sentenceText: segment.text,
+                url: apiUrl(segment.url),
+                title: request.title,
+                artist: 'Reading Companion',
+                headers: authHeaders(),
+              });
+              addedSegments += 1;
+            }
+            if (!progressiveStarted && live()) {
+              const { state } = await TrackPlayer.getPlaybackState();
+              if (!existingTrack || state === State.None || state === State.Stopped
+                  || state === State.Ended) {
+                setCurrentId(request.id);
+                setCurrentTitle(request.title);
+                setPlaybackStartedAtById((value) => value[request.id]
+                  ? value : { ...value, [request.id]: new Date().toISOString() });
+                await TrackPlayer.play();
+                progressiveStarted = true;
+              }
+            }
+          };
+          const playerTask = playerTail.current.then(addFresh, addFresh);
+          playerTail.current = playerTask;
+          await playerTask;
+        };
         let job: AudioJob;
         try {
           job = (await api.getAudioJob(audioJobId)).job;
@@ -347,6 +446,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         }
         if (!live()) return;
         applyJob(request.id, request.title, job);
+        await appendSegments(job);
 
         let pollFailures = 0;
         while (job.status === 'running') {
@@ -362,41 +462,53 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           }
           if (!live()) return;
           applyJob(request.id, request.title, job);
+          await appendSegments(job);
         }
         if (job.status === 'error' || !job.url) {
           terminalAudioFailure = true;
           throw new Error(job.error ?? 'Could not prepare queued audio.');
         }
 
-        // Close the cue admission gate before placing the final track. Any cue mutation already
-        // admitted finishes first; later cues see manual/final ownership and are dropped.
+        if (addedSegments > 0) {
+          await markHandoffHandled(handoffKey);
+          if (chatJobId) await consumeEligibleHandoff(chatJobId);
+          setPrep(null);
+          return;
+        }
+
+        // Combined-only cache fallback: apply the same preview gate and serialized handoff.
         automaticPrepIdRef.current = null;
+        const finalUrl = job.url;
         let added = false;
         const addFinal = async () => {
           if (!live()) return;
           const activeIndex = await TrackPlayer.getActiveTrackIndex();
           const queue = await TrackPlayer.getQueue();
           const staleIndexes = queue
-            .map((track, index) => (
-              index !== activeIndex && (
-                String(track.id) === request.id || String(track.id).startsWith('preview:')
-              ) ? index : -1
-            ))
+            .map((track, index) => {
+              const slotId = track.slotId ?? track.id;
+              return index !== activeIndex && (
+                String(slotId) === request.id || String(track.id).startsWith('preview:')
+              ) ? index : -1;
+            })
             .filter((index) => index >= 0);
           if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
           const existingTrack = await TrackPlayer.getActiveTrack();
           await TrackPlayer.add({
             id: request.id,
-            url: apiUrl(job.url!),
+            url: apiUrl(finalUrl),
             title: request.title,
             artist: 'Reading Companion',
             headers: authHeaders(),
           });
           if (!live()) return;
           const { state } = await TrackPlayer.getPlaybackState();
-          if (!existingTrack || state === State.None || state === State.Stopped || state === State.Ended) {
+          if (!existingTrack || state === State.None || state === State.Stopped
+              || state === State.Ended) {
             setCurrentId(request.id);
             setCurrentTitle(request.title);
+            setPlaybackStartedAtById((value) => value[request.id]
+              ? value : { ...value, [request.id]: new Date().toISOString() });
             await TrackPlayer.play();
           }
           added = true;
@@ -446,6 +558,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         dismiss,
         narrationById,
         errorById,
+        playbackStartedAtById,
       }}>
       {children}
     </AudioContext.Provider>

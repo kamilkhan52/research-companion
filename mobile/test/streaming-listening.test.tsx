@@ -37,6 +37,7 @@ const baseJob: ChatJob = {
   preview_complete: false,
   preview_phase: 'analysis',
   preview_progress: { phase: 'analysis', remaining_known: false },
+  timings: {},
 };
 
 test('listening turns send delivery mode and hand the completed audio job to the queue', async () => {

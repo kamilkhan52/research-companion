@@ -197,6 +197,7 @@ export interface ChatJob {
   preview_complete: boolean;
   preview_phase: string | null;
   preview_progress: Record<string, unknown>;
+  timings: Record<string, string>;
 }
 
 /** One short, grounded listening cue generated independently from a live chat turn. */
@@ -212,6 +213,7 @@ export interface PreviewJob {
   url: string | null;
   model: string | null;
   suppressed: boolean;
+  timings: Record<string, string>;
   error: string | null;
   started_at: string;
   finished_at: string | null;
@@ -450,6 +452,8 @@ export interface AudioJob {
   segments_total: number;
   narration: string | null;
   url: string | null;
+  segments: Array<{ index: number; text: string; url: string }>;
+  timings: Record<string, string>;
   error: string | null;
   started_at: string;
   finished_at: string | null;

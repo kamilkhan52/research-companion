@@ -10,56 +10,11 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import TrackPlayer from 'react-native-track-player';
 
+import { splitSentences, type SentenceBoundary } from '../../sentence-seek';
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
-interface Sentence {
-  text: string;
-  startFrac: number;
-  endFrac: number;
-}
-
-/** Split into sentences (keeping short fragments intact) and tag each with the [start, end)
- *  fraction of the total text it occupies — the basis for the proportional highlight.
- *
- *  The narration agent (prompts.narration_system) deliberately inserts periods that are NOT
- *  sentence ends: dotted letter-by-letter abbreviations ("OPT" -> "O.P.T") so the TTS engine
- *  spells them out. So a terminator only ends a sentence when followed by whitespace/end of
- *  text (never inside "O.P.T"), and a lone period right after a single letter ("O.P.T. model")
- *  only counts when the next word starts a new sentence. Headings ("Methodology.") end with a
- *  real period + whitespace and still get their own line, as intended. */
-function splitSentences(text: string): Sentence[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  const parts: string[] = [];
-  let start = 0;
-  // A boundary candidate: terminator run + optional closing quotes/brackets + whitespace/end.
-  const boundary = /([.!?]+)["')\]]*(?:\s+|$)/g;
-  let m: RegExpExecArray | null;
-  while ((m = boundary.exec(trimmed))) {
-    const end = m.index + m[0].length;
-    if (m[1] === '.' && /(?:^|[\s."'(\[])[A-Za-z]$/.test(trimmed.slice(start, m.index))) {
-      // Lone period after a single letter — likely the tail of a dotted abbreviation. It ends
-      // the sentence only if the next character starts a new one (capital/digit/quote).
-      const next = trimmed[end];
-      if (next !== undefined && !/[A-Z0-9"'(\[]/.test(next)) continue;
-    }
-    parts.push(trimmed.slice(start, end));
-    start = end;
-  }
-  if (start < trimmed.length) parts.push(trimmed.slice(start));
-  const total = parts.reduce((n, p) => n + p.length, 0) || 1;
-  let acc = 0;
-  const out: Sentence[] = [];
-  for (const p of parts) {
-    const s = acc;
-    acc += p.length;
-    const t = p.trim();
-    if (t) out.push({ text: t, startFrac: s / total, endFrac: acc / total });
-  }
-  return out;
-}
 
 /** How long a manual scroll suspends auto-follow, so the roll never fights the user's thumb. */
 const FOLLOW_RESUME_MS = 4000;
@@ -139,7 +94,7 @@ export function RollingTranscript({ narration }: { narration: string }) {
   }, [activeIdx]);
 
   // Stable handlers (reading live values through refs) so TranscriptLine's memo holds.
-  const stateRef = useRef({ sentences, duration });
+  const stateRef = useRef<{ sentences: SentenceBoundary[]; duration: number }>({ sentences, duration });
   stateRef.current = { sentences, duration };
   const handlePress = useCallback((i: number) => {
     const { sentences: ss, duration: d } = stateRef.current;

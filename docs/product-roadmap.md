@@ -31,7 +31,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
 | 2.2a | Contextual cue continuity during narration prep | — | In progress |
-| 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
+| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | In review — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
 | 3.3 | Playback position restoration | — | Planned |
@@ -250,6 +250,20 @@ Explicit ±15-second controls remain.
 Instrument analysis first-token, cue-ready, analysis-complete, narration-complete, first-segment,
 and playback-start timestamps. A multi-segment response passes only when playback begins before the
 last segment finishes.
+
+Implementation verification:
+
+- audio jobs publish cached per-segment URLs as synthesis completes while retaining the combined
+  MP3; legacy combined-only cache hits remain zero-cost fallbacks;
+- automatic Listening and manual Listen both enqueue segment one before later synthesis completes,
+  append later segments without interrupting active playback, and retain stable message identity;
+- sentence parsing is shared by the rolling transcript, on-screen previous/next controls, and the
+  headless TrackPlayer service; missing metadata falls back to explicit ±15-second seeking;
+- analysis, cue, narration, first-segment, and client playback-start timestamps are recorded;
+- full Ruff and 350-test backend suites pass; all twelve mobile Jest suites (thirty tests) and
+  TypeScript pass;
+- native iOS/Android acceptance remains required for progressive autoplay, segment transitions,
+  headset previous/next behavior, background playback, and combined-file replay.
 
 ## Phase 3 — continuity and navigation
 

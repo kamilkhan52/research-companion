@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from . import agent, agent_harness, audio_jobs, config, logging_config, preview_jobs, sessions
 from .agent import AgentError
-from .jobs import Job, JobRegistry, new_id
+from .jobs import Job, JobRegistry, new_id, now_iso
 
 # runner(slug, history) yields the same event dicts as agent_harness.stream_agentic_events:
 # {'type': 'text'|'tool'|'final', ...}. Sync or async iterator; injectable for tests.
@@ -53,6 +53,7 @@ class ChatJob(Job):
     preview_complete: bool = True
     preview_phase: str | None = None
     preview_progress: dict = field(default_factory=dict)
+    timings: dict[str, str] = field(default_factory=dict)
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -111,6 +112,8 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         else:
             final_text = _consume_sync(job, events)
         turn = agent.parse(final_text)
+        with _registry.lock:
+            job.timings["analysis_complete"] = now_iso()
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
@@ -261,6 +264,8 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         if len(canon) > sent:
             delta = canon[sent:]
             with _registry.lock:
+                if "analysis_first_token" not in job.timings:
+                    job.timings["analysis_first_token"] = now_iso()
                 if job.items and job.items[-1]["kind"] == "text":
                     job.items[-1] = {"kind": "text", "text": job.items[-1]["text"] + delta}
                 else:

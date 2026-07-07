@@ -17,6 +17,7 @@ import TrackPlayer, {
 
 import { useAudio } from '@/audio/AudioProvider';
 import { SKIP_SECONDS } from '@/audio/setup';
+import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
 import { Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
@@ -127,6 +128,18 @@ export default function PlayerScreen() {
                 <Text style={styles.skipGlyph}>{SKIP_SECONDS}»</Text>
               </Pressable>
             </View>
+            <View style={styles.sentenceRow}>
+              <Pressable
+                onPress={() => seekSentence(TrackPlayer, -1, SKIP_SECONDS)}
+                accessibilityLabel="Previous sentence">
+                <Text variant="caption">Previous sentence</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => seekSentence(TrackPlayer, 1, SKIP_SECONDS)}
+                accessibilityLabel="Next sentence">
+                <Text variant="caption">Next sentence</Text>
+              </Pressable>
+            </View>
           </View>
         </>
       ) : audio.prep ? (
@@ -197,6 +210,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: space.xl,
     marginTop: space.md,
+  },
+  sentenceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: space.sm,
   },
   playBtn: {
     width: 72,

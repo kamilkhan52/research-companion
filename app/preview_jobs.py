@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from . import assembler, audio_jobs, config, llm, logging_config, prompts, store, tts
 from .fileio import atomic_write_bytes
-from .jobs import Job, JobRegistry, new_id
+from .jobs import Job, JobRegistry, new_id, now_iso
 
 MAX_CUE_CHARS = 240
 CONTINUATION_POLL_SECONDS = 0.25
@@ -41,6 +41,7 @@ class PreviewJob(Job):
     url: str | None = None
     model: str | None = None
     suppressed: bool = False
+    timings: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -277,6 +278,7 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
             job.cue = cue
             job.source_sentence_ids = source_ids
             job.stage = "synthesizing"
+            job.timings["cue_ready"] = now_iso()
         if _suppressed(job):
             return
 

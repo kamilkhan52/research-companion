@@ -18,6 +18,8 @@ const doneJob: AudioJob = {
   segments_total: 1,
   narration: 'Spoken answer.',
   url: '/api/audio/abc.mp3',
+  segments: [],
+  timings: {},
   error: null,
   started_at: '2026-07-06T00:00:00Z',
   finished_at: '2026-07-06T00:00:01Z',
@@ -143,7 +145,6 @@ test('preview cues keep playing while automatic final narration is preparing', a
       <AudioProvider><Capture /></AudioProvider>
     </ProjectProvider>,
   );
-
   audio.enqueueJob(
     { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
     'audio-job',
@@ -218,6 +219,151 @@ test('final narration removes queued cues but lets the active cue finish', async
   await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledWith(
     expect.objectContaining({ id: 'turn-1' }),
   ));
+  expect(TrackPlayer.remove).toHaveBeenCalledWith([1]);
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
+});
+
+test('progressive narration starts segment one before the final segment is ready', async () => {
+  const firstSegment: AudioJob = {
+    ...doneJob,
+    status: 'running',
+    segments_done: 1,
+    segments_total: 2,
+    url: null,
+    segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
+  };
+  const completed: AudioJob = {
+    ...doneJob,
+    segments_done: 2,
+    segments_total: 2,
+    segments: [
+      ...firstSegment.segments,
+      { index: 1, text: 'Second sentence.', url: '/api/audio/seg2.mp3' },
+    ],
+  };
+  let resolveFinal!: (value: { job: AudioJob }) => void;
+  jest.mocked(api.getAudioJob)
+    .mockResolvedValueOnce({ job: firstSegment })
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveFinal = resolve; }));
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValue([]);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-progressive', title: 'Paper', text: 'Canonical response.' },
+    'audio-job',
+    'project-a',
+    'chat-job-progressive',
+  );
+
+  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+  expect(audio.playbackStartedAtById['turn-progressive']).toBeTruthy();
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({
+    slotId: 'turn-progressive',
+    segmentIndex: 0,
+  }));
+  expect(TrackPlayer.add).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(api.getAudioJob).toHaveBeenCalledTimes(2), { timeout: 2500 });
+  resolveFinal({ job: completed });
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(2));
+});
+
+test('manual Listen also begins from the first progressive segment', async () => {
+  const partial: AudioJob = {
+    ...doneJob,
+    status: 'running',
+    segments_done: 1,
+    segments_total: 2,
+    url: null,
+    segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
+  };
+  const completed: AudioJob = {
+    ...doneJob,
+    segments_done: 2,
+    segments_total: 2,
+    segments: [
+      ...partial.segments,
+      { index: 1, text: 'Second sentence.', url: '/api/audio/seg2.mp3' },
+    ],
+  };
+  let resolveFinal!: (value: { job: AudioJob }) => void;
+  jest.mocked(api.startAudioJob).mockResolvedValueOnce({ job: partial });
+  jest.mocked(api.getAudioJob).mockImplementationOnce(() => new Promise((resolve) => {
+    resolveFinal = resolve;
+  }));
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+  let playing!: Promise<void>;
+  await act(async () => {
+    playing = audio.playText({ id: 'manual-progressive', title: 'Paper', text: 'Answer.' });
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({
+    slotId: 'manual-progressive',
+    segmentIndex: 0,
+  }));
+  await waitFor(() => expect(api.getAudioJob).toHaveBeenCalled(), { timeout: 2500 });
+  resolveFinal({ job: completed });
+  await act(async () => { await playing; });
+  expect(TrackPlayer.add).toHaveBeenCalledTimes(2);
+});
+
+test('first progressive segment drops queued cues without interrupting the active cue', async () => {
+  const readySegment: AudioJob = {
+    ...doneJob,
+    segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
+  };
+  jest.mocked(api.getAudioJob).mockResolvedValueOnce({ job: readySegment });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValueOnce(0);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValueOnce([
+    { id: 'preview:active' },
+    { id: 'preview:queued' },
+  ] as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({ id: 'preview:active' } as never);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Playing });
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <AudioProvider><Capture /></AudioProvider>
+    </ProjectProvider>,
+  );
+
+  audio.enqueueJob(
+    { id: 'turn-progressive', title: 'Paper', text: 'Canonical response.' },
+    'audio-job',
+    'project-a',
+  );
+
+  await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({
+    slotId: 'turn-progressive',
+    segmentIndex: 0,
+  })));
   expect(TrackPlayer.remove).toHaveBeenCalledWith([1]);
   expect(TrackPlayer.play).not.toHaveBeenCalled();
 });

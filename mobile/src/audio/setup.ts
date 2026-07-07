@@ -35,6 +35,8 @@ export function setupPlayer(): Promise<void> {
         Capability.SeekTo,
         Capability.JumpForward,
         Capability.JumpBackward,
+        Capability.SkipToPrevious,
+        Capability.SkipToNext,
       ],
       compactCapabilities: [Capability.Play, Capability.Pause, Capability.JumpForward],
       forwardJumpInterval: SKIP_SECONDS,
