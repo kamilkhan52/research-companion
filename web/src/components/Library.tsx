@@ -72,6 +72,23 @@ export function Library({ onNavigate }: Props) {
         <button className="btn primary" onClick={() => setShowNew(true)}>
           + New project
         </button>
+        {showNew && (
+          <NewProjectForm
+            name={newName}
+            onChange={setNewName}
+            onCreate={async () => {
+              if (!newName.trim()) return;
+              try {
+                const r = await createProject(newName.trim());
+                setActivePid(r.project.id);
+                setNewName('');
+                setShowNew(false);
+                refetch();
+              } catch { /* handled inline */ }
+            }}
+            onCancel={() => { setShowNew(false); setNewName(''); }}
+          />
+        )}
       </div>
     );
   }
