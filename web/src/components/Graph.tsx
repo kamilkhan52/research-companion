@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useGraph } from '@/hooks/useGraph';
 import { useActivePid } from '@/hooks/useLibrary';
 import { GraphEngine } from '@/graph/engine';
@@ -53,14 +53,23 @@ export function Graph({ onNavigate }: Props) {
     return edges;
   }, [edges, filter]);
 
-  // Initialize engine
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const engine = new GraphEngine(canvasRef.current, {
+  const setCanvasRef = useCallback((el: HTMLCanvasElement | null) => {
+    if (!el) return;
+    canvasRef.current = el;
+    const engine = new GraphEngine(el, {
       onNodeClick: (n) => setSelectedNode(n),
     });
     engineRef.current = engine;
-    return () => engine.destroy();
+
+    // Feed data if already loaded (canvas mounts after data resolves)
+    if (nodes.length > 0) {
+      engine.setData(nodes, filteredEdges, recommendations);
+    }
+    if (highlightedIds) {
+      engine.setOptions({ highlightedNodeIds: highlightedIds });
+    }
+
+    return () => { engine.destroy(); engineRef.current = null; };
   }, []);
 
   // Feed data
@@ -69,8 +78,8 @@ export function Graph({ onNavigate }: Props) {
   }, [highlightedIds]);
 
   useEffect(() => {
-    if (nodes.length > 0) {
-      engineRef.current?.setData(nodes, filteredEdges, recommendations);
+    if (nodes.length > 0 && engineRef.current) {
+      engineRef.current.setData(nodes, filteredEdges, recommendations);
     }
   }, [nodes, filteredEdges, recommendations]);
 
@@ -100,6 +109,9 @@ export function Graph({ onNavigate }: Props) {
             ? `${readyPapers} of ${totalPapers} papers ready.`
             : 'Add papers to your project to build a citation graph.'}
         </p>
+        {build && build.status === 'error' && (
+          <p className="build-progress-error">{build.error || 'Build failed'}</p>
+        )}
         {build && build.status === 'running' ? (
           <BuildProgress build={build} />
         ) : totalPapers > 0 ? (
@@ -141,7 +153,14 @@ export function Graph({ onNavigate }: Props) {
         </button>
       </div>
 
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas ref={setCanvasRef} className="graph-canvas" />
+
+      {build && build.status === 'error' && (
+        <div className="build-progress build-progress-compact" style={{ position: 'absolute', bottom: 'var(--space-md)', left: 'var(--space-md)', right: 'var(--space-md)' }}>
+          <p className="build-progress-error">{build.error || 'Build failed'}</p>
+          <button className="btn ghost" onClick={startBuild}>Rebuild</button>
+        </div>
+      )}
 
       {selectedNode && (
         <NodeDetail node={selectedNode} edges={edges} nodes={nodes} onNavigate={onNavigate} onClose={() => setSelectedNode(null)} />
@@ -185,10 +204,10 @@ function NodeDetail({
           Open paper ›
         </button>
       )}
-      {node.url && (
-        <button className="btn ghost" onClick={() => window.open(node.url!, '_blank')}>
+      {node.url && /^https?:/.test(node.url) && (
+        <a className="btn ghost" href={node.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', textDecoration: 'none', textAlign: 'center' }}>
           Open source ↗
-        </button>
+        </a>
       )}
       {cites.length > 0 && (
         <div className="node-detail-section">

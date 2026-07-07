@@ -151,6 +151,7 @@ export class GraphEngine {
 
   setOptions(options: Partial<GraphEngineOptions>) {
     this.options = { ...this.options, ...options };
+    this.render();
   }
 
   private onMouseMove(e: MouseEvent) {
