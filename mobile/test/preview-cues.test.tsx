@@ -16,6 +16,7 @@ const doneCue: PreviewJob = {
   url: '/api/audio/cue.mp3',
   model: 'preview/model',
   suppressed: false,
+  timings: {},
   error: null,
   started_at: '2026-07-07T00:00:00Z',
   finished_at: '2026-07-07T00:00:01Z',
@@ -40,6 +41,7 @@ const parentJob: ChatJob = {
   preview_complete: true,
   preview_phase: 'audio_synthesis',
   preview_progress: { segments_done: 1, segments_total: 1 },
+  timings: {},
 };
 
 function props(overrides: Partial<Parameters<typeof usePreviewCues>[0]> = {}) {

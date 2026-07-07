@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import agent, config, sessions, tts, usage
@@ -42,6 +42,8 @@ class AudioJob(Job):
     segments_total: int = 0
     narration: str | None = None     # available once the narrating stage finishes
     url: str | None = None           # /api/audio/<hash>.mp3, once done
+    segments: list[dict] = field(default_factory=list)  # published incrementally
+    timings: dict[str, str] = field(default_factory=dict)
 
 
 # Keyed by content hash (voice settings + text); `_jobs` aliases the registry dict so tests can
@@ -64,6 +66,21 @@ def audio_cache_path(narration: str) -> Path:
     /api/speak has always used, so both entry points share one cache."""
     name = hashlib.sha1(f"{_voice_key()}|{narration}".encode()).hexdigest() + ".mp3"
     return AUDIO_DIR / name
+
+
+def segment_cache_path(text: str) -> Path:
+    name = hashlib.sha1(f"segment|{_voice_key()}|{text}".encode()).hexdigest() + ".mp3"
+    return AUDIO_DIR / name
+
+
+def _segment_metadata(parts: list[str], *, existing_only: bool) -> list[dict]:
+    out = []
+    for index, part in enumerate(parts):
+        path = segment_cache_path(part)
+        if existing_only and not path.exists():
+            return []
+        out.append({"index": index, "text": part, "url": f"/api/audio/{path.name}"})
+    return out
 
 
 # Audio is app-global (the mp3 cache is shared across projects), so its jobs live under the
@@ -95,9 +112,13 @@ def start_job(text: str, billing_project: str | None = None,
     # Fully cached (narration text + synthesized mp3): register a done job, no thread.
     narration = sessions.get_cached_narration(text)
     if narration is not None and audio_cache_path(narration).exists():
+        parts = tts.split_for_tts(narration)
+        segments = _segment_metadata(parts, existing_only=True)
         return _registry.put(jid, AudioJob(
             id=jid, status="done", stage="synthesizing", narration=narration,
-            url=f"/api/audio/{audio_cache_path(narration).name}", finished_at=now_iso()),
+            url=f"/api/audio/{audio_cache_path(narration).name}",
+            segments=segments, segments_done=len(segments), segments_total=len(parts),
+            finished_at=now_iso()),
             project_id=None)
 
     def work(job: AudioJob) -> None:
@@ -116,20 +137,38 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.narration = narration
             job.stage = "synthesizing"
+            job.timings["narration_complete"] = now_iso()
 
         path = audio_cache_path(narration)
-        if not path.exists():
-            parts = tts.split_for_tts(narration)
-            if not parts:
-                raise tts.TTSError("Nothing to synthesize.")
+        parts = tts.split_for_tts(narration)
+        if not parts:
+            raise tts.TTSError("Nothing to synthesize.")
+        with _registry.lock:
+            job.segments_total = len(parts)
+
+        # A legacy combined cache may not have segment files. Keep the zero-cost cache hit and
+        # let clients use the final URL instead of re-synthesizing merely to backfill segments.
+        if path.exists() and not _segment_metadata(parts, existing_only=True):
             with _registry.lock:
-                job.segments_total = len(parts)
+                job.segments_done = len(parts)
+        else:
             chunks: list[bytes] = []
-            for part in parts:
-                chunks.append(synth_fn(part))
+            for index, part in enumerate(parts):
+                segment_path = segment_cache_path(part)
+                if not segment_path.exists():
+                    atomic_write_bytes(segment_path, synth_fn(part))
+                chunks.append(segment_path.read_bytes())
                 with _registry.lock:
+                    job.segments.append({
+                        "index": index,
+                        "text": part,
+                        "url": f"/api/audio/{segment_path.name}",
+                    })
                     job.segments_done += 1
-            atomic_write_bytes(path, b"".join(chunks))
+                    if index == 0:
+                        job.timings["first_segment"] = now_iso()
+            if not path.exists():
+                atomic_write_bytes(path, b"".join(chunks))
 
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"

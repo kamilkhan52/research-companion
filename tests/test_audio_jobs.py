@@ -70,7 +70,41 @@ def test_long_narration_reports_per_segment_progress():
 
     assert finished.status == "done"
     assert finished.segments_total == len(tts.split_for_tts(long_text)) >= 2
-    assert finished.segments_done == finished.segments_total == len(calls)
+    assert finished.segments_done == finished.segments_total
+    assert 1 <= len(calls) <= finished.segments_total  # identical segment text reuses its cache
+    assert len(finished.segments) == finished.segments_total
+    assert all((audio_jobs.AUDIO_DIR / item["url"].rsplit("/", 1)[-1]).exists()
+               for item in finished.segments)
+
+
+def test_first_segment_is_published_before_later_synthesis_finishes():
+    long_text = ("First sentence fills enough space. " * 130)
+    release_later = threading.Event()
+    calls = 0
+
+    def staged_synth(part: str) -> bytes:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            release_later.wait(5)
+        return f"segment-{calls}".encode()
+
+    job = audio_jobs.start_job(long_text, narrate_fn=lambda text: text, synth_fn=staged_synth)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        snapshot = audio_jobs.get_job(job.id)
+        if snapshot and snapshot.segments:
+            break
+        time.sleep(0.02)
+    else:
+        raise TimeoutError("first segment was not published")
+
+    assert snapshot.status == "running"
+    assert snapshot.segments_done == 1
+    assert snapshot.segments[0]["index"] == 0
+    assert snapshot.timings["first_segment"]
+    release_later.set()
+    assert _wait_until_settled(job.id).status == "done"
 
 
 def test_second_request_joins_the_running_job():
