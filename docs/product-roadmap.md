@@ -31,7 +31,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
 | 2.2a | Contextual cue continuity during narration prep | — | In progress |
-| 2.3 | Progressive TTS segments + sentence/headset controls | — | In development |
+| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | In review — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
 | 3.3 | Playback position restoration | — | Planned |
