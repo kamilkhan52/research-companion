@@ -29,7 +29,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
 | 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Merged — device pass pending |
-| 2.2 | Grounded preview cues from the live response | — | In development |
+| 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | In review — device pass pending |
 | 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
 | 3.1 | Recent sessions and activity timestamps | — | Planned |
 | 3.2 | Authored-draft safety and reconciliation | — | Planned |
