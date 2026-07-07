@@ -55,11 +55,22 @@ export function Library({ onNavigate }: Props) {
 
   if (error) {
     return (
-      <div className="lc-empty">
-        <p className="muted">{error}</p>
-        <button className="btn ghost" onClick={refetch}>
-          Retry
-        </button>
+      <div className="library">
+        {projects.length > 0 && (
+          <ProjectBar
+            projects={projects}
+            activePid={activePid || ''}
+            onSelect={setActivePid}
+            onNew={() => setShowNew(true)}
+            onNavigate={onNavigate}
+          />
+        )}
+        <div className="lc-empty">
+          <p className="muted">{error}</p>
+          <button className="btn ghost" onClick={refetch}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -72,6 +83,23 @@ export function Library({ onNavigate }: Props) {
         <button className="btn primary" onClick={() => setShowNew(true)}>
           + New project
         </button>
+        {showNew && (
+          <NewProjectForm
+            name={newName}
+            onChange={setNewName}
+            onCreate={async () => {
+              if (!newName.trim()) return;
+              try {
+                const r = await createProject(newName.trim());
+                setActivePid(r.project.id);
+                setNewName('');
+                setShowNew(false);
+                refetch();
+              } catch { /* handled inline */ }
+            }}
+            onCancel={() => { setShowNew(false); setNewName(''); }}
+          />
+        )}
       </div>
     );
   }

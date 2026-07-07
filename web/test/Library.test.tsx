@@ -132,6 +132,54 @@ describe('Library', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument();
   });
 
+  it('clears error on refetch and recovers', async () => {
+    // First call fails
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ projects: mockProjects }) } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(mockState) } as Response);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+
+    const user = userEvent.setup();
+    render(<Library onNavigate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Network error')).toBeInTheDocument();
+    });
+
+    // Retry should clear error and show projects
+    await user.click(screen.getByText('Retry'));
+
+    await waitFor(() => {
+      expect(screen.getByText('My Research (1/3)')).toBeInTheDocument();
+    });
+  });
+
+  it('recovers from project switch after 404', async () => {
+    // Projects load fine, state returns 404 for first project, switch to other project
+    const fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ projects: mockProjects }) } as Response)
+      .mockRejectedValueOnce(new Error('Request failed (404)'))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(mockState) } as Response);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
+
+    const user = userEvent.setup();
+    render(<Library onNavigate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Request failed (404)')).toBeInTheDocument();
+    });
+
+    // Switch to other project — project bar is visible in error state
+    const select = screen.getByLabelText('Active project');
+    await user.selectOptions(select, 'proj-2');
+
+    await waitFor(() => {
+      expect(screen.getByText('Physics (0/2)')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Request failed (404)')).not.toBeInTheDocument();
+  });
+
   it('navigates on paper click', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ projects: mockProjects }) } as Response)
