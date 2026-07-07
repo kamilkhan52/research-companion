@@ -20,6 +20,18 @@ export interface Project {
   read_count: number;
 }
 
+/** One cross-project activity entry (GET /api/recent-sessions). */
+export interface RecentSession {
+  project_id: string;
+  project_name: string;
+  slug: string;
+  title: string;
+  kind: 'paper' | 'review';
+  state: SessionState;
+  started_at: string | null;
+  updated_at: string;
+}
+
 /** A paper (Paper.to_dict()). */
 export interface Paper {
   slug: string;

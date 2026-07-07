@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime
 
 from . import config, prompts, store
 from .fileio import atomic_write_text
 from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
+
+# sessions.json is a read/modify/write index shared by chat-job threads and request handlers.
+# A single-process lock matches the deployment model documented in CLAUDE.md and prevents one
+# project/session update from silently overwriting another update based on a stale read.
+_index_lock = threading.RLock()
 
 
 def _sessions_dir():
@@ -29,7 +35,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _load_index() -> dict:
+def _load_index_unlocked() -> dict:
     idx_file = _index_file()
     if idx_file.exists():
         try:
@@ -39,8 +45,18 @@ def _load_index() -> dict:
     return {}
 
 
-def _save_index(idx: dict) -> None:
+def _load_index() -> dict:
+    with _index_lock:
+        return _load_index_unlocked()
+
+
+def _save_index_unlocked(idx: dict) -> None:
     atomic_write_text(_index_file(), json.dumps(idx, indent=2))
+
+
+def session_index() -> dict[str, dict]:
+    """A snapshot of the active project's session metadata."""
+    return _load_index()
 
 
 def session_states() -> dict[str, str]:
@@ -52,12 +68,22 @@ def get_state(slug: str) -> str | None:
 
 
 def set_state(slug: str, state: str) -> None:
-    idx = _load_index()
-    meta = idx.get(slug, {})
-    meta["state"] = state
-    meta["updated_at"] = _now()
-    idx[slug] = meta
-    _save_index(idx)
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        meta["state"] = state
+        meta["updated_at"] = _now()
+        idx[slug] = meta
+        _save_index_unlocked(idx)
+
+
+def _touch_session(slug: str, timestamp: str) -> None:
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        meta["updated_at"] = timestamp
+        idx[slug] = meta
+        _save_index_unlocked(idx)
 
 
 def _jsonl(slug: str):
@@ -69,6 +95,7 @@ def _append_record(slug: str, record: dict) -> dict:
     record["ts"] = _now()
     with _jsonl(slug).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _touch_session(slug, record["ts"])
     return record
 
 
@@ -88,13 +115,15 @@ def start_session(slug: str, title: str, kind: str = "paper", opening: str | Non
     """Begin (or restart) a discussion. For a paper, corpus full text must already be cached;
     kind="review" is the cross-paper working-notes review chat. `opening` is the (possibly
     user-edited) first-prompt template for this session; None falls back to the default."""
-    idx = _load_index()
-    meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
-            "started_at": _now(), "updated_at": _now()}
-    if opening:
-        meta["opening"] = opening
-    idx[slug] = meta
-    _save_index(idx)
+    with _index_lock:
+        idx = _load_index_unlocked()
+        now = _now()
+        meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
+                "started_at": now, "updated_at": now}
+        if opening:
+            meta["opening"] = opening
+        idx[slug] = meta
+        _save_index_unlocked(idx)
     # fresh transcript for a fresh session start
     if _jsonl(slug).exists():
         _jsonl(slug).unlink()
