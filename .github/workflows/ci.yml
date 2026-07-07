@@ -64,3 +64,5 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+      - name: Verify dist is committed
+        run: git diff --exit-code -- web/dist
