@@ -17,9 +17,10 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
-import { useFavoriteModels, useSaveSettings, useSettings, useUsage } from '@/api/queries';
+import { useFavoriteModels, usePrompts, useSaveSettings, useSettings, useUsage } from '@/api/queries';
 import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
+import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
@@ -27,11 +28,13 @@ import { colors, radius, space } from '@/theme/tokens';
 export default function SettingsScreen() {
   const router = useRouter();
   const qc = useQueryClient();
+  const { activePid } = useActiveProject();
   const [url, setUrl] = useState(getBaseUrl());
   const [savingUrl, setSavingUrl] = useState(false);
 
   const settings = useSettings();
   const favorites = useFavoriteModels();
+  const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
 
   // Local editable copies of server-side settings.
@@ -232,6 +235,16 @@ export default function SettingsScreen() {
                   keyless fallback — so search works even with no key, and upgrades when a key
                   has credit. Reading your own project's papers needs no key.
                 </Text>
+              </Section>
+
+              <Section title="Developer · Prompt files">
+                <PromptStatusPanel
+                  prompts={prompts.data}
+                  loading={prompts.isLoading}
+                  error={prompts.isError}
+                  refreshing={prompts.isFetching}
+                  onRefresh={() => { void prompts.refetch(); }}
+                />
               </Section>
 
               <Button

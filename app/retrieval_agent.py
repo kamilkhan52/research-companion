@@ -19,23 +19,9 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
 
-from . import agent_harness, research_tools, retriever
+from . import agent_harness, prompts, research_tools, retriever
 
 HUNT_MAX_PDF_BYTES = 40_000_000
-_HUNT_PROMPT = """You locate a downloadable PDF for an academic paper. You get the paper's
-title; find a URL whose PDF actually downloads and extracts.
-
-Strategy:
-1. web_search for the title (add "pdf" or the venue to queries when helpful).
-2. Call fetch_pdf on the most promising URLs, best first. Good candidates:
-   arxiv.org/pdf/..., openreview.net/pdf?id=..., usenix.org/system/files/...,
-   aclanthology.org/...pdf, proceedings.mlr.press/..., dl.acm.org/doi/pdf/...,
-   or any direct .pdf link from a credible source.
-3. fetch_pdf returns SUCCESS or a failure reason. On SUCCESS, stop and reply with just the
-   working URL. Try at most 5 URLs; if none works, reply FAILED: <one-line reason>.
-
-Never invent URLs — only use ones returned by web_search or trivially derived from them
-(e.g. an arxiv.org/abs/ link's /pdf/ form)."""
 
 
 def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Agent:
@@ -73,7 +59,7 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
         return research_tools.web_search(objective, search_queries)
 
     return Agent(model or agent_harness._openrouter_model(),
-                 system_prompt=_HUNT_PROMPT + f'\n\nPaper title: "{title}"',
+                 system_prompt=prompts.render("retrieval_hunt", title=title),
                  tools=[web_search, fetch_pdf], output_type=str, retries=2)
 
 

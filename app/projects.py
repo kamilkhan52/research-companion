@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import config, store
+from . import config, prompts, store
 from .fileio import atomic_write_text
 
 META = "project.json"
@@ -28,37 +28,6 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 class ProjectError(Exception):
     pass
 
-
-# Default reading method seeded into every new project (editable per project afterwards).
-DEFAULT_READING_METHOD = """# Reading method
-
-We will read research papers as research academics. This involves:
-
-- Thoroughly understand the content of the papers at both high-level and down to low-level
-  details.
-- When discussing, always quote from the paper so the essence of the paper in the author's
-  words is not lost.
-- Always be thorough and specific.
-- State any assumptions or questions you have after reading, and ask for my opinions on
-  relevant ideas.
-- Be critical. If something does not seem sound in light of our assumptions or prior
-  discussions, point it out.
-
-The first response after the paper is shared should be a comprehensive summary of the problem
-definition, solution/contributions, methodology, experimental setup, and evaluation.
-
-Figures: highlight any figures referenced in the section being discussed.
-
-Quotes: quotes from the paper are essential in any response that refers to the paper.
-
-Prefer descriptive paragraphs over bullet points for reasoning and explanations.
-
-Reason first, then state the conclusion (thinking happens through token generation).
-
-For each paper, briefly situate it relative to the others on the list: which came before, which
-are concurrent, which came after, and which it cites (building on / extending / supporting /
-contrasting / refuting), quoting the citing sentence when the relationship is substantive.
-"""
 
 _STARTER_READING_LIST = """# Reading list
 
@@ -196,7 +165,8 @@ def create_project(name: str, method: str | None = None) -> dict:
     (root / "sessions").mkdir()
     (root / ".state").mkdir()
     (root / "reading-list.md").write_text(_STARTER_READING_LIST, encoding="utf-8")
-    (root / "reading-method.md").write_text(method or DEFAULT_READING_METHOD, encoding="utf-8")
+    default_method = prompts.REGISTRY_BY_KEY["reading_method"].bundled_default
+    (root / "reading-method.md").write_text(method or default_method, encoding="utf-8")
     (root / "working-notes.md").write_text(_STARTER_WORKING_NOTES, encoding="utf-8")
     (root / ".gitignore").write_text(".state/\n", encoding="utf-8")
     meta = {"id": pid, "name": name, "created_at": _now()}

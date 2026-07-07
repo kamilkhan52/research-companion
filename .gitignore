@@ -6,6 +6,9 @@ __pycache__/
 # the code repo. `project/` is the pre-multiproject store; `projects/` holds per-project repos.
 project/
 projects/
-# App-global state: API keys, model/TTS settings, prompt overrides, audio + narration caches.
+# App-global state: keys/settings, legacy prompt overrides, last-valid prompt state, caches.
 .app-state/
 *.log
+
+# Web client (Vite)
+web/node_modules/

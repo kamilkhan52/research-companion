@@ -880,24 +880,29 @@ async function renderPrompts() {
   $app.innerHTML = '<div class="loading-row"><span class="spinner"></span> Loading prompts…</div>';
   let data;
   try { data = await api("/api/prompts"); } catch (e) { toast(e.message); return; }
-  let html = '<p class="muted">These prompts drive the workflow. Edit and Save to override the built-in default; Reset restores it. Keep any {placeholders} intact.</p>';
+  let html = '<p class="muted">Prompt files configured on the server are read-only here; edit them in Obsidian. Legacy prompts remain editable when no prompt directory is configured.</p>';
   data.prompts.forEach((p) => {
     const ph = (p.placeholders && p.placeholders.length)
       ? " · placeholders: " + p.placeholders.map((x) => "{" + x + "}").join(" ") : "";
-    const src = p.source === "file" ? " · stored in reading-method.md" : "";
+    const src = p.path ? " · " + (p.valid ? "valid" : "INVALID") + " · " + p.path
+      : " · source: " + p.source;
+    const error = p.error ? '<p class="error">' + escapeHtml(p.error) + "</p>" : "";
+    const controls = p.managed ? "" :
+      '<div class="btn-row"><button class="primary save-prompt">Save</button>' +
+      (p.storage === "file" ? "" : '<button class="ghost reset-prompt">Reset to default</button>') +
+      "</div>";
     html += '<div class="panel prompt-card" data-key="' + p.key + '">' +
       "<h3>" + escapeHtml(p.label) + (p.is_overridden ? ' <span class="badge in_discussion">edited</span>' : "") + "</h3>" +
       '<p class="muted">' + escapeHtml(p.description) + escapeHtml(ph + src) + "</p>" +
-      '<textarea class="prompt-text">' + escapeHtml(p.value) + "</textarea>" +
-      '<div class="btn-row"><button class="primary save-prompt">Save</button>' +
-      (p.source === "file" ? "" : '<button class="ghost reset-prompt">Reset to default</button>') +
-      "</div></div>";
+      error + '<textarea class="prompt-text"' + (p.managed ? " readonly" : "") + ">" +
+      escapeHtml(p.value) + "</textarea>" + controls + "</div>";
   });
   $app.innerHTML = html;
   $app.querySelectorAll(".prompt-card").forEach((card) => {
     const key = card.dataset.key;
     const ta = card.querySelector(".prompt-text");
-    card.querySelector(".save-prompt").onclick = () => savePrompt(key, ta, card);
+    const sb = card.querySelector(".save-prompt");
+    if (sb) sb.onclick = () => savePrompt(key, ta, card);
     const rb = card.querySelector(".reset-prompt");
     if (rb) rb.onclick = () => resetPrompt(key, ta, card);
   });

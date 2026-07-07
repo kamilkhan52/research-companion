@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from . import citations, config, graph_layout, graph_store, llm, store
+from . import citations, config, graph_layout, graph_store, llm, prompts, store
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -106,45 +106,6 @@ def resolve_model() -> str:
 
 
 # ---------- extraction (the one LLM-calling step) ----------
-
-_EXTRACTION_SYSTEM = """You are a meticulous research-paper bibliography analyst. You will be \
-given the full text of one academic paper. Extract its reference list and assess how each \
-reference is actually used in the paper's body.
-
-Respond with ONLY a single JSON object (no markdown fences, no commentary), matching exactly \
-this shape:
-
-{
-  "references": [
-    {
-      "index": <int, 1-based, matching the paper's own numbering if it uses numbered citations>,
-      "raw_text": "<the bibliography entry's text, verbatim or near-verbatim>",
-      "title": "<paper title, cleaned>",
-      "authors": ["<author name>", "..."],
-      "venue": "<conference/journal/arXiv, e.g. 'OSDI 2024' or 'arXiv preprint'>",
-      "year": <int or null>,
-      "arxiv_id": "<e.g. '2401.09670', or null>",
-      "doi": "<or null>",
-      "url": "<or null>",
-      "confidence": <0.0-1.0, your confidence in this extraction's accuracy>,
-      "contexts": ["<verbatim short excerpt from the BODY text (not the bibliography) where \
-this reference is cited or discussed, 1-3 sentences>", "...up to 4 contexts..."],
-      "significant": <true/false>,
-      "significance_reason": "<one sentence: why significant (e.g. 'used as the primary \
-baseline in all evaluations') or why not (e.g. 'listed only in a related-work enumeration')>"
-    }
-  ]
-}
-
-A reference is SIGNIFICANT if the paper's body substantially uses, compares against, extends, \
-builds on, or depends on it — e.g. a baseline, a method the paper adopts or modifies, a system \
-it is evaluated against, or a foundational result its argument depends on. A reference is NOT \
-significant if it appears only in a bibliography or in a one-clause "prior work includes X, Y, \
-Z" enumeration with no further engagement. Include every reference you can find, even \
-insignificant ones — the significant flag captures that distinction, don't just omit them. If \
-the paper's full text looks truncated, still extract every reference visible in whatever \
-bibliography text is present. If you cannot find a bibliography at all, return \
-{"references": []}."""
 
 
 def _extract_json(content: str) -> dict:
@@ -254,7 +215,7 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
         return _result("error", [], "No cached full text for this paper.")
 
     messages = [
-        {"role": "system", "content": _EXTRACTION_SYSTEM},
+        {"role": "system", "content": prompts.get("graph_extraction")},
         {"role": "user", "content": f"Paper title: {title}\n\nFull text:\n\n{text[:MAX_FULL_TEXT_CHARS]}"},
     ]
     # One retry (tries=2) for a transient blip; the hard deadline below bounds total wall-clock

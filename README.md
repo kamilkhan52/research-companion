@@ -12,8 +12,8 @@ Phase 1 slice of `research-companion-architecture.md`.
   `reading-method.md`, `working-notes.md`, `corpus/<paper>.md` (full text + Notes block),
   `sessions/*.jsonl` — its own git repo.
 - **Multiple projects**: keep several independent reading projects (each its own store) and
-  switch between them in the UI. App-global settings (keys, model/TTS picks, prompts) are
-  shared across projects and live in `.app-state/`.
+  switch between them in the UI. App-global keys, model/TTS picks, and caches live in
+  `.app-state/`; prompts can be authoritative Markdown in an Obsidian vault.
 - **Agent proposes, you commit**: notes + synthesis edits land only after you approve.
 
 ## Quick start
@@ -41,6 +41,28 @@ single-project install, migrate the old `project/` store into `projects/`:
 ```bash
 ./scripts/migrate_to_projects.py "LLM Inference Serving"   # names the adopted project
 ```
+
+### Obsidian vault
+
+To make prompts and project files directly editable in Obsidian, configure a dedicated vault:
+
+```bash
+# Preview only; no files are changed.
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion"
+
+# Copy projects (including their nested .git histories) and seed prompt Markdown files.
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --apply
+
+# After upgrades, preview and seed newly registered prompts without touching Projects or edits.
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --prompts-only
+./scripts/migrate_to_vault.py --vault "$HOME/Documents/Research Companion" --prompts-only --apply
+
+# Then add this to .env and restart the backend.
+RC_VAULT_ROOT="/Users/you/Documents/Research Companion"
+```
+
+The migration never deletes the source. `RC_PROMPTS_DIR` and `RC_PROJECTS_ROOT` can override the
+two vault subdirectories independently.
 
 ### Auth setup (Supabase — Google + email)
 
@@ -119,7 +141,7 @@ app/         FastAPI backend (the deterministic spine + agent client + reference
 web/         mobile-first single-page client (legacy; see mobile/ for the active client)
 mobile/      React Native + Expo client (Android-first)
 projects/    per-project git-backed stores (reading list, method, working-notes, corpus, sessions)
-.app-state/  app-global: API keys, model/TTS settings, prompt overrides, audio + narration caches
+.app-state/  app-global: keys/settings, legacy prompt overrides, last-valid state, derived caches
 shared/      generated API types (scripts/gen-api-types.sh) for typed clients
 docs/        architecture + mobile app plan
 scripts/     helpers (migrate_to_projects.py, gen-api-types.sh)

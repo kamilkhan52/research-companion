@@ -19,6 +19,7 @@ export const keys = {
   opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
   settings: ['settings'] as const,
   favoriteModels: ['favoriteModels'] as const,
+  prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
@@ -87,6 +88,15 @@ export function useFavoriteModels() {
     queryFn: async () => (await api.getFavoriteModels()).models,
     enabled: hasUrl,
     staleTime: 5 * 60_000,
+  });
+}
+
+export function usePrompts(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: keys.prompts(pid),
+    queryFn: async () => (await api.getPrompts(pid)).prompts,
+    enabled: hasUrl,
   });
 }
 

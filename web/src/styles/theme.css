@@ -1,0 +1,37 @@
+/* Research Companion — "Neon lab" theme. Mirrors mobile/src/theme/tokens.ts.
+   Deep ink surfaces, restrained electric-cyan + violet glow, calm body text. */
+
+:root {
+  --bg:        #07080e;
+  --bg2:       #0b0d16;
+  --panel:     #11141f;
+  --panel2:    #161a28;
+  --panel-active: #1c2233;
+  --line:      rgba(125, 145, 200, 0.14);
+  --line2:     rgba(125, 145, 200, 0.26);
+
+  --text:      #e9edf7;
+  --muted:     #909bb6;
+
+  --cyan:      #34e7e0;
+  --cyan-ink:  #062b2a;
+  --violet:    #9b7bff;
+  --green:     #4ee6a0;
+  --amber:     #ffce6b;
+  --danger:    #ff6f8c;
+
+  --radius-sm: 11px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-xxl: 32px;
+
+  --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-body:    "Manrope", ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
