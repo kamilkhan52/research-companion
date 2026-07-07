@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { getSession, getOpeningDraft, getReview, approve, reopen, startJob, replyJob, retryJob, finishJob, requestChangesJob, getChatJob, getActiveChatJob, startPaper } from '@/api/endpoints';
+import { getSession, getOpeningDraft, getReview, approve, reopen, startJob, replyJob, continueJob, retryJob, finishJob, requestChangesJob, getChatJob, getActiveChatJob, startPaper } from '@/api/endpoints';
 import type { ChatJob } from '@/api/endpoints';
 import type { SessionTurn, OpeningDraft, ReviewResponse } from '@/api/session-types';
 import { useActivePid } from '@/hooks/useLibrary';
@@ -35,7 +35,7 @@ function useJobPoll(pid: string | null) {
         const r = await getChatJob(pid, jobId);
         if (r.job.status === 'running') {
           setJob(r.job);
-          setStreamText(r.job.items.filter((i): i is { type: 'text'; text: string } => i.type === 'text').map((i) => i.text).join(''));
+          setStreamText(r.job.items.filter((i): i is { kind: 'text'; text: string } => i.kind === 'text').map((i) => i.text).join(''));
         } else {
           if (intervalRef.current) clearInterval(intervalRef.current);
           intervalRef.current = null;
@@ -99,7 +99,7 @@ export function Discussion({ slug, onNavigate }: Props) {
   useEffect(() => {
     if (!activePid || view !== 'chat') return;
     getActiveChatJob(activePid, slug)
-      .then((r) => { if (r.job) startPoll(r.job.id); })
+      .then((r) => { if (r.job && r.job.status === 'running') { setWorking(true); startPoll(r.job.id); } })
       .catch(() => {});
   }, [activePid, slug, view]);
 
@@ -116,12 +116,12 @@ export function Discussion({ slug, onNavigate }: Props) {
   async function handleStartPaper() {
     if (!activePid) return;
     setWorking(true);
+    setError(null);
     try {
       const r = await startPaper(activePid, slug, { arxiv_id: arxivId || undefined, pdf_url: pdfUrl || undefined });
       if (r.needs_confirmation && r.candidates) { setCandidates(r.candidates); setWorking(false); }
-      else { loadDraft(); }
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    setWorking(false);
+      else { loadDraft(); setWorking(false); }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setWorking(false); }
   }
 
   async function handleCandidatePick(aid: string) {
@@ -238,6 +238,7 @@ export function Discussion({ slug, onNavigate }: Props) {
             <span>or PDF URL</span>
             <input className="discovery-input" value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} placeholder="https://…/paper.pdf" />
           </label>
+          {error && <p className="build-progress-error">{error}</p>}
           <button className="btn primary" onClick={handleStartPaper} disabled={working}>
             {working ? 'Fetching…' : 'Fetch paper'}
           </button>
@@ -285,6 +286,12 @@ export function Discussion({ slug, onNavigate }: Props) {
       </div>
       {!working && (
         <div className="composer">
+          {turns.length > 0 && turns[turns.length - 1]?.role === 'user' && (
+            <div className="gen-note">
+              <span className="muted">No response yet.</span>
+              <button className="btn ghost" onClick={() => submitJob(() => continueJob(activePid!, slug))}>Generate response</button>
+            </div>
+          )}
           <div className="composer-row">
             <textarea className="composer-input" placeholder="Type your reply…" value={reply} onChange={(e) => { setReply(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 140) + 'px'; }} onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { const t = reply.trim(); if (t) { setTurns((prev) => [...prev, { role: 'user', text: t }]); setReply(''); submitJob(() => replyJob(activePid!, { slug, text: t })); } } }} rows={1} />
             <button className="btn primary" onClick={() => { const t = reply.trim(); if (!t) return; setTurns((prev) => [...prev, { role: 'user', text: t }]); setReply(''); submitJob(() => replyJob(activePid!, { slug, text: t })); }} disabled={!reply.trim()}>Send</button>

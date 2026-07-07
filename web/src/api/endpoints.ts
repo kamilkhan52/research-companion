@@ -76,7 +76,7 @@ export function requestChangesJob(pid: string, body: { slug: string; text: strin
   return apiPost<{ job: { id: string } }>(`${P(pid)}/request_changes_job`, body);
 }
 
-export interface TextItem { type: 'text'; text: string; }
+export interface TextItem { kind: 'text'; text: string; }
 export interface ChatJob {
   id: string;
   status: 'running' | 'done' | 'error';
