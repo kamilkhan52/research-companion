@@ -109,6 +109,9 @@ export function Graph({ onNavigate }: Props) {
             ? `${readyPapers} of ${totalPapers} papers ready.`
             : 'Add papers to your project to build a citation graph.'}
         </p>
+        {build && build.status === 'error' && (
+          <p className="build-progress-error">{build.error || 'Build failed'}</p>
+        )}
         {build && build.status === 'running' ? (
           <BuildProgress build={build} />
         ) : totalPapers > 0 ? (
@@ -194,7 +197,7 @@ function NodeDetail({
           Open paper ›
         </button>
       )}
-      {node.url && (
+      {node.url && /^https?:/.test(node.url) && (
         <a className="btn ghost" href={node.url} target="_blank" rel="noopener noreferrer" style={{ display: 'block', textDecoration: 'none', textAlign: 'center' }}>
           Open source ↗
         </a>
