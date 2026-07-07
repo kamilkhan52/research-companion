@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Library } from '@/components/Library';
+import { Graph } from '@/components/Graph';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings';
 
@@ -87,12 +88,7 @@ function ViewRouter({
     case 'library':
       return <Library onNavigate={navigate} />;
     case 'graph':
-      return (
-        <div className="placeholder-view">
-          <h2>Reference Graph</h2>
-          <p className="muted">Coming in Phase 3 — high-performance canvas graph.</p>
-        </div>
-      );
+      return <Graph onNavigate={navigate} />;
     case 'discover':
       return (
         <div className="placeholder-view">
