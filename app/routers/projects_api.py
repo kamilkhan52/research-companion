@@ -6,7 +6,7 @@ binding it active via `use_project`, exactly as before the split.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from .. import config, projects, sessions, store
@@ -25,6 +25,11 @@ class ProjectReq(BaseModel):
 @router.get("/api/projects")
 def list_projects():
     return {"projects": projects.list_projects()}
+
+
+@router.get("/api/recent-sessions")
+def recent_sessions(limit: int = Query(default=20, ge=1, le=100)):
+    return {"sessions": projects.recent_sessions(limit)}
 
 
 @router.post("/api/projects")

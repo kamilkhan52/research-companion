@@ -5,8 +5,8 @@ import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
-import { useBaseUrl, useProjectState, useProjects } from '@/api/queries';
-import type { Paper } from '@/api/types';
+import { useBaseUrl, useProjectState, useProjects, useRecentSessions } from '@/api/queries';
+import type { Paper, RecentSession } from '@/api/types';
 import { IconButton, TopBar } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { useActiveProject } from '@/store/project';
@@ -18,6 +18,7 @@ export default function LibraryScreen() {
   const { activePid, setActivePid, ready } = useActiveProject();
   const hasUrl = !!useBaseUrl();
   const { data: projects } = useProjects();
+  const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
 
   // Auto-select the first project if none is active yet.
@@ -31,6 +32,14 @@ export default function LibraryScreen() {
   const activeProject = projects?.find((p) => p.id === activePid);
 
   const grouped = useMemo(() => groupPapers(stateQuery.data?.papers ?? []), [stateQuery.data]);
+  const continueSession = recentQuery.data?.find(
+    (session) => session.kind === 'paper' && session.state !== 'committed',
+  );
+
+  const openRecentSession = (session: RecentSession) => {
+    setActivePid(session.project_id);
+    router.push(`/paper/${encodeURIComponent(session.slug)}`);
+  };
 
   const settingsBtn = (
     <IconButton glyph="⚙" onPress={() => router.push('/settings')} accessibilityLabel="Settings" />
@@ -70,11 +79,16 @@ export default function LibraryScreen() {
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
-            refreshing={stateQuery.isFetching}
-            onRefresh={() => stateQuery.refetch()}
+            refreshing={stateQuery.isFetching || recentQuery.isFetching}
+            onRefresh={() => {
+              void Promise.all([stateQuery.refetch(), recentQuery.refetch()]);
+            }}
             tintColor={colors.cyan}
           />
         }>
+        {continueSession ? (
+          <ContinueCard session={continueSession} onPress={() => openRecentSession(continueSession)} />
+        ) : null}
         {!activePid ? (
           <Empty
             heading="No project selected"
@@ -123,6 +137,31 @@ export default function LibraryScreen() {
       />
     </Screen>
   );
+}
+
+function ContinueCard({ session, onPress }: { session: RecentSession; onPress: () => void }) {
+  const meta = stateMeta[session.state ?? 'unread'] ?? stateMeta.unread;
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.continueWrap, pressed && { opacity: 0.8 }]}>
+      <Card style={styles.continueCard}>
+        <View style={{ flex: 1, gap: space.xs }}>
+          <Text variant="label" color={colors.cyan}>CONTINUE</Text>
+          <Text variant="heading" numberOfLines={2}>{session.title}</Text>
+          <Text variant="caption" color={colors.muted} numberOfLines={1}>
+            {session.project_name} · {formatActivityTime(session.updated_at)}
+          </Text>
+          <Chip label={meta.label} color={meta.color} />
+        </View>
+        <Text style={{ color: colors.cyan, fontSize: 24 }}>›</Text>
+      </Card>
+    </Pressable>
+  );
+}
+
+function formatActivityTime(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return 'Recently active';
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function ProjectBar({
@@ -267,6 +306,8 @@ const styles = StyleSheet.create({
     borderColor: colors.line2,
   },
   list: { padding: space.md, paddingBottom: space.xxl },
+  continueWrap: { marginBottom: space.lg },
+  continueCard: { flexDirection: 'row', alignItems: 'center', gap: space.sm, borderColor: colors.cyan },
   groupLabel: { marginBottom: space.sm, marginLeft: space.xs },
   paperRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
   empty: { paddingVertical: space.xxl * 1.5, paddingHorizontal: space.lg, alignItems: 'center' },

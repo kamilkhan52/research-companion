@@ -21,6 +21,7 @@ import type {
   PromptStatus,
   Project,
   ProjectState,
+  RecentSession,
   PreviewJob,
   Session,
   Settings,
@@ -58,6 +59,8 @@ export const getAudioJob = (id: string) =>
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');
+export const getRecentSessions = (limit = 20) =>
+  apiGet<{ sessions: RecentSession[] }>(`/api/recent-sessions?limit=${limit}`);
 export const createProject = (name: string, method?: string) =>
   apiPost<{ project: Project }>('/api/projects', { name, method });
 

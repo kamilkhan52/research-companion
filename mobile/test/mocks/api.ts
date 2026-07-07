@@ -14,6 +14,7 @@ export const narrate = unexpected('narrate');
 export const startAudioJob = unexpected('startAudioJob');
 export const getAudioJob = unexpected('getAudioJob');
 export const listProjects = jest.fn(async () => ({ projects: [] }));
+export const getRecentSessions = jest.fn(async () => ({ sessions: [] }));
 export const createProject = unexpected('createProject');
 export const getProjectState = unexpected('getProjectState');
 export const getUsage = unexpected('getUsage');
