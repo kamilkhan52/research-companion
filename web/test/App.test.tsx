@@ -24,13 +24,15 @@ describe('App', () => {
     expect(screen.getByText(/loading library/i)).toBeInTheDocument();
   });
 
-  it('navigates to graph view via hash', () => {
+  it('navigates to graph view via hash', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     window.location.hash = '#graph';
     render(<App />);
-    expect(screen.getByText('Reference Graph')).toBeInTheDocument();
+    expect(screen.getByText(/no reference graph/i)).toBeInTheDocument();
   });
 
   it('shows back button on non-library views', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     window.location.hash = '#graph';
     render(<App />);
     expect(screen.getByLabelText('Back')).toBeInTheDocument();
