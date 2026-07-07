@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import { getSession, getOpeningDraft, streamPost, getReview, approve, reopen } from '@/api/endpoints';
 import { useActivePid } from '@/hooks/useLibrary';
 import type { SessionTurn, StreamEvent, OpeningDraft, ReviewResponse } from '@/api/session-types';
@@ -12,8 +13,17 @@ interface Props {
 
 type View = 'compose' | 'chat' | 'review';
 
+// Sanitize markdown output: model content may contain untrusted HTML from paper/web sources.
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, { ALLOWED_TAGS: ['h1','h2','h3','h4','p','br','strong','em','code','pre','blockquote','ul','ol','li','a','span','table','thead','tbody','tr','th','td'], ALLOWED_ATTR: ['href','target','rel','class'] });
+}
+
 // Configure marked for safe rendering
 marked.setOptions({ breaks: true });
+
+// SSE streaming endpoints are correct for the web app — the Cloudflare tunnel timeout
+// (CLAUDE.md invariant 1) affects the mobile app. The web SPA is served from the same
+// origin as FastAPI, so SSE connections are not tunnel-proxied and survive long turns.
 
 export function Discussion({ slug, onNavigate }: Props) {
   const [activePid] = useActivePid();
@@ -336,7 +346,7 @@ function TurnBubble({ turn, index, turns, onRetry }: {
         <span>Companion{signal}</span>
       </div>
       <div className="bubble assistant">
-        <div className="turn-text" dangerouslySetInnerHTML={{ __html: marked.parse(turn.canonical || '') as string }} />
+        <div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitizeHtml(marked.parse(turn.canonical || '') as string) }} />
       </div>
       <div className="turn-actions">
         <button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More actions">⋯</button>
@@ -364,7 +374,7 @@ function StreamBubble({ text }: { text: string }) {
     <div className="turn">
       <div className="turn-who">Companion</div>
       <div className="bubble assistant">
-        <div className="turn-text" dangerouslySetInnerHTML={{ __html: marked.parse(text) as string }} />
+        <div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitizeHtml(marked.parse(text) as string) }} />
       </div>
     </div>
   );
