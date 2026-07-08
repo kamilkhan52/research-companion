@@ -321,7 +321,16 @@ function DiscussionThread({
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
   // lifecycle draft (reply / request-changes). Both persist until server acceptance.
   const inputText = editing ? editing.draft : textDraft.value;
+  // The library fires onChangeText('') once from its initial-layout input reset (and our
+  // controlled `text` prop immediately overrides its internal state). Writing that '' into
+  // the persisted draft would clobber the stored value mid-load — the exact draft-loss
+  // roadmap 3.2 exists to prevent — so the first empty callback is swallowed.
+  const sawFirstChangeRef = useRef(false);
   const onChangeText = useCallback((t: string) => {
+    if (!sawFirstChangeRef.current) {
+      sawFirstChangeRef.current = true;
+      if (t === '') return;
+    }
     if (editing) setEditing((e) => (e ? { ...e, draft: t } : e));
     else textDraft.setValue(t);
   }, [editing, setEditing, textDraft.setValue]);
@@ -420,9 +429,11 @@ function DiscussionThread({
     if (editing) void submitEdit();
     else if (state === 'notes_drafted') void requestChanges();
     else void send();
-    // The handlers close over draft state; deps list the state they read.
+    // The handlers close over draft state; deps list the state they read. stream.run is a
+    // dep because it captures the delivery mode — omitting it would send with a stale mode
+    // after toggling Listening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length]);
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run]);
 
   // Long-press a message for its actions (copy everywhere; edit on user replies).
   const onLongPressMessage = useCallback((context: unknown, message: DiscussionMessage) => {
@@ -431,8 +442,14 @@ function DiscussionThread({
     const sheet = (context as IChatContext | undefined)?.actionSheet?.();
     if (!sheet) return;
     const copyText = entry.role === 'user' ? entry.text : entry.canonical;
+    // No editing once committed: that state's toolbar has no composer, so an edit could
+    // neither be typed nor cancelled (reopen the discussion instead).
     const canEdit =
-      entry.role === 'user' && !stream.streaming && !editing && message.replyIndex != null;
+      entry.role === 'user' &&
+      state !== 'committed' &&
+      !stream.streaming &&
+      !editing &&
+      message.replyIndex != null;
     const options = canEdit ? ['Copy', 'Edit & regenerate', 'Cancel'] : ['Copy', 'Cancel'];
     sheet.showActionSheetWithOptions(
       { options, cancelButtonIndex: options.length - 1 },
@@ -444,7 +461,14 @@ function DiscussionThread({
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, stream.streaming, transcript]);
+  }, [editing, state, stream.streaming, transcript]);
+
+  // A persisted edit can outlive its window (e.g. the notes were committed from another
+  // device while an edit draft sat here). Committed state has no composer to show or cancel
+  // it, so drop it rather than stranding an invisible editing mode.
+  useEffect(() => {
+    if (state === 'committed' && editing) void editDraft.clear(null);
+  }, [editDraft.clear, editing, state]);
 
   const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
     const msg = props.currentMessage;
@@ -536,8 +560,9 @@ function DiscussionThread({
         style={styles.accessoryBtn}
       />
     );
+    // stream.run: same stale-delivery-mode concern as handleSend (draftNotes captures it).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state, stream.run]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
@@ -600,8 +625,6 @@ function DiscussionThread({
       onLongPressMessage={onLongPressMessage}
       renderInputToolbar={renderInputToolbar}
       renderChatFooter={renderChatFooter}
-      minComposerHeight={44}
-      maxComposerHeight={120}
       messagesContainerStyle={styles.messagesContainer}
       listProps={{ keyboardShouldPersistTaps: 'handled' }}
     />
@@ -1088,6 +1111,10 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: 'Manrope_400Regular',
     fontSize: 15,
+    // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
+    // the height bounds live on the input style itself.
+    minHeight: 44,
+    maxHeight: 120,
   },
   committedBar: {
     borderTopWidth: 1,

@@ -66,6 +66,8 @@ describe('toDiscussionMessages', () => {
     ];
     const out = toDiscussionMessages([user('opening')], 'just sent', items);
     expect(out[0]._id).toBe(STREAMING_MESSAGE_ID);
+    // The bubble only dispatches to the custom renderer when text is truthy.
+    expect(out[0].text).toBeTruthy();
     expect(out[0].streaming).toBe(true);
     expect(out[0].streamItems).toBe(items);
     expect(out[0].user).toBe(ANALYST_USER);

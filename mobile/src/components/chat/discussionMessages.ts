@@ -68,7 +68,9 @@ export function toDiscussionMessages(
   if (streamItems) {
     out.push({
       _id: STREAMING_MESSAGE_ID,
-      text: '',
+      // Non-empty on purpose: the library's Bubble only calls renderMessageText when
+      // `currentMessage.text` is truthy, and this row renders entirely through it.
+      text: ' ',
       createdAt: transcript.length + 1,
       user: ANALYST_USER,
       streaming: true,
