@@ -39,18 +39,9 @@ async function seekSentence(player, direction, fallbackSeconds = 15) {
     return 'fallback';
   }
   const starts = sentences.map((sentence) => sentence.startFrac * progress.duration);
-  let target;
-  if (direction > 0) {
-    target = starts.find((value) => value > progress.position + 0.5);
-  } else {
-    // Always step to the sentence before the one currently playing — never just restart
-    // the current sentence. "Currently playing" is the last sentence whose start is at or
-    // before the playhead; clamp to the first sentence once already there.
-    const currentIndex = starts.reduce(
-      (idx, value, i) => (value <= progress.position + 0.5 ? i : idx), 0,
-    );
-    target = starts[Math.max(currentIndex - 1, 0)];
-  }
+  const target = direction > 0
+    ? starts.find((value) => value > progress.position + 0.5)
+    : [...starts].reverse().find((value) => value < progress.position - 0.75);
   if (target != null) {
     await player.seekTo(target);
     return 'sentence';
