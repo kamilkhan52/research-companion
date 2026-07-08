@@ -82,10 +82,10 @@ class EditReq(DeliveryReq):
 
 # ---------- streaming helpers ----------
 
-def _run_and_record(slug: str) -> dict:
+def _run_and_record(slug: str, model: str | None = None) -> dict:
     history = sessions.build_history(slug)
     try:
-        turn = agent.run_turn(slug, history)
+        turn = agent.run_turn(slug, history, model=model)
     except AgentError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     sessions.record_assistant(slug, turn)
@@ -385,7 +385,7 @@ def reply(req: ReplyReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.record_user(req.slug, req.text, kind="reply")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
@@ -536,7 +536,7 @@ def continue_turn(req: FinishReq):
     records = sessions.read_records(req.slug)
     if not records or records[-1]["role"] != "user":
         raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
@@ -545,14 +545,14 @@ def finish(req: FinishReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.record_user(req.slug, prompts.get("finish_instruction"), kind="finish")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/request_changes")
 def request_changes(req: RequestChangesReq):
     _prep_request_changes(req)
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 

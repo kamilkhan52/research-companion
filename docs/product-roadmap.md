@@ -60,7 +60,9 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
   cadence is three seconds, they continue until final narration is playable, and they never
   interrupt non-preview audio.
 - All user-authored text is persisted locally until server acceptance or an explicit save.
-- Composer model selection applies to one response only and never silently changes the default.
+- Composer model selection (the top-of-discussion picker) is a visible, explicit override for
+  new responses in that screen instance — reset to the account default on the next visit — and
+  never silently changes the persisted default itself.
 - Navigation becomes an overlay drawer on phones and a permanent rail on wider layouts.
 - Rich visuals begin with arXiv HTML. PDF figure extraction and pixel-level visual interpretation
   are deferred; descriptions must remain grounded in captions and surrounding text.

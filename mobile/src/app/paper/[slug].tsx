@@ -86,6 +86,9 @@ const FULL_WIDTH_ROW: ViewStyle = {
 const FULL_WIDTH_ROW_PROP = {
   containerStyle: { left: FULL_WIDTH_ROW, right: FULL_WIDTH_ROW } as LeftRightStyle<ViewStyle>,
 };
+// MessageText's own container has a built-in inset (marginVertical: 5, marginHorizontal: 10)
+// we don't want stacking with our own padding on user-message text (see userText style).
+const ZERO_INSET: ViewStyle = { marginVertical: 0, marginHorizontal: 0 };
 
 export default function DiscussionScreen() {
   const router = useRouter();
@@ -208,7 +211,8 @@ export default function DiscussionScreen() {
         right={
           <>
             <ModelPill
-              label={selectedModel ?? settings.data?.model ?? 'Default'}
+              selectedModel={selectedModel}
+              defaultLabel={settings.data?.model ?? 'Default'}
               favorites={favoriteModels.data ?? []}
               onPick={setSelectedModel}
             />
@@ -353,15 +357,21 @@ function OverflowMenu({
 // A compact pill showing the model the *next* new response will use; tapping picks a one-shot
 // override for this screen only (never persisted — see the `selectedModel` comment above).
 function ModelPill({
-  label,
+  selectedModel,
+  defaultLabel,
   favorites,
   onPick,
 }: {
-  label: string;
+  selectedModel: string | null;
+  defaultLabel: string;
   favorites: FavoriteModel[];
   onPick: (modelId: string | null) => void;
 }) {
   const { showActionSheetWithOptions } = useActionSheet();
+  // Show the favorite's short label when the pick matches one, not the raw OpenRouter id.
+  const label = selectedModel == null
+    ? defaultLabel
+    : favorites.find((m) => m.id === selectedModel)?.label ?? selectedModel;
 
   function open() {
     const options = ['Use default', ...favorites.map((m) => m.label), 'Cancel'];
@@ -514,7 +524,7 @@ function DiscussionThread({
     await editDraft.markSubmitted();
     await stream.run(
       paths.edit,
-      { slug, reply_index: replyIndex, text },
+      { slug, reply_index: replyIndex, text, model: selectedModel ?? undefined },
       text,
       () => editDraft.clear(null),
     );
@@ -584,9 +594,10 @@ function DiscussionThread({
     else void send();
     // The handlers close over draft state; deps list the state they read. stream.run is a
     // dep because it captures the delivery mode — omitting it would send with a stale mode
-    // after toggling Listening.
+    // after toggling Listening. selectedModel is a dep for the same reason — omitting it sent
+    // a stale (or no) model override whenever the pill was picked after the last keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run]);
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
 
   // Long-press a message for its actions (copy everywhere; edit on user replies).
   const onLongPressMessage = useCallback((context: unknown, message: DiscussionMessage) => {
@@ -640,6 +651,10 @@ function DiscussionThread({
     return (
       <MessageText
         {...props}
+        // Zero the library's own container margin (MessageText.js: marginVertical: 5,
+        // marginHorizontal: 10) so userText's padding is the only inset — otherwise the two
+        // stack and user text sits at a different inset than assistantBody's.
+        containerStyle={{ left: ZERO_INSET, right: ZERO_INSET }}
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
@@ -1239,20 +1254,24 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: colors.line,
+    // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
+    // full-width band shows rounded notches against both screen edges.
+    borderRadius: 0,
   },
   userBubble: {
     backgroundColor: colors.panel2,
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: colors.line2,
+    borderRadius: 0,
   },
   userText: {
     color: colors.text,
     fontFamily: fonts.body,
     fontSize: 15.5,
     lineHeight: 24,
-    // The library's default MessageText has no padding of its own; without this, text would
-    // sit flush against the now edge-to-edge bubble borders (see FULL_WIDTH_ROW).
+    // MessageText's own margin is zeroed (ZERO_INSET) so this padding is the only inset,
+    // matching assistantBody's — otherwise the two insets would stack.
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
   },
