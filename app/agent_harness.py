@@ -68,13 +68,20 @@ TOOLS = [
 ]
 
 
-def _openrouter_model() -> OpenAIChatModel:
+def _openrouter_model(model_id: str | None = None) -> OpenAIChatModel:
     settings = config.load_settings()
     key = settings.get("openrouter_api_key")
     if not key:
         raise agent_mod.AgentError("No OpenRouter API key set. Add it in Settings.")
     provider = OpenAIProvider(base_url=config.OPENROUTER_BASE, api_key=key)
-    return OpenAIChatModel(settings.get("model"), provider=provider)
+    return OpenAIChatModel(model_id or settings.get("model"), provider=provider)
+
+
+def model_override(model_id: str | None) -> Model | None:
+    """A one-shot Model instance for `model_id`, or None to let build_agent's own
+    `model or _openrouter_model()` fallback pick the account default. Never persists
+    `model_id` anywhere — the caller decides per turn, every other turn is unaffected."""
+    return _openrouter_model(model_id) if model_id else None
 
 
 def build_agent(slug: str, model: Model | None = None) -> Agent:

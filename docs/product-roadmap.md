@@ -38,7 +38,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
 | 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
-| 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
+| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Merged — device pass pending |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
 | 6.1 | Native Markdown + equation rendering | — | Planned |
@@ -60,7 +60,9 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
   cadence is three seconds, they continue until final narration is playable, and they never
   interrupt non-preview audio.
 - All user-authored text is persisted locally until server acceptance or an explicit save.
-- Composer model selection applies to one response only and never silently changes the default.
+- Composer model selection (the top-of-discussion picker) is a visible, explicit override for
+  new responses in that screen instance — reset to the account default on the next visit — and
+  never silently changes the persisted default itself.
 - Navigation becomes an overlay drawer on phones and a permanent rail on wider layouts.
 - Rich visuals begin with arXiv HTML. PDF figure extraction and pixel-level visual interpretation
   are deferred; descriptions must remain grounded in captions and surrounding text.
@@ -368,12 +370,18 @@ Acceptance:
 
 ### 4.1 Modern discussion controls
 
-Replace Listen/Copy labels with accessible icons. Add a three-dot action menu for retry,
-regenerate, and retry with model. Add optional one-shot `model` fields throughout turn requests;
-the server passes them to the job without saving global settings.
+Full-width message bubbles (bands, not floating chat bubbles). Listen/Copy on assistant messages
+became icon-only; a third per-message action opens Retry / Retry with &lt;model&gt;, the first mobile
+caller of the already-implemented `retry_job`/`RetryReq`. Every turn request (`DeliveryReq`) now
+carries an optional one-shot `model` field the server passes straight to the job — `_prep_chat_start`
+/`_prep_retry` no longer call `config.save_settings`, fixing a real gap against the locked decision
+("composer model selection applies to one response only and never silently changes the default").
+A model picker at the top of the discussion (like Gemini/ChatGPT) sets that one-shot override for
+every new response in the current screen instance, never persisted.
 
-Build a rounded unified composer with the send icon inside the input. Move Draft Notes to a labeled
-checkmark action in the discussion header. Retain visible error/retry states and keyboard behavior.
+The top-right icon row (Listening, notes, related works, graph) and the composer's Draft Notes
+button collapsed into a single ⋯ overflow menu (`@expo/react-native-action-sheet`, already a
+transitive dependency of the chat library).
 
 ### 4.2 Sheets and motion
 

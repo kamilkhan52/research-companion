@@ -13,7 +13,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from app import chat_jobs, preview_jobs, sessions
+from app import agent, chat_jobs, preview_jobs, sessions
 from app.routers import session as session_routes
 
 PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"
@@ -438,8 +438,8 @@ def test_job_route_passes_listening_delivery_mode(temp_project, monkeypatch):
     slug = _session_with_reply()
     captured = {}
 
-    def fake_start(target, delivery_mode="reading"):
-        captured.update(slug=target, delivery_mode=delivery_mode)
+    def fake_start(target, delivery_mode="reading", model=None):
+        captured.update(slug=target, delivery_mode=delivery_mode, model=model)
         return SimpleNamespace(id="chat-job")
 
     monkeypatch.setattr(chat_jobs, "start_turn", fake_start)
@@ -449,4 +449,50 @@ def test_job_route_passes_listening_delivery_mode(temp_project, monkeypatch):
     )
 
     assert response == {"job": {"id": "chat-job"}}
-    assert captured == {"slug": slug, "delivery_mode": "listening"}
+    assert captured["delivery_mode"] == "listening"
+    assert captured["model"] is None
+
+
+def test_job_route_passes_one_shot_model_override(temp_project, monkeypatch):
+    """A model chosen for one turn reaches start_turn as a one-shot override — and, per the
+    locked product decision, never touches persisted settings (config.save_settings is not
+    called anywhere in this path any more)."""
+    slug = _session_with_reply()
+    captured = {}
+
+    def fake_start(target, delivery_mode="reading", model=None):
+        captured.update(slug=target, delivery_mode=delivery_mode, model=model)
+        return SimpleNamespace(id="chat-job")
+
+    monkeypatch.setattr(chat_jobs, "start_turn", fake_start)
+    monkeypatch.setattr(chat_jobs, "snapshot", lambda job_id: {"id": job_id})
+
+    def fail_save_settings(*args, **kwargs):
+        raise AssertionError("must not persist a one-shot model override to settings")
+
+    monkeypatch.setattr(session_routes.config, "save_settings", fail_save_settings)
+
+    response = session_routes.continue_job(
+        session_routes.FinishReq(slug=slug, model="anthropic/claude-opus-4-8")
+    )
+
+    assert response == {"job": {"id": "chat-job"}}
+    assert captured["model"] == "anthropic/claude-opus-4-8"
+
+
+def test_default_events_threads_model_to_single_shot(monkeypatch):
+    """chat_jobs._default_events (the production runner) must pass a model override through
+    to agent.stream_tokens rather than relying on the settings default."""
+    captured = {}
+
+    def fake_stream_tokens(slug, history, model=None):
+        captured["model"] = model
+        yield "### CANONICAL ###\nhi\n### END ###"
+
+    monkeypatch.setattr(chat_jobs.agent_harness, "AGENTIC_ENABLED", False)
+    monkeypatch.setattr(agent, "stream_tokens", fake_stream_tokens)
+
+    events = list(chat_jobs._default_events("p", [], model="openai/gpt-5"))
+
+    assert captured["model"] == "openai/gpt-5"
+    assert events[-1]["type"] == "final"

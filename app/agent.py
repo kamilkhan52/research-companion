@@ -97,12 +97,14 @@ def parse(content: str) -> Turn:
     return _parse(content)
 
 
-def run_turn(slug: str, history: list[dict]) -> Turn:
+def run_turn(slug: str, history: list[dict], model: str | None = None) -> Turn:
     """Stage 1: history is [{role, content}] (assistant content is the prior CANONICAL text).
     Returns the parsed analysis Turn (narration is filled later by `narrate`). The analysis
-    model gets a large output budget because reasoning models spend tokens before the answer."""
+    model gets a large output budget because reasoning models spend tokens before the answer.
+    `model` is a one-shot override for this call only; None falls back to the account default
+    (see llm._build_body)."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    return _parse(_complete(messages, max_tokens=16000))
+    return _parse(_complete(messages, model=model, max_tokens=16000))
 
 
 # ---- streaming (Stage 1) ----
@@ -133,20 +135,21 @@ def canonical_prefix(raw: str) -> str:
     return rest.strip()
 
 
-def stream_messages(messages: list[dict], max_tokens: int = 16000, operation: str = "analysis"):
+def stream_messages(messages: list[dict], max_tokens: int = 16000, operation: str = "analysis",
+                    model: str | None = None):
     """Yield raw content pieces of a streaming completion, translating the llm client's
     LLMError into AgentError. Public seam so callers (notes_jobs' single-shot editor) don't
     reach into module privates for a plain streamed completion."""
     try:
-        yield from llm.stream(messages, max_tokens=max_tokens, operation=operation)
+        yield from llm.stream(messages, model=model, max_tokens=max_tokens, operation=operation)
     except llm.LLMError as e:
         raise AgentError(str(e)) from e
 
 
-def stream_tokens(slug: str, history: list[dict]):
+def stream_tokens(slug: str, history: list[dict], model: str | None = None):
     """Yield raw content pieces of the analysis response as they arrive."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    yield from stream_messages(messages, max_tokens=16000, operation="analysis")
+    yield from stream_messages(messages, max_tokens=16000, operation="analysis", model=model)
 
 
 def narrate(canonical_text: str) -> str:

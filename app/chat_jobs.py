@@ -77,14 +77,17 @@ def active_for(slug: str) -> ChatJob | None:
 
 
 def start_turn(slug: str, runner: RunnerFn | None = None,
-               delivery_mode: str = "reading") -> ChatJob:
+               delivery_mode: str = "reading", model: str | None = None) -> ChatJob:
     """Start generating the assistant turn for `slug` in a background thread, or join the job
     already running for it. The user message must already be recorded (history is rebuilt from
     the session file inside the thread). Callers poll get_job(id) until it settles; the turn is
-    recorded to the session the moment it completes, whether or not anyone is polling."""
+    recorded to the session the moment it completes, whether or not anyone is polling.
+
+    `model` is a one-shot override for this turn only (ignored if a custom `runner` is
+    injected — that's the tests' seam, not a production caller)."""
     if delivery_mode not in ("reading", "listening"):
         raise ValueError(f"Unknown delivery mode: {delivery_mode}")
-    runner = runner or _default_events
+    runner = runner or (lambda s, h: _default_events(s, h, model=model))
 
     def generate(job: ChatJob) -> None:
         job._preview_enabled = (job.delivery_mode == "listening"
@@ -220,15 +223,17 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     )
 
 
-def _default_events(slug: str, history: list):
+def _default_events(slug: str, history: list, model: str | None = None):
     """The production runner: the agentic tool loop when enabled, else the single-shot token
-    stream wrapped in the same event shape."""
+    stream wrapped in the same event shape. `model` is a one-shot override for this turn only
+    (see routers.session.DeliveryReq.model); None uses the account default."""
     if agent_harness.AGENTIC_ENABLED:
-        return agent_harness.stream_agentic_events(slug, history)
+        return agent_harness.stream_agentic_events(slug, history,
+                                                    model=agent_harness.model_override(model))
 
     def _single_shot():
         pieces: list[str] = []
-        for piece in agent.stream_tokens(slug, history):
+        for piece in agent.stream_tokens(slug, history, model=model):
             pieces.append(piece)
             yield {"type": "text", "text": piece}
         yield {"type": "final", "text": "".join(pieces)}
