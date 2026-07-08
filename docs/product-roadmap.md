@@ -30,7 +30,8 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
 | 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
-| 2.2a | Contextual cue continuity during narration prep | — | In progress |
+| 2.2a | Contextual cue continuity during narration prep | [#30](https://github.com/kamilkhan52/research-companion/pull/30) | Merged — device pass pending |
+| 2.2b | Retrieval-phase spoken cues (arXiv hunt) | — | Deferred |
 | 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
@@ -238,6 +239,27 @@ Acceptance:
   automatic-preparation playback, cue ordering, and final handoff;
 - Android device verification covers cadence, intellectual focus, post-response continuity,
   progress wording, non-interruption, and final handoff. iOS remains explicitly deferred.
+
+#### Post-merge device-feedback fixes (landed directly on `main`)
+
+From the first Android device pass, fixed directly on `main` (not separate PRs):
+
+- mini-player no longer stacks duplicate full-screen player routes on repeated taps;
+- rolling transcript highlight and tap-to-seek corrected for progressive multi-segment playback
+  (the per-segment position was being mapped as whole-narration fraction);
+- final cue announces the response is ready and about to play, and the client keeps at most two
+  cues queued ahead so a long prep never builds a stale backlog;
+- references render as tappable links — in-project papers open their discussion thread, external
+  ones prompt to open the source or add it to the reading list;
+- listening cues can narrate the analysis turn's agentic tool use (web search / fetch), sourced
+  as bounded `agent_activity` items (the analysis half of "cover agentic activity").
+
+#### 2.2b Retrieval-phase spoken cues (deferred)
+
+Spoken cues during the paper-retrieval / arXiv-hunt phase (the other half of "cover agentic
+activity"). Deferred: retrieval is a connection-tied stream with no audio/cue infrastructure, so
+reliable cues there need retrieval to gain the same job+cue treatment as the analysis turn, plus a
+decision on listening-mode gating while the user watches the fetch on screen.
 
 ### 2.3 Progressive final narration
 
