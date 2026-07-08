@@ -290,6 +290,13 @@ Implementation verification:
 - native iOS/Android acceptance remains required for progressive autoplay, segment transitions,
   headset previous/next behavior, background playback, and combined-file replay.
 
+#### Post-merge device-feedback fix
+
+Previous-sentence seeking always steps to the sentence before the one currently playing —
+never restarts the current sentence, which is what the old within-a-grace-window boundary
+search actually did. Already at the first sentence of the current segment still falls through
+to the existing skipToPrevious segment-crossing behavior unchanged.
+
 ## Phase 3 — continuity and navigation
 
 ### 3.1 Recent sessions and activity timestamps
