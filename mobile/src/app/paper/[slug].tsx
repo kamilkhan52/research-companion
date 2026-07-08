@@ -4,14 +4,28 @@
 // background jobs (polled, not held open), so a turn survives leaving this screen, the app
 // backgrounding, or the tunnel dropping — on entry we reattach to any turn still in flight,
 // and after each turn we refetch the canonical transcript the server recorded.
+//
+// The thread itself (inverted message list, keyboard handling, composer shell, scroll-to-
+// bottom) is the chat library's; we plug in domain renderers: Markdown assistant messages
+// with listen/copy, the live turn's interleaved text/tool items, and the lifecycle-dependent
+// input toolbar (reply → draft notes → request changes / approve → committed).
 
+import {
+  Bubble,
+  Chat,
+  InputToolbar,
+  MessageText,
+  type BubbleProps,
+  type IChatContext,
+  type InputToolbarProps,
+  type MessageTextProps,
+} from '@kesha-antonov/react-native-chat';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Keyboard,
   Linking,
   Pressable,
   ScrollView,
@@ -34,6 +48,11 @@ import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
+import {
+  toDiscussionMessages,
+  DISCUSSION_USER,
+  type DiscussionMessage,
+} from '@/components/chat/discussionMessages';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
@@ -117,7 +136,6 @@ export default function DiscussionScreen() {
     playPreview: audio.playPreview,
     parentJobId: stream.previewParentJobId,
   });
-  const scrollRef = useRef<ScrollView>(null);
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
@@ -140,97 +158,6 @@ export default function DiscussionScreen() {
   }, [pid, slug]);
 
   const [showRelated, setShowRelated] = useState(false);
-
-  // Message editing: which user reply is being edited + its draft. reply_index counts only
-  // user turns (matching the backend, whose transcript surfaces only kind=="reply" users), so
-  // precompute each transcript row's reply index (-1 for assistant rows).
-  const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
-    pid && slug ? draftKey(pid, 'discussion', slug, 'message-edit') : null,
-    null,
-  );
-  const editing = editDraft.value;
-  const setEditing = editDraft.setValue;
-  const replyIndices = useMemo(() => {
-    let c = -1;
-    return transcript.map((e) => (e.role === 'user' ? ++c : -1));
-  }, [transcript]);
-  // Mirrored into refs for the keyboard listener (registered once): whether an edit is in
-  // progress, and the edited bubble's y within the scroll content (from its onLayout).
-  const editingRef = useRef(false);
-  const editRowYRef = useRef<number | null>(null);
-  useEffect(() => {
-    editingRef.current = !!editing;
-    if (!editing) editRowYRef.current = null;
-  }, [editing]);
-
-  useEffect(() => {
-    if (!editDraft.submitted || !editing) return;
-    const replies = transcript.filter((entry) => entry.role === 'user');
-    const accepted = replies[editing.replyIndex];
-    if (accepted?.role === 'user' && accepted.text === editing.draft.trim()) {
-      void editDraft.clear(null);
-    }
-  }, [editDraft.clear, editDraft.submitted, editing, transcript]);
-
-  function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
-    const begin = () => setEditing({ replyIndex, draft: currentText });
-    // Editing regenerates from this point, discarding later turns (no branch is kept). The
-    // immediate answer is always redone; warn only when more work than that would be lost.
-    if (transcript.length > transcriptPos + 2) {
-      Alert.alert(
-        'Edit and regenerate?',
-        'This replaces your message and removes the responses after it.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Edit', style: 'destructive', onPress: begin },
-        ],
-      );
-    } else {
-      begin();
-    }
-  }
-
-  async function submitEdit() {
-    if (!editing || !paths || !slug) return;
-    const text = editing.draft.trim();
-    if (!text) return;
-    const replyIndex = editing.replyIndex;
-    const currentReply = transcript.filter((entry) => entry.role === 'user')[replyIndex];
-    if (currentReply?.role === 'user' && currentReply.text === text) {
-      await editDraft.clear(null);
-      return;
-    }
-    await editDraft.markSubmitted();
-    await stream.run(
-      paths.edit,
-      { slug, reply_index: replyIndex, text },
-      text,
-      () => editDraft.clear(null),
-    );
-  }
-
-  // Keep the conversation pinned to the latest content.
-  useEffect(() => {
-    const id = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
-    return () => clearTimeout(id);
-  }, [transcript.length, stream.liveText, stream.pendingUser]);
-
-  // When the keyboard opens for the composer, scroll to the end so the composer + latest
-  // turn stay visible. When it opens for an in-place message edit, stay on (and reveal)
-  // the message being edited instead of jumping to the bottom.
-  useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidShow', () =>
-      setTimeout(() => {
-        if (editingRef.current) {
-          const y = editRowYRef.current;
-          if (y != null) scrollRef.current?.scrollTo({ y: Math.max(y - space.md, 0), animated: true });
-        } else {
-          scrollRef.current?.scrollToEnd({ animated: true });
-        }
-      }, 50),
-    );
-    return () => sub.remove();
-  }, []);
 
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
@@ -288,66 +215,20 @@ export default function DiscussionScreen() {
           sessionState={state}
         />
       ) : (
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior="padding"
-          keyboardVerticalOffset={8}>
-          <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={styles.thread}
-            keyboardShouldPersistTaps="handled">
-            {transcript.map((entry, i) =>
-              entry.role === 'user' ? (
-                <UserBubble
-                  key={i}
-                  text={entry.text}
-                  canEdit={!stream.streaming && !editing}
-                  editing={editing?.replyIndex === replyIndices[i]}
-                  draft={editing?.draft ?? ''}
-                  onChangeDraft={(t) => setEditing((e) => (e ? { ...e, draft: t } : e))}
-                  onStartEdit={() => startEdit(replyIndices[i], entry.text, i)}
-                  onCancelEdit={() => void editDraft.clear(null)}
-                  onSubmitEdit={submitEdit}
-                  onEditLayout={(y) => {
-                    editRowYRef.current = y;
-                  }}
-                />
-              ) : (
-                <Message
-                  key={i}
-                  entry={entry}
-                  audioId={messageAudioId(pid, slug!, entry.assistant_index)}
-                  title={session.data?.paper.title ?? 'Narration'}
-                />
-              ),
-            )}
-
-            {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
-            {stream.streaming ? <StreamingAgentBubble items={stream.items} /> : null}
-
-            {stream.error ? (
-              <Card style={styles.errorCard}>
-                <Text variant="body" color={colors.danger}>
-                  {stream.error}
-                </Text>
-                <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
-              </Card>
-            ) : null}
-          </ScrollView>
-
-          <Composer
-            pid={pid}
-            slug={slug!}
-            state={state}
-            stream={stream}
-            paths={paths!}
-            acceptedDrafts={session.data?.accepted_drafts ?? []}
-            onMutated={() => {
-              qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
-              qc.invalidateQueries({ queryKey: keys.projectState(pid) });
-            }}
-          />
-        </KeyboardAvoidingView>
+        <DiscussionThread
+          pid={pid}
+          slug={slug!}
+          state={state}
+          stream={stream}
+          paths={paths!}
+          transcript={transcript}
+          acceptedDrafts={session.data?.accepted_drafts ?? []}
+          title={session.data?.paper.title ?? 'Narration'}
+          onMutated={() => {
+            qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
+            qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+          }}
+        />
       )}
     </Screen>
     </LinkHandlerContext.Provider>
@@ -361,6 +242,394 @@ const STATE_LABEL: Record<string, string> = {
   notes_drafted: 'Notes drafted — review',
   committed: 'Notes committed',
 };
+
+// ---------- the thread (library chat + lifecycle toolbar) ----------
+
+function DiscussionThread({
+  pid,
+  slug,
+  state,
+  stream,
+  paths,
+  transcript,
+  acceptedDrafts,
+  title,
+  onMutated,
+}: {
+  pid: string;
+  slug: string;
+  state: string | null;
+  stream: ReturnType<typeof useStreamingTurn>;
+  paths: ReturnType<typeof turnJobPaths>;
+  transcript: TranscriptEntry[];
+  acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
+  title: string;
+  onMutated: () => void;
+}) {
+  // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
+  // being authored elsewhere, that reply stays recoverable when the discussion is reopened
+  // instead of being relabeled as request-changes feedback.
+  const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
+  const textDraft = usePersistedDraft(draftKey(pid, 'discussion', slug, draftKind), '');
+  // Message editing: which user reply is being edited + its draft. reply_index counts only
+  // user turns (matching the backend, whose transcript surfaces only kind=="reply" users).
+  // The edit happens in the composer (long-press a reply → Edit), prefilled with its text.
+  const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
+    draftKey(pid, 'discussion', slug, 'message-edit'),
+    null,
+  );
+  const editing = editDraft.value;
+  const setEditing = editDraft.setValue;
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const disabled = stream.streaming || busy;
+  // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
+  // useRef nullability; the cast bridges that without changing runtime behavior.
+  const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
+
+  // Reconcile authored text against what the server accepted: once the submitted edit shows
+  // up in the transcript, drop the local draft.
+  useEffect(() => {
+    if (!editDraft.submitted || !editing) return;
+    const replies = transcript.filter((entry) => entry.role === 'user');
+    const accepted = replies[editing.replyIndex];
+    if (accepted?.role === 'user' && accepted.text === editing.draft.trim()) {
+      void editDraft.clear(null);
+    }
+  }, [editDraft.clear, editDraft.submitted, editing, transcript]);
+
+  useEffect(() => {
+    if (!textDraft.submitted || !textDraft.value.trim()) return;
+    const baseline = textDraft.acceptedBaseline ?? acceptedDrafts.length;
+    const expectedKind = draftKind === 'reply' ? 'reply' : 'revision';
+    if (acceptedDrafts.slice(baseline).some(
+      (draft) => draft.kind === expectedKind && draft.text === textDraft.value.trim(),
+    )) {
+      void textDraft.clear('');
+    }
+  }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
+
+  const messages = useMemo(
+    () => toDiscussionMessages(
+      transcript,
+      stream.pendingUser,
+      stream.streaming ? stream.items : null,
+    ),
+    [transcript, stream.pendingUser, stream.streaming, stream.items],
+  );
+
+  // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
+  // lifecycle draft (reply / request-changes). Both persist until server acceptance.
+  const inputText = editing ? editing.draft : textDraft.value;
+  // The library fires onChangeText('') once from its initial-layout input reset (and our
+  // controlled `text` prop immediately overrides its internal state). Writing that '' into
+  // the persisted draft would clobber the stored value mid-load — the exact draft-loss
+  // roadmap 3.2 exists to prevent — so the first empty callback is swallowed.
+  const sawFirstChangeRef = useRef(false);
+  const onChangeText = useCallback((t: string) => {
+    if (!sawFirstChangeRef.current) {
+      sawFirstChangeRef.current = true;
+      if (t === '') return;
+    }
+    if (editing) setEditing((e) => (e ? { ...e, draft: t } : e));
+    else textDraft.setValue(t);
+  }, [editing, setEditing, textDraft.setValue]);
+
+  function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
+    const begin = () => {
+      setEditing({ replyIndex, draft: currentText });
+      setTimeout(() => inputRef.current?.focus(), 50);
+    };
+    // Editing regenerates from this point, discarding later turns (no branch is kept). The
+    // immediate answer is always redone; warn only when more work than that would be lost.
+    if (transcript.length > transcriptPos + 2) {
+      Alert.alert(
+        'Edit and regenerate?',
+        'This replaces your message and removes the responses after it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Edit', style: 'destructive', onPress: begin },
+        ],
+      );
+    } else {
+      begin();
+    }
+  }
+
+  async function submitEdit() {
+    if (!editing) return;
+    const text = editing.draft.trim();
+    if (!text) return;
+    const replyIndex = editing.replyIndex;
+    const currentReply = transcript.filter((entry) => entry.role === 'user')[replyIndex];
+    if (currentReply?.role === 'user' && currentReply.text === text) {
+      await editDraft.clear(null);
+      return;
+    }
+    await editDraft.markSubmitted();
+    await stream.run(
+      paths.edit,
+      { slug, reply_index: replyIndex, text },
+      text,
+      () => editDraft.clear(null),
+    );
+  }
+
+  async function send() {
+    const t = textDraft.value.trim();
+    if (!t) return;
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(paths.reply, { slug, text: t }, t, () => textDraft.clear(''));
+  }
+
+  async function requestChanges() {
+    const t = textDraft.value.trim();
+    if (!t) return;
+    setActionError(null);
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(
+      paths.requestChanges,
+      { slug, text: t },
+      undefined,
+      () => textDraft.clear(''),
+    );
+  }
+
+  async function draftNotes() {
+    await stream.run(paths.finish, { slug });
+  }
+
+  async function approve() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.approve(pid, slug);
+      onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not commit the notes.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reopen() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.reopen(pid, slug);
+      onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const handleSend = useCallback(() => {
+    if (editing) void submitEdit();
+    else if (state === 'notes_drafted') void requestChanges();
+    else void send();
+    // The handlers close over draft state; deps list the state they read. stream.run is a
+    // dep because it captures the delivery mode — omitting it would send with a stale mode
+    // after toggling Listening.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run]);
+
+  // Long-press a message for its actions (copy everywhere; edit on user replies).
+  const onLongPressMessage = useCallback((context: unknown, message: DiscussionMessage) => {
+    const entry = message.entry;
+    if (!entry) return;
+    const sheet = (context as IChatContext | undefined)?.actionSheet?.();
+    if (!sheet) return;
+    const copyText = entry.role === 'user' ? entry.text : entry.canonical;
+    // No editing once committed: that state's toolbar has no composer, so an edit could
+    // neither be typed nor cancelled (reopen the discussion instead).
+    const canEdit =
+      entry.role === 'user' &&
+      state !== 'committed' &&
+      !stream.streaming &&
+      !editing &&
+      message.replyIndex != null;
+    const options = canEdit ? ['Copy', 'Edit & regenerate', 'Cancel'] : ['Copy', 'Cancel'];
+    sheet.showActionSheetWithOptions(
+      { options, cancelButtonIndex: options.length - 1 },
+      (i?: number) => {
+        if (i === 0) void Clipboard.setStringAsync(copyText);
+        else if (i === 1 && canEdit) {
+          startEdit(message.replyIndex!, entry.text, message.transcriptIndex!);
+        }
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, state, stream.streaming, transcript]);
+
+  // A persisted edit can outlive its window (e.g. the notes were committed from another
+  // device while an edit draft sat here). Committed state has no composer to show or cancel
+  // it, so drop it rather than stranding an invisible editing mode.
+  useEffect(() => {
+    if (state === 'committed' && editing) void editDraft.clear(null);
+  }, [editDraft.clear, editing, state]);
+
+  const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
+    const msg = props.currentMessage;
+    if (msg?.streamItems) return <StreamingTurnBody items={msg.streamItems} />;
+    if (msg?.entry?.role === 'assistant') {
+      return (
+        <AssistantBody
+          entry={msg.entry}
+          audioId={messageAudioId(pid, slug, msg.entry.assistant_index)}
+          title={title}
+        />
+      );
+    }
+    return (
+      <MessageText
+        {...props}
+        textStyle={{ left: styles.userText, right: styles.userText }}
+      />
+    );
+  }, [pid, slug, title]);
+
+  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
+    <Bubble
+      {...props}
+      wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
+    />
+  ), []);
+
+  const renderSend = useCallback(() => {
+    if (state === 'notes_drafted' && !editing) return null;
+    const canSend = !!inputText.trim() && !disabled;
+    return (
+      <Pressable
+        onPress={handleSend}
+        disabled={!canSend}
+        style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+        accessibilityLabel={editing ? 'Save edit and regenerate' : 'Send'}>
+        <Text variant="heading" color={canSend ? colors.cyanInk : colors.muted}>
+          {editing ? '↻' : '↑'}
+        </Text>
+      </Pressable>
+    );
+  }, [disabled, editing, handleSend, inputText, state]);
+
+  const renderAccessory = useCallback(() => {
+    if (editing) {
+      return (
+        <View style={styles.accessoryRow}>
+          <Text variant="caption" style={{ flex: 1 }}>
+            Editing your message — later responses will be regenerated.
+          </Text>
+          <Button
+            title="Cancel"
+            variant="ghost"
+            onPress={() => void editDraft.clear(null)}
+          />
+        </View>
+      );
+    }
+    if (state === 'notes_drafted') {
+      return (
+        <View style={styles.accessoryCol}>
+          {actionError ? (
+            <Text variant="caption" color={colors.danger}>{actionError}</Text>
+          ) : null}
+          <View style={styles.accessoryRow}>
+            {inputText.trim() ? (
+              <Button title="Request changes" variant="ghost" onPress={handleSend} disabled={disabled} style={{ flex: 1 }} />
+            ) : (
+              <Button title="Reopen" variant="ghost" onPress={() => void reopen()} loading={busy} disabled={disabled} style={{ flex: 1 }} />
+            )}
+            <Button
+              title="Approve & commit"
+              onPress={() => void approve()}
+              loading={busy}
+              disabled={disabled || !!inputText.trim()}
+              style={{ flex: 1 }}
+            />
+          </View>
+        </View>
+      );
+    }
+    return (
+      <Button
+        title="Draft notes →"
+        variant="ghost"
+        onPress={() => void draftNotes()}
+        disabled={disabled}
+        style={styles.accessoryBtn}
+      />
+    );
+    // stream.run: same stale-delivery-mode concern as handleSend (draftNotes captures it).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state, stream.run]);
+
+  const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
+    if (state === 'committed') {
+      return (
+        <View style={styles.committedBar}>
+          <Text variant="caption" style={{ textAlign: 'center' }}>
+            Notes committed to this project's record.
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <InputToolbar
+        {...props}
+        containerStyle={styles.toolbar}
+        renderSend={renderSend}
+        renderAccessory={renderAccessory}
+      />
+    );
+  }, [renderAccessory, renderSend, state]);
+
+  const renderChatFooter = useCallback(() => {
+    if (!stream.error) return null;
+    return (
+      <Card style={styles.errorCard}>
+        <Text variant="body" color={colors.danger}>{stream.error}</Text>
+        <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
+      </Card>
+    );
+  }, [stream.clearError, stream.error]);
+
+  const placeholder = editing
+    ? 'Edit your message…'
+    : state === 'notes_drafted'
+      ? 'Request changes to the draft…'
+      : 'Reply…';
+
+  return (
+    <Chat<DiscussionMessage>
+      messages={messages}
+      user={DISCUSSION_USER}
+      text={inputText}
+      textInputRef={inputRef}
+      textInputProps={{
+        onChangeText,
+        editable: !disabled,
+        placeholder,
+        placeholderTextColor: colors.muted,
+        style: styles.composerInput,
+      }}
+      colorScheme="dark"
+      disableKeyboardProvider
+      isScrollToBottomEnabled
+      isDayAnimationEnabled={false}
+      renderDay={() => null}
+      renderTime={() => null}
+      renderAvatar={null}
+      renderBubble={renderBubble}
+      renderMessageText={renderMessageText}
+      onLongPressMessage={onLongPressMessage}
+      renderInputToolbar={renderInputToolbar}
+      renderChatFooter={renderChatFooter}
+      messagesContainerStyle={styles.messagesContainer}
+      listProps={{ keyboardShouldPersistTaps: 'handled' }}
+    />
+  );
+}
 
 // ---------- compose-first ----------
 
@@ -476,8 +745,10 @@ function ComposeFirst({
 
   if (stream.streaming) {
     return (
-      <ScrollView contentContainerStyle={styles.thread}>
-        <StreamingAgentBubble items={stream.items} />
+      <ScrollView contentContainerStyle={styles.streamingOnly}>
+        <Card style={styles.assistantCard}>
+          <StreamingTurnBody items={stream.items} />
+        </Card>
       </ScrollView>
     );
   }
@@ -594,171 +865,19 @@ interface SourceCandidate {
   score?: number;
 }
 
-// ---------- composer (state-dependent input + actions) ----------
+// ---------- message bodies (rendered inside the library's bubbles) ----------
 
-function Composer({
-  pid,
-  slug,
-  state,
-  stream,
-  paths,
-  acceptedDrafts,
-  onMutated,
+function AssistantBody({
+  entry,
+  audioId,
+  title,
 }: {
-  pid: string;
-  slug: string;
-  state: string | null;
-  stream: ReturnType<typeof useStreamingTurn>;
-  paths: ReturnType<typeof turnJobPaths>;
-  acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
-  onMutated: () => void;
+  entry: Extract<TranscriptEntry, { role: 'assistant' }>;
+  audioId: string;
+  title: string;
 }) {
-  // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
-  // being authored elsewhere, that reply stays recoverable when the discussion is reopened
-  // instead of being relabeled as request-changes feedback.
-  const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
-  const textDraft = usePersistedDraft(
-    draftKey(pid, 'discussion', slug, draftKind),
-    '',
-  );
-  const text = textDraft.value;
-  const setText = textDraft.setValue;
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const disabled = stream.streaming || busy;
-
-  useEffect(() => {
-    if (!textDraft.submitted || !text.trim()) return;
-    const baseline = textDraft.acceptedBaseline ?? acceptedDrafts.length;
-    const expectedKind = draftKind === 'reply' ? 'reply' : 'revision';
-    if (acceptedDrafts.slice(baseline).some(
-      (draft) => draft.kind === expectedKind && draft.text === text.trim(),
-    )) {
-      void textDraft.clear('');
-    }
-  }, [acceptedDrafts, draftKind, text, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted]);
-
-  async function send() {
-    const t = text.trim();
-    if (!t) return;
-    await textDraft.markSubmitted(acceptedDrafts.length);
-    await stream.run(paths.reply, { slug, text: t }, t, () => textDraft.clear(''));
-  }
-
-  async function draftNotes() {
-    await stream.run(paths.finish, { slug });
-  }
-
-  async function approve() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.approve(pid, slug);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not commit the notes.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function requestChanges() {
-    const t = text.trim();
-    if (!t) return;
-    setActionError(null);
-    await textDraft.markSubmitted(acceptedDrafts.length);
-    await stream.run(
-      paths.requestChanges,
-      { slug, text: t },
-      undefined,
-      () => textDraft.clear(''),
-    );
-  }
-
-  async function reopen() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.reopen(pid, slug);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (state === 'committed') {
-    return (
-      <View style={styles.composerBar}>
-        <Text variant="caption" style={{ textAlign: 'center', flex: 1 }}>
-          Notes committed to this project's record.
-        </Text>
-      </View>
-    );
-  }
-
-  if (state === 'notes_drafted') {
-    return (
-      <View style={styles.composerBar}>
-        {actionError ? (
-          <Text variant="caption" color={colors.danger} style={{ marginBottom: space.sm }}>
-            {actionError}
-          </Text>
-        ) : null}
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Request changes to the draft…"
-          placeholderTextColor={colors.muted}
-          style={styles.input}
-          multiline
-          editable={!disabled}
-        />
-        <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
-          {text.trim() ? (
-            <Button title="Request changes" variant="ghost" onPress={requestChanges} disabled={disabled} style={{ flex: 1 }} />
-          ) : (
-            <Button title="Reopen" variant="ghost" onPress={reopen} loading={busy} disabled={disabled} style={{ flex: 1 }} />
-          )}
-          <Button title="Approve & commit" onPress={approve} loading={busy} disabled={disabled || !!text.trim()} style={{ flex: 1 }} />
-        </View>
-      </View>
-    );
-  }
-
-  // in_discussion (default)
-  return (
-    <View style={styles.composerBar}>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Reply…"
-          placeholderTextColor={colors.muted}
-          style={[styles.input, { flex: 1 }]}
-          multiline
-          editable={!disabled}
-        />
-        <Button title="Send" onPress={send} disabled={disabled || !text.trim()} style={styles.sendBtn} />
-      </View>
-      <Button
-        title="Draft notes →"
-        variant="ghost"
-        onPress={draftNotes}
-        disabled={disabled}
-        style={{ marginTop: space.sm }}
-      />
-    </View>
-  );
-}
-
-// ---------- messages ----------
-
-function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: string; title: string }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
-  if (entry.role === 'user') return <UserBubble text={entry.text} />;
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
@@ -777,7 +896,7 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
   }
 
   return (
-    <Card style={styles.assistant}>
+    <View style={styles.assistantBody}>
       <Markdown text={canonical} />
       {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
       {audioError ? (
@@ -807,71 +926,6 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
             {copied ? '✓ Copied' : '⧉ Copy'}
           </Text>
         </Pressable>
-      </View>
-    </Card>
-  );
-}
-
-function UserBubble({
-  text,
-  canEdit,
-  editing,
-  draft,
-  onChangeDraft,
-  onStartEdit,
-  onCancelEdit,
-  onSubmitEdit,
-  onEditLayout,
-}: {
-  text: string;
-  canEdit?: boolean;
-  editing?: boolean;
-  draft?: string;
-  onChangeDraft?: (t: string) => void;
-  onStartEdit?: () => void;
-  onCancelEdit?: () => void;
-  onSubmitEdit?: () => void;
-  onEditLayout?: (y: number) => void;
-}) {
-  if (editing) {
-    return (
-      <View style={styles.userRow} onLayout={(e) => onEditLayout?.(e.nativeEvent.layout.y)}>
-        <View style={[styles.userBubble, styles.userBubbleEditing]}>
-          <TextInput
-            value={draft}
-            onChangeText={onChangeDraft}
-            multiline
-            autoFocus
-            style={styles.editInput}
-            selectionColor={colors.cyan}
-          />
-          <View style={styles.editActions}>
-            <Pressable onPress={onCancelEdit} style={styles.msgBtn} accessibilityLabel="Cancel edit">
-              <Text variant="caption" color={colors.muted}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={onSubmitEdit}
-              disabled={!draft?.trim()}
-              style={({ pressed }) => [styles.msgBtn, pressed && styles.msgBtnActive]}
-              accessibilityLabel="Save edit and regenerate">
-              <Text variant="caption" color={draft?.trim() ? colors.cyan : colors.muted}>
-                ↻ Save & regenerate
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    );
-  }
-  return (
-    <View style={styles.userRow}>
-      <View style={styles.userBubble}>
-        <Text selectable variant="body">{text}</Text>
-        {canEdit ? (
-          <Pressable onPress={onStartEdit} hitSlop={8} style={styles.editHint} accessibilityLabel="Edit this message">
-            <Text variant="caption" color={colors.muted}>✎ Edit</Text>
-          </Pressable>
-        ) : null}
       </View>
     </View>
   );
@@ -915,7 +969,7 @@ function SmoothMarkdown({ text }: { text: string }) {
 // row keeps naming what's happening right now (thinking / which tool / writing), so quiet
 // stretches read as work in progress rather than a stall, and a one-line note says the turn
 // survives leaving the screen.
-function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
+function StreamingTurnBody({ items }: { items: StreamItem[] }) {
   const last = items[items.length - 1];
   const status = !last
     ? 'Thinking…'
@@ -923,7 +977,7 @@ function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
       ? `${(TOOL_META[last.name]?.label ?? 'Researching')}…`
       : 'Writing…';
   return (
-    <Card style={styles.assistant}>
+    <View style={styles.assistantBody}>
       {items.map((it, i) =>
         it.kind === 'text' ? (
           <SmoothMarkdown key={i} text={it.text} />
@@ -940,7 +994,7 @@ function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
       <Text variant="caption" color={colors.muted}>
         Keeps going in the background — safe to leave this screen.
       </Text>
-    </Card>
+    </View>
   );
 }
 
@@ -953,8 +1007,8 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  thread: { padding: space.md, paddingBottom: space.xl, gap: space.md },
   composeFirst: { padding: space.md },
+  streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {
     backgroundColor: colors.panel,
@@ -988,7 +1042,31 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     lineHeight: 22,
   },
-  assistant: { backgroundColor: colors.panel },
+  // ---- thread ----
+  messagesContainer: { backgroundColor: colors.bg },
+  assistantCard: { backgroundColor: colors.panel },
+  assistantBody: { paddingHorizontal: space.sm, paddingVertical: space.sm },
+  analystBubble: {
+    backgroundColor: colors.panel,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    marginVertical: space.xs,
+  },
+  userBubble: {
+    backgroundColor: colors.panel2,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    borderRadius: radius.md,
+    borderBottomRightRadius: 4,
+    marginVertical: space.xs,
+  },
+  userText: {
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 15.5,
+    lineHeight: 24,
+  },
   msgActions: { flexDirection: 'row', gap: space.sm, marginTop: space.md },
   msgBtn: {
     alignSelf: 'flex-start',
@@ -1001,33 +1079,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   msgBtnActive: { borderColor: colors.cyan },
-  userRow: { alignItems: 'flex-end' },
-  userBubble: {
-    backgroundColor: colors.panel2,
-    borderWidth: 1,
-    borderColor: colors.line2,
-    borderRadius: radius.md,
-    borderBottomRightRadius: 4,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    maxWidth: '88%',
-  },
-  userBubbleEditing: { borderColor: colors.cyan, maxWidth: '92%', minWidth: '70%' },
-  editInput: {
-    color: colors.text,
-    fontFamily: fonts.body,
-    fontSize: 15.5,
-    lineHeight: 24,
-    padding: 0,
-    minHeight: 24,
-  },
-  editActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: space.sm,
-    marginTop: space.sm,
-  },
-  editHint: { marginTop: space.xs, alignSelf: 'flex-end' },
   toolTrail: {
     gap: space.xs,
     paddingVertical: space.sm,
@@ -1047,26 +1098,49 @@ const styles = StyleSheet.create({
     marginTop: space.xs,
     marginBottom: space.xs,
   },
-  errorCard: { borderColor: colors.danger },
-  composerBar: {
+  errorCard: { borderColor: colors.danger, margin: space.md },
+  // ---- toolbar ----
+  toolbar: {
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    backgroundColor: colors.bg2,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.xs,
+  },
+  composerInput: {
+    color: colors.text,
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 15,
+    // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
+    // the height bounds live on the input style itself.
+    minHeight: 44,
+    maxHeight: 120,
+  },
+  committedBar: {
     borderTopWidth: 1,
     borderTopColor: colors.line,
     padding: space.md,
     paddingBottom: space.lg,
     backgroundColor: colors.bg2,
   },
-  input: {
-    backgroundColor: colors.panel2,
-    borderWidth: 1,
-    borderColor: colors.line2,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: 10,
-    color: colors.text,
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 15,
-    maxHeight: 120,
-    minHeight: 44,
+  accessoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.sm,
+    paddingBottom: space.sm,
   },
-  sendBtn: { paddingHorizontal: space.lg, height: 44 },
+  accessoryCol: { gap: space.sm, paddingHorizontal: space.sm, paddingBottom: space.sm },
+  accessoryBtn: { marginHorizontal: space.sm, marginBottom: space.sm },
+  sendBtn: {
+    backgroundColor: colors.cyan,
+    borderRadius: radius.pill,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: space.sm,
+    marginBottom: 4,
+  },
+  sendBtnDisabled: { backgroundColor: colors.panel2 },
 });

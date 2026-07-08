@@ -37,6 +37,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
+| 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
 | 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
@@ -342,6 +343,28 @@ Move Discover/Notes/Graph out of the cramped project row. Give the project name 
 an anchored dropdown/popover for switching projects.
 
 ## Phase 4 — discussion and interaction redesign
+
+### 4.0 Discussion thread on a maintained chat library
+
+Replace the hand-rolled discussion thread (manual ScrollView, scroll pinning, keyboard
+listeners, bespoke bubbles and composer shell) with
+[`@kesha-antonov/react-native-chat`](https://github.com/kesha-antonov/react-native-chat), the
+maintained continuation of react-native-gifted-chat (its peer dependencies were already in the
+app). The library owns the inverted message list, keyboard handling, scroll-to-bottom, and the
+input-toolbar shell; domain renderers plug in Markdown assistant messages with listen/copy, the
+live turn's interleaved text/tool items, and the lifecycle-dependent toolbar (reply → draft
+notes → request changes / approve → committed). Message editing moves from in-bubble to the
+chat-standard long-press → edit-in-composer flow. Turn delivery is untouched: background jobs +
+polling (`useStreamingTurn`), persisted authored drafts, and listening hand-off all remain.
+
+Acceptance:
+
+- Unit tests cover the transcript → message mapping (ordering, reply indices, synthetic
+  pending/streaming rows).
+- Reply, edit-and-regenerate, request changes, approve, reopen, and draft notes all work
+  against the unchanged job endpoints; drafts still clear only on server acceptance.
+- Android device pass: keyboard behavior, streaming pin-to-bottom, long-press menus, listening
+  hand-off.
 
 ### 4.1 Modern discussion controls
 
