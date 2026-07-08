@@ -6,12 +6,13 @@
 // neighbors are dimmed for orientation; tapping a sentence seeks to (approximately) its start.
 // Also home to GeneratingBar/prepLabel, the audio-preparation progress UI.
 
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import TrackPlayer from 'react-native-track-player';
+import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
 
 import { splitSentences, type SentenceBoundary } from '../../sentence-seek';
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
+import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
 import { Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -68,6 +69,35 @@ export function RollingTranscript({ narration }: { narration: string }) {
   const { position, duration } = useSmoothPosition();
   const sentences = useMemo(() => splitSentences(narration), [narration]);
 
+  // Progressive narration (#28) plays as several segment tracks, each reporting its own
+  // position/duration. `useActiveTrack` tells us which segment is playing; we load the char
+  // length of every segment for this slot so playback maps back onto the whole-narration
+  // fractions above instead of resetting each segment.
+  const active = useActiveTrack();
+  const slotId = active?.slotId != null ? String(active.slotId) : null;
+  const activeSeg = typeof active?.segmentIndex === 'number' ? active.segmentIndex : -1;
+  const [segLens, setSegLens] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (slotId == null || activeSeg < 0) {
+      setSegLens((cur) => (cur.length ? [] : cur));
+      return;
+    }
+    let cancelled = false;
+    // Re-read as playback advances: later segments are still being appended, so the queue grows.
+    TrackPlayer.getQueue().then((queue) => {
+      if (cancelled) return;
+      const lens: number[] = [];
+      for (const track of queue) {
+        const sId = track.slotId != null ? String(track.slotId) : String(track.id);
+        if (sId !== slotId || typeof track.segmentIndex !== 'number') continue;
+        lens[track.segmentIndex] = String(track.sentenceText ?? '').length || 1;
+      }
+      setSegLens(lens);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [slotId, activeSeg]);
+
   const scrollRef = useRef<ScrollView>(null);
   const offsets = useRef<Record<number, { y: number; h: number }>>({});
   const viewportH = useRef(0);
@@ -77,9 +107,15 @@ export function RollingTranscript({ narration }: { narration: string }) {
 
   // Only highlight once playback has actually started and we know the duration; before that
   // (duration 0) show the plain roll rather than pinning the first sentence.
-  const frac = duration > 0 ? Math.min(1, (position + LEAD_S) / duration) : -1;
-  const activeIdx =
-    frac < 0 ? -1 : sentences.findIndex((s) => frac >= s.startFrac && frac < s.endFrac);
+  const progressive = activeSeg >= 0 && segLens.length > 0;
+  const frac = duration <= 0
+    ? -1
+    : progressive
+      ? globalFraction({
+          segLens, activeSeg, within: (position + LEAD_S) / duration, totalChars: narration.length,
+        })
+      : Math.min(1, (position + LEAD_S) / duration);
+  const activeIdx = activeSentenceIndex(sentences, frac);
 
   useEffect(() => {
     if (activeIdx < 0 || activeIdx === lastCentered.current) return;
@@ -94,14 +130,27 @@ export function RollingTranscript({ narration }: { narration: string }) {
   }, [activeIdx]);
 
   // Stable handlers (reading live values through refs) so TranscriptLine's memo holds.
-  const stateRef = useRef<{ sentences: SentenceBoundary[]; duration: number }>({ sentences, duration });
-  stateRef.current = { sentences, duration };
+  const stateRef = useRef({ sentences, duration, progressive, segLens, slotId, total: narration.length });
+  stateRef.current = { sentences, duration, progressive, segLens, slotId, total: narration.length };
   const handlePress = useCallback((i: number) => {
-    const { sentences: ss, duration: d } = stateRef.current;
-    if (d > 0) {
+    const { sentences: ss, duration: d, progressive: prog, segLens: lens, slotId: slot, total } = stateRef.current;
+    followPausedUntil.current = 0; // jumping is an explicit "take me there" — resume follow
+    lastCentered.current = -1;
+    if (prog && slot != null && total > 0) {
+      // Map the tapped sentence's whole-narration char position back to its segment track, skip
+      // there, then seek within that segment. Segment durations are proportional to char length.
+      const { index, within } = segmentForChar(lens, ss[i].startFrac * total);
+      void (async () => {
+        const queue = await TrackPlayer.getQueue();
+        const qi = queue.findIndex((t) =>
+          (t.slotId != null ? String(t.slotId) : String(t.id)) === slot && t.segmentIndex === index);
+        if (qi < 0) return;
+        await TrackPlayer.skip(qi);
+        const { duration: segDur } = await TrackPlayer.getProgress();
+        if (segDur > 0 && within > 0) await TrackPlayer.seekTo(within * segDur);
+      })();
+    } else if (d > 0) {
       void TrackPlayer.seekTo(ss[i].startFrac * d);
-      followPausedUntil.current = 0; // jumping is an explicit "take me there" — resume follow
-      lastCentered.current = -1;
     }
   }, []);
   const handleLayout = useCallback((i: number, y: number, h: number) => {

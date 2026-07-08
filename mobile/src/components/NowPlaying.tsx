@@ -5,7 +5,7 @@
 // the rolling transcript, scrubber, and skips. Rendered in the root layout so audio persists
 // across navigation.
 
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TrackPlayer, {
@@ -28,11 +28,16 @@ function fmt(sec: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-const openPlayer = () => router.push('/player');
-
 export function NowPlaying() {
   const insets = useSafeAreaInsets();
   const audio = useAudio();
+  const pathname = usePathname();
+  // Guard against stacking duplicate full-screen player routes when the bar is tapped
+  // repeatedly (each raw push() would mount another copy). navigate() rewinds to an existing
+  // instance; the pathname check also blocks a re-tap while already on the player.
+  const openPlayer = () => {
+    if (pathname !== '/player') router.navigate('/player');
+  };
   const track = useActiveTrack();
   const { playing } = useIsPlaying();
   const { state } = usePlaybackState();
