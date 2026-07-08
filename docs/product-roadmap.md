@@ -37,7 +37,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
-| 4.0 | Discussion thread on a maintained chat library | — | In review |
+| 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | In review |
 | 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
