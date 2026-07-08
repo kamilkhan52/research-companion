@@ -39,9 +39,20 @@ async function seekSentence(player, direction, fallbackSeconds = 15) {
     return 'fallback';
   }
   const starts = sentences.map((sentence) => sentence.startFrac * progress.duration);
-  const target = direction > 0
-    ? starts.find((value) => value > progress.position + 0.5)
-    : [...starts].reverse().find((value) => value < progress.position - 0.75);
+  let target;
+  if (direction > 0) {
+    target = starts.find((value) => value > progress.position + 0.5);
+  } else {
+    // Step to the sentence before the one currently playing — never just restart the
+    // current sentence. "Currently playing" is the last sentence whose start is at or
+    // before the playhead. If there's no earlier sentence in this segment (already in
+    // the first one), leave target unset so the skipToPrevious/segment-crossing fallback
+    // below still runs, same as before.
+    const currentIndex = starts.reduce(
+      (idx, value, i) => (value <= progress.position + 0.5 ? i : idx), 0,
+    );
+    target = currentIndex > 0 ? starts[currentIndex - 1] : undefined;
+  }
   if (target != null) {
     await player.seekTo(target);
     return 'sentence';
