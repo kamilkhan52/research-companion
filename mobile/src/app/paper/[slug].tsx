@@ -10,6 +10,7 @@
 // with listen/copy, the live turn's interleaved text/tool items, and the lifecycle-dependent
 // input toolbar (reply → draft notes → request changes / approve → committed).
 
+import { ActionSheetProvider, useActionSheet } from '@expo/react-native-action-sheet';
 import {
   Bubble,
   Chat,
@@ -18,6 +19,7 @@ import {
   type BubbleProps,
   type IChatContext,
   type InputToolbarProps,
+  type LeftRightStyle,
   type MessageTextProps,
 } from '@kesha-antonov/react-native-chat';
 import { useQueryClient } from '@tanstack/react-query';
@@ -32,6 +34,7 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type ViewStyle,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useIsPlaying } from 'react-native-track-player';
@@ -40,10 +43,10 @@ import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths, turnJobPaths } from '@/api/endpoints';
-import { useAddPaper, useOpeningDraft, useSession } from '@/api/queries';
+import { useAddPaper, useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type { ChatJob, FavoriteModel, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { isHandoffEligible } from '@/audio/handoffState';
@@ -64,6 +67,25 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
+
+// The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
+// row of `flexDirection: 'row'`, so a plain width override on the child bubble can't stretch
+// it — Yoga only stretches a flex child along the CROSS axis). Flipping the row to a column
+// lets the default `alignItems: 'stretch'` fill the row's own (now unconstrained) width, which
+// cascades down through Bubble's unstyled wrapper Views to the visible bubble. `containerStyle`
+// is read by Message (Message/types.d.ts) via Chat's untyped prop pass-through, but isn't part
+// of ChatProps' declared surface — the cast is the seam, not a type escape from our own code.
+const FULL_WIDTH_ROW: ViewStyle = {
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  width: '100%',
+  maxWidth: '100%',
+  marginLeft: 0,
+  marginRight: 0,
+};
+const FULL_WIDTH_ROW_PROP = {
+  containerStyle: { left: FULL_WIDTH_ROW, right: FULL_WIDTH_ROW } as LeftRightStyle<ViewStyle>,
+};
 
 export default function DiscussionScreen() {
   const router = useRouter();
@@ -103,6 +125,17 @@ export default function DiscussionScreen() {
   }, [addPaper, pid, router]);
 
   const session = useSession(pid, slug ?? null);
+  const settings = useSettings();
+  const favoriteModels = useFavoriteModels();
+  // The model for the *next* new response in this discussion only (Gemini/ChatGPT-style
+  // picker) — component state, never persisted to AsyncStorage or Settings, so it resets to
+  // the account default whenever this screen is opened fresh. Threaded as a one-shot `model`
+  // override into reply/finish/requestChanges/chatStart; never silently changes the default
+  // (locked product decision).
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  useEffect(() => {
+    setSelectedModel(null);
+  }, [slug]);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
   const handleTurnDone = useCallback(async (job: ChatJob) => {
@@ -159,8 +192,14 @@ export default function DiscussionScreen() {
 
   const [showRelated, setShowRelated] = useState(false);
 
+  async function draftNotesFromMenu() {
+    if (!paths || !slug) return;
+    await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
+  }
+
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
+    <ActionSheetProvider>
     <Screen edges={['top']}>
       <TopBar
         title={session.data?.paper.title ?? 'Discussion'}
@@ -168,24 +207,25 @@ export default function DiscussionScreen() {
         onBack={() => router.back()}
         right={
           <>
-            <IconButton
-              glyph="♫"
-              active={listeningMode}
-              onPress={() => {
+            <ModelPill
+              label={selectedModel ?? settings.data?.model ?? 'Default'}
+              favorites={favoriteModels.data ?? []}
+              onPick={setSelectedModel}
+            />
+            <OverflowMenu
+              listeningMode={listeningMode}
+              onToggleListening={() => {
                 if (listeningMode) audio.cancelPrep();
                 setListeningMode(!listeningMode);
               }}
-              accessibilityLabel={listeningMode ? 'Turn off Listening mode' : 'Turn on Listening mode'}
+              hasNotes={!!session.data?.paper.has_notes}
+              onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
+              onRelatedWorks={() => setShowRelated(true)}
+              onGraph={() => router.push('/graph')}
+              showDraftNotes={hasSession && state !== 'notes_drafted' && state !== 'committed'}
+              draftNotesDisabled={stream.streaming}
+              onDraftNotes={() => void draftNotesFromMenu()}
             />
-            {session.data?.paper.has_notes ? (
-              <IconButton
-                glyph="✎"
-                onPress={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
-                accessibilityLabel="View notes"
-              />
-            ) : null}
-            <IconButton glyph="❖" onPress={() => setShowRelated(true)} accessibilityLabel="Related works" />
-            <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
           </>
         }
       />
@@ -213,6 +253,7 @@ export default function DiscussionScreen() {
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
           sessionState={state}
+          selectedModel={selectedModel}
         />
       ) : (
         <DiscussionThread
@@ -224,6 +265,8 @@ export default function DiscussionScreen() {
           transcript={transcript}
           acceptedDrafts={session.data?.accepted_drafts ?? []}
           title={session.data?.paper.title ?? 'Narration'}
+          favorites={favoriteModels.data ?? []}
+          selectedModel={selectedModel}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -231,6 +274,7 @@ export default function DiscussionScreen() {
         />
       )}
     </Screen>
+    </ActionSheetProvider>
     </LinkHandlerContext.Provider>
   );
 }
@@ -243,6 +287,103 @@ const STATE_LABEL: Record<string, string> = {
   committed: 'Notes committed',
 };
 
+// ---------- top bar: overflow menu + model picker ----------
+
+// The single ⋯ overflow trigger for every discussion-level action that isn't the composer
+// itself: Listening toggle, notes/related-works/graph navigation, and (moved from the
+// composer) Draft notes. Requires an ActionSheetProvider ancestor (wrapping the whole screen).
+function OverflowMenu({
+  listeningMode,
+  onToggleListening,
+  hasNotes,
+  onViewNotes,
+  onRelatedWorks,
+  onGraph,
+  showDraftNotes,
+  draftNotesDisabled,
+  onDraftNotes,
+}: {
+  listeningMode: boolean;
+  onToggleListening: () => void;
+  hasNotes: boolean;
+  onViewNotes: () => void;
+  onRelatedWorks: () => void;
+  onGraph: () => void;
+  showDraftNotes: boolean;
+  draftNotesDisabled: boolean;
+  onDraftNotes: () => void;
+}) {
+  const { showActionSheetWithOptions } = useActionSheet();
+
+  function open() {
+    const options: string[] = [listeningMode ? 'Turn off Listening mode' : 'Turn on Listening mode'];
+    const actions: (() => void)[] = [onToggleListening];
+    if (hasNotes) {
+      options.push('View notes');
+      actions.push(onViewNotes);
+    }
+    options.push('Related works');
+    actions.push(onRelatedWorks);
+    options.push('Reference graph');
+    actions.push(onGraph);
+    let draftNotesIndex = -1;
+    if (showDraftNotes) {
+      draftNotesIndex = options.length;
+      options.push('Draft notes →');
+      actions.push(onDraftNotes);
+    }
+    const cancelButtonIndex = options.length;
+    options.push('Cancel');
+    showActionSheetWithOptions(
+      {
+        options,
+        cancelButtonIndex,
+        disabledButtonIndices: draftNotesIndex >= 0 && draftNotesDisabled ? [draftNotesIndex] : undefined,
+      },
+      (i) => {
+        if (i == null || i === cancelButtonIndex) return;
+        actions[i]?.();
+      },
+    );
+  }
+
+  return <IconButton glyph="⋯" onPress={open} accessibilityLabel="More actions" />;
+}
+
+// A compact pill showing the model the *next* new response will use; tapping picks a one-shot
+// override for this screen only (never persisted — see the `selectedModel` comment above).
+function ModelPill({
+  label,
+  favorites,
+  onPick,
+}: {
+  label: string;
+  favorites: FavoriteModel[];
+  onPick: (modelId: string | null) => void;
+}) {
+  const { showActionSheetWithOptions } = useActionSheet();
+
+  function open() {
+    const options = ['Use default', ...favorites.map((m) => m.label), 'Cancel'];
+    const cancelButtonIndex = options.length - 1;
+    showActionSheetWithOptions({ options, cancelButtonIndex }, (i) => {
+      if (i == null || i === cancelButtonIndex) return;
+      onPick(i === 0 ? null : favorites[i - 1].id);
+    });
+  }
+
+  return (
+    <Pressable
+      onPress={open}
+      style={styles.modelPill}
+      accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
+      <Text variant="caption" color={colors.cyan} numberOfLines={1} style={styles.modelPillText}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 // ---------- the thread (library chat + lifecycle toolbar) ----------
 
 function DiscussionThread({
@@ -254,6 +395,8 @@ function DiscussionThread({
   transcript,
   acceptedDrafts,
   title,
+  favorites,
+  selectedModel,
   onMutated,
 }: {
   pid: string;
@@ -264,6 +407,8 @@ function DiscussionThread({
   transcript: TranscriptEntry[];
   acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
   title: string;
+  favorites: FavoriteModel[];
+  selectedModel: string | null;
   onMutated: () => void;
 }) {
   // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
@@ -379,7 +524,12 @@ function DiscussionThread({
     const t = textDraft.value.trim();
     if (!t) return;
     await textDraft.markSubmitted(acceptedDrafts.length);
-    await stream.run(paths.reply, { slug, text: t }, t, () => textDraft.clear(''));
+    await stream.run(
+      paths.reply,
+      { slug, text: t, model: selectedModel ?? undefined },
+      t,
+      () => textDraft.clear(''),
+    );
   }
 
   async function requestChanges() {
@@ -389,15 +539,18 @@ function DiscussionThread({
     await textDraft.markSubmitted(acceptedDrafts.length);
     await stream.run(
       paths.requestChanges,
-      { slug, text: t },
+      { slug, text: t, model: selectedModel ?? undefined },
       undefined,
       () => textDraft.clear(''),
     );
   }
 
-  async function draftNotes() {
-    await stream.run(paths.finish, { slug });
-  }
+  // Regenerate an assistant turn (optionally with a different model), from its per-message
+  // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
+  // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
+  const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+    void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
+  }, [paths.retry, slug, stream.run]);
 
   async function approve() {
     setBusy(true);
@@ -479,6 +632,8 @@ function DiscussionThread({
           entry={msg.entry}
           audioId={messageAudioId(pid, slug, msg.entry.assistant_index)}
           title={title}
+          favorites={favorites}
+          onRetry={handleRetry}
         />
       );
     }
@@ -488,7 +643,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title]);
+  }, [pid, slug, title, favorites, handleRetry]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -551,18 +706,10 @@ function DiscussionThread({
         </View>
       );
     }
-    return (
-      <Button
-        title="Draft notes →"
-        variant="ghost"
-        onPress={() => void draftNotes()}
-        disabled={disabled}
-        style={styles.accessoryBtn}
-      />
-    );
-    // stream.run: same stale-delivery-mode concern as handleSend (draftNotes captures it).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state, stream.run]);
+    // Draft notes lives in the top-bar overflow menu now; the default in_discussion composer
+    // has nothing extra to show below Send.
+    return null;
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
@@ -627,6 +774,7 @@ function DiscussionThread({
       renderChatFooter={renderChatFooter}
       messagesContainerStyle={styles.messagesContainer}
       listProps={{ keyboardShouldPersistTaps: 'handled' }}
+      {...FULL_WIDTH_ROW_PROP}
     />
   );
 }
@@ -649,6 +797,7 @@ function ComposeFirst({
   chatStartPath,
   initialSource,
   sessionState,
+  selectedModel,
 }: {
   pid: string;
   slug: string;
@@ -656,6 +805,7 @@ function ComposeFirst({
   chatStartPath: string;
   initialSource?: string;
   sessionState: string | null;
+  selectedModel: string | null;
 }) {
   const opening = useOpeningDraft(pid, slug);
   const promptDraft = usePersistedDraft(
@@ -719,7 +869,7 @@ function ComposeFirst({
       await promptDraft.markSubmitted();
       await stream.run(
         chatStartPath,
-        { slug, prompt, model: opening.data?.model ?? undefined },
+        { slug, prompt, model: selectedModel ?? opening.data?.model ?? undefined },
         undefined,
         async () => {
           await promptDraft.clear(opening.data?.prompt ?? '');
@@ -871,13 +1021,18 @@ function AssistantBody({
   entry,
   audioId,
   title,
+  favorites,
+  onRetry,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
   title: string;
+  favorites: FavoriteModel[];
+  onRetry: (assistantIndex: number, model?: string) => void;
 }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
+  const { showActionSheetWithOptions } = useActionSheet();
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
@@ -887,12 +1042,24 @@ function AssistantBody({
 
   // Listen -> prepare + play; on the loaded track it's a pause/resume toggle; after a
   // failure it retries (playText clears this message's error).
-  const listenLabel = current ? (playing ? '❚❚ Pause' : '▶︎ Resume') : audioError ? '↻ Retry' : '▶︎ Listen';
+  const listenGlyph = current ? (playing ? '❚❚' : '▶︎') : audioError ? '↻' : '▶︎';
+  const listenA11y = current
+    ? (playing ? 'Pause this narration' : 'Resume this narration')
+    : audioError ? 'Retry narration' : 'Listen to this response';
 
   async function copy() {
     await Clipboard.setStringAsync(canonical);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  }
+
+  function openRetryMenu() {
+    const options = ['Retry', ...favorites.map((m) => `Retry with ${m.label}`), 'Cancel'];
+    const cancelButtonIndex = options.length - 1;
+    showActionSheetWithOptions({ options, cancelButtonIndex }, (i) => {
+      if (i == null || i === cancelButtonIndex) return;
+      onRetry(entry.assistant_index, i === 0 ? undefined : favorites[i - 1].id);
+    });
   }
 
   return (
@@ -908,23 +1075,29 @@ function AssistantBody({
         <Pressable
           onPress={() => audio.playText({ id: audioId, title, text: canonical })}
           disabled={!!prep}
-          style={({ pressed }) => [styles.msgBtn, (pressed || current) && styles.msgBtnActive]}
-          accessibilityLabel={current ? 'Pause or resume this narration' : 'Listen to this response'}>
+          style={({ pressed }) => [styles.msgIconBtn, (pressed || current) && styles.msgBtnActive]}
+          accessibilityLabel={listenA11y}>
           {prep ? (
             <ActivityIndicator color={colors.cyan} size="small" />
           ) : (
-            <Text variant="caption" color={current ? colors.cyan : colors.muted}>
-              {listenLabel}
+            <Text style={[styles.msgGlyph, { color: current ? colors.cyan : colors.muted }]}>
+              {listenGlyph}
             </Text>
           )}
         </Pressable>
         <Pressable
           onPress={copy}
-          style={({ pressed }) => [styles.msgBtn, (pressed || copied) && styles.msgBtnActive]}
+          style={({ pressed }) => [styles.msgIconBtn, (pressed || copied) && styles.msgBtnActive]}
           accessibilityLabel="Copy this response">
-          <Text variant="caption" color={copied ? colors.cyan : colors.muted}>
-            {copied ? '✓ Copied' : '⧉ Copy'}
+          <Text style={[styles.msgGlyph, { color: copied ? colors.cyan : colors.muted }]}>
+            {copied ? '✓' : '⧉'}
           </Text>
+        </Pressable>
+        <Pressable
+          onPress={openRetryMenu}
+          style={({ pressed }) => [styles.msgIconBtn, pressed && styles.msgBtnActive]}
+          accessibilityLabel="Retry this response, optionally with a different model">
+          <Text style={[styles.msgGlyph, { color: colors.muted }]}>⟳</Text>
         </Pressable>
       </View>
     </View>
@@ -1007,6 +1180,18 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 }
 
 const styles = StyleSheet.create({
+  modelPill: {
+    maxWidth: 108,
+    height: 40,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.panel2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modelPillText: { fontFamily: fonts.mono },
   composeFirst: { padding: space.md },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
@@ -1045,39 +1230,43 @@ const styles = StyleSheet.create({
   // ---- thread ----
   messagesContainer: { backgroundColor: colors.bg },
   assistantCard: { backgroundColor: colors.panel },
-  assistantBody: { paddingHorizontal: space.sm, paddingVertical: space.sm },
+  assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
+  // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
+  // those read as "floating chat bubble" cues that don't make sense once the tinted card
+  // reaches both screen edges. A top/bottom border is enough to separate turns.
   analystBubble: {
     backgroundColor: colors.panel,
-    borderWidth: 1,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: colors.line,
-    borderRadius: radius.md,
-    marginVertical: space.xs,
   },
   userBubble: {
     backgroundColor: colors.panel2,
-    borderWidth: 1,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.md,
-    borderBottomRightRadius: 4,
-    marginVertical: space.xs,
   },
   userText: {
     color: colors.text,
     fontFamily: fonts.body,
     fontSize: 15.5,
     lineHeight: 24,
+    // The library's default MessageText has no padding of its own; without this, text would
+    // sit flush against the now edge-to-edge bubble borders (see FULL_WIDTH_ROW).
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
   },
   msgActions: { flexDirection: 'row', gap: space.sm, marginTop: space.md },
-  msgBtn: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+  msgIconBtn: {
+    width: 36,
+    height: 36,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
-    minWidth: 84,
     alignItems: 'center',
+    justifyContent: 'center',
   },
+  msgGlyph: { fontSize: 17, lineHeight: 20 },
   msgBtnActive: { borderColor: colors.cyan },
   toolTrail: {
     gap: space.xs,
@@ -1131,7 +1320,6 @@ const styles = StyleSheet.create({
     paddingBottom: space.sm,
   },
   accessoryCol: { gap: space.sm, paddingHorizontal: space.sm, paddingBottom: space.sm },
-  accessoryBtn: { marginHorizontal: space.sm, marginBottom: space.sm },
   sendBtn: {
     backgroundColor: colors.cyan,
     borderRadius: radius.pill,
