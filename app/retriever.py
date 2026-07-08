@@ -122,6 +122,23 @@ def search_arxiv(title: str, max_results: int = 6) -> list[dict]:
     return results
 
 
+def fetch_arxiv_metadata(arxiv_id: str) -> dict | None:
+    """Title + abstract for a known arXiv id (no PDF download), or None if the id resolves to
+    nothing. arXiv answers a bad id with an empty feed or a stub entry titled "Error"."""
+    m = _ARXIV_ID_RE.search(arxiv_id)
+    aid = m.group(1) if m else arxiv_id
+    r = _arxiv_get(ARXIV_API, params={"id_list": aid, "max_results": 1})
+    feed = feedparser.parse(r.text)
+    if not feed.entries:
+        return None
+    entry = feed.entries[0]
+    title = re.sub(r"\s+", " ", entry.title).strip()
+    abstract = re.sub(r"\s+", " ", getattr(entry, "summary", "")).strip()
+    if not abstract or title.lower() == "error":
+        return None
+    return {"arxiv_id": aid, "title": title, "abstract": abstract}
+
+
 def search_arxiv_raw(query: str, max_results: int = 25, sort_by: str = "relevance") -> list[dict]:
     """Broad arXiv search for discovery: takes a raw search_query expression (all:/abs:/ti:/
     cat: terms, AND/OR, quoted phrases) rather than an exact title, and returns richer entries

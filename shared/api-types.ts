@@ -1148,6 +1148,8 @@ export interface components {
             group?: string | null;
             /** Arxiv Id */
             arxiv_id?: string | null;
+            /** Abstract */
+            abstract?: string | null;
         };
         /** ApproveReq */
         ApproveReq: {

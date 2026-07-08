@@ -170,8 +170,17 @@ export function useNotes(pid: string | null, target: string | null) {
 export function useAddPaper(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ title, group, arxivId }: { title: string; group?: string; arxivId?: string }) =>
-      api.addPaper(pid, title, group, arxivId),
+    mutationFn: ({
+      title,
+      group,
+      arxivId,
+      abstract,
+    }: {
+      title: string;
+      group?: string;
+      arxivId?: string;
+      abstract?: string;
+    }) => api.addPaper(pid, title, group, arxivId, abstract),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });

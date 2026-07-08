@@ -290,7 +290,7 @@ function SuggestionCard({
   async function handleAdd() {
     if (added) return;
     try {
-      await addPaper.mutateAsync({ title: s.title, arxivId: s.arxiv_id });
+      await addPaper.mutateAsync({ title: s.title, arxivId: s.arxiv_id, abstract: s.abstract });
       setAdded(true);
       onAdded?.();
     } catch {

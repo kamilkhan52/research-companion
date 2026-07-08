@@ -24,7 +24,8 @@ def build_review_context() -> str:
         parts.append("\n".join(block))
     else:
         parts.append("# Per-paper Notes\n\nNo papers have been read in full yet.")
-    parts.append("# The full reading list\n\n" + store.reading_list_overview())
+    parts.append("# The full reading list (papers not yet read carry their abstract)\n\n"
+                 + store.reading_list_overview())
     return "\n\n---\n\n".join(parts)
 
 
@@ -92,6 +93,9 @@ def build_context(slug: str) -> str:
         parts.append("\n".join(block))
 
     parts.append("# The full reading list (for situating this paper)\n\n"
+                 "(Entries not yet read carry their abstract — enough to speak to how they "
+                 "relate to this paper, but not a substitute for having read them. Entries "
+                 "already read contribute their Notes above instead.)\n\n"
                  + store.reading_list_overview())
 
     entry = store.entry_markdown(slug)
