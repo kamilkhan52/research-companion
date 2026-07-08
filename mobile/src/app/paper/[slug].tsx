@@ -806,7 +806,17 @@ function DiscussionThread({
       renderInputToolbar={renderInputToolbar}
       renderChatFooter={renderChatFooter}
       messagesContainerStyle={styles.messagesContainer}
-      listProps={{ keyboardShouldPersistTaps: 'handled' }}
+      listProps={{
+        keyboardShouldPersistTaps: 'handled',
+        // The inverted list has no explicit auto-scroll effect (see the library's own
+        // MessagesContainer source) — it relies on staying at scroll offset 0 while the
+        // streaming message (index 0) grows. Without this, RN's default FlatList still
+        // corrects the viewport toward offset 0 as that off-screen content resizes, which
+        // drags a reader back to the bottom mid-scroll. `autoscrollToTopThreshold` keeps
+        // following only while already within that many px of the latest message; scrolling
+        // further away holds position until the user scrolls back or taps scroll-to-bottom.
+        maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 100 },
+      }}
       {...FULL_WIDTH_ROW_PROP}
     />
   );
@@ -1171,17 +1181,9 @@ function SmoothMarkdown({ text }: { text: string }) {
 
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
-// agent UIs conventionally show it — rather than pinning all tools above all text. A status
-// row keeps naming what's happening right now (thinking / which tool / writing), so quiet
-// stretches read as work in progress rather than a stall, and a one-line note says the turn
-// survives leaving the screen.
+// agent UIs conventionally show it — rather than pinning all tools above all text. The streamed
+// text itself is the progress indicator; no separate status line or footer note.
 function StreamingTurnBody({ items }: { items: StreamItem[] }) {
-  const last = items[items.length - 1];
-  const status = !last
-    ? 'Thinking…'
-    : last.kind === 'tool'
-      ? `${(TOOL_META[last.name]?.label ?? 'Researching')}…`
-      : 'Writing…';
   return (
     <View style={styles.assistantBody}>
       {items.map((it, i) =>
@@ -1193,13 +1195,6 @@ function StreamingTurnBody({ items }: { items: StreamItem[] }) {
           </View>
         ),
       )}
-      <View style={styles.liveStatus}>
-        <ActivityIndicator color={colors.cyan} size="small" />
-        <Text variant="caption">{status}</Text>
-      </View>
-      <Text variant="caption" color={colors.muted}>
-        Keeps going in the background — safe to leave this screen.
-      </Text>
     </View>
   );
 }
@@ -1317,13 +1312,6 @@ const styles = StyleSheet.create({
   },
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
-  liveStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginTop: space.xs,
-    marginBottom: space.xs,
-  },
   errorCard: { borderColor: colors.danger, margin: space.md },
   // ---- toolbar ----
   toolbar: {

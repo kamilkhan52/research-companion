@@ -383,13 +383,23 @@ The top-right icon row (Listening, notes, related works, graph) and the composer
 button collapsed into a single ⋯ overflow menu (`@expo/react-native-action-sheet`, already a
 transitive dependency of the chat library).
 
-#### Post-merge device-feedback fix
+#### Post-merge device-feedback fixes
 
-From the device pass on #33/#34: the chat library's own `KeyboardAvoidingView` assumes it
-starts right below the safe area (`keyboardVerticalOffset={insets.top}` in its source), with no
-way to know a `TopBar` sits above it in this app's layout — the reply composer surfaced partly
-under the keyboard. Fixed by measuring the real header height and passing `insets.top +
-headerHeight` as `keyboardAvoidingViewProps.keyboardVerticalOffset`.
+From the device pass on #33/#34:
+
+- the chat library's own `KeyboardAvoidingView` assumes it starts right below the safe area
+  (`keyboardVerticalOffset={insets.top}` in its source), with no way to know a `TopBar` sits
+  above it in this app's layout — the reply composer surfaced partly under the keyboard. Fixed
+  by measuring the real header height and passing `insets.top + headerHeight` as
+  `keyboardAvoidingViewProps.keyboardVerticalOffset`.
+- dropped the streaming turn's status line ("Thinking…/Writing…/&lt;tool&gt;…") and background-safe
+  footer note — the streamed text itself already shows progress.
+- scrolling up to read while a response is still generating no longer gets dragged back to the
+  bottom: the inverted message list has no explicit auto-scroll effect of its own (relying on
+  staying at scroll offset 0 while the growing streaming item sits at index 0), but RN's default
+  FlatList still corrects the viewport toward that offset as off-screen content resizes. Fixed
+  with `maintainVisibleContentPosition` (`autoscrollToTopThreshold: 100`) so the list only keeps
+  following while already near the latest message.
 
 ### 4.2 Sheets and motion
 
