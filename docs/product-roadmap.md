@@ -38,7 +38,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
 | 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
-| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | — | In review |
+| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | In review |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
 | 6.1 | Native Markdown + equation rendering | — | Planned |
