@@ -176,6 +176,27 @@ def test_failed_parent_suppresses_blocked_preview_before_publishing_error(
     assert sessions.read_records(slug)[-1]["role"] == "user"
 
 
+def test_agentic_tool_use_becomes_a_grounded_cue_source():
+    """A tool call during an agentic listening turn is captured as an `agent_activity` source so
+    cues can narrate what the agent is doing (searching, fetching), not just the written prose."""
+    job = chat_jobs.ChatJob(id="job-tool", slug="paper", delivery_mode="listening")
+    job._preview_enabled = True
+    job._tool_activity = []
+
+    chat_jobs._apply(job, {"type": "tool", "name": "web_search",
+                           "detail": "transformer scaling laws"}, [], 0)
+
+    assert len(job._tool_activity) == 1
+    source = job._tool_activity[0]
+    assert source["kind"] == "agent_activity"
+    assert source["id"] == "tool0001"
+    assert "web search" in source["text"].lower()
+    assert "transformer scaling laws" in source["text"]
+    # And it lands in the client-visible item stream as a tool row.
+    assert job.items[-1] == {"kind": "tool", "name": "web_search",
+                             "detail": "transformer scaling laws"}
+
+
 def test_empty_canonical_is_an_error_not_a_recorded_blank_turn(temp_project):
     slug = _session_with_reply()
     job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": ""}]))

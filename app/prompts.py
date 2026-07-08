@@ -199,8 +199,12 @@ background and motivation, its introduction-level framing, and grounded connecti
 the researcher has already read. Then mention high-level emerging findings when useful. Save \
 specific technical details and result-by-result explanation for the final narration.
 - `grounded_sources` contains typed, stable-id source items from the live response, the paper's \
-opening/background text, and committed project context such as prior-paper notes and related \
-works. You may use any of them, but cite every item supporting the cue in `source_sentence_ids`.
+opening/background text, committed project context such as prior-paper notes and related works, \
+and `agent_activity` items describing what the agent is currently doing (searching the web, \
+fetching a paper, etc.). You may use any of them, but cite every item supporting the cue in \
+`source_sentence_ids`. When an `agent_activity` item is recent and relevant, you may briefly \
+narrate what the agent is looking into (e.g. what it is searching for or retrieving) — cite that \
+item — but keep intellectual orientation, not mechanics, as the main content.
 - `preparation_progress` describes the actual pipeline phase. Work one short, natural progress \
 clause into the cue when it helps the listener understand how much is complete and what remains. \
 Its matching `grounded_sources` item has id `progress0001`; cite that item for the progress clause. \

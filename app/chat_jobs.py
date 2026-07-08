@@ -92,6 +92,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         job._preview_last_started = time.monotonic()
         job._preview_next_sentence = 0
         job._preview_context = []
+        job._tool_activity = []  # agent_activity source items, so cues can narrate tool use
         if job._preview_enabled:
             try:
                 job._preview_context = preview_jobs.research_sources(job.slug)
@@ -170,7 +171,9 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             job.assistant_index = assistant_index
 
         if getattr(job, "_preview_enabled", False) and audio_job_id:
-            sources = preview_jobs.response_sources(turn.canonical) + list(job._preview_context)
+            sources = (preview_jobs.response_sources(turn.canonical)
+                       + list(getattr(job, "_tool_activity", []))
+                       + list(job._preview_context))
 
             def publish(ids: list[str], phase: str, progress: dict, complete: bool) -> None:
                 with _registry.lock:
@@ -275,6 +278,16 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     elif ev["type"] == "tool":
         with _registry.lock:
             job.items.append({"kind": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
+        # Surface agentic tool use (web search, paper fetch, …) as grounded sources so listening
+        # cues can narrate what the agent is doing, not just the prose it has written so far.
+        acts = getattr(job, "_tool_activity", None)
+        if acts is not None:
+            name = str(ev.get("name") or "tool").replace("_", " ").strip()
+            detail = str(ev.get("detail") or "").strip()
+            text = f"The agent is using its {name} tool" + (f": {detail}" if detail else "") + "."
+            acts.append({"id": f"tool{len(acts) + 1:04d}", "text": text[:300],
+                         "kind": "agent_activity"})
+            del acts[:-12]  # keep only the most recent dozen tool actions
     return sent
 
 
@@ -298,10 +311,14 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
         if previous and previous.status == "done" and previous.cue:
             previous_cue = previous.cue
 
-    sentences = [
-        {"id": f"s{index + 1:04d}", "text": completed[index], "kind": "live_response"}
-        for index in range(next_index, len(completed))
-    ] + list(getattr(job, "_preview_context", []))
+    sentences = (
+        [
+            {"id": f"s{index + 1:04d}", "text": completed[index], "kind": "live_response"}
+            for index in range(next_index, len(completed))
+        ]
+        + list(getattr(job, "_tool_activity", []))[-6:]
+        + list(getattr(job, "_preview_context", []))
+    )
     try:
         cue_job = preview_jobs.start_job(
             job.id,
