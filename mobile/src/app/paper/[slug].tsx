@@ -815,7 +815,9 @@ function DiscussionThread({
         // drags a reader back to the bottom mid-scroll. `autoscrollToTopThreshold` keeps
         // following only while already within that many px of the latest message; scrolling
         // further away holds position until the user scrolls back or taps scroll-to-bottom.
-        maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 100 },
+        // Matches the library's own scrollToBottomOffset default (200) so the two thresholds
+        // agree: the scroll-to-bottom button and "still following" flip at the same point.
+        maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 200 },
       }}
       {...FULL_WIDTH_ROW_PROP}
     />
