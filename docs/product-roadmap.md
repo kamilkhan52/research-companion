@@ -383,6 +383,14 @@ The top-right icon row (Listening, notes, related works, graph) and the composer
 button collapsed into a single ⋯ overflow menu (`@expo/react-native-action-sheet`, already a
 transitive dependency of the chat library).
 
+#### Post-merge device-feedback fix
+
+From the device pass on #33/#34: the chat library's own `KeyboardAvoidingView` assumes it
+starts right below the safe area (`keyboardVerticalOffset={insets.top}` in its source), with no
+way to know a `TopBar` sits above it in this app's layout — the reply composer surfaced partly
+under the keyboard. Fixed by measuring the real header height and passing `insets.top +
+headerHeight` as `keyboardAvoidingViewProps.keyboardVerticalOffset`.
+
 ### 4.2 Sheets and motion
 
 Replace Modal components that show drag handles with the native

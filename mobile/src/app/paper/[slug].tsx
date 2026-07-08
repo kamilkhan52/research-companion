@@ -37,6 +37,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsPlaying } from 'react-native-track-player';
 
 import * as Clipboard from 'expo-clipboard';
@@ -194,6 +195,12 @@ export default function DiscussionScreen() {
   }, [pid, slug]);
 
   const [showRelated, setShowRelated] = useState(false);
+  // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
+  // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
+  // sits above it in this app's layout, so without correcting for that height the composer
+  // stays partly under the keyboard. Measure the real header height and hand back the
+  // corrected total (device inset + header) as the override.
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   async function draftNotesFromMenu() {
     if (!paths || !slug) return;
@@ -204,6 +211,7 @@ export default function DiscussionScreen() {
     <LinkHandlerContext.Provider value={handleReferenceLink}>
     <ActionSheetProvider>
     <Screen edges={['top']}>
+      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
       <TopBar
         title={session.data?.paper.title ?? 'Discussion'}
         subtitle={state ? STATE_LABEL[state] : undefined}
@@ -233,6 +241,7 @@ export default function DiscussionScreen() {
           </>
         }
       />
+      </View>
 
       <RelatedWorksSheet
         pid={pid}
@@ -271,6 +280,7 @@ export default function DiscussionScreen() {
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
           selectedModel={selectedModel}
+          headerHeight={headerHeight}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -407,6 +417,7 @@ function DiscussionThread({
   title,
   favorites,
   selectedModel,
+  headerHeight,
   onMutated,
 }: {
   pid: string;
@@ -419,6 +430,7 @@ function DiscussionThread({
   title: string;
   favorites: FavoriteModel[];
   selectedModel: string | null;
+  headerHeight: number;
   onMutated: () => void;
 }) {
   // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
@@ -438,6 +450,11 @@ function DiscussionThread({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = stream.streaming || busy;
+  // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
+  // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
+  // the keyboard without this correction.
+  const insets = useSafeAreaInsets();
+  const keyboardVerticalOffset = insets.top + headerHeight;
   // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
   // useRef nullability; the cast bridges that without changing runtime behavior.
   const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
@@ -777,6 +794,7 @@ function DiscussionThread({
       }}
       colorScheme="dark"
       disableKeyboardProvider
+      keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
       isScrollToBottomEnabled
       isDayAnimationEnabled={false}
       renderDay={() => null}
