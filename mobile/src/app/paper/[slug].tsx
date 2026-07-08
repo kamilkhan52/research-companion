@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   Keyboard,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -25,7 +26,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths, turnJobPaths } from '@/api/endpoints';
-import { useOpeningDraft, useSession } from '@/api/queries';
+import { useAddPaper, useOpeningDraft, useSession } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
 import type { ChatJob, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
@@ -33,7 +34,7 @@ import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
-import { Markdown } from '@/components/Markdown';
+import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { IconButton, TopBar } from '@/components/TopBar';
@@ -53,6 +54,34 @@ export default function DiscussionScreen() {
   const { slug, source } = useLocalSearchParams<{ slug: string; source?: string }>();
   const { activePid } = useActiveProject();
   const pid = activePid;
+  const addPaper = useAddPaper(pid ?? '');
+
+  // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` and jump
+  // straight into that paper's discussion; external references (a URL/arXiv link) prompt to open
+  // the source or add it to the reading list.
+  const handleReferenceLink = useCallback<LinkHandler>((href, label) => {
+    if (href.startsWith('rc-paper:')) {
+      const s = href.slice('rc-paper:'.length);
+      if (s) router.push(`/paper/${encodeURIComponent(s)}`);
+      return;
+    }
+    if (!/^https?:\/\//i.test(href)) return;
+    const arxiv = href.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i);
+    Alert.alert(label || 'External reference', href, [
+      { text: 'Open link', onPress: () => void Linking.openURL(href).catch(() => undefined) },
+      {
+        text: 'Add to reading list',
+        onPress: () => {
+          if (!pid) return;
+          void addPaper.mutateAsync({
+            title: label || href,
+            arxivId: arxiv ? arxiv[1] : undefined,
+          }).catch(() => undefined);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [addPaper, pid, router]);
 
   const session = useSession(pid, slug ?? null);
   const audio = useAudio();
@@ -204,6 +233,7 @@ export default function DiscussionScreen() {
   }, []);
 
   return (
+    <LinkHandlerContext.Provider value={handleReferenceLink}>
     <Screen edges={['top']}>
       <TopBar
         title={session.data?.paper.title ?? 'Discussion'}
@@ -320,6 +350,7 @@ export default function DiscussionScreen() {
         </KeyboardAvoidingView>
       )}
     </Screen>
+    </LinkHandlerContext.Provider>
   );
 }
 

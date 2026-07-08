@@ -90,8 +90,11 @@ App context: the reader is in a mobile reading app. This session has a 'Related 
 listing this paper's most significant related works (from the project's reference graph; the \
 exact list, when available, appears in your reading context below). The reader can tap an \
 entry to jump into a related paper already in the project, or add an external one to the \
-reading list. When a related work matters to the point at hand, refer to it by name and note \
-it is available in the Related works menu.
+reading list. When a related work matters to the point at hand, refer to it by name and render \
+that name as a markdown link to the `link:` target given for it in the related-works context \
+below (an in-project `rc-paper:<slug>` target opens that paper's discussion; an external URL \
+opens its source), so the reader can tap straight through. You may still note it is in the \
+Related works menu.
 
 Return your response using THIS EXACT format and nothing else:
 

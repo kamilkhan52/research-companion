@@ -3,18 +3,33 @@
 // lists, blockquotes, fenced code, and paragraphs. Deliberately small — not a full CommonMark
 // implementation — to keep reading fast and the bundle lean.
 
-import { Fragment, useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { createContext, Fragment, useContext, useMemo } from 'react';
+import { Linking, StyleSheet, View } from 'react-native';
 
 import { Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
 
-export function Markdown({ text }: { text: string }) {
+/** Called when an inline link is tapped. The discussion screen provides one (via
+ *  LinkHandlerContext) that routes `rc-paper:<slug>` links into the in-project paper's discussion
+ *  and prompts for external references; elsewhere links just open http(s) URLs externally. */
+export type LinkHandler = (href: string, label?: string) => void;
+
+const defaultLinkPress: LinkHandler = (href) => {
+  if (/^https?:\/\//i.test(href)) void Linking.openURL(href).catch(() => undefined);
+};
+
+/** Lets a screen (the discussion) install a link handler for all Markdown it renders without
+ *  threading a prop through every message component. */
+export const LinkHandlerContext = createContext<LinkHandler | null>(null);
+
+export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
+  const contextHandler = useContext(LinkHandlerContext);
+  const handleLink = onLinkPress ?? contextHandler ?? defaultLinkPress;
   return (
     <View style={{ gap: space.sm }}>
       {blocks.map((block, i) => (
-        <Block key={i} block={block} />
+        <Block key={i} block={block} onLinkPress={handleLink} />
       ))}
     </View>
   );
@@ -105,7 +120,7 @@ function parseBlocks(src: string): Block[] {
 
 const HEADING_SIZE: Record<number, number> = { 1: 22, 2: 19, 3: 17, 4: 15.5 };
 
-function Block({ block }: { block: Block }) {
+function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
   switch (block.kind) {
     case 'heading':
       return (
@@ -117,20 +132,20 @@ function Block({ block }: { block: Block }) {
             color: colors.text,
             marginTop: space.xs,
           }}>
-          <Inline text={block.text} />
+          <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'paragraph':
       return (
         <Text selectable variant="body">
-          <Inline text={block.text} />
+          <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
           <Text selectable variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
-            <Inline text={block.text} />
+            <Inline text={block.text} onLinkPress={onLinkPress} />
           </Text>
         </View>
       );
@@ -149,7 +164,7 @@ function Block({ block }: { block: Block }) {
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
               <Text selectable variant="body" style={{ flex: 1 }}>
-                <Inline text={item} />
+                <Inline text={item} onLinkPress={onLinkPress} />
               </Text>
             </View>
           ))}
@@ -158,8 +173,8 @@ function Block({ block }: { block: Block }) {
   }
 }
 
-/** Inline formatting: bold, italic (asterisk or underscore), and inline code. */
-function Inline({ text }: { text: string }) {
+/** Inline formatting: links, bold, italic (asterisk or underscore), and inline code. */
+function Inline({ text, onLinkPress }: { text: string; onLinkPress: LinkHandler }) {
   const tokens = tokenizeInline(text);
   return (
     <>
@@ -167,6 +182,12 @@ function Inline({ text }: { text: string }) {
         <Fragment key={i}>
           {t.type === 'code' ? (
             <Text style={{ fontFamily: fonts.mono, fontSize: 13.5, color: colors.cyan }}>{t.text}</Text>
+          ) : t.type === 'link' ? (
+            <Text
+              style={{ color: colors.cyan, textDecorationLine: 'underline' }}
+              onPress={() => onLinkPress(t.href ?? '', t.text)}>
+              {t.text}
+            </Text>
           ) : (
             <Text
               style={[
@@ -183,20 +204,23 @@ function Inline({ text }: { text: string }) {
 }
 
 interface InlineToken {
-  type: 'text' | 'bold' | 'italic' | 'code';
+  type: 'text' | 'bold' | 'italic' | 'code' | 'link';
   text: string;
+  href?: string;
 }
 
 function tokenizeInline(input: string): InlineToken[] {
   const tokens: InlineToken[] = [];
-  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+  // Link `[label](href)` is matched first so its label isn't consumed by emphasis parsing.
+  const re = /(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {
     if (m.index > last) tokens.push({ type: 'text', text: input.slice(last, m.index) });
-    if (m[2] !== undefined) tokens.push({ type: 'bold', text: m[2] });
-    else if (m[4] !== undefined) tokens.push({ type: 'code', text: m[4] });
-    else if (m[6] !== undefined) tokens.push({ type: 'italic', text: m[6] });
+    if (m[2] !== undefined) tokens.push({ type: 'link', text: m[2], href: m[3] });
+    else if (m[5] !== undefined) tokens.push({ type: 'bold', text: m[5] });
+    else if (m[7] !== undefined) tokens.push({ type: 'code', text: m[7] });
+    else if (m[9] !== undefined) tokens.push({ type: 'italic', text: m[9] });
     last = re.lastIndex;
   }
   if (last < input.length) tokens.push({ type: 'text', text: input.slice(last) });
