@@ -112,13 +112,15 @@ def test_research_sources_include_paper_opening_and_prior_project_context(monkey
     assert all("Ignore for previews" not in text for text in texts)
 
 
-def test_progress_is_a_citable_grounded_source_for_exact_segment_counts(temp_project):
+def test_audio_synthesis_progress_is_a_citable_ready_handoff_source(temp_project):
+    """In the synthesis phase progressive playback has effectively begun, so the progress source
+    announces readiness (the hand-off cue) rather than a segment count."""
     captured = {}
 
     def generate(messages, model):
         captured["payload"] = json.loads(messages[1]["content"])
         return json.dumps({
-            "cue": "Audio synthesis is 2 of 4 segments through, with 2 remaining.",
+            "cue": "The full response is ready and will play now.",
             "source_sentence_ids": ["progress0001"],
         })
 
@@ -142,7 +144,7 @@ def test_progress_is_a_citable_grounded_source_for_exact_segment_counts(temp_pro
     assert finished.source_sentence_ids == ["progress0001"]
     progress_source = captured["payload"]["grounded_sources"][-1]
     assert progress_source["id"] == "progress0001"
-    assert "2 of 4" in progress_source["text"]
+    assert "ready" in progress_source["text"].lower()
 
 
 def test_coordinator_continues_cues_with_audio_progress_until_ready(

@@ -66,6 +66,9 @@ interface AudioContextValue {
 const POLL_MS = 1000;
 // Polls that may fail in a row (network blips, brief tunnel drops) before we give up.
 const MAX_POLL_FAILURES = 8;
+// Most grounded cues to keep queued behind the currently-playing cue (opportunistic; extra
+// cues are dropped so a long narration prep never builds a backlog that delays the response).
+const MAX_QUEUED_CUES = 2;
 // A server restart loses the in-memory job (poll 404s); re-POST resumes from the server
 // caches. Capped so a persistently broken server can't loop forever.
 const MAX_RESTARTS = 2;
@@ -319,6 +322,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         // speaking, append the next cue so TrackPlayer advances naturally without a reset gap.
         if ((activeBusy && !activeIsPreview) || !upcomingOnlyPreviews) return;
         if (activeBusy && activeIsPreview) {
+          // Cap the play-ahead backlog: keep at most MAX_QUEUED_CUES waiting behind the active
+          // cue so a slow narration prep doesn't build a queue of stale cues that all have to
+          // play out before the response does. Extra cues are simply dropped (opportunistic).
+          if (upcoming.length >= MAX_QUEUED_CUES) return;
           await TrackPlayer.add({
             id,
             url: apiUrl(url),

@@ -203,6 +203,10 @@ clause into the cue when it helps the listener understand how much is complete a
 Its matching `grounded_sources` item has id `progress0001`; cite that item for the progress clause. \
 Never invent a percentage or ETA. When remaining work is unknown, say so implicitly rather than \
 claiming precision.
+- Hand-off cue: when `preparation_progress` says the full spoken response is ready and about to \
+play (the audio-synthesis phase), make THIS a short closing cue that clearly tells the listener \
+the full response is ready and will now play. Do not open a new topic in that cue; cite \
+`progress0001`.
 - `previous_cue` may contain several already-spoken cues. Do not repeat their substance. Vary the \
 intellectual focus so the sequence builds curiosity rather than narrating agent mechanics.
 

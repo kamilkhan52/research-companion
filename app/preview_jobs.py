@@ -157,14 +157,10 @@ def _progress_source(progress: dict) -> dict | None:
         text = ("The written response is complete. Its spoken adaptation is still being "
                 "prepared, and the amount remaining is not yet known.")
     elif phase == "audio_synthesis":
-        done = int(progress.get("segments_done") or 0)
-        total = int(progress.get("segments_total") or 0)
-        if total:
-            text = (f"Final narration audio synthesis has completed {done} of {total} segments; "
-                    f"{max(total - done, 0)} segments remain before playback is ready.")
-        else:
-            text = ("Final narration audio synthesis has started; the amount remaining is not "
-                    "yet known.")
+        # Synthesis has started, so progressive playback of the full spoken response begins
+        # essentially now. Frame this as the hand-off moment (see listening_preview_priorities).
+        text = ("The full spoken response is now ready and begins playing immediately after this "
+                "update.")
     else:
         return None
     return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
