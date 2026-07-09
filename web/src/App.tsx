@@ -4,6 +4,9 @@ import { Graph } from '@/components/Graph';
 import { Discussion } from '@/components/Discussion';
 import { Discovery } from '@/components/Discovery';
 import { Notes } from '@/components/Notes';
+import { Settings } from '@/components/Settings';
+import { AudioProvider } from '@/audio/AudioProvider';
+import { NowPlaying, Player } from '@/audio/AudioPlayer';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
@@ -37,19 +40,21 @@ export function App() {
     window.location.hash = hash;
   }, []);
 
-  return (
+  return <AudioProvider>(
     <>
       <TopBar
         title="Research Companion"
-        showBack={route.view !== 'library'}
+        showBack={route.view !== 'library' && route.view !== 'settings'}
         onBack={() => navigate('library')}
         onSettings={() => navigate('settings')}
       />
       <main className="app-main">
-        <ViewRouter route={route} navigate={navigate} />
+        <ViewRouter route={route.view === 'settings' ? { view: 'library' } : route} navigate={navigate} />
       </main>
+      {route.view === 'settings' && <Settings onClose={() => navigate('library')} />}
+      <NowPlaying onOpen={() => navigate('player')} />
     </>
-  );
+  </AudioProvider>;
 }
 
 function TopBar({
@@ -99,12 +104,7 @@ function ViewRouter({
     case 'notes':
       return <Notes target={route.param ?? 'working'} />;
     case 'player':
-      return (
-        <div className="placeholder-view">
-          <h2>Player</h2>
-          <p className="muted">Coming in Phase 6.</p>
-        </div>
-      );
+      return <Player />;
     case 'settings':
       return (
         <div className="placeholder-view">
