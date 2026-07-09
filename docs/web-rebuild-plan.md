@@ -22,8 +22,8 @@ single final PR.
 | 1 | `web/foundation` | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
 | 2 | `web/library` | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
 | 3 | `web/graph` | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
-| 4 | `web/discussion` | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | In review |
-| 5 | `web/discovery-notes` | — | Planned |
+| 4 | `web/discussion` | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | Merged |
+| 5 | `web/discovery-notes` | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | In review |
 | 6 | `web/settings-audio` | — | Planned |
 | 7 | `web/auth-polish` | — | Planned |
 

@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect } from 'react';
 import { Library } from '@/components/Library';
 import { Graph } from '@/components/Graph';
 import { Discussion } from '@/components/Discussion';
+import { Discovery } from '@/components/Discovery';
+import { Notes } from '@/components/Notes';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
@@ -93,19 +95,9 @@ function ViewRouter({
     case 'paper':
       return <Discussion slug={route.param ?? ''} onNavigate={navigate} />;
     case 'discover':
-      return (
-        <div className="placeholder-view">
-          <h2>Discover</h2>
-          <p className="muted">Coming in Phase 5.</p>
-        </div>
-      );
+      return <Discovery onNavigate={navigate} />;
     case 'notes':
-      return (
-        <div className="placeholder-view">
-          <h2>Notes</h2>
-          <p className="muted">Coming in Phase 5.</p>
-        </div>
-      );
+      return <Notes target={route.param ?? 'working'} />;
     case 'player':
       return (
         <div className="placeholder-view">
