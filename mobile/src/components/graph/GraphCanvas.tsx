@@ -10,7 +10,7 @@ import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-na
 
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
-import { Text } from '@/ui';
+import { Icon, Text } from '@/ui';
 import { colors, radius as radiusTokens, space } from '@/theme/tokens';
 
 const MIN_SCALE = 0.3;
@@ -130,7 +130,8 @@ export function GraphCanvas({
         style={styles.resetBtn}
         accessibilityLabel="Reset graph view"
         hitSlop={8}>
-        <Text variant="caption">⟲ Reset view</Text>
+        <Icon name="rotate-ccw" size={13} color={colors.text} />
+        <Text variant="caption" color={colors.text}>Reset view</Text>
       </Pressable>
     </View>
   );
@@ -221,9 +222,9 @@ const NodeCircle = memo(function NodeCircle({
 }) {
   const r = nodeRadius(node);
   const isProject = node.kind === 'project';
-  const isRead = node.list_status === 'read';
   const isSignificant = node.significant_cited_by_count > 0;
-  const accent = isProject ? (isRead ? colors.green : colors.cyan) : colors.violet;
+  // Mint = in project, violet = external (DS node palette); read/unread no longer split hues.
+  const accent = isProject ? colors.mint : colors.violet;
   const labelWidth = Math.max(r * 3.6, 74);
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text
@@ -241,7 +242,7 @@ const NodeCircle = memo(function NodeCircle({
           width: r * 2,
           height: r * 2,
           borderRadius: r,
-          backgroundColor: isProject ? colors.panel2 : colors.bg2,
+          backgroundColor: isProject ? colors.elevated : colors.surface,
           borderWidth: selected ? 3 : isSignificant ? 2 : 1.3,
           borderColor: selected ? colors.amber : isSignificant ? accent : colors.line2,
           alignItems: 'center',
@@ -283,11 +284,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: space.md,
     bottom: space.md,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radiusTokens.pill,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: space.lg,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
 });

@@ -15,7 +15,7 @@ import {
 import { useCreateProject, useProjects } from '@/api/queries';
 import { Button, Card, Icon, Text } from '@/ui';
 import type { Project } from '@/api/types';
-import { colors, radius, space } from '@/theme/tokens';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export function ProjectSwitcher({
   visible,
@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: 12,
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 15,
   },
 });

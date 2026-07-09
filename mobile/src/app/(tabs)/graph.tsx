@@ -11,11 +11,11 @@ import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/a
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
-import { IconButton, TopBar } from '@/components/TopBar';
+import { TabHeader } from '@/components/TopBar';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Screen, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { Button, Card, Chip, Screen, Text } from '@/ui';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
 
@@ -113,20 +113,13 @@ export default function GraphScreen() {
 
   return (
     <Screen edges={['top']}>
-      <TopBar
+      <TabHeader
         title="Reference Graph"
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
-        onBack={router.canGoBack() ? () => router.back() : undefined}
-        right={
-          <>
-            <IconButton
-              glyph="↻"
-              onPress={() => graphQuery.refetch()}
-              accessibilityLabel="Refresh graph"
-            />
-            <IconButton glyph="✦" onPress={() => setShowRecs(true)} accessibilityLabel="Recommendations" />
-          </>
-        }
+        actions={[
+          { name: 'refresh-cw', onPress: () => graphQuery.refetch(), accessibilityLabel: 'Refresh graph' },
+          { name: 'zap', onPress: () => setShowRecs(true), accessibilityLabel: 'Recommendations' },
+        ]}
       />
 
       {!activePid ? (
@@ -158,7 +151,7 @@ export default function GraphScreen() {
 
           {!isFiltering && graph.nodes.length > visibleGraph.nodes.length ? (
             <Pressable onPress={() => setShowAll((v) => !v)} style={styles.focusToggle}>
-              <Text variant="caption" color={colors.cyan}>
+              <Text variant="caption" color={colors.mint}>
                 {showAll
                   ? `Showing all ${graph.nodes.length} · tap to focus`
                   : `Focused: ${visibleGraph.nodes.length} key papers · tap to show all ${graph.nodes.length}`}
@@ -239,7 +232,7 @@ function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['p
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
-        <ActivityIndicator color={colors.cyan} />
+        <ActivityIndicator color={colors.mint} />
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
           {progress?.currentTitle ? `Analyzing "${progress.currentTitle}"…` : 'Building graph…'}
         </Text>
@@ -306,23 +299,15 @@ function FilterBar({
       />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.sm }}>
         <View style={{ flexDirection: 'row', gap: space.sm }}>
-          {FILTERS.map((f) => {
-            const active = f.key === filter;
-            return (
-              <Pressable
-                key={f.key}
-                onPress={() => onFilterChange(f.key)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`Filter: ${f.label}`}
-                accessibilityState={{ selected: active }}
-                style={[styles.filterChip, active && styles.filterChipActive]}>
-                <Text variant="caption" color={active ? colors.cyan : colors.muted}>
-                  {f.label}
-                </Text>
-              </Pressable>
-            );
-          })}
+          {FILTERS.map((f) => (
+            <Chip
+              key={f.key}
+              label={f.label}
+              dot={false}
+              selected={f.key === filter}
+              onPress={() => onFilterChange(f.key)}
+            />
+          ))}
           {resultCount !== null ? (
             <View style={styles.resultCount}>
               <Text variant="caption">{resultCount} match{resultCount === 1 ? '' : 'es'}</Text>
@@ -338,7 +323,7 @@ function Centered({ text, loading, action }: { text?: string; loading?: boolean;
   return (
     <View style={styles.centered}>
       {loading ? (
-        <ActivityIndicator color={colors.cyan} />
+        <ActivityIndicator color={colors.mint} />
       ) : (
         <>
           <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.md }}>
@@ -359,10 +344,10 @@ const styles = StyleSheet.create({
   progressTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     overflow: 'hidden',
   },
-  progressFill: { height: '100%', backgroundColor: colors.cyan, borderRadius: 3 },
+  progressFill: { height: '100%', backgroundColor: colors.mint, borderRadius: 3 },
   focusToggle: {
     alignSelf: 'center',
     marginTop: space.sm,
@@ -371,28 +356,19 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
   },
   filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
   searchInput: {
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 10,
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 14,
   },
-  filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.pill,
-    backgroundColor: colors.panel2,
-    borderWidth: 1,
-    borderColor: colors.line2,
-  },
-  filterChipActive: { borderColor: colors.cyan },
   resultCount: { justifyContent: 'center', paddingHorizontal: 4 },
 });

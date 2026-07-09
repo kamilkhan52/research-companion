@@ -5,30 +5,10 @@
 //               optional right actions; used by screens pushed over the tabs.
 
 import { type ReactNode } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { IconButton as UIIconButton, Text, type IconName } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
-
-/** @deprecated Text-glyph button kept only for screens not yet rebuilt (graph, paper);
- * new code uses the Feather-based IconButton from '@/ui'. Removed in the final revamp PR. */
-export function IconButton({ glyph, onPress, accessibilityLabel, active = false }: {
-  glyph: string;
-  onPress: () => void;
-  accessibilityLabel: string;
-  active?: boolean;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityLabel={accessibilityLabel}
-      hitSlop={8}
-      accessibilityState={{ selected: active }}
-      style={({ pressed }) => [styles.legacyBtn, active && styles.legacyBtnActive, pressed && { opacity: 0.85 }]}>
-      <Text style={[styles.legacyGlyph, active && styles.legacyGlyphActive]}>{glyph}</Text>
-    </Pressable>
-  );
-}
+import { colors, space } from '@/theme/tokens';
 
 export function TabHeader({
   title,
@@ -127,17 +107,4 @@ const styles = StyleSheet.create({
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, alignItems: 'center' },
-  legacyBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
-    borderWidth: 1,
-    borderColor: colors.line,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  legacyBtnActive: { backgroundColor: colors.mint, borderColor: colors.mint },
-  legacyGlyph: { fontSize: 22, color: colors.text, lineHeight: 26 },
-  legacyGlyphActive: { color: colors.mintInk },
 });

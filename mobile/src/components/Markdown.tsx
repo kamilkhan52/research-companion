@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   code: {
-    backgroundColor: colors.bg2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line,
     borderRadius: 10,

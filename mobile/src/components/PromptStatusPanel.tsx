@@ -28,12 +28,12 @@ export function PromptStatusPanel({
         disabled={refreshing}
         onPress={onRefresh}
         style={({ pressed }) => [styles.refresh, pressed && styles.pressed]}>
-        <Text variant="heading" color={colors.cyan}>
+        <Text variant="heading" color={colors.mint}>
           {refreshing ? 'Refreshing…' : 'Refresh prompt status'}
         </Text>
       </Pressable>
 
-      {loading ? <ActivityIndicator testID="prompt-status-loading" color={colors.cyan} /> : null}
+      {loading ? <ActivityIndicator testID="prompt-status-loading" color={colors.mint} /> : null}
       {error ? (
         <Text variant="caption" color={colors.danger}>
           Prompt status unavailable. Check the server connection and try again.
@@ -49,7 +49,7 @@ export function PromptStatusPanel({
             <Text variant="heading" style={styles.label}>{prompt.label}</Text>
             <Text
               variant="caption"
-              color={prompt.valid ? colors.green : colors.danger}
+              color={prompt.valid ? colors.mint : colors.danger}
               accessibilityLabel={`${prompt.label}: ${prompt.valid ? 'valid' : 'invalid'}`}>
               {prompt.valid ? 'VALID' : 'INVALID'}
             </Text>
@@ -57,7 +57,7 @@ export function PromptStatusPanel({
           <Text variant="caption" color={colors.muted}>
             Active source: {prompt.source.replace(/_/g, ' ')}
           </Text>
-          <Text variant="mono" selectable style={styles.path}>
+          <Text variant="caption" selectable style={styles.path}>
             {prompt.path ?? `Bundled in server · ${prompt.relative_path}`}
           </Text>
           {prompt.error ? (
@@ -84,7 +84,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.line2,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
   },
   pressed: { opacity: 0.82 },
   row: {

@@ -31,8 +31,7 @@ type TextVariant =
   | 'editorial'
   | 'serifTitle'
   | 'serifBody'
-  | 'serifItalic'
-  | 'mono'; // compat alias; maps to Manrope meta text, removed in the final revamp PR
+  | 'serifItalic';
 
 const TEXT_STYLES: Record<TextVariant, object> = {
   // Manrope — UI scale (DS: Display/32, Section heading/22, body, METADATA·13/MEDIUM)
@@ -59,7 +58,6 @@ const TEXT_STYLES: Record<TextVariant, object> = {
     lineHeight: 26,
     color: colors.text,
   },
-  mono: { fontFamily: fonts.bodyMedium, fontSize: 13, color: colors.muted },
 };
 
 export function Text({

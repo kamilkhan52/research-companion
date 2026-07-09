@@ -40,7 +40,10 @@ coherently. Same for font aliases `display`/`displayBold`/`mono` (→ Manrope).
 - **Manrope** — all UI, controls, dense card text. Weights 400/500/600/700.
 - **Newsreader** (incl. italics) — editorial headings and long-form reading moments:
   assistant prose, synthesis documents, paper titles on hero cards, epigraphs.
-- **Chakra Petch and JetBrains Mono are removed.** No mono type anywhere in the final state.
+- **Chakra Petch and JetBrains Mono are removed.** No mono *font dependency* remains. One
+  audited exception: code blocks / inline code in rendered Markdown and the raw-markdown
+  notes editor use the platform's built-in mono face (Menlo / `monospace`) — code is content
+  fidelity, not UI chrome, and the design system ships no mono member.
 - Text variants live in `mobile/src/ui/index.tsx`: `display`, `title`, `heading`, `body`,
   `label`, `overline`, `caption` (Manrope) and `editorial`, `serifTitle`, `serifBody`,
   `serifItalic` (Newsreader). Dense/narrow cards use Manrope — Newsreader collides in

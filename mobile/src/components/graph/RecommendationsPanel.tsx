@@ -10,7 +10,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } fro
 import { useAddPaper } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
 import { Card, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export function RecommendationsPanel({
   pid,
@@ -30,11 +30,11 @@ export function RecommendationsPanel({
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
-          <Text variant="title" style={{ marginBottom: 4 }}>
+          <Text variant="editorial" style={{ marginBottom: 4 }}>
             Recommended additions
           </Text>
           <Text variant="caption" style={{ marginBottom: space.md }}>
-            External papers your project's reading already leans on
+            High-signal papers connected to your project
           </Text>
 
           {recommendations.length === 0 ? (
@@ -115,10 +115,10 @@ function RecommendationCard({
           style={[styles.addBtn, added && styles.addBtnDone]}
           accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}>
           {addPaper.isPending ? (
-            <ActivityIndicator size="small" color={colors.cyan} />
+            <ActivityIndicator size="small" color={colors.mintInk} />
           ) : (
-            <Text variant="caption" color={added ? colors.green : colors.cyan}>
-              {added ? '✓ Added to reading list' : '+ Add to project'}
+            <Text variant="caption" color={added ? colors.mint : colors.mintInk} style={added ? null : { fontFamily: fonts.bodySemiBold }}>
+              {added ? 'Added to reading list' : '+ Add'}
             </Text>
           )}
         </Pressable>
@@ -135,9 +135,9 @@ function RecommendationCard({
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.bg2,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.line,
     padding: space.lg,
@@ -162,13 +162,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   addBtn: {
-    marginTop: space.sm,
-    height: 36,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.line2,
+    marginTop: space.md,
+    height: 40,
+    borderRadius: radius.pill,
+    backgroundColor: colors.mint,
+    alignSelf: 'flex-end',
+    paddingHorizontal: space.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addBtnDone: { borderColor: colors.green },
+  addBtnDone: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.mint, alignSelf: 'stretch' },
 });

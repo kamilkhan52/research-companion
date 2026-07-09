@@ -1322,7 +1322,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 15,
   },
   promptInput: {
@@ -1332,7 +1332,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     padding: space.md,
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 15,
     minHeight: 160,
     textAlignVertical: 'top',
@@ -1402,7 +1402,7 @@ const styles = StyleSheet.create({
   },
   composerInput: {
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 15,
     // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
     // the height bounds live on the input style itself.
