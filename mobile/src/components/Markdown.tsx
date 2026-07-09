@@ -4,7 +4,7 @@
 // implementation — to keep reading fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useMemo } from 'react';
-import { Linking, Platform, StyleSheet, View } from 'react-native';
+import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
 
 import { Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
@@ -140,7 +140,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
             HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
             { color: colors.text, marginTop: space.xs },
           ]}>
-          <Inline text={block.text} onLinkPress={onLinkPress} />
+          <Inline text={block.text} onLinkPress={onLinkPress} serif={block.level < 4} />
         </Text>
       );
     case 'paragraph':
@@ -181,29 +181,43 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
   }
 }
 
-/** Inline formatting: links, bold, italic (asterisk or underscore), and inline code. */
-function Inline({ text, onLinkPress }: { text: string; onLinkPress: LinkHandler }) {
+/** Inline formatting: links, bold, italic (asterisk or underscore), and inline code.
+ * Spans are raw RN Text so plain tokens INHERIT the enclosing block's typography (the themed
+ * Text would stamp its own body variant over serif blocks). Emphasis picks its face from the
+ * block context: serif blocks get Newsreader weights/italics, the Manrope level-4 heading
+ * path keeps Manrope (best-effort synthetic italic — Manrope ships no italic cut). */
+function Inline({
+  text,
+  onLinkPress,
+  serif = true,
+}: {
+  text: string;
+  onLinkPress: LinkHandler;
+  serif?: boolean;
+}) {
   const tokens = tokenizeInline(text);
   return (
     <>
       {tokens.map((t, i) => (
         <Fragment key={i}>
           {t.type === 'code' ? (
-            <Text style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</Text>
+            <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</RNText>
           ) : t.type === 'link' ? (
-            <Text
+            <RNText
               style={{ color: colors.mint, textDecorationLine: 'underline' }}
               onPress={() => onLinkPress(t.href ?? '', t.text)}>
               {t.text}
-            </Text>
-          ) : (
-            <Text
-              style={[
-                t.type === 'bold' && { fontFamily: fonts.serifSemiBold },
-                t.type === 'italic' && { fontFamily: fonts.serifItalic },
-              ]}>
+            </RNText>
+          ) : t.type === 'bold' ? (
+            <RNText style={{ fontFamily: serif ? fonts.serifSemiBold : fonts.bodyBold }}>
               {t.text}
-            </Text>
+            </RNText>
+          ) : t.type === 'italic' ? (
+            <RNText style={serif ? { fontFamily: fonts.serifItalic } : { fontStyle: 'italic' }}>
+              {t.text}
+            </RNText>
+          ) : (
+            <RNText>{t.text}</RNText>
           )}
         </Fragment>
       ))}
