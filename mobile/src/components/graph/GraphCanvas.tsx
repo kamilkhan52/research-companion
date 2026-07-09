@@ -222,9 +222,9 @@ const NodeCircle = memo(function NodeCircle({
 }) {
   const r = nodeRadius(node);
   const isProject = node.kind === 'project';
-  const isRead = node.list_status === 'read';
   const isSignificant = node.significant_cited_by_count > 0;
-  const accent = isProject ? (isRead ? colors.mint : colors.mint) : colors.violet;
+  // Mint = in project, violet = external (DS node palette); read/unread no longer split hues.
+  const accent = isProject ? colors.mint : colors.violet;
   const labelWidth = Math.max(r * 3.6, 74);
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text

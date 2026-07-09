@@ -110,7 +110,7 @@ function RelatedCard({
         {inProject ? (
           <Pressable
             onPress={() => onOpenPaper(work.slug!)}
-            style={styles.actionBtn}
+            style={[styles.actionBtn, styles.actionBtnPrimary]}
             accessibilityLabel={`Open ${work.title}`}>
             <Text variant="caption" color={colors.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>Open discussion</Text>
           </Pressable>
@@ -118,7 +118,7 @@ function RelatedCard({
           <Pressable
             onPress={handleAdd}
             disabled={added || addPaper.isPending}
-            style={[styles.actionBtn, added && { borderColor: colors.mint }]}
+            style={[styles.actionBtn, added ? { borderColor: colors.mint } : styles.actionBtnPrimary]}
             accessibilityLabel={`Add ${work.title} to project`}>
             {addPaper.isPending ? (
               <ActivityIndicator size="small" color={colors.mint} />
@@ -180,4 +180,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6,
   },
+  // Mint fill for the card's main CTA (frame 06); mintInk text is only legible on this fill.
+  actionBtnPrimary: { backgroundColor: colors.mint, borderColor: colors.mint },
 });
