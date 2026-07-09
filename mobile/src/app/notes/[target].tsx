@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   TextInput,
@@ -27,7 +28,7 @@ import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Screen, Text } from '@/ui';
+import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type Mode = 'view' | 'edit';
@@ -174,7 +175,7 @@ export default function NotesScreen() {
             autoFocus
             textAlignVertical="top"
             style={styles.editor}
-            selectionColor={colors.cyan}
+            selectionColor={colors.mint}
           />
           {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
           <View style={styles.footerRow}>
@@ -193,11 +194,17 @@ export default function NotesScreen() {
           <ScrollView contentContainerStyle={styles.body}>
             {showProposal ? (
               <Card style={styles.proposalCard}>
-                <Text variant="label" color={colors.cyan}>
-                  PROPOSED REVISION
-                </Text>
-                <Text variant="caption" color={colors.muted} style={{ marginTop: 2 }}>
+                <View style={styles.proposalHead}>
+                  <Icon name="zap" size={14} color={colors.mint} />
+                  <Text variant="label" color={colors.mint}>
+                    AI revision
+                  </Text>
+                </View>
+                <Text variant="serifItalic" style={{ marginTop: space.xs }}>
                   “{agent.job?.instruction}”
+                </Text>
+                <Text variant="caption" color={colors.violet} style={{ marginTop: space.xs }}>
+                  Review below — nothing is committed until you apply.
                 </Text>
               </Card>
             ) : null}
@@ -247,7 +254,7 @@ export default function NotesScreen() {
                 multiline
                 autoFocus
                 style={styles.askInput}
-                selectionColor={colors.cyan}
+                selectionColor={colors.mint}
               />
               <View style={styles.footerRow}>
                 <Button
@@ -270,15 +277,17 @@ export default function NotesScreen() {
           ) : (
             <View style={styles.footerRow}>
               <Button
-                title="✎ Edit"
+                title="Edit directly"
                 variant="ghost"
+                icon="edit-3"
                 onPress={() => startEdit(markdown)}
                 disabled={agent.running}
                 style={{ flex: 1 }}
               />
               <Button
-                title="✦ Revise with AI"
+                title="Propose revision"
                 variant="ghost"
+                icon="zap"
                 onPress={() => setAsking(true)}
                 disabled={agent.running || !markdown.trim()}
                 style={{ flex: 1 }}
@@ -302,16 +311,19 @@ function AgentProgress({ items }: { items: StreamItem[] }) {
   return (
     <Card style={styles.progressCard}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <ActivityIndicator color={colors.cyan} size="small" />
+        <ActivityIndicator color={colors.mint} size="small" />
         <Text variant="caption" color={colors.muted}>
           {chars > 0 ? `Revising… ${chars} characters drafted` : 'The analyst is working on it…'}
         </Text>
       </View>
       {tools.slice(-3).map((t, i) => (
-        <Text key={i} variant="caption" color={colors.cyan} numberOfLines={1} style={{ marginTop: 4 }}>
-          ⚒ {t.name}
-          {t.detail ? ` — ${t.detail}` : ''}
-        </Text>
+        <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <Icon name="tool" size={12} color={colors.mint} />
+          <Text variant="caption" color={colors.mint} numberOfLines={1} style={{ flex: 1 }}>
+            {t.name}
+            {t.detail ? ` — ${t.detail}` : ''}
+          </Text>
+        </View>
       ))}
     </Card>
   );
@@ -332,7 +344,7 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   return (
     <View style={styles.centered}>
       {loading ? (
-        <ActivityIndicator color={colors.cyan} />
+        <ActivityIndicator color={colors.mint} />
       ) : (
         <Text variant="body" color={colors.muted} style={{ textAlign: 'center' }}>
           {text}
@@ -350,12 +362,12 @@ const styles = StyleSheet.create({
     flex: 1,
     margin: space.md,
     padding: space.md,
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line2,
     color: colors.text,
-    fontFamily: fonts.mono,
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
     fontSize: 13,
     lineHeight: 19,
   },
@@ -373,7 +385,7 @@ const styles = StyleSheet.create({
     padding: space.md,
     minHeight: 64,
     maxHeight: 140,
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line2,
@@ -381,7 +393,8 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 14,
   },
-  proposalCard: { borderColor: colors.cyan, borderWidth: 1 },
+  proposalCard: { borderColor: colors.violet, borderWidth: 1 },
+  proposalHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   progressCard: { marginTop: space.sm },
   errorCard: { borderColor: colors.danger, borderWidth: 1, marginTop: space.sm },
   centeredText: { textAlign: 'center' },

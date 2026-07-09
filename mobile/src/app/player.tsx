@@ -19,8 +19,8 @@ import { useAudio } from '@/audio/AudioProvider';
 import { SKIP_SECONDS } from '@/audio/setup';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
-import { Screen, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { Icon, IconButton, Screen, Text } from '@/ui';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -54,17 +54,16 @@ export default function PlayerScreen() {
   return (
     <Screen edges={['top', 'bottom']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} accessibilityLabel="Collapse player">
-          <Text style={styles.chevron}>⌄</Text>
-        </Pressable>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text variant="label" style={styles.nowLabel}>
-            NOW PLAYING
+        <IconButton name="chevron-down" size={20} onPress={() => router.back()} accessibilityLabel="Collapse player" />
+        <View style={{ flex: 1, minWidth: 0, alignItems: 'center' }}>
+          <Text variant="heading" style={{ fontSize: 18 }} color={colors.mint}>
+            Listening mode
           </Text>
-          <Text variant="heading" numberOfLines={2}>
+          <Text variant="serifTitle" style={{ fontSize: 17, lineHeight: 22, textAlign: 'center' }} numberOfLines={2}>
             {track?.title ?? audio.prep?.title ?? 'Narration'}
           </Text>
         </View>
+        <View style={{ width: 42 }} />
       </View>
 
       {track ? (
@@ -85,9 +84,9 @@ export default function PlayerScreen() {
               minimumValue={0}
               maximumValue={duration || 1}
               value={value}
-              minimumTrackTintColor={colors.cyan}
+              minimumTrackTintColor={colors.mint}
               maximumTrackTintColor={colors.line2}
-              thumbTintColor={colors.cyan}
+              thumbTintColor={colors.mint}
               onValueChange={(v) => setScrubbing(v)}
               onSlidingComplete={(v) => {
                 TrackPlayer.seekTo(v);
@@ -96,7 +95,7 @@ export default function PlayerScreen() {
             />
             <View style={styles.timesRow}>
               <Text variant="caption">{fmt(value)}</Text>
-              <Text variant="caption" color={buffering ? colors.cyan : colors.muted}>
+              <Text variant="caption" color={buffering ? colors.mint : colors.muted}>
                 {buffering ? 'Buffering…' : playing ? '' : state === State.Ended ? 'Ended' : 'Paused'}
               </Text>
               <Text variant="caption">{duration ? fmt(duration) : '–:––'}</Text>
@@ -108,16 +107,17 @@ export default function PlayerScreen() {
                 hitSlop={8}
                 style={styles.skipBtn}
                 accessibilityLabel={`Back ${SKIP_SECONDS} seconds`}>
-                <Text style={styles.skipGlyph}>«{SKIP_SECONDS}</Text>
+                <Icon name="rotate-ccw" size={15} color={colors.text} />
+                <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
               </Pressable>
               <Pressable
                 onPress={togglePlay}
                 style={styles.playBtn}
                 accessibilityLabel={playing ? 'Pause' : 'Play'}>
                 {buffering ? (
-                  <ActivityIndicator color={colors.cyanInk} />
+                  <ActivityIndicator color={colors.mintInk} />
                 ) : (
-                  <Text style={styles.playGlyph}>{playing ? '❚❚' : '▶︎'}</Text>
+                  <Icon name={playing ? 'pause' : 'play'} size={26} color={colors.mintInk} />
                 )}
               </Pressable>
               <Pressable
@@ -125,7 +125,8 @@ export default function PlayerScreen() {
                 hitSlop={8}
                 style={styles.skipBtn}
                 accessibilityLabel={`Forward ${SKIP_SECONDS} seconds`}>
-                <Text style={styles.skipGlyph}>{SKIP_SECONDS}»</Text>
+                <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
+                <Icon name="rotate-cw" size={15} color={colors.text} />
               </Pressable>
             </View>
             <View style={styles.sentenceRow}>
@@ -146,8 +147,8 @@ export default function PlayerScreen() {
         // Opened while audio is still being prepared: show the live stage + real progress,
         // and hand over to the transcript/controls the moment the track loads.
         <View style={styles.centerFill}>
-          <ActivityIndicator color={colors.cyan} />
-          <Text variant="body" color={colors.cyan} style={{ marginTop: space.md }}>
+          <ActivityIndicator color={colors.mint} />
+          <Text variant="body" color={colors.mint} style={{ marginTop: space.md }}>
             {prepLabel(audio.prep.stage, audio.prep.done, audio.prep.total)}
           </Text>
           {audio.prep.stage === 'synthesizing' && audio.prep.total > 0 ? (
@@ -186,14 +187,12 @@ export default function PlayerScreen() {
 const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: space.md,
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
     paddingBottom: space.md,
   },
-  chevron: { color: colors.muted, fontSize: 28, lineHeight: 30, paddingHorizontal: 2 },
-  nowLabel: { letterSpacing: 1.2, marginBottom: 2 },
   centerFill: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   controls: {
     paddingHorizontal: space.lg,
@@ -220,22 +219,23 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: radius.pill,
-    backgroundColor: colors.cyan,
+    backgroundColor: colors.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  playGlyph: { color: colors.cyanInk, fontSize: 24, fontFamily: 'Manrope_700Bold' },
   skipBtn: {
     height: 52,
     paddingHorizontal: space.lg,
     borderRadius: radius.pill,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6,
   },
-  skipGlyph: { color: colors.text, fontSize: 14, fontFamily: 'Manrope_600SemiBold' },
+  skipGlyph: { color: colors.text, fontSize: 14, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
@@ -244,7 +244,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginTop: space.lg,
   },
-  prepFill: { height: '100%', borderRadius: radius.pill, backgroundColor: colors.cyan },
+  prepFill: { height: '100%', borderRadius: radius.pill, backgroundColor: colors.mint },
   cancelBtn: {
     marginTop: space.xl,
     paddingHorizontal: space.lg,
