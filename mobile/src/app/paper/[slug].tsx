@@ -57,16 +57,17 @@ import {
   DISCUSSION_USER,
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
+import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
-import { IconButton, TopBar } from '@/components/TopBar';
+import { TopBar } from '@/components/TopBar';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
-import { Button, Card, Screen, Text } from '@/ui';
+import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 // The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
@@ -262,6 +263,7 @@ export default function DiscussionScreen() {
         <ComposeFirst
           pid={pid}
           slug={slug!}
+          title={session.data?.paper.title ?? 'This paper'}
           stream={stream}
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
@@ -303,9 +305,9 @@ const STATE_LABEL: Record<string, string> = {
 
 // ---------- top bar: overflow menu + model picker ----------
 
-// The single ⋯ overflow trigger for every discussion-level action that isn't the composer
-// itself: Listening toggle, notes/related-works/graph navigation, and (moved from the
-// composer) Draft notes. Requires an ActionSheetProvider ancestor (wrapping the whole screen).
+// The single overflow trigger for every discussion-level action that isn't the composer
+// itself: navigation into related works / graph / notes, then the quieter mode toggles —
+// grouped per Figma `08c · Actions menu`.
 function OverflowMenu({
   listeningMode,
   onToggleListening,
@@ -327,45 +329,57 @@ function OverflowMenu({
   draftNotesDisabled: boolean;
   onDraftNotes: () => void;
 }) {
-  const { showActionSheetWithOptions } = useActionSheet();
+  const [open, setOpen] = useState(false);
 
-  function open() {
-    const options: string[] = [listeningMode ? 'Turn off Listening mode' : 'Turn on Listening mode'];
-    const actions: (() => void)[] = [onToggleListening];
-    if (hasNotes) {
-      options.push('View notes');
-      actions.push(onViewNotes);
-    }
-    options.push('Related works');
-    actions.push(onRelatedWorks);
-    options.push('Reference graph');
-    actions.push(onGraph);
-    let draftNotesIndex = -1;
-    if (showDraftNotes) {
-      draftNotesIndex = options.length;
-      options.push('Draft notes →');
-      actions.push(onDraftNotes);
-    }
-    const cancelButtonIndex = options.length;
-    options.push('Cancel');
-    showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex,
-        disabledButtonIndices: draftNotesIndex >= 0 && draftNotesDisabled ? [draftNotesIndex] : undefined,
-      },
-      (i) => {
-        if (i == null || i === cancelButtonIndex) return;
-        actions[i]?.();
-      },
-    );
+  const options: SheetOption[] = [
+    {
+      key: 'related',
+      title: 'Related works',
+      icon: 'layers',
+      accent: colors.mint,
+      onPress: onRelatedWorks,
+    },
+    {
+      key: 'graph',
+      title: 'Reference graph',
+      icon: 'share-2',
+      accent: colors.mint,
+      onPress: onGraph,
+    },
+  ];
+  if (showDraftNotes) {
+    options.push({
+      key: 'draft',
+      title: 'Draft notes',
+      icon: 'edit-3',
+      accent: colors.mint,
+      disabled: draftNotesDisabled,
+      onPress: onDraftNotes,
+    });
   }
+  if (hasNotes) {
+    options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: colors.mint, onPress: onViewNotes });
+  }
+  options.push({
+    key: 'listening',
+    title: listeningMode ? 'Turn off listening' : 'Turn on listening',
+    icon: 'headphones',
+    section: true,
+    onPress: onToggleListening,
+  });
 
-  return <IconButton glyph="⋯" onPress={open} accessibilityLabel="More actions" />;
+  return (
+    <>
+      <IconButton name="more-vertical" onPress={() => setOpen(true)} accessibilityLabel="More actions" />
+      <OptionsSheet visible={open} onClose={() => setOpen(false)} options={options} />
+    </>
+  );
 }
 
-// A compact pill showing the model the *next* new response will use; tapping picks a one-shot
-// override for this screen only (never persisted — see the `selectedModel` comment above).
+// A compact pill showing the model the *next* new response will use; tapping opens the
+// styled picker (Figma `08b · Model + thinking picker`, minus thinking depth — the backend
+// has no such parameter). One-shot override for this screen only (never persisted — see the
+// `selectedModel` comment above).
 function ModelPill({
   selectedModel,
   defaultLabel,
@@ -377,30 +391,48 @@ function ModelPill({
   favorites: FavoriteModel[];
   onPick: (modelId: string | null) => void;
 }) {
-  const { showActionSheetWithOptions } = useActionSheet();
+  const [open, setOpen] = useState(false);
   // Show the favorite's short label when the pick matches one, not the raw OpenRouter id.
   const label = selectedModel == null
     ? defaultLabel
     : favorites.find((m) => m.id === selectedModel)?.label ?? selectedModel;
 
-  function open() {
-    const options = ['Use default', ...favorites.map((m) => m.label), 'Cancel'];
-    const cancelButtonIndex = options.length - 1;
-    showActionSheetWithOptions({ options, cancelButtonIndex }, (i) => {
-      if (i == null || i === cancelButtonIndex) return;
-      onPick(i === 0 ? null : favorites[i - 1].id);
-    });
-  }
+  const options: SheetOption[] = [
+    {
+      key: 'default',
+      title: 'Project default',
+      subtitle: defaultLabel,
+      icon: 'check-circle',
+      selected: selectedModel == null,
+      onPress: () => onPick(null),
+    },
+    ...favorites.map((m) => ({
+      key: m.id,
+      title: m.label,
+      subtitle: m.id,
+      icon: 'zap' as IconName,
+      selected: selectedModel === m.id,
+      onPress: () => onPick(m.id),
+    })),
+  ];
 
   return (
-    <Pressable
-      onPress={open}
-      style={styles.modelPill}
-      accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
-      <Text variant="caption" color={colors.cyan} numberOfLines={1} style={styles.modelPillText}>
-        {label}
-      </Text>
-    </Pressable>
+    <>
+      <Pressable
+        onPress={() => setOpen(true)}
+        style={styles.modelPill}
+        accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
+        <Text variant="caption" color={colors.mint} numberOfLines={1} style={styles.modelPillText}>
+          {label}
+        </Text>
+      </Pressable>
+      <OptionsSheet
+        visible={open}
+        onClose={() => setOpen(false)}
+        title="Model for next response"
+        options={options}
+      />
+    </>
   );
 }
 
@@ -693,9 +725,11 @@ function DiscussionThread({
         disabled={!canSend}
         style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
         accessibilityLabel={editing ? 'Save edit and regenerate' : 'Send'}>
-        <Text variant="heading" color={canSend ? colors.cyanInk : colors.muted}>
-          {editing ? '↻' : '↑'}
-        </Text>
+        <Icon
+          name={editing ? 'rotate-cw' : 'arrow-up'}
+          size={18}
+          color={canSend ? colors.mintInk : colors.muted}
+        />
       </Pressable>
     );
   }, [disabled, editing, handleSend, inputText, state]);
@@ -754,12 +788,17 @@ function DiscussionThread({
       );
     }
     return (
-      <InputToolbar
-        {...props}
-        containerStyle={styles.toolbar}
-        renderSend={renderSend}
-        renderAccessory={renderAccessory}
-      />
+      <View>
+        <Text variant="caption" style={styles.disclaimer}>
+          Research Companion can make mistakes — check sources.
+        </Text>
+        <InputToolbar
+          {...props}
+          containerStyle={styles.toolbar}
+          renderSend={renderSend}
+          renderAccessory={renderAccessory}
+        />
+      </View>
     );
   }, [renderAccessory, renderSend, state]);
 
@@ -777,7 +816,7 @@ function DiscussionThread({
     ? 'Edit your message…'
     : state === 'notes_drafted'
       ? 'Request changes to the draft…'
-      : 'Reply…';
+      : 'Ask about this paper…';
 
   return (
     <Chat<DiscussionMessage>
@@ -838,6 +877,7 @@ function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
 function ComposeFirst({
   pid,
   slug,
+  title,
   stream,
   chatStartPath,
   initialSource,
@@ -846,6 +886,7 @@ function ComposeFirst({
 }: {
   pid: string;
   slug: string;
+  title: string;
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
   initialSource?: string;
@@ -951,26 +992,19 @@ function ComposeFirst({
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <ScrollView contentContainerStyle={styles.composeFirst} keyboardShouldPersistTaps="handled">
-        {/* Default path stays clean: just Start. The opening prompt is editable, but hidden
-            behind Customize so most sessions don't open on a wall of prompt text. */}
-        <Text variant="body" color={colors.muted}>
-          The analyst will fetch the paper and open with a comprehensive first read.
-        </Text>
+        {/* Hero card (Figma `09 · Start Reading`): status chip + editorial title. */}
+        <Card style={styles.heroCard}>
+          <Chip label="Unread paper" dot={false} />
+          <Text variant="editorial">{title}</Text>
+          <Text variant="body" color={colors.muted}>
+            The analyst will fetch the paper and open with a comprehensive first read.
+          </Text>
+        </Card>
         {retrieveError ? (
           <Text variant="body" color={colors.danger} style={{ marginTop: space.md }}>
             {retrieveError}
           </Text>
         ) : null}
-        <Button
-          title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={() => void start(
-            initialSource ? parseSource(initialSource) : undefined,
-            initialSource,
-          )}
-          loading={starting}
-          disabled={!prompt.trim()}
-          style={{ marginTop: space.lg }}
-        />
         {starting && steps.length ? (
           <View style={[styles.toolTrail, { marginTop: space.md }]}>
             {steps.map((s, i) => (
@@ -978,16 +1012,10 @@ function ComposeFirst({
             ))}
           </View>
         ) : null}
-        <Button
-          title={showCustomize ? 'Hide customization' : 'Customize opening prompt'}
-          variant="ghost"
-          onPress={() => setShowCustomize((v) => !v)}
-          style={{ marginTop: space.sm }}
-        />
 
         {showCustomize ? (
-          <View style={{ marginTop: space.md }}>
-            <Text variant="label">OPENING PROMPT</Text>
+          <View style={{ marginTop: space.lg }}>
+            <Text variant="overline">Opening prompt</Text>
             <Text variant="caption" style={{ marginBottom: space.sm, marginTop: space.xs }}>
               Edit how the analyst should begin. The paper text is fetched when you start.
             </Text>
@@ -1000,7 +1028,7 @@ function ComposeFirst({
               placeholderTextColor={colors.muted}
             />
             {opening.data?.model ? (
-              <Text variant="mono" style={{ marginTop: space.sm }}>
+              <Text variant="caption" style={{ marginTop: space.sm }}>
                 model: {opening.data.model}
               </Text>
             ) : null}
@@ -1008,26 +1036,26 @@ function ComposeFirst({
         ) : null}
 
         {candidates && candidates.length ? (
-          <View style={{ marginTop: space.lg, gap: space.sm }}>
-            <Text variant="label">CANDIDATE SOURCES</Text>
+          <Card style={{ marginTop: space.lg, gap: space.sm }}>
+            <Text variant="heading">Source candidates</Text>
             {candidates.map((c) => (
               <Pressable
                 key={c.arxiv_id}
                 onPress={() => void start({ arxiv_id: c.arxiv_id })}
                 disabled={starting}
-                style={styles.candidate}>
+                style={({ pressed }) => [styles.candidate, pressed && { opacity: 0.8 }]}>
                 <Text variant="body" numberOfLines={2}>{c.title}</Text>
                 <Text variant="caption" color={colors.muted}>arXiv:{c.arxiv_id}</Text>
               </Pressable>
             ))}
-          </View>
+          </Card>
         ) : null}
 
         {/* Manual source fallback — surfaced when retrieval needs help (error/candidates) or
             the user opened customization; hidden on the clean default path. */}
         {retrieveError || candidates?.length || showCustomize ? (
         <View style={{ marginTop: space.lg }}>
-          <Text variant="label">PROVIDE A SOURCE</Text>
+          <Text variant="overline">Provide a source</Text>
           <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
             Paste a PDF link or an arXiv id if the paper can’t be found automatically.
           </Text>
@@ -1050,6 +1078,26 @@ function ComposeFirst({
         </View>
         ) : null}
       </ScrollView>
+
+      {/* Sticky footer per the frame: primary start + quiet customize, side by side. */}
+      <View style={styles.startFooter}>
+        <Button
+          title={starting ? 'Fetching paper…' : 'Start reading'}
+          onPress={() => void start(
+            initialSource ? parseSource(initialSource) : undefined,
+            initialSource,
+          )}
+          loading={starting}
+          disabled={!prompt.trim()}
+          style={{ flex: 1.2 }}
+        />
+        <Button
+          title="Customize prompt"
+          variant="ghost"
+          onPress={() => setShowCustomize((v) => !v)}
+          style={{ flex: 1 }}
+        />
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -1087,7 +1135,8 @@ function AssistantBody({
 
   // Listen -> prepare + play; on the loaded track it's a pause/resume toggle; after a
   // failure it retries (playText clears this message's error).
-  const listenGlyph = current ? (playing ? '❚❚' : '▶︎') : audioError ? '↻' : '▶︎';
+  const listenIcon: IconName = current ? (playing ? 'pause' : 'play') : audioError ? 'rotate-cw' : 'headphones';
+  const listenLabel = current ? (playing ? 'Pause' : 'Resume') : audioError ? 'Retry audio' : 'Listen';
   const listenA11y = current
     ? (playing ? 'Pause this narration' : 'Resume this narration')
     : audioError ? 'Retry narration' : 'Listen to this response';
@@ -1117,55 +1166,87 @@ function AssistantBody({
         </Text>
       ) : null}
       <View style={styles.msgActions}>
-        <Pressable
+        <MsgAction
+          icon={listenIcon}
+          label={listenLabel}
+          active={current}
+          busy={!!prep}
           onPress={() => audio.playText({ id: audioId, title, text: canonical })}
-          disabled={!!prep}
-          style={({ pressed }) => [styles.msgIconBtn, (pressed || current) && styles.msgBtnActive]}
-          accessibilityLabel={listenA11y}>
-          {prep ? (
-            <ActivityIndicator color={colors.cyan} size="small" />
-          ) : (
-            <Text style={[styles.msgGlyph, { color: current ? colors.cyan : colors.muted }]}>
-              {listenGlyph}
-            </Text>
-          )}
-        </Pressable>
-        <Pressable
-          onPress={copy}
-          style={({ pressed }) => [styles.msgIconBtn, (pressed || copied) && styles.msgBtnActive]}
-          accessibilityLabel="Copy this response">
-          <Text style={[styles.msgGlyph, { color: copied ? colors.cyan : colors.muted }]}>
-            {copied ? '✓' : '⧉'}
-          </Text>
-        </Pressable>
-        <Pressable
+          accessibilityLabel={listenA11y}
+        />
+        <MsgAction
+          icon={copied ? 'check' : 'copy'}
+          label={copied ? 'Copied' : 'Copy'}
+          active={copied}
+          onPress={() => void copy()}
+          accessibilityLabel="Copy this response"
+        />
+        <MsgAction
+          icon="rotate-ccw"
+          label="Retry"
           onPress={openRetryMenu}
-          style={({ pressed }) => [styles.msgIconBtn, pressed && styles.msgBtnActive]}
-          accessibilityLabel="Retry this response, optionally with a different model">
-          <Text style={[styles.msgGlyph, { color: colors.muted }]}>⟳</Text>
-        </Pressable>
+          accessibilityLabel="Retry this response, optionally with a different model"
+        />
       </View>
     </View>
   );
 }
 
-// Friendly label + glyph for each research tool the agent can call (agentic path).
-const TOOL_META: Record<string, { glyph: string; label: string }> = {
-  web_search: { glyph: '🔎', label: 'Searching the web' },
-  web_fetch: { glyph: '🌐', label: 'Reading a page' },
-  read_paper_text: { glyph: '📄', label: 'Reading a paper' },
-  related_papers: { glyph: '🕸', label: 'Finding related papers' },
-  list_project_papers: { glyph: '📚', label: 'Scanning the project' },
+// Quiet inline action under an assistant answer (Figma 08a's ♡ Helpful · ⧉ Copy · Listen row):
+// icon + small label, muted until active.
+function MsgAction({
+  icon,
+  label,
+  onPress,
+  active,
+  busy,
+  accessibilityLabel,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  active?: boolean;
+  busy?: boolean;
+  accessibilityLabel: string;
+}) {
+  const tint = active ? colors.mint : colors.muted;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={busy}
+      hitSlop={8}
+      style={({ pressed }) => [styles.msgAction, pressed && { opacity: 0.7 }]}
+      accessibilityLabel={accessibilityLabel}>
+      {busy ? (
+        <ActivityIndicator color={colors.mint} size="small" />
+      ) : (
+        <Icon name={icon} size={15} color={tint} />
+      )}
+      <Text variant="caption" color={tint}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+// Friendly label + icon for each research tool the agent can call (agentic path).
+const TOOL_META: Record<string, { icon: IconName; label: string }> = {
+  web_search: { icon: 'search', label: 'Searching the web' },
+  web_fetch: { icon: 'globe', label: 'Reading a page' },
+  read_paper_text: { icon: 'file-text', label: 'Reading a paper' },
+  related_papers: { icon: 'share-2', label: 'Finding related papers' },
+  list_project_papers: { icon: 'book-open', label: 'Scanning the project' },
   // retrieval (/start_stream) steps
-  arxiv: { glyph: '📚', label: 'Resolving on arXiv' },
-  fetch_pdf: { glyph: '📥', label: 'Trying a PDF' },
+  arxiv: { icon: 'book-open', label: 'Resolving on arXiv' },
+  fetch_pdf: { icon: 'download', label: 'Trying a PDF' },
 };
 
 function ToolLine({ name, detail }: { name: string; detail: string }) {
-  const meta = TOOL_META[name] ?? { glyph: '🔧', label: name };
+  const meta = TOOL_META[name] ?? { icon: 'tool' as IconName, label: name };
   return (
     <View style={styles.toolRow}>
-      <Text variant="caption" color={colors.cyan}>{meta.glyph} {meta.label}</Text>
+      <Icon name={meta.icon} size={13} color={colors.mint} />
+      <Text variant="caption" color={colors.mint}>{meta.label}</Text>
       {detail ? (
         <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
           {detail}
@@ -1204,7 +1285,7 @@ function StreamingTurnBody({ items }: { items: StreamItem[] }) {
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   return (
     <View style={styles.centered}>
-      {loading ? <ActivityIndicator color={colors.cyan} /> : <Text variant="body" color={colors.muted}>{text}</Text>}
+      {loading ? <ActivityIndicator color={colors.mint} /> : <Text variant="body" color={colors.muted}>{text}</Text>}
     </View>
   );
 }
@@ -1217,16 +1298,16 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modelPillText: { fontFamily: fonts.mono },
+  modelPillText: { fontFamily: fonts.bodyMedium },
   composeFirst: { padding: space.md },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -1234,7 +1315,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   searchInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -1245,7 +1326,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   promptInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -1259,13 +1340,13 @@ const styles = StyleSheet.create({
   },
   // ---- thread ----
   messagesContainer: { backgroundColor: colors.bg },
-  assistantCard: { backgroundColor: colors.panel },
+  assistantCard: { backgroundColor: colors.surface },
   assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
   // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
   // those read as "floating chat bubble" cues that don't make sense once the tinted card
   // reaches both screen edges. A top/bottom border is enough to separate turns.
   analystBubble: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.surface,
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: colors.line,
@@ -1274,7 +1355,7 @@ const styles = StyleSheet.create({
     borderRadius: 0,
   },
   userBubble: {
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderTopWidth: 1,
     borderBottomWidth: 1,
     borderColor: colors.line2,
@@ -1290,18 +1371,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
   },
-  msgActions: { flexDirection: 'row', gap: space.sm, marginTop: space.md },
-  msgIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.line2,
+  msgActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.lg,
+    marginTop: space.md,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  msgGlyph: { fontSize: 17, lineHeight: 20 },
-  msgBtnActive: { borderColor: colors.cyan },
+  msgAction: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 32 },
   toolTrail: {
     gap: space.xs,
     paddingVertical: space.sm,
@@ -1310,18 +1387,18 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
   },
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
   errorCard: { borderColor: colors.danger, margin: space.md },
   // ---- toolbar ----
+  disclaimer: { textAlign: 'center', paddingTop: 6, backgroundColor: colors.bg },
   toolbar: {
-    borderTopWidth: 1,
-    borderTopColor: colors.line,
-    backgroundColor: colors.bg2,
+    borderTopWidth: 0,
+    backgroundColor: colors.bg,
     paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
+    paddingVertical: space.sm,
   },
   composerInput: {
     color: colors.text,
@@ -1329,15 +1406,23 @@ const styles = StyleSheet.create({
     fontSize: 15,
     // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
     // the height bounds live on the input style itself.
-    minHeight: 44,
+    minHeight: 46,
     maxHeight: 120,
+    // The pill composer from Figma 08a: the input itself carries the rounded elevated
+    // surface, since the library's composer container isn't styleable from here.
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.lg,
+    paddingVertical: 12,
   },
   committedBar: {
     borderTopWidth: 1,
     borderTopColor: colors.line,
     padding: space.md,
     paddingBottom: space.lg,
-    backgroundColor: colors.bg2,
+    backgroundColor: colors.bg,
   },
   accessoryRow: {
     flexDirection: 'row',
@@ -1348,14 +1433,25 @@ const styles = StyleSheet.create({
   },
   accessoryCol: { gap: space.sm, paddingHorizontal: space.sm, paddingBottom: space.sm },
   sendBtn: {
-    backgroundColor: colors.cyan,
+    backgroundColor: colors.mint,
     borderRadius: radius.pill,
-    width: 36,
-    height: 36,
+    width: 42,
+    height: 42,
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: space.sm,
     marginBottom: 4,
   },
-  sendBtnDisabled: { backgroundColor: colors.panel2 },
+  sendBtnDisabled: { backgroundColor: colors.elevated },
+  // ---- compose-first (Start Reading) ----
+  heroCard: { gap: space.md, alignItems: 'flex-start' },
+  startFooter: {
+    flexDirection: 'row',
+    gap: space.sm,
+    padding: space.lg,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    backgroundColor: colors.bg,
+  },
 });

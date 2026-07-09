@@ -4,10 +4,14 @@
 // implementation — to keep reading fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useMemo } from 'react';
-import { Linking, StyleSheet, View } from 'react-native';
+import { Linking, Platform, StyleSheet, View } from 'react-native';
 
 import { Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
+
+// Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
+// monospace member, so code falls back to the platform's own mono face.
+const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
 
 /** Called when an inline link is tapped. The discussion screen provides one (via
  *  LinkHandlerContext) that routes `rc-paper:<slug>` links into the in-project paper's discussion
@@ -118,32 +122,37 @@ function parseBlocks(src: string): Block[] {
   return blocks;
 }
 
-const HEADING_SIZE: Record<number, number> = { 1: 22, 2: 19, 3: 17, 4: 15.5 };
+// Long-form document type per the redesign: Newsreader for headings and prose (the "reads
+// like a document, not chat" principle), Manrope only for the densest level-4 run-ins.
+const HEADING_STYLES: Record<number, object> = {
+  1: { fontFamily: fonts.serifMedium, fontSize: 24, lineHeight: 30 },
+  2: { fontFamily: fonts.serifMedium, fontSize: 21, lineHeight: 27 },
+  3: { fontFamily: fonts.serifMedium, fontSize: 18, lineHeight: 24 },
+  4: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 22 },
+};
 
 function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
   switch (block.kind) {
     case 'heading':
       return (
         <Text
-          style={{
-            fontFamily: fonts.display,
-            fontSize: HEADING_SIZE[block.level] ?? 15.5,
-            color: colors.text,
-            marginTop: space.xs,
-          }}>
+          style={[
+            HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
+            { color: colors.text, marginTop: space.xs },
+          ]}>
           <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'paragraph':
       return (
-        <Text variant="body">
+        <Text variant="serifBody">
           <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
+          <Text variant="serifItalic">
             <Inline text={block.text} onLinkPress={onLinkPress} />
           </Text>
         </View>
@@ -151,7 +160,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
     case 'code':
       return (
         <View style={styles.code}>
-          <Text style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
+          <Text style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
     case 'list':
@@ -159,10 +168,10 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
         <View style={{ gap: 4 }}>
           {block.items.map((item, idx) => (
             <View key={idx} style={styles.listItem}>
-              <Text variant="body" color={colors.cyan} style={{ width: 22 }}>
+              <Text variant="serifBody" color={colors.mint} style={{ width: 22 }}>
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
-              <Text variant="body" style={{ flex: 1 }}>
+              <Text variant="serifBody" style={{ flex: 1 }}>
                 <Inline text={item} onLinkPress={onLinkPress} />
               </Text>
             </View>
@@ -180,18 +189,18 @@ function Inline({ text, onLinkPress }: { text: string; onLinkPress: LinkHandler 
       {tokens.map((t, i) => (
         <Fragment key={i}>
           {t.type === 'code' ? (
-            <Text style={{ fontFamily: fonts.mono, fontSize: 13.5, color: colors.cyan }}>{t.text}</Text>
+            <Text style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</Text>
           ) : t.type === 'link' ? (
             <Text
-              style={{ color: colors.cyan, textDecorationLine: 'underline' }}
+              style={{ color: colors.mint, textDecorationLine: 'underline' }}
               onPress={() => onLinkPress(t.href ?? '', t.text)}>
               {t.text}
             </Text>
           ) : (
             <Text
               style={[
-                t.type === 'bold' && { fontFamily: fonts.bodyBold },
-                t.type === 'italic' && { fontStyle: 'italic' },
+                t.type === 'bold' && { fontFamily: fonts.serifSemiBold },
+                t.type === 'italic' && { fontFamily: fonts.serifItalic },
               ]}>
               {t.text}
             </Text>
