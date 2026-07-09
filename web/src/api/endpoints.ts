@@ -119,3 +119,72 @@ export function getRetrievalJob(pid: string, jobId: string) {
 export function getLatestRetrievalJob(pid: string, slug: string) {
   return apiGet<{ job: RetrievalJob | null }>(`${P(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`);
 }
+
+// Discovery persists completed suggestions in the project; the job is only live progress.
+export interface DiscoverySuggestion {
+  title: string;
+  authors: string[];
+  year: number | null;
+  arxiv_id: string;
+  relevance_score: number;
+  citation_count: number | null;
+  abstract: string;
+}
+
+export interface DiscoveryJob {
+  status: 'running' | 'done' | 'error';
+  phase: string;
+  error: string | null;
+}
+
+export interface DiscoveryResult {
+  goals: string;
+  suggestions: DiscoverySuggestion[];
+}
+
+export function getDiscovery(pid: string) {
+  return apiGet<{ job: DiscoveryJob | null; result: DiscoveryResult | null; goals: string }>(`${P(pid)}/discover`);
+}
+
+export function startDiscovery(pid: string, goals: string) {
+  return apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
+}
+
+export function addPaper(pid: string, title: string, arxivId?: string) {
+  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined });
+}
+
+// Notes edits are explicit human commits. The agent job is deliberately proposal-only until
+// saveNotes is called after review.
+export interface NotesJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  result: string | null;
+  error: string | null;
+}
+
+export interface NotesData {
+  target: string;
+  title: string;
+  markdown: string;
+}
+
+export function getNotes(pid: string, target: string) {
+  return apiGet<NotesData>(`${P(pid)}/notes/${encodeURIComponent(target)}`);
+}
+
+export function saveNotes(pid: string, target: string, markdown: string) {
+  return apiPost(`${P(pid)}/notes/${encodeURIComponent(target)}`, { markdown });
+}
+
+export function startNotesAgentJob(pid: string, target: string, instruction: string) {
+  return apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/agent_job`, { instruction });
+}
+
+export function getNotesJob(pid: string, jobId: string) {
+  return apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getLatestNotesJob(pid: string, target: string) {
+  return apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`);
+}

@@ -1,0 +1,76 @@
+.notes {
+  flex: 1;
+}
+
+.notes-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.notes-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.notes-actions,
+.notes-agent-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.notes-body {
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.notes-body h1, .notes-body h2, .notes-body h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+.notes-body p { margin: 0 0 12px; }
+
+.notes-body code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(52, 231, 224, 0.10);
+  color: #aef4ee;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.notes-body a { color: var(--cyan); }
+
+.notes-editor {
+  width: 100%;
+  min-height: 300px;
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.notes-editor:focus { outline: none; border-color: rgba(52, 231, 224, 0.5); }
+
+.agent-panel,
+.agent-proposal {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+}
+
+.agent-panel .discovery-goals { min-height: 88px; }

@@ -43,8 +43,8 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
 | W.2 | Web rebuild: Library | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
 | W.3 | Web rebuild: Graph (high-perf canvas) | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
-| W.4 | Web rebuild: Discussion + notes review | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | In review |
-| W.5 | Web rebuild: Discovery + Notes | — | Planned |
+| W.4 | Web rebuild: Discussion + notes review | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | Merged |
+| W.5 | Web rebuild: Discovery + Notes | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | In review |
 | W.6 | Web rebuild: Settings + Audio + Player | — | Planned |
 | W.7 | Web rebuild: Auth + Polish | — | Planned |
 
