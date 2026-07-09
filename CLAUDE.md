@@ -99,7 +99,7 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `discovery.py` — goals → ranked arXiv reading suggestions.
 - `jobs.py` — the shared `JobRegistry` behind every background job (dict+lock, pruning, thread
   spawn, the contextvar rebind of invariant 2, error capture, persist-before-done finalize).
-- `*_jobs.py` (`audio`, `chat`, `graph`, `discovery`, `notes`) — background-job modules (see
+- `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
   invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
   function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
 - `tts.py` — OpenAI TTS behind a swappable interface. `auth.py` — Supabase/token/open auth.
@@ -107,8 +107,15 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 ## Dev workflow
 
 - **Run backend:** `./run.sh` (boots venv, installs deps, serves `:8000`, one worker, **no
-  `--reload`**). After backend edits you must **restart** it — a stale server answers routes
-  added since startup with **405** (the static catch-all mount handles unknown POSTs).
+  `--reload`** by default). After backend edits you must **restart** it — a stale server answers
+  routes added since startup with **405** (the static catch-all mount handles unknown POSTs).
+- **Dev auto-reload (opt-in):** `RC_RELOAD=1 ./run.sh` restarts the worker on changes under
+  `app/`, so new routes stop 405-ing without a manual restart. The watch is deliberately scoped
+  to `--reload-dir app`: uvicorn's reloader watches the CWD by default, and the app writes to
+  `projects/` and `.app-state/` constantly (session index, audio cache, git commits), so an
+  unscoped `--reload` would reload-loop forever. A reload is a **full process restart** — it
+  drops the in-memory job registries and kills any in-flight background job (invariants 1/6), so
+  don't save mid-job when you care about the result. Leave it **off** for the tunnel deployment.
 - **Second instance for verification** (don't disturb the live server): `.env` pins `RC_PORT`
   and `run.sh` exports `.env` last, so bypass it — `.venv/bin/uvicorn app.main:app --host
   127.0.0.1 --port 8901`.
@@ -121,6 +128,27 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `docs/web-rebuild-plan.md` for the phased rebuild status.
 - **API types:** `scripts/gen-api-types.sh` regenerates `shared/api-types.ts` from the
   OpenAPI schema (offline). Run it when you change an endpoint's shape.
+- **Testing on Kamil's physical phone (the normal device-verification path).** The phone is an
+  Android **Expo dev build** (not Expo Go — the project depends on `expo-dev-client`; its
+  launcher shows "Research Companion / Development Build"). The phone is usually **not on the
+  same Wi-Fi** as the dev Mac, so both the app JS *and* the backend reach the Mac over **two
+  independent public tunnels**:
+  1. **Backend tunnel** — `./tunnel.sh` runs a cloudflared *quick tunnel* to `:8000` and prints a
+     `https://<random>.trycloudflare.com` URL (this is the ~100s-timeout tunnel behind invariant
+     1). The URL changes every run. Enter it in the app under **Settings → server URL**; it is
+     persisted client-side as `rc.baseUrl` in AsyncStorage (see `mobile/src/api/config.ts`), so
+     the phone keeps the last one until you paste the new one. Not secret; can also be baked via
+     `app.json` `extra.apiBaseUrl`.
+  2. **Metro/JS-bundle tunnel** — `cd mobile && npx expo start --tunnel` (uses `@expo/ngrok`)
+     prints an `exp://<random>.exp.direct` URL. Paste that into the dev-build launcher's `exp://`
+     field (or scan its QR), and reload. Plain `npx expo start` only yields a LAN URL, which the
+     phone can't reach off-Wi-Fi. **Known gotcha:** the ngrok service Expo's `--tunnel` relies on
+     has outages ("failed to start tunnel / remote gone away" or "Cannot read properties of
+     undefined (reading 'body')") — that's ngrok-side, not the code. When it's down, fall back to
+     putting the phone and Mac on the **same network** (e.g. Mac joins the phone's hotspot) and
+     use the plain-LAN `exp://10.x.x.x:8081` URL — no ngrok needed.
+  Both tunnel URLs are ephemeral, so a device test = restart `./run.sh`, (re)start both tunnels,
+  paste the fresh backend URL in Settings, connect the fresh `exp://` in the launcher, reload.
 
 ## Conventions
 

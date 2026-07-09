@@ -20,6 +20,18 @@ export interface Project {
   read_count: number;
 }
 
+/** One cross-project activity entry (GET /api/recent-sessions). */
+export interface RecentSession {
+  project_id: string;
+  project_name: string;
+  slug: string;
+  title: string;
+  kind: 'paper' | 'review';
+  state: SessionState;
+  started_at: string | null;
+  updated_at: string;
+}
+
 /** A paper (Paper.to_dict()). */
 export interface Paper {
   slug: string;
@@ -50,6 +62,11 @@ export type TranscriptEntry =
       narration: string;
       state_signal: string;
       proposed_commit: ProposedCommit | null;
+      assistant_index: number;
+      delivery_mode: 'reading' | 'listening';
+      chat_job_id: string | null;
+      audio_job_id: string | null;
+      audio_error: string | null;
     };
 
 /** GET /api/projects/{pid}/state */
@@ -58,6 +75,7 @@ export interface ProjectState {
   has_key: boolean;
   model: string | null;
   narration_model: string | null;
+  preview_model: string | null;
   speech_provider: string | null;
   has_openai_key: boolean;
   papers: Paper[];
@@ -68,6 +86,7 @@ export interface Session {
   paper: Paper;
   state: SessionState;
   transcript: TranscriptEntry[];
+  accepted_drafts: { kind: 'reply' | 'revision'; text: string }[];
 }
 
 /** GET /api/projects/{pid}/opening_draft/{slug} */
@@ -83,6 +102,7 @@ export interface Settings {
   key_hint: string;
   model: string | null;
   narration_model: string | null;
+  preview_model: string | null;
   has_openai_key: boolean;
   openai_key_hint: string;
   speech_provider: string | null;
@@ -178,6 +198,35 @@ export interface ChatJob {
   items: StreamItem[];
   turn: Turn | null;
   state: SessionState | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  delivery_mode: 'reading' | 'listening';
+  audio_job_id: string | null;
+  audio_error: string | null;
+  assistant_index: number | null;
+  preview_job_ids: string[];
+  preview_coordinator_id: string | null;
+  preview_complete: boolean;
+  preview_phase: string | null;
+  preview_progress: Record<string, unknown>;
+  timings: Record<string, string>;
+}
+
+/** One short, grounded listening cue generated independently from a live chat turn. */
+export interface PreviewJob {
+  id: string;
+  chat_job_id: string;
+  ordinal: number;
+  status: 'running' | 'done' | 'error';
+  stage: 'generating' | 'synthesizing';
+  sentence_ids: string[];
+  source_sentence_ids: string[];
+  cue: string | null;
+  url: string | null;
+  model: string | null;
+  suppressed: boolean;
+  timings: Record<string, string>;
   error: string | null;
   started_at: string;
   finished_at: string | null;
@@ -416,6 +465,8 @@ export interface AudioJob {
   segments_total: number;
   narration: string | null;
   url: string | null;
+  segments: Array<{ index: number; text: string; url: string }>;
+  timings: Record<string, string>;
   error: string | null;
   started_at: string;
   finished_at: string | null;

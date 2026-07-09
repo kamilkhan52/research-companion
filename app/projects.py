@@ -153,6 +153,40 @@ def list_projects() -> list[dict]:
     return out
 
 
+def recent_sessions(limit: int = 20) -> list[dict]:
+    """Recent session activity across projects, newest first.
+
+    Session state is project-scoped, so every index read is performed with that project bound
+    to the active contextvar. Only registry-derived ids reach the path boundary.
+    """
+    from . import sessions
+
+    out = []
+    for project in list_projects():
+        pid = project["id"]
+        token = config.set_active_project(pid)
+        try:
+            index = sessions.session_index()
+        finally:
+            config.reset_active_project(token)
+        for slug, meta in index.items():
+            updated_at = meta.get("updated_at")
+            if not updated_at:
+                continue
+            out.append({
+                "project_id": pid,
+                "project_name": project["name"],
+                "slug": slug,
+                "title": meta.get("title", slug),
+                "kind": meta.get("kind", "paper"),
+                "state": meta.get("state"),
+                "started_at": meta.get("started_at"),
+                "updated_at": updated_at,
+            })
+    out.sort(key=lambda item: item["updated_at"], reverse=True)
+    return out[:limit]
+
+
 def create_project(name: str, method: str | None = None) -> dict:
     """Scaffold a new project dir (git repo) with starter files. Returns its meta."""
     name = (name or "").strip()

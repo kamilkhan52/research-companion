@@ -22,6 +22,7 @@ import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
+import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -41,6 +42,7 @@ export default function SettingsScreen() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [narrationModel, setNarrationModel] = useState('');
+  const [previewModel, setPreviewModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
   const [parallelKey, setParallelKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
@@ -57,6 +59,7 @@ export default function SettingsScreen() {
     if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
+      setPreviewModel(previewModelDraft(settings.data.preview_model));
       setVoice(settings.data.tts_voice ?? '');
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
       setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
@@ -79,6 +82,7 @@ export default function SettingsScreen() {
     const payload: Record<string, unknown> = {
       model: model || null,
       narration_model: narrationModel || null,
+      preview_model: previewModelPatch(previewModel),
       speech_provider: speechProvider,
       tts_voice: voice || null,
       prior_notes_scope: priorScope,
@@ -104,8 +108,9 @@ export default function SettingsScreen() {
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           {/* Server connection */}
           <Section title="Server">
-            <Text variant="caption" style={{ marginBottom: space.sm }}>
-              Your backend URL — the Cloudflare tunnel link (e.g. https://name.trycloudflare.com).
+            <Text variant="body" color={colors.muted} style={{ marginBottom: space.md }}>
+              Connect your backend to sync projects, papers, audio, and notes — the Cloudflare
+              tunnel link (e.g. https://name.trycloudflare.com).
             </Text>
             <Field
               value={url}
@@ -124,11 +129,16 @@ export default function SettingsScreen() {
           </Section>
 
           {!hasBaseUrl() ? (
-            <Text variant="caption" style={{ textAlign: 'center', marginTop: space.lg }}>
-              Set a server URL above to configure analysis and audio.
-            </Text>
+            <>
+              <LockedRow label="Analysis model" />
+              <LockedRow label="Audio voice" />
+              <LockedRow label="Research sources" />
+              <Text variant="caption" style={{ textAlign: 'center', marginTop: space.lg }}>
+                Set a server URL first to configure analysis and audio.
+              </Text>
+            </>
           ) : settings.isLoading ? (
-            <ActivityIndicator color={colors.cyan} style={{ paddingVertical: space.xl }} />
+            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
           ) : settings.isError ? (
             <Text variant="caption" color={colors.danger} style={{ textAlign: 'center', marginTop: space.lg }}>
               Couldn't reach the server. Check the URL and that the backend is running.
@@ -163,6 +173,14 @@ export default function SettingsScreen() {
                   models={favorites.data ?? []}
                   selected={narrationModel}
                   onPick={setNarrationModel}
+                />
+
+                <Label text="Listening preview model" />
+                <Field value={previewModel} onChangeText={setPreviewModel} placeholder="Defaults to narration model" autoCapitalize="none" />
+                <ModelChips
+                  models={favorites.data ?? []}
+                  selected={previewModel}
+                  onPick={setPreviewModel}
                 />
 
                 <Label text="Prior notes in paper context" />
@@ -289,7 +307,7 @@ function UsageSection() {
   return (
     <Section title="Usage (this project)">
       {usage.isLoading ? (
-        <ActivityIndicator color={colors.cyan} />
+        <ActivityIndicator color={colors.mint} />
       ) : usage.isError || !usage.data ? (
         <Text variant="caption" color={colors.muted}>Usage unavailable.</Text>
       ) : (
@@ -342,6 +360,16 @@ function UsageBody({ data }: { data: UsageSummary }) {
   );
 }
 
+/** Disconnected placeholder row (Figma `08 · Settings / Connect`). */
+function LockedRow({ label }: { label: string }) {
+  return (
+    <Card style={styles.lockedRow}>
+      <Text variant="heading">{label}</Text>
+      <Text variant="caption">Locked until connected</Text>
+    </Card>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: space.lg }}>
@@ -379,7 +407,7 @@ function Toggle({ label, active, onPress }: { label: string; active: boolean; on
       accessibilityRole="radio"
       accessibilityState={{ checked: active }}
       style={[styles.toggle, active && styles.toggleActive]}>
-      <Text variant="heading" color={active ? colors.cyanInk : colors.text}>
+      <Text variant="heading" color={active ? colors.mintInk : colors.text}>
         {label}
       </Text>
     </Pressable>
@@ -408,7 +436,7 @@ function ModelChips({
             accessibilityRole="radio"
             accessibilityState={{ checked: active }}
             style={[styles.modelChip, active && styles.modelChipActive]}>
-            <Text variant="caption" color={active ? colors.cyan : colors.muted}>
+            <Text variant="caption" color={active ? colors.mint : colors.muted}>
               {m.label}
             </Text>
           </Pressable>
@@ -420,11 +448,18 @@ function ModelChips({
 
 const styles = StyleSheet.create({
   content: { padding: space.md, paddingBottom: space.xxl * 2 },
+  lockedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: space.md,
+    paddingVertical: space.lg,
+  },
   input: {
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 12,
     color: colors.text,
@@ -434,22 +469,22 @@ const styles = StyleSheet.create({
   toggle: {
     flex: 1,
     height: 44,
-    borderRadius: radius.sm,
-    backgroundColor: colors.panel2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toggleActive: { backgroundColor: colors.cyan, borderColor: colors.cyan },
+  toggleActive: { backgroundColor: colors.mint, borderColor: colors.mint },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm },
   modelChip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: radius.pill,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
   },
-  modelChipActive: { borderColor: colors.cyan },
+  modelChipActive: { borderColor: colors.mint, backgroundColor: 'rgba(101, 214, 180, 0.10)' },
 });

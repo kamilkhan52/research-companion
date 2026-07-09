@@ -3,18 +3,37 @@
 // lists, blockquotes, fenced code, and paragraphs. Deliberately small — not a full CommonMark
 // implementation — to keep reading fast and the bundle lean.
 
-import { Fragment, useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { createContext, Fragment, useContext, useMemo } from 'react';
+import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
 
 import { Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
 
-export function Markdown({ text }: { text: string }) {
+// Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
+// monospace member, so code falls back to the platform's own mono face.
+const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
+
+/** Called when an inline link is tapped. The discussion screen provides one (via
+ *  LinkHandlerContext) that routes `rc-paper:<slug>` links into the in-project paper's discussion
+ *  and prompts for external references; elsewhere links just open http(s) URLs externally. */
+export type LinkHandler = (href: string, label?: string) => void;
+
+const defaultLinkPress: LinkHandler = (href) => {
+  if (/^https?:\/\//i.test(href)) void Linking.openURL(href).catch(() => undefined);
+};
+
+/** Lets a screen (the discussion) install a link handler for all Markdown it renders without
+ *  threading a prop through every message component. */
+export const LinkHandlerContext = createContext<LinkHandler | null>(null);
+
+export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
+  const contextHandler = useContext(LinkHandlerContext);
+  const handleLink = onLinkPress ?? contextHandler ?? defaultLinkPress;
   return (
     <View style={{ gap: space.sm }}>
       {blocks.map((block, i) => (
-        <Block key={i} block={block} />
+        <Block key={i} block={block} onLinkPress={handleLink} />
       ))}
     </View>
   );
@@ -103,41 +122,45 @@ function parseBlocks(src: string): Block[] {
   return blocks;
 }
 
-const HEADING_SIZE: Record<number, number> = { 1: 22, 2: 19, 3: 17, 4: 15.5 };
+// Long-form document type per the redesign: Newsreader for headings and prose (the "reads
+// like a document, not chat" principle), Manrope only for the densest level-4 run-ins.
+const HEADING_STYLES: Record<number, object> = {
+  1: { fontFamily: fonts.serifMedium, fontSize: 24, lineHeight: 30 },
+  2: { fontFamily: fonts.serifMedium, fontSize: 21, lineHeight: 27 },
+  3: { fontFamily: fonts.serifMedium, fontSize: 18, lineHeight: 24 },
+  4: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 22 },
+};
 
-function Block({ block }: { block: Block }) {
+function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
   switch (block.kind) {
     case 'heading':
       return (
         <Text
-          selectable
-          style={{
-            fontFamily: fonts.display,
-            fontSize: HEADING_SIZE[block.level] ?? 15.5,
-            color: colors.text,
-            marginTop: space.xs,
-          }}>
-          <Inline text={block.text} />
+          style={[
+            HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
+            { color: colors.text, marginTop: space.xs },
+          ]}>
+          <Inline text={block.text} onLinkPress={onLinkPress} serif={block.level < 4} />
         </Text>
       );
     case 'paragraph':
       return (
-        <Text selectable variant="body">
-          <Inline text={block.text} />
+        <Text variant="serifBody">
+          <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text selectable variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
-            <Inline text={block.text} />
+          <Text variant="serifItalic">
+            <Inline text={block.text} onLinkPress={onLinkPress} />
           </Text>
         </View>
       );
     case 'code':
       return (
         <View style={styles.code}>
-          <Text selectable style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
+          <Text style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
     case 'list':
@@ -145,11 +168,11 @@ function Block({ block }: { block: Block }) {
         <View style={{ gap: 4 }}>
           {block.items.map((item, idx) => (
             <View key={idx} style={styles.listItem}>
-              <Text variant="body" color={colors.cyan} style={{ width: 22 }}>
+              <Text variant="serifBody" color={colors.mint} style={{ width: 22 }}>
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
-              <Text selectable variant="body" style={{ flex: 1 }}>
-                <Inline text={item} />
+              <Text variant="serifBody" style={{ flex: 1 }}>
+                <Inline text={item} onLinkPress={onLinkPress} />
               </Text>
             </View>
           ))}
@@ -158,23 +181,43 @@ function Block({ block }: { block: Block }) {
   }
 }
 
-/** Inline formatting: bold, italic (asterisk or underscore), and inline code. */
-function Inline({ text }: { text: string }) {
+/** Inline formatting: links, bold, italic (asterisk or underscore), and inline code.
+ * Spans are raw RN Text so plain tokens INHERIT the enclosing block's typography (the themed
+ * Text would stamp its own body variant over serif blocks). Emphasis picks its face from the
+ * block context: serif blocks get Newsreader weights/italics, the Manrope level-4 heading
+ * path keeps Manrope (best-effort synthetic italic — Manrope ships no italic cut). */
+function Inline({
+  text,
+  onLinkPress,
+  serif = true,
+}: {
+  text: string;
+  onLinkPress: LinkHandler;
+  serif?: boolean;
+}) {
   const tokens = tokenizeInline(text);
   return (
     <>
       {tokens.map((t, i) => (
         <Fragment key={i}>
           {t.type === 'code' ? (
-            <Text style={{ fontFamily: fonts.mono, fontSize: 13.5, color: colors.cyan }}>{t.text}</Text>
-          ) : (
-            <Text
-              style={[
-                t.type === 'bold' && { fontFamily: fonts.bodyBold },
-                t.type === 'italic' && { fontStyle: 'italic' },
-              ]}>
+            <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</RNText>
+          ) : t.type === 'link' ? (
+            <RNText
+              style={{ color: colors.mint, textDecorationLine: 'underline' }}
+              onPress={() => onLinkPress(t.href ?? '', t.text)}>
               {t.text}
-            </Text>
+            </RNText>
+          ) : t.type === 'bold' ? (
+            <RNText style={{ fontFamily: serif ? fonts.serifSemiBold : fonts.bodyBold }}>
+              {t.text}
+            </RNText>
+          ) : t.type === 'italic' ? (
+            <RNText style={serif ? { fontFamily: fonts.serifItalic } : { fontStyle: 'italic' }}>
+              {t.text}
+            </RNText>
+          ) : (
+            <RNText>{t.text}</RNText>
           )}
         </Fragment>
       ))}
@@ -183,20 +226,23 @@ function Inline({ text }: { text: string }) {
 }
 
 interface InlineToken {
-  type: 'text' | 'bold' | 'italic' | 'code';
+  type: 'text' | 'bold' | 'italic' | 'code' | 'link';
   text: string;
+  href?: string;
 }
 
 function tokenizeInline(input: string): InlineToken[] {
   const tokens: InlineToken[] = [];
-  const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+  // Link `[label](href)` is matched first so its label isn't consumed by emphasis parsing.
+  const re = /(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {
     if (m.index > last) tokens.push({ type: 'text', text: input.slice(last, m.index) });
-    if (m[2] !== undefined) tokens.push({ type: 'bold', text: m[2] });
-    else if (m[4] !== undefined) tokens.push({ type: 'code', text: m[4] });
-    else if (m[6] !== undefined) tokens.push({ type: 'italic', text: m[6] });
+    if (m[2] !== undefined) tokens.push({ type: 'link', text: m[2], href: m[3] });
+    else if (m[5] !== undefined) tokens.push({ type: 'bold', text: m[5] });
+    else if (m[7] !== undefined) tokens.push({ type: 'code', text: m[7] });
+    else if (m[9] !== undefined) tokens.push({ type: 'italic', text: m[9] });
     last = re.lastIndex;
   }
   if (last < input.length) tokens.push({ type: 'text', text: input.slice(last) });

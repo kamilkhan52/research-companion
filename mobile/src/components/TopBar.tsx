@@ -1,25 +1,73 @@
-// App top bar: a sticky header with an optional back affordance, a centered display-font title,
-// and an optional right-side action. Mirrors the web client's topbar.
+// App headers. Two shapes from the Figma proposal:
+//   TabHeader — big left-aligned display title with a right-side icon cluster; used by the
+//               four tab screens (Library, Discover, Notes, Map).
+//   TopBar    — stack/modal header: circular back button, centered mint title (+ subtitle),
+//               optional right actions; used by screens pushed over the tabs.
 
 import { type ReactNode } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { Text } from '@/ui';
+import { IconButton as UIIconButton, Text, type IconName } from '@/ui';
 import { colors, radius, space } from '@/theme/tokens';
 
-export function IconButton({ glyph, onPress, accessibilityLabel }: {
+/** @deprecated Text-glyph button kept only for screens not yet rebuilt (graph, paper);
+ * new code uses the Feather-based IconButton from '@/ui'. Removed in the final revamp PR. */
+export function IconButton({ glyph, onPress, accessibilityLabel, active = false }: {
   glyph: string;
   onPress: () => void;
   accessibilityLabel: string;
+  active?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
       accessibilityLabel={accessibilityLabel}
       hitSlop={8}
-      style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-      <Text style={styles.glyph}>{glyph}</Text>
+      accessibilityState={{ selected: active }}
+      style={({ pressed }) => [styles.legacyBtn, active && styles.legacyBtnActive, pressed && { opacity: 0.85 }]}>
+      <Text style={[styles.legacyGlyph, active && styles.legacyGlyphActive]}>{glyph}</Text>
     </Pressable>
+  );
+}
+
+export function TabHeader({
+  title,
+  subtitle,
+  actions,
+}: {
+  title: string;
+  subtitle?: string;
+  /** Right-side Feather icon buttons, rendered borderless per the proposal's tab headers. */
+  actions?: { name: IconName; onPress: () => void; accessibilityLabel: string }[];
+}) {
+  return (
+    <View style={styles.tabHeader}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text variant="display" numberOfLines={2}>
+          {title}
+        </Text>
+        {subtitle ? (
+          <Text variant="caption" numberOfLines={1} style={{ marginTop: 2 }}>
+            {subtitle}
+          </Text>
+        ) : null}
+      </View>
+      {actions?.length ? (
+        <View style={styles.tabActions}>
+          {actions.map((a) => (
+            <UIIconButton
+              key={a.accessibilityLabel}
+              name={a.name}
+              size={21}
+              color={colors.muted}
+              filled={false}
+              onPress={a.onPress}
+              accessibilityLabel={a.accessibilityLabel}
+            />
+          ))}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -37,10 +85,12 @@ export function TopBar({
   return (
     <View style={styles.bar}>
       <View style={styles.side}>
-        {onBack ? <IconButton glyph="‹" onPress={onBack} accessibilityLabel="Back" /> : null}
+        {onBack ? (
+          <UIIconButton name="chevron-left" size={20} onPress={onBack} accessibilityLabel="Back" />
+        ) : null}
       </View>
       <View style={styles.center}>
-        <Text variant="title" numberOfLines={1} color={colors.cyan}>
+        <Text variant="heading" style={{ fontSize: 18 }} numberOfLines={1} color={colors.mint}>
           {title}
         </Text>
         {subtitle ? (
@@ -55,6 +105,15 @@ export function TopBar({
 }
 
 const styles = StyleSheet.create({
+  tabHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: space.md,
+    gap: space.sm,
+  },
+  tabActions: { flexDirection: 'row', gap: 2, marginTop: 4 },
   bar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -68,16 +127,17 @@ const styles = StyleSheet.create({
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, alignItems: 'center' },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.sm,
-    backgroundColor: colors.panel2,
+  legacyBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.pill,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconBtnPressed: { backgroundColor: colors.panelActive },
-  glyph: { fontSize: 24, color: colors.text, lineHeight: 28 },
+  legacyBtnActive: { backgroundColor: colors.mint, borderColor: colors.mint },
+  legacyGlyph: { fontSize: 22, color: colors.text, lineHeight: 26 },
+  legacyGlyphActive: { color: colors.mintInk },
 });

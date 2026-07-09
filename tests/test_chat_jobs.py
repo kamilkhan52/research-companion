@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
-from app import chat_jobs, sessions
+from app import agent, chat_jobs, preview_jobs, sessions
+from app.routers import session as session_routes
 
 PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"
 
@@ -20,8 +22,12 @@ PROTO = "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END #
 @pytest.fixture(autouse=True)
 def _clear_jobs():
     chat_jobs._jobs.clear()
+    preview_jobs._jobs.clear()
+    preview_jobs._coordinator_jobs.clear()
     yield
     chat_jobs._jobs.clear()
+    preview_jobs._jobs.clear()
+    preview_jobs._coordinator_jobs.clear()
 
 
 def _session_with_reply(slug: str = "p") -> str:
@@ -108,6 +114,89 @@ def test_runner_failure_is_an_error_job_and_session_is_untouched(temp_project):
     assert sessions.read_records(slug)[-1]["role"] == "user"
 
 
+def test_failed_parent_suppresses_blocked_preview_before_publishing_error(
+    temp_project, monkeypatch,
+):
+    slug = _session_with_reply()
+    preview_started = threading.Event()
+    release_preview = threading.Event()
+    synth_calls = []
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {
+            "speech_provider": "openai",
+            "preview_model": "preview/model",
+            "narration_model": "narration/model",
+            "tts_model": "tts-model",
+            "tts_voice": "voice",
+        },
+    )
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 0)
+
+    def blocked_preview(messages, model):
+        preview_started.set()
+        release_preview.wait(5)
+        return '{"cue":"Grounded cue.","source_sentence_ids":["s0001"]}'
+
+    monkeypatch.setattr(preview_jobs, "_default_generate", blocked_preview)
+    monkeypatch.setattr(
+        preview_jobs.tts,
+        "openai_speech",
+        lambda cue: synth_calls.append(cue) or b"mp3",
+    )
+
+    def failing_after_preview(slug_, history):
+        yield {"type": "text", "text": "### CANONICAL ###\nGrounded cue. "}
+        yield {"type": "text", "text": "More analysis is coming"}
+        assert preview_started.wait(5)
+        raise chat_jobs.AgentError("analysis failed after preview")
+
+    job = chat_jobs.start_turn(
+        slug,
+        runner=lambda s, h: failing_after_preview(s, h),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+    assert finished.status == "error"
+    assert finished.preview_job_ids
+
+    release_preview.set()
+    deadline = time.time() + 5
+    cue_job = None
+    while time.time() < deadline:
+        cue_job = preview_jobs.get_job(finished.preview_job_ids[0])
+        if cue_job and cue_job.status != "running":
+            break
+        time.sleep(0.02)
+    assert cue_job and cue_job.status == "done"
+    assert cue_job.suppressed is True
+    assert cue_job.url is None
+    assert synth_calls == []
+    assert sessions.read_records(slug)[-1]["role"] == "user"
+
+
+def test_agentic_tool_use_becomes_a_grounded_cue_source():
+    """A tool call during an agentic listening turn is captured as an `agent_activity` source so
+    cues can narrate what the agent is doing (searching, fetching), not just the written prose."""
+    job = chat_jobs.ChatJob(id="job-tool", slug="paper", delivery_mode="listening")
+    job._preview_enabled = True
+    job._tool_activity = []
+
+    chat_jobs._apply(job, {"type": "tool", "name": "web_search",
+                           "detail": "transformer scaling laws"}, [], 0)
+
+    assert len(job._tool_activity) == 1
+    source = job._tool_activity[0]
+    assert source["kind"] == "agent_activity"
+    assert source["id"] == "tool0001"
+    assert "web search" in source["text"].lower()
+    assert "transformer scaling laws" in source["text"]
+    # And it lands in the client-visible item stream as a tool row.
+    assert job.items[-1] == {"kind": "tool", "name": "web_search",
+                             "detail": "transformer scaling laws"}
+
+
 def test_empty_canonical_is_an_error_not_a_recorded_blank_turn(temp_project):
     slug = _session_with_reply()
     job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": ""}]))
@@ -144,3 +233,266 @@ def test_snapshot_is_a_plain_dict_safe_for_polling(temp_project):
     snap = chat_jobs.snapshot(job.id)
     assert snap and snap["status"] == "done" and snap["slug"] == slug
     assert chat_jobs.snapshot("nope") is None
+
+
+def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    captured = {}
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai"},
+    )
+
+    def fake_audio(text, billing_project=None):
+        assert sessions.read_records(slug)[-1]["role"] == "assistant"
+        captured.update(text=text, billing_project=billing_project)
+        return SimpleNamespace(id="audio-job")
+
+    monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", fake_audio)
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": PROTO}]),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.audio_job_id == "audio-job"
+    assert finished.audio_error is None
+    assert finished.assistant_index == 0
+    assert captured == {"text": "The answer.", "billing_project": temp_project}
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["assistant_index"] == 0
+    assert transcript[-1]["delivery_mode"] == "listening"
+    assert transcript[-1]["chat_job_id"] == finished.id
+    assert transcript[-1]["audio_job_id"] == "audio-job"
+
+
+def test_reading_turn_does_not_start_audio(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    monkeypatch.setattr(
+        chat_jobs.audio_jobs,
+        "start_job",
+        lambda *args, **kwargs: pytest.fail("reading turn started audio"),
+    )
+    job = chat_jobs.start_turn(slug, runner=_sync_runner([{"type": "final", "text": PROTO}]))
+    assert _wait_until_settled(job.id).audio_job_id is None
+
+
+def test_listening_turn_starts_grounded_preview_without_blocking_analysis(
+    temp_project, monkeypatch,
+):
+    slug = _session_with_reply()
+    captured = {}
+    coordinator = {}
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai", "tts_model": "m", "tts_voice": "v"},
+    )
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 0)
+
+    monkeypatch.setattr(
+        chat_jobs.preview_jobs,
+        "research_sources",
+        lambda slug: [{"id": "project0001", "text": "Prior work.",
+                       "kind": "prior_project_context"}],
+    )
+
+    def fake_preview(chat_job_id, ordinal, sentences, previous_cue, progress):
+        captured.update(
+            chat_job_id=chat_job_id,
+            ordinal=ordinal,
+            sentences=sentences,
+            previous_cue=previous_cue,
+            progress=progress,
+        )
+        return SimpleNamespace(id="preview-job")
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_preview)
+    monkeypatch.setattr(
+        chat_jobs.preview_jobs, "get_job",
+        lambda job_id: SimpleNamespace(status="running", cue=None),
+    )
+    def fake_coordinator(chat_id, audio_id, sources, existing_ids, publish, **kwargs):
+        coordinator.update(
+            chat_id=chat_id,
+            audio_id=audio_id,
+            sources=sources,
+            existing_ids=existing_ids,
+            kwargs=kwargs,
+        )
+        return SimpleNamespace(id="coordinator-job")
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_coordinator", fake_coordinator)
+    monkeypatch.setattr(
+        chat_jobs.audio_jobs,
+        "start_job",
+        lambda *args, **kwargs: SimpleNamespace(id="audio-job"),
+    )
+    full = ("### CANONICAL ###\nThe first finding is grounded. The second finding is ready. "
+            "\n### STATE ###\nin_discussion\n### END ###")
+    events = [
+        {"type": "text", "text": "### CANONICAL ###\nThe first finding is grounded. "},
+        {"type": "text", "text": "The second finding is ready. "},
+        {"type": "final", "text": full},
+    ]
+
+    job = chat_jobs.start_turn(slug, runner=_sync_runner(events), delivery_mode="listening")
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.preview_job_ids == ["preview-job"]
+    assert captured == {
+        "chat_job_id": job.id,
+        "ordinal": 1,
+        "sentences": [
+            {"id": "s0001", "text": "The first finding is grounded.",
+             "kind": "live_response"},
+            {"id": "project0001", "text": "Prior work.",
+             "kind": "prior_project_context"},
+        ],
+        "previous_cue": "",
+        "progress": {
+            "phase": "analysis",
+            "completed_response_sentences": 1,
+            "remaining_known": False,
+        },
+    }
+    assert coordinator["audio_id"] == "audio-job"
+    assert coordinator["existing_ids"] == ["preview-job"]
+    assert [source["kind"] for source in coordinator["sources"]] == [
+        "live_response", "live_response", "prior_project_context",
+    ]
+    assert finished.preview_complete is False
+    assert finished.preview_coordinator_id == "coordinator-job"
+
+
+def test_preview_cadence_uses_new_sentences_context_and_previous_cue(monkeypatch):
+    job = chat_jobs.ChatJob(id="chat-1", delivery_mode="listening")
+    job._preview_enabled = True
+    job._preview_last_started = 0.0
+    job._preview_next_sentence = 0
+    job._preview_context = [
+        {"id": "project0001", "text": "Prior work.", "kind": "prior_project_context"}
+    ]
+    calls = []
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 3)
+    monkeypatch.setattr(chat_jobs.time, "monotonic", lambda: 20.0 + len(calls) * 3)
+
+    def fake_start(chat_job_id, ordinal, sentences, previous_cue, progress):
+        calls.append((chat_job_id, ordinal, sentences, previous_cue, progress))
+        return SimpleNamespace(id=f"preview-{ordinal}")
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(
+        chat_jobs.preview_jobs,
+        "get_job",
+        lambda job_id: SimpleNamespace(status="done", cue=f"spoken {job_id}"),
+    )
+
+    chat_jobs._maybe_start_preview(job, "One. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. Three. fragment")
+    chat_jobs._maybe_start_preview(job, "One. Two. Three. Four. fragment")
+
+    assert job.preview_job_ids == ["preview-1", "preview-2", "preview-3", "preview-4"]
+    assert calls[0][2] == [
+        {"id": "s0001", "text": "One.", "kind": "live_response"},
+        {"id": "project0001", "text": "Prior work.", "kind": "prior_project_context"},
+    ]
+    assert calls[1][2][0] == {"id": "s0002", "text": "Two.", "kind": "live_response"}
+    assert calls[1][3] == "spoken preview-1"
+    assert calls[1][4]["completed_response_sentences"] == 2
+    assert all(call[0] == "chat-1" for call in calls)
+
+
+def test_audio_start_failure_does_not_fail_recorded_listening_turn(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai"},
+    )
+    def fail_audio(*args, **kwargs):
+        raise RuntimeError("TTS unavailable")
+
+    monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", fail_audio)
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": PROTO}]),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.audio_job_id is None
+    assert "TTS unavailable" in (finished.audio_error or "")
+    assert sessions.read_records(slug)[-1]["canonical"] == "The answer."
+    transcript = sessions.transcript(slug)
+    assert transcript[-1]["audio_job_id"] is None
+    assert "TTS unavailable" in transcript[-1]["audio_error"]
+
+
+def test_job_route_passes_listening_delivery_mode(temp_project, monkeypatch):
+    slug = _session_with_reply()
+    captured = {}
+
+    def fake_start(target, delivery_mode="reading", model=None):
+        captured.update(slug=target, delivery_mode=delivery_mode, model=model)
+        return SimpleNamespace(id="chat-job")
+
+    monkeypatch.setattr(chat_jobs, "start_turn", fake_start)
+    monkeypatch.setattr(chat_jobs, "snapshot", lambda job_id: {"id": job_id})
+    response = session_routes.continue_job(
+        session_routes.FinishReq(slug=slug, delivery_mode="listening")
+    )
+
+    assert response == {"job": {"id": "chat-job"}}
+    assert captured["delivery_mode"] == "listening"
+    assert captured["model"] is None
+
+
+def test_job_route_passes_one_shot_model_override(temp_project, monkeypatch):
+    """A model chosen for one turn reaches start_turn as a one-shot override — and, per the
+    locked product decision, never touches persisted settings (config.save_settings is not
+    called anywhere in this path any more)."""
+    slug = _session_with_reply()
+    captured = {}
+
+    def fake_start(target, delivery_mode="reading", model=None):
+        captured.update(slug=target, delivery_mode=delivery_mode, model=model)
+        return SimpleNamespace(id="chat-job")
+
+    monkeypatch.setattr(chat_jobs, "start_turn", fake_start)
+    monkeypatch.setattr(chat_jobs, "snapshot", lambda job_id: {"id": job_id})
+
+    def fail_save_settings(*args, **kwargs):
+        raise AssertionError("must not persist a one-shot model override to settings")
+
+    monkeypatch.setattr(session_routes.config, "save_settings", fail_save_settings)
+
+    response = session_routes.continue_job(
+        session_routes.FinishReq(slug=slug, model="anthropic/claude-opus-4-8")
+    )
+
+    assert response == {"job": {"id": "chat-job"}}
+    assert captured["model"] == "anthropic/claude-opus-4-8"
+
+
+def test_default_events_threads_model_to_single_shot(monkeypatch):
+    """chat_jobs._default_events (the production runner) must pass a model override through
+    to agent.stream_tokens rather than relying on the settings default."""
+    captured = {}
+
+    def fake_stream_tokens(slug, history, model=None):
+        captured["model"] = model
+        yield "### CANONICAL ###\nhi\n### END ###"
+
+    monkeypatch.setattr(chat_jobs.agent_harness, "AGENTIC_ENABLED", False)
+    monkeypatch.setattr(agent, "stream_tokens", fake_stream_tokens)
+
+    events = list(chat_jobs._default_events("p", [], model="openai/gpt-5"))
+
+    assert captured["model"] == "openai/gpt-5"
+    assert events[-1]["type"] == "final"

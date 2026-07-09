@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime
 
 from . import config, prompts, store
 from .fileio import atomic_write_text
 from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
+
+# sessions.json is a read/modify/write index shared by chat-job threads and request handlers.
+# A single-process lock matches the deployment model documented in CLAUDE.md and prevents one
+# project/session update from silently overwriting another update based on a stale read.
+_index_lock = threading.RLock()
 
 
 def _sessions_dir():
@@ -29,7 +35,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def _load_index() -> dict:
+def _load_index_unlocked() -> dict:
     idx_file = _index_file()
     if idx_file.exists():
         try:
@@ -39,8 +45,18 @@ def _load_index() -> dict:
     return {}
 
 
-def _save_index(idx: dict) -> None:
+def _load_index() -> dict:
+    with _index_lock:
+        return _load_index_unlocked()
+
+
+def _save_index_unlocked(idx: dict) -> None:
     atomic_write_text(_index_file(), json.dumps(idx, indent=2))
+
+
+def session_index() -> dict[str, dict]:
+    """A snapshot of the active project's session metadata."""
+    return _load_index()
 
 
 def session_states() -> dict[str, str]:
@@ -52,23 +68,35 @@ def get_state(slug: str) -> str | None:
 
 
 def set_state(slug: str, state: str) -> None:
-    idx = _load_index()
-    meta = idx.get(slug, {})
-    meta["state"] = state
-    meta["updated_at"] = _now()
-    idx[slug] = meta
-    _save_index(idx)
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        meta["state"] = state
+        meta["updated_at"] = _now()
+        idx[slug] = meta
+        _save_index_unlocked(idx)
+
+
+def _touch_session(slug: str, timestamp: str) -> None:
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        meta["updated_at"] = timestamp
+        idx[slug] = meta
+        _save_index_unlocked(idx)
 
 
 def _jsonl(slug: str):
     return _sessions_dir() / f"{slug}.jsonl"
 
 
-def _append_record(slug: str, record: dict) -> None:
+def _append_record(slug: str, record: dict) -> dict:
     _sessions_dir().mkdir(parents=True, exist_ok=True)
     record["ts"] = _now()
     with _jsonl(slug).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _touch_session(slug, record["ts"])
+    return record
 
 
 def read_records(slug: str) -> list[dict]:
@@ -87,13 +115,15 @@ def start_session(slug: str, title: str, kind: str = "paper", opening: str | Non
     """Begin (or restart) a discussion. For a paper, corpus full text must already be cached;
     kind="review" is the cross-paper working-notes review chat. `opening` is the (possibly
     user-edited) first-prompt template for this session; None falls back to the default."""
-    idx = _load_index()
-    meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
-            "started_at": _now(), "updated_at": _now()}
-    if opening:
-        meta["opening"] = opening
-    idx[slug] = meta
-    _save_index(idx)
+    with _index_lock:
+        idx = _load_index_unlocked()
+        now = _now()
+        meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
+                "started_at": now, "updated_at": now}
+        if opening:
+            meta["opening"] = opening
+        idx[slug] = meta
+        _save_index_unlocked(idx)
     # fresh transcript for a fresh session start
     if _jsonl(slug).exists():
         _jsonl(slug).unlink()
@@ -107,14 +137,41 @@ def get_opening(slug: str) -> str | None:
     return _load_index().get(slug, {}).get("opening")
 
 
-def record_user(slug: str, text: str, kind: str = "reply") -> None:
-    _append_record(slug, {"role": "user", "kind": kind, "text": text})
+def record_user(slug: str, text: str, kind: str = "reply", *, authored_text: str | None = None) -> None:
+    record = {"role": "user", "kind": kind, "text": text}
+    if authored_text is not None:
+        record["authored_text"] = authored_text
+    _append_record(slug, record)
 
 
-def record_assistant(slug: str, turn: Turn) -> None:
-    _append_record(slug, {"role": "assistant", **turn.to_dict()})
+def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
+                     chat_job_id: str | None = None,
+                     audio_job_id: str | None = None,
+                     audio_error: str | None = None) -> tuple[str, int]:
+    assistant_index = sum(r.get("role") == "assistant" for r in read_records(slug))
+    record = _append_record(slug, {
+        "role": "assistant",
+        **turn.to_dict(),
+        "delivery_mode": delivery_mode,
+        "chat_job_id": chat_job_id,
+        "audio_job_id": audio_job_id,
+        "audio_error": audio_error,
+    })
     if turn.proposed_commit:
         set_state(slug, NOTES_DRAFTED)
+    return record["ts"], assistant_index
+
+
+def update_assistant_audio(slug: str, timestamp: str, *, audio_job_id: str | None,
+                           audio_error: str | None) -> None:
+    """Update only the listening handoff on one already-recorded assistant turn."""
+    records = read_records(slug)
+    for record in reversed(records):
+        if record.get("role") == "assistant" and record.get("ts") == timestamp:
+            record["audio_job_id"] = audio_job_id
+            record["audio_error"] = audio_error
+            _rewrite(slug, records)
+            return
 
 
 def build_history(slug: str) -> list[dict]:
@@ -141,18 +198,43 @@ def build_history(slug: str) -> list[dict]:
 def transcript(slug: str) -> list[dict]:
     """UI-facing transcript (excludes the regenerated opening message)."""
     out = []
+    assistant_index = -1
     for rec in read_records(slug):
         if rec["role"] == "user":
             if rec.get("kind") == "reply":  # hide internal finish/revision prompts
                 out.append({"role": "user", "text": rec["text"]})
         else:
+            assistant_index += 1
             out.append({
                 "role": "assistant",
+                "assistant_index": assistant_index,
                 "canonical": rec.get("canonical", ""),
                 "narration": rec.get("narration", ""),
                 "state_signal": rec.get("state_signal", ""),
                 "proposed_commit": rec.get("proposed_commit"),
+                "delivery_mode": rec.get("delivery_mode", "reading"),
+                "chat_job_id": rec.get("chat_job_id"),
+                "audio_job_id": rec.get("audio_job_id"),
+                "audio_error": rec.get("audio_error"),
             })
+    return out
+
+
+def accepted_drafts(slug: str) -> list[dict]:
+    """Human-authored discussion inputs accepted into the server transcript.
+
+    Revision records contain a rendered model instruction, so preserve and expose only their
+    original feedback. Internal finish prompts are deliberately excluded.
+    """
+    out = []
+    for record in read_records(slug):
+        if record.get("role") != "user":
+            continue
+        kind = record.get("kind")
+        if kind == "reply":
+            out.append({"kind": kind, "text": record.get("text", "")})
+        elif kind == "revision" and record.get("authored_text") is not None:
+            out.append({"kind": kind, "text": record["authored_text"]})
     return out
 
 

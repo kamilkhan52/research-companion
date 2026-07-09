@@ -64,6 +64,10 @@ def test_registry_has_stable_file_validation_metadata():
         "full_text",
     )
     assert "###CANONICAL###" in prompts.REGISTRY_BY_KEY["analysis_system"].required_literals
+    assert prompts.REGISTRY_BY_KEY["listening_preview"].required_literals == (
+        '"cue"',
+        '"source_sentence_ids"',
+    )
     for spec in prompts.REGISTRY:
         prompts._validate(spec, spec.bundled_default)
 

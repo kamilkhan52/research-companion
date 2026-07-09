@@ -28,14 +28,17 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.1 | Obsidian vault configuration, migration, and prompt loader | [#14](https://github.com/kamilkhan52/research-companion/pull/14) | Complete |
 | 1.2 | Centralize every model prompt + prompt status UI | [#16](https://github.com/kamilkhan52/research-companion/pull/16) | Complete |
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
-| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | In review — device pass pending |
-| 2.2 | Grounded preview cues from the live response | — | Planned |
-| 2.3 | Progressive TTS segments + sentence/headset controls | — | Planned |
-| 3.1 | Recent sessions and activity timestamps | — | Planned |
-| 3.2 | Authored-draft safety and reconciliation | — | Planned |
+| 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
+| 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
+| 2.2a | Contextual cue continuity during narration prep | [#30](https://github.com/kamilkhan52/research-companion/pull/30) | Merged — device pass pending |
+| 2.2b | Retrieval-phase spoken cues (arXiv hunt) | — | Deferred |
+| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — device pass pending |
+| 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
+| 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
 | 3.3 | Playback position restoration | — | Planned |
 | 3.4 | Responsive drawer and project/navigation layout | — | Planned |
-| 4.1 | Discussion composer, icons, overflow actions, one-shot model | — | Planned |
+| 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
+| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Merged — device pass pending |
 | 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
 | 6.1 | Native Markdown + equation rendering | — | Planned |
@@ -59,10 +62,14 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
   extraction, PDF hunt, tool guidance, TTS, default reading method, and listening previews.
 - Listening mode is a per-device toggle and is off by default. It automatically prepares and
   plays responses in order and never interrupts current playback.
-- Preview cues are model-written but grounded only in completed source sentences from the real
-  response. Default cadence is at least 10 seconds apart, with at most three cues.
+- Preview cues are model-written from grounded source IDs: completed response text, the paper's
+  abstract/introduction, and committed project context about prior reading. Their target start
+  cadence is three seconds, they continue until final narration is playable, and they never
+  interrupt non-preview audio.
 - All user-authored text is persisted locally until server acceptance or an explicit save.
-- Composer model selection applies to one response only and never silently changes the default.
+- Composer model selection (the top-of-discussion picker) is a visible, explicit override for
+  new responses in that screen instance — reset to the account default on the next visit — and
+  never silently changes the persisted default itself.
 - Navigation becomes an overlay drawer on phones and a permanent rail on wider layouts.
 - Rich visuals begin with arXiv HTML. PDF figure extraction and pixel-level visual interpretation
   are deferred; descriptions must remain grounded in captions and surrounding text.
@@ -181,17 +188,88 @@ Persist `rc.listeningMode` on the device and expose a quick discussion-header to
 but automatically begin server-side audio preparation after analysis. The client queues final
 narrations and never interrupts a playing track.
 
+Automated verification ([PR #19](https://github.com/kamilkhan52/research-companion/pull/19)):
+
+- full Ruff and 336-test backend suites pass; all nine mobile Jest suites (sixteen tests) and
+  TypeScript pass;
+- tests cover persisted device state, request delivery mode, record-before-audio ordering,
+  audio-start failure isolation, first-track autoplay, non-interrupting queue append, recoverable
+  handoffs after navigation, stable message identity, response regeneration, device-local handoff
+  eligibility, off/on dismissal, active-track-safe replacement, retryable handoff recovery, and
+  cancellation during native queue add;
+- native acceptance remains required for relaunch persistence, background/resume, automatic
+  playback, queue advancement, and disabling Listening mode with a track active.
+
 ### 2.2 Grounded preview cues
 
-While canonical text streams, assign stable IDs to completed sentences. At most every 10 seconds,
-submit only new completed sentences and previous cue text to a configurable `preview_model`
-(default: narration model). The preview prompt returns JSON with a short spoken preview and its
-source sentence IDs.
+While canonical text streams, assign stable IDs to completed sentences. At a target three-second
+start cadence, submit new completed sentences, the paper opening, committed prior-reading context,
+and previous cue text to a configurable `preview_model` (default: narration model). The preview
+prompt returns JSON with a short spoken preview and its source IDs.
 
 Reject unknown IDs, unseen numeric claims, malformed JSON, or output over 240 characters. Generate
-cue speech in a separate background job so analysis never blocks. Play cues only while otherwise
-idle; suppress late cues once final narration starts. Cap each response at three cues. Attribute
-preview LLM/TTS usage to the initiating project.
+cue speech in a separate background job so analysis never blocks. Prefer background, motivation,
+introduction framing, and relationships to papers already read; reserve detailed results for final
+narration. Play cues only while the player is idle or another cue is active, and suppress queued
+cues once final narration becomes playable. Attribute preview LLM/TTS usage to the initiating
+project.
+
+Implementation verification:
+
+- preview generation and synthesis run in independent project-scoped background jobs; chat
+  snapshots publish only their opaque job ids and final narration suppresses outstanding cues;
+- strict validation rejects malformed JSON, unknown source ids, uncited numeric claims, and cues
+  over 240 characters;
+- full Ruff and 349-test backend suites pass; all eleven mobile Jest suites (twenty-five tests) and
+  TypeScript pass;
+- mobile tests cover idle-only cue playback, busy-player dropping, server suppression, polling,
+  failed-parent cancellation, cross-turn parent identity, dynamic preview-model fallback,
+  explicit override clearing, and serialization with the final-audio queue;
+- native iOS/Android acceptance remains required for audible cadence, background behavior,
+  non-interruption, lock-screen behavior, and final-narration handoff.
+
+#### 2.2a Contextual cue continuity adjustment
+
+Keep the completed chat snapshot live while its final audio job runs. A project-scoped coordinator
+continues publishing grounded cue jobs through narration adaptation and synthesis, with honest
+phase/segment progress and no invented ETA. Stop when the combined final audio is ready—or when the
+first progressive segment is published after 2.3—and remove any queued, not-yet-spoken cues before
+adding the final track. Model/TTS latency can exceed three seconds, so the cadence is a scheduling
+target rather than a fabricated delivery guarantee.
+
+Acceptance:
+
+- the model receives bounded paper-opening and committed prior-reading context plus canonical
+  response sources, and every factual/numeric claim remains source-ID validated;
+- cues continue after written analysis completes, report only real known progress, and stop when
+  final narration is playable;
+- automatic final-audio polling does not block cue playback; active user/final audio is never
+  interrupted, multiple cues queue naturally, and final readiness discards queued late cues;
+- backend and mobile tests cover context, coordinator lifecycle/progress, completed-parent polling,
+  automatic-preparation playback, cue ordering, and final handoff;
+- Android device verification covers cadence, intellectual focus, post-response continuity,
+  progress wording, non-interruption, and final handoff. iOS remains explicitly deferred.
+
+#### Post-merge device-feedback fixes (landed directly on `main`)
+
+From the first Android device pass, fixed directly on `main` (not separate PRs):
+
+- mini-player no longer stacks duplicate full-screen player routes on repeated taps;
+- rolling transcript highlight and tap-to-seek corrected for progressive multi-segment playback
+  (the per-segment position was being mapped as whole-narration fraction);
+- final cue announces the response is ready and about to play, and the client keeps at most two
+  cues queued ahead so a long prep never builds a stale backlog;
+- references render as tappable links — in-project papers open their discussion thread, external
+  ones prompt to open the source or add it to the reading list;
+- listening cues can narrate the analysis turn's agentic tool use (web search / fetch), sourced
+  as bounded `agent_activity` items (the analysis half of "cover agentic activity").
+
+#### 2.2b Retrieval-phase spoken cues (deferred)
+
+Spoken cues during the paper-retrieval / arXiv-hunt phase (the other half of "cover agentic
+activity"). Deferred: retrieval is a connection-tied stream with no audio/cue infrastructure, so
+reliable cues there need retrieval to gain the same job+cue treatment as the analysis turn, plus a
+decision on listening-mode gating while the user watches the fetch on screen.
 
 ### 2.3 Progressive final narration
 
@@ -205,6 +283,27 @@ Instrument analysis first-token, cue-ready, analysis-complete, narration-complet
 and playback-start timestamps. A multi-segment response passes only when playback begins before the
 last segment finishes.
 
+Implementation verification:
+
+- audio jobs publish cached per-segment URLs as synthesis completes while retaining the combined
+  MP3; legacy combined-only cache hits remain zero-cost fallbacks;
+- automatic Listening and manual Listen both enqueue segment one before later synthesis completes,
+  append later segments without interrupting active playback, and retain stable message identity;
+- sentence parsing is shared by the rolling transcript, on-screen previous/next controls, and the
+  headless TrackPlayer service; missing metadata falls back to explicit ±15-second seeking;
+- analysis, cue, narration, first-segment, and client playback-start timestamps are recorded;
+- full Ruff and 350-test backend suites pass; all twelve mobile Jest suites (thirty tests) and
+  TypeScript pass;
+- native iOS/Android acceptance remains required for progressive autoplay, segment transitions,
+  headset previous/next behavior, background playback, and combined-file replay.
+
+#### Post-merge device-feedback fix
+
+Previous-sentence seeking always steps to the sentence before the one currently playing —
+never restarts the current sentence, which is what the old within-a-grace-window boundary
+search actually did. Already at the first sentence of the current segment still falls through
+to the existing skipToPrevious segment-crossing behavior unchanged.
+
 ## Phase 3 — continuity and navigation
 
 ### 3.1 Recent sessions and activity timestamps
@@ -213,12 +312,34 @@ Serialize session-index read/modify/write operations and update `updated_at` for
 assistant record. Add a cross-project recent-sessions endpoint containing project, paper, state,
 and activity time.
 
+Verification record ([PR #29](https://github.com/kamilkhan52/research-companion/pull/29)):
+
+- concurrent index writers are serialized without losing session metadata, and user/assistant
+  records advance the authoritative activity timestamp;
+- recent activity is sorted across project boundaries while each project context is explicitly
+  rebound, and the home Continue card switches projects before resuming the latest unfinished
+  paper;
+- full Ruff and 353-test backend suites pass; all twelve mobile Jest suites (thirty-two tests) and
+  TypeScript pass.
+
 ### 3.2 Authored-draft safety and reconciliation
 
 Persist reply, request-changes, message-edit, opening/source, notes, and discovery drafts under
 project/screen-specific AsyncStorage keys. Debounce writes and clear only after server acceptance or
 save. If a POST response is lost, reconcile the draft against the refetched transcript before
 offering another send.
+
+Verification record ([PR #31](https://github.com/kamilkhan52/research-companion/pull/31)):
+
+- all planned authoring surfaces use project/screen-specific persisted keys, debounced normal
+  writes, and a submission flush before network delivery;
+- discussion replies and revision feedback reconcile against accepted human-authored transcript
+  inputs after a lost response, using a persisted acceptance baseline to avoid matching older
+  identical text;
+- notes saves, opening prompts, and discovery goals reconcile against authoritative refetched
+  server state, while message edits and source retrieval remain persisted until acceptance;
+- full Ruff and 355-test backend suites pass; all thirteen mobile Jest suites (thirty-six tests)
+  and TypeScript pass.
 
 ### 3.3 Playback position restoration
 
@@ -239,14 +360,60 @@ an anchored dropdown/popover for switching projects.
 
 ## Phase 4 — discussion and interaction redesign
 
+### 4.0 Discussion thread on a maintained chat library
+
+Replace the hand-rolled discussion thread (manual ScrollView, scroll pinning, keyboard
+listeners, bespoke bubbles and composer shell) with
+[`@kesha-antonov/react-native-chat`](https://github.com/kesha-antonov/react-native-chat), the
+maintained continuation of react-native-gifted-chat (its peer dependencies were already in the
+app). The library owns the inverted message list, keyboard handling, scroll-to-bottom, and the
+input-toolbar shell; domain renderers plug in Markdown assistant messages with listen/copy, the
+live turn's interleaved text/tool items, and the lifecycle-dependent toolbar (reply → draft
+notes → request changes / approve → committed). Message editing moves from in-bubble to the
+chat-standard long-press → edit-in-composer flow. Turn delivery is untouched: background jobs +
+polling (`useStreamingTurn`), persisted authored drafts, and listening hand-off all remain.
+
+Acceptance:
+
+- Unit tests cover the transcript → message mapping (ordering, reply indices, synthetic
+  pending/streaming rows).
+- Reply, edit-and-regenerate, request changes, approve, reopen, and draft notes all work
+  against the unchanged job endpoints; drafts still clear only on server acceptance.
+- Android device pass: keyboard behavior, streaming pin-to-bottom, long-press menus, listening
+  hand-off.
+
 ### 4.1 Modern discussion controls
 
-Replace Listen/Copy labels with accessible icons. Add a three-dot action menu for retry,
-regenerate, and retry with model. Add optional one-shot `model` fields throughout turn requests;
-the server passes them to the job without saving global settings.
+Full-width message bubbles (bands, not floating chat bubbles). Listen/Copy on assistant messages
+became icon-only; a third per-message action opens Retry / Retry with &lt;model&gt;, the first mobile
+caller of the already-implemented `retry_job`/`RetryReq`. Every turn request (`DeliveryReq`) now
+carries an optional one-shot `model` field the server passes straight to the job — `_prep_chat_start`
+/`_prep_retry` no longer call `config.save_settings`, fixing a real gap against the locked decision
+("composer model selection applies to one response only and never silently changes the default").
+A model picker at the top of the discussion (like Gemini/ChatGPT) sets that one-shot override for
+every new response in the current screen instance, never persisted.
 
-Build a rounded unified composer with the send icon inside the input. Move Draft Notes to a labeled
-checkmark action in the discussion header. Retain visible error/retry states and keyboard behavior.
+The top-right icon row (Listening, notes, related works, graph) and the composer's Draft Notes
+button collapsed into a single ⋯ overflow menu (`@expo/react-native-action-sheet`, already a
+transitive dependency of the chat library).
+
+#### Post-merge device-feedback fixes
+
+From the device pass on #33/#34:
+
+- the chat library's own `KeyboardAvoidingView` assumes it starts right below the safe area
+  (`keyboardVerticalOffset={insets.top}` in its source), with no way to know a `TopBar` sits
+  above it in this app's layout — the reply composer surfaced partly under the keyboard. Fixed
+  by measuring the real header height and passing `insets.top + headerHeight` as
+  `keyboardAvoidingViewProps.keyboardVerticalOffset`.
+- dropped the streaming turn's status line ("Thinking…/Writing…/&lt;tool&gt;…") and background-safe
+  footer note — the streamed text itself already shows progress.
+- scrolling up to read while a response is still generating no longer gets dragged back to the
+  bottom: the inverted message list has no explicit auto-scroll effect of its own (relying on
+  staying at scroll offset 0 while the growing streaming item sits at index 0), but RN's default
+  FlatList still corrects the viewport toward that offset as off-screen content resizes. Fixed
+  with `maintainVisibleContentPosition` (`autoscrollToTopThreshold: 100`) so the list only keeps
+  following while already near the latest message.
 
 ### 4.2 Sheets and motion
 

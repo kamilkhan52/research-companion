@@ -116,7 +116,7 @@ export default function GraphScreen() {
       <TopBar
         title="Reference Graph"
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
-        onBack={() => router.back()}
+        onBack={router.canGoBack() ? () => router.back() : undefined}
         right={
           <>
             <IconButton

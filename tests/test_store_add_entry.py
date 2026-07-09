@@ -50,11 +50,13 @@ def test_add_entry_defaults_group_to_unsorted(temp_project):
     assert papers[0].group == "Unsorted"
 
 
-def test_add_entry_records_arxiv_id_as_provenance_comment_only(temp_project):
+def test_add_entry_records_arxiv_id_as_its_own_comment(temp_project):
     slug = store.add_entry("Has An Arxiv Id", arxiv_id="1706.03762")
     text = store._reading_list().read_text(encoding="utf-8")
     assert "<!-- arxiv: 1706.03762 -->" in text
-    # Provenance only -- it must not be picked up as a slug/cites override.
+    # It is readable as an id (backfill_abstracts resolves papers by it) but is not a
+    # slug/cites override, and it does not trigger retrieval.
+    assert store.arxiv_id_for(slug) == "1706.03762"
     papers = store.list_papers()
     assert papers[0].slug == slug
     assert papers[0].cites == []

@@ -3,6 +3,7 @@
 
 const TrackPlayer = require('react-native-track-player').default;
 const { Event } = require('react-native-track-player');
+const { seekSentence } = require('./sentence-seek');
 
 const SKIP_SECONDS = 15;
 
@@ -17,4 +18,6 @@ module.exports = async function () {
     await TrackPlayer.seekBy(-(e?.interval ?? SKIP_SECONDS));
   });
   TrackPlayer.addEventListener(Event.RemoteSeek, (e) => TrackPlayer.seekTo(e.position));
+  TrackPlayer.addEventListener(Event.RemotePrevious, () => seekSentence(TrackPlayer, -1));
+  TrackPlayer.addEventListener(Event.RemoteNext, () => seekSentence(TrackPlayer, 1));
 };

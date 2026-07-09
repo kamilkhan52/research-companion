@@ -7,6 +7,7 @@ module never calls an LLM and never makes network calls — it is pure spine.
 from __future__ import annotations
 
 import re
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -72,6 +73,22 @@ _ENTRY_RE = re.compile(r"^\*\*(?P<title>.+?)\*\*\s*[—-]\s*\*(?P<status>unread|
 _H2_RE = re.compile(r"^##\s+(?P<group>.+?)\s*$")
 _SLUG_COMMENT_RE = re.compile(r"<!--\s*slug:\s*(?P<slug>[a-z0-9-]+)\s*-->", re.I)
 _CITES_COMMENT_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
+_ARXIV_COMMENT_RE = re.compile(r"<!--\s*arxiv:\s*(?P<arxiv_id>[^\s>]+?)\s*-->", re.I)
+_COMMENT_LINE_RE = re.compile(r"^\s*<!--.*-->\s*$")
+_ABSTRACT_LABEL_RE = re.compile(r"^Abstract:\s*(?P<head>.*)$", re.I)
+
+# An entry's abstract is a labelled paragraph inside its block, in the same style as the
+# `Authors:` / `Context & adoption:` paragraphs that projects already hand-write:
+#
+#     **Orca: A Distributed Serving System...** — *unread*
+#     <!-- arxiv: 2201.11705 -->
+#
+#     Abstract: Large-scale Transformer-based models...
+#
+# It runs to the next blank line, so it is wrapped prose a human can read and edit. Abstracts
+# give the agent something to reason about for papers nobody has read yet — an unread entry
+# otherwise reaches a discussion as a bare title (see reading_list_overview).
+_ABSTRACT_WRAP_COLS = 95
 
 # Slug derivation and citation links (which prior Notes to auto-load) are BOTH per-project
 # content authored in reading-list.md, not application data: pin a non-obvious slug with an
@@ -134,7 +151,8 @@ def _parse_entries() -> list[dict]:
 
 
 def _parse_entries_uncached(rl: Path) -> list[dict]:
-    """Return entries with title, status, group, slug, cites, and the raw text block."""
+    """Return entries with title, status, group, slug, cites, arxiv_id, abstract, and the raw
+    text block (plus the block's [line_index, end_index) extent, which set_abstract rewrites)."""
     text = rl.read_text(encoding="utf-8") if rl.exists() else ""
     lines = text.splitlines()
     entries: list[dict] = []
@@ -163,16 +181,45 @@ def _parse_entries_uncached(rl: Path) -> list[dict]:
             if _H2_RE.match(lines[j]):
                 end = j
                 break
-        block = "\n".join(lines[start:end]).strip()
-        e["block"] = block
-        slug_override = _SLUG_COMMENT_RE.search(block)
-        cites_override = _CITES_COMMENT_RE.search(block)
+        block_lines = lines[start:end]
+        e["end_index"] = end
+        e["block"] = "\n".join(block_lines).strip()
+        slug_override = _SLUG_COMMENT_RE.search(e["block"])
+        cites_override = _CITES_COMMENT_RE.search(e["block"])
+        arxiv = _ARXIV_COMMENT_RE.search(e["block"])
         e["slug"] = slug_override.group("slug") if slug_override else derive_slug(e["title"])
         if cites_override:
             e["cites"] = [c.strip() for c in cites_override.group("cites").split(",") if c.strip()]
         else:
             e["cites"] = []
+        e["arxiv_id"] = arxiv.group("arxiv_id") if arxiv else ""
+        e["abstract"] = _extract_abstract(block_lines)
     return entries
+
+
+def _abstract_span(block_lines: list[str]) -> tuple[int, int] | None:
+    """The [start, end) extent of the `Abstract:` paragraph within a block's lines, or None.
+    The paragraph runs from the labelled line to the next blank line or the block's end."""
+    for i, line in enumerate(block_lines):
+        if _ABSTRACT_LABEL_RE.match(line):
+            end = len(block_lines)
+            for j in range(i + 1, len(block_lines)):
+                if not block_lines[j].strip():
+                    end = j
+                    break
+            return (i, end)
+    return None
+
+
+def _extract_abstract(block_lines: list[str]) -> str:
+    """The abstract as a single unwrapped line ("" when the entry has none)."""
+    span = _abstract_span(block_lines)
+    if span is None:
+        return ""
+    start, end = span
+    head = _ABSTRACT_LABEL_RE.match(block_lines[start]).group("head")
+    para = " ".join([head, *(line.strip() for line in block_lines[start + 1:end])])
+    return re.sub(r"\s+", " ", para).strip()
 
 
 _NOTES_MARKER = b"\n## Notes"
@@ -242,23 +289,91 @@ def title_for(slug: str) -> str:
 
 
 def entry_markdown(slug: str) -> str:
-    """The raw reading-list block for one paper (authors, venue, context, groups)."""
+    """The raw reading-list block for one paper (authors, venue, context, groups, abstract)."""
     for e in _parse_entries():
         if e["slug"] == slug:
             return e["block"]
     return ""
 
 
+def abstract_for(slug: str) -> str:
+    """The stored abstract for one paper as a single line ("" when the entry has none)."""
+    for e in _parse_entries():
+        if e["slug"] == slug:
+            return e["abstract"]
+    return ""
+
+
+def arxiv_id_for(slug: str) -> str:
+    """The entry's `<!-- arxiv: ... -->` id, if it has one."""
+    for e in _parse_entries():
+        if e["slug"] == slug:
+            return e["arxiv_id"]
+    return ""
+
+
 def reading_list_overview() -> str:
     """Compact list of every paper (group, title, status) so the agent can situate the
-    current paper relative to the others."""
+    current paper relative to the others.
+
+    A paper that has been read contributes its whole Notes block to the context separately, so
+    here we just name it. A paper that has *not* been read contributes nothing else anywhere —
+    so its abstract rides along here, and is the only thing that lets a discussion say something
+    substantive about a paper still on the to-read pile."""
     lines, group = [], None
     for e in _parse_entries():
         if e["group"] != group:
             group = e["group"]
             lines.append(f"\n### {group}")
         lines.append(f"- {e['title']} — *{e['status']}* (slug: {e['slug']})")
+        if e["abstract"] and not has_notes(e["slug"]):
+            lines.append(f"  Abstract: {e['abstract']}")
     return "\n".join(lines).strip()
+
+
+def _abstract_paragraph(abstract: str) -> list[str]:
+    """The `Abstract:` paragraph as wrapped file lines. Never break inside a token: _extract_
+    abstract unwraps by joining lines with a space, so a line ending mid-word round-trips as
+    "3D DRAM- stacked" (hyphens) or a mangled URL. Abstracts are dense with both."""
+    return textwrap.wrap(f"Abstract: {abstract}", width=_ABSTRACT_WRAP_COLS,
+                         break_on_hyphens=False, break_long_words=False)
+
+
+def set_abstract(slug: str, abstract: str) -> bool:
+    """Write (or replace) an entry's `Abstract:` paragraph in reading-list.md. Returns False
+    when no entry carries that slug. Deterministic and offline like the rest of this module —
+    a caller that must *fetch* an abstract does so in the retriever layer (invariant 3)."""
+    abstract = re.sub(r"\s+", " ", abstract or "").strip()
+    if not abstract:
+        raise ValueError("Abstract is empty.")
+    target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+    if not target:
+        return False
+
+    rl = _reading_list()
+    lines = rl.read_text(encoding="utf-8").splitlines()
+    start, end = target["line_index"], target["end_index"]
+    block = lines[start:end]
+    para = _abstract_paragraph(abstract)
+
+    span = _abstract_span(block)
+    if span is not None:
+        block[span[0]:span[1]] = para
+    else:
+        # Insert as its own paragraph, after the title line and any comments pinned beneath it.
+        i = 1
+        while i < len(block) and _COMMENT_LINE_RE.match(block[i]):
+            i += 1
+        head, rest = block[:i], block[i:]
+        while rest and not rest[0].strip():
+            rest.pop(0)          # the blank that separated the head from the body; we re-add it
+        block = head + ["", *para] + (["", *rest] if rest else [])
+    if end < len(lines) and block[-1].strip():
+        block.append("")         # keep the blank line that separates us from the next entry
+
+    atomic_write_text(rl, "\n".join(lines[:start] + block + lines[end:]).rstrip() + "\n")
+    _parse_cache.pop(str(rl), None)   # the entry block changed — drop the stale parse
+    return True
 
 
 # ---- corpus full-text ----
@@ -365,13 +480,18 @@ class DuplicatePaperError(ValueError):
     pass
 
 
-def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) -> str:
+def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
+              abstract: str | None = None) -> str:
     """Append a new *unread* reading-list entry under `group` (created if it doesn't exist
     yet). Returns the new entry's slug. Deliberately does NOT retrieve full text or git-commit
     — this only edits reading-list.md (metadata), matching the rest of this module's "never
     calls an LLM and never makes network calls" invariant; retrieval stays lazy (first time
     the paper is opened) like every other paper, and committing stays a human's explicit,
-    reviewed action (committer.py), like every other change to a project's record."""
+    reviewed action (committer.py), like every other change to a project's record.
+
+    The caller passes `abstract` when it already has one (Discover searched arXiv to find this
+    paper, so it does). Otherwise the entry starts abstract-less and
+    `scripts/backfill_abstracts.py` can fill it in later."""
     title = (title or "").strip()
     if not title:
         raise ValueError("Title is required.")
@@ -387,7 +507,10 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None) 
 
     block = [f"**{title}** — *unread*"]
     if arxiv_id:
-        block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")  # provenance only; not parsed
+        block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")
+    abstract = re.sub(r"\s+", " ", abstract or "").strip()
+    if abstract:
+        block += ["", *_abstract_paragraph(abstract)]
     block.append("")
 
     heading_idx = next((i for i, line in enumerate(lines) if line.strip() == heading), None)

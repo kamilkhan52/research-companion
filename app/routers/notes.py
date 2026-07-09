@@ -26,7 +26,8 @@ class ApproveReq(BaseModel):
 class AddPaperReq(BaseModel):
     title: str
     group: str | None = None
-    arxiv_id: str | None = None   # provenance only (e.g. from a graph node); not auto-retrieved
+    arxiv_id: str | None = None   # recorded as a comment; the paper is not auto-retrieved
+    abstract: str | None = None   # pass it when the caller has one (Discover does)
 
 
 class NotesSaveReq(BaseModel):
@@ -124,7 +125,8 @@ def add_paper(pid: str, req: AddPaperReq):
     opened, like every other paper) and nothing is git-committed (like every other change to
     the record, that stays an explicit human action via /approve)."""
     try:
-        slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id)
+        slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
+                               abstract=req.abstract)
     except store.DuplicatePaperError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:

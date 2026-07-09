@@ -1,17 +1,20 @@
 import {
-  ChakraPetch_600SemiBold,
-  ChakraPetch_700Bold,
-} from '@expo-google-fonts/chakra-petch';
-import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
-import {
   Manrope_400Regular,
   Manrope_500Medium,
   Manrope_600SemiBold,
   Manrope_700Bold,
 } from '@expo-google-fonts/manrope';
+import {
+  Newsreader_400Regular,
+  Newsreader_400Regular_Italic,
+  Newsreader_500Medium,
+  Newsreader_500Medium_Italic,
+  Newsreader_600SemiBold,
+} from '@expo-google-fonts/newsreader';
+import { Feather } from '@expo/vector-icons';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -25,20 +28,34 @@ import { queryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { NowPlaying } from '@/components/NowPlaying';
 import { ProjectProvider } from '@/store/project';
+import { ListeningProvider } from '@/store/listening';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// The four tab screens render NowPlaying inside the tab bar (above the tab row); the root
+// copy covers only stack screens pushed over the tabs, so the card never doubles up.
+const TAB_PATHS = new Set(['/', '/discover', '/notes', '/graph']);
+
+function StackNowPlaying() {
+  const pathname = usePathname();
+  if (TAB_PATHS.has(pathname)) return null;
+  return <NowPlaying />;
+}
+
 export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const [fontsLoaded] = useFonts({
-    ChakraPetch_600SemiBold,
-    ChakraPetch_700Bold,
     Manrope_400Regular,
     Manrope_500Medium,
     Manrope_600SemiBold,
     Manrope_700Bold,
-    JetBrainsMono_400Regular,
+    Newsreader_400Regular,
+    Newsreader_400Regular_Italic,
+    Newsreader_500Medium,
+    Newsreader_500Medium_Italic,
+    Newsreader_600SemiBold,
+    ...Feather.font,
   });
 
   useEffect(() => {
@@ -62,7 +79,8 @@ export default function RootLayout() {
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <ProjectProvider>
-              <AudioProvider>
+              <ListeningProvider>
+                <AudioProvider>
                 <StatusBar style="light" />
                 <View style={{ flex: 1, backgroundColor: colors.bg }}>
                   <View style={{ flex: 1 }}>
@@ -72,19 +90,18 @@ export default function RootLayout() {
                         contentStyle: { backgroundColor: colors.bg },
                         animation: 'slide_from_right',
                       }}>
-                      <Stack.Screen name="index" />
-                      <Stack.Screen name="discover" />
+                      <Stack.Screen name="(tabs)" />
                       <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-                      <Stack.Screen name="graph" />
                       <Stack.Screen
                         name="player"
                         options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                       />
                     </Stack>
                   </View>
-                  <NowPlaying />
+                  <StackNowPlaying />
                 </View>
-              </AudioProvider>
+                </AudioProvider>
+              </ListeningProvider>
             </ProjectProvider>
           </QueryClientProvider>
         </KeyboardProvider>

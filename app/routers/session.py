@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -18,6 +19,7 @@ from .. import (
     chat_jobs,
     config,
     graph,
+    preview_jobs,
     prompts,
     retrieval_agent,
     retrieval_jobs,
@@ -41,33 +43,39 @@ class StartReq(BaseModel):
     pdf_url: str | None = None
 
 
-class ChatStartReq(BaseModel):
-    slug: str
-    prompt: str | None = None   # edited first-prompt template for this session
-    model: str | None = None    # model for the first response
-
-
-class ReplyReq(BaseModel):
-    slug: str
-    text: str
-
-
-class FinishReq(BaseModel):
-    slug: str
-
-
-class RequestChangesReq(BaseModel):
-    slug: str
-    text: str
-
-
-class RetryReq(BaseModel):
-    slug: str
-    assistant_index: int
+class DeliveryReq(BaseModel):
+    delivery_mode: Literal["reading", "listening"] = "reading"
+    # One-shot model override for this turn only — never persisted to settings (locked product
+    # decision: composer model selection applies to one response only and never silently
+    # changes the default). None falls through to the account's configured default.
     model: str | None = None
 
 
-class EditReq(BaseModel):
+class ChatStartReq(DeliveryReq):
+    slug: str
+    prompt: str | None = None   # edited first-prompt template for this session
+
+
+class ReplyReq(DeliveryReq):
+    slug: str
+    text: str
+
+
+class FinishReq(DeliveryReq):
+    slug: str
+
+
+class RequestChangesReq(DeliveryReq):
+    slug: str
+    text: str
+
+
+class RetryReq(DeliveryReq):
+    slug: str
+    assistant_index: int
+
+
+class EditReq(DeliveryReq):
     slug: str
     reply_index: int
     text: str
@@ -75,10 +83,10 @@ class EditReq(BaseModel):
 
 # ---------- streaming helpers ----------
 
-def _run_and_record(slug: str) -> dict:
+def _run_and_record(slug: str, model: str | None = None) -> dict:
     history = sessions.build_history(slug)
     try:
-        turn = agent.run_turn(slug, history)
+        turn = agent.run_turn(slug, history, model=model)
     except AgentError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     sessions.record_assistant(slug, turn)
@@ -89,14 +97,14 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _turn_stream(slug: str):
+def _turn_stream(slug: str, model: str | None = None):
     """Stream the analysis turn as SSE: incremental CANONICAL text, then a final 'done'
     event carrying the parsed+recorded turn. The user message must already be recorded."""
     history = sessions.build_history(slug)
     pieces: list[str] = []
     sent = 0
     try:
-        for piece in agent.stream_tokens(slug, history):
+        for piece in agent.stream_tokens(slug, history, model=model):
             pieces.append(piece)
             canon = agent.canonical_prefix("".join(pieces))
             if len(canon) > sent:
@@ -115,7 +123,7 @@ def _turn_stream(slug: str):
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
 
 
-async def _agentic_turn_stream(slug: str):
+async def _agentic_turn_stream(slug: str, model: str | None = None):
     """Streaming turn through the Pydantic AI tool loop (when RC_AGENTIC is on). Same client
     contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
     'tool' events announcing each research tool the model calls. The final answer is parsed from
@@ -125,7 +133,9 @@ async def _agentic_turn_stream(slug: str):
     sent = 0
     final_text = ""
     try:
-        async for ev in agent_harness.stream_agentic_events(slug, history):
+        async for ev in agent_harness.stream_agentic_events(
+            slug, history, model=agent_harness.model_override(model)
+        ):
             if ev["type"] == "text":
                 pieces.append(ev["text"])
                 canon = agent.canonical_prefix("".join(pieces))
@@ -149,12 +159,12 @@ async def _agentic_turn_stream(slug: str):
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
 
 
-def _stream_for(slug: str):
+def _stream_for(slug: str, model: str | None = None):
     """Pick the streaming turn implementation: the agentic tool loop when enabled, else the
     proven single-shot stream. Both are (async/sync) generators StreamingResponse can consume."""
     if agent_harness.AGENTIC_ENABLED:
-        return _agentic_turn_stream(slug)
-    return _turn_stream(slug)
+        return _agentic_turn_stream(slug, model=model)
+    return _turn_stream(slug, model=model)
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -176,6 +186,7 @@ def get_session(slug: str):
         "paper": paper,
         "state": sessions.get_state(slug),
         "transcript": sessions.transcript(slug),
+        "accepted_drafts": sessions.accepted_drafts(slug),
     }
 
 
@@ -334,8 +345,6 @@ def _require_session(slug: str) -> None:
 def _prep_chat_start(req: ChatStartReq) -> None:
     if not config.has_api_key():
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
-    if req.model:
-        config.save_settings({"model": req.model})
     is_review = req.slug == REVIEW_SLUG
     if is_review:
         title = REVIEW_TITLE
@@ -364,8 +373,6 @@ def _prep_continue(req: FinishReq) -> None:
 
 def _prep_retry(req: RetryReq) -> None:
     _require_session(req.slug)
-    if req.model:
-        config.save_settings({"model": req.model})
     sessions.truncate_before_assistant(req.slug, req.assistant_index)
 
 
@@ -387,7 +394,7 @@ def _prep_finish(req: FinishReq) -> None:
 def _prep_request_changes(req: RequestChangesReq) -> None:
     _require_session(req.slug)
     sessions.record_user(req.slug, prompts.render("request_changes", feedback=req.text),
-                         kind="revision")
+                         kind="revision", authored_text=req.text)
 
 
 @project_router.post("/chat/start_stream")
@@ -395,7 +402,7 @@ def chat_start_stream(req: ChatStartReq):
     """Fire the first response for any chat (paper or review) with the edited opening prompt
     and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
     _prep_chat_start(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -404,21 +411,21 @@ def reply(req: ReplyReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.record_user(req.slug, req.text, kind="reply")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/reply_stream")
 def reply_stream(req: ReplyReq):
     _prep_reply(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/continue_stream")
 def continue_stream(req: FinishReq):
     _prep_continue(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -427,7 +434,7 @@ def retry_stream(req: RetryReq):
     """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
     response to the preceding user message."""
     _prep_retry(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -436,21 +443,21 @@ def edit_stream(req: EditReq):
     """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
     old response and everything after it, then stream a fresh answer to the edited message."""
     _prep_edit(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
     _prep_finish(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/request_changes_stream")
 def request_changes_stream(req: RequestChangesReq):
     _prep_request_changes(req)
-    return StreamingResponse(_stream_for(req.slug), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -467,57 +474,58 @@ def _no_turn_in_flight(slug: str) -> None:
                             detail="A response is already being generated for this paper.")
 
 
-def _started_job(slug: str) -> dict:
-    return {"job": chat_jobs.snapshot(chat_jobs.start_turn(slug).id)}
+def _started_job(slug: str, delivery_mode: str, model: str | None = None) -> dict:
+    job = chat_jobs.start_turn(slug, delivery_mode=delivery_mode, model=model)
+    return {"job": chat_jobs.snapshot(job.id)}
 
 
 @project_router.post("/chat/start_job")
 def chat_start_job(req: ChatStartReq):
     _no_turn_in_flight(req.slug)
     _prep_chat_start(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/reply_job")
 def reply_job(req: ReplyReq):
     _no_turn_in_flight(req.slug)
     _prep_reply(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/continue_job")
 def continue_job(req: FinishReq):
     _no_turn_in_flight(req.slug)
     _prep_continue(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/retry_job")
 def retry_job(req: RetryReq):
     _no_turn_in_flight(req.slug)
     _prep_retry(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/edit_job")
 def edit_job(req: EditReq):
     _no_turn_in_flight(req.slug)
     _prep_edit(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/finish_job")
 def finish_job(req: FinishReq):
     _no_turn_in_flight(req.slug)
     _prep_finish(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/request_changes_job")
 def request_changes_job(req: RequestChangesReq):
     _no_turn_in_flight(req.slug)
     _prep_request_changes(req)
-    return _started_job(req.slug)
+    return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.get("/chat/jobs/active/{slug}")
@@ -536,6 +544,15 @@ def chat_job_status(job_id: str):
     return {"job": snap}
 
 
+@project_router.get("/preview/jobs/{job_id}")
+def preview_job_status(job_id: str):
+    """Cheap project-scoped poll for one grounded listening cue."""
+    snap = preview_jobs.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown preview job")
+    return {"job": snap}
+
+
 @project_router.post("/continue")
 def continue_turn(req: FinishReq):
     """Generate the assistant response for a reply that was recorded but never answered
@@ -545,7 +562,7 @@ def continue_turn(req: FinishReq):
     records = sessions.read_records(req.slug)
     if not records or records[-1]["role"] != "user":
         raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
@@ -554,14 +571,14 @@ def finish(req: FinishReq):
     if not sessions.get_state(req.slug):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.record_user(req.slug, prompts.get("finish_instruction"), kind="finish")
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/request_changes")
 def request_changes(req: RequestChangesReq):
     _prep_request_changes(req)
-    turn = _run_and_record(req.slug)
+    turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
 

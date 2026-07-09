@@ -181,6 +181,8 @@ _ENV_DEFAULTS = {
     "model": os.environ.get("RC_MODEL", "anthropic/claude-opus-4.6"),
     # narration model: faithfully adapts the canonical text for TTS (lighter/faster)
     "narration_model": os.environ.get("RC_NARRATION_MODEL", "anthropic/claude-haiku-4.5"),
+    # listening-preview model: defaults dynamically to narration_model when unset
+    "preview_model": os.environ.get("RC_PREVIEW_MODEL", ""),
     # speech (audio) — OpenRouter has no TTS, so OpenAI uses its own key
     "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
     "speech_provider": os.environ.get("RC_SPEECH_PROVIDER", "openai"),  # openai | browser
@@ -197,7 +199,7 @@ _ENV_DEFAULTS = {
 }
 
 
-_SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "openai_api_key",
+_SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_model", "openai_api_key",
                  "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
                  "firecrawl_api_key", "prior_notes_scope")
 

@@ -1,40 +1,61 @@
-// Design tokens — the "Neon lab" theme, ported from web/styles.css so the mobile app reads as
-// the same product: deep ink surfaces, restrained electric-cyan + violet accents, calm body text.
+// Design tokens — the "Scholar dark" theme from the Figma redesign proposal
+// (file `Research Companion — UI Redesign Proposal`, page `01 · Design System`).
+// A quiet research instrument: warm off-white text on near-black ink, mint for
+// action/approved progress, violet for relationship/synthesis/evidence, amber for
+// bridge/warning. Manrope carries all UI; Newsreader carries editorial/long-form moments.
 
 export const colors = {
-  bg: '#07080e',
-  bg2: '#0b0d16',
-  panel: '#11141f',
-  panel2: '#161a28',
-  panelActive: '#1c2233',
-  line: 'rgba(125, 145, 200, 0.14)',
-  line2: 'rgba(125, 145, 200, 0.26)',
+  bg: '#0B0D12',
+  /** Large soft background shapes that give the canvas its subtle atmosphere. */
+  bgGlow: '#11141C',
+  surface: '#151922',
+  elevated: '#1B202B',
+  line: 'rgba(153, 163, 183, 0.14)',
+  line2: 'rgba(153, 163, 183, 0.28)',
 
-  text: '#e9edf7',
-  muted: '#909bb6',
+  text: '#F3F0E8',
+  muted: '#99A3B7',
 
-  cyan: '#34e7e0',
-  cyanInk: '#062b2a',
-  violet: '#9b7bff',
-  green: '#4ee6a0',
-  amber: '#ffce6b',
-  danger: '#ff6f8c',
+  mint: '#65D6B4',
+  /** Dark ink for text/icons sitting on a mint fill. */
+  mintInk: '#0A231B',
+  violet: '#9B8AFB',
+  amber: '#E4B85C',
+  danger: '#E5738C',
+
+  // ── Compat aliases (pre-redesign token names; removed in the final revamp PR) ──
+  bg2: '#0E1118',
+  panel: '#151922',
+  panel2: '#1B202B',
+  panelActive: '#212736',
+  cyan: '#65D6B4',
+  cyanInk: '#0A231B',
+  green: '#65D6B4',
 } as const;
 
 export const fonts = {
-  display: 'ChakraPetch_600SemiBold',
-  displayBold: 'ChakraPetch_700Bold',
+  // Manrope — UI, controls, dense card text.
   body: 'Manrope_400Regular',
   bodyMedium: 'Manrope_500Medium',
   bodySemiBold: 'Manrope_600SemiBold',
   bodyBold: 'Manrope_700Bold',
-  mono: 'JetBrainsMono_400Regular',
+  // Newsreader — editorial headings and long-form reading moments.
+  serif: 'Newsreader_400Regular',
+  serifItalic: 'Newsreader_400Regular_Italic',
+  serifMedium: 'Newsreader_500Medium',
+  serifSemiBold: 'Newsreader_600SemiBold',
+
+  // ── Compat aliases (map old techno/mono roles onto Manrope; removed in final PR) ──
+  display: 'Manrope_600SemiBold',
+  displayBold: 'Manrope_700Bold',
+  mono: 'Manrope_500Medium',
 } as const;
 
 export const radius = {
-  sm: 11,
+  sm: 12,
   md: 16,
-  lg: 22,
+  lg: 20,
+  xl: 26,
   pill: 999,
 } as const;
 
@@ -47,12 +68,13 @@ export const space = {
   xxl: 32,
 } as const;
 
-/** Map a paper/session state to an accent color + short label for chips. */
+/** Map a paper/session state to an accent color + short label for chips.
+ * Mint = active/approved progress, violet = synthesis, amber = in-flight retrieval. */
 export const stateMeta: Record<string, { label: string; color: string }> = {
   unread: { label: 'Unread', color: colors.muted },
   retrieving: { label: 'Retrieving', color: colors.amber },
-  in_discussion: { label: 'Discussing', color: colors.cyan },
+  in_discussion: { label: 'Discussing', color: colors.mint },
   notes_drafted: { label: 'Notes drafted', color: colors.violet },
-  committed: { label: 'Read', color: colors.green },
-  read: { label: 'Read', color: colors.green },
+  committed: { label: 'Read', color: colors.mint },
+  read: { label: 'Read', color: colors.mint },
 };

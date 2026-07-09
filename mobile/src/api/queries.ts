@@ -14,6 +14,7 @@ export function useBaseUrl(): string {
 
 export const keys = {
   projects: ['projects'] as const,
+  recentSessions: ['recentSessions'] as const,
   projectState: (pid: string) => ['project', pid, 'state'] as const,
   session: (pid: string, slug: string) => ['project', pid, 'session', slug] as const,
   opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
@@ -32,6 +33,15 @@ export function useProjects() {
   return useQuery({
     queryKey: keys.projects,
     queryFn: async () => (await api.listProjects()).projects,
+    enabled: hasUrl,
+  });
+}
+
+export function useRecentSessions() {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: keys.recentSessions,
+    queryFn: async () => (await api.getRecentSessions()).sessions,
     enabled: hasUrl,
   });
 }
@@ -160,8 +170,17 @@ export function useNotes(pid: string | null, target: string | null) {
 export function useAddPaper(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ title, group, arxivId }: { title: string; group?: string; arxivId?: string }) =>
-      api.addPaper(pid, title, group, arxivId),
+    mutationFn: ({
+      title,
+      group,
+      arxivId,
+      abstract,
+    }: {
+      title: string;
+      group?: string;
+      arxivId?: string;
+      abstract?: string;
+    }) => api.addPaper(pid, title, group, arxivId, abstract),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });

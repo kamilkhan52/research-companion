@@ -17,7 +17,7 @@ export interface NotesAgentState {
   /** The finished proposal's markdown (job done), until dismissed. */
   proposal: string | null;
   error: string | null;
-  run: (instruction: string) => Promise<void>;
+  run: (instruction: string) => Promise<boolean>;
   /** Re-attach to a job already running for this target (e.g. after navigating back). */
   resume: () => Promise<void>;
   dismissProposal: () => void;
@@ -68,7 +68,7 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
 
   const run = useCallback(
     async (instruction: string) => {
-      if (!pid || !target || startingRef.current || running || !instruction.trim()) return;
+      if (!pid || !target || startingRef.current || running || !instruction.trim()) return false;
       startingRef.current = true;
       setError(null);
       setProposal(null);
@@ -77,9 +77,11 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
       try {
         const { job: started } = await startNotesAgent(pid, target, instruction.trim());
         applyJob(started);
+        return true;
       } catch (e) {
         setError((e as Error).message ?? 'The notes edit failed.');
         setRunning(false);
+        return false;
       } finally {
         startingRef.current = false;
       }

@@ -21,6 +21,8 @@ import type {
   PromptStatus,
   Project,
   ProjectState,
+  RecentSession,
+  PreviewJob,
   Session,
   Settings,
   UsageSummary,
@@ -57,6 +59,8 @@ export const getAudioJob = (id: string) =>
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');
+export const getRecentSessions = (limit = 20) =>
+  apiGet<{ sessions: RecentSession[] }>(`/api/recent-sessions?limit=${limit}`);
 export const createProject = (name: string, method?: string) =>
   apiPost<{ project: Project }>('/api/projects', { name, method });
 
@@ -86,9 +90,16 @@ export const reopen = (pid: string, slug: string) =>
   apiPost<{ state: string | null; transcript: unknown[] }>(`${P(pid)}/reopen`, { slug });
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
   apiPost<{ result: unknown; paper: unknown }>(`${P(pid)}/approve`, { slug, ...body });
-/** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation. */
-export const addPaper = (pid: string, title: string, group?: string, arxiv_id?: string) =>
-  apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, group, arxiv_id });
+/** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation.
+ *  Pass the abstract when the caller has one: it is what an unread paper contributes to a
+ *  discussion's context until someone reads it. */
+export const addPaper = (
+  pid: string,
+  title: string,
+  group?: string,
+  arxiv_id?: string,
+  abstract?: string,
+) => apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, group, arxiv_id, abstract });
 
 // Stream endpoint paths (used with streamPost from stream.ts).
 export const streamPaths = (pid: string) => ({
@@ -119,6 +130,9 @@ export const getChatJob = (pid: string, id: string) =>
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string) =>
   apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+/** Poll one independently generated grounded listening cue. */
+export const getPreviewJob = (pid: string, id: string) =>
+  apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`);
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
 // target = a paper slug, or 'working' for the cross-paper working notes.

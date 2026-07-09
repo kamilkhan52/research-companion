@@ -25,6 +25,7 @@ import type { StreamItem } from '@/api/types';
 import { Markdown } from '@/components/Markdown';
 import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
+import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -34,16 +35,28 @@ type Mode = 'view' | 'edit';
 export default function NotesScreen() {
   const router = useRouter();
   const qc = useQueryClient();
-  const { target } = useLocalSearchParams<{ target: string }>();
+  // Also mounted as the Notes tab (no route param), which shows the project-level synthesis.
+  const { target: targetParam } = useLocalSearchParams<{ target?: string }>();
+  const target = targetParam ?? 'working';
   const { activePid: pid } = useActiveProject();
 
   const notes = useNotes(pid, target ?? null);
   const agent = useNotesAgent(pid, target ?? null);
+  const editDraft = usePersistedDraft<string | null>(
+    pid && target ? draftKey(pid, 'notes', target, 'manual-edit') : null,
+    null,
+  );
+  const instructionDraft = usePersistedDraft(
+    pid && target ? draftKey(pid, 'notes', target, 'agent-instruction') : null,
+    '',
+  );
 
   const [mode, setMode] = useState<Mode>('view');
-  const [draft, setDraft] = useState<string | null>(null); // non-null while editing
+  const draft = editDraft.value; // non-null while editing
+  const setDraft = editDraft.setValue;
   const [asking, setAsking] = useState(false);              // instruction composer open
-  const [instruction, setInstruction] = useState('');
+  const instruction = instructionDraft.value;
+  const setInstruction = instructionDraft.setValue;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -56,19 +69,49 @@ export default function NotesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, target]);
 
+  useEffect(() => {
+    if (editDraft.ready && editDraft.hasDraft && editDraft.value !== null) setMode('edit');
+    // Restoring is tied to the storage load transition. Later edits set mode directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editDraft.ready]);
+
+  useEffect(() => {
+    if (instructionDraft.ready && instructionDraft.hasDraft) setAsking(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instructionDraft.ready]);
+
+  useEffect(() => {
+    if (editDraft.submitted && draft !== null && notes.data?.markdown === draft) {
+      void editDraft.clear(null);
+      setMode('view');
+    }
+  }, [draft, editDraft.clear, editDraft.submitted, notes.data?.markdown]);
+
+  useEffect(() => {
+    if (
+      instructionDraft.submitted
+      && agent.job?.instruction.trim() === instruction.trim()
+    ) {
+      void instructionDraft.clear('');
+      setAsking(false);
+    }
+  }, [agent.job?.instruction, instruction, instructionDraft.clear, instructionDraft.submitted]);
+
   async function persist(text: string, summary?: string) {
     if (!pid || !target) return;
     setSaving(true);
     setSaveError(null);
+    if (text === draft) await editDraft.markSubmitted();
     try {
       await saveNotes(pid, target, text, summary);
       qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       setMode('view');
-      setDraft(null);
+      await editDraft.clear(null);
       agent.dismissProposal();
     } catch (e) {
       setSaveError((e as Error).message ?? 'Save failed.');
+      await qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
     } finally {
       setSaving(false);
     }
@@ -84,7 +127,7 @@ export default function NotesScreen() {
     const dirty = draft !== null && draft !== markdown;
     const close = () => {
       setMode('view');
-      setDraft(null);
+      void editDraft.clear(null);
     };
     if (dirty) {
       Alert.alert('Discard changes?', 'Your edits to these notes will be lost.', [
@@ -96,12 +139,14 @@ export default function NotesScreen() {
     }
   }
 
-  function submitInstruction() {
+  async function submitInstruction() {
     const text = instruction.trim();
     if (!text) return;
-    setAsking(false);
-    setInstruction('');
-    void agent.run(text);
+    await instructionDraft.markSubmitted();
+    if (await agent.run(text)) {
+      await instructionDraft.clear('');
+      setAsking(false);
+    }
   }
 
   const showProposal = agent.proposal !== null && mode === 'view';
@@ -111,7 +156,7 @@ export default function NotesScreen() {
       <TopBar
         title={title}
         subtitle={showProposal ? 'Proposed revision — review before applying' : 'Notes'}
-        onBack={() => router.back()}
+        onBack={router.canGoBack() ? () => router.back() : undefined}
       />
 
       {!pid || !target ? (
@@ -210,7 +255,7 @@ export default function NotesScreen() {
                   variant="ghost"
                   onPress={() => {
                     setAsking(false);
-                    setInstruction('');
+                    void instructionDraft.clear('');
                   }}
                   style={{ flex: 1 }}
                 />

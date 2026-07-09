@@ -4,41 +4,93 @@
 // background jobs (polled, not held open), so a turn survives leaving this screen, the app
 // backgrounding, or the tunnel dropping — on entry we reattach to any turn still in flight,
 // and after each turn we refetch the canonical transcript the server recorded.
+//
+// The thread itself (inverted message list, keyboard handling, composer shell, scroll-to-
+// bottom) is the chat library's; we plug in domain renderers: Markdown assistant messages
+// with listen/copy, the live turn's interleaved text/tool items, and the lifecycle-dependent
+// input toolbar (reply → draft notes → request changes / approve → committed).
 
+import { ActionSheetProvider, useActionSheet } from '@expo/react-native-action-sheet';
+import {
+  Bubble,
+  Chat,
+  InputToolbar,
+  MessageText,
+  type BubbleProps,
+  type IChatContext,
+  type InputToolbarProps,
+  type LeftRightStyle,
+  type MessageTextProps,
+} from '@kesha-antonov/react-native-chat';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Keyboard,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
   TextInput,
   View,
+  type ViewStyle,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsPlaying } from 'react-native-track-player';
 
 import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths, turnJobPaths } from '@/api/endpoints';
-import { useOpeningDraft, useSession } from '@/api/queries';
+import { useAddPaper, useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type { ChatJob, FavoriteModel, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
-import { Markdown } from '@/components/Markdown';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
+import { isHandoffEligible } from '@/audio/handoffState';
+import { usePreviewCues } from '@/audio/usePreviewCues';
+import {
+  toDiscussionMessages,
+  DISCUSSION_USER,
+  type DiscussionMessage,
+} from '@/components/chat/discussionMessages';
+import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
-import { IconButton, TopBar } from '@/components/TopBar';
+import { TopBar } from '@/components/TopBar';
+import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Screen, Text } from '@/ui';
+import { useListeningMode } from '@/store/listening';
+import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
+
+// The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
+// row of `flexDirection: 'row'`, so a plain width override on the child bubble can't stretch
+// it — Yoga only stretches a flex child along the CROSS axis). Flipping the row to a column
+// lets the default `alignItems: 'stretch'` fill the row's own (now unconstrained) width, which
+// cascades down through Bubble's unstyled wrapper Views to the visible bubble. `containerStyle`
+// is read by Message (Message/types.d.ts) via Chat's untyped prop pass-through, but isn't part
+// of ChatProps' declared surface — the cast is the seam, not a type escape from our own code.
+const FULL_WIDTH_ROW: ViewStyle = {
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  width: '100%',
+  maxWidth: '100%',
+  marginLeft: 0,
+  marginRight: 0,
+};
+const FULL_WIDTH_ROW_PROP = {
+  containerStyle: { left: FULL_WIDTH_ROW, right: FULL_WIDTH_ROW } as LeftRightStyle<ViewStyle>,
+};
+// MessageText's own container has a built-in inset (marginVertical: 5, marginHorizontal: 10)
+// we don't want stacking with our own padding on user-message text (see userText style).
+const ZERO_INSET: ViewStyle = { marginVertical: 0, marginHorizontal: 0 };
 
 export default function DiscussionScreen() {
   const router = useRouter();
@@ -48,15 +100,93 @@ export default function DiscussionScreen() {
   const { slug, source } = useLocalSearchParams<{ slug: string; source?: string }>();
   const { activePid } = useActiveProject();
   const pid = activePid;
+  const addPaper = useAddPaper(pid ?? '');
+
+  // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` and jump
+  // straight into that paper's discussion; external references (a URL/arXiv link) prompt to open
+  // the source or add it to the reading list.
+  const handleReferenceLink = useCallback<LinkHandler>((href, label) => {
+    if (href.startsWith('rc-paper:')) {
+      const s = href.slice('rc-paper:'.length);
+      if (s) router.push(`/paper/${encodeURIComponent(s)}`);
+      return;
+    }
+    if (!/^https?:\/\//i.test(href)) return;
+    const arxiv = href.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i);
+    Alert.alert(label || 'External reference', href, [
+      { text: 'Open link', onPress: () => void Linking.openURL(href).catch(() => undefined) },
+      {
+        text: 'Add to reading list',
+        onPress: () => {
+          if (!pid) return;
+          void addPaper.mutateAsync({
+            title: label || href,
+            arxivId: arxiv ? arxiv[1] : undefined,
+          }).catch(() => undefined);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [addPaper, pid, router]);
 
   const session = useSession(pid, slug ?? null);
-  const stream = useStreamingTurn(pid, slug ?? null);
-  const scrollRef = useRef<ScrollView>(null);
+  const settings = useSettings();
+  const favoriteModels = useFavoriteModels();
+  // The model for the *next* new response in this discussion only (Gemini/ChatGPT-style
+  // picker) — component state, never persisted to AsyncStorage or Settings, so it resets to
+  // the account default whenever this screen is opened fresh. Threaded as a one-shot `model`
+  // override into reply/finish/requestChanges/chatStart; never silently changes the default
+  // (locked product decision).
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  useEffect(() => {
+    setSelectedModel(null);
+  }, [slug]);
+  const audio = useAudio();
+  const { listeningMode, setListeningMode } = useListeningMode();
+  const handleTurnDone = useCallback(async (job: ChatJob) => {
+    if (!listeningMode || job.delivery_mode !== 'listening') return;
+    if (!(await isHandoffEligible(job.id))) return;
+    if (job.audio_error) throw new Error(job.audio_error);
+    const canonical = job.turn?.canonical;
+    if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
+    audio.enqueueJob(
+      {
+        id: messageAudioId(pid, slug, job.assistant_index),
+        title: session.data?.paper.title ?? 'Narration',
+        text: canonical,
+      },
+      job.audio_job_id,
+      pid,
+      job.id,
+    );
+  }, [audio, listeningMode, pid, session.data?.paper.title, slug]);
+  const stream = useStreamingTurn(
+    pid,
+    slug ?? null,
+    listeningMode ? 'listening' : 'reading',
+    handleTurnDone,
+  );
+  usePreviewCues({
+    enabled: listeningMode,
+    project: pid,
+    title: session.data?.paper.title ?? 'Research update',
+    jobIds: stream.previewJobIds,
+    playPreview: audio.playPreview,
+    parentJobId: stream.previewParentJobId,
+  });
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
   const hasSession = !!state && transcript.length > 0;
   const paths = pid ? turnJobPaths(pid) : null;
+  useListeningHandoffRecovery({
+    enabled: listeningMode,
+    project: pid,
+    slug: slug ?? null,
+    title: session.data?.paper.title ?? 'Narration',
+    transcript,
+    enqueueJob: audio.enqueueJob,
+  });
 
   // Reattach to a turn that's still generating for this paper (we navigated away mid-turn,
   // the app was backgrounded, the connection dropped…). The job kept running server-side.
@@ -66,94 +196,53 @@ export default function DiscussionScreen() {
   }, [pid, slug]);
 
   const [showRelated, setShowRelated] = useState(false);
+  // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
+  // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
+  // sits above it in this app's layout, so without correcting for that height the composer
+  // stays partly under the keyboard. Measure the real header height and hand back the
+  // corrected total (device inset + header) as the override.
+  const [headerHeight, setHeaderHeight] = useState(0);
 
-  // Message editing: which user reply is being edited + its draft. reply_index counts only
-  // user turns (matching the backend, whose transcript surfaces only kind=="reply" users), so
-  // precompute each transcript row's reply index (-1 for assistant rows).
-  const [editing, setEditing] = useState<{ replyIndex: number; draft: string } | null>(null);
-  const replyIndices = useMemo(() => {
-    let c = -1;
-    return transcript.map((e) => (e.role === 'user' ? ++c : -1));
-  }, [transcript]);
-  // Mirrored into refs for the keyboard listener (registered once): whether an edit is in
-  // progress, and the edited bubble's y within the scroll content (from its onLayout).
-  const editingRef = useRef(false);
-  const editRowYRef = useRef<number | null>(null);
-  useEffect(() => {
-    editingRef.current = !!editing;
-    if (!editing) editRowYRef.current = null;
-  }, [editing]);
-
-  function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
-    const begin = () => setEditing({ replyIndex, draft: currentText });
-    // Editing regenerates from this point, discarding later turns (no branch is kept). The
-    // immediate answer is always redone; warn only when more work than that would be lost.
-    if (transcript.length > transcriptPos + 2) {
-      Alert.alert(
-        'Edit and regenerate?',
-        'This replaces your message and removes the responses after it.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Edit', style: 'destructive', onPress: begin },
-        ],
-      );
-    } else {
-      begin();
-    }
+  async function draftNotesFromMenu() {
+    if (!paths || !slug) return;
+    await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
   }
-
-  function submitEdit() {
-    if (!editing || !paths || !slug) return;
-    const text = editing.draft.trim();
-    if (!text) return;
-    const replyIndex = editing.replyIndex;
-    setEditing(null);
-    void stream.run(paths.edit, { slug, reply_index: replyIndex, text }, text);
-  }
-
-  // Keep the conversation pinned to the latest content.
-  useEffect(() => {
-    const id = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
-    return () => clearTimeout(id);
-  }, [transcript.length, stream.liveText, stream.pendingUser]);
-
-  // When the keyboard opens for the composer, scroll to the end so the composer + latest
-  // turn stay visible. When it opens for an in-place message edit, stay on (and reveal)
-  // the message being edited instead of jumping to the bottom.
-  useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidShow', () =>
-      setTimeout(() => {
-        if (editingRef.current) {
-          const y = editRowYRef.current;
-          if (y != null) scrollRef.current?.scrollTo({ y: Math.max(y - space.md, 0), animated: true });
-        } else {
-          scrollRef.current?.scrollToEnd({ animated: true });
-        }
-      }, 50),
-    );
-    return () => sub.remove();
-  }, []);
 
   return (
+    <LinkHandlerContext.Provider value={handleReferenceLink}>
+    <ActionSheetProvider>
     <Screen edges={['top']}>
+      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
       <TopBar
         title={session.data?.paper.title ?? 'Discussion'}
         subtitle={state ? STATE_LABEL[state] : undefined}
         onBack={() => router.back()}
         right={
           <>
-            {session.data?.paper.has_notes ? (
-              <IconButton
-                glyph="✎"
-                onPress={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
-                accessibilityLabel="View notes"
-              />
-            ) : null}
-            <IconButton glyph="❖" onPress={() => setShowRelated(true)} accessibilityLabel="Related works" />
-            <IconButton glyph="✦" onPress={() => router.push('/graph')} accessibilityLabel="Reference graph" />
+            <ModelPill
+              selectedModel={selectedModel}
+              defaultLabel={settings.data?.model ?? 'Default'}
+              favorites={favoriteModels.data ?? []}
+              onPick={setSelectedModel}
+            />
+            <OverflowMenu
+              listeningMode={listeningMode}
+              onToggleListening={() => {
+                if (listeningMode) audio.cancelPrep();
+                setListeningMode(!listeningMode);
+              }}
+              hasNotes={!!session.data?.paper.has_notes}
+              onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
+              onRelatedWorks={() => setShowRelated(true)}
+              onGraph={() => router.push('/graph')}
+              showDraftNotes={hasSession && state !== 'notes_drafted' && state !== 'committed'}
+              draftNotesDisabled={stream.streaming}
+              onDraftNotes={() => void draftNotesFromMenu()}
+            />
           </>
         }
       />
+      </View>
 
       <RelatedWorksSheet
         pid={pid}
@@ -174,72 +263,35 @@ export default function DiscussionScreen() {
         <ComposeFirst
           pid={pid}
           slug={slug!}
+          title={session.data?.paper.title ?? 'This paper'}
           stream={stream}
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
+          sessionState={state}
+          selectedModel={selectedModel}
         />
       ) : (
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior="padding"
-          keyboardVerticalOffset={8}>
-          <ScrollView
-            ref={scrollRef}
-            contentContainerStyle={styles.thread}
-            keyboardShouldPersistTaps="handled">
-            {transcript.map((entry, i) =>
-              entry.role === 'user' ? (
-                <UserBubble
-                  key={i}
-                  text={entry.text}
-                  canEdit={!stream.streaming && !editing}
-                  editing={editing?.replyIndex === replyIndices[i]}
-                  draft={editing?.draft ?? ''}
-                  onChangeDraft={(t) => setEditing((e) => (e ? { ...e, draft: t } : e))}
-                  onStartEdit={() => startEdit(replyIndices[i], entry.text, i)}
-                  onCancelEdit={() => setEditing(null)}
-                  onSubmitEdit={submitEdit}
-                  onEditLayout={(y) => {
-                    editRowYRef.current = y;
-                  }}
-                />
-              ) : (
-                <Message
-                  key={i}
-                  entry={entry}
-                  audioId={`${slug}:${i}`}
-                  title={session.data?.paper.title ?? 'Narration'}
-                />
-              ),
-            )}
-
-            {stream.pendingUser ? <UserBubble text={stream.pendingUser} /> : null}
-            {stream.streaming ? <StreamingAgentBubble items={stream.items} /> : null}
-
-            {stream.error ? (
-              <Card style={styles.errorCard}>
-                <Text variant="body" color={colors.danger}>
-                  {stream.error}
-                </Text>
-                <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
-              </Card>
-            ) : null}
-          </ScrollView>
-
-          <Composer
-            pid={pid}
-            slug={slug!}
-            state={state}
-            stream={stream}
-            paths={paths!}
-            onMutated={() => {
-              qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
-              qc.invalidateQueries({ queryKey: keys.projectState(pid) });
-            }}
-          />
-        </KeyboardAvoidingView>
+        <DiscussionThread
+          pid={pid}
+          slug={slug!}
+          state={state}
+          stream={stream}
+          paths={paths!}
+          transcript={transcript}
+          acceptedDrafts={session.data?.accepted_drafts ?? []}
+          title={session.data?.paper.title ?? 'Narration'}
+          favorites={favoriteModels.data ?? []}
+          selectedModel={selectedModel}
+          headerHeight={headerHeight}
+          onMutated={() => {
+            qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
+            qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+          }}
+        />
       )}
     </Screen>
+    </ActionSheetProvider>
+    </LinkHandlerContext.Provider>
   );
 }
 
@@ -250,6 +302,566 @@ const STATE_LABEL: Record<string, string> = {
   notes_drafted: 'Notes drafted — review',
   committed: 'Notes committed',
 };
+
+// ---------- top bar: overflow menu + model picker ----------
+
+// The single overflow trigger for every discussion-level action that isn't the composer
+// itself: navigation into related works / graph / notes, then the quieter mode toggles —
+// grouped per Figma `08c · Actions menu`.
+function OverflowMenu({
+  listeningMode,
+  onToggleListening,
+  hasNotes,
+  onViewNotes,
+  onRelatedWorks,
+  onGraph,
+  showDraftNotes,
+  draftNotesDisabled,
+  onDraftNotes,
+}: {
+  listeningMode: boolean;
+  onToggleListening: () => void;
+  hasNotes: boolean;
+  onViewNotes: () => void;
+  onRelatedWorks: () => void;
+  onGraph: () => void;
+  showDraftNotes: boolean;
+  draftNotesDisabled: boolean;
+  onDraftNotes: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const options: SheetOption[] = [
+    {
+      key: 'related',
+      title: 'Related works',
+      icon: 'layers',
+      accent: colors.mint,
+      onPress: onRelatedWorks,
+    },
+    {
+      key: 'graph',
+      title: 'Reference graph',
+      icon: 'share-2',
+      accent: colors.mint,
+      onPress: onGraph,
+    },
+  ];
+  if (showDraftNotes) {
+    options.push({
+      key: 'draft',
+      title: 'Draft notes',
+      icon: 'edit-3',
+      accent: colors.mint,
+      disabled: draftNotesDisabled,
+      onPress: onDraftNotes,
+    });
+  }
+  if (hasNotes) {
+    options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: colors.mint, onPress: onViewNotes });
+  }
+  options.push({
+    key: 'listening',
+    title: listeningMode ? 'Turn off listening' : 'Turn on listening',
+    icon: 'headphones',
+    section: true,
+    onPress: onToggleListening,
+  });
+
+  return (
+    <>
+      <IconButton name="more-vertical" onPress={() => setOpen(true)} accessibilityLabel="More actions" />
+      <OptionsSheet visible={open} onClose={() => setOpen(false)} options={options} />
+    </>
+  );
+}
+
+// A compact pill showing the model the *next* new response will use; tapping opens the
+// styled picker (Figma `08b · Model + thinking picker`, minus thinking depth — the backend
+// has no such parameter). One-shot override for this screen only (never persisted — see the
+// `selectedModel` comment above).
+function ModelPill({
+  selectedModel,
+  defaultLabel,
+  favorites,
+  onPick,
+}: {
+  selectedModel: string | null;
+  defaultLabel: string;
+  favorites: FavoriteModel[];
+  onPick: (modelId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Show the favorite's short label when the pick matches one, not the raw OpenRouter id.
+  const label = selectedModel == null
+    ? defaultLabel
+    : favorites.find((m) => m.id === selectedModel)?.label ?? selectedModel;
+
+  const options: SheetOption[] = [
+    {
+      key: 'default',
+      title: 'Project default',
+      subtitle: defaultLabel,
+      icon: 'check-circle',
+      selected: selectedModel == null,
+      onPress: () => onPick(null),
+    },
+    ...favorites.map((m) => ({
+      key: m.id,
+      title: m.label,
+      subtitle: m.id,
+      icon: 'zap' as IconName,
+      selected: selectedModel === m.id,
+      onPress: () => onPick(m.id),
+    })),
+  ];
+
+  return (
+    <>
+      <Pressable
+        onPress={() => setOpen(true)}
+        style={styles.modelPill}
+        accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
+        <Text variant="caption" color={colors.mint} numberOfLines={1} style={styles.modelPillText}>
+          {label}
+        </Text>
+      </Pressable>
+      <OptionsSheet
+        visible={open}
+        onClose={() => setOpen(false)}
+        title="Model for next response"
+        options={options}
+      />
+    </>
+  );
+}
+
+// ---------- the thread (library chat + lifecycle toolbar) ----------
+
+function DiscussionThread({
+  pid,
+  slug,
+  state,
+  stream,
+  paths,
+  transcript,
+  acceptedDrafts,
+  title,
+  favorites,
+  selectedModel,
+  headerHeight,
+  onMutated,
+}: {
+  pid: string;
+  slug: string;
+  state: string | null;
+  stream: ReturnType<typeof useStreamingTurn>;
+  paths: ReturnType<typeof turnJobPaths>;
+  transcript: TranscriptEntry[];
+  acceptedDrafts: { kind: 'reply' | 'revision'; text: string }[];
+  title: string;
+  favorites: FavoriteModel[];
+  selectedModel: string | null;
+  headerHeight: number;
+  onMutated: () => void;
+}) {
+  // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
+  // being authored elsewhere, that reply stays recoverable when the discussion is reopened
+  // instead of being relabeled as request-changes feedback.
+  const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
+  const textDraft = usePersistedDraft(draftKey(pid, 'discussion', slug, draftKind), '');
+  // Message editing: which user reply is being edited + its draft. reply_index counts only
+  // user turns (matching the backend, whose transcript surfaces only kind=="reply" users).
+  // The edit happens in the composer (long-press a reply → Edit), prefilled with its text.
+  const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
+    draftKey(pid, 'discussion', slug, 'message-edit'),
+    null,
+  );
+  const editing = editDraft.value;
+  const setEditing = editDraft.setValue;
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const disabled = stream.streaming || busy;
+  // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
+  // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
+  // the keyboard without this correction.
+  const insets = useSafeAreaInsets();
+  const keyboardVerticalOffset = insets.top + headerHeight;
+  // The library's prop is typed RefObject<TextInput> (non-null), predating React 19's
+  // useRef nullability; the cast bridges that without changing runtime behavior.
+  const inputRef = useRef<TextInput>(null) as RefObject<TextInput>;
+
+  // Reconcile authored text against what the server accepted: once the submitted edit shows
+  // up in the transcript, drop the local draft.
+  useEffect(() => {
+    if (!editDraft.submitted || !editing) return;
+    const replies = transcript.filter((entry) => entry.role === 'user');
+    const accepted = replies[editing.replyIndex];
+    if (accepted?.role === 'user' && accepted.text === editing.draft.trim()) {
+      void editDraft.clear(null);
+    }
+  }, [editDraft.clear, editDraft.submitted, editing, transcript]);
+
+  useEffect(() => {
+    if (!textDraft.submitted || !textDraft.value.trim()) return;
+    const baseline = textDraft.acceptedBaseline ?? acceptedDrafts.length;
+    const expectedKind = draftKind === 'reply' ? 'reply' : 'revision';
+    if (acceptedDrafts.slice(baseline).some(
+      (draft) => draft.kind === expectedKind && draft.text === textDraft.value.trim(),
+    )) {
+      void textDraft.clear('');
+    }
+  }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
+
+  const messages = useMemo(
+    () => toDiscussionMessages(
+      transcript,
+      stream.pendingUser,
+      stream.streaming ? stream.items : null,
+    ),
+    [transcript, stream.pendingUser, stream.streaming, stream.items],
+  );
+
+  // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
+  // lifecycle draft (reply / request-changes). Both persist until server acceptance.
+  const inputText = editing ? editing.draft : textDraft.value;
+  // The library fires onChangeText('') once from its initial-layout input reset (and our
+  // controlled `text` prop immediately overrides its internal state). Writing that '' into
+  // the persisted draft would clobber the stored value mid-load — the exact draft-loss
+  // roadmap 3.2 exists to prevent — so the first empty callback is swallowed.
+  const sawFirstChangeRef = useRef(false);
+  const onChangeText = useCallback((t: string) => {
+    if (!sawFirstChangeRef.current) {
+      sawFirstChangeRef.current = true;
+      if (t === '') return;
+    }
+    if (editing) setEditing((e) => (e ? { ...e, draft: t } : e));
+    else textDraft.setValue(t);
+  }, [editing, setEditing, textDraft.setValue]);
+
+  function startEdit(replyIndex: number, currentText: string, transcriptPos: number) {
+    const begin = () => {
+      setEditing({ replyIndex, draft: currentText });
+      setTimeout(() => inputRef.current?.focus(), 50);
+    };
+    // Editing regenerates from this point, discarding later turns (no branch is kept). The
+    // immediate answer is always redone; warn only when more work than that would be lost.
+    if (transcript.length > transcriptPos + 2) {
+      Alert.alert(
+        'Edit and regenerate?',
+        'This replaces your message and removes the responses after it.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Edit', style: 'destructive', onPress: begin },
+        ],
+      );
+    } else {
+      begin();
+    }
+  }
+
+  async function submitEdit() {
+    if (!editing) return;
+    const text = editing.draft.trim();
+    if (!text) return;
+    const replyIndex = editing.replyIndex;
+    const currentReply = transcript.filter((entry) => entry.role === 'user')[replyIndex];
+    if (currentReply?.role === 'user' && currentReply.text === text) {
+      await editDraft.clear(null);
+      return;
+    }
+    await editDraft.markSubmitted();
+    await stream.run(
+      paths.edit,
+      { slug, reply_index: replyIndex, text, model: selectedModel ?? undefined },
+      text,
+      () => editDraft.clear(null),
+    );
+  }
+
+  async function send() {
+    const t = textDraft.value.trim();
+    if (!t) return;
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(
+      paths.reply,
+      { slug, text: t, model: selectedModel ?? undefined },
+      t,
+      () => textDraft.clear(''),
+    );
+  }
+
+  async function requestChanges() {
+    const t = textDraft.value.trim();
+    if (!t) return;
+    setActionError(null);
+    await textDraft.markSubmitted(acceptedDrafts.length);
+    await stream.run(
+      paths.requestChanges,
+      { slug, text: t, model: selectedModel ?? undefined },
+      undefined,
+      () => textDraft.clear(''),
+    );
+  }
+
+  // Regenerate an assistant turn (optionally with a different model), from its per-message
+  // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
+  // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
+  const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+    void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
+  }, [paths.retry, slug, stream.run]);
+
+  async function approve() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.approve(pid, slug);
+      onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not commit the notes.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reopen() {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.reopen(pid, slug);
+      onMutated();
+    } catch (e) {
+      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const handleSend = useCallback(() => {
+    if (editing) void submitEdit();
+    else if (state === 'notes_drafted') void requestChanges();
+    else void send();
+    // The handlers close over draft state; deps list the state they read. stream.run is a
+    // dep because it captures the delivery mode — omitting it would send with a stale mode
+    // after toggling Listening. selectedModel is a dep for the same reason — omitting it sent
+    // a stale (or no) model override whenever the pill was picked after the last keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
+
+  // Long-press a message for its actions (copy everywhere; edit on user replies).
+  const onLongPressMessage = useCallback((context: unknown, message: DiscussionMessage) => {
+    const entry = message.entry;
+    if (!entry) return;
+    const sheet = (context as IChatContext | undefined)?.actionSheet?.();
+    if (!sheet) return;
+    const copyText = entry.role === 'user' ? entry.text : entry.canonical;
+    // No editing once committed: that state's toolbar has no composer, so an edit could
+    // neither be typed nor cancelled (reopen the discussion instead).
+    const canEdit =
+      entry.role === 'user' &&
+      state !== 'committed' &&
+      !stream.streaming &&
+      !editing &&
+      message.replyIndex != null;
+    const options = canEdit ? ['Copy', 'Edit & regenerate', 'Cancel'] : ['Copy', 'Cancel'];
+    sheet.showActionSheetWithOptions(
+      { options, cancelButtonIndex: options.length - 1 },
+      (i?: number) => {
+        if (i === 0) void Clipboard.setStringAsync(copyText);
+        else if (i === 1 && canEdit) {
+          startEdit(message.replyIndex!, entry.text, message.transcriptIndex!);
+        }
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, state, stream.streaming, transcript]);
+
+  // A persisted edit can outlive its window (e.g. the notes were committed from another
+  // device while an edit draft sat here). Committed state has no composer to show or cancel
+  // it, so drop it rather than stranding an invisible editing mode.
+  useEffect(() => {
+    if (state === 'committed' && editing) void editDraft.clear(null);
+  }, [editDraft.clear, editing, state]);
+
+  const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
+    const msg = props.currentMessage;
+    if (msg?.streamItems) return <StreamingTurnBody items={msg.streamItems} />;
+    if (msg?.entry?.role === 'assistant') {
+      return (
+        <AssistantBody
+          entry={msg.entry}
+          audioId={messageAudioId(pid, slug, msg.entry.assistant_index)}
+          title={title}
+          favorites={favorites}
+          onRetry={handleRetry}
+        />
+      );
+    }
+    return (
+      <MessageText
+        {...props}
+        // Zero the library's own container margin (MessageText.js: marginVertical: 5,
+        // marginHorizontal: 10) so userText's padding is the only inset — otherwise the two
+        // stack and user text sits at a different inset than assistantBody's.
+        containerStyle={{ left: ZERO_INSET, right: ZERO_INSET }}
+        textStyle={{ left: styles.userText, right: styles.userText }}
+      />
+    );
+  }, [pid, slug, title, favorites, handleRetry]);
+
+  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
+    <Bubble
+      {...props}
+      wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
+    />
+  ), []);
+
+  const renderSend = useCallback(() => {
+    if (state === 'notes_drafted' && !editing) return null;
+    const canSend = !!inputText.trim() && !disabled;
+    return (
+      <Pressable
+        onPress={handleSend}
+        disabled={!canSend}
+        style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+        accessibilityLabel={editing ? 'Save edit and regenerate' : 'Send'}>
+        <Icon
+          name={editing ? 'rotate-cw' : 'arrow-up'}
+          size={18}
+          color={canSend ? colors.mintInk : colors.muted}
+        />
+      </Pressable>
+    );
+  }, [disabled, editing, handleSend, inputText, state]);
+
+  const renderAccessory = useCallback(() => {
+    if (editing) {
+      return (
+        <View style={styles.accessoryRow}>
+          <Text variant="caption" style={{ flex: 1 }}>
+            Editing your message — later responses will be regenerated.
+          </Text>
+          <Button
+            title="Cancel"
+            variant="ghost"
+            onPress={() => void editDraft.clear(null)}
+          />
+        </View>
+      );
+    }
+    if (state === 'notes_drafted') {
+      return (
+        <View style={styles.accessoryCol}>
+          {actionError ? (
+            <Text variant="caption" color={colors.danger}>{actionError}</Text>
+          ) : null}
+          <View style={styles.accessoryRow}>
+            {inputText.trim() ? (
+              <Button title="Request changes" variant="ghost" onPress={handleSend} disabled={disabled} style={{ flex: 1 }} />
+            ) : (
+              <Button title="Reopen" variant="ghost" onPress={() => void reopen()} loading={busy} disabled={disabled} style={{ flex: 1 }} />
+            )}
+            <Button
+              title="Approve & commit"
+              onPress={() => void approve()}
+              loading={busy}
+              disabled={disabled || !!inputText.trim()}
+              style={{ flex: 1 }}
+            />
+          </View>
+        </View>
+      );
+    }
+    // Draft notes lives in the top-bar overflow menu now; the default in_discussion composer
+    // has nothing extra to show below Send.
+    return null;
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
+
+  const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
+    if (state === 'committed') {
+      return (
+        <View style={styles.committedBar}>
+          <Text variant="caption" style={{ textAlign: 'center' }}>
+            Notes committed to this project's record.
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <View>
+        <Text variant="caption" style={styles.disclaimer}>
+          Research Companion can make mistakes — check sources.
+        </Text>
+        <InputToolbar
+          {...props}
+          containerStyle={styles.toolbar}
+          renderSend={renderSend}
+          renderAccessory={renderAccessory}
+        />
+      </View>
+    );
+  }, [renderAccessory, renderSend, state]);
+
+  const renderChatFooter = useCallback(() => {
+    if (!stream.error) return null;
+    return (
+      <Card style={styles.errorCard}>
+        <Text variant="body" color={colors.danger}>{stream.error}</Text>
+        <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
+      </Card>
+    );
+  }, [stream.clearError, stream.error]);
+
+  const placeholder = editing
+    ? 'Edit your message…'
+    : state === 'notes_drafted'
+      ? 'Request changes to the draft…'
+      : 'Ask about this paper…';
+
+  return (
+    <Chat<DiscussionMessage>
+      messages={messages}
+      user={DISCUSSION_USER}
+      text={inputText}
+      textInputRef={inputRef}
+      textInputProps={{
+        onChangeText,
+        editable: !disabled,
+        placeholder,
+        placeholderTextColor: colors.muted,
+        style: styles.composerInput,
+      }}
+      colorScheme="dark"
+      disableKeyboardProvider
+      keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
+      isScrollToBottomEnabled
+      isDayAnimationEnabled={false}
+      renderDay={() => null}
+      renderTime={() => null}
+      renderAvatar={null}
+      renderBubble={renderBubble}
+      renderMessageText={renderMessageText}
+      onLongPressMessage={onLongPressMessage}
+      renderInputToolbar={renderInputToolbar}
+      renderChatFooter={renderChatFooter}
+      messagesContainerStyle={styles.messagesContainer}
+      listProps={{
+        keyboardShouldPersistTaps: 'handled',
+        // The inverted list has no explicit auto-scroll effect (see the library's own
+        // MessagesContainer source) — it relies on staying at scroll offset 0 while the
+        // streaming message (index 0) grows. Without this, RN's default FlatList still
+        // corrects the viewport toward offset 0 as that off-screen content resizes, which
+        // drags a reader back to the bottom mid-scroll. `autoscrollToTopThreshold` keeps
+        // following only while already within that many px of the latest message; scrolling
+        // further away holds position until the user scrolls back or taps scroll-to-bottom.
+        // Matches the library's own scrollToBottomOffset default (200) so the two thresholds
+        // agree: the scroll-to-bottom button and "still following" flip at the same point.
+        maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 200 },
+      }}
+      {...FULL_WIDTH_ROW_PROP}
+    />
+  );
+}
 
 // ---------- compose-first ----------
 
@@ -265,38 +877,63 @@ function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
 function ComposeFirst({
   pid,
   slug,
+  title,
   stream,
   chatStartPath,
   initialSource,
+  sessionState,
+  selectedModel,
 }: {
   pid: string;
   slug: string;
+  title: string;
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
   initialSource?: string;
+  sessionState: string | null;
+  selectedModel: string | null;
 }) {
   const opening = useOpeningDraft(pid, slug);
-  const [prompt, setPrompt] = useState('');
+  const promptDraft = usePersistedDraft(
+    draftKey(pid, 'discussion', slug, 'opening'),
+    opening.data?.prompt ?? '',
+  );
+  const sourceDraft = usePersistedDraft(
+    draftKey(pid, 'discussion', slug, 'source'),
+    initialSource ?? '',
+  );
+  const prompt = promptDraft.value;
+  const setPrompt = promptDraft.setValue;
   const [starting, setStarting] = useState(false);
   const [retrieveError, setRetrieveError] = useState<string | null>(null);
   // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
   // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
-  const [manualSource, setManualSource] = useState(initialSource ?? '');
+  const manualSource = sourceDraft.value;
+  const setManualSource = sourceDraft.setValue;
   const [showCustomize, setShowCustomize] = useState(false);
   // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
   // sees what's happening during a fetch instead of an opaque spinner.
   const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
 
   useEffect(() => {
-    if (opening.data?.prompt && !prompt) setPrompt(opening.data.prompt);
-  }, [opening.data]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (initialSource && sourceDraft.ready && !sourceDraft.hasDraft) {
+      sourceDraft.setValue(initialSource);
+    }
+  }, [initialSource, sourceDraft.hasDraft, sourceDraft.ready, sourceDraft.setValue]);
 
-  async function start(source?: { arxiv_id?: string; pdf_url?: string }) {
+  useEffect(() => {
+    if (promptDraft.submitted && sessionState && opening.data?.prompt === promptDraft.value) {
+      void promptDraft.clear(opening.data.prompt);
+    }
+  }, [opening.data?.prompt, promptDraft.clear, promptDraft.submitted, promptDraft.value, sessionState]);
+
+  async function start(source?: { arxiv_id?: string; pdf_url?: string }, sourceText?: string) {
     setStarting(true);
     setRetrieveError(null);
     setSteps([]);
     try {
+      if (sourceText) await sourceDraft.markSubmitted();
       let ok = false;
       await streamPost<StartStreamEvent>(streamPaths(pid).paperStart, { slug, ...source }, {
         onEvent: (ev) => {
@@ -313,8 +950,18 @@ function ComposeFirst({
         },
       });
       if (!ok) return;
+      if (sourceText) await sourceDraft.clear('');
       setCandidates(null);
-      await stream.run(chatStartPath, { slug, prompt, model: opening.data?.model ?? undefined });
+      await promptDraft.markSubmitted();
+      await stream.run(
+        chatStartPath,
+        { slug, prompt, model: selectedModel ?? opening.data?.model ?? undefined },
+        undefined,
+        async () => {
+          await promptDraft.clear(opening.data?.prompt ?? '');
+          await sourceDraft.clear('');
+        },
+      );
     } catch (e) {
       setRetrieveError((e as Error).message ?? 'Could not fetch the paper.');
     } finally {
@@ -327,15 +974,17 @@ function ComposeFirst({
   function startFromManual() {
     const s = manualSource.trim();
     if (!s) return;
-    start(parseSource(s));
+    void start(parseSource(s), s);
   }
 
   if (opening.isLoading) return <Centered loading />;
 
   if (stream.streaming) {
     return (
-      <ScrollView contentContainerStyle={styles.thread}>
-        <StreamingAgentBubble items={stream.items} />
+      <ScrollView contentContainerStyle={styles.streamingOnly}>
+        <Card style={styles.assistantCard}>
+          <StreamingTurnBody items={stream.items} />
+        </Card>
       </ScrollView>
     );
   }
@@ -343,23 +992,19 @@ function ComposeFirst({
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <ScrollView contentContainerStyle={styles.composeFirst} keyboardShouldPersistTaps="handled">
-        {/* Default path stays clean: just Start. The opening prompt is editable, but hidden
-            behind Customize so most sessions don't open on a wall of prompt text. */}
-        <Text variant="body" color={colors.muted}>
-          The analyst will fetch the paper and open with a comprehensive first read.
-        </Text>
+        {/* Hero card (Figma `09 · Start Reading`): status chip + editorial title. */}
+        <Card style={styles.heroCard}>
+          <Chip label="Unread paper" dot={false} />
+          <Text variant="editorial">{title}</Text>
+          <Text variant="body" color={colors.muted}>
+            The analyst will fetch the paper and open with a comprehensive first read.
+          </Text>
+        </Card>
         {retrieveError ? (
           <Text variant="body" color={colors.danger} style={{ marginTop: space.md }}>
             {retrieveError}
           </Text>
         ) : null}
-        <Button
-          title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={() => start(initialSource ? parseSource(initialSource) : undefined)}
-          loading={starting}
-          disabled={!prompt.trim()}
-          style={{ marginTop: space.lg }}
-        />
         {starting && steps.length ? (
           <View style={[styles.toolTrail, { marginTop: space.md }]}>
             {steps.map((s, i) => (
@@ -367,16 +1012,10 @@ function ComposeFirst({
             ))}
           </View>
         ) : null}
-        <Button
-          title={showCustomize ? 'Hide customization' : 'Customize opening prompt'}
-          variant="ghost"
-          onPress={() => setShowCustomize((v) => !v)}
-          style={{ marginTop: space.sm }}
-        />
 
         {showCustomize ? (
-          <View style={{ marginTop: space.md }}>
-            <Text variant="label">OPENING PROMPT</Text>
+          <View style={{ marginTop: space.lg }}>
+            <Text variant="overline">Opening prompt</Text>
             <Text variant="caption" style={{ marginBottom: space.sm, marginTop: space.xs }}>
               Edit how the analyst should begin. The paper text is fetched when you start.
             </Text>
@@ -389,7 +1028,7 @@ function ComposeFirst({
               placeholderTextColor={colors.muted}
             />
             {opening.data?.model ? (
-              <Text variant="mono" style={{ marginTop: space.sm }}>
+              <Text variant="caption" style={{ marginTop: space.sm }}>
                 model: {opening.data.model}
               </Text>
             ) : null}
@@ -397,26 +1036,26 @@ function ComposeFirst({
         ) : null}
 
         {candidates && candidates.length ? (
-          <View style={{ marginTop: space.lg, gap: space.sm }}>
-            <Text variant="label">CANDIDATE SOURCES</Text>
+          <Card style={{ marginTop: space.lg, gap: space.sm }}>
+            <Text variant="heading">Source candidates</Text>
             {candidates.map((c) => (
               <Pressable
                 key={c.arxiv_id}
-                onPress={() => start({ arxiv_id: c.arxiv_id })}
+                onPress={() => void start({ arxiv_id: c.arxiv_id })}
                 disabled={starting}
-                style={styles.candidate}>
+                style={({ pressed }) => [styles.candidate, pressed && { opacity: 0.8 }]}>
                 <Text variant="body" numberOfLines={2}>{c.title}</Text>
                 <Text variant="caption" color={colors.muted}>arXiv:{c.arxiv_id}</Text>
               </Pressable>
             ))}
-          </View>
+          </Card>
         ) : null}
 
         {/* Manual source fallback — surfaced when retrieval needs help (error/candidates) or
             the user opened customization; hidden on the clean default path. */}
         {retrieveError || candidates?.length || showCustomize ? (
         <View style={{ marginTop: space.lg }}>
-          <Text variant="label">PROVIDE A SOURCE</Text>
+          <Text variant="overline">Provide a source</Text>
           <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
             Paste a PDF link or an arXiv id if the paper can’t be found automatically.
           </Text>
@@ -439,6 +1078,26 @@ function ComposeFirst({
         </View>
         ) : null}
       </ScrollView>
+
+      {/* Sticky footer per the frame: primary start + quiet customize, side by side. */}
+      <View style={styles.startFooter}>
+        <Button
+          title={starting ? 'Fetching paper…' : 'Start reading'}
+          onPress={() => void start(
+            initialSource ? parseSource(initialSource) : undefined,
+            initialSource,
+          )}
+          loading={starting}
+          disabled={!prompt.trim()}
+          style={{ flex: 1.2 }}
+        />
+        <Button
+          title="Customize prompt"
+          variant="ghost"
+          onPress={() => setShowCustomize((v) => !v)}
+          style={{ flex: 1 }}
+        />
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -449,154 +1108,38 @@ interface SourceCandidate {
   score?: number;
 }
 
-// ---------- composer (state-dependent input + actions) ----------
+// ---------- message bodies (rendered inside the library's bubbles) ----------
 
-function Composer({
-  pid,
-  slug,
-  state,
-  stream,
-  paths,
-  onMutated,
+function AssistantBody({
+  entry,
+  audioId,
+  title,
+  favorites,
+  onRetry,
 }: {
-  pid: string;
-  slug: string;
-  state: string | null;
-  stream: ReturnType<typeof useStreamingTurn>;
-  paths: ReturnType<typeof turnJobPaths>;
-  onMutated: () => void;
+  entry: Extract<TranscriptEntry, { role: 'assistant' }>;
+  audioId: string;
+  title: string;
+  favorites: FavoriteModel[];
+  onRetry: (assistantIndex: number, model?: string) => void;
 }) {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const disabled = stream.streaming || busy;
-
-  async function send() {
-    const t = text.trim();
-    if (!t) return;
-    setText('');
-    await stream.run(paths.reply, { slug, text: t }, t);
-  }
-
-  async function draftNotes() {
-    await stream.run(paths.finish, { slug });
-  }
-
-  async function approve() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.approve(pid, slug);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not commit the notes.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function requestChanges() {
-    const t = text.trim();
-    if (!t) return;
-    setText('');
-    setActionError(null);
-    void stream.run(paths.requestChanges, { slug, text: t });
-  }
-
-  async function reopen() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.reopen(pid, slug);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (state === 'committed') {
-    return (
-      <View style={styles.composerBar}>
-        <Text variant="caption" style={{ textAlign: 'center', flex: 1 }}>
-          Notes committed to this project's record.
-        </Text>
-      </View>
-    );
-  }
-
-  if (state === 'notes_drafted') {
-    return (
-      <View style={styles.composerBar}>
-        {actionError ? (
-          <Text variant="caption" color={colors.danger} style={{ marginBottom: space.sm }}>
-            {actionError}
-          </Text>
-        ) : null}
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Request changes to the draft…"
-          placeholderTextColor={colors.muted}
-          style={styles.input}
-          multiline
-          editable={!disabled}
-        />
-        <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
-          {text.trim() ? (
-            <Button title="Request changes" variant="ghost" onPress={requestChanges} disabled={disabled} style={{ flex: 1 }} />
-          ) : (
-            <Button title="Reopen" variant="ghost" onPress={reopen} loading={busy} disabled={disabled} style={{ flex: 1 }} />
-          )}
-          <Button title="Approve & commit" onPress={approve} loading={busy} disabled={disabled || !!text.trim()} style={{ flex: 1 }} />
-        </View>
-      </View>
-    );
-  }
-
-  // in_discussion (default)
-  return (
-    <View style={styles.composerBar}>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder="Reply…"
-          placeholderTextColor={colors.muted}
-          style={[styles.input, { flex: 1 }]}
-          multiline
-          editable={!disabled}
-        />
-        <Button title="Send" onPress={send} disabled={disabled || !text.trim()} style={styles.sendBtn} />
-      </View>
-      <Button
-        title="Draft notes →"
-        variant="ghost"
-        onPress={draftNotes}
-        disabled={disabled}
-        style={{ marginTop: space.sm }}
-      />
-    </View>
-  );
-}
-
-// ---------- messages ----------
-
-function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: string; title: string }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
-  if (entry.role === 'user') return <UserBubble text={entry.text} />;
+  const { showActionSheetWithOptions } = useActionSheet();
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
-  const audioError = audio.errorById[audioId];
+  const audioError = audio.errorById[audioId] ?? entry.audio_error;
   const [copied, setCopied] = useState(false);
   const canonical = entry.canonical;
 
   // Listen -> prepare + play; on the loaded track it's a pause/resume toggle; after a
   // failure it retries (playText clears this message's error).
-  const listenLabel = current ? (playing ? '❚❚ Pause' : '▶︎ Resume') : audioError ? '↻ Retry' : '▶︎ Listen';
+  const listenIcon: IconName = current ? (playing ? 'pause' : 'play') : audioError ? 'rotate-cw' : 'headphones';
+  const listenLabel = current ? (playing ? 'Pause' : 'Resume') : audioError ? 'Retry audio' : 'Listen';
+  const listenA11y = current
+    ? (playing ? 'Pause this narration' : 'Resume this narration')
+    : audioError ? 'Retry narration' : 'Listen to this response';
 
   async function copy() {
     await Clipboard.setStringAsync(canonical);
@@ -604,8 +1147,17 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
     setTimeout(() => setCopied(false), 1500);
   }
 
+  function openRetryMenu() {
+    const options = ['Retry', ...favorites.map((m) => `Retry with ${m.label}`), 'Cancel'];
+    const cancelButtonIndex = options.length - 1;
+    showActionSheetWithOptions({ options, cancelButtonIndex }, (i) => {
+      if (i == null || i === cancelButtonIndex) return;
+      onRetry(entry.assistant_index, i === 0 ? undefined : favorites[i - 1].id);
+    });
+  }
+
   return (
-    <Card style={styles.assistant}>
+    <View style={styles.assistantBody}>
       <Markdown text={canonical} />
       {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
       {audioError ? (
@@ -614,114 +1166,87 @@ function Message({ entry, audioId, title }: { entry: TranscriptEntry; audioId: s
         </Text>
       ) : null}
       <View style={styles.msgActions}>
-        <Pressable
+        <MsgAction
+          icon={listenIcon}
+          label={listenLabel}
+          active={current}
+          busy={!!prep}
           onPress={() => audio.playText({ id: audioId, title, text: canonical })}
-          disabled={!!prep}
-          style={({ pressed }) => [styles.msgBtn, (pressed || current) && styles.msgBtnActive]}
-          accessibilityLabel={current ? 'Pause or resume this narration' : 'Listen to this response'}>
-          {prep ? (
-            <ActivityIndicator color={colors.cyan} size="small" />
-          ) : (
-            <Text variant="caption" color={current ? colors.cyan : colors.muted}>
-              {listenLabel}
-            </Text>
-          )}
-        </Pressable>
-        <Pressable
-          onPress={copy}
-          style={({ pressed }) => [styles.msgBtn, (pressed || copied) && styles.msgBtnActive]}
-          accessibilityLabel="Copy this response">
-          <Text variant="caption" color={copied ? colors.cyan : colors.muted}>
-            {copied ? '✓ Copied' : '⧉ Copy'}
-          </Text>
-        </Pressable>
-      </View>
-    </Card>
-  );
-}
-
-function UserBubble({
-  text,
-  canEdit,
-  editing,
-  draft,
-  onChangeDraft,
-  onStartEdit,
-  onCancelEdit,
-  onSubmitEdit,
-  onEditLayout,
-}: {
-  text: string;
-  canEdit?: boolean;
-  editing?: boolean;
-  draft?: string;
-  onChangeDraft?: (t: string) => void;
-  onStartEdit?: () => void;
-  onCancelEdit?: () => void;
-  onSubmitEdit?: () => void;
-  onEditLayout?: (y: number) => void;
-}) {
-  if (editing) {
-    return (
-      <View style={styles.userRow} onLayout={(e) => onEditLayout?.(e.nativeEvent.layout.y)}>
-        <View style={[styles.userBubble, styles.userBubbleEditing]}>
-          <TextInput
-            value={draft}
-            onChangeText={onChangeDraft}
-            multiline
-            autoFocus
-            style={styles.editInput}
-            selectionColor={colors.cyan}
-          />
-          <View style={styles.editActions}>
-            <Pressable onPress={onCancelEdit} style={styles.msgBtn} accessibilityLabel="Cancel edit">
-              <Text variant="caption" color={colors.muted}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={onSubmitEdit}
-              disabled={!draft?.trim()}
-              style={({ pressed }) => [styles.msgBtn, pressed && styles.msgBtnActive]}
-              accessibilityLabel="Save edit and regenerate">
-              <Text variant="caption" color={draft?.trim() ? colors.cyan : colors.muted}>
-                ↻ Save & regenerate
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    );
-  }
-  return (
-    <View style={styles.userRow}>
-      <View style={styles.userBubble}>
-        <Text selectable variant="body">{text}</Text>
-        {canEdit ? (
-          <Pressable onPress={onStartEdit} hitSlop={8} style={styles.editHint} accessibilityLabel="Edit this message">
-            <Text variant="caption" color={colors.muted}>✎ Edit</Text>
-          </Pressable>
-        ) : null}
+          accessibilityLabel={listenA11y}
+        />
+        <MsgAction
+          icon={copied ? 'check' : 'copy'}
+          label={copied ? 'Copied' : 'Copy'}
+          active={copied}
+          onPress={() => void copy()}
+          accessibilityLabel="Copy this response"
+        />
+        <MsgAction
+          icon="rotate-ccw"
+          label="Retry"
+          onPress={openRetryMenu}
+          accessibilityLabel="Retry this response, optionally with a different model"
+        />
       </View>
     </View>
   );
 }
 
-// Friendly label + glyph for each research tool the agent can call (agentic path).
-const TOOL_META: Record<string, { glyph: string; label: string }> = {
-  web_search: { glyph: '🔎', label: 'Searching the web' },
-  web_fetch: { glyph: '🌐', label: 'Reading a page' },
-  read_paper_text: { glyph: '📄', label: 'Reading a paper' },
-  related_papers: { glyph: '🕸', label: 'Finding related papers' },
-  list_project_papers: { glyph: '📚', label: 'Scanning the project' },
+// Quiet inline action under an assistant answer (Figma 08a's ♡ Helpful · ⧉ Copy · Listen row):
+// icon + small label, muted until active.
+function MsgAction({
+  icon,
+  label,
+  onPress,
+  active,
+  busy,
+  accessibilityLabel,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  active?: boolean;
+  busy?: boolean;
+  accessibilityLabel: string;
+}) {
+  const tint = active ? colors.mint : colors.muted;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={busy}
+      hitSlop={8}
+      style={({ pressed }) => [styles.msgAction, pressed && { opacity: 0.7 }]}
+      accessibilityLabel={accessibilityLabel}>
+      {busy ? (
+        <ActivityIndicator color={colors.mint} size="small" />
+      ) : (
+        <Icon name={icon} size={15} color={tint} />
+      )}
+      <Text variant="caption" color={tint}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+// Friendly label + icon for each research tool the agent can call (agentic path).
+const TOOL_META: Record<string, { icon: IconName; label: string }> = {
+  web_search: { icon: 'search', label: 'Searching the web' },
+  web_fetch: { icon: 'globe', label: 'Reading a page' },
+  read_paper_text: { icon: 'file-text', label: 'Reading a paper' },
+  related_papers: { icon: 'share-2', label: 'Finding related papers' },
+  list_project_papers: { icon: 'book-open', label: 'Scanning the project' },
   // retrieval (/start_stream) steps
-  arxiv: { glyph: '📚', label: 'Resolving on arXiv' },
-  fetch_pdf: { glyph: '📥', label: 'Trying a PDF' },
+  arxiv: { icon: 'book-open', label: 'Resolving on arXiv' },
+  fetch_pdf: { icon: 'download', label: 'Trying a PDF' },
 };
 
 function ToolLine({ name, detail }: { name: string; detail: string }) {
-  const meta = TOOL_META[name] ?? { glyph: '🔧', label: name };
+  const meta = TOOL_META[name] ?? { icon: 'tool' as IconName, label: name };
   return (
     <View style={styles.toolRow}>
-      <Text variant="caption" color={colors.cyan}>{meta.glyph} {meta.label}</Text>
+      <Icon name={meta.icon} size={13} color={colors.mint} />
+      <Text variant="caption" color={colors.mint}>{meta.label}</Text>
       {detail ? (
         <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
           {detail}
@@ -739,19 +1264,11 @@ function SmoothMarkdown({ text }: { text: string }) {
 
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
-// agent UIs conventionally show it — rather than pinning all tools above all text. A status
-// row keeps naming what's happening right now (thinking / which tool / writing), so quiet
-// stretches read as work in progress rather than a stall, and a one-line note says the turn
-// survives leaving the screen.
-function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
-  const last = items[items.length - 1];
-  const status = !last
-    ? 'Thinking…'
-    : last.kind === 'tool'
-      ? `${(TOOL_META[last.name]?.label ?? 'Researching')}…`
-      : 'Writing…';
+// agent UIs conventionally show it — rather than pinning all tools above all text. The streamed
+// text itself is the progress indicator; no separate status line or footer note.
+function StreamingTurnBody({ items }: { items: StreamItem[] }) {
   return (
-    <Card style={styles.assistant}>
+    <View style={styles.assistantBody}>
       {items.map((it, i) =>
         it.kind === 'text' ? (
           <SmoothMarkdown key={i} text={it.text} />
@@ -761,31 +1278,36 @@ function StreamingAgentBubble({ items }: { items: StreamItem[] }) {
           </View>
         ),
       )}
-      <View style={styles.liveStatus}>
-        <ActivityIndicator color={colors.cyan} size="small" />
-        <Text variant="caption">{status}</Text>
-      </View>
-      <Text variant="caption" color={colors.muted}>
-        Keeps going in the background — safe to leave this screen.
-      </Text>
-    </Card>
+    </View>
   );
 }
 
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   return (
     <View style={styles.centered}>
-      {loading ? <ActivityIndicator color={colors.cyan} /> : <Text variant="body" color={colors.muted}>{text}</Text>}
+      {loading ? <ActivityIndicator color={colors.mint} /> : <Text variant="body" color={colors.muted}>{text}</Text>}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  thread: { padding: space.md, paddingBottom: space.xl, gap: space.md },
+  modelPill: {
+    maxWidth: 108,
+    height: 40,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.elevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modelPillText: { fontFamily: fonts.bodyMedium },
   composeFirst: { padding: space.md },
+  streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -793,7 +1315,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   searchInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -804,7 +1326,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   promptInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -816,46 +1338,47 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
     lineHeight: 22,
   },
-  assistant: { backgroundColor: colors.panel },
-  msgActions: { flexDirection: 'row', gap: space.sm, marginTop: space.md },
-  msgBtn: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.line2,
-    minWidth: 84,
-    alignItems: 'center',
+  // ---- thread ----
+  messagesContainer: { backgroundColor: colors.bg },
+  assistantCard: { backgroundColor: colors.surface },
+  assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
+  // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
+  // those read as "floating chat bubble" cues that don't make sense once the tinted card
+  // reaches both screen edges. A top/bottom border is enough to separate turns.
+  analystBubble: {
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: colors.line,
+    // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
+    // full-width band shows rounded notches against both screen edges.
+    borderRadius: 0,
   },
-  msgBtnActive: { borderColor: colors.cyan },
-  userRow: { alignItems: 'flex-end' },
   userBubble: {
-    backgroundColor: colors.panel2,
-    borderWidth: 1,
+    backgroundColor: colors.elevated,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.md,
-    borderBottomRightRadius: 4,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    maxWidth: '88%',
+    borderRadius: 0,
   },
-  userBubbleEditing: { borderColor: colors.cyan, maxWidth: '92%', minWidth: '70%' },
-  editInput: {
+  userText: {
     color: colors.text,
     fontFamily: fonts.body,
     fontSize: 15.5,
     lineHeight: 24,
-    padding: 0,
-    minHeight: 24,
+    // MessageText's own margin is zeroed (ZERO_INSET) so this padding is the only inset,
+    // matching assistantBody's — otherwise the two insets would stack.
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
   },
-  editActions: {
+  msgActions: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: space.sm,
-    marginTop: space.sm,
+    flexWrap: 'wrap',
+    gap: space.lg,
+    marginTop: space.md,
+    alignItems: 'center',
   },
-  editHint: { marginTop: space.xs, alignSelf: 'flex-end' },
+  msgAction: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 32 },
   toolTrail: {
     gap: space.xs,
     paddingVertical: space.sm,
@@ -864,37 +1387,71 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
   },
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
-  liveStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    marginTop: space.xs,
-    marginBottom: space.xs,
+  errorCard: { borderColor: colors.danger, margin: space.md },
+  // ---- toolbar ----
+  disclaimer: { textAlign: 'center', paddingTop: 6, backgroundColor: colors.bg },
+  toolbar: {
+    borderTopWidth: 0,
+    backgroundColor: colors.bg,
+    paddingHorizontal: space.sm,
+    paddingVertical: space.sm,
   },
-  errorCard: { borderColor: colors.danger },
-  composerBar: {
+  composerInput: {
+    color: colors.text,
+    fontFamily: 'Manrope_400Regular',
+    fontSize: 15,
+    // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
+    // the height bounds live on the input style itself.
+    minHeight: 46,
+    maxHeight: 120,
+    // The pill composer from Figma 08a: the input itself carries the rounded elevated
+    // surface, since the library's composer container isn't styleable from here.
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    borderRadius: radius.pill,
+    paddingHorizontal: space.lg,
+    paddingVertical: 12,
+  },
+  committedBar: {
     borderTopWidth: 1,
     borderTopColor: colors.line,
     padding: space.md,
     paddingBottom: space.lg,
-    backgroundColor: colors.bg2,
+    backgroundColor: colors.bg,
   },
-  input: {
-    backgroundColor: colors.panel2,
-    borderWidth: 1,
-    borderColor: colors.line2,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: 10,
-    color: colors.text,
-    fontFamily: 'Manrope_400Regular',
-    fontSize: 15,
-    maxHeight: 120,
-    minHeight: 44,
+  accessoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.sm,
+    paddingBottom: space.sm,
   },
-  sendBtn: { paddingHorizontal: space.lg, height: 44 },
+  accessoryCol: { gap: space.sm, paddingHorizontal: space.sm, paddingBottom: space.sm },
+  sendBtn: {
+    backgroundColor: colors.mint,
+    borderRadius: radius.pill,
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: space.sm,
+    marginBottom: 4,
+  },
+  sendBtnDisabled: { backgroundColor: colors.elevated },
+  // ---- compose-first (Start Reading) ----
+  heroCard: { gap: space.md, alignItems: 'flex-start' },
+  startFooter: {
+    flexDirection: 'row',
+    gap: space.sm,
+    padding: space.lg,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    backgroundColor: colors.bg,
+  },
 });

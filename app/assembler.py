@@ -24,7 +24,8 @@ def build_review_context() -> str:
         parts.append("\n".join(block))
     else:
         parts.append("# Per-paper Notes\n\nNo papers have been read in full yet.")
-    parts.append("# The full reading list\n\n" + store.reading_list_overview())
+    parts.append("# The full reading list (papers not yet read carry their abstract)\n\n"
+                 + store.reading_list_overview())
     return "\n\n---\n\n".join(parts)
 
 
@@ -66,20 +67,35 @@ def build_context(slug: str) -> str:
     if related:
         block = ["# Significant related works (shown to the reader in this session's "
                  "'Related works' menu)",
-                 "(From the project's reference graph. The reader can open this menu to explore "
-                 "any of these — jump into ones already in the project, or add external ones to "
-                 "the reading list. When one is relevant to the discussion, refer to it by name "
-                 "and mention it's in the Related works menu.)"]
+                 "(From the project's reference graph. When a related work below is relevant to "
+                 "the discussion, refer to it by name AND render that name as a markdown link to "
+                 "its `link:` target given below, so the reader can tap straight through — an "
+                 "in-project paper opens its own discussion thread; an external one opens its "
+                 "source. Example: [Attention Is All You Need](rc-paper:attention-is-all-you-need). "
+                 "Use the target verbatim. You may still note the item is in the Related works "
+                 "menu.)"]
         for r in related:
             status = ("in this project, read" if r["kind"] == "project" and r["list_status"] == "read"
                       else "in this project, unread" if r["kind"] == "project" else "external")
             cites = f"; ~{r['citation_count']:,} citations" if r.get("citation_count") else ""
             rel = "this paper builds on it" if r["direction"] == "builds_on" else "it builds on this paper"
+            if r["kind"] == "project" and r.get("slug"):
+                target = f"rc-paper:{r['slug']}"
+            elif r.get("url"):
+                target = r["url"]
+            elif r.get("arxiv_id"):
+                target = f"https://arxiv.org/abs/{r['arxiv_id']}"
+            else:
+                target = ""
+            link = f" link:{target}" if target else ""
             block.append(f"- \"{r['title']}\" ({r.get('year') or 'n.d.'}; {status}{cites}) — "
-                         f"{rel}: {r['reason']}")
+                         f"{rel}: {r['reason']}{link}")
         parts.append("\n".join(block))
 
     parts.append("# The full reading list (for situating this paper)\n\n"
+                 "(Entries not yet read carry their abstract — enough to speak to how they "
+                 "relate to this paper, but not a substitute for having read them. Entries "
+                 "already read contribute their Notes above instead.)\n\n"
                  + store.reading_list_overview())
 
     entry = store.entry_markdown(slug)
