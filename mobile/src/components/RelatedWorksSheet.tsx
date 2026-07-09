@@ -10,8 +10,8 @@ import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, V
 
 import { useAddPaper, useRelatedWorks } from '@/api/queries';
 import type { RelatedWork } from '@/api/types';
-import { Card, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { Card, Icon, Text } from '@/ui';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export function RelatedWorksSheet({
   pid,
@@ -33,7 +33,7 @@ export function RelatedWorksSheet({
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
-          <Text variant="title" style={{ marginBottom: 4 }}>
+          <Text variant="editorial" style={{ marginBottom: 4 }}>
             Related works
           </Text>
           <Text variant="caption" style={{ marginBottom: space.md }}>
@@ -41,7 +41,7 @@ export function RelatedWorksSheet({
           </Text>
 
           {related.isLoading ? (
-            <ActivityIndicator color={colors.cyan} style={{ paddingVertical: space.xl }} />
+            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
           ) : !related.data?.length ? (
             <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
               Nothing yet — build the reference graph to populate this menu.
@@ -93,12 +93,17 @@ function RelatedCard({
 
   return (
     <Card style={styles.card}>
-      <Text variant="heading" numberOfLines={2}>{work.title}</Text>
-      <Text variant="caption" style={{ marginTop: 2 }}>{meta}</Text>
+      <Text variant="serifTitle" numberOfLines={3}>{work.title}</Text>
+      <Text variant="caption" style={{ marginTop: 4 }}>{meta}</Text>
       {work.reason ? (
-        <Text variant="caption" color={colors.text} style={{ marginTop: space.sm, opacity: 0.85 }}>
-          {work.reason}
-        </Text>
+        <View style={{ marginTop: space.sm }}>
+          <Text variant="label" color={colors.violet}>
+            Why it matters here
+          </Text>
+          <Text variant="body" style={{ marginTop: 2, fontSize: 14.5, lineHeight: 21 }}>
+            {work.reason}
+          </Text>
+        </View>
       ) : null}
 
       <View style={styles.actions}>
@@ -107,19 +112,19 @@ function RelatedCard({
             onPress={() => onOpenPaper(work.slug!)}
             style={styles.actionBtn}
             accessibilityLabel={`Open ${work.title}`}>
-            <Text variant="caption" color={colors.cyan}>→ Open discussion</Text>
+            <Text variant="caption" color={colors.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>Open discussion</Text>
           </Pressable>
         ) : (
           <Pressable
             onPress={handleAdd}
             disabled={added || addPaper.isPending}
-            style={[styles.actionBtn, added && { borderColor: colors.green }]}
+            style={[styles.actionBtn, added && { borderColor: colors.mint }]}
             accessibilityLabel={`Add ${work.title} to project`}>
             {addPaper.isPending ? (
-              <ActivityIndicator size="small" color={colors.cyan} />
+              <ActivityIndicator size="small" color={colors.mint} />
             ) : (
-              <Text variant="caption" color={added ? colors.green : colors.cyan}>
-                {added ? '✓ Added' : '+ Add to project'}
+              <Text variant="caption" color={added ? colors.mint : colors.mintInk} style={added ? null : { fontFamily: fonts.bodySemiBold }}>
+                {added ? 'Added' : 'Add to project'}
               </Text>
             )}
           </Pressable>
@@ -129,7 +134,8 @@ function RelatedCard({
             onPress={() => Linking.openURL(link)}
             style={styles.actionBtn}
             accessibilityLabel={`Open source for ${work.title}`}>
-            <Text variant="caption" color={colors.muted}>↗ Source</Text>
+            <Icon name="external-link" size={12} color={colors.muted} />
+            <Text variant="caption" color={colors.muted}>Open source</Text>
           </Pressable>
         ) : null}
       </View>
@@ -145,9 +151,9 @@ function RelatedCard({
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.bg2,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.line,
     padding: space.lg,
@@ -162,15 +168,16 @@ const styles = StyleSheet.create({
     marginBottom: space.md,
   },
   card: { borderColor: colors.line2 },
-  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.sm },
+  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.md, alignItems: 'center' },
   actionBtn: {
-    height: 36,
-    paddingHorizontal: space.md,
-    borderRadius: radius.sm,
+    height: 38,
+    paddingHorizontal: space.lg,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
+    gap: 6,
   },
 });

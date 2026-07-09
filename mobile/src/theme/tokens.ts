@@ -22,15 +22,6 @@ export const colors = {
   violet: '#9B8AFB',
   amber: '#E4B85C',
   danger: '#E5738C',
-
-  // ── Compat aliases (pre-redesign token names; removed in the final revamp PR) ──
-  bg2: '#0E1118',
-  panel: '#151922',
-  panel2: '#1B202B',
-  panelActive: '#212736',
-  cyan: '#65D6B4',
-  cyanInk: '#0A231B',
-  green: '#65D6B4',
 } as const;
 
 export const fonts = {
@@ -44,11 +35,6 @@ export const fonts = {
   serifItalic: 'Newsreader_400Regular_Italic',
   serifMedium: 'Newsreader_500Medium',
   serifSemiBold: 'Newsreader_600SemiBold',
-
-  // ── Compat aliases (map old techno/mono roles onto Manrope; removed in final PR) ──
-  display: 'Manrope_600SemiBold',
-  displayBold: 'Manrope_700Bold',
-  mono: 'Manrope_500Medium',
 } as const;
 
 export const radius = {

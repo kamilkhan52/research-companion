@@ -24,7 +24,7 @@ import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -463,7 +463,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: 12,
     color: colors.text,
-    fontFamily: 'Manrope_400Regular',
+    fontFamily: fonts.body,
     fontSize: 15,
   },
   toggle: {

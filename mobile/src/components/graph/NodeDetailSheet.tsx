@@ -9,7 +9,7 @@ import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, V
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphEdge, GraphNode } from '@/api/types';
-import { Chip, Text } from '@/ui';
+import { Chip, Icon, Text } from '@/ui';
 import { colors, radius, space, stateMeta } from '@/theme/tokens';
 
 export function NodeDetailSheet({
@@ -86,7 +86,7 @@ function SheetContent({
         <View style={styles.headerRow}>
           <Chip
             label={node.kind === 'project' ? 'In this project' : 'External reference'}
-            color={node.kind === 'project' ? colors.cyan : colors.violet}
+            color={node.kind === 'project' ? colors.mint : colors.violet}
           />
           {node.kind === 'project' && node.list_status ? (
             <Chip
@@ -96,7 +96,7 @@ function SheetContent({
           ) : null}
         </View>
 
-        <Text variant="title" style={{ marginTop: space.sm }}>
+        <Text variant="editorial" style={{ marginTop: space.sm }}>
           {node.title}
         </Text>
 
@@ -121,17 +121,9 @@ function SheetContent({
           ) : null}
         </View>
 
-        {link ? (
-          <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
-            <Text variant="heading" color={colors.cyan}>
-              ↗ Open source
-            </Text>
-          </Pressable>
-        ) : null}
-
         {node.kind === 'project' ? (
           <Pressable onPress={() => node.slug && onOpenPaper(node.slug)} style={styles.discussBtn}>
-            <Text variant="heading" color={colors.cyanInk}>
+            <Text variant="heading" color={colors.mintInk}>
               Open Discussion
             </Text>
           </Pressable>
@@ -142,14 +134,21 @@ function SheetContent({
             style={[styles.discussBtn, added && styles.discussBtnDone]}
             accessibilityLabel={added ? `${node.title} added to project` : `Add ${node.title} to project`}>
             {addPaper.isPending ? (
-              <ActivityIndicator color={colors.cyanInk} />
+              <ActivityIndicator color={colors.mintInk} />
             ) : (
-              <Text variant="heading" color={added ? colors.text : colors.cyanInk}>
-                {added ? '✓ Added to reading list' : '+ Add to project'}
+              <Text variant="heading" color={added ? colors.mint : colors.mintInk}>
+                {added ? 'Added to reading list' : 'Add to project'}
               </Text>
             )}
           </Pressable>
         )}
+
+        {link ? (
+          <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
+            <Icon name="external-link" size={16} color={colors.text} />
+            <Text variant="heading">Open source</Text>
+          </Pressable>
+        ) : null}
         {addPaper.isError ? (
           <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
             {(addPaper.error as Error).message}
@@ -195,7 +194,7 @@ function SheetContent({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.stat}>
-      <Text variant="display" style={{ fontSize: 22 }}>
+      <Text variant="title" style={{ fontSize: 24 }} color={colors.violet}>
         {value}
       </Text>
       <Text variant="caption">{label}</Text>
@@ -240,8 +239,8 @@ function EdgeRow({
         </Text>
       ) : null}
       {edge.contexts.slice(0, 1).map((ctx, i) => (
-        <Text key={i} variant="mono" style={styles.context} numberOfLines={3}>
-          "{ctx}"
+        <Text key={i} variant="serifItalic" style={styles.context} numberOfLines={3}>
+          “{ctx}”
         </Text>
       ))}
     </Pressable>
@@ -251,9 +250,9 @@ function EdgeRow({
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.bg2,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.line,
     padding: space.lg,
@@ -272,31 +271,33 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: space.xl, marginTop: space.lg },
   stat: { alignItems: 'flex-start' },
   linkBtn: {
-    marginTop: space.lg,
-    height: 44,
-    borderRadius: radius.sm,
+    marginTop: space.sm,
+    height: 48,
+    borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
-    backgroundColor: colors.panel2,
+    backgroundColor: colors.elevated,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
   discussBtn: {
-    marginTop: space.sm,
-    height: 44,
-    borderRadius: radius.sm,
-    backgroundColor: colors.cyan,
+    marginTop: space.lg,
+    height: 48,
+    borderRadius: radius.pill,
+    backgroundColor: colors.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  discussBtnDone: { backgroundColor: colors.panel2, borderWidth: 1, borderColor: colors.green },
+  discussBtnDone: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.mint },
   edgeRow: {
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
+    backgroundColor: colors.elevated,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.line,
     padding: space.md,
   },
   edgeRowSignificant: { borderColor: colors.amber },
-  context: { color: colors.muted, marginTop: 2, fontStyle: 'italic' },
+  context: { color: colors.muted, marginTop: 2, fontSize: 14, lineHeight: 20 },
 });

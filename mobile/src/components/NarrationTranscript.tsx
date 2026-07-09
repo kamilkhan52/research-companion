@@ -226,7 +226,7 @@ export function GeneratingBar({
 
   return (
     <View style={styles.genWrap}>
-      <Text variant="caption" color={colors.cyan}>
+      <Text variant="caption" color={colors.mint}>
         {prepLabel(stage, done, total)}
       </Text>
       <View style={styles.track}>
@@ -263,11 +263,11 @@ const styles = StyleSheet.create({
     width: '40%',
     height: '100%',
     borderRadius: radius.pill,
-    backgroundColor: colors.cyan,
+    backgroundColor: colors.mint,
   },
   fill: {
     height: '100%',
     borderRadius: radius.pill,
-    backgroundColor: colors.cyan,
+    backgroundColor: colors.mint,
   },
 });
