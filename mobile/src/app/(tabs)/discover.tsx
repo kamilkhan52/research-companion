@@ -139,7 +139,11 @@ export default function DiscoverScreen() {
             </Pressable>
           )}
 
-          {runState.running && runState.job ? <ProgressPanel job={runState.job} /> : null}
+          {/* Keep the panel after an in-session run finishes so the fully-checked
+              "Search complete" state (frame 02) actually renders above the results. */}
+          {runState.job && (runState.running || runState.job.status === 'done') ? (
+            <ProgressPanel job={runState.job} />
+          ) : null}
 
           {runState.error ? (
             <Card style={styles.errorCard}>
@@ -233,7 +237,7 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
     { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance to your goals' },
   ];
   const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
-  const done = job.phase === 'done';
+  const done = job.phase === 'done' || job.status === 'done';
   return (
     <Card style={styles.progressPanel}>
       <Text variant="serifTitle" color={colors.mint}>
@@ -484,7 +488,6 @@ const styles = StyleSheet.create({
     left: '-50%',
     height: 2,
     backgroundColor: colors.line2,
-    zIndex: -1,
   },
   stepLineDone: { backgroundColor: colors.mint },
   stepDot: {
