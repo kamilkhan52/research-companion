@@ -125,7 +125,6 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
     case 'heading':
       return (
         <Text
-          selectable
           style={{
             fontFamily: fonts.display,
             fontSize: HEADING_SIZE[block.level] ?? 15.5,
@@ -137,14 +136,14 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
       );
     case 'paragraph':
       return (
-        <Text selectable variant="body">
+        <Text variant="body">
           <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text selectable variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
+          <Text variant="body" color={colors.muted} style={{ fontStyle: 'italic' }}>
             <Inline text={block.text} onLinkPress={onLinkPress} />
           </Text>
         </View>
@@ -152,7 +151,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
     case 'code':
       return (
         <View style={styles.code}>
-          <Text selectable style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
+          <Text style={{ fontFamily: fonts.mono, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
     case 'list':
@@ -163,7 +162,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
               <Text variant="body" color={colors.cyan} style={{ width: 22 }}>
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
-              <Text selectable variant="body" style={{ flex: 1 }}>
+              <Text variant="body" style={{ flex: 1 }}>
                 <Inline text={item} onLinkPress={onLinkPress} />
               </Text>
             </View>
