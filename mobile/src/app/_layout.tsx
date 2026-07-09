@@ -14,7 +14,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, usePathname } from 'expo-router';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -32,6 +32,16 @@ import { ListeningProvider } from '@/store/listening';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// The four tab screens render NowPlaying inside the tab bar (above the tab row); the root
+// copy covers only stack screens pushed over the tabs, so the card never doubles up.
+const TAB_PATHS = new Set(['/', '/discover', '/notes', '/graph']);
+
+function StackNowPlaying() {
+  const pathname = usePathname();
+  if (TAB_PATHS.has(pathname)) return null;
+  return <NowPlaying />;
+}
 
 export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
@@ -80,17 +90,15 @@ export default function RootLayout() {
                         contentStyle: { backgroundColor: colors.bg },
                         animation: 'slide_from_right',
                       }}>
-                      <Stack.Screen name="index" />
-                      <Stack.Screen name="discover" />
+                      <Stack.Screen name="(tabs)" />
                       <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-                      <Stack.Screen name="graph" />
                       <Stack.Screen
                         name="player"
                         options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                       />
                     </Stack>
                   </View>
-                  <NowPlaying />
+                  <StackNowPlaying />
                 </View>
                 </AudioProvider>
               </ListeningProvider>
