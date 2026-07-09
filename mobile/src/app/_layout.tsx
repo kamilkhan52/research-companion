@@ -1,14 +1,17 @@
 import {
-  ChakraPetch_600SemiBold,
-  ChakraPetch_700Bold,
-} from '@expo-google-fonts/chakra-petch';
-import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
-import {
   Manrope_400Regular,
   Manrope_500Medium,
   Manrope_600SemiBold,
   Manrope_700Bold,
 } from '@expo-google-fonts/manrope';
+import {
+  Newsreader_400Regular,
+  Newsreader_400Regular_Italic,
+  Newsreader_500Medium,
+  Newsreader_500Medium_Italic,
+  Newsreader_600SemiBold,
+} from '@expo-google-fonts/newsreader';
+import { Feather } from '@expo/vector-icons';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
@@ -33,13 +36,16 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const [fontsLoaded] = useFonts({
-    ChakraPetch_600SemiBold,
-    ChakraPetch_700Bold,
     Manrope_400Regular,
     Manrope_500Medium,
     Manrope_600SemiBold,
     Manrope_700Bold,
-    JetBrainsMono_400Regular,
+    Newsreader_400Regular,
+    Newsreader_400Regular_Italic,
+    Newsreader_500Medium,
+    Newsreader_500Medium_Italic,
+    Newsreader_600SemiBold,
+    ...Feather.font,
   });
 
   useEffect(() => {
