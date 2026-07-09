@@ -115,7 +115,7 @@ function RecommendationCard({
           style={[styles.addBtn, added && styles.addBtnDone]}
           accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}>
           {addPaper.isPending ? (
-            <ActivityIndicator size="small" color={colors.mint} />
+            <ActivityIndicator size="small" color={colors.mintInk} />
           ) : (
             <Text variant="caption" color={added ? colors.mint : colors.mintInk} style={added ? null : { fontFamily: fonts.bodySemiBold }}>
               {added ? 'Added to reading list' : '+ Add'}
