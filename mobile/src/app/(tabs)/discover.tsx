@@ -22,11 +22,11 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { useAddPaper, useDiscovery } from '@/api/queries';
 import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
-import { TopBar } from '@/components/TopBar';
+import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Screen, Text } from '@/ui';
+import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 export default function DiscoverScreen() {
@@ -82,13 +82,18 @@ export default function DiscoverScreen() {
 
   return (
     <Screen edges={['top']}>
-      <TopBar title="Discover readings" onBack={router.canGoBack() ? () => router.back() : undefined} />
+      <TabHeader
+        title="Discover"
+        actions={[
+          { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
+        ]}
+      />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {showEditor ? (
-            <>
-              <Text variant="label">PROJECT GOALS</Text>
-              <Text variant="caption" style={{ marginTop: space.xs, marginBottom: space.sm }}>
+            <Card style={{ gap: space.sm }}>
+              <Text variant="overline">Project goals</Text>
+              <Text variant="caption">
                 Describe what you want to understand, learn, or explore. We’ll search arXiv and
                 suggest the most fundamental papers to start from.
               </Text>
@@ -102,21 +107,16 @@ export default function DiscoverScreen() {
                 editable={!runState.running}
               />
               <Button
-                title={runState.running ? 'Searching…' : result ? 'Search again' : 'Find foundational papers'}
+                title={runState.running ? 'Searching…' : result ? 'Search again' : 'Find readings'}
                 onPress={runDiscovery}
                 loading={runState.running}
                 disabled={!goals.trim()}
-                style={{ marginTop: space.md }}
+                style={{ marginTop: space.xs }}
               />
               {editingGoals && !runState.running ? (
-                <Button
-                  title="Cancel"
-                  variant="ghost"
-                  onPress={() => setEditingGoals(false)}
-                  style={{ marginTop: space.sm }}
-                />
+                <Button title="Cancel" variant="ghost" onPress={() => setEditingGoals(false)} />
               ) : null}
-            </>
+            </Card>
           ) : (
             // Compact goals summary — the search is the focus now; tap to edit & search again.
             <Pressable
@@ -124,20 +124,26 @@ export default function DiscoverScreen() {
               disabled={runState.running}
               accessibilityLabel="Edit project goals">
               <Card style={styles.goalsSummary}>
-                <Text variant="label">PROJECT GOALS</Text>
-                <Text variant="caption" color={colors.text} numberOfLines={2} style={{ marginTop: space.xs, opacity: 0.85 }}>
+                <View style={styles.goalsHead}>
+                  <Text variant="overline">Project goals</Text>
+                  {!runState.running ? (
+                    <Text variant="label" color={colors.mint}>
+                      Edit
+                    </Text>
+                  ) : null}
+                </View>
+                <Text variant="body" numberOfLines={3} style={{ marginTop: space.xs }}>
                   {goals || result?.goals || ''}
                 </Text>
-                {!runState.running ? (
-                  <Text variant="caption" color={colors.cyan} style={{ marginTop: space.sm }}>
-                    ✎ Edit goals · search again
-                  </Text>
-                ) : null}
               </Card>
             </Pressable>
           )}
 
-          {runState.running && runState.job ? <ProgressPanel job={runState.job} /> : null}
+          {/* Keep the panel after an in-session run finishes so the fully-checked
+              "Search complete" state (frame 02) actually renders above the results. */}
+          {runState.job && (runState.running || runState.job.status === 'done') ? (
+            <ProgressPanel job={runState.job} />
+          ) : null}
 
           {runState.error ? (
             <Card style={styles.errorCard}>
@@ -150,15 +156,13 @@ export default function DiscoverScreen() {
 
           {result && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
-              <Text variant="label">SUGGESTED READINGS</Text>
-              {result.focus ? (
-                <Text variant="caption" style={{ marginTop: space.xs }}>
-                  {result.focus}
-                </Text>
-              ) : null}
-              <Text variant="caption" color={colors.muted} style={{ marginTop: 2, marginBottom: space.md }}>
-                Ranked {result.candidate_count} arXiv papers by relevance to your goals and
-                citations.
+              <Text variant="editorial">Recommended foundations</Text>
+              <Text variant="body" color={colors.muted} style={{ marginTop: 2 }}>
+                Why these papers fit your project
+              </Text>
+              <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
+                {result.focus ? `${result.focus} · ` : ''}Ranked {result.candidate_count} arXiv
+                papers by relevance to your goals and citations.
               </Text>
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
@@ -202,7 +206,7 @@ export default function DiscoverScreen() {
           <View style={styles.footer}>
             <Button
               title={`Go to library · ${addedCount} added`}
-              onPress={() => router.back()}
+              onPress={() => router.navigate('/')}
             />
           </View>
         ) : null}
@@ -215,48 +219,56 @@ export default function DiscoverScreen() {
 
 const PHASE_ORDER = ['queries', 'searching', 'citations', 'scoring', 'done'] as const;
 
+// The mint check timeline from Figma `02 · Discover` ("Planned → Reviewed → Checked →
+// Ranked"), with the live phase's detail line underneath — the polled job data the old
+// vertical panel showed, kept.
 function ProgressPanel({ job }: { job: DiscoveryJob }) {
   const current = PHASE_ORDER.indexOf(job.phase);
-  const rows = [
-    { key: 'queries', label: 'Planning searches', detail: job.focus },
+  const steps = [
+    { key: 'queries', label: 'Planned', detail: job.focus },
     {
       key: 'searching',
-      label: 'Searching arXiv',
+      label: 'Searched',
       detail: job.total_queries
         ? `${job.searched}/${job.total_queries} searches · ${job.found} papers`
-        : '',
+        : 'Searching arXiv…',
     },
-    { key: 'citations', label: 'Fetching citation counts', detail: `${job.found} papers` },
-    { key: 'scoring', label: 'Ranking by relevance to your goals', detail: '' },
+    { key: 'citations', label: 'Checked', detail: `Citations for ${job.found} papers` },
+    { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance to your goals' },
   ];
+  const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
+  const done = job.phase === 'done' || job.status === 'done';
   return (
-    <View style={styles.progressPanel}>
-      {rows.map((row, i) => {
-        const state = i < current ? 'done' : i === current ? 'active' : 'pending';
-        return (
-          <View key={row.key} style={styles.progressRow}>
-            {state === 'active' ? (
-              <ActivityIndicator size="small" color={colors.cyan} />
-            ) : (
-              <Text style={{ color: state === 'done' ? colors.green : colors.muted, fontSize: 14 }}>
-                {state === 'done' ? '✓' : '○'}
+    <Card style={styles.progressPanel}>
+      <Text variant="serifTitle" color={colors.mint}>
+        {done ? 'Search complete' : 'Searching…'}
+      </Text>
+      <View style={styles.stepsRow}>
+        {steps.map((step, i) => {
+          const state = done || i < current ? 'done' : i === current ? 'active' : 'pending';
+          return (
+            <View key={step.key} style={styles.step}>
+              {i > 0 ? <View style={[styles.stepLine, state !== 'pending' && styles.stepLineDone]} /> : null}
+              <View style={[styles.stepDot, state === 'done' && styles.stepDotDone]}>
+                {state === 'done' ? (
+                  <Icon name="check" size={13} color={colors.mintInk} />
+                ) : state === 'active' ? (
+                  <ActivityIndicator size="small" color={colors.mint} />
+                ) : null}
+              </View>
+              <Text variant="caption" color={state === 'pending' ? colors.muted : colors.text}>
+                {step.label}
               </Text>
-            )}
-            <Text
-              variant="body"
-              color={state === 'pending' ? colors.muted : colors.text}
-              style={{ flexShrink: 0 }}>
-              {row.label}
-            </Text>
-            {state !== 'pending' && row.detail ? (
-              <Text variant="caption" numberOfLines={1} style={{ flex: 1 }}>
-                {row.detail}
-              </Text>
-            ) : null}
-          </View>
-        );
-      })}
-    </View>
+            </View>
+          );
+        })}
+      </View>
+      {!done && active?.detail ? (
+        <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center' }}>
+          {active.detail}
+        </Text>
+      ) : null}
+    </Card>
   );
 }
 
@@ -300,11 +312,9 @@ function SuggestionCard({
 
   return (
     <Card style={styles.suggestionCard}>
-      <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Text variant="mono" color={colors.violet}>
-          {rank}
-        </Text>
-        <View style={{ flex: 1 }}>
+      <View style={{ flexDirection: 'row', gap: space.md }}>
+        <Text style={styles.rankNum}>{String(rank).padStart(2, '0')}</Text>
+        <View style={{ flex: 1, minWidth: 0 }}>
           <Text variant="heading">{s.title}</Text>
           <Text variant="caption" style={{ marginTop: 2 }}>
             {meta}
@@ -312,9 +322,12 @@ function SuggestionCard({
         </View>
       </View>
       {s.reasons[0] ? (
-        <Text variant="caption" color={colors.text} style={{ marginTop: space.sm, opacity: 0.85 }}>
-          {s.reasons[0]}
-        </Text>
+        <View style={styles.reasonRow}>
+          <Icon name="check" size={14} color={colors.mint} />
+          <Text variant="caption" color={colors.text} style={{ flex: 1, opacity: 0.85 }}>
+            {s.reasons[0]}
+          </Text>
+        </View>
       ) : null}
 
       {showAbstract ? (
@@ -324,19 +337,6 @@ function SuggestionCard({
       ) : null}
 
       <View style={styles.actions}>
-        <Pressable
-          onPress={handleAdd}
-          disabled={added || addPaper.isPending}
-          style={[styles.actionBtn, added && { borderColor: colors.green }]}
-          accessibilityLabel={`Add ${s.title} to library`}>
-          {addPaper.isPending ? (
-            <ActivityIndicator size="small" color={colors.cyan} />
-          ) : (
-            <Text variant="caption" color={added ? colors.green : colors.cyan}>
-              {added ? '✓ Added' : '+ Add to library'}
-            </Text>
-          )}
-        </Pressable>
         <Pressable
           onPress={() => setShowAbstract((v) => !v)}
           style={styles.actionBtn}
@@ -349,8 +349,19 @@ function SuggestionCard({
           onPress={() => Linking.openURL(s.url)}
           style={styles.actionBtn}
           accessibilityLabel={`Open ${s.title} on arXiv`}>
-          <Text variant="caption" color={colors.muted}>↗ arXiv</Text>
+          <Icon name="external-link" size={13} color={colors.muted} />
+          <Text variant="caption" color={colors.muted}>arXiv</Text>
         </Pressable>
+        <View style={{ flex: 1 }} />
+        <Button
+          title={added ? 'Added' : 'Add'}
+          icon={added ? 'check' : 'plus'}
+          onPress={handleAdd}
+          loading={addPaper.isPending}
+          disabled={added || addPaper.isPending}
+          style={styles.addBtn}
+          accessibilityLabel={`Add ${s.title} to library`}
+        />
       </View>
       {addPaper.isError ? (
         <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
@@ -404,9 +415,9 @@ function SpecificPaper({ pid }: { pid: string }) {
   }
 
   return (
-    <View style={{ marginTop: space.xl }}>
-      <Text variant="label">HAVE A SPECIFIC PAPER?</Text>
-      <Text variant="caption" style={{ marginTop: space.xs, marginBottom: space.sm }}>
+    <Card style={{ marginTop: space.xl, gap: space.sm }}>
+      <Text variant="title">Have a specific paper?</Text>
+      <Text variant="caption">
         Paste a paper title, an arXiv link or id, or a direct PDF link. It’s added to your
         library and fetched when you open it — with an agentic web hunt if it’s hard to find.
       </Text>
@@ -414,7 +425,7 @@ function SpecificPaper({ pid }: { pid: string }) {
         value={text}
         onChangeText={setText}
         style={styles.specificInput}
-        placeholder="Paper title  ·  arxiv.org/abs/2501.01005  ·  https://…/paper.pdf"
+        placeholder="Paste arXiv link, DOI, or title"
         placeholderTextColor={colors.muted}
         autoCapitalize="none"
         autoCorrect={false}
@@ -426,21 +437,20 @@ function SpecificPaper({ pid }: { pid: string }) {
         onPress={submit}
         loading={addPaper.isPending}
         disabled={!text.trim()}
-        style={{ marginTop: space.sm }}
       />
       {err ? (
         <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
           {err}
         </Text>
       ) : null}
-    </View>
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
   body: { padding: space.md, paddingBottom: space.xxl },
   goalsInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -453,7 +463,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   specificInput: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
     borderRadius: radius.md,
@@ -463,17 +473,44 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 15,
   },
-  progressPanel: {
-    gap: space.sm,
-    padding: space.md,
-    marginTop: space.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.panel2,
+  progressPanel: { gap: space.md, marginTop: space.md, alignItems: 'center' },
+  stepsRow: {
+    flexDirection: 'row',
+    alignSelf: 'stretch',
+    justifyContent: 'space-between',
+    paddingHorizontal: space.sm,
   },
-  progressRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  step: { alignItems: 'center', gap: 6, flex: 1 },
+  stepLine: {
+    position: 'absolute',
+    top: 14,
+    right: '50%',
+    left: '-50%',
+    height: 2,
+    backgroundColor: colors.line2,
+  },
+  stepLineDone: { backgroundColor: colors.mint },
+  stepDot: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    borderWidth: 2,
+    borderColor: colors.line2,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepDotDone: { backgroundColor: colors.mint, borderColor: colors.mint },
   goalsSummary: { padding: space.md, borderColor: colors.line2 },
+  goalsHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  rankNum: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 24,
+    lineHeight: 30,
+    color: colors.violet,
+  },
+  reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: space.sm },
+  addBtn: { height: 40, paddingHorizontal: space.lg },
   footer: {
     padding: space.md,
     borderTopWidth: 1,
