@@ -1,6 +1,7 @@
 import { apiGet, apiPost } from '@/api/client';
 import type { Project, ProjectState } from '@/api/types';
 import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
+import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
 
 export function listProjects(): Promise<{ projects: Project[] }> {
   return apiGet('/api/projects');
@@ -24,4 +25,97 @@ export function buildGraph(pid: string): Promise<{ build: GraphBuildJob }> {
 
 export function getGraphBuildStatus(pid: string): Promise<{ build: GraphBuildJob }> {
   return apiGet(`/api/projects/${encodeURIComponent(pid)}/graph/build/status`);
+}
+
+function P(pid: string) { return `/api/projects/${encodeURIComponent(pid)}`; }
+
+export function getSession(pid: string, slug: string): Promise<Session> {
+  return apiGet(`${P(pid)}/session/${encodeURIComponent(slug)}`);
+}
+
+export function getOpeningDraft(pid: string, slug: string): Promise<OpeningDraft> {
+  return apiGet(`${P(pid)}/opening_draft/${encodeURIComponent(slug)}`);
+}
+
+export function reopen(pid: string, slug: string): Promise<{ state: string; transcript: unknown[] }> {
+  return apiPost(`${P(pid)}/reopen`, { slug });
+}
+
+export function approve(pid: string, slug: string, body?: Record<string, unknown>) {
+  return apiPost<{ result: unknown }>(`${P(pid)}/approve`, { slug, ...body });
+}
+
+export function getReview(pid: string, slug: string): Promise<ReviewResponse> {
+  return apiGet(`${P(pid)}/review/${encodeURIComponent(slug)}`);
+}
+
+// Job-based turn endpoints — long/LLM operations run server-side, client polls.
+// See CLAUDE.md invariant 1: never use connection-tied SSE for minutes-long operations.
+
+export function startJob(pid: string, body: { slug: string; prompt?: string; model?: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/chat/start_job`, body);
+}
+
+export function replyJob(pid: string, body: { slug: string; text: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/reply_job`, body);
+}
+
+export function continueJob(pid: string, slug: string) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/continue_job`, { slug });
+}
+
+export function retryJob(pid: string, body: { slug: string; assistant_index: number; model?: string | null }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/retry_job`, body);
+}
+
+export function finishJob(pid: string, slug: string) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/finish_job`, { slug });
+}
+
+export function requestChangesJob(pid: string, body: { slug: string; text: string }) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/request_changes_job`, body);
+}
+
+export interface TextItem { kind: 'text'; text: string; }
+export interface ToolItem { kind: 'tool'; name: string; detail: string; }
+export interface ChatJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  turn: { role: string; canonical?: string; text?: string; state_signal?: string; proposed_commit?: unknown } | null;
+  items: (TextItem | ToolItem)[];
+  error: string | null;
+}
+
+export function getChatJob(pid: string, jobId: string): Promise<{ job: ChatJob }> {
+  return apiGet(`${P(pid)}/chat/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getActiveChatJob(pid: string, slug: string): Promise<{ job: ChatJob | null }> {
+  return apiGet(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+}
+
+// Paper retrieval (pre-discussion) is a background job for the same reason chat turns are:
+// arXiv pacing, PDF downloads/extraction, and the fallback hunt can outlive a tunnel request.
+export interface RetrievalJob {
+  id: string;
+  slug: string;
+  status: 'running' | 'done' | 'error';
+  phase: 'resolving' | 'hunting' | 'confirmation' | 'done';
+  detail: string;
+  items: { kind: 'tool'; name: string; detail: string }[];
+  candidates: { arxiv_id: string; title: string; score: number }[];
+  retrieved: boolean;
+  error: string | null;
+}
+
+export function startRetrievalJob(pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) {
+  return apiPost<{ job: RetrievalJob }>(`${P(pid)}/retrieval/jobs`, { slug, ...opts });
+}
+
+export function getRetrievalJob(pid: string, jobId: string) {
+  return apiGet<{ job: RetrievalJob }>(`${P(pid)}/retrieval/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getLatestRetrievalJob(pid: string, slug: string) {
+  return apiGet<{ job: RetrievalJob | null }>(`${P(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`);
 }
