@@ -82,7 +82,7 @@ export default function DiscoverScreen() {
 
   return (
     <Screen edges={['top']}>
-      <TopBar title="Discover readings" onBack={() => router.back()} />
+      <TopBar title="Discover readings" onBack={router.canGoBack() ? () => router.back() : undefined} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {showEditor ? (

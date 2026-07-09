@@ -35,7 +35,9 @@ type Mode = 'view' | 'edit';
 export default function NotesScreen() {
   const router = useRouter();
   const qc = useQueryClient();
-  const { target } = useLocalSearchParams<{ target: string }>();
+  // Also mounted as the Notes tab (no route param), which shows the project-level synthesis.
+  const { target: targetParam } = useLocalSearchParams<{ target?: string }>();
+  const target = targetParam ?? 'working';
   const { activePid: pid } = useActiveProject();
 
   const notes = useNotes(pid, target ?? null);
@@ -154,7 +156,7 @@ export default function NotesScreen() {
       <TopBar
         title={title}
         subtitle={showProposal ? 'Proposed revision — review before applying' : 'Notes'}
-        onBack={() => router.back()}
+        onBack={router.canGoBack() ? () => router.back() : undefined}
       />
 
       {!pid || !target ? (

@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 
 import { useCreateProject, useProjects } from '@/api/queries';
-import { Button, Card, Text } from '@/ui';
+import { Button, Card, Icon, Text } from '@/ui';
 import type { Project } from '@/api/types';
 import { colors, radius, space } from '@/theme/tokens';
 
@@ -52,7 +52,7 @@ export function ProjectSwitcher({
           </Text>
 
           {isLoading ? (
-            <ActivityIndicator color={colors.cyan} style={{ paddingVertical: space.xl }} />
+            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
           ) : (
             <View style={{ gap: space.sm }}>
               {(projects ?? []).map((p) => (
@@ -126,14 +126,14 @@ function ProjectRow({
     <Pressable onPress={onPress}>
       <Card style={[styles.row, active && styles.rowActive]}>
         <View style={{ flex: 1 }}>
-          <Text variant="heading" color={active ? colors.cyan : colors.text}>
+          <Text variant="heading" color={active ? colors.mint : colors.text}>
             {project.name}
           </Text>
           <Text variant="caption" style={{ marginTop: 2 }}>
             {project.paper_count} paper{project.paper_count === 1 ? '' : 's'} · {project.read_count} read
           </Text>
         </View>
-        {active ? <Text color={colors.cyan}>✓</Text> : null}
+        {active ? <Icon name="check" size={18} color={colors.mint} /> : null}
       </Card>
     </Pressable>
   );
@@ -142,9 +142,9 @@ function ProjectRow({
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.bg2,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.line,
     padding: space.lg,
@@ -160,12 +160,12 @@ const styles = StyleSheet.create({
     marginBottom: space.md,
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  rowActive: { borderColor: colors.cyan },
+  rowActive: { borderColor: colors.mint },
   input: {
-    backgroundColor: colors.panel,
+    backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 12,
     color: colors.text,

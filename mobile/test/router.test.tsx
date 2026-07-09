@@ -5,7 +5,7 @@ import { Slot } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 import { Text } from 'react-native';
 
-import LibraryScreen from '@/app/index';
+import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import { ProjectProvider } from '@/store/project';
