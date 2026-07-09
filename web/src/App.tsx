@@ -7,6 +7,8 @@ import { Notes } from '@/components/Notes';
 import { Settings } from '@/components/Settings';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { NowPlaying, Player } from '@/audio/AudioPlayer';
+import { AuthGate } from '@/components/AuthGate';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
@@ -29,6 +31,7 @@ function parseHash(): Route {
 
 export function App() {
   const [route, setRoute] = useState<Route>(parseHash);
+  const [authenticated, setAuthenticated] = useState(false);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash());
@@ -40,7 +43,15 @@ export function App() {
     window.location.hash = hash;
   }, []);
 
-  return <AudioProvider>(
+  useEffect(() => {
+    const regate = () => setAuthenticated(false);
+    window.addEventListener('rc:auth-required', regate);
+    return () => window.removeEventListener('rc:auth-required', regate);
+  }, []);
+
+  if (!authenticated) return <div className="auth-container"><AuthGate onAuthenticated={() => setAuthenticated(true)} /></div>;
+
+  return <ErrorBoundary><AudioProvider>(
     <>
       <TopBar
         title="Research Companion"
@@ -54,7 +65,7 @@ export function App() {
       {route.view === 'settings' && <Settings onClose={() => navigate('library')} />}
       <NowPlaying onOpen={() => navigate('player')} />
     </>
-  </AudioProvider>;
+  </AudioProvider></ErrorBoundary>;
 }
 
 function TopBar({

@@ -2,6 +2,14 @@ import { render, screen } from '@testing-library/react';
 import { App } from '@/App';
 import { vi, afterEach } from 'vitest';
 
+vi.mock('@/components/AuthGate', async () => {
+  const { useEffect } = await import('react');
+  return { AuthGate: ({ onAuthenticated }: { onAuthenticated: () => void }) => {
+    useEffect(() => onAuthenticated(), [onAuthenticated]);
+    return null;
+  } };
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
@@ -12,41 +20,42 @@ describe('App', () => {
     window.location.hash = '';
   });
 
-  it('renders the top bar title', () => {
+  it('renders the top bar title', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    expect(screen.getByText('Research Companion')).toBeInTheDocument();
+    expect(await screen.findByText('Research Companion')).toBeInTheDocument();
   });
 
-  it('shows loading state on library view', () => {
+  it('shows loading state on library view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    expect(screen.getByText(/loading library/i)).toBeInTheDocument();
+    expect(await screen.findByText(/loading library/i)).toBeInTheDocument();
   });
 
   it('navigates to graph view via hash', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     window.location.hash = '#graph';
     render(<App />);
-    expect(screen.getByText(/no reference graph/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no reference graph/i)).toBeInTheDocument();
   });
 
-  it('shows back button on non-library views', () => {
+  it('shows back button on non-library views', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     window.location.hash = '#graph';
     render(<App />);
-    expect(screen.getByLabelText('Back')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Back')).toBeInTheDocument();
   });
 
-  it('hides back button on library view', () => {
+  it('hides back button on library view', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
+    await screen.findByText('Research Companion');
     expect(screen.queryByLabelText('Back')).not.toBeInTheDocument();
   });
 
-  it('shows settings gear icon', () => {
+  it('shows settings gear icon', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     render(<App />);
-    expect(screen.getByLabelText('Settings')).toBeInTheDocument();
+    expect(await screen.findByLabelText('Settings')).toBeInTheDocument();
   });
 });

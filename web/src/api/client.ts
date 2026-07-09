@@ -15,6 +15,10 @@ function authHeaders(): Record<string, string> {
 }
 
 async function parseError(res: Response): Promise<never> {
+  if (res.status === 401) {
+    localStorage.removeItem('rc_token');
+    window.dispatchEvent(new Event('rc:auth-required'));
+  }
   let detail = `Request failed (${res.status})`;
   try {
     const body = await res.json();

@@ -23,9 +23,9 @@ single final PR.
 | 2 | `web/library` | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
 | 3 | `web/graph` | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
 | 4 | `web/discussion` | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | Merged |
-| 5 | `web/discovery-notes` | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | In review |
+| 5 | `web/discovery-notes` | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | Merged |
 | 6 | `web/settings-audio` | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | In review |
-| 7 | `web/auth-polish` | — | Planned |
+| 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | In review |
 
 ## Phase 1 — Foundation
 
