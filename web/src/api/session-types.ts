@@ -16,7 +16,7 @@ export interface SessionPaper {
 
 export interface Session {
   paper: SessionPaper;
-  state: string;
+  state: string | null;
   transcript: SessionTurn[];
   model?: string;
 }

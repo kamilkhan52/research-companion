@@ -1,59 +1,111 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { getSession, getOpeningDraft, getReview, approve, reopen, startJob, replyJob, continueJob, retryJob, finishJob, requestChangesJob, getChatJob, getActiveChatJob, startPaper } from '@/api/endpoints';
-import type { ChatJob } from '@/api/endpoints';
-import type { SessionTurn, OpeningDraft, ReviewResponse } from '@/api/session-types';
+import {
+  approve,
+  continueJob,
+  finishJob,
+  getActiveChatJob,
+  getChatJob,
+  getLatestRetrievalJob,
+  getOpeningDraft,
+  getRetrievalJob,
+  getReview,
+  getSession,
+  reopen,
+  replyJob,
+  requestChangesJob,
+  retryJob,
+  startJob,
+  startRetrievalJob,
+} from '@/api/endpoints';
+import type { ChatJob, RetrievalJob } from '@/api/endpoints';
+import type { OpeningDraft, ReviewResponse, Session, SessionTurn } from '@/api/session-types';
+import { ApiError } from '@/api/client';
 import { useActivePid } from '@/hooks/useLibrary';
 import './Discussion.css';
 
 interface Props { slug: string; onNavigate: (hash: string) => void; }
 type View = 'compose' | 'chat' | 'review' | 'start';
+interface WatchableJob { id: string; status: 'running' | 'done' | 'error'; }
 
 marked.setOptions({ breaks: true });
+
 function sanitize(html: string): string {
-  return DOMPurify.sanitize(html, { ALLOWED_TAGS: ['h1','h2','h3','h4','p','br','strong','em','code','pre','blockquote','ul','ol','li','a','span','table','thead','tbody','tr','th','td'], ALLOWED_ATTR: ['href','target','rel','class'] });
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['h1','h2','h3','h4','p','br','strong','em','code','pre','blockquote','ul','ol','li','a','span','table','thead','tbody','tr','th','td'],
+    ALLOWED_ATTR: ['href','target','rel','class'],
+  });
 }
 
-function useJobPoll(pid: string | null) {
-  const [job, setJob] = useState<ChatJob | null>(null);
-  const [streamText, setStreamText] = useState('');
-  const jobIdRef = useRef<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const startPoll = useCallback((jobId: string) => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    jobIdRef.current = jobId;
-    setJob(null);
-    setStreamText('');
-
-    intervalRef.current = setInterval(async () => {
-      if (!pid || jobIdRef.current !== jobId) return;
-      try {
-        const r = await getChatJob(pid, jobId);
-        if (jobIdRef.current !== jobId) return; // stale
-        if (r.job.status === 'running') {
-          setJob(r.job);
-          setStreamText(r.job.items.filter((i): i is { kind: 'text'; text: string } => i.kind === 'text').map((i) => i.text).join(''));
-        } else {
-          if (intervalRef.current) clearInterval(intervalRef.current);
-          intervalRef.current = null;
-          setJob(r.job);
-          setStreamText('');
-        }
-      } catch {}
-    }, 1000);
-  }, [pid]);
+/** One request at a time. A terminal snapshot invalidates the watch synchronously, so an older
+ * response can never overwrite it. Network blips retry; a 404 signals the caller to reconcile
+ * with canonical server state (the server may have restarted after persisting the result). */
+function useJobWatcher<T extends WatchableJob>(
+  pid: string | null,
+  load: (pid: string, id: string) => Promise<{ job: T }>,
+) {
+  const [job, setJob] = useState<T | null>(null);
+  const [missingVersion, setMissingVersion] = useState(0);
+  const generationRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stop = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = null;
-    jobIdRef.current = null;
+    generationRef.current += 1;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
   }, []);
 
-  useEffect(() => () => stop(), []);
+  const start = useCallback((jobId: string) => {
+    stop();
+    const generation = generationRef.current;
+    setJob(null);
 
-  return { job, streamText, startPoll, stop };
+    const poll = async () => {
+      if (!pid || generationRef.current !== generation) return;
+      try {
+        const { job: snapshot } = await load(pid, jobId);
+        if (generationRef.current !== generation) return;
+        if (snapshot.status !== 'running') {
+          generationRef.current += 1; // invalidate before React can schedule another response
+          timerRef.current = null;
+          setJob(snapshot);
+          return;
+        }
+        setJob(snapshot);
+      } catch (error) {
+        if (generationRef.current !== generation) return;
+        if (error instanceof ApiError && error.status === 404) {
+          generationRef.current += 1;
+          timerRef.current = null;
+          setJob(null);
+          setMissingVersion((value) => value + 1);
+          return;
+        }
+      }
+      if (generationRef.current === generation) {
+        timerRef.current = setTimeout(poll, 1000);
+      }
+    };
+
+    void poll();
+  }, [load, pid, stop]);
+
+  const accept = useCallback((snapshot: T) => {
+    if (snapshot.status === 'running') start(snapshot.id);
+    else {
+      stop();
+      setJob(snapshot);
+    }
+  }, [start, stop]);
+
+  const clear = useCallback(() => {
+    stop();
+    setJob(null);
+  }, [stop]);
+
+  useEffect(() => clear, [clear]);
+  return { job, missingVersion, start, accept, clear };
 }
 
 export function Discussion({ slug, onNavigate }: Props) {
@@ -65,145 +117,258 @@ export function Discussion({ slug, onNavigate }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [retrievalError, setRetrievalError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
-
   const [draft, setDraft] = useState<OpeningDraft | null>(null);
   const [model, setModel] = useState('');
-
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [notesBlock, setNotesBlock] = useState('');
   const [synthesis, setSynthesis] = useState('');
-
-  const { job, streamText, startPoll, stop } = useJobPoll(activePid);
-  const [candidates, setCandidates] = useState<{ arxiv_id: string; title: string; score: number }[]>([]);
+  const [candidates, setCandidates] = useState<RetrievalJob['candidates']>([]);
   const [arxivId, setArxivId] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
-
   const chatRef = useRef<HTMLDivElement>(null);
-  const didInitRef = useRef(false);
+  // Update during render rather than waiting for an effect: an A request that resolves during
+  // B's render must never write A's transcript/review/draft into B's screen.
+  const routeRef = useRef({ pid: activePid, slug });
+  routeRef.current = { pid: activePid, slug };
 
-  useEffect(() => { if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight; }, [turns, streamText]);
-
-  // Fetch canonical transcript from server — replaces local appending
-  function fetchSession() {
-    if (!activePid) return;
-    getSession(activePid, slug).then((s) => {
-      setTurns((s.transcript || []).map((t: SessionTurn) => ({ ...t, narration: '' })));
-      setModel(s.model || '');
-      if (s.state === 'notes_drafted') loadReview();
-    }).catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }
+  const chatWatch = useJobWatcher<ChatJob>(activePid, getChatJob);
+  const retrievalWatch = useJobWatcher<RetrievalJob>(activePid, getRetrievalJob);
+  const streamText = (chatWatch.job?.items || [])
+    .filter((item): item is { kind: 'text'; text: string } => item.kind === 'text')
+    .map((item) => item.text)
+    .join('');
 
   useEffect(() => {
-    if (!activePid) return;
-    getSession(activePid, slug).then((s) => {
-      if (didInitRef.current) return;
-      didInitRef.current = true;
-      setPaperTitle(s.paper.title);
-      setTurns((s.transcript || []).map((t: SessionTurn) => ({ ...t, narration: '' })));
-      setModel(s.model || '');
-      if (s.state === 'notes_drafted') loadReview();
-      else if ((s.transcript || []).length > 0) setView('chat');
-      else if (!s.paper.retrieved) setView('start');
-      else loadDraft();
-    }).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  }, [turns, streamText]);
+
+  const loadReview = useCallback(async () => {
+    const pid = activePid;
+    const expectedSlug = slug;
+    if (!pid) return;
+    const result = await getReview(pid, expectedSlug);
+    if (routeRef.current.pid !== pid || routeRef.current.slug !== expectedSlug) return;
+    setReview(result);
+    setNotesBlock(result.notes_block || '');
+    setSynthesis(result.synthesis_proposed || '');
+    setView('review');
   }, [activePid, slug]);
 
+  const applySession = useCallback((session: Session) => {
+    setPaperTitle(session.paper.title);
+    setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
+    setModel(session.model || '');
+  }, []);
+
+  const fetchCanonicalSession = useCallback(async () => {
+    const pid = activePid;
+    const expectedSlug = slug;
+    if (!pid) return null;
+    const session = await getSession(pid, expectedSlug);
+    if (routeRef.current.pid !== pid || routeRef.current.slug !== expectedSlug) return null;
+    applySession(session);
+    if (session.state === 'notes_drafted') await loadReview();
+    return session;
+  }, [activePid, applySession, loadReview, slug]);
+
+  const loadDraft = useCallback(async () => {
+    const pid = activePid;
+    const expectedSlug = slug;
+    if (!pid) return;
+    const opening = await getOpeningDraft(pid, expectedSlug);
+    if (routeRef.current.pid !== pid || routeRef.current.slug !== expectedSlug) return;
+    setDraft(opening);
+    setModel(opening.model);
+    setView('compose');
+  }, [activePid, slug]);
+
+  // Initialize per (project, paper). Cancellation handles React StrictMode and direct A -> B
+  // navigation without a one-shot ref that would strand the prior paper's state on screen.
   useEffect(() => {
-    if (!activePid || view !== 'chat') return;
-    getActiveChatJob(activePid, slug).then((r) => {
-      if (r.job && r.job.status === 'running') { setWorking(true); startPoll(r.job.id); }
-    }).catch(() => {});
-  }, [activePid, slug, view]);
-
-  function loadDraft() {
-    if (!activePid) return;
-    getOpeningDraft(activePid, slug).then((d) => { setDraft(d); setModel(d.model); setView('compose'); }).catch(() => setView('chat'));
-  }
-  function loadReview() {
-    if (!activePid) return;
-    getReview(activePid, slug).then((r) => { setReview(r); setNotesBlock(r.notes_block || ''); setSynthesis(r.synthesis_proposed || ''); setView('review'); }).catch(() => {});
-  }
-
-  async function handleStartPaper() {
-    if (!activePid) return;
-    setWorking(true);
-    setRetrievalError(null);
-    try {
-      const r = await startPaper(activePid, slug, { arxiv_id: arxivId || undefined, pdf_url: pdfUrl || undefined });
-      if (r.needs_confirmation && r.candidates) { setCandidates(r.candidates); setWorking(false); }
-      else { loadDraft(); setWorking(false); }
-    } catch (e) { setRetrievalError(e instanceof Error ? e.message : String(e)); setWorking(false); }
-  }
-
-  async function handleCandidatePick(aid: string) {
-    if (!activePid) return;
-    setWorking(true);
-    setRetrievalError(null);
-    try { await startPaper(activePid, slug, { arxiv_id: aid }); loadDraft(); }
-    catch (e) { setRetrievalError(e instanceof Error ? e.message : String(e)); }
+    let cancelled = false;
+    chatWatch.clear();
+    retrievalWatch.clear();
+    setView('compose');
+    setTurns([]);
+    setDraft(null);
+    setReview(null);
     setWorking(false);
+    setError(null);
+    setRetrievalError(null);
+    setCandidates([]);
+
+    const initialize = async () => {
+      if (!activePid) return;
+      try {
+        let session = await getSession(activePid, slug);
+        if (cancelled) return;
+        applySession(session);
+        if (session.state === 'notes_drafted') {
+          await loadReview();
+          return;
+        }
+        if ((session.transcript || []).length > 0) {
+          setView('chat');
+          const { job } = await getActiveChatJob(activePid, slug);
+          if (cancelled) return;
+          if (job?.status === 'running') {
+            setWorking(true);
+            chatWatch.start(job.id);
+          } else {
+            // Close the session-fetch/active-job race: a turn may have persisted between them.
+            session = await getSession(activePid, slug);
+            if (!cancelled) applySession(session);
+          }
+          return;
+        }
+        if (!session.paper.retrieved) {
+          setView('start');
+          const { job } = await getLatestRetrievalJob(activePid, slug);
+          if (!cancelled && job) retrievalWatch.accept(job);
+          return;
+        }
+        await loadDraft();
+      } catch (caught) {
+        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+      }
+    };
+    void initialize();
+    return () => { cancelled = true; };
+  // watcher callbacks are stable for a pid; including the whole watcher objects would restart
+  // initialization on every snapshot.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePid, slug, applySession, loadDraft, loadReview]);
+
+  useEffect(() => {
+    const job = chatWatch.job;
+    if (!job || job.status === 'running') return;
+    setWorking(false);
+    void fetchCanonicalSession().catch((caught) => {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    });
+    if (job.status === 'error') setError(job.error || 'Turn failed');
+  }, [chatWatch.job, fetchCanonicalSession]);
+
+  useEffect(() => {
+    if (chatWatch.missingVersion === 0) return;
+    setWorking(false);
+    void fetchCanonicalSession().catch((caught) => {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    });
+  }, [chatWatch.missingVersion, fetchCanonicalSession]);
+
+  useEffect(() => {
+    const job = retrievalWatch.job;
+    if (!job || job.status === 'running') return;
+    setWorking(false);
+    if (job.status === 'error') {
+      setRetrievalError(job.error || 'Paper retrieval failed');
+    } else if (job.candidates.length > 0) {
+      setCandidates(job.candidates);
+    } else if (job.retrieved) {
+      void loadDraft().catch((caught) => {
+        setRetrievalError(caught instanceof Error ? caught.message : String(caught));
+      });
+    }
+  }, [loadDraft, retrievalWatch.job]);
+
+  useEffect(() => {
+    if (retrievalWatch.missingVersion === 0 || !activePid) return;
+    let cancelled = false;
+    getLatestRetrievalJob(activePid, slug)
+      .then(({ job }) => { if (!cancelled && job) retrievalWatch.accept(job); })
+      .catch((caught) => {
+        if (!cancelled) setRetrievalError(caught instanceof Error ? caught.message : String(caught));
+      });
+    return () => { cancelled = true; };
+  }, [activePid, retrievalWatch.accept, retrievalWatch.missingVersion, slug]);
+
+  async function beginRetrieval(opts?: { arxiv_id?: string; pdf_url?: string }) {
+    if (!activePid) return;
+    setWorking(true);
+    setRetrievalError(null);
+    setCandidates([]);
+    try {
+      const { job } = await startRetrievalJob(activePid, slug, opts);
+      retrievalWatch.accept(job);
+    } catch (caught) {
+      setWorking(false);
+      setRetrievalError(caught instanceof Error ? caught.message : String(caught));
+    }
   }
 
-  async function submitJob(fn: () => Promise<{ job: { id: string } }>) {
+  async function submitJob(start: () => Promise<{ job: { id: string } }>) {
     if (!activePid) return;
     setError(null);
     setWorking(true);
-    try { const r = await fn(); startPoll(r.job.id); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); setWorking(false); }
+    try {
+      const { job } = await start();
+      chatWatch.start(job.id);
+      void fetchCanonicalSession(); // show the server-recorded user/revision turn immediately
+    } catch (caught) {
+      setWorking(false);
+      void fetchCanonicalSession();
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
   }
-
-  // On job terminal — stop polling and fetch canonical session transcript
-  useEffect(() => {
-    if (!job || job.status === 'running') return;
-    setWorking(false);
-    stop();
-    fetchSession();
-  }, [job]);
-
-  // On job error specifically — show the error message
-  useEffect(() => {
-    if (!job || job.status !== 'error') return;
-    setError(job.error || 'Turn failed');
-  }, [job]);
 
   async function handleApprove() {
     if (!activePid) return;
-    try { await approve(activePid, slug, { notes_block: notesBlock, synthesis }); onNavigate('library'); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    try {
+      await approve(activePid, slug, { notes_block: notesBlock, synthesis });
+      onNavigate('library');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
   }
+
   async function handleRequestChanges() {
     const text = prompt('What should change?');
     if (!text || !activePid) return;
     setView('chat');
-    await submitJob(() => requestChangesJob(activePid!, { slug, text }));
-  }
-  async function handleReopen() {
-    if (!activePid) return;
-    try { await reopen(activePid, slug); fetchSession(); setView('chat'); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    await submitJob(() => requestChangesJob(activePid, { slug, text }));
   }
 
-  // ---- Views ----
+  async function handleReopen() {
+    if (!activePid) return;
+    try {
+      await reopen(activePid, slug);
+      await fetchCanonicalSession();
+      setView('chat');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
 
   const lastIsUser = turns.length > 0 && turns[turns.length - 1]?.role === 'user';
 
   if (view === 'start') {
+    const retrievalRunning = retrievalWatch.job?.status === 'running';
     return (
       <div className="discussion">
         <div className="compose-panel">
           <h3>{paperTitle || 'Start reading'}</h3>
-          <p className="muted">Fetch the paper from arXiv before starting the discussion.</p>
+          <p className="muted">Fetch the paper before starting the discussion.</p>
           <label className="field"><span>arXiv ID (e.g. 2309.06180)</span>
-            <input className="discovery-input" value={arxivId} onChange={(e) => setArxivId(e.target.value)} placeholder="2309.06180" /></label>
+            <input className="discovery-input" value={arxivId} onChange={(event) => setArxivId(event.target.value)} placeholder="2309.06180" /></label>
           <label className="field"><span>or PDF URL</span>
-            <input className="discovery-input" value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} placeholder="https://…/paper.pdf" /></label>
+            <input className="discovery-input" value={pdfUrl} onChange={(event) => setPdfUrl(event.target.value)} placeholder="https://…/paper.pdf" /></label>
           {retrievalError && <p className="build-progress-error">{retrievalError}</p>}
-          <button className="btn primary" onClick={handleStartPaper} disabled={working}>{working ? 'Fetching…' : 'Fetch paper'}</button>
+          {retrievalRunning && (
+            <div className="lc-loading"><span className="spinner" />
+              {retrievalWatch.job?.phase === 'hunting' ? 'Searching for a PDF…' : 'Fetching paper…'}
+            </div>
+          )}
+          <button className="btn primary" onClick={() => beginRetrieval({ arxiv_id: arxivId || undefined, pdf_url: pdfUrl || undefined })} disabled={retrievalRunning || working}>
+            {retrievalRunning || working ? 'Fetching…' : 'Fetch paper'}
+          </button>
           {candidates.length > 0 && (
             <div className="candidate-list">
               <p className="muted">Multiple matches found. Pick the right one:</p>
-              {candidates.map((c) => (
-                <button key={c.arxiv_id} className="btn ghost" onClick={() => handleCandidatePick(c.arxiv_id)} style={{ width: '100%', textAlign: 'left' }}>{c.title} — arXiv:{c.arxiv_id}</button>
+              {candidates.map((candidate) => (
+                <button key={candidate.arxiv_id} className="btn ghost" onClick={() => beginRetrieval({ arxiv_id: candidate.arxiv_id })} style={{ width: '100%', textAlign: 'left' }}>
+                  {candidate.title} — arXiv:{candidate.arxiv_id}
+                </button>
               ))}
             </div>
           )}
@@ -213,78 +378,69 @@ export function Discussion({ slug, onNavigate }: Props) {
   }
 
   if (error) {
-    return (
-      <div className="discussion">
-        <div className="lc-empty"><p className="muted">{error}</p>
-          <button className="btn ghost" onClick={() => setError(null)}>Dismiss</button>
-        </div>
-      </div>
-    );
+    return <div className="discussion"><div className="lc-empty"><p className="muted">{error}</p>
+      <button className="btn ghost" onClick={() => setError(null)}>Dismiss</button></div></div>;
   }
 
   if (view === 'review' && review) {
     return (
-      <div className="discussion">
-        <div className="review-panel">
-          <h3>{paperTitle ? 'Review — ' + paperTitle : 'Approve notes'}</h3>
-          <p className="muted">{review.summary}</p>
-          {notesBlock !== undefined && (<div className="review-sec"><div className="review-label muted">Notes block</div><textarea className="review-textarea" value={notesBlock} onChange={(e) => setNotesBlock(e.target.value)} /></div>)}
-          <div className="review-sec"><div className="review-label muted">Working notes</div><textarea className="review-textarea" value={synthesis} onChange={(e) => setSynthesis(e.target.value)} /></div>
-          <div className="btn-row">
-            <button className="btn primary" onClick={handleApprove}>Approve & commit</button>
-            <button className="btn ghost" onClick={handleRequestChanges}>Request changes</button>
-            <button className="btn ghost" onClick={handleReopen}>Back to discussion</button>
-          </div>
+      <div className="discussion"><div className="review-panel">
+        <h3>{paperTitle ? `Review — ${paperTitle}` : 'Approve notes'}</h3>
+        <p className="muted">{review.summary}</p>
+        <div className="review-sec"><div className="review-label muted">Notes block</div>
+          <textarea className="review-textarea" value={notesBlock} onChange={(event) => setNotesBlock(event.target.value)} /></div>
+        <div className="review-sec"><div className="review-label muted">Working notes</div>
+          <textarea className="review-textarea" value={synthesis} onChange={(event) => setSynthesis(event.target.value)} /></div>
+        <div className="btn-row">
+          <button className="btn primary" onClick={handleApprove}>Approve & commit</button>
+          <button className="btn ghost" onClick={handleRequestChanges}>Request changes</button>
+          <button className="btn ghost" onClick={handleReopen}>Back to discussion</button>
         </div>
-      </div>
+      </div></div>
     );
   }
 
   if (view === 'compose' && draft) {
     return (
-      <div className="discussion">
-        <div className="compose-panel">
-          <h3>{draft.title ? 'Start — ' + draft.title : 'Start reading'}</h3>
-          <p className="muted">Edit the opening prompt and pick a model for the first response.</p>
-          <textarea className="compose-textarea" value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} />
-          <div className="btn-row">
-            <button className="btn primary" onClick={() => { setView('chat'); submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, model })); }} disabled={working}>Generate first response</button>
-          </div>
-        </div>
-      </div>
+      <div className="discussion"><div className="compose-panel">
+        <h3>{draft.title ? `Start — ${draft.title}` : 'Start reading'}</h3>
+        <p className="muted">Edit the opening prompt and pick a model for the first response.</p>
+        <textarea className="compose-textarea" value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} />
+        <div className="btn-row"><button className="btn primary" onClick={() => {
+          setView('chat');
+          void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, model }));
+        }} disabled={working}>Generate first response</button></div>
+      </div></div>
     );
   }
 
   return (
     <div className="discussion">
       <div className="chat-scroll" ref={chatRef}>
-        {turns.length === 0 && !working ? <div className="lc-empty"><p className="muted">No turns yet.</p></div> : turns.map((t, i) => <TurnBubble key={i} turn={t} index={i} turns={turns} onRetry={(idx, m) => { setError(null); stop(); submitJob(() => retryJob(activePid!, { slug, assistant_index: idx, model: m || null })); }} />)}
+        {turns.length === 0 && !working
+          ? <div className="lc-empty"><p className="muted">No turns yet.</p></div>
+          : turns.map((turn, index) => <TurnBubble key={index} turn={turn} index={index} turns={turns} onRetry={(assistantIndex, retryModel) => {
+              chatWatch.clear();
+              void submitJob(() => retryJob(activePid!, { slug, assistant_index: assistantIndex, model: retryModel || null }));
+            }} />)}
         {working && <StreamBubble text={streamText} />}
       </div>
-      {!working && (
-        <div className="composer">
-          {lastIsUser ? (
-            <div className="gen-note">
-              <span className="muted">No response yet.</span>
-              <button className="btn ghost" onClick={() => submitJob(() => continueJob(activePid!, slug))}>Generate response</button>
-              <button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button>
-            </div>
-          ) : (
-            <>
-              <div className="composer-row">
-                <textarea className="composer-input" placeholder="Type your reply…" value={reply}
-                  onChange={(e) => { setReply(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 140) + 'px'; }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { const t = reply.trim(); if (t) { setTurns((prev) => [...prev, { role: 'user', text: t }]); setReply(''); submitJob(() => replyJob(activePid!, { slug, text: t })); } } }}
-                  rows={1} />
-                <button className="btn primary" onClick={() => { const t = reply.trim(); if (!t) return; setTurns((prev) => [...prev, { role: 'user', text: t }]); setReply(''); submitJob(() => replyJob(activePid!, { slug, text: t })); }} disabled={!reply.trim()}>Send</button>
-              </div>
-              <div className="composer-actions">
-                <button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {!working && <div className="composer">
+        {lastIsUser ? (
+          <div className="gen-note"><span className="muted">No response yet.</span>
+            <button className="btn ghost" onClick={() => submitJob(() => continueJob(activePid!, slug))}>Generate response</button>
+            <button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button>
+          </div>
+        ) : (<>
+          <div className="composer-row"><textarea className="composer-input" placeholder="Type your reply…" value={reply}
+            onChange={(event) => { setReply(event.target.value); event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 140)}px`; }}
+            onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text }));
+            } }} rows={1} />
+            <button className="btn primary" onClick={() => { const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text })); }} disabled={!reply.trim()}>Send</button></div>
+          <div className="composer-actions"><button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button></div>
+        </>)}
+      </div>}
     </div>
   );
 }
@@ -292,18 +448,14 @@ export function Discussion({ slug, onNavigate }: Props) {
 function TurnBubble({ turn, index, turns, onRetry }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (turn.role === 'user') return <div className="turn"><div className="turn-who">You</div><div className="bubble user"><div className="turn-text">{turn.text}</div></div></div>;
-  const aidx = turns.slice(0, index + 1).filter((t) => t.role === 'assistant').length - 1;
+  const assistantIndex = turns.slice(0, index + 1).filter((entry) => entry.role === 'assistant').length - 1;
   const signal = turn.state_signal === 'ready_to_draft_notes' ? <span className="turn-signal">ready to draft notes</span> : null;
-  return (
-    <div className="turn">
-      <div className="turn-who"><span>Companion{signal}</span></div>
-      <div className="bubble assistant"><div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitize(marked.parse(turn.canonical || '') as string) }} /></div>
-      <div className="turn-actions">
-        <button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
-        {menuOpen && (<div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(aidx); setMenuOpen(false); }}>Retry</div><div className="turn-menu-item" onClick={() => { onRetry(aidx, ''); setMenuOpen(false); }}>Retry with current model</div></div>)}
-      </div>
-    </div>
-  );
+  return <div className="turn"><div className="turn-who"><span>Companion{signal}</span></div>
+    <div className="bubble assistant"><div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitize(marked.parse(turn.canonical || '') as string) }} /></div>
+    <div className="turn-actions"><button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
+      {menuOpen && <div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(assistantIndex); setMenuOpen(false); }}>Retry</div>
+        <div className="turn-menu-item" onClick={() => { onRetry(assistantIndex, ''); setMenuOpen(false); }}>Retry with current model</div></div>}</div>
+  </div>;
 }
 
 function StreamBubble({ text }: { text: string }) {

@@ -77,11 +77,12 @@ export function requestChangesJob(pid: string, body: { slug: string; text: strin
 }
 
 export interface TextItem { kind: 'text'; text: string; }
+export interface ToolItem { kind: 'tool'; name: string; detail: string; }
 export interface ChatJob {
   id: string;
   status: 'running' | 'done' | 'error';
   turn: { role: string; canonical?: string; text?: string; state_signal?: string; proposed_commit?: unknown } | null;
-  items: TextItem[];
+  items: (TextItem | ToolItem)[];
   error: string | null;
 }
 
@@ -93,9 +94,28 @@ export function getActiveChatJob(pid: string, slug: string): Promise<{ job: Chat
   return apiGet(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
 }
 
-// Paper retrieval (pre-discussion)
-export function startPaper(pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) {
-  return apiPost<{ ok?: boolean; retrieved?: boolean; needs_confirmation?: boolean; candidates?: { arxiv_id: string; title: string; score: number }[] }>(
-    `${P(pid)}/start`, { slug, ...opts },
-  );
+// Paper retrieval (pre-discussion) is a background job for the same reason chat turns are:
+// arXiv pacing, PDF downloads/extraction, and the fallback hunt can outlive a tunnel request.
+export interface RetrievalJob {
+  id: string;
+  slug: string;
+  status: 'running' | 'done' | 'error';
+  phase: 'resolving' | 'hunting' | 'confirmation' | 'done';
+  detail: string;
+  items: { kind: 'tool'; name: string; detail: string }[];
+  candidates: { arxiv_id: string; title: string; score: number }[];
+  retrieved: boolean;
+  error: string | null;
+}
+
+export function startRetrievalJob(pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) {
+  return apiPost<{ job: RetrievalJob }>(`${P(pid)}/retrieval/jobs`, { slug, ...opts });
+}
+
+export function getRetrievalJob(pid: string, jobId: string) {
+  return apiGet<{ job: RetrievalJob }>(`${P(pid)}/retrieval/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function getLatestRetrievalJob(pid: string, slug: string) {
+  return apiGet<{ job: RetrievalJob | null }>(`${P(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`);
 }
