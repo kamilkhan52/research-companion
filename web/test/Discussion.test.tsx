@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useLibrary', () => ({ useActivePid: () => [active.pid, vi.fn()] }));
 vi.mock('@/api/endpoints', () => api);
+vi.mock('@/audio/AudioProvider', () => ({ useAudio: () => ({ playText: vi.fn() }) }));
 
 function session(slug: string, title: string, overrides: Record<string, unknown> = {}) {
   return {

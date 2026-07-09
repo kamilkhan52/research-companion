@@ -23,6 +23,7 @@ import type { ChatJob, RetrievalJob } from '@/api/endpoints';
 import type { OpeningDraft, ReviewResponse, Session, SessionTurn } from '@/api/session-types';
 import { ApiError } from '@/api/client';
 import { useActivePid } from '@/hooks/useLibrary';
+import { useAudio } from '@/audio/AudioProvider';
 import './Discussion.css';
 
 interface Props { slug: string; onNavigate: (hash: string) => void; }
@@ -126,6 +127,7 @@ export function Discussion({ slug, onNavigate }: Props) {
   const [arxivId, setArxivId] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
   const chatRef = useRef<HTMLDivElement>(null);
+  const { playText } = useAudio();
   // Update during render rather than waiting for an effect: an A request that resolves during
   // B's render must never write A's transcript/review/draft into B's screen.
   const routeRef = useRef({ pid: activePid, slug });
@@ -243,11 +245,14 @@ export function Discussion({ slug, onNavigate }: Props) {
     const job = chatWatch.job;
     if (!job || job.status === 'running') return;
     setWorking(false);
-    void fetchCanonicalSession().catch((caught) => {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    });
+    void fetchCanonicalSession().then((session) => {
+      if (job.status !== 'done' || localStorage.getItem('rc_autoplay') !== '1' || !session) return;
+      const assistantIndex = session.transcript.reduce((count, turn) => count + (turn.role === 'assistant' ? 1 : 0), 0) - 1;
+      const lastAssistant = [...session.transcript].reverse().find((turn) => turn.role === 'assistant');
+      if (lastAssistant?.canonical) void playText({ id: `${slug}:${assistantIndex}`, title: session.paper.title, text: lastAssistant.canonical });
+    }).catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
     if (job.status === 'error') setError(job.error || 'Turn failed');
-  }, [chatWatch.job, fetchCanonicalSession]);
+  }, [chatWatch.job, fetchCanonicalSession, playText, slug]);
 
   useEffect(() => {
     if (chatWatch.missingVersion === 0) return;
@@ -422,7 +427,7 @@ export function Discussion({ slug, onNavigate }: Props) {
           : turns.map((turn, index) => <TurnBubble key={index} turn={turn} index={index} turns={turns} onRetry={(assistantIndex, retryModel) => {
               chatWatch.clear();
               void submitJob(() => retryJob(activePid!, { slug, assistant_index: assistantIndex, model: retryModel || null }));
-            }} />)}
+            }} onListen={(assistantIndex, text) => void playText({ id: `${slug}:${assistantIndex}`, title: paperTitle || slug, text })} />)}
         {working && <StreamBubble text={streamText} />}
       </div>
       {!working && <div className="composer">
@@ -445,14 +450,14 @@ export function Discussion({ slug, onNavigate }: Props) {
   );
 }
 
-function TurnBubble({ turn, index, turns, onRetry }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void }) {
+function TurnBubble({ turn, index, turns, onRetry, onListen }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void; onListen: (idx: number, text: string) => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (turn.role === 'user') return <div className="turn"><div className="turn-who">You</div><div className="bubble user"><div className="turn-text">{turn.text}</div></div></div>;
   const assistantIndex = turns.slice(0, index + 1).filter((entry) => entry.role === 'assistant').length - 1;
   const signal = turn.state_signal === 'ready_to_draft_notes' ? <span className="turn-signal">ready to draft notes</span> : null;
   return <div className="turn"><div className="turn-who"><span>Companion{signal}</span></div>
     <div className="bubble assistant"><div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitize(marked.parse(turn.canonical || '') as string) }} /></div>
-    <div className="turn-actions"><button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
+    <div className="turn-actions"><button className="btn ghost" onClick={() => onListen(assistantIndex, turn.canonical || '')}>Listen</button><button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
       {menuOpen && <div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(assistantIndex); setMenuOpen(false); }}>Retry</div>
         <div className="turn-menu-item" onClick={() => { onRetry(assistantIndex, ''); setMenuOpen(false); }}>Retry with current model</div></div>}</div>
   </div>;

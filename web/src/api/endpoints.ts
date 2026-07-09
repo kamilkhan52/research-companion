@@ -188,3 +188,22 @@ export function getNotesJob(pid: string, jobId: string) {
 export function getLatestNotesJob(pid: string, target: string) {
   return apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`);
 }
+
+export interface AudioJob {
+  id: string;
+  status: 'running' | 'done' | 'error';
+  stage: 'narrating' | 'synthesizing';
+  segments_done: number;
+  segments_total: number;
+  narration: string | null;
+  url: string | null;
+  error: string | null;
+}
+
+export function startAudioJob(text: string, project?: string | null) {
+  return apiPost<{ job: AudioJob }>('/api/audio/jobs', project ? { text, project } : { text });
+}
+
+export function getAudioJob(jobId: string) {
+  return apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(jobId)}`);
+}
