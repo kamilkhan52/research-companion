@@ -26,16 +26,48 @@ const defaultLinkPress: LinkHandler = (href) => {
  *  threading a prop through every message component. */
 export const LinkHandlerContext = createContext<LinkHandler | null>(null);
 
+/** The active project's papers, provided app-wide (PaperEntityProvider), so any rendered
+ *  Markdown recognizes an exact paper-title mention and turns it into a live rc-paper link.
+ *  Deterministic by design: whole-title matches only, no fuzzy matching — a false paper link
+ *  is worse than a missed one. */
+export const PaperIndexContext = createContext<{ title: string; slug: string }[] | null>(null);
+
+interface TitleMatcher {
+  re: RegExp;
+  slugByTitle: Map<string, string>;
+}
+
+const TitleMatcherContext = createContext<TitleMatcher | null>(null);
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** One alternation over every known title, longest first so a superset title wins over a
+ *  title that happens to be its prefix. Case-insensitive; very short titles are skipped —
+ *  they collide with ordinary prose too easily. */
+function buildTitleMatcher(papers: { title: string; slug: string }[]): TitleMatcher | null {
+  const usable = papers.filter((p) => p.title.trim().length >= 12);
+  if (!usable.length) return null;
+  const sorted = [...usable].sort((a, b) => b.title.length - a.title.length);
+  return {
+    re: new RegExp(sorted.map((p) => escapeRegExp(p.title.trim())).join('|'), 'gi'),
+    slugByTitle: new Map(sorted.map((p) => [p.title.trim().toLowerCase(), p.slug])),
+  };
+}
+
 export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
   const blocks = useMemo(() => parseBlocks(text), [text]);
   const contextHandler = useContext(LinkHandlerContext);
+  const papers = useContext(PaperIndexContext);
+  const matcher = useMemo(() => (papers?.length ? buildTitleMatcher(papers) : null), [papers]);
   const handleLink = onLinkPress ?? contextHandler ?? defaultLinkPress;
   return (
-    <View style={{ gap: space.sm }}>
-      {blocks.map((block, i) => (
-        <Block key={i} block={block} onLinkPress={handleLink} />
-      ))}
-    </View>
+    <TitleMatcherContext.Provider value={matcher}>
+      <View style={{ gap: space.sm }}>
+        {blocks.map((block, i) => (
+          <Block key={i} block={block} onLinkPress={handleLink} />
+        ))}
+      </View>
+    </TitleMatcherContext.Provider>
   );
 }
 
@@ -195,7 +227,9 @@ function Inline({
   onLinkPress: LinkHandler;
   serif?: boolean;
 }) {
-  const tokens = tokenizeInline(text);
+  const matcher = useContext(TitleMatcherContext);
+  let tokens = tokenizeInline(text);
+  if (matcher) tokens = linkifyTitles(tokens, matcher);
   return (
     <>
       {tokens.map((t, i) => (
@@ -229,6 +263,32 @@ interface InlineToken {
   type: 'text' | 'bold' | 'italic' | 'code' | 'link';
   text: string;
   href?: string;
+}
+
+/** Split plain-text tokens on exact known-title mentions, turning each into an rc-paper
+ *  link token. Code, link, and emphasis tokens pass through untouched, so an authored link
+ *  label is never re-linkified. */
+function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToken[] {
+  const out: InlineToken[] = [];
+  for (const t of tokens) {
+    if (t.type !== 'text') {
+      out.push(t);
+      continue;
+    }
+    let last = 0;
+    let m: RegExpExecArray | null;
+    matcher.re.lastIndex = 0;
+    while ((m = matcher.re.exec(t.text)) !== null) {
+      const slug = matcher.slugByTitle.get(m[0].trim().toLowerCase());
+      if (!slug) continue;
+      if (m.index > last) out.push({ type: 'text', text: t.text.slice(last, m.index) });
+      out.push({ type: 'link', text: m[0], href: `rc-paper:${slug}` });
+      last = matcher.re.lastIndex;
+    }
+    if (last === 0) out.push(t);
+    else if (last < t.text.length) out.push({ type: 'text', text: t.text.slice(last) });
+  }
+  return out;
 }
 
 function tokenizeInline(input: string): InlineToken[] {

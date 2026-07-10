@@ -59,6 +59,7 @@ import {
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
+import { usePaperActions } from '@/components/PaperEntityProvider';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { TopBar } from '@/components/TopBar';
@@ -109,13 +110,15 @@ export default function DiscussionScreen() {
   const pid = activePid;
   const addPaper = useAddPaper(pid ?? '');
 
-  // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` and jump
-  // straight into that paper's discussion; external references (a URL/arXiv link) prompt to open
+  // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` (or get
+  // linkified from an exact title mention) and open the paper action sheet — hop to its
+  // discussion, notes, or Map spot; external references (a URL/arXiv link) prompt to open
   // the source or add it to the reading list.
+  const showPaperActions = usePaperActions();
   const handleReferenceLink = useCallback<LinkHandler>((href, label) => {
     if (href.startsWith('rc-paper:')) {
       const s = href.slice('rc-paper:'.length);
-      if (s) router.push(`/paper/${encodeURIComponent(s)}`);
+      if (s) showPaperActions(s);
       return;
     }
     if (!/^https?:\/\//i.test(href)) return;
@@ -134,7 +137,7 @@ export default function DiscussionScreen() {
       },
       { text: 'Cancel', style: 'cancel' },
     ]);
-  }, [addPaper, pid, router]);
+  }, [addPaper, pid, showPaperActions]);
 
   const session = useSession(pid, slug ?? null);
   const settings = useSettings();
