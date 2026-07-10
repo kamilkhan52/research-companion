@@ -283,6 +283,15 @@ and hit). Per the user, this one runs design-first:
 2. **codex generates the UI proposal from that prompt and builds the frame in Figma.**
 3. **Fable implements** from the Figma frame through the normal PR + review loop.
 
+**Status:** steps 1–2 done 2026-07-10. Brief: `docs/player-jump-controls-design-brief.md`;
+codex built section `14 · Player Jump Controls` (node 52:1203) on `02 · Mobile Screens`
+with three explorations; the recommended frame is **K1 · Semantic inner pair** (52:1204):
+one transport row `↺15 · |←¶ · play · ¶→| · 15↻` — sentence prev/next as 52 px
+mint-outlined circles (skip glyph + three "text line" marks) flanking the 72 px mint play,
+±15 s pills outboard keeping their rotate identity. K2 (segmented rail, 52:1254) and K3
+(stacked row, 52:1330) were explored and rejected for vertical weight. Implementation
+follows K1; the frames' "Listening mode" header is legacy context — Phase F removes it.
+
 ## Round 2 backlog (unscheduled)
 
 - Keep-or-delete notes choice on paper removal, if the retained-notes default proves noisy.

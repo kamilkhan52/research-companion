@@ -101,14 +101,26 @@ export default function PlayerScreen() {
               <Text variant="caption">{duration ? fmt(duration) : '–:––'}</Text>
             </View>
 
+            {/* One transport row, two jump kinds (Figma: 14 · Player Jump Controls, K1).
+                Sentence jump is the semantic control ("say that again") so it sits
+                first-class beside play with a mint outline; the coarse ±15s time jump
+                stays outboard with its rotate-glyph identity. */}
             <View style={styles.buttonsRow}>
               <Pressable
                 onPress={() => TrackPlayer.seekBy(-SKIP_SECONDS)}
                 hitSlop={8}
-                style={styles.skipBtn}
+                style={styles.timeBtn}
                 accessibilityLabel={`Back ${SKIP_SECONDS} seconds`}>
-                <Icon name="rotate-ccw" size={15} color={colors.text} />
+                <Icon name="rotate-ccw" size={14} color={colors.text} />
                 <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => seekSentence(TrackPlayer, -1, SKIP_SECONDS)}
+                hitSlop={8}
+                style={styles.sentenceBtn}
+                accessibilityLabel="Previous sentence">
+                <Icon name="skip-back" size={17} color={colors.mint} />
+                <SentenceGlyph />
               </Pressable>
               <Pressable
                 onPress={togglePlay}
@@ -121,24 +133,20 @@ export default function PlayerScreen() {
                 )}
               </Pressable>
               <Pressable
+                onPress={() => seekSentence(TrackPlayer, 1, SKIP_SECONDS)}
+                hitSlop={8}
+                style={styles.sentenceBtn}
+                accessibilityLabel="Next sentence">
+                <SentenceGlyph />
+                <Icon name="skip-forward" size={17} color={colors.mint} />
+              </Pressable>
+              <Pressable
                 onPress={() => TrackPlayer.seekBy(SKIP_SECONDS)}
                 hitSlop={8}
-                style={styles.skipBtn}
+                style={styles.timeBtn}
                 accessibilityLabel={`Forward ${SKIP_SECONDS} seconds`}>
                 <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
-                <Icon name="rotate-cw" size={15} color={colors.text} />
-              </Pressable>
-            </View>
-            <View style={styles.sentenceRow}>
-              <Pressable
-                onPress={() => seekSentence(TrackPlayer, -1, SKIP_SECONDS)}
-                accessibilityLabel="Previous sentence">
-                <Text variant="caption">Previous sentence</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => seekSentence(TrackPlayer, 1, SKIP_SECONDS)}
-                accessibilityLabel="Next sentence">
-                <Text variant="caption">Next sentence</Text>
+                <Icon name="rotate-cw" size={14} color={colors.text} />
               </Pressable>
             </View>
           </View>
@@ -184,6 +192,18 @@ export default function PlayerScreen() {
   );
 }
 
+// Three staggered "text lines" beside the skip glyph — the cue that this jump lands on a
+// sentence of the transcript, not on the clock.
+function SentenceGlyph() {
+  return (
+    <View style={styles.sentenceGlyph} accessible={false}>
+      <View style={[styles.sentenceGlyphLine, { width: 7 }]} />
+      <View style={[styles.sentenceGlyphLine, { width: 9 }]} />
+      <View style={[styles.sentenceGlyphLine, { width: 5 }]} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
@@ -206,14 +226,8 @@ const styles = StyleSheet.create({
   buttonsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: space.xl,
-    marginTop: space.md,
-  },
-  sentenceRow: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: space.sm,
+    marginTop: space.md,
   },
   playBtn: {
     width: 72,
@@ -223,9 +237,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  skipBtn: {
+  timeBtn: {
+    width: 52,
     height: 52,
-    paddingHorizontal: space.lg,
     borderRadius: radius.pill,
     backgroundColor: colors.elevated,
     borderWidth: 1,
@@ -233,9 +247,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    gap: 6,
+    gap: 3,
   },
-  skipGlyph: { color: colors.text, fontSize: 14, fontFamily: fonts.bodySemiBold },
+  sentenceBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.pill,
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: 'rgba(101, 214, 180, 0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 3,
+  },
+  sentenceGlyph: { gap: 2, alignItems: 'flex-start' },
+  sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: colors.mint },
+  skipGlyph: { color: colors.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
