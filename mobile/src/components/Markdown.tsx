@@ -1,11 +1,14 @@
-// Minimal, dependency-free markdown renderer for the scholarly analysis text. Supports the
-// subset the backend produces: ATX headings, bold/italic, inline code, unordered/ordered
-// lists, blockquotes, fenced code, and paragraphs. Deliberately small — not a full CommonMark
-// implementation — to keep reading fast and the bundle lean.
+// Minimal markdown renderer for the scholarly analysis text. Supports the subset the backend
+// produces: ATX headings, bold/italic, inline code, unordered/ordered lists, blockquotes,
+// fenced code, paragraphs, and TeX math (`\( \)` inline, `\[ \]` / `$$ $$` display — see
+// MathView). Deliberately small — not a full CommonMark implementation — to keep reading
+// fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useMemo } from 'react';
 import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
 
+import { InlineMath, MathBlock } from '@/components/MathView';
+import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
 
@@ -55,7 +58,9 @@ function buildTitleMatcher(papers: { title: string; slug: string }[]): TitleMatc
 }
 
 export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
-  const blocks = useMemo(() => parseBlocks(text), [text]);
+  // Old transcripts may carry leaked `<search for="…">` pseudo tool tags (G.2); the backend
+  // cleans new ones before recording, this pass cleans the archive at render time.
+  const blocks = useMemo(() => parseBlocks(stripPseudoToolTags(text)), [text]);
   const contextHandler = useContext(LinkHandlerContext);
   const papers = useContext(PaperIndexContext);
   const matcher = useMemo(() => (papers?.length ? buildTitleMatcher(papers) : null), [papers]);
@@ -76,7 +81,12 @@ type Block =
   | { kind: 'paragraph'; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
   | { kind: 'quote'; text: string }
-  | { kind: 'code'; text: string };
+  | { kind: 'code'; text: string }
+  | { kind: 'math'; tex: string };
+
+// A paragraph that is nothing but one display-math span renders as a standalone equation
+// block: `\[ … \]` or `$$ … $$` (the analyst produces both).
+const DISPLAY_MATH_RE = /^(?:\\\[([\s\S]+)\\\]|\$\$([\s\S]+)\$\$)$/;
 
 function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\r\n/g, '\n').split('\n');
@@ -148,7 +158,10 @@ function parseBlocks(src: string): Block[] {
       buf.push(lines[i].trim());
       i++;
     }
-    blocks.push({ kind: 'paragraph', text: buf.join(' ') });
+    const text = buf.join(' ');
+    const display = DISPLAY_MATH_RE.exec(text.trim());
+    if (display) blocks.push({ kind: 'math', tex: (display[1] ?? display[2]).trim() });
+    else blocks.push({ kind: 'paragraph', text });
   }
 
   return blocks;
@@ -195,6 +208,8 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
           <Text style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
+    case 'math':
+      return <MathBlock tex={block.tex} />;
     case 'list':
       return (
         <View style={{ gap: 4 }}>
@@ -234,7 +249,9 @@ function Inline({
     <>
       {tokens.map((t, i) => (
         <Fragment key={i}>
-          {t.type === 'code' ? (
+          {t.type === 'math' ? (
+            <InlineMath tex={t.text} />
+          ) : t.type === 'code' ? (
             <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</RNText>
           ) : t.type === 'link' ? (
             <RNText
@@ -260,7 +277,7 @@ function Inline({
 }
 
 interface InlineToken {
-  type: 'text' | 'bold' | 'italic' | 'code' | 'link';
+  type: 'text' | 'bold' | 'italic' | 'code' | 'link' | 'math';
   text: string;
   href?: string;
 }
@@ -293,16 +310,23 @@ function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToke
 
 function tokenizeInline(input: string): InlineToken[] {
   const tokens: InlineToken[] = [];
-  // Link `[label](href)` is matched first so its label isn't consumed by emphasis parsing.
-  const re = /(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+  // Math is matched first — TeX is full of `_` and `*` that the emphasis rules would chew
+  // up. `\( … \)` is inline; `\[ … \]` / `$$ … $$` occurring mid-paragraph render inline
+  // too (the block form is handled in parseBlocks). Single-`$` is deliberately NOT math:
+  // it collides with prices in ordinary prose.
+  // Then link `[label](href)`, so its label isn't consumed by emphasis parsing.
+  const re =
+    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {
     if (m.index > last) tokens.push({ type: 'text', text: input.slice(last, m.index) });
-    if (m[2] !== undefined) tokens.push({ type: 'link', text: m[2], href: m[3] });
-    else if (m[5] !== undefined) tokens.push({ type: 'bold', text: m[5] });
-    else if (m[7] !== undefined) tokens.push({ type: 'code', text: m[7] });
-    else if (m[9] !== undefined) tokens.push({ type: 'italic', text: m[9] });
+    if (m[1] !== undefined) {
+      tokens.push({ type: 'math', text: (m[2] ?? m[3] ?? m[4]).trim() });
+    } else if (m[6] !== undefined) tokens.push({ type: 'link', text: m[6], href: m[7] });
+    else if (m[9] !== undefined) tokens.push({ type: 'bold', text: m[9] });
+    else if (m[11] !== undefined) tokens.push({ type: 'code', text: m[11] });
+    else if (m[13] !== undefined) tokens.push({ type: 'italic', text: m[13] });
     last = re.lastIndex;
   }
   if (last < input.length) tokens.push({ type: 'text', text: input.slice(last) });

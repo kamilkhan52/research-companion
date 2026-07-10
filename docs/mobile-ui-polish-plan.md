@@ -147,9 +147,9 @@ Everything requiring a native rebuild, grouped so the phone reinstalls once:
 `npx expo prebuild --platform android --clean && npx expo run:android` with the phone on USB,
 or `npx eas-cli build --profile development --platform android` if using EAS. Install the
 resulting build over the old one; the launcher then shows Paradigm with the new icon.
-**Round 2 adds one rider to this batch**: `react-native-webview` (for equation rendering,
+**Round 2 adds one rider to this batch**: `react-native-svg` (for equation rendering,
 Phase G) — behind a guarded require like haptics, so the same bundle hot-loads before the
-rebuild and gains the capability after.
+rebuild (unicode-fallback math) and gains SVG equations after.
 
 ---
 
@@ -192,14 +192,18 @@ dependency on the codex→Figma step).
 ## Phase G — response content rendering (mobile + small backend)
 
 1. **Equation rendering.** Model responses legitimately contain LaTeX (`\( … \)` inline,
-   display blocks); the Markdown renderer currently shows raw markup. Approach: KaTeX in
-   an auto-sized `react-native-webview` for display math, with a pure-JS fallback
-   (unicode-normalized plain text in the serif style) used both for simple inline math
-   and whenever the webview module is absent — the dep is a guarded require and joins the
-   Phase E rebuild batch, so this hot-loads gracefully before the rebuild. KaTeX assets
-   bundled locally (no CDN). Math is excluded from TTS narration input or normalized to
-   words there (backend narrate stage already rewrites prose — verify it doesn't read
-   raw markup aloud).
+   `\[ … \]`/`$$ … $$` display); the Markdown renderer currently shows raw markup.
+   Approach (revised at implementation time from the original KaTeX-in-WebView idea):
+   **MathJax → SVG** — `mathjax-full` is pure JS (runs under Hermes) and converts TeX to
+   self-contained SVG whose glyphs are paths, rendered natively by `react-native-svg`.
+   No WebView-per-formula inside the inverted chat list (the decisive argument), no font
+   embedding, crisp at any zoom, `currentColor` theming. `react-native-svg` is the native
+   dep and joins the Phase E rebuild batch behind a guarded require (haptics pattern);
+   until the rebuild — and on any MathJax failure — a modest pure-JS unicode
+   approximation (`lib/math.texToPlain`) renders in serif italics, so math reads as math,
+   never as markup. Single-`$` is deliberately not math (prices in prose). The backend
+   narrate stage already rewrites canonical prose for the ear; equations reach it as TeX
+   and are verbalized by the narration model as before.
 2. **Tool-call leakage.** Raw `<search for="…">` tags have appeared inside rendered
    responses. Fix at the source: strip/convert tool syntax when the assistant text is
    finalized into the transcript (backend, where the agent's text is persisted), showing
