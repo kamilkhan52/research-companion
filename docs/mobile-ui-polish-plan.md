@@ -1,7 +1,9 @@
-# Mobile UI polish plan — post-revamp round 1
+# Mobile UI polish plan — post-revamp rounds
 
 Follow-up to `docs/mobile-ui-revamp-plan.md` (the Figma revamp, merged as PRs #39–#44),
-driven by the first on-device review. Same working agreement as that plan: a **driver**
+driven by on-device reviews. **Round 1** (Phases A–E, PRs #45–#49) is merged; **Round 2**
+(Phases F–K below, from the 2026-07-09 review) is next. Same working agreement as that
+plan: a **driver**
 implements phases as PRs into `main`, a **reviewer** (codex, or an Opus subagent when codex
 is out of quota) reviews each PR against this doc + `CLAUDE.md`, one review with numbered
 findings and a `VERDICT: APPROVE|REQUEST_CHANGES` line, loop until approve, squash-merge.
@@ -126,7 +128,6 @@ If still choppy after device verification: profile (Perf monitor), then consider
 Pressables out of the animated subtree, viewport culling, and — as the last resort — a Skia
 canvas (`@shopify/react-native-skia`, which needs the dev-client rebuild batch below).
 
-## Backlog (spec'd later, not scheduled)
 ## Phase E — dev-client rebuild batch (one reinstall)
 
 Everything requiring a native rebuild, grouped so the phone reinstalls once:
@@ -146,13 +147,155 @@ Everything requiring a native rebuild, grouped so the phone reinstalls once:
 `npx expo prebuild --platform android --clean && npx expo run:android` with the phone on USB,
 or `npx eas-cli build --profile development --platform android` if using EAS. Install the
 resulting build over the old one; the launcher then shows Paradigm with the new icon.
+**Round 2 adds one rider to this batch**: `react-native-webview` (for equation rendering,
+Phase G) — behind a guarded require like haptics, so the same bundle hot-loads before the
+rebuild and gains the capability after.
+
+---
+
+# Round 2 — second on-device review (2026-07-09)
+
+Raw feedback organized into phases F–K. Round-1 constraints carry over unchanged (tsc +
+jest + expo export per PR; backend phases add pytest + second-instance smoke on `:8901`;
+new deps only where listed; hot-load-safe until the Phase E rebuild). Suggested PR order:
+**F → G → H → I → J → K** — quick wins first, then rendering, discussion flow, listening
+pipeline, Map gestures, and the design-first player controls last (it has an external
+dependency on the codex→Figma step).
+
+## Phase F — chat & player quick wins (mobile only, one PR)
+
+1. **Send → Stop while generating.** The composer send button (`renderSend`,
+   `paper/[slug].tsx:733`) becomes a stop button whenever `stream.streaming` — tap stops
+   the client-side turn (stop polling/rendering; the composer unlocks immediately). The
+   backend job has no cancel today (`app/jobs.py` — threads run to completion); add a
+   best-effort `cancelled` flag checked between agent stages so a stopped turn also stops
+   burning tokens. The partial transcript is kept, marked as stopped.
+2. **Drop the disclaimer.** Remove the "Research Companion can make mistakes" row under
+   responses in `paper/[slug].tsx` — pure vertical-space recovery.
+3. **Drop "Listening mode"** overline on the player screen (`player.tsx:60`) — the screen
+   is self-evident.
+4. **Themed scroll-to-bottom.** The bare "V" is the chat library's default
+   `scrollToBottomComponent`; replace with our circular icon button (elevated fill, thin
+   border, Feather `chevron-down`, mint tint) consistent with the header pills.
+5. **Themed long-press + Retry menus.** `onLongPressMessage` (`paper/[slug].tsx:666`)
+   uses the library's native `showActionSheetWithOptions`, which ignores our theme; route
+   it through our `OptionsSheet` instead (Copy / Edit & regenerate). Audit for any other
+   native-menu usage (the response "Retry" affordance included) — `OptionsSheet` becomes
+   the only menu idiom in the app.
+6. **Remove reading-list category headers.** The Library's group labels
+   (`(tabs)/index.tsx:230-233`, `groupPapers`) render hand-written sections that only the
+   first project has; new projects have no reliable categorization method (and LLM
+   categorization is rejected for now as unpredictable). Render a flat list (keep status
+   filters); keep `Paper.group` in the API untouched so a future categorization method
+   can light it back up. Backend prompt/flow must not be asked to invent categories.
+
+## Phase G — response content rendering (mobile + small backend)
+
+1. **Equation rendering.** Model responses legitimately contain LaTeX (`\( … \)` inline,
+   display blocks); the Markdown renderer currently shows raw markup. Approach: KaTeX in
+   an auto-sized `react-native-webview` for display math, with a pure-JS fallback
+   (unicode-normalized plain text in the serif style) used both for simple inline math
+   and whenever the webview module is absent — the dep is a guarded require and joins the
+   Phase E rebuild batch, so this hot-loads gracefully before the rebuild. KaTeX assets
+   bundled locally (no CDN). Math is excluded from TTS narration input or normalized to
+   words there (backend narrate stage already rewrites prose — verify it doesn't read
+   raw markup aloud).
+2. **Tool-call leakage.** Raw `<search for="…">` tags have appeared inside rendered
+   responses. Fix at the source: strip/convert tool syntax when the assistant text is
+   finalized into the transcript (backend, where the agent's text is persisted), showing
+   at most a muted one-line "Searched: …" status. Add a defensive mobile Markdown pass
+   that renders any leaked `<search …>` tag as a muted chip rather than raw text, and
+   keep such lines out of narration. pytest covers the stripping.
+
+## Phase H — discussion flow & reading modes (backend + mobile)
+
+1. **Kebab consolidation.** Move model selection and "Draft notes" into the three-dot
+   menu (`paper/[slug].tsx` header): the header model chip and the composer-adjacent
+   "Draft notes" chip (`:794`) go away. Rename **"Draft notes" → "Finish reading"**
+   everywhere user-facing.
+2. **Continue after finishing.** Once notes are committed the composer disappears with no
+   way back. Add **"Continue discussion"** (kebab + a quiet inline affordance on the
+   committed state) that transitions the paper back to the in-discussion state via a
+   small backend endpoint — deterministic state change, plain request, committed notes
+   stay committed (a later "Finish reading" simply proposes a new draft). pytest: state
+   round-trip, notes untouched by reopening.
+3. **Reading modes at session start.** On the Start Reading screen, add a mode selector
+   (chips above "How should we start?"): **Balanced** (default) · **Background-heavy**
+   (unfamiliar area, more context) · **Technical** (assume expertise) · **Detailed**
+   (thorough walkthrough). Modes are prompt presets in `Prompts/` that layer onto the
+   opening prompt; "Customize prompt" still shows/edits the final text. Also expose a
+   quick mode switch mid-session in the kebab (applies to subsequent turns) — the target
+   user is listening on the go, so switching must be one tap, not prompt editing.
+4. **Related works in discussion view.** Two defects: (a) the sheet content doesn't
+   scroll on-device — `RelatedWorksSheet.tsx` nests a ScrollView with `maxHeight: '100%'`
+   inside a 75%-height Modal; diagnose the gesture/measure conflict and make the list
+   reliably scrollable (bounded height + FlatList if needed); (b) results must include
+   papers that are NOT on the reading list — off-list works should appear with their
+   "Add to project" action (the UI already renders external works; verify the discussion
+   entry point / backend endpoint isn't filtering to project papers and fix wherever the
+   filter lives).
+
+## Phase I — listening pipeline: single stitched track + coherent cues (backend + mobile)
+
+1. **Back to one full track.** Segmented incremental playback loses too much: no full
+   response duration while playing, playback dies on background/lock state changes, and
+   rewind can't cross the current segment's start. Revert playback to the **complete
+   stitched file**: keep segment synthesis and incremental progress reporting
+   (`app/audio_jobs.py` already stitches the final mp3), but the client
+   (`audio/AudioProvider.tsx`) waits for the job's final `url` instead of playing
+   segments as they land. (Seamless client-side stitching was considered and rejected as
+   a heavier lift than waiting.) Preview cues cover the wait.
+2. **Exactly one "ready" handoff.** Today up to ~4 distinct cues can announce the
+   response before it plays — disconnected and incoherent. Audit the cue pipeline
+   (`app/preview_jobs.py`, `mobile/src/audio/usePreviewCues.ts`): cues play strictly in
+   sequence, at most one final handoff line immediately precedes the main track, and
+   pending cues are skipped once the stitched track is ready. The transition must feel
+   authored, not evented.
+3. **Richer, external-context cues.** While the full track renders, cues should deliver
+   information *external to the paper* rather than paraphrasing it: agentic lookups on
+   author affiliations, the authors' other notable works (related or interestingly not),
+   newer versions / publication status, and public discussion of the paper. Cues and the
+   main response should be generated aware of each other (share the response outline into
+   the cue prompt) so the sequence stays coherent and non-redundant. Extends
+   `preview_jobs` prompts + a bounded research step; respects job/polling invariants.
+4. **Pronunciation.** Narration says "arXiv" literally; normalize to "archive" (plus a
+   small pronunciation map for recurring terms) in the narration text before TTS
+   (`app/tts.py` / narrate stage), with a pytest.
+
+## Phase J — Map gesture correctness (mobile only)
+
+1. **Focal-point pinch zoom.** Pinch currently zooms toward the wrong point instead of
+   centering on the fingers. Fix `GraphCanvas.tsx` pinch math to anchor at the gesture's
+   `focalX/focalY` (adjust translation so the point under the fingers stays fixed while
+   scale changes) — standard focal-anchored transform.
+2. **Pan momentum.** Pan stops dead on release; add `withDecay` on the translation on
+   gesture end (clamped to content bounds) so panning while zoomed behaves like scrolling.
+
+## Phase K — player jump controls (design-first, special workflow)
+
+The player needs clear buttons for both jump kinds — the **±15s duration jump** and the
+**sentence jump** (currently the sentence jump is bare tappable text, weird to discover
+and hit). Per the user, this one runs design-first:
+
+1. **Fable writes the design prompt**: the app's design philosophy (scholar-dark,
+   Manrope/Newsreader, mint action language, pill/circle controls), the player's current
+   layout, and the functional spec for the two jump controls.
+2. **codex generates the UI proposal from that prompt and builds the frame in Figma.**
+3. **Fable implements** from the Figma frame through the normal PR + review loop.
+
+## Round 2 backlog (unscheduled)
+
 - Keep-or-delete notes choice on paper removal, if the retained-notes default proves noisy.
+- Skia canvas for the Map, only if it still stutters after Phases D and J on-device.
+- Reading-list categorization revisit: define a reliable (predictable, user-approvable)
+  method before restoring Library group headers (Phase F.6).
 
 ## Verification
 
 - Per PR: `npx tsc --noEmit`, `npx jest`, `npx expo export --platform android` in `mobile/`;
-  Phase B additionally: `.venv/bin/python -m pytest -q` and a second-instance smoke of the
-  DELETE endpoint on `:8901` (per CLAUDE.md, never the live server).
+  backend-touching phases (B, and round 2's F.1, G.2, H, I) additionally:
+  `.venv/bin/python -m pytest -q` and a second-instance smoke of new/changed endpoints on
+  `:8901` (per CLAUDE.md, never the live server).
 - Device check per phase via the hot-load flow: backend running + `./tunnel.sh`, Metro via
   `npx expo start --tunnel` in `mobile/` (kill any stale Metro on :8081 first; `npm install`
   if `mobile/package.json` changed), then reload the dev client.
