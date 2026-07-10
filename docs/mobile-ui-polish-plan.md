@@ -127,10 +127,25 @@ Pressables out of the animated subtree, viewport culling, and — as the last re
 canvas (`@shopify/react-native-skia`, which needs the dev-client rebuild batch below).
 
 ## Backlog (spec'd later, not scheduled)
-- **Dev-client rebuild batch** (one EAS/local build, grouped so the phone only reinstalls
-  once): launcher name "Paradigm", app icon/splash to match the new design language, and any
-  new native deps approved by then (e.g. expo-haptics for press feedback, Skia if the graph
-  needs it).
+## Phase E — dev-client rebuild batch (one reinstall)
+
+Everything requiring a native rebuild, grouped so the phone reinstalls once:
+
+- **Launcher identity**: app.json name "Paradigm" (from phase A) plus a new icon set in the
+  design language — a mint/violet reference-graph constellation on the scholar-dark canvas
+  (generic icon, adaptive foreground/background, themed monochrome, splash mark; generated
+  by `scripts/gen_app_icons.py`, pure numpy, rerunnable). Splash + adaptive backgrounds are
+  `#0B0D12`.
+- **expo-haptics**, wired through the guarded wrapper `mobile/src/lib/haptics.ts`: tab
+  switches tick (`selectionAsync`), primary mint buttons give a light impact. The require is
+  try/catch-guarded so the SAME bundle hot-loads as a no-op on the current dev client and
+  gains feedback once the rebuilt client is installed. Never import expo-haptics directly.
+- Skia stays out unless on-device testing shows the phase-D graph work isn't enough.
+
+**Build step (user-run, once, after this phase merges):** from `mobile/` —
+`npx expo prebuild --platform android --clean && npx expo run:android` with the phone on USB,
+or `npx eas-cli build --profile development --platform android` if using EAS. Install the
+resulting build over the old one; the launcher then shows Paradigm with the new icon.
 - Keep-or-delete notes choice on paper removal, if the retained-notes default proves noisy.
 
 ## Verification

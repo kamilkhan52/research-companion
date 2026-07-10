@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
 
+import { impactTap } from '@/lib/haptics';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type TextVariant =
@@ -233,7 +234,10 @@ export function Button({
     variant === 'primary' ? colors.mintInk : variant === 'danger' ? colors.danger : colors.text;
   return (
     <Pressable
-      onPress={onPress}
+      onPress={(e) => {
+        if (variant === 'primary') impactTap();
+        onPress?.(e);
+      }}
       disabled={isDisabled}
       style={({ pressed }) => [
         styles.btn,
