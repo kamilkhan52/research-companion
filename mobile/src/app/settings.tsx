@@ -22,6 +22,7 @@ import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
+import { useListeningMode } from '@/store/listening';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -49,6 +50,8 @@ export default function SettingsScreen() {
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
   const [priorScope, setPriorScope] = useState<'related' | 'all'>('related');
+  // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
+  const { playbackMode, setPlaybackMode } = useListeningMode();
 
   // Sync local fields from the server exactly once, on first successful load — NOT on every
   // settings.data change. A background refetch (e.g. right after saveSettings invalidates the
@@ -197,6 +200,20 @@ export default function SettingsScreen() {
 
               {/* Audio */}
               <Section title="Audio">
+                <Label
+                  text="Narration playback"
+                  hint="applies immediately, stored on this device"
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Toggle label="Full track" active={playbackMode === 'full'} onPress={() => setPlaybackMode('full')} />
+                  <Toggle label="Progressive" active={playbackMode === 'progressive'} onPress={() => setPlaybackMode('progressive')} />
+                </View>
+                <Text variant="caption" style={{ marginBottom: space.md, marginTop: space.xs }}>
+                  {playbackMode === 'full'
+                    ? 'Waits for the complete narration: full length visible, survives locking the phone, rewind anywhere. Cues fill the wait.'
+                    : 'Starts speaking as parts are synthesized: faster to first audio, but seeking is bounded by the current part and backgrounding can interrupt.'}
+                </Text>
+
                 <Label text="Speech provider" />
                 <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
                   <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => setSpeechProvider('openai')} />

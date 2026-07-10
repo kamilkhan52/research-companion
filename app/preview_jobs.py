@@ -140,6 +140,40 @@ def research_sources(slug: str) -> list[dict]:
     )
 
 
+# One bounded web lookup per paper per process (polish plan I.3): context EXTERNAL to the
+# paper that makes the waiting time genuinely informative — the authors and their other
+# work, publication/version status, public discussion. Fetched in the coordinator's thread
+# (never on the analysis path), cached so repeat listens cost nothing, and typed as
+# untrusted web content for the cue prompt.
+_external_cache: dict[str, list[dict]] = {}
+_EXTERNAL_CACHE_MAX = 64
+
+
+def external_sources(slug: str) -> list[dict]:
+    if slug in _external_cache:
+        return _external_cache[slug]
+    paper = store.get_paper(slug)
+    if not paper:
+        return []
+    title = paper.title
+    try:
+        from . import research_tools  # late import: keeps preview module import-light
+        result = research_tools.web_search(
+            f"Context around the research paper \"{title}\": the authors and their "
+            "affiliations, other notable work by the same authors, whether a newer version "
+            "or a publication venue exists for this paper, and any public discussion of it.",
+            [f"{title} authors affiliation", f"{title} published venue discussion"],
+        )
+    except Exception as exc:
+        log.warning("external context lookup failed slug=%s: %s", slug, str(exc)[:200])
+        return []
+    chunks = _source_chunks(str(result or ""), "web", "external_web_context", 12)
+    if len(_external_cache) >= _EXTERNAL_CACHE_MAX:
+        _external_cache.clear()
+    _external_cache[slug] = chunks
+    return chunks
+
+
 def response_sources(text: str) -> list[dict]:
     sentences = completed_sentences(text.rstrip() + " ")
     return [
@@ -157,10 +191,15 @@ def _progress_source(progress: dict) -> dict | None:
         text = ("The written response is complete. Its spoken adaptation is still being "
                 "prepared, and the amount remaining is not yet known.")
     elif phase == "audio_synthesis":
-        # Synthesis has started, so progressive playback of the full spoken response begins
-        # essentially now. Frame this as the hand-off moment (see listening_preview_priorities).
-        text = ("The full spoken response is now ready and begins playing immediately after this "
-                "update.")
+        # Playback starts only when the COMPLETE stitched track exists (polish plan I.1), so
+        # this must never claim the response "is ready" — that phrasing, repeated across the
+        # cues generated during synthesis, was exactly the on-device "several announcements,
+        # then nothing plays yet" bug (I.2). The response speaks for itself when it starts.
+        done = progress.get("segments_done")
+        total = progress.get("segments_total")
+        counted = f" ({done} of {total} parts synthesized)" if total else ""
+        text = ("The written response is complete and its audio is being synthesized"
+                f"{counted}; it will begin playing automatically once assembled.")
     else:
         return None
     return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
@@ -301,10 +340,10 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
 def _audio_progress(audio_job) -> tuple[str, dict, bool]:
     if audio_job is None:
         return "unavailable", {"remaining_known": False}, True
-    # Phase 2.3 publishes progressive segments. Treat the first one as final narration ready,
-    # while remaining compatible with today's combined-file job.
-    segments = getattr(audio_job, "segments", None) or []
-    ready = audio_job.status in ("done", "error") or bool(segments)
+    # Playback is the COMPLETE stitched file (polish plan I.1) — the client no longer plays
+    # segments as they land — so cues keep flowing (and pending ones get suppressed) until
+    # the job actually settles, not at the first synthesized segment.
+    ready = audio_job.status in ("done", "error")
     if audio_job.stage == "synthesizing":
         total = int(audio_job.segments_total or 0)
         done = int(audio_job.segments_done or 0)
@@ -332,12 +371,22 @@ def start_coordinator(
     *,
     cadence_seconds: float,
     last_started_at: float,
+    slug: str | None = None,
 ) -> PreviewCoordinator:
     """Continue contextual cues until final narration can begin playback."""
     source_copy = [dict(item) for item in sources]
     cue_ids = list(existing_job_ids)
 
     def work(job: PreviewCoordinator) -> None:
+        # The narration wait is exactly when the listener has attention to spare — enrich
+        # the remaining cues with paper-external context (I.3). Runs here, in the
+        # coordinator's own thread, so the lookup never delays analysis or the first cues.
+        if slug:
+            try:
+                source_copy.extend(external_sources(slug))
+            except Exception as exc:
+                log.warning("external sources failed chat=%s: %s",
+                            chat_job_id[:8], str(exc)[:200])
         previous_cues = [
             cue.cue for cue_id in cue_ids
             if (cue := get_job(cue_id)) is not None and cue.status == "done" and cue.cue

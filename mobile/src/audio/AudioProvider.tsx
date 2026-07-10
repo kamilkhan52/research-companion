@@ -15,6 +15,7 @@ import type { AudioJob } from '@/api/types';
 import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
+import { useListeningMode } from '@/store/listening';
 
 interface PlayRequest {
   id: string; // stable key for the message (e.g. `${slug}:${index}`)
@@ -124,6 +125,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const { activePid } = useActiveProject();
   const activePidRef = useRef(activePid);
   activePidRef.current = activePid;
+  // Playback style (polish plan I.1, Settings → Audio): 'full' waits for the complete
+  // stitched track (duration visible, lock/background-proof, whole-response rewind);
+  // 'progressive' plays segments as they land (starts sooner). Captured per preparation
+  // via this ref so flipping the setting mid-prep can't mix the two paths.
+  const { playbackMode } = useListeningMode();
+  const playbackModeRef = useRef(playbackMode);
+  playbackModeRef.current = playbackMode;
 
   useEffect(() => {
     setupPlayer().catch(() => {});
@@ -202,8 +210,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
       try {
         await setupPlayer();
+        // In 'full' mode addedSegments stays 0 and the final stitched-track path below is
+        // the only one that plays; the server still synthesizes segment-by-segment and the
+        // prep card shows that progress either way.
+        const incremental = playbackModeRef.current === 'progressive';
         let addedSegments = 0;
         const appendSegments = async (nextJob: AudioJob) => {
+          if (!incremental) return;
           const fresh = nextJob.segments.slice(addedSegments);
           if (!fresh.length) return;
           if (addedSegments === 0) await TrackPlayer.reset();
@@ -273,6 +286,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           id,
           url: apiUrl(job.url),
           title,
+          // The full narration rides on the track so sentence-jump and the transcript
+          // work across the WHOLE response (sentence-seek reads track.narration).
+          narration: job.narration ?? undefined,
           artist: 'Reading Companion',
           headers: authHeaders(),
         });
@@ -390,9 +406,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       let terminalAudioFailure = false;
       try {
         await setupPlayer();
+        // See playText: 'full' keeps addedSegments at 0 so the stitched-track path below
+        // is the only playback; preview cues keep playing through the whole wait.
+        const incremental = playbackModeRef.current === 'progressive';
         let addedSegments = 0;
         let progressiveStarted = false;
         const appendSegments = async (nextJob: AudioJob) => {
+          if (!incremental) return;
           const fresh = nextJob.segments.slice(addedSegments);
           if (!fresh.length) return;
           const firstBatch = addedSegments === 0;
@@ -483,9 +503,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        // Combined-only cache fallback: apply the same preview gate and serialized handoff.
+        // Full stitched track (the only path in 'full' mode; also the cache fallback for
+        // 'progressive'): same preview gate and serialized handoff.
         automaticPrepIdRef.current = null;
         const finalUrl = job.url;
+        const finalNarration = job.narration ?? undefined;
         let added = false;
         const addFinal = async () => {
           if (!live()) return;
@@ -505,6 +527,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             id: request.id,
             url: apiUrl(finalUrl),
             title: request.title,
+            narration: finalNarration,
             artist: 'Reading Companion',
             headers: authHeaders(),
           });

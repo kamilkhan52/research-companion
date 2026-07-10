@@ -215,6 +215,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                     publish,
                     cadence_seconds=PREVIEW_CADENCE_SECONDS,
                     last_started_at=getattr(job, "_preview_last_started", time.monotonic()),
+                    slug=job.slug,
                 )
                 with _registry.lock:
                     job.preview_coordinator_id = coordinator.id

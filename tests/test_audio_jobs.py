@@ -257,3 +257,13 @@ def test_route_cached_result_bills_no_one(temp_project, monkeypatch):
     resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=None))
     assert resp["job"]["status"] == "done"  # cache hit, no thread
     assert usage.load()["by_operation"]["narration"]["calls"] == before  # nothing re-billed
+
+
+def test_normalize_for_speech_pronounces_arxiv_as_archive():
+    """Polish plan I.4: spoken form only — written/canonical text keeps 'arXiv'."""
+    from app import tts
+    assert tts.normalize_for_speech("Published on arXiv in 2017.") == "Published on archive in 2017."
+    assert tts.normalize_for_speech("ArXiv and arXiv's listings") == "archive and archive's listings"
+    # Word-bounded: identifiers that merely contain the letters stay intact.
+    assert tts.normalize_for_speech("the arxival record") == "the arxival record"
+    assert tts.BrowserTTS().synthesize("see arXiv")["text"] == "see archive"
