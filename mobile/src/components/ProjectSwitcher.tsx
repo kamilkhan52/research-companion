@@ -28,18 +28,25 @@ export function ProjectSwitcher({
   onSelect: (pid: string) => void;
   onClose: () => void;
 }) {
-  const { data: projects, isLoading } = useProjects();
+  const projectsQuery = useProjects();
+  const { data: projects, isLoading } = projectsQuery;
   const createProject = useCreateProject();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
+  const [createError, setCreateError] = useState<string | null>(null);
 
   async function handleCreate() {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const res = await createProject.mutateAsync({ name: trimmed });
-    setName('');
-    setCreating(false);
-    onSelect(res.project.id);
+    setCreateError(null);
+    try {
+      const res = await createProject.mutateAsync({ name: trimmed });
+      setName('');
+      setCreating(false);
+      onSelect(res.project.id);
+    } catch (e) {
+      setCreateError((e as Error).message ?? 'Could not create the project.');
+    }
   }
 
   return (
@@ -53,6 +60,14 @@ export function ProjectSwitcher({
 
           {isLoading ? (
             <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+          ) : projectsQuery.isError ? (
+            <View style={{ paddingVertical: space.md, gap: space.sm }}>
+              <Text variant="body" color={colors.muted}>
+                Couldn't reach the server — check the connection or the server URL in
+                Settings.
+              </Text>
+              <Button title="Retry" variant="ghost" onPress={() => projectsQuery.refetch()} />
+            </View>
           ) : (
             <View style={{ gap: space.sm }}>
               {(projects ?? []).map((p) => (
@@ -106,6 +121,11 @@ export function ProjectSwitcher({
             ) : (
               <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
             )}
+            {createError ? (
+              <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+                {createError}
+              </Text>
+            ) : null}
           </View>
         </Pressable>
       </Pressable>
