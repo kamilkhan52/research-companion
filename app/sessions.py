@@ -77,6 +77,29 @@ def set_state(slug: str, state: str) -> None:
         _save_index_unlocked(idx)
 
 
+# Reading modes (polish plan H.3): a per-session preset layered onto the analyst's system
+# prompt — how much background vs. technical depth the explanation carries. "balanced" is
+# the default and adds no layer. Stored in the session index so it survives restarts and
+# applies to every subsequent turn until switched.
+READING_MODES = ("balanced", "background", "technical", "detailed")
+
+
+def get_reading_mode(slug: str) -> str:
+    return _load_index().get(slug, {}).get("reading_mode") or "balanced"
+
+
+def set_reading_mode(slug: str, mode: str) -> None:
+    if mode not in READING_MODES:
+        raise ValueError(f"Unknown reading mode: {mode}")
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        meta["reading_mode"] = mode
+        meta["updated_at"] = _now()
+        idx[slug] = meta
+        _save_index_unlocked(idx)
+
+
 def _touch_session(slug: str, timestamp: str) -> None:
     with _index_lock:
         idx = _load_index_unlocked()
@@ -291,6 +314,14 @@ def edit_reply(slug: str, reply_index: int, new_text: str) -> bool:
     _rewrite(slug, records[: pos + 1])  # keep the edited reply, drop everything after it
     set_state(slug, IN_DISCUSSION)
     return True
+
+
+def continue_discussion(slug: str) -> None:
+    """Committed -> InDiscussion (polish plan H.2): NOTHING is dropped — the committed notes
+    stay committed and the transcript stands; the composer simply comes back so the reading
+    can go on. A later finish proposes a fresh draft through the normal propose/approve flow.
+    Contrast with reopen_discussion below, which discards a rejected (uncommitted) draft."""
+    set_state(slug, IN_DISCUSSION)
 
 
 def reopen_discussion(slug: str) -> None:

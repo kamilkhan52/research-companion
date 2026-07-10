@@ -21,6 +21,7 @@ import type {
   PromptStatus,
   Project,
   ProjectState,
+  ReadingMode,
   RecentSession,
   PreviewJob,
   Session,
@@ -88,6 +89,12 @@ export const startPaper = (pid: string, slug: string, opts?: { arxiv_id?: string
 // non-generating actions (approve/reopen/addPaper) may use plain apiPost.
 export const reopen = (pid: string, slug: string) =>
   apiPost<{ state: string | null; transcript: unknown[] }>(`${P(pid)}/reopen`, { slug });
+/** Committed -> InDiscussion: bring the composer back; nothing recorded is touched. */
+export const continueDiscussion = (pid: string, slug: string) =>
+  apiPost<{ state: string | null }>(`${P(pid)}/continue_discussion`, { slug });
+/** Switch the session's reading mode — applies to every subsequent turn. */
+export const setSessionMode = (pid: string, slug: string, mode: ReadingMode) =>
+  apiPost<{ mode: ReadingMode }>(`${P(pid)}/session_mode`, { slug, mode });
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
   apiPost<{ result: unknown; paper: unknown }>(`${P(pid)}/approve`, { slug, ...body });
 /** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation.

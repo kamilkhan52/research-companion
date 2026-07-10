@@ -489,6 +489,32 @@ class PromptSpec:
     editor_source: Literal["file", "override"] = "override"
 
 
+# Reading-mode layers (polish plan H.3): appended to the analysis system prompt for the
+# session's chosen mode. Short and directive — they tune the register of the explanation,
+# they don't replace the reading method. "balanced" is the absence of a layer.
+_MODE_BACKGROUND = """# Reading mode: background-heavy
+
+The researcher is not familiar with this paper's research area. For every technical point,
+first establish the background it rests on: define field jargon and acronyms on first use,
+explain why the problem matters before how it is solved, and prefer intuition and concrete
+examples before precision. Assume general research literacy, not domain knowledge. Never
+skip a concept because it is "standard" in this field."""
+
+_MODE_TECHNICAL = """# Reading mode: technical
+
+The researcher is an expert in this paper's area. Skip introductory background and
+motivation they already know. Engage the mathematics, algorithms, and implementation
+directly; be precise about assumptions, complexity, and failure modes; compare against the
+closest related methods quantitatively where the paper allows it."""
+
+_MODE_DETAILED = """# Reading mode: detailed
+
+The researcher wants a thorough walkthrough. Work through the paper systematically —
+methods, derivations, experimental setup, results, and limitations — without skipping
+steps. When the paper glosses over a derivation or design decision, reconstruct it. Prefer
+completeness over brevity; long responses are fine."""
+
+
 REGISTRY = (
     PromptSpec(
         key="reading_method",
@@ -498,6 +524,27 @@ REGISTRY = (
         scope="project",
         editor_source="file",
         description="How papers are read. Stored in each project's reading-method.md.",
+    ),
+    PromptSpec(
+        key="reading_mode_background",
+        label="Reading mode: background-heavy",
+        relative_path="Analysis/Mode Background-heavy.md",
+        bundled_default=_MODE_BACKGROUND,
+        description="System-prompt layer when the session's reading mode is background-heavy.",
+    ),
+    PromptSpec(
+        key="reading_mode_technical",
+        label="Reading mode: technical",
+        relative_path="Analysis/Mode Technical.md",
+        bundled_default=_MODE_TECHNICAL,
+        description="System-prompt layer when the session's reading mode is technical.",
+    ),
+    PromptSpec(
+        key="reading_mode_detailed",
+        label="Reading mode: detailed",
+        relative_path="Analysis/Mode Detailed.md",
+        bundled_default=_MODE_DETAILED,
+        description="System-prompt layer when the session's reading mode is detailed.",
     ),
     PromptSpec(
         key="analysis_system",

@@ -45,7 +45,8 @@ import { streamPaths, turnJobPaths } from '@/api/endpoints';
 import { useAddPaper, useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { ChatJob, FavoriteModel, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type { ChatJob, FavoriteModel, ReadingMode, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { isHandoffEligible } from '@/audio/handoffState';
@@ -204,6 +205,20 @@ export default function DiscussionScreen() {
   }, [pid, slug]);
 
   const [showRelated, setShowRelated] = useState(false);
+  // Model + reading-mode pickers live behind the kebab menu (polish plan H.1) — the header
+  // stays quiet: back, title, one menu button.
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modePickerOpen, setModePickerOpen] = useState(false);
+  const readingMode = session.data?.reading_mode ?? 'balanced';
+  const switchMode = useCallback(async (mode: ReadingMode) => {
+    if (!pid || !slug || mode === readingMode) return;
+    try {
+      await api.setSessionMode(pid, slug, mode);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+    } catch (e) {
+      Alert.alert('Could not switch mode', (e as Error).message ?? 'Request failed.');
+    }
+  }, [pid, qc, readingMode, slug]);
   // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
   // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
   // sits above it in this app's layout, so without correcting for that height the composer
@@ -211,9 +226,22 @@ export default function DiscussionScreen() {
   // corrected total (device inset + header) as the override.
   const [headerHeight, setHeaderHeight] = useState(0);
 
-  async function draftNotesFromMenu() {
+  async function finishReadingFromMenu() {
     if (!paths || !slug) return;
     await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
+  }
+
+  // Committed -> back in discussion (polish plan H.2): the server keeps everything recorded;
+  // only the state flips, so the composer returns and a later Finish proposes a fresh draft.
+  async function continueFromCommitted() {
+    if (!pid || !slug) return;
+    try {
+      await api.continueDiscussion(pid, slug);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+    } catch (e) {
+      Alert.alert('Could not continue the discussion', (e as Error).message ?? 'Request failed.');
+    }
   }
 
   return (
@@ -225,31 +253,49 @@ export default function DiscussionScreen() {
         subtitle={state ? STATE_LABEL[state] : undefined}
         onBack={() => router.back()}
         right={
-          <>
-            <ModelPill
-              selectedModel={selectedModel}
-              defaultLabel={settings.data?.model ?? 'Default'}
-              favorites={favoriteModels.data ?? []}
-              onPick={setSelectedModel}
-            />
-            <OverflowMenu
-              listeningMode={listeningMode}
-              onToggleListening={() => {
-                if (listeningMode) audio.cancelPrep();
-                setListeningMode(!listeningMode);
-              }}
-              hasNotes={!!session.data?.paper.has_notes}
-              onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
-              onRelatedWorks={() => setShowRelated(true)}
-              onGraph={() => router.push('/graph')}
-              showDraftNotes={hasSession && state !== 'notes_drafted' && state !== 'committed'}
-              draftNotesDisabled={stream.streaming}
-              onDraftNotes={() => void draftNotesFromMenu()}
-            />
-          </>
+          <OverflowMenu
+            listeningMode={listeningMode}
+            onToggleListening={() => {
+              if (listeningMode) audio.cancelPrep();
+              setListeningMode(!listeningMode);
+            }}
+            hasNotes={!!session.data?.paper.has_notes}
+            onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
+            onRelatedWorks={() => setShowRelated(true)}
+            onGraph={() => router.push('/graph')}
+            showFinishReading={hasSession && state !== 'notes_drafted' && state !== 'committed'}
+            finishReadingDisabled={stream.streaming}
+            onFinishReading={() => void finishReadingFromMenu()}
+            showContinue={state === 'committed'}
+            onContinue={() => void continueFromCommitted()}
+            modelLabel={
+              selectedModel == null
+                ? (settings.data?.model ?? 'Default')
+                : (favoriteModels.data?.find((m) => m.id === selectedModel)?.label ?? selectedModel)
+            }
+            onPickModel={() => setModelPickerOpen(true)}
+            showReadingMode={hasSession}
+            readingModeLabel={READING_MODE_LABELS[readingMode]}
+            onPickReadingMode={() => setModePickerOpen(true)}
+          />
         }
       />
       </View>
+
+      <ModelPickerSheet
+        visible={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        selectedModel={selectedModel}
+        defaultLabel={settings.data?.model ?? 'Default'}
+        favorites={favoriteModels.data ?? []}
+        onPick={setSelectedModel}
+      />
+      <ModePickerSheet
+        visible={modePickerOpen}
+        onClose={() => setModePickerOpen(false)}
+        mode={readingMode}
+        onPick={(m) => void switchMode(m)}
+      />
 
       <RelatedWorksSheet
         pid={pid}
@@ -289,7 +335,7 @@ export default function DiscussionScreen() {
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
           selectedModel={selectedModel}
-          onDraftNotes={() => void draftNotesFromMenu()}
+          onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
@@ -322,9 +368,16 @@ function OverflowMenu({
   onViewNotes,
   onRelatedWorks,
   onGraph,
-  showDraftNotes,
-  draftNotesDisabled,
-  onDraftNotes,
+  showFinishReading,
+  finishReadingDisabled,
+  onFinishReading,
+  showContinue,
+  onContinue,
+  modelLabel,
+  onPickModel,
+  showReadingMode,
+  readingModeLabel,
+  onPickReadingMode,
 }: {
   listeningMode: boolean;
   onToggleListening: () => void;
@@ -332,9 +385,16 @@ function OverflowMenu({
   onViewNotes: () => void;
   onRelatedWorks: () => void;
   onGraph: () => void;
-  showDraftNotes: boolean;
-  draftNotesDisabled: boolean;
-  onDraftNotes: () => void;
+  showFinishReading: boolean;
+  finishReadingDisabled: boolean;
+  onFinishReading: () => void;
+  showContinue: boolean;
+  onContinue: () => void;
+  modelLabel: string;
+  onPickModel: () => void;
+  showReadingMode: boolean;
+  readingModeLabel: string;
+  onPickReadingMode: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -354,24 +414,52 @@ function OverflowMenu({
       onPress: onGraph,
     },
   ];
-  if (showDraftNotes) {
+  if (showFinishReading) {
     options.push({
-      key: 'draft',
-      title: 'Draft notes',
-      icon: 'edit-3',
+      key: 'finish',
+      title: 'Finish reading',
+      subtitle: 'Draft notes to commit for this paper',
+      icon: 'check-square',
       accent: colors.mint,
-      disabled: draftNotesDisabled,
-      onPress: onDraftNotes,
+      disabled: finishReadingDisabled,
+      onPress: onFinishReading,
+    });
+  }
+  if (showContinue) {
+    options.push({
+      key: 'continue',
+      title: 'Continue discussion',
+      subtitle: 'Reopen the composer — committed notes stay',
+      icon: 'message-circle',
+      accent: colors.mint,
+      onPress: onContinue,
     });
   }
   if (hasNotes) {
     options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: colors.mint, onPress: onViewNotes });
   }
+  // Session configuration (polish plan H.1: model + mode live here, not in the header).
+  options.push({
+    key: 'model',
+    title: 'Model',
+    subtitle: modelLabel,
+    icon: 'zap',
+    section: true,
+    onPress: onPickModel,
+  });
+  if (showReadingMode) {
+    options.push({
+      key: 'mode',
+      title: 'Reading mode',
+      subtitle: readingModeLabel,
+      icon: 'book-open',
+      onPress: onPickReadingMode,
+    });
+  }
   options.push({
     key: 'listening',
     title: listeningMode ? 'Turn off listening' : 'Turn on listening',
     icon: 'headphones',
-    section: true,
     onPress: onToggleListening,
   });
 
@@ -383,27 +471,24 @@ function OverflowMenu({
   );
 }
 
-// A compact pill showing the model the *next* new response will use; tapping opens the
-// styled picker (Figma `08b · Model + thinking picker`, minus thinking depth — the backend
-// has no such parameter). One-shot override for this screen only (never persisted — see the
-// `selectedModel` comment above).
-function ModelPill({
+// The styled model picker (Figma `08b · Model + thinking picker`, minus thinking depth — the
+// backend has no such parameter). One-shot override for this screen only (never persisted —
+// see the `selectedModel` comment above). Opened from the kebab menu (H.1).
+function ModelPickerSheet({
+  visible,
+  onClose,
   selectedModel,
   defaultLabel,
   favorites,
   onPick,
 }: {
+  visible: boolean;
+  onClose: () => void;
   selectedModel: string | null;
   defaultLabel: string;
   favorites: FavoriteModel[];
   onPick: (modelId: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  // Show the favorite's short label when the pick matches one, not the raw OpenRouter id.
-  const label = selectedModel == null
-    ? defaultLabel
-    : favorites.find((m) => m.id === selectedModel)?.label ?? selectedModel;
-
   const options: SheetOption[] = [
     {
       key: 'default',
@@ -422,25 +507,50 @@ function ModelPill({
       onPress: () => onPick(m.id),
     })),
   ];
-
   return (
-    <>
-      <Pressable
-        onPress={() => setOpen(true)}
-        style={styles.modelPill}
-        accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
-        <Icon name="zap" size={11} color={colors.mint} />
-        <Text variant="caption" color={colors.mint} numberOfLines={1} style={styles.modelPillText}>
-          {label.split(/[\s/:]/)[0]}
-        </Text>
-      </Pressable>
-      <OptionsSheet
-        visible={open}
-        onClose={() => setOpen(false)}
-        title="Model for next response"
-        options={options}
-      />
-    </>
+    <OptionsSheet
+      visible={visible}
+      onClose={onClose}
+      title="Model for next response"
+      options={options}
+    />
+  );
+}
+
+// Reading-mode picker (polish plan H.3): one tap switches how the analyst pitches every
+// subsequent turn — the on-the-go alternative to editing prompts.
+const MODE_OPTIONS: { mode: ReadingMode; icon: IconName; subtitle: string }[] = [
+  { mode: 'balanced', icon: 'circle', subtitle: 'The default register' },
+  { mode: 'background', icon: 'book-open', subtitle: 'New to this area — explain the groundwork' },
+  { mode: 'technical', icon: 'cpu', subtitle: 'Expert — skip basics, engage the math' },
+  { mode: 'detailed', icon: 'list', subtitle: 'Thorough walkthrough, nothing skipped' },
+];
+
+function ModePickerSheet({
+  visible,
+  onClose,
+  mode,
+  onPick,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  mode: ReadingMode;
+  onPick: (mode: ReadingMode) => void;
+}) {
+  return (
+    <OptionsSheet
+      visible={visible}
+      onClose={onClose}
+      title="Reading mode"
+      options={MODE_OPTIONS.map((opt) => ({
+        key: opt.mode,
+        title: READING_MODE_LABELS[opt.mode],
+        subtitle: opt.subtitle,
+        icon: opt.icon,
+        selected: mode === opt.mode,
+        onPress: () => onPick(opt.mode),
+      }))}
+    />
   );
 }
 
@@ -457,7 +567,7 @@ function DiscussionThread({
   title,
   favorites,
   selectedModel,
-  onDraftNotes,
+  onContinue,
   headerHeight,
   onMutated,
 }: {
@@ -471,7 +581,7 @@ function DiscussionThread({
   title: string;
   favorites: FavoriteModel[];
   selectedModel: string | null;
-  onDraftNotes: () => void;
+  onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
 }) {
@@ -805,25 +915,25 @@ function DiscussionThread({
         </View>
       );
     }
-    // Surface the wrap-up path without hunting the overflow menu: a quiet chip while the
-    // discussion is active (the same action also stays in the menu).
-    if (state === 'in_discussion' && !disabled) {
-      return (
-        <View style={styles.accessoryRow}>
-          <Chip label="Draft notes" dot={false} onPress={onDraftNotes} />
-        </View>
-      );
-    }
+    // "Finish reading" lives in the kebab menu only (polish plan H.1) — no composer chip.
     return null;
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state, onDraftNotes]);
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
+      // Committed is a resting point, not a dead end (polish plan H.2): the quiet inline
+      // affordance reopens the composer; the same action lives in the kebab menu.
       return (
         <View style={styles.committedBar}>
           <Text variant="caption" style={{ textAlign: 'center' }}>
             Notes committed to this project's record.
           </Text>
+          <Button
+            title="Continue discussion"
+            variant="ghost"
+            onPress={onContinue}
+            style={{ alignSelf: 'center', marginTop: space.xs }}
+          />
         </View>
       );
     }
@@ -835,7 +945,7 @@ function DiscussionThread({
         renderAccessory={renderAccessory}
       />
     );
-  }, [renderAccessory, renderSend, state]);
+  }, [onContinue, renderAccessory, renderSend, state]);
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
@@ -958,6 +1068,10 @@ function ComposeFirst({
   const manualSource = sourceDraft.value;
   const setManualSource = sourceDraft.setValue;
   const [showCustomize, setShowCustomize] = useState(false);
+  // Reading mode for this session (polish plan H.3): one-tap presets for how the analyst
+  // should pitch the explanation — the on-the-go alternative to editing the prompt. Sent
+  // with the chat start; switchable later from the kebab menu.
+  const [mode, setMode] = useState<ReadingMode>('balanced');
   // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
   // sees what's happening during a fetch instead of an opaque spinner.
   const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
@@ -1001,7 +1115,12 @@ function ComposeFirst({
       await promptDraft.markSubmitted();
       await stream.run(
         chatStartPath,
-        { slug, prompt, model: selectedModel ?? opening.data?.model ?? undefined },
+        {
+          slug,
+          prompt,
+          model: selectedModel ?? opening.data?.model ?? undefined,
+          mode: mode === 'balanced' ? undefined : mode,
+        },
         undefined,
         async () => {
           await promptDraft.clear(opening.data?.prompt ?? '');
@@ -1058,6 +1177,22 @@ function ComposeFirst({
             The analyst will fetch the paper and open with a comprehensive first read.
           </Text>
         </Card>
+
+        {/* Reading mode (polish plan H.3): quick presets, switchable later from the menu. */}
+        <View style={{ marginTop: space.lg }}>
+          <Text variant="overline">Reading mode</Text>
+          <View style={styles.modeRow}>
+            {(Object.keys(READING_MODE_LABELS) as ReadingMode[]).map((m) => (
+              <Chip
+                key={m}
+                label={READING_MODE_LABELS[m]}
+                selected={mode === m}
+                dot={false}
+                onPress={() => setMode(m)}
+              />
+            ))}
+          </View>
+        </View>
         {retrieveError ? (
           <Text variant="body" color={colors.danger} style={{ marginTop: space.md }}>
             {retrieveError}
@@ -1363,21 +1498,8 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  modelPill: {
-    maxWidth: 96,
-    height: 36,
-    paddingHorizontal: 10,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.elevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: 4,
-  },
-  modelPillText: { fontFamily: fonts.bodyMedium },
   composeFirst: { padding: space.md },
+  modeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {

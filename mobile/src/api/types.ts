@@ -83,10 +83,23 @@ export interface ProjectState {
   papers: Paper[];
 }
 
+/** How the analyst pitches its explanations for this session (polish plan H.3).
+ *  'balanced' is the default; the others layer a register-tuning block onto the system
+ *  prompt for every subsequent turn. */
+export type ReadingMode = 'balanced' | 'background' | 'technical' | 'detailed';
+
+export const READING_MODE_LABELS: Record<ReadingMode, string> = {
+  balanced: 'Balanced',
+  background: 'Background-heavy',
+  technical: 'Technical',
+  detailed: 'Detailed',
+};
+
 /** GET /api/projects/{pid}/session/{slug} */
 export interface Session {
   paper: Paper;
   state: SessionState;
+  reading_mode: ReadingMode;
   transcript: TranscriptEntry[];
   accepted_drafts: { kind: 'reply' | 'revision'; text: string }[];
 }
