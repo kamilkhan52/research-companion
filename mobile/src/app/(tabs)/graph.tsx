@@ -4,7 +4,7 @@
 
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
@@ -33,6 +33,7 @@ export default function GraphScreen() {
   const build = useGraphBuild(activePid);
 
   const [query, setQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
   const [filter, setFilter] = useState<FilterKind>('all');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showRecs, setShowRecs] = useState(false);
@@ -99,6 +100,8 @@ export default function GraphScreen() {
     return withEdges(keep, graph.nodes.filter((n) => keep.has(n.id)));
   }, [graph, isFiltering, filteredNodes, showAll]);
 
+  const staleCount = status?.stale_papers.length ?? 0;
+
   function openPaper(slug: string) {
     setSelectedNode(null);
     router.push(`/paper/${encodeURIComponent(slug)}`);
@@ -109,15 +112,44 @@ export default function GraphScreen() {
     setSelectedNode(rec);
   }
 
-  const staleCount = status?.stale_papers.length ?? 0;
-
   return (
     <Screen edges={['top']}>
       <TabHeader
-        title="Reference Graph"
+        title="Map"
         subtitle={graph ? `${graph.nodes.length} papers · ${graph.edges.length} citations` : undefined}
         actions={[
-          { name: 'refresh-cw', onPress: () => graphQuery.refetch(), accessibilityLabel: 'Refresh graph' },
+          {
+            name: 'search',
+            onPress: () => {
+              // Closing the search also clears it — a hidden query would silently keep
+              // culling the canvas.
+              setShowSearch((v) => {
+                if (v) setQuery('');
+                return !v;
+              });
+            },
+            accessibilityLabel: showSearch ? 'Hide search' : 'Search papers',
+          },
+          {
+            name: 'refresh-cw',
+            badge: staleCount > 0,
+            onPress: () => {
+              if (staleCount > 0) {
+                Alert.alert(
+                  'Rebuild reference graph?',
+                  `${staleCount} paper${staleCount === 1 ? '' : 's'} changed since the last build.`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
+                    { text: 'Rebuild', onPress: () => build.run(false) },
+                  ],
+                );
+              } else {
+                void graphQuery.refetch();
+              }
+            },
+            accessibilityLabel: staleCount > 0 ? 'Refresh graph (rebuild available)' : 'Refresh graph',
+          },
           { name: 'zap', onPress: () => setShowRecs(true), accessibilityLabel: 'Recommendations' },
         ]}
       />
@@ -135,15 +167,12 @@ export default function GraphScreen() {
         <EmptyBuildState status={status} build={build} />
       ) : (
         <>
-          {build.building ? (
-            <BuildProgressBanner progress={build.progress} />
-          ) : staleCount > 0 ? (
-            <StaleBanner count={staleCount} onRebuild={() => build.run(false)} />
-          ) : null}
+          {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
 
           <FilterBar
             query={query}
             onQueryChange={setQuery}
+            showSearch={showSearch}
             filter={filter}
             onFilterChange={setFilter}
             resultCount={isFiltering ? filteredNodes.length : null}
@@ -165,7 +194,6 @@ export default function GraphScreen() {
             selectedId={selectedNode?.id ?? null}
             highlightIds={null}
             onSelectNode={setSelectedNode}
-            layoutBounds={graph.layout}
           />
 
           {build.error ? <ErrorBanner detail={build.error} onDismiss={build.clearError} /> : null}
@@ -251,17 +279,6 @@ function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['p
   );
 }
 
-function StaleBanner({ count, onRebuild }: { count: number; onRebuild: () => void }) {
-  return (
-    <Card style={styles.banner}>
-      <Text variant="body">
-        {count} paper{count === 1 ? '' : 's'} changed since the graph was last built.
-      </Text>
-      <Button title="Rebuild" variant="ghost" onPress={onRebuild} style={{ marginTop: space.sm }} />
-    </Card>
-  );
-}
-
 function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => void }) {
   return (
     <Card style={[styles.banner, { borderColor: colors.danger }]}>
@@ -276,27 +293,32 @@ function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => v
 function FilterBar({
   query,
   onQueryChange,
+  showSearch,
   filter,
   onFilterChange,
   resultCount,
 }: {
   query: string;
   onQueryChange: (v: string) => void;
+  showSearch: boolean;
   filter: FilterKind;
   onFilterChange: (f: FilterKind) => void;
   resultCount: number | null;
 }) {
   return (
     <View style={styles.filterBar}>
-      <TextInput
-        value={query}
-        onChangeText={onQueryChange}
-        placeholder="Search title, author, year…"
-        placeholderTextColor={colors.muted}
-        style={styles.searchInput}
-        autoCapitalize="none"
-        returnKeyType="search"
-      />
+      {showSearch ? (
+        <TextInput
+          value={query}
+          onChangeText={onQueryChange}
+          placeholder="Search title, author, year…"
+          placeholderTextColor={colors.muted}
+          style={styles.searchInput}
+          autoCapitalize="none"
+          returnKeyType="search"
+          autoFocus
+        />
+      ) : null}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.sm }}>
         <View style={{ flexDirection: 'row', gap: space.sm }}>
           {FILTERS.map((f) => (

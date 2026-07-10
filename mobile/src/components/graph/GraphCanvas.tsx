@@ -3,7 +3,7 @@
 // already linked into the current build (expo-router's own Stack transitions depend on them),
 // so this ships with zero new native dependency / no EAS rebuild required.
 
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -23,16 +23,14 @@ export function GraphCanvas({
   selectedId,
   highlightIds,
   onSelectNode,
-  layoutBounds,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
   selectedId: string | null;
   highlightIds: Set<string> | null;
   onSelectNode: (node: GraphNode) => void;
-  layoutBounds?: { width: number; height: number };
 }) {
-  const { positions, width, height } = useGraphLayout(nodes, edges, layoutBounds);
+  const { positions, width, height } = useGraphLayout(nodes, edges);
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
   const translateX = useSharedValue(0);
@@ -66,6 +64,15 @@ export function GraphCanvas({
     },
     [centerView],
   );
+
+  // Recenter when the LAYOUT's size changes, not just the viewport's: canvas height is
+  // data-dependent (aspect-clamped), so filter/search/show-all can swap in a different
+  // canvas without onLayout firing — stale translate values would leave the new graph
+  // shifted or mostly off-screen. centerView is recreated on width/height changes, so it
+  // carries that dependency.
+  useEffect(() => {
+    if (viewport.w > 0 && viewport.h > 0) centerView(viewport.w, viewport.h, false);
+  }, [viewport.w, viewport.h, centerView]);
 
   const pan = Gesture.Pan()
     .onStart(() => {

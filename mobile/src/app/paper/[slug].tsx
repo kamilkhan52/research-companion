@@ -85,8 +85,15 @@ const FULL_WIDTH_ROW: ViewStyle = {
   marginLeft: 0,
   marginRight: 0,
 };
-const FULL_WIDTH_ROW_PROP = {
-  containerStyle: { left: FULL_WIDTH_ROW, right: FULL_WIDTH_ROW } as LeftRightStyle<ViewStyle>,
+// User replies stay a floating right-aligned bubble (distinct from the assistant's document
+// bands): keep the library's row layout, just widen its 70% cap and give it an edge margin.
+const USER_ROW: ViewStyle = {
+  maxWidth: '86%',
+  marginRight: space.md,
+  marginVertical: space.xs,
+};
+const ROW_STYLES_PROP = {
+  containerStyle: { left: FULL_WIDTH_ROW, right: USER_ROW } as LeftRightStyle<ViewStyle>,
 };
 // MessageText's own container has a built-in inset (marginVertical: 5, marginHorizontal: 10)
 // we don't want stacking with our own padding on user-message text (see userText style).
@@ -282,6 +289,7 @@ export default function DiscussionScreen() {
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
           selectedModel={selectedModel}
+          onDraftNotes={() => void draftNotesFromMenu()}
           headerHeight={headerHeight}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
@@ -422,8 +430,9 @@ function ModelPill({
         onPress={() => setOpen(true)}
         style={styles.modelPill}
         accessibilityLabel={`Model for the next response: ${label}. Tap to change.`}>
+        <Icon name="zap" size={11} color={colors.mint} />
         <Text variant="caption" color={colors.mint} numberOfLines={1} style={styles.modelPillText}>
-          {label}
+          {label.split(/[\s/:]/)[0]}
         </Text>
       </Pressable>
       <OptionsSheet
@@ -449,6 +458,7 @@ function DiscussionThread({
   title,
   favorites,
   selectedModel,
+  onDraftNotes,
   headerHeight,
   onMutated,
 }: {
@@ -462,6 +472,7 @@ function DiscussionThread({
   title: string;
   favorites: FavoriteModel[];
   selectedModel: string | null;
+  onDraftNotes: () => void;
   headerHeight: number;
   onMutated: () => void;
 }) {
@@ -772,10 +783,17 @@ function DiscussionThread({
         </View>
       );
     }
-    // Draft notes lives in the top-bar overflow menu now; the default in_discussion composer
-    // has nothing extra to show below Send.
+    // Surface the wrap-up path without hunting the overflow menu: a quiet chip while the
+    // discussion is active (the same action also stays in the menu).
+    if (state === 'in_discussion' && !disabled) {
+      return (
+        <View style={styles.accessoryRow}>
+          <Chip label="Draft notes" dot={false} onPress={onDraftNotes} />
+        </View>
+      );
+    }
     return null;
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state, onDraftNotes]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
@@ -858,7 +876,7 @@ function DiscussionThread({
         // agree: the scroll-to-bottom button and "still following" flip at the same point.
         maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 200 },
       }}
-      {...FULL_WIDTH_ROW_PROP}
+      {...ROW_STYLES_PROP}
     />
   );
 }
@@ -1292,15 +1310,17 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 
 const styles = StyleSheet.create({
   modelPill: {
-    maxWidth: 108,
-    height: 40,
-    paddingHorizontal: space.sm,
+    maxWidth: 96,
+    height: 36,
+    paddingHorizontal: 10,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line,
     backgroundColor: colors.elevated,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 4,
   },
   modelPillText: { fontFamily: fonts.bodyMedium },
   composeFirst: { padding: space.md },
@@ -1356,10 +1376,10 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     backgroundColor: colors.elevated,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
+    borderWidth: 1,
     borderColor: colors.line2,
-    borderRadius: 0,
+    borderRadius: radius.lg,
+    borderBottomRightRadius: 6,
   },
   userText: {
     color: colors.text,
