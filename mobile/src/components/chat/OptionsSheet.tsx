@@ -1,8 +1,8 @@
-// Styled options menu for the discussion screen (Figma `08b · Model + thinking picker` and
-// `08c · Actions menu`): a violet-bordered card over a dim backdrop, rows of icon + title
-// (+ optional subtitle), a check on the selected row, and optional section dividers. Replaces
-// the native action sheet for these two menus so they carry the design language; transient
-// per-message menus stay native.
+// Styled options menu (Figma `08b · Model + thinking picker` and `08c · Actions menu`): a
+// violet-bordered card over a dim backdrop, rows of icon + title (+ optional subtitle), a
+// check on the selected row, and optional section dividers. The ONLY menu idiom in the app
+// (polish plan F.5) — per-message long-press and retry menus included; never use the native
+// action sheet.
 
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 

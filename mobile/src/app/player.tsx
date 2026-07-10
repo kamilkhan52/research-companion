@@ -56,9 +56,8 @@ export default function PlayerScreen() {
       <View style={styles.header}>
         <IconButton name="chevron-down" size={20} onPress={() => router.back()} accessibilityLabel="Collapse player" />
         <View style={{ flex: 1, minWidth: 0, alignItems: 'center' }}>
-          <Text variant="heading" style={{ fontSize: 18 }} color={colors.mint}>
-            Listening mode
-          </Text>
+          {/* No "Listening mode" label (polish plan F.3) — the screen is self-evident and the
+              vertical space belongs to the transcript. */}
           <Text variant="serifTitle" style={{ fontSize: 17, lineHeight: 22, textAlign: 'center' }} numberOfLines={2}>
             {track?.title ?? audio.prep?.title ?? 'Narration'}
           </Text>

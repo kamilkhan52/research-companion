@@ -42,6 +42,7 @@ const parentJob: ChatJob = {
   preview_phase: 'audio_synthesis',
   preview_progress: { segments_done: 1, segments_total: 1 },
   timings: {},
+  cancelled: false,
 };
 
 function props(overrides: Partial<Parameters<typeof usePreviewCues>[0]> = {}) {

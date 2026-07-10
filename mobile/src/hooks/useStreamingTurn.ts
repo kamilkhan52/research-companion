@@ -10,7 +10,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiPost, ApiError } from '@/api/client';
-import { getActiveChatJob, getChatJob } from '@/api/endpoints';
+import { cancelChatJob, getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
 import {
@@ -48,6 +48,9 @@ export interface StreamingTurn {
   resume: () => Promise<void>;
   /** Stop watching. The job keeps running server-side and lands in the transcript. */
   cancel: () => void;
+  /** Ask the server to STOP generating (the composer's Stop button). The partial response is
+   * recorded marked as stopped; polling continues and settles through the normal done path. */
+  stop: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -248,6 +251,18 @@ export function useStreamingTurn(
     setPreviewJobIds([]);
   }, []);
 
+  const stop = useCallback(async () => {
+    const id = watchRef.current;
+    if (!id || !pid) return;
+    try {
+      await cancelChatJob(pid, id);
+      // Keep watching: the worker settles the job (with the stopped partial recorded) within
+      // one event boundary, and the normal done path refetches the transcript.
+    } catch (e) {
+      setError((e as Error).message ?? 'Could not stop the response.');
+    }
+  }, [pid]);
+
   const clearError = useCallback(() => setError(null), []);
 
   const liveText = useMemo(
@@ -267,6 +282,7 @@ export function useStreamingTurn(
     run,
     resume,
     cancel,
+    stop,
     clearError,
   };
 }
