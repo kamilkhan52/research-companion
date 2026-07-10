@@ -272,6 +272,7 @@ def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
             retrieved=corpus_path(slug).exists(),
             has_notes=has_notes(slug),
             session_state=session_states.get(slug),
+            arxiv_id=e["arxiv_id"],
         ))
     return papers
 

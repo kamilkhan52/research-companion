@@ -42,6 +42,8 @@ export interface Paper {
   retrieved: boolean;
   has_notes: boolean;
   session_state: SessionState;
+  /** The entry's arxiv id when reading-list.md carries one ("" otherwise). */
+  arxiv_id: string;
   // The review pseudo-paper carries an extra kind field.
   kind?: string;
 }

@@ -17,6 +17,7 @@ import { useProjectState } from '@/api/queries';
 import type { Paper } from '@/api/types';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { LinkHandlerContext, PaperIndexContext, type LinkHandler } from '@/components/Markdown';
+import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { useActiveProject } from '@/store/project';
 import { colors, stateMeta } from '@/theme/tokens';
 
@@ -33,6 +34,8 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
   const stateQuery = useProjectState(activePid);
   const papers = stateQuery.data?.papers;
   const [slug, setSlug] = useState<string | null>(null);
+  // Related works is its own bottom sheet layered after the action sheet closes.
+  const [relatedSlug, setRelatedSlug] = useState<string | null>(null);
 
   const index = useMemo(
     () => (papers ?? []).map((p) => ({ title: p.title, slug: p.slug })),
@@ -83,16 +86,40 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
       });
     }
     opts.push({
+      key: 'related',
+      title: 'Related works',
+      icon: 'layers',
+      onPress: () => {
+        close();
+        setRelatedSlug(slug);
+      },
+    });
+    opts.push({
       key: 'map',
       title: 'Show in Map',
       icon: 'share-2',
       onPress: () => {
         close();
-        router.navigate(`/graph?focus=${encodeURIComponent(slug)}`);
+        // The nonce makes every "Show in Map" a fresh param set, so re-focusing the SAME
+        // paper after the user closed its node sheet still re-selects (the Map's effect
+        // keys on the params).
+        router.navigate(`/graph?focus=${encodeURIComponent(slug)}&t=${Date.now()}`);
       },
     });
+    if (paper?.arxiv_id) {
+      opts.push({
+        key: 'source',
+        title: 'Open source',
+        subtitle: `arxiv.org/abs/${paper.arxiv_id}`,
+        icon: 'external-link',
+        onPress: () => {
+          close();
+          void Linking.openURL(`https://arxiv.org/abs/${paper.arxiv_id}`).catch(() => undefined);
+        },
+      });
+    }
     return opts;
-  }, [slug, paper?.has_notes, router]);
+  }, [slug, paper?.has_notes, paper?.arxiv_id, router]);
 
   const stateKey = paper ? (paper.session_state ?? (paper.list_status === 'read' ? 'committed' : 'unread')) : null;
   const stateLabel = paper ? (stateMeta[stateKey ?? 'unread'] ?? stateMeta.unread).label : undefined;
@@ -108,6 +135,16 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
             title={stateLabel}
             subtitle={paper?.title ?? slug ?? undefined}
             options={options}
+          />
+          <RelatedWorksSheet
+            pid={activePid}
+            slug={relatedSlug}
+            visible={relatedSlug !== null}
+            onClose={() => setRelatedSlug(null)}
+            onOpenPaper={(target) => {
+              setRelatedSlug(null);
+              router.push(`/paper/${encodeURIComponent(target)}`);
+            }}
           />
         </LinkHandlerContext.Provider>
       </PaperIndexContext.Provider>
