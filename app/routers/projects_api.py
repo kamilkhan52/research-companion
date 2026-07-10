@@ -75,9 +75,18 @@ def remove_paper(pid: str, slug: str):
     if notes_kept:
         store.append_removed_marker(slug)
     store.remove_entry(slug)
+    # Stage and commit ONLY what this removal changed. The confirm approved removing this
+    # paper — not whatever else happens to be dirty in the project tree (an in-flight job's
+    # transcript write, another request's edit), so a blanket `add -A` here would sweep
+    # unapproved changes into the record. The pathspec on commit bounds it the same way.
+    changed = ["reading-list.md"]
+    if notes_kept:
+        changed.append(str(store.corpus_path(slug).relative_to(config.project_dir())))
     try:
-        committer._git("add", "-A")
-        committer._git("commit", "-q", "-m", f"Remove {paper.title} from reading list")
+        committer._git("add", "--", *changed)
+        committer._git(
+            "commit", "-q", "-m", f"Remove {paper.title} from reading list", "--", *changed,
+        )
     except CommitError as e:
         if "nothing to commit" not in str(e):
             raise HTTPException(status_code=500, detail=str(e)) from e

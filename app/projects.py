@@ -159,7 +159,7 @@ def recent_sessions(limit: int = 20) -> list[dict]:
     Session state is project-scoped, so every index read is performed with that project bound
     to the active contextvar. Only registry-derived ids reach the path boundary.
     """
-    from . import sessions
+    from . import sessions, store
 
     out = []
     for project in list_projects():
@@ -167,11 +167,18 @@ def recent_sessions(limit: int = 20) -> list[dict]:
         token = config.set_active_project(pid)
         try:
             index = sessions.session_index()
+            current_slugs = {p.slug for p in store.list_papers()}
         finally:
             config.reset_active_project(token)
         for slug, meta in index.items():
             updated_at = meta.get("updated_at")
             if not updated_at:
+                continue
+            # Session metadata survives a paper's removal (the transcript is kept for a warm
+            # re-add), but a removed paper must not be re-advertised here — the Continue card
+            # would route to a slug /session/{slug} now 404s. An in-flight job finishing after
+            # removal re-touches the index, so filtering at read time is the reliable spot.
+            if meta.get("kind", "paper") == "paper" and slug not in current_slugs:
                 continue
             out.append({
                 "project_id": pid,

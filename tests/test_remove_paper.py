@@ -83,3 +83,66 @@ def test_remove_paper_route_404s_unknown_slug(temp_project):
     with pytest.raises(HTTPException) as e:
         remove_paper(temp_project, "missing")
     assert e.value.status_code == 404
+
+
+def test_remove_commit_excludes_unrelated_dirty_files(temp_project):
+    """The confirm approved THIS removal — a dirty transcript/corpus from an in-flight job
+    must not ride along in the removal commit (invariant 4)."""
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    store.append_notes_block("a", "Paper A", "## Notes\n\nKept.")
+    # Track everything, then dirty an unrelated file the way a finishing job would.
+    subprocess.run(["git", "add", "-A"], cwd=str(config.project_dir()), capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "baseline"],
+                   cwd=str(config.project_dir()), capture_output=True)
+    unrelated = store.corpus_path("b")
+    unrelated.write_text(unrelated.read_text(encoding="utf-8") + "\nmid-flight write\n",
+                         encoding="utf-8")
+
+    remove_paper(temp_project, "a")
+
+    committed = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                               cwd=str(config.project_dir()), capture_output=True, text=True).stdout
+    assert "reading-list.md" in committed
+    assert "corpus/a.md" in committed          # the retained-notes marker
+    assert "corpus/b.md" not in committed      # the unrelated dirty file stayed out
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=str(config.project_dir()),
+                            capture_output=True, text=True).stdout
+    assert "corpus/b.md" in status             # still dirty, awaiting its own approval
+
+
+def test_graph_status_reports_removed_paper_as_stale(temp_project):
+    from app import graph, graph_store, sessions
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    data = graph_store.load()
+    graph_store.set_graph(data, {
+        "built_at": "2026-07-09T00:00:00+00:00", "model": "m",
+        "nodes": [
+            {"id": "p:a", "kind": "project", "slug": "a"},
+            {"id": "p:b", "kind": "project", "slug": "b"},
+        ],
+        "edges": [],
+    })
+    graph_store.save(data)
+
+    store.remove_entry("a")
+    st = graph.status(store.list_papers(sessions.session_states()))
+    assert "a" in st["stale_papers"]
+    assert st["removed_papers"] == ["a"]
+    assert "b" not in st["removed_papers"]
+
+
+def test_recent_sessions_drops_removed_papers(temp_project):
+    from app import projects, sessions
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    sessions.start_session("a", "Paper A")
+    sessions.start_session("b", "Paper B")
+
+    remove_paper(temp_project, "a")
+    slugs = {s["slug"] for s in projects.recent_sessions()}
+    assert "a" not in slugs
+    assert "b" in slugs
+    # The transcript index entry itself is retained (warm re-add) — only the listing filters.
+    assert "a" in sessions.session_index()
