@@ -22,6 +22,7 @@ from .. import (
     preview_jobs,
     prompts,
     retrieval_agent,
+    retrieval_jobs,
     retriever,
     sessions,
     store,
@@ -231,6 +232,31 @@ def start_paper(req: StartReq):
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
     })
     return {"ok": True, "retrieved": True}
+
+
+@project_router.post("/retrieval/jobs")
+def start_retrieval_job(req: StartReq):
+    """Start or join connection-independent paper retrieval and return immediately."""
+    try:
+        job = retrieval_jobs.start_retrieval(req.slug, req.arxiv_id, req.pdf_url)
+    except RetrievalError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return {"job": retrieval_jobs.snapshot(job.id)}
+
+
+@project_router.get("/retrieval/jobs/latest/{slug}")
+def latest_retrieval_job(slug: str):
+    """Latest retained retrieval for re-entry, including terminal candidates/errors."""
+    job = retrieval_jobs.latest_for(slug)
+    return {"job": retrieval_jobs.snapshot(job.id) if job else None}
+
+
+@project_router.get("/retrieval/jobs/{job_id}")
+def retrieval_job_status(job_id: str):
+    snap = retrieval_jobs.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown retrieval job")
+    return {"job": snap}
 
 
 @project_router.get("/related/{slug}")

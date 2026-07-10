@@ -1,0 +1,21 @@
+.settings-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(2, 3, 8, .62); display: grid; place-items: end center; backdrop-filter: blur(3px); }
+.settings-modal { width: 100%; max-width: 600px; max-height: 88vh; overflow-y: auto; background: linear-gradient(180deg, #12141f, #0b0d16); border: 1px solid var(--line2); border-radius: 20px 20px 0 0; padding: 18px 17px max(env(safe-area-inset-bottom), 20px); box-shadow: 0 -20px 60px -30px rgba(52, 231, 224, .4); }
+.settings-head, .settings-row, .prompts-row { display: flex; align-items: center; justify-content: space-between; }
+.settings-head h2 { margin: 2px 0 14px; font-family: var(--font-display); font-size: 18px; }
+.settings-body { display: flex; flex-direction: column; }
+.field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 15px; }
+.field > span, .settings-subhead { font-family: var(--font-display); font-size: 12px; letter-spacing: .04em; color: var(--muted); }
+.field input, .field select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; font: inherit; }
+.field input:focus, .field select:focus { outline: none; border-color: rgba(52, 231, 224, .5); }
+.settings-row { gap: 11px; align-items: start; }
+.settings-row .field { flex: 1; }
+.settings-hr { border: none; border-top: 1px solid var(--line); margin: 6px 0 14px; }
+.check { flex-direction: row; align-items: center; gap: 9px; color: var(--text); font-size: 14px; cursor: pointer; }
+.check input { width: 18px; height: 18px; accent-color: var(--cyan); }
+.settings-message { text-align: center; color: var(--cyan); font-size: 13px; }
+.prompts-status { margin-bottom: 16px; }
+.prompts-row { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
+.now-playing { position: fixed; z-index: 40; bottom: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--space-sm); padding: 10px max(16px, env(safe-area-inset-left)); background: var(--panel); border-top: 1px solid var(--line); }
+.now-playing-title { flex: 1; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; color: var(--text); background: none; border: 0; font: inherit; }
+.player-screen { display: flex; min-height: 60vh; flex-direction: column; gap: var(--space-md); align-items: flex-start; padding: var(--space-lg); }
+.player-screen article { max-width: 700px; white-space: pre-wrap; }

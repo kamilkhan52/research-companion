@@ -28,7 +28,10 @@ from .fileio import atomic_write_text
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-WEB_DIR = BASE_DIR / "web"
+# Web client directory. RC_WEB_DIR overrides. If the Vite build output (web/dist/) exists,
+# serve that; otherwise fall back to the plain web/ directory for backward compatibility.
+_WEB_DIST = BASE_DIR / "web" / "dist"
+WEB_DIR = Path(os.environ.get("RC_WEB_DIR", str(_WEB_DIST if _WEB_DIST.exists() else (BASE_DIR / "web")))).resolve()
 
 
 @dataclass(frozen=True)

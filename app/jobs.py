@@ -127,6 +127,25 @@ class JobRegistry(Generic[J]):
         with self._lock:
             return self._running_for(key, pid)
 
+    def latest_for(self, key: str, *, project_id=_AMBIENT) -> J | None:
+        """Newest retained job for a dedup key, whether running or terminal.
+
+        Unlike ``active_for``, this is intended for proposal/result jobs whose finished value is
+        not persisted anywhere else. A client that navigates away after starting one must still
+        be able to recover the completed result when it returns.
+        """
+        pid = _resolve_pid(project_id)
+        with self._lock:
+            matching = [
+                job for job in self._jobs.values()
+                if getattr(job, _KEY_ATTR, None) == key
+                and getattr(job, _PID_ATTR, None) == pid
+            ]
+            # Dict insertion order is creation order. Timestamps intentionally use second
+            # precision for readable snapshots, so ordering by `started_at` would choose the
+            # wrong job when a user immediately retries within the same second.
+            return matching[-1] if matching else None
+
     def _running_for(self, key: str, pid: str | None) -> J | None:  # caller holds the lock
         for job in self._jobs.values():
             if (getattr(job, _KEY_ATTR, None) == key

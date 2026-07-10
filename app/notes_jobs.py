@@ -98,6 +98,16 @@ def active_for(target: str) -> NotesJob | None:
     return _registry.active_for(target)
 
 
+def latest_for(target: str) -> NotesJob | None:
+    """Return the most recent proposal for re-entry, including a settled one.
+
+    The generated markdown intentionally lives only on its job until a person applies it.
+    Looking up only a running job would therefore discard a completed proposal whenever the
+    editor navigated away before the final poll.
+    """
+    return _registry.latest_for(target)
+
+
 def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) -> NotesJob:
     """Start revising `target`'s notes per `instruction` in a background thread, or join the
     job already running for it. The result stays on the job as a proposal — callers poll

@@ -52,6 +52,13 @@ def notes_job_active(target: str):
     return {"job": notes_jobs.snapshot(job.id) if job else None}
 
 
+@project_router.get("/notes/jobs/latest/{target}")
+def notes_job_latest(target: str):
+    """Most recent retained proposal, whether it is still running or ready to apply."""
+    job = notes_jobs.latest_for(target)
+    return {"job": notes_jobs.snapshot(job.id) if job else None}
+
+
 @project_router.get("/notes/jobs/{job_id}")
 def notes_job_status(job_id: str):
     snap = notes_jobs.snapshot(job_id)

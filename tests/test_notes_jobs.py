@@ -145,6 +145,8 @@ def test_second_start_for_same_target_joins_the_running_job(temp_project):
     release.set()
     assert _wait_until_settled(first.id).status == "done"
     assert notes_jobs.active_for("p1") is None
+    # A completed proposal is still recoverable on re-entry; it is not a persisted document.
+    assert notes_jobs.latest_for("p1") is first
 
 
 def test_edit_prompt_contains_document_and_instruction(temp_project):
