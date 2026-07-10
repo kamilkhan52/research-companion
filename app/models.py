@@ -26,6 +26,7 @@ class Paper:
     retrieved: bool = False
     has_notes: bool = False
     session_state: str | None = None  # transient working state if a session exists
+    arxiv_id: str = ""                # the entry's <!-- arxiv: ... --> id, when it has one
 
     def to_dict(self) -> dict:
         return asdict(self)

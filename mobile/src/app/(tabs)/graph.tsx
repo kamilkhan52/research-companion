@@ -2,7 +2,7 @@
 // other and which external works they lean on, with a recommendation ranking for what to
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
@@ -28,6 +28,9 @@ const FILTERS: { key: FilterKind; label: string }[] = [
 
 export default function GraphScreen() {
   const router = useRouter();
+  // `?focus=<slug>` (from the paper action sheet's "Show in Map") selects that node once
+  // the graph is available; `t` is a per-tap nonce so re-focusing the same slug re-selects.
+  const { focus, t: focusNonce } = useLocalSearchParams<{ focus?: string; t?: string }>();
   const { activePid } = useActiveProject();
   const graphQuery = useGraph(activePid);
   const build = useGraphBuild(activePid);
@@ -52,6 +55,12 @@ export default function GraphScreen() {
   useEffect(() => {
     resumeBuild(data?.build);
   }, [data?.build, resumeBuild]);
+
+  useEffect(() => {
+    if (!focus || !graph) return;
+    const node = graph.nodes.find((n) => n.kind === 'project' && n.slug === focus);
+    if (node) setSelectedNode(node);
+  }, [focus, focusNonce, graph]);
 
   const nodesById = useMemo(() => {
     const m: Record<string, GraphNode> = {};

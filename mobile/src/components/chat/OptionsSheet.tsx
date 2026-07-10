@@ -27,11 +27,14 @@ export function OptionsSheet({
   visible,
   onClose,
   title,
+  subtitle,
   options,
 }: {
   visible: boolean;
   onClose: () => void;
   title?: string;
+  /** Longer editorial line under the overline title (e.g. a paper's full title). */
+  subtitle?: string;
   options: SheetOption[];
 }) {
   return (
@@ -42,6 +45,11 @@ export function OptionsSheet({
             {title ? (
               <Text variant="overline" color={colors.violet} style={styles.title}>
                 {title}
+              </Text>
+            ) : null}
+            {subtitle ? (
+              <Text variant="serifTitle" style={styles.subtitle} numberOfLines={4}>
+                {subtitle}
               </Text>
             ) : null}
             {options.map((opt) => (
@@ -106,6 +114,7 @@ const styles = StyleSheet.create({
     maxHeight: '75%',
   },
   title: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs },
+  subtitle: { paddingHorizontal: space.lg, paddingBottom: space.sm },
   divider: { height: 1, backgroundColor: colors.line, marginVertical: space.sm, marginHorizontal: space.lg },
   row: {
     flexDirection: 'row',

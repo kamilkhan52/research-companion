@@ -27,6 +27,7 @@ import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { NowPlaying } from '@/components/NowPlaying';
+import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { colors } from '@/theme/tokens';
@@ -81,6 +82,7 @@ export default function RootLayout() {
             <ProjectProvider>
               <ListeningProvider>
                 <AudioProvider>
+                <PaperEntityProvider>
                 <StatusBar style="light" />
                 <View style={{ flex: 1, backgroundColor: colors.bg }}>
                   <View style={{ flex: 1 }}>
@@ -100,6 +102,7 @@ export default function RootLayout() {
                   </View>
                   <StackNowPlaying />
                 </View>
+                </PaperEntityProvider>
                 </AudioProvider>
               </ListeningProvider>
             </ProjectProvider>
