@@ -6,7 +6,13 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, {
+  runOnJS,
+  useAnimatedReaction,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
@@ -16,6 +22,11 @@ import { colors, radius as radiusTokens, space } from '@/theme/tokens';
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
 const INITIAL_SCALE = 0.65;
+// Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Labels below this zoom are
+// unreadable anyway, and each is a laid-out Text — shed them while zoomed out. Arrowheads
+// double the per-edge view count, so on dense graphs only significant edges keep theirs.
+const LABEL_MIN_SCALE = 0.5;
+const ARROWS_ON_ALL_EDGES_MAX = 120;
 
 export function GraphCanvas({
   nodes,
@@ -102,16 +113,42 @@ export function GraphCanvas({
     ],
   }));
 
+  // Label level-of-detail: watch the UI-thread scale and flip ONE piece of JS state only
+  // when the readability threshold is crossed — not per frame.
+  const [labelsVisible, setLabelsVisible] = useState(INITIAL_SCALE >= LABEL_MIN_SCALE);
+  useAnimatedReaction(
+    () => scale.value >= LABEL_MIN_SCALE,
+    (visible, previous) => {
+      if (visible !== previous) runOnJS(setLabelsVisible)(visible);
+    },
+  );
+
+  const arrowsOnAll = edges.length <= ARROWS_ON_ALL_EDGES_MAX;
+
   return (
     <View style={styles.viewport} onLayout={onLayout}>
       <GestureDetector gesture={composed}>
-        <Animated.View style={[{ width, height, position: 'absolute' }, canvasStyle]}>
+        <Animated.View
+          // Rasterizing the whole canvas turns pan/zoom into a texture transform instead of
+          // re-drawing hundreds of Views per frame. Slight blur while pinch-zooming past the
+          // captured resolution is the accepted trade.
+          renderToHardwareTextureAndroid
+          style={[{ width, height, position: 'absolute' }, canvasStyle]}>
           {edges.map((edge, i) => {
             const a = positions[edge.source];
             const b = positions[edge.target];
             if (!a || !b) return null;
             const dimmed = !!highlightIds && (!highlightIds.has(edge.source) || !highlightIds.has(edge.target));
-            return <EdgeLine key={`${edge.source}>${edge.target}:${i}`} a={a} b={b} significant={edge.significant} dimmed={dimmed} />;
+            return (
+              <EdgeLine
+                key={`${edge.source}>${edge.target}:${i}`}
+                a={a}
+                b={b}
+                significant={edge.significant}
+                showArrow={arrowsOnAll || edge.significant}
+                dimmed={dimmed}
+              />
+            );
           })}
           {nodes.map((node) => {
             const pos = positions[node.id];
@@ -125,6 +162,7 @@ export function GraphCanvas({
                 y={pos.y}
                 selected={node.id === selectedId}
                 dimmed={dimmed}
+                labelsVisible={labelsVisible}
                 onSelectNode={onSelectNode}
               />
             );
@@ -152,11 +190,13 @@ const EdgeLine = memo(function EdgeLine({
   a,
   b,
   significant,
+  showArrow,
   dimmed,
 }: {
   a: { x: number; y: number };
   b: { x: number; y: number };
   significant: boolean;
+  showArrow: boolean;
   dimmed: boolean;
 }) {
   const dx = b.x - a.x;
@@ -190,6 +230,7 @@ const EdgeLine = memo(function EdgeLine({
           transform: [{ rotate: `${angle}rad` }],
         }}
       />
+      {showArrow ? (
       <View
         pointerEvents="none"
         style={{
@@ -208,6 +249,7 @@ const EdgeLine = memo(function EdgeLine({
           transform: [{ rotate: `${angle + Math.PI / 2}rad` }],
         }}
       />
+      ) : null}
     </>
   );
 });
@@ -218,6 +260,7 @@ const NodeCircle = memo(function NodeCircle({
   y,
   selected,
   dimmed,
+  labelsVisible,
   onSelectNode,
 }: {
   node: GraphNode;
@@ -225,6 +268,7 @@ const NodeCircle = memo(function NodeCircle({
   y: number;
   selected: boolean;
   dimmed: boolean;
+  labelsVisible: boolean;
   onSelectNode: (node: GraphNode) => void;
 }) {
   const r = nodeRadius(node);
@@ -236,7 +280,7 @@ const NodeCircle = memo(function NodeCircle({
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text
   // layouts, the single biggest per-node cost when the whole graph is shown.
-  const showLabel = isProject || isSignificant || selected;
+  const showLabel = selected || (labelsVisible && (isProject || isSignificant));
 
   return (
     <Pressable
