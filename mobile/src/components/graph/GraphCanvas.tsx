@@ -4,9 +4,15 @@
 // so this ships with zero new native dependency / no EAS rebuild required.
 
 import { memo, useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { PixelRatio, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, {
+  runOnJS,
+  useAnimatedReaction,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
@@ -16,6 +22,16 @@ import { colors, radius as radiusTokens, space } from '@/theme/tokens';
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.5;
 const INITIAL_SCALE = 0.65;
+// Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Labels below this zoom are
+// unreadable anyway, and each is a laid-out Text — shed them while zoomed out. Arrowheads
+// double the per-edge view count, so on dense graphs only significant edges keep theirs.
+const LABEL_MIN_SCALE = 0.5;
+const ARROWS_ON_ALL_EDGES_MAX = 120;
+// Android allocates a hardware layer for the WHOLE view in device pixels (not the clipped
+// viewport), so rasterizing an oversized canvas would trade jank for OOM/dropped-layer risk
+// on exactly the dense graphs this targets. Budget the layer and only hold it during
+// gestures — allocated on touch-down, released on lift.
+const RASTER_LAYER_BUDGET_BYTES = 32 * 1024 * 1024;
 
 export function GraphCanvas({
   nodes,
@@ -74,7 +90,16 @@ export function GraphCanvas({
     if (viewport.w > 0 && viewport.h > 0) centerView(viewport.w, viewport.h, false);
   }, [viewport.w, viewport.h, centerView]);
 
+  // Rasterize only while a finger is down (see RASTER_LAYER_BUDGET_BYTES): a counter over
+  // both gestures' begin/finalize flips ONE piece of JS state on the 0<->1 transitions.
+  const [gestureActive, setGestureActive] = useState(false);
+  const activeTouches = useSharedValue(0);
+
   const pan = Gesture.Pan()
+    .onBegin(() => {
+      activeTouches.value += 1;
+      if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
+    })
     .onStart(() => {
       startX.value = translateX.value;
       startY.value = translateY.value;
@@ -82,17 +107,35 @@ export function GraphCanvas({
     .onUpdate((e) => {
       translateX.value = startX.value + e.translationX;
       translateY.value = startY.value + e.translationY;
+    })
+    .onFinalize(() => {
+      activeTouches.value -= 1;
+      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
     });
 
   const pinch = Gesture.Pinch()
+    .onBegin(() => {
+      activeTouches.value += 1;
+      if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
+    })
     .onStart(() => {
       startScale.value = scale.value;
     })
     .onUpdate((e) => {
       scale.value = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale.value * e.scale));
+    })
+    .onFinalize(() => {
+      activeTouches.value -= 1;
+      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
     });
 
   const composed = Gesture.Simultaneous(pan, pinch);
+
+  // RGBA bytes for a full-canvas layer at this device's density; oversized canvases keep the
+  // plain View path (the LOD + arrowhead cuts still apply there).
+  const rasterizable =
+    Platform.OS === 'android' &&
+    width * height * PixelRatio.get() ** 2 * 4 <= RASTER_LAYER_BUDGET_BYTES;
 
   const canvasStyle = useAnimatedStyle(() => ({
     transform: [
@@ -102,16 +145,43 @@ export function GraphCanvas({
     ],
   }));
 
+  // Label level-of-detail: watch the UI-thread scale and flip ONE piece of JS state only
+  // when the readability threshold is crossed — not per frame.
+  const [labelsVisible, setLabelsVisible] = useState(INITIAL_SCALE >= LABEL_MIN_SCALE);
+  useAnimatedReaction(
+    () => scale.value >= LABEL_MIN_SCALE,
+    (visible, previous) => {
+      if (visible !== previous) runOnJS(setLabelsVisible)(visible);
+    },
+  );
+
+  const arrowsOnAll = edges.length <= ARROWS_ON_ALL_EDGES_MAX;
+
   return (
     <View style={styles.viewport} onLayout={onLayout}>
       <GestureDetector gesture={composed}>
-        <Animated.View style={[{ width, height, position: 'absolute' }, canvasStyle]}>
+        <Animated.View
+          // Rasterizing the canvas turns pan/zoom into a texture transform instead of
+          // re-drawing hundreds of Views per frame — but only while a gesture is live and
+          // only within the layer budget above. Slight blur while pinch-zooming past the
+          // captured resolution is the accepted trade.
+          renderToHardwareTextureAndroid={rasterizable && gestureActive}
+          style={[{ width, height, position: 'absolute' }, canvasStyle]}>
           {edges.map((edge, i) => {
             const a = positions[edge.source];
             const b = positions[edge.target];
             if (!a || !b) return null;
             const dimmed = !!highlightIds && (!highlightIds.has(edge.source) || !highlightIds.has(edge.target));
-            return <EdgeLine key={`${edge.source}>${edge.target}:${i}`} a={a} b={b} significant={edge.significant} dimmed={dimmed} />;
+            return (
+              <EdgeLine
+                key={`${edge.source}>${edge.target}:${i}`}
+                a={a}
+                b={b}
+                significant={edge.significant}
+                showArrow={arrowsOnAll || edge.significant}
+                dimmed={dimmed}
+              />
+            );
           })}
           {nodes.map((node) => {
             const pos = positions[node.id];
@@ -125,6 +195,7 @@ export function GraphCanvas({
                 y={pos.y}
                 selected={node.id === selectedId}
                 dimmed={dimmed}
+                labelsVisible={labelsVisible}
                 onSelectNode={onSelectNode}
               />
             );
@@ -152,11 +223,13 @@ const EdgeLine = memo(function EdgeLine({
   a,
   b,
   significant,
+  showArrow,
   dimmed,
 }: {
   a: { x: number; y: number };
   b: { x: number; y: number };
   significant: boolean;
+  showArrow: boolean;
   dimmed: boolean;
 }) {
   const dx = b.x - a.x;
@@ -190,6 +263,7 @@ const EdgeLine = memo(function EdgeLine({
           transform: [{ rotate: `${angle}rad` }],
         }}
       />
+      {showArrow ? (
       <View
         pointerEvents="none"
         style={{
@@ -208,6 +282,7 @@ const EdgeLine = memo(function EdgeLine({
           transform: [{ rotate: `${angle + Math.PI / 2}rad` }],
         }}
       />
+      ) : null}
     </>
   );
 });
@@ -218,6 +293,7 @@ const NodeCircle = memo(function NodeCircle({
   y,
   selected,
   dimmed,
+  labelsVisible,
   onSelectNode,
 }: {
   node: GraphNode;
@@ -225,6 +301,7 @@ const NodeCircle = memo(function NodeCircle({
   y: number;
   selected: boolean;
   dimmed: boolean;
+  labelsVisible: boolean;
   onSelectNode: (node: GraphNode) => void;
 }) {
   const r = nodeRadius(node);
@@ -236,7 +313,7 @@ const NodeCircle = memo(function NodeCircle({
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text
   // layouts, the single biggest per-node cost when the whole graph is shown.
-  const showLabel = isProject || isSignificant || selected;
+  const showLabel = selected || (labelsVisible && (isProject || isSignificant));
 
   return (
     <Pressable

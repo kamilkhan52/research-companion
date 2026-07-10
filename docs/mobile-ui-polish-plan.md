@@ -105,13 +105,28 @@ Already in place: discussion Markdown routes `rc-paper:<slug>` links through
    `rc-paper:<slug>` links when referencing project papers in notes blocks, which makes the
    deterministic pass mostly unnecessary over time. Prompt-file change only.
 
-## Backlog (spec'd later, not scheduled)
+## Phase D — graph performance (static wins first)
 
-- **Graph performance plan** (fps/smoothness/responsiveness): profile first (Perf monitor +
-  `react-native-performance`); candidates: memoized node/edge subtrees keyed by layout
-  signature (already partial), moving node Pressables out of the animated subtree, viewport
-  culling at low zoom, label LOD, and — if RN Views stay too slow — a Skia canvas
-  (`@shopify/react-native-skia`, needs a dev-client rebuild).
+Ship the changes that don't need device profiling, then profile only if the Map still feels
+choppy on the phone:
+
+1. **Hardware rasterization** (`renderToHardwareTextureAndroid` on the animated canvas):
+   pan/zoom becomes a texture transform instead of re-drawing hundreds of Views per frame.
+   Gated twice: only while a gesture is live (layer allocated on touch-down, released on
+   lift) and only when the full canvas fits a 32 MiB device-pixel layer budget — Android
+   allocates the layer for the whole view, so an unbounded canvas would trade jank for OOM.
+   Accepted trade: slight blur while pinch-zooming past the captured resolution.
+2. **Label level-of-detail**: node labels hide below ~0.5 zoom (unreadable there anyway;
+   each is a laid-out Text). Driven by a `useAnimatedReaction` on the UI-thread scale that
+   flips one JS state only on threshold crossings — never per frame. Selection always labels.
+3. **Arrowhead budget**: arrowheads double the per-edge view count, so graphs over ~120
+   visible edges keep arrowheads only on significant edges.
+
+If still choppy after device verification: profile (Perf monitor), then consider moving node
+Pressables out of the animated subtree, viewport culling, and — as the last resort — a Skia
+canvas (`@shopify/react-native-skia`, which needs the dev-client rebuild batch below).
+
+## Backlog (spec'd later, not scheduled)
 - **Dev-client rebuild batch** (one EAS/local build, grouped so the phone only reinstalls
   once): launcher name "Paradigm", app icon/splash to match the new design language, and any
   new native deps approved by then (e.g. expo-haptics for press feedback, Skia if the graph
