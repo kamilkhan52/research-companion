@@ -9,7 +9,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import config, projects, sessions, store
+from .. import committer, config, projects, sessions, store
+from ..committer import CommitError
 from ..projects import ProjectError
 from . import make_project_router
 
@@ -55,6 +56,32 @@ def rename_project(pid: str, req: ProjectReq):
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"project": meta}
+
+
+@project_router.delete("/papers/{slug}")
+def remove_paper(pid: str, slug: str):
+    """Remove a paper from this project's reading list. Product decision: its notes are KEPT
+    — a marker line is appended so the retained notes say the paper left the list — and the
+    corpus text / session transcript stay on disk (warm start if it is ever re-added).
+
+    This is the one write path besides /approve and notes-save that git-commits directly:
+    the client only calls it after the user's explicit in-app confirmation, so the human
+    approval that invariant 4 requires has already happened. Deterministic and fast (no LLM,
+    no network) ⇒ a plain request, not a background job."""
+    paper = store.get_paper(slug)
+    if paper is None:
+        raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
+    notes_kept = store.has_notes(slug)
+    if notes_kept:
+        store.append_removed_marker(slug)
+    store.remove_entry(slug)
+    try:
+        committer._git("add", "-A")
+        committer._git("commit", "-q", "-m", f"Remove {paper.title} from reading list")
+    except CommitError as e:
+        if "nothing to commit" not in str(e):
+            raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"removed": slug, "notes_kept": notes_kept}
 
 
 @project_router.get("/state")

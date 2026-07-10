@@ -527,3 +527,40 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
     atomic_write_text(rl, "\n".join(new_lines).rstrip() + "\n")
     _parse_cache.pop(str(rl), None)   # a new entry was appended
     return slug
+
+
+# ---- removing a paper ----
+
+def remove_entry(slug: str) -> bool:
+    """Delete the entry's block from reading-list.md (metadata only). Returns False when no
+    entry carries that slug. Everything else the paper left on disk — corpus text, a committed
+    Notes block, session transcript — deliberately stays: it is cheap, keeps the notes'
+    history intact, and makes re-adding the paper later a warm start. Like add_entry, this
+    does NOT git-commit; the removal endpoint commits the human-confirmed change."""
+    target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+    if not target:
+        return False
+    rl = _reading_list()
+    lines = rl.read_text(encoding="utf-8").splitlines()
+    start, end = target["line_index"], target["end_index"]
+    # Trailing blank separator lines belong to the block being removed.
+    while end < len(lines) and not lines[end].strip():
+        end += 1
+    del lines[start:end]
+    atomic_write_text(rl, "\n".join(lines).rstrip() + "\n")
+    _parse_cache.pop(str(rl), None)   # an entry was removed
+    return True
+
+
+def append_removed_marker(slug: str) -> None:
+    """Record inside the paper's retained Notes block that the paper left the reading list
+    (the product decision is keep-notes-on-removal; the marker keeps the retained notes
+    honest when read later). No-op when the paper has no committed notes."""
+    if not has_notes(slug):
+        return
+    p = corpus_path(slug)
+    stamp = datetime.now(UTC).date().isoformat()
+    marker = f"> Removed from the reading list on {stamp}. Notes retained."
+    text = p.read_text(encoding="utf-8")
+    atomic_write_text(p, text.rstrip() + "\n\n" + marker + "\n")
+    _notes_cache.pop(str(p), None)   # content changed — drop the memoized verdict

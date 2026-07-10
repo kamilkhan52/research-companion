@@ -314,6 +314,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/papers/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Paper
+         * @description Remove a paper from this project's reading list. Product decision: its notes are KEPT
+         *     — a marker line is appended so the retained notes say the paper left the list — and the
+         *     corpus text / session transcript stay on disk (warm start if it is ever re-added).
+         *
+         *     This is the one write path besides /approve and notes-save that git-commits directly:
+         *     the client only calls it after the user's explicit in-app confirmation, so the human
+         *     approval that invariant 4 requires has already happened. Deterministic and fast (no LLM,
+         *     no network) ⇒ a plain request, not a background job.
+         */
+        delete: operations["remove_paper_api_projects__pid__papers__slug__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/state": {
         parameters: {
             query?: never;
@@ -1906,6 +1933,38 @@ export interface operations {
                 "application/json": components["schemas"]["NarrateReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_paper_api_projects__pid__papers__slug__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

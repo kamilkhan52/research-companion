@@ -1,7 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { apiGet, apiPost, authHeaders, apiUrl } from './client';
+import { apiDelete, apiGet, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AudioJob,
   AuthConfig,
@@ -100,6 +100,12 @@ export const addPaper = (
   arxiv_id?: string,
   abstract?: string,
 ) => apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, group, arxiv_id, abstract });
+/** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
+ *  the backend git-commits this change — the caller must have shown a confirm first. */
+export const removePaper = (pid: string, slug: string) =>
+  apiDelete<{ removed: string; notes_kept: boolean }>(
+    `${P(pid)}/papers/${encodeURIComponent(slug)}`,
+  );
 
 // Stream endpoint paths (used with streamPost from stream.ts).
 export const streamPaths = (pid: string) => ({
