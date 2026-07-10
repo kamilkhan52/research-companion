@@ -518,6 +518,18 @@ def chat_job_status(job_id: str):
     return {"job": snap}
 
 
+@project_router.post("/chat/jobs/{job_id}/cancel")
+def chat_job_cancel(job_id: str):
+    """Best-effort stop for a running turn (the composer's Stop button). The worker stops at
+    its next event boundary; canonical text already streamed is recorded marked as stopped
+    (an empty partial records nothing). The job settles through its normal done path, so
+    pollers simply see it finish early. Idempotent; a no-op on already-settled jobs."""
+    snap = chat_jobs.request_cancel(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown chat job")
+    return {"job": snap}
+
+
 @project_router.get("/preview/jobs/{job_id}")
 def preview_job_status(job_id: str):
     """Cheap project-scoped poll for one grounded listening cue."""

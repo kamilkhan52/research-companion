@@ -54,6 +54,10 @@ class ChatJob(Job):
     preview_phase: str | None = None
     preview_progress: dict = field(default_factory=dict)
     timings: dict[str, str] = field(default_factory=dict)
+    # Best-effort stop requested by the user. The consume loops check it between runner events,
+    # so the turn ends at the next event boundary; whatever canonical text already streamed is
+    # recorded marked as stopped. The job still settles as 'done' — pollers see it finish early.
+    cancelled: bool = False
 
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
@@ -74,6 +78,19 @@ def active_for(slug: str) -> ChatJob | None:
     """The running job for a session, if any — how a client that navigated away and returned
     finds the turn it left mid-flight."""
     return _registry.active_for(slug)
+
+
+def request_cancel(job_id: str) -> dict | None:
+    """Flag a running turn to stop at its next event boundary (no-op on settled jobs). Returns
+    the job's snapshot, or None if the id is unknown. The actual stop happens in the worker
+    thread: abandoning the runner iterator closes it, which tears down the model stream."""
+    job = _registry.get(job_id)  # project-scoped, like get_job/snapshot
+    if job is None:
+        return None
+    with _registry.lock:
+        if job.status == "running":
+            job.cancelled = True
+    return snapshot(job_id)
 
 
 def start_turn(slug: str, runner: RunnerFn | None = None,
@@ -115,6 +132,9 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             final_text = asyncio.run(_consume_async(job, events))
         else:
             final_text = _consume_sync(job, events)
+        if job.cancelled:
+            _record_cancelled(job, final_text)
+            return
         turn = agent.parse(final_text)
         with _registry.lock:
             job.timings["analysis_complete"] = now_iso()
@@ -245,6 +265,8 @@ async def _consume_async(job: ChatJob, events: AsyncIterator[dict]) -> str:
     sent = 0
     final_text = ""
     async for ev in events:
+        if job.cancelled:
+            break  # abandoning the iterator closes it (loop shutdown), ending the model stream
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]
@@ -256,6 +278,8 @@ def _consume_sync(job: ChatJob, events: Iterable[dict]) -> str:
     sent = 0
     final_text = ""
     for ev in events:
+        if job.cancelled:
+            break  # abandoning the iterator closes it, ending the model stream
         sent = _apply(job, ev, pieces, sent)
         if ev["type"] == "final":
             final_text = ev["text"]
@@ -343,6 +367,30 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
         job.preview_job_ids.append(cue_job.id)
     job._preview_next_sentence = len(completed)
     job._preview_last_started = now
+
+
+STOP_MARKER = "> Stopped by you — the response above is partial."
+
+
+def _record_cancelled(job: ChatJob, partial_text: str) -> None:
+    """Settle a stopped turn: record whatever canonical text already streamed, marked as
+    stopped, and skip audio/cue work entirely. An empty partial records nothing — the user's
+    message simply has no reply yet, exactly as if the turn had never started. A stopped
+    partial never advances session state (a half-streamed proposal is not a proposal)."""
+    with _registry.lock:
+        job.timings["analysis_complete"] = now_iso()
+    turn = agent.parse(partial_text) if partial_text.strip() else None
+    if turn and turn.canonical.strip():
+        turn.canonical = turn.canonical.rstrip() + f"\n\n{STOP_MARKER}"
+        turn.proposed_commit = None
+        _, assistant_index = sessions.record_assistant(
+            job.slug, turn, delivery_mode=job.delivery_mode, chat_job_id=job.id)
+        with _registry.lock:
+            job.turn = turn.to_dict()
+            job.assistant_index = assistant_index
+    with _registry.lock:
+        job.state = sessions.get_state(job.slug)
+    _suppress_previews(job)
 
 
 def _suppress_previews(job: ChatJob) -> None:

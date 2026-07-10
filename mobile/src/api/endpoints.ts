@@ -136,6 +136,10 @@ export const getChatJob = (pid: string, id: string) =>
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string) =>
   apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+/** Best-effort stop for a running turn: the partial response is recorded marked as stopped
+ * and the job settles through its normal done path (keep polling; it finishes early). */
+export const cancelChatJob = (pid: string, id: string) =>
+  apiPost<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}/cancel`, {});
 /** Poll one independently generated grounded listening cue. */
 export const getPreviewJob = (pid: string, id: string) =>
   apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`);

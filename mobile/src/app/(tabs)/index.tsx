@@ -1,5 +1,5 @@
 // Library — the home tab. Project-scoped: a project switcher pill over a continue-reading
-// hero, project progress, status filters, and the grouped list of papers in the active
+// hero, project progress, status filters, and the flat list of papers in the active
 // project. Tapping a paper opens its Discussion. Layout follows Figma frame `01 · Library`.
 
 import { useRouter } from 'expo-router';
@@ -97,8 +97,11 @@ export default function LibraryScreen() {
     for (const p of papers) c[filterBucket(p)] += 1;
     return c;
   }, [papers]);
-  const grouped = useMemo(
-    () => groupPapers(filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter)),
+  // Flat list, no reading-list category headers (polish plan F.6): the sections were
+  // hand-written for the first project and no reliable categorization method exists for new
+  // ones — `Paper.group` stays in the API for when one is defined.
+  const visiblePapers = useMemo(
+    () => (filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter)),
     [papers, filter],
   );
   const continueSession = recentQuery.data?.find(
@@ -222,28 +225,21 @@ export default function LibraryScreen() {
             body="Describe your research goals to get suggested foundational readings from arXiv — or bring a specific paper by name or link."
             action={<Button title="Find foundational papers" onPress={() => router.push('/discover')} />}
           />
-        ) : grouped.length === 0 ? (
+        ) : visiblePapers.length === 0 ? (
           <Text variant="caption" style={{ textAlign: 'center', paddingVertical: space.xl }}>
             No papers match this filter.
           </Text>
         ) : (
-          grouped.map(({ group, papers: papersInGroup }) => (
-            <View key={group} style={{ marginBottom: space.lg }}>
-              <Text variant="overline" style={styles.groupLabel}>
-                {group}
-              </Text>
-              <View style={{ gap: space.sm }}>
-                {papersInGroup.map((p) => (
-                  <PaperRow
-                    key={p.slug}
-                    paper={p}
-                    onPress={() => router.push(`/paper/${encodeURIComponent(p.slug)}`)}
-                    onRemove={() => confirmRemove(p)}
-                  />
-                ))}
-              </View>
-            </View>
-          ))
+          <View style={{ gap: space.sm }}>
+            {visiblePapers.map((p) => (
+              <PaperRow
+                key={p.slug}
+                paper={p}
+                onPress={() => router.push(`/paper/${encodeURIComponent(p.slug)}`)}
+                onRemove={() => confirmRemove(p)}
+              />
+            ))}
+          </View>
         )}
       </ScrollView>
 
@@ -393,21 +389,6 @@ function Empty({ heading, body, action }: { heading: string; body: string; actio
   );
 }
 
-interface Group {
-  group: string;
-  papers: Paper[];
-}
-
-function groupPapers(papers: Paper[]): Group[] {
-  const map = new Map<string, Paper[]>();
-  for (const p of papers) {
-    const g = p.group || 'Ungrouped';
-    if (!map.has(g)) map.set(g, []);
-    map.get(g)!.push(p);
-  }
-  return Array.from(map, ([group, ps]) => ({ group, papers: ps }));
-}
-
 const styles = StyleSheet.create({
   projectPill: {
     flexDirection: 'row',
@@ -438,7 +419,6 @@ const styles = StyleSheet.create({
   progressCard: { gap: space.md, marginBottom: space.md },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   filters: { marginBottom: space.lg, flexGrow: 0 },
-  groupLabel: { marginBottom: space.sm, marginLeft: space.xs },
   paperRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   paperMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },

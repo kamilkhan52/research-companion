@@ -10,14 +10,12 @@
 // with listen/copy, the live turn's interleaved text/tool items, and the lifecycle-dependent
 // input toolbar (reply → draft notes → request changes / approve → committed).
 
-import { ActionSheetProvider, useActionSheet } from '@expo/react-native-action-sheet';
 import {
   Bubble,
   Chat,
   InputToolbar,
   MessageText,
   type BubbleProps,
-  type IChatContext,
   type InputToolbarProps,
   type LeftRightStyle,
   type MessageTextProps,
@@ -220,7 +218,6 @@ export default function DiscussionScreen() {
 
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
-    <ActionSheetProvider>
     <Screen edges={['top']}>
       <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
       <TopBar
@@ -301,7 +298,6 @@ export default function DiscussionScreen() {
         />
       )}
     </Screen>
-    </ActionSheetProvider>
     </LinkHandlerContext.Provider>
   );
 }
@@ -662,12 +658,13 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
 
-  // Long-press a message for its actions (copy everywhere; edit on user replies).
-  const onLongPressMessage = useCallback((context: unknown, message: DiscussionMessage) => {
+  // Long-press a message for its actions (copy everywhere; edit on user replies). Rendered
+  // through the app's own OptionsSheet — the native action sheet ignores the design language
+  // (polish plan F.5: OptionsSheet is the only menu idiom anywhere in the app).
+  const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
+  const onLongPressMessage = useCallback((_context: unknown, message: DiscussionMessage) => {
     const entry = message.entry;
     if (!entry) return;
-    const sheet = (context as IChatContext | undefined)?.actionSheet?.();
-    if (!sheet) return;
     const copyText = entry.role === 'user' ? entry.text : entry.canonical;
     // No editing once committed: that state's toolbar has no composer, so an edit could
     // neither be typed nor cancelled (reopen the discussion instead).
@@ -677,16 +674,24 @@ function DiscussionThread({
       !stream.streaming &&
       !editing &&
       message.replyIndex != null;
-    const options = canEdit ? ['Copy', 'Edit & regenerate', 'Cancel'] : ['Copy', 'Cancel'];
-    sheet.showActionSheetWithOptions(
-      { options, cancelButtonIndex: options.length - 1 },
-      (i?: number) => {
-        if (i === 0) void Clipboard.setStringAsync(copyText);
-        else if (i === 1 && canEdit) {
-          startEdit(message.replyIndex!, entry.text, message.transcriptIndex!);
-        }
+    const options: SheetOption[] = [
+      {
+        key: 'copy',
+        title: 'Copy',
+        icon: 'copy',
+        onPress: () => void Clipboard.setStringAsync(copyText),
       },
-    );
+    ];
+    if (canEdit) {
+      options.push({
+        key: 'edit',
+        title: 'Edit & regenerate',
+        subtitle: 'Replaces the responses after this message',
+        icon: 'edit-3',
+        onPress: () => startEdit(message.replyIndex!, entry.text, message.transcriptIndex!),
+      });
+    }
+    setMsgMenu(options);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, stream.streaming, transcript]);
 
@@ -732,6 +737,18 @@ function DiscussionThread({
 
   const renderSend = useCallback(() => {
     if (state === 'notes_drafted' && !editing) return null;
+    // While a response is generating, the send slot becomes Stop (polish plan F.1): the
+    // server records whatever streamed so far marked as stopped, and the turn settles early.
+    if (stream.streaming) {
+      return (
+        <Pressable
+          onPress={() => void stream.stop()}
+          style={styles.sendBtn}
+          accessibilityLabel="Stop generating">
+          <Icon name="square" size={15} color={colors.mintInk} />
+        </Pressable>
+      );
+    }
     const canSend = !!inputText.trim() && !disabled;
     return (
       <Pressable
@@ -746,7 +763,7 @@ function DiscussionThread({
         />
       </Pressable>
     );
-  }, [disabled, editing, handleSend, inputText, state]);
+  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop]);
 
   const renderAccessory = useCallback(() => {
     if (editing) {
@@ -809,17 +826,12 @@ function DiscussionThread({
       );
     }
     return (
-      <View>
-        <Text variant="caption" style={styles.disclaimer}>
-          Research Companion can make mistakes — check sources.
-        </Text>
-        <InputToolbar
-          {...props}
-          containerStyle={styles.toolbar}
-          renderSend={renderSend}
-          renderAccessory={renderAccessory}
-        />
-      </View>
+      <InputToolbar
+        {...props}
+        containerStyle={styles.toolbar}
+        renderSend={renderSend}
+        renderAccessory={renderAccessory}
+      />
     );
   }, [renderAccessory, renderSend, state]);
 
@@ -840,6 +852,7 @@ function DiscussionThread({
       : 'Ask about this paper…';
 
   return (
+    <>
     <Chat<DiscussionMessage>
       messages={messages}
       user={DISCUSSION_USER}
@@ -856,6 +869,10 @@ function DiscussionThread({
       disableKeyboardProvider
       keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
       isScrollToBottomEnabled
+      // The library's default is a bare "V" text glyph on a white circle — restyle it into
+      // the app's circular icon-button idiom.
+      scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={colors.mint} />}
+      scrollToBottomContentStyle={styles.scrollToBottomBtn}
       isDayAnimationEnabled={false}
       renderDay={() => null}
       renderTime={() => null}
@@ -881,6 +898,12 @@ function DiscussionThread({
       }}
       {...ROW_STYLES_PROP}
     />
+    <OptionsSheet
+      visible={!!msgMenu}
+      onClose={() => setMsgMenu(null)}
+      options={msgMenu ?? []}
+    />
+    </>
   );
 }
 
@@ -1146,12 +1169,12 @@ function AssistantBody({
 }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
-  const { showActionSheetWithOptions } = useActionSheet();
 
   const prep = audio.prep?.id === audioId ? audio.prep : null;
   const current = audio.currentId === audioId;
   const audioError = audio.errorById[audioId] ?? entry.audio_error;
   const [copied, setCopied] = useState(false);
+  const [retryMenu, setRetryMenu] = useState(false);
   const canonical = entry.canonical;
 
   // Listen -> prepare + play; on the loaded track it's a pause/resume toggle; after a
@@ -1168,14 +1191,22 @@ function AssistantBody({
     setTimeout(() => setCopied(false), 1500);
   }
 
-  function openRetryMenu() {
-    const options = ['Retry', ...favorites.map((m) => `Retry with ${m.label}`), 'Cancel'];
-    const cancelButtonIndex = options.length - 1;
-    showActionSheetWithOptions({ options, cancelButtonIndex }, (i) => {
-      if (i == null || i === cancelButtonIndex) return;
-      onRetry(entry.assistant_index, i === 0 ? undefined : favorites[i - 1].id);
-    });
-  }
+  // Themed retry menu (OptionsSheet, per polish plan F.5 — no native action sheets anywhere).
+  const retryOptions: SheetOption[] = [
+    {
+      key: 'retry',
+      title: 'Retry',
+      subtitle: 'Regenerate with the current model',
+      icon: 'rotate-ccw',
+      onPress: () => onRetry(entry.assistant_index),
+    },
+    ...favorites.map((m) => ({
+      key: `retry-${m.id}`,
+      title: `Retry with ${m.label}`,
+      icon: 'zap' as IconName,
+      onPress: () => onRetry(entry.assistant_index, m.id),
+    })),
+  ];
 
   return (
     <View style={styles.assistantBody}>
@@ -1205,10 +1236,16 @@ function AssistantBody({
         <MsgAction
           icon="rotate-ccw"
           label="Retry"
-          onPress={openRetryMenu}
+          onPress={() => setRetryMenu(true)}
           accessibilityLabel="Retry this response, optionally with a different model"
         />
       </View>
+      <OptionsSheet
+        visible={retryMenu}
+        onClose={() => setRetryMenu(false)}
+        title="Retry response"
+        options={retryOptions}
+      />
     </View>
   );
 }
@@ -1415,8 +1452,16 @@ const styles = StyleSheet.create({
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
   errorCard: { borderColor: colors.danger, margin: space.md },
+  // Overrides the library's white default circle (its content is our Icon; see
+  // scrollToBottomComponent) into the app's circular icon-button idiom.
+  scrollToBottomBtn: {
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    elevation: 0,
+    shadowOpacity: 0,
+  },
   // ---- toolbar ----
-  disclaimer: { textAlign: 'center', paddingTop: 6, backgroundColor: colors.bg },
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: colors.bg,

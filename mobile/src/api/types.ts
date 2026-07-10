@@ -213,6 +213,8 @@ export interface ChatJob {
   preview_phase: string | null;
   preview_progress: Record<string, unknown>;
   timings: Record<string, string>;
+  /** True once a best-effort stop was requested; the job still settles as 'done'. */
+  cancelled: boolean;
 }
 
 /** One short, grounded listening cue generated independently from a live chat turn. */
