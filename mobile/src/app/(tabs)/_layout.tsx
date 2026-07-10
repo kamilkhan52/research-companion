@@ -10,6 +10,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { NowPlaying } from '@/components/NowPlaying';
+import { selectionTap } from '@/lib/haptics';
 import { Text, type IconName } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
 
@@ -44,6 +45,7 @@ function TabBar({ state, navigation }: TabBarProps) {
                   canPreventDefault: true,
                 });
                 if (!active && !event.defaultPrevented) {
+                  selectionTap();
                   navigation.navigate(route.name);
                 }
               }}
