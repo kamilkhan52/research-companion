@@ -53,7 +53,8 @@ export default function LibraryScreen() {
   const router = useRouter();
   const { activePid, setActivePid, ready } = useActiveProject();
   const hasUrl = !!useBaseUrl();
-  const { data: projects } = useProjects();
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data;
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
@@ -190,7 +191,18 @@ export default function LibraryScreen() {
           </ScrollView>
         ) : null}
 
-        {!activePid ? (
+        {!activePid && projectsQuery.isError ? (
+          // A baked default URL means fresh installs start "connected" — when the server is
+          // unreachable (phone off the tailnet, backend down) that must read as a network
+          // problem with a retry, not as an empty account.
+          <Empty
+            heading="Couldn't reach the server"
+            body={`${(projectsQuery.error as Error)?.message ?? 'Request failed.'}\n\nCheck that you're connected (Tailscale on?) or set a different server URL in Settings.`}
+            action={<Button title="Retry" onPress={() => projectsQuery.refetch()} />}
+          />
+        ) : !activePid && projectsQuery.isLoading ? (
+          <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xxl }} />
+        ) : !activePid ? (
           <Empty
             heading="No project selected"
             body="Choose a research project, or create a new one to start reading."

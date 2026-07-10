@@ -143,8 +143,19 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
      undefined (reading 'body')") — that's ngrok-side, not the code. When it's down, fall back to
      putting the phone and Mac on the **same network** (e.g. Mac joins the phone's hotspot) and
      use the plain-LAN `exp://10.x.x.x:8081` URL — no ngrok needed.
-  Both tunnel URLs are ephemeral, so a device test = restart `./run.sh`, (re)start both tunnels,
-  paste the fresh backend URL in Settings, connect the fresh `exp://` in the launcher, reload.
+  **Stable backend path (preferred since 2026-07): Tailscale.** The phone (oneplus-15) and
+  the dev Mac are both on the tailnet, so the backend has a PERMANENT address —
+  `http://100.83.161.127:8000` (the Mac mini's tailnet IP; MagicDNS equivalent
+  `http://kamils-mac-mini.tail65e110.ts.net:8000`). It is baked into the app as
+  `app.json → extra.apiBaseUrl`, so a fresh install (e.g. an EAS build with empty
+  AsyncStorage) connects with no setup; a URL saved in Settings still overrides it.
+  HTTP-over-tailnet is WireGuard-encrypted on the wire and tailnet-private;
+  `expo-build-properties` sets `usesCleartextTraffic` so release/EAS profiles allow it. The
+  cloudflared quick tunnel above remains the fallback for a device NOT on the tailnet (its
+  URL is ephemeral). If Tailscale HTTPS certs get enabled in the admin console,
+  `tailscale serve` can upgrade this to a real https URL. The Metro `exp://` tunnel is still
+  per-session, so a device test = restart `./run.sh`, start the Metro tunnel, reload — the
+  backend URL takes care of itself on-tailnet.
 
 ## Conventions
 
