@@ -60,6 +60,24 @@ def test_continue_discussion_reopens_committed_without_dropping_records(temp_pro
     assert sessions.read_records(slug) == before  # nothing dropped, nothing added
 
 
+def test_reopen_rejects_committed_sessions(temp_project):
+    """Review round 1: /reopen truncates draft records, so a committed session (whose final
+    records ARE the accepted finish + proposal) must 409 instead of losing them."""
+    slug = _started()
+    sessions.record_user(slug, prompts.get("finish_instruction"), kind="finish")
+    sessions.set_state(slug, "committed")
+    before = sessions.read_records(slug)
+    with pytest.raises(HTTPException) as e:
+        session_routes.reopen(session_routes.FinishReq(slug=slug))
+    assert e.value.status_code == 409
+    assert sessions.read_records(slug) == before  # nothing truncated
+    # And in_discussion (no draft awaiting review) is equally a no-op with a clear 409.
+    sessions.set_state(slug, "in_discussion")
+    with pytest.raises(HTTPException) as e:
+        session_routes.reopen(session_routes.FinishReq(slug=slug))
+    assert e.value.status_code == 409
+
+
 def test_continue_discussion_rejects_non_committed_states(temp_project):
     with pytest.raises(HTTPException) as e:
         session_routes.continue_discussion(session_routes.FinishReq(slug="ghost"))

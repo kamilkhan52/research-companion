@@ -809,6 +809,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/chat/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Job Cancel
+         * @description Best-effort stop for a running turn (the composer's Stop button). The worker stops at
+         *     its next event boundary; canonical text already streamed is recorded marked as stopped
+         *     (an empty partial records nothing). The job settles through its normal done path, so
+         *     pollers simply see it finish early. Idempotent; a no-op on already-settled jobs.
+         */
+        post: operations["chat_job_cancel_api_projects__pid__chat_jobs__job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/preview/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -896,9 +919,56 @@ export interface paths {
         /**
          * Reopen
          * @description NotesDrafted -> InDiscussion: discard the rejected draft and go back to discussing,
-         *     so the wrap-up step can be redone (e.g. after editing a prompt).
+         *     so the wrap-up step can be redone (e.g. after editing a prompt). Gated to notes_drafted
+         *     ONLY — on a committed session the same truncation would delete the accepted finish/
+         *     proposal records from the log (a stale client must get a 409, not silent data loss);
+         *     committed sessions continue via /continue_discussion, which touches nothing.
          */
         post: operations["reopen_api_projects__pid__reopen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/continue_discussion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Continue Discussion
+         * @description Committed -> InDiscussion (polish plan H.2): bring the composer back after 'Finish
+         *     reading' without touching anything recorded — committed notes stay committed, the
+         *     transcript stands, and a later finish proposes a fresh draft through the normal flow.
+         *     Deterministic state change, so a plain request (invariant 1 does not apply).
+         */
+        post: operations["continue_discussion_api_projects__pid__continue_discussion_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/session_mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Session Mode
+         * @description Switch the session's reading mode (polish plan H.3) — applies to every subsequent
+         *     turn. One tap from the overflow menu; deterministic, so a plain request.
+         */
+        post: operations["session_mode_api_projects__pid__session_mode_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1210,6 +1280,8 @@ export interface components {
             slug: string;
             /** Prompt */
             prompt?: string | null;
+            /** Mode */
+            mode?: ("balanced" | "background" | "technical" | "detailed") | null;
         };
         /** DiscoverReq */
         DiscoverReq: {
@@ -1258,6 +1330,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** ModeReq */
+        ModeReq: {
+            /** Slug */
+            slug: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "balanced" | "background" | "technical" | "detailed";
         };
         /** NarrateReq */
         NarrateReq: {
@@ -2838,6 +2920,38 @@ export interface operations {
             };
         };
     };
+    chat_job_cancel_api_projects__pid__chat_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     preview_job_status_api_projects__pid__preview_jobs__job_id__get: {
         parameters: {
             query?: never;
@@ -2987,6 +3101,76 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["FinishReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    continue_discussion_api_projects__pid__continue_discussion_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinishReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_mode_api_projects__pid__session_mode_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModeReq"];
             };
         };
         responses: {

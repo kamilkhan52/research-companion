@@ -581,9 +581,16 @@ def request_changes(req: RequestChangesReq):
 @project_router.post("/reopen")
 def reopen(req: FinishReq):
     """NotesDrafted -> InDiscussion: discard the rejected draft and go back to discussing,
-    so the wrap-up step can be redone (e.g. after editing a prompt)."""
-    if not sessions.get_state(req.slug):
+    so the wrap-up step can be redone (e.g. after editing a prompt). Gated to notes_drafted
+    ONLY — on a committed session the same truncation would delete the accepted finish/
+    proposal records from the log (a stale client must get a 409, not silent data loss);
+    committed sessions continue via /continue_discussion, which touches nothing."""
+    state = sessions.get_state(req.slug)
+    if not state:
         raise HTTPException(status_code=409, detail="No active session for this paper.")
+    if state != "notes_drafted":
+        raise HTTPException(status_code=409,
+                            detail="Nothing to reopen — no draft is awaiting review.")
     sessions.reopen_discussion(req.slug)
     return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
 
