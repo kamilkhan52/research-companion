@@ -62,3 +62,31 @@ def test_canonical_prefix_holds_back_partial_tag_then_converts():
 def test_canonical_prefix_holds_back_partial_closing_tag():
     base = "### CANONICAL ###\nProse. "
     assert agent.canonical_prefix(base + "</sear") == "Prose."
+
+
+def test_holdback_never_swallows_ordinary_prose():
+    """Review round 1: the holdback must not suppress legitimate live text. Comparisons,
+    generics, HTML mentions, and name-like words stream through in full."""
+    base = "### CANONICAL ###\n"
+    for tail in (
+        "For x < sigma is small.",       # comparison + spaced '<'
+        "the <search strategy we use",   # tool name followed by a non-attribute word
+        "use <browser automation",       # name-prefix outgrown into another word
+        "a Vec<f32> of values",
+        "HTML like <em>hi</em> renders",
+        "x<sigma denotes the bound",     # unspaced comparison, name prefix outgrown
+    ):
+        assert agent.canonical_prefix(base + tail) == tail
+
+    # Momentary holdbacks that resolve as more text arrives (could still become a tag).
+    assert agent.canonical_prefix(base + "see <") == "see"
+    assert agent.canonical_prefix(base + "see <sear") == "see"
+    assert agent.canonical_prefix(base + "see <search for=") == "see"
+
+
+def test_no_marker_fallback_is_also_cleaned():
+    """Review round 1: the protocol-drift path (no section markers at all) must apply the
+    same cleanup before the raw text is persisted and narrated."""
+    turn = agent.parse('Plain answer. <search for="kv cache"> More.')
+    assert "<search" not in turn.canonical
+    assert "*Searched: kv cache*" in turn.canonical

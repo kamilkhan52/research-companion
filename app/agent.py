@@ -48,8 +48,10 @@ def _parse(content: str) -> Turn:
     content = content if isinstance(content, str) else (content or "")
     matches = list(_SECTION_RE.finditer(content))
     if not matches:
-        # Model ignored the protocol: treat the whole thing as the canonical record.
-        return Turn(role="assistant", canonical=content.strip(), state_signal="in_discussion")
+        # Model ignored the protocol: treat the whole thing as the canonical record. This
+        # protocol-drift path needs the same pseudo-tool-tag cleanup as the marked path.
+        return Turn(role="assistant", canonical=strip_pseudo_tool_tags(content.strip()),
+                    state_signal="in_discussion")
     sections: dict[str, str] = {}
     for i, m in enumerate(matches):
         name = m.group(1)
@@ -113,24 +115,42 @@ def run_turn(slug: str, history: list[dict], model: str | None = None) -> Turn:
 # `<search for="...">` runs inside the canonical answer. Convert each to a muted one-line
 # status instead of shipping raw markup to the reader (and to the narration model).
 
+# The tag shape is strict — name immediately after '<', a known attribute immediately after
+# the name — because every observed leak looks exactly like `<search for="...">`, and a
+# narrow "what counts as a tag" keeps the streaming holdback below from ever needing to
+# suppress ordinary prose ('x < sigma', 'the <search strategy', 'Vec<f32>').
+_TOOL_TAG_NAMES = ("search", "web_search", "fetch", "web_fetch", "browse", "lookup")
+_NAMES_ALT = "|".join(_TOOL_TAG_NAMES)
+_ATTRS_ALT = "for|query|q|url|urls"
 _PSEUDO_TOOL_RE = re.compile(
-    r"""<\s*(?P<name>search|web_search|fetch|web_fetch|browse|lookup)\b[^<>]*?
-        (?:for|query|q|url|urls)\s*=\s*"(?P<arg>[^"]*)"[^<>]*>
-        (?:\s*</\s*(?P=name)\s*>)?""",
+    r"""<(?P<name>""" + _NAMES_ALT + r""")\s+
+        (?:""" + _ATTRS_ALT + r""")\s*=\s*"(?P<arg>[^"]*)"[^<>]*>
+        (?:\s*</(?P=name)\s*>)?""",
     re.I | re.X)
 # An orphan closing tag (its opener was already converted, or never existed).
-_PSEUDO_TOOL_CLOSE_RE = re.compile(
-    r"</\s*(?:search|web_search|fetch|web_fetch|browse|lookup)\s*>", re.I)
-# A tag still streaming in (no closing '>') — held back by canonical_prefix the same way a
-# forming section marker is, so readers never see half a tag that later disappears. Matches
-# any PREFIX of a tool name (the name itself may still be arriving: '</sear'); a legit '<'
-# followed by anything that isn't the start of a tool name streams through untouched.
-_TOOL_TAG_NAMES = ("search", "web_search", "fetch", "web_fetch", "browse", "lookup")
+_PSEUDO_TOOL_CLOSE_RE = re.compile(r"</(?:" + _NAMES_ALT + r")\s*>", re.I)
+# A tag still streaming in (no '>' yet) — held back by canonical_prefix the same way a
+# forming section marker is, so the visible prefix stays append-only (never emit text that a
+# later conversion would rewrite). Held back iff the tail could still BECOME a matching tag:
+#   <          </se        <search        <search for        <search for="quer      </search
+# Anything else after '<' (a non-name word, 'x<sigma' once it outgrows a name prefix, a name
+# followed by a non-attribute word like '<search strategy') streams through untouched — and
+# by construction the strict _PSEUDO_TOOL_RE can never match it later.
 _TOOL_NAME_PREFIXES = "|".join(sorted(
     {name[:i] for name in _TOOL_TAG_NAMES for i in range(1, len(name) + 1)},
     key=len, reverse=True))
+_ATTR_PREFIXES = "|".join(sorted(
+    {attr[:i] for attr in ("for", "query", "q", "url", "urls") for i in range(1, len(attr) + 1)},
+    key=len, reverse=True))
 _PSEUDO_TOOL_PARTIAL_RE = re.compile(
-    r"<\s*(?:/\s*)?(?:" + _TOOL_NAME_PREFIXES + r")[a-z_]*(?:\s[^<>]*|=[^<>]*)?$", re.I)
+    r"<(?:"
+    r"/(?:" + _TOOL_NAME_PREFIXES + r")?"                      # closing tag forming
+    r"|(?:" + _NAMES_ALT + r")\s+(?:"                          # complete name + attrs arriving
+    r"(?:" + _ATTRS_ALT + r")\s*=\s*(?:\"[^<>]*)?"             #   attr= (value may be open)
+    r"|(?:" + _ATTR_PREFIXES + r")"                            #   attr name still typing
+    r")?"
+    r"|(?:" + _TOOL_NAME_PREFIXES + r")"                       # opening name still typing
+    r")?$", re.I)
 _FENCE_SPLIT_RE = re.compile(r"(```.*?```)", re.S)
 
 

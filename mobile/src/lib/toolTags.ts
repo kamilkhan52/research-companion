@@ -5,11 +5,13 @@
 
 const NAMES = 'search|web_search|fetch|web_fetch|browse|lookup';
 
+// Strict tag shape, mirroring the backend: name immediately after '<', known attribute
+// immediately after the name — so ordinary prose with '<' never converts.
 const TAG_RE = new RegExp(
-  `<\\s*(${NAMES})\\b[^<>]*?(?:for|query|q|url|urls)\\s*=\\s*"([^"]*)"[^<>]*>(?:\\s*</\\s*\\1\\s*>)?`,
+  `<(${NAMES})\\s+(?:for|query|q|url|urls)\\s*=\\s*"([^"]*)"[^<>]*>(?:\\s*</\\1\\s*>)?`,
   'gi',
 );
-const CLOSE_RE = new RegExp(`</\\s*(?:${NAMES})\\s*>`, 'gi');
+const CLOSE_RE = new RegExp(`</(?:${NAMES})\\s*>`, 'gi');
 const FENCE_SPLIT_RE = /(```[\s\S]*?```)/;
 
 /** Convert leaked tool-call markup to `*Searched: …*` status lines, outside code fences. */
