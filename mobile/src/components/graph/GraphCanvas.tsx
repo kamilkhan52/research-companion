@@ -119,11 +119,14 @@ export function GraphCanvas({
       translateX.value = startX.value + e.translationX;
       translateY.value = startY.value + e.translationY;
     })
-    .onEnd((e) => {
+    .onEnd((e, success) => {
       // Momentum (polish plan J.2): glide with the release velocity like a scroll view —
       // essential when panning zoomed-in — clamped so a fling can't strand the canvas
       // fully off-screen. Bounds derive from screen-space canvas extents: the view scales
       // about its own center C, so its edges sit at t + C ± s·(size/2).
+      // Only on a REAL release: a second finger landing cancels this pan (maxPointers 1,
+      // success=false) and a decay started there would race the pinch's translate writes.
+      if (!success) return;
       const s = scale.value;
       const minX = FLING_KEEP_VISIBLE_PX - width / 2 - (s * width) / 2;
       const maxX = viewport.w - FLING_KEEP_VISIBLE_PX - width / 2 + (s * width) / 2;
