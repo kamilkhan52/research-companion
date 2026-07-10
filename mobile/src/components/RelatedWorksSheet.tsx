@@ -47,7 +47,11 @@ export function RelatedWorksSheet({
               Nothing yet — build the reference graph to populate this menu.
             </Text>
           ) : (
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: '100%' }}>
+            // flexShrink (not a % maxHeight) is what actually bounds the ScrollView here:
+            // the sheet is content-sized under a maxHeight cap, so a percentage resolves
+            // against an unconstrained parent and the list silently refuses to scroll
+            // (polish plan H.4 — the on-device "can't scroll related works" bug).
+            <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1 }}>
               <View style={{ gap: space.sm, paddingBottom: space.xl }}>
                 {related.data.map((work) => (
                   <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />

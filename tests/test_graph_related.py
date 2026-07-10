@@ -52,3 +52,34 @@ def test_related_ranked_and_capped(temp_project):
 
 def test_related_empty_without_graph(temp_project):
     assert graph.related_works_for("p") == []
+
+
+def test_externals_keep_slots_when_project_papers_dominate_the_ranking(temp_project):
+    """Polish plan H.4: the menu exists to surface works the researcher DOESN'T have, so a
+    cap filled entirely by in-project papers must yield its tail to the best externals."""
+    nodes = [_n("p", kind="project")]
+    edges = []
+    for i in range(6):  # six project papers that all outrank every external
+        nodes.append(_n(f"q{i}", kind="project", cited_by_project_count=50 - i))
+        edges.append({"source": "p", "target": f"q{i}", "significant": True, "reason": "r"})
+    for i in range(4):
+        nodes.append(_n(f"ext:{i}", citation_count=1000 - i))
+        edges.append({"source": "p", "target": f"ext:{i}", "significant": True, "reason": "r"})
+    _seed_graph(nodes, edges)
+
+    rel = graph.related_works_for("p", limit=6)
+    externals = [r["id"] for r in rel if r["kind"] != "project"]
+    assert externals == ["ext:0", "ext:1", "ext:2"]  # best three externals, in rank order
+    kept_projects = [r["id"] for r in rel if r["kind"] == "project"]
+    assert kept_projects == ["q0", "q1", "q2"]  # the strongest project entries survive
+
+
+def test_external_guarantee_never_pads_beyond_whats_available(temp_project):
+    _seed_graph(
+        [_n("p", kind="project"), _n("q", kind="project", cited_by_project_count=9), _n("ext:a")],
+        [
+            {"source": "p", "target": "q", "significant": True, "reason": "r"},
+            {"source": "p", "target": "ext:a", "significant": True, "reason": "r"},
+        ])
+    rel = graph.related_works_for("p", limit=5)
+    assert len(rel) == 2  # nothing invented, nothing duplicated

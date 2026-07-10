@@ -546,7 +546,7 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
     return out
 
 
-def related_works_for(slug: str, limit: int = 7) -> list[dict]:
+def related_works_for(slug: str, limit: int = 10) -> list[dict]:
     """The most significant related works for one paper, from the stored graph: works it
     builds on / compares against (its significant outgoing citations) and project papers that
     build on it (significant incoming). Ranked by how load-bearing the work is (in-project
@@ -577,10 +577,28 @@ def related_works_for(slug: str, limit: int = 7) -> list[dict]:
         })
     # "Builds on" first (the prior work the paper stands on), then citers; within each group
     # the most load-bearing works first.
-    items.sort(key=lambda r: (r["direction"] != "builds_on",
-                              -(nodes[r["id"]].get("cited_by_project_count", 0)),
-                              -(r.get("citation_count") or 0)))
-    return items[:limit]
+    def rank(r: dict):
+        return (r["direction"] != "builds_on",
+                -(nodes[r["id"]].get("cited_by_project_count", 0)),
+                -(r.get("citation_count") or 0))
+
+    items.sort(key=rank)
+    top = items[:limit]
+    # Off-list works must stay represented (polish plan H.4): project papers dominate the
+    # ranking via cited_by_project_count, and a cap that squeezes externals out turns this
+    # menu into a Library index — the researcher opens it precisely to find works they
+    # DON'T have yet. Swap the lowest-ranked project entries for the best externals.
+    want = min(3, sum(1 for r in items if r["kind"] != "project"))
+    have = sum(1 for r in top if r["kind"] != "project")
+    if have < want:
+        spare = [r for r in items[limit:] if r["kind"] != "project"]
+        for _ in range(want - have):
+            drop = max((i for i, r in enumerate(top) if r["kind"] == "project"), default=None)
+            if drop is None or not spare:
+                break
+            top[drop] = spare.pop(0)
+        top.sort(key=rank)
+    return top
 
 
 # ---------- status (cheap, no LLM) ----------

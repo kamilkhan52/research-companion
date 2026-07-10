@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from . import assembler, config, llm, prompts
+from . import assembler, config, llm, prompts, sessions
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
@@ -33,8 +33,18 @@ def _system_for(slug: str) -> str:
     if slug == REVIEW_SLUG:
         return (prompts.get("review_system") + "\n\n" + access
                 + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug))
-    return (prompts.get("analysis_system") + "\n\n" + access
+    return (prompts.get("analysis_system") + _mode_layer(slug) + "\n\n" + access
             + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug))
+
+
+def _mode_layer(slug: str) -> str:
+    """The session's reading-mode system-prompt layer (polish plan H.3). 'balanced' — the
+    default — adds nothing; the other modes append a short register-tuning block, so a
+    one-tap switch changes every subsequent turn without touching the opening prompt."""
+    mode = sessions.get_reading_mode(slug)
+    if mode == "balanced":
+        return ""
+    return "\n\n" + prompts.get(f"reading_mode_{mode}")
 
 
 

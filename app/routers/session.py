@@ -53,6 +53,13 @@ class DeliveryReq(BaseModel):
 class ChatStartReq(DeliveryReq):
     slug: str
     prompt: str | None = None   # edited first-prompt template for this session
+    # Reading mode chosen at session start (polish plan H.3); None keeps the default.
+    mode: Literal["balanced", "background", "technical", "detailed"] | None = None
+
+
+class ModeReq(BaseModel):
+    slug: str
+    mode: Literal["balanced", "background", "technical", "detailed"]
 
 
 class ReplyReq(DeliveryReq):
@@ -184,6 +191,7 @@ def get_session(slug: str):
     return {
         "paper": paper,
         "state": sessions.get_state(slug),
+        "reading_mode": sessions.get_reading_mode(slug),
         "transcript": sessions.transcript(slug),
         "accepted_drafts": sessions.accepted_drafts(slug),
     }
@@ -331,6 +339,8 @@ def _prep_chat_start(req: ChatStartReq) -> None:
         title = p.title
     sessions.start_session(req.slug, title, kind=("review" if is_review else "paper"),
                            opening=(req.prompt or None))
+    if req.mode:
+        sessions.set_reading_mode(req.slug, req.mode)
 
 
 def _prep_reply(req: ReplyReq) -> None:
@@ -576,3 +586,28 @@ def reopen(req: FinishReq):
         raise HTTPException(status_code=409, detail="No active session for this paper.")
     sessions.reopen_discussion(req.slug)
     return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
+
+
+@project_router.post("/continue_discussion")
+def continue_discussion(req: FinishReq):
+    """Committed -> InDiscussion (polish plan H.2): bring the composer back after 'Finish
+    reading' without touching anything recorded — committed notes stay committed, the
+    transcript stands, and a later finish proposes a fresh draft through the normal flow.
+    Deterministic state change, so a plain request (invariant 1 does not apply)."""
+    state = sessions.get_state(req.slug)
+    if not state:
+        raise HTTPException(status_code=409, detail="No active session for this paper.")
+    if state != "committed":
+        raise HTTPException(status_code=409, detail="The discussion is already open.")
+    sessions.continue_discussion(req.slug)
+    return {"state": sessions.get_state(req.slug)}
+
+
+@project_router.post("/session_mode")
+def session_mode(req: ModeReq):
+    """Switch the session's reading mode (polish plan H.3) — applies to every subsequent
+    turn. One tap from the overflow menu; deterministic, so a plain request."""
+    if not sessions.get_state(req.slug):
+        raise HTTPException(status_code=409, detail="No active session for this paper.")
+    sessions.set_reading_mode(req.slug, req.mode)
+    return {"mode": sessions.get_reading_mode(req.slug)}
