@@ -112,15 +112,16 @@ def test_research_sources_include_paper_opening_and_prior_project_context(monkey
     assert all("Ignore for previews" not in text for text in texts)
 
 
-def test_audio_synthesis_progress_is_a_citable_ready_handoff_source(temp_project):
-    """In the synthesis phase progressive playback has effectively begun, so the progress source
-    announces readiness (the hand-off cue) rather than a segment count."""
+def test_audio_synthesis_progress_is_citable_and_never_announces_readiness(temp_project):
+    """Playback is the complete stitched track (polish plan I.1/I.2): the synthesis-phase
+    progress source carries the honest parts count and must NOT claim the response is ready
+    or about to play — repeated ready-announcements were the on-device incoherence bug."""
     captured = {}
 
     def generate(messages, model):
         captured["payload"] = json.loads(messages[1]["content"])
         return json.dumps({
-            "cue": "The full response is ready and will play now.",
+            "cue": "Synthesis continues, 2 of 4 parts done.",
             "source_sentence_ids": ["progress0001"],
         })
 
@@ -144,7 +145,53 @@ def test_audio_synthesis_progress_is_a_citable_ready_handoff_source(temp_project
     assert finished.source_sentence_ids == ["progress0001"]
     progress_source = captured["payload"]["grounded_sources"][-1]
     assert progress_source["id"] == "progress0001"
-    assert "ready" in progress_source["text"].lower()
+    assert "2 of 4" in progress_source["text"]
+    assert "ready" not in progress_source["text"].lower()
+    assert "immediately" not in progress_source["text"].lower()
+
+
+def test_audio_progress_ready_only_when_the_job_settles(temp_project):
+    """Segments landing no longer means playable (I.1): a running job with synthesized
+    segments must keep the cue pipeline alive until the stitched file exists."""
+    running = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 3, "segments_total": 4,
+        "segments": [{"index": 0}],  # would have flipped ready under progressive playback
+    })()
+    phase, progress, ready = preview_jobs._audio_progress(running)
+    assert phase == "audio_synthesis"
+    assert ready is False
+    running.status = "done"
+    _, _, ready_after = preview_jobs._audio_progress(running)
+    assert ready_after is True
+
+
+def test_external_sources_are_cached_and_fail_soft(temp_project, monkeypatch):
+    from app import research_tools, store
+
+    store.add_entry("Attention Is All You Need")
+    slug = store.list_papers()[0].slug
+    calls = []
+
+    def fake_search(objective, queries=None):
+        calls.append(objective)
+        return "The authors were at Google Brain.\n\nA v2 appeared at NeurIPS."
+
+    monkeypatch.setattr(research_tools, "web_search", fake_search)
+    preview_jobs._external_cache.clear()
+
+    sources = preview_jobs.external_sources(slug)
+    assert sources and all(item["kind"] == "external_web_context" for item in sources)
+    assert any("Google Brain" in item["text"] for item in sources)
+    assert preview_jobs.external_sources(slug) == sources  # cached
+    assert len(calls) == 1
+
+    # Unknown paper and a failing search both degrade to no sources, never an exception.
+    assert preview_jobs.external_sources("ghost") == []
+    preview_jobs._external_cache.clear()
+    monkeypatch.setattr(research_tools, "web_search",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert preview_jobs.external_sources(slug) == []
 
 
 def test_coordinator_continues_cues_with_audio_progress_until_ready(

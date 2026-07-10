@@ -40,12 +40,27 @@ class TTSProvider(Protocol):
         ...
 
 
+# Spoken-form substitutions applied at the synthesis boundary ONLY (polish plan I.4):
+# display text, canonical records, and cached narration text all keep the written form
+# ("arXiv"); the voice gets the accepted pronunciation. Keyed small and word-bounded —
+# add entries here as more mispronunciations are reported.
+_SPOKEN_FORMS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\barxiv\b", re.IGNORECASE), "archive"),
+)
+
+
+def normalize_for_speech(text: str) -> str:
+    for pattern, spoken in _SPOKEN_FORMS:
+        text = pattern.sub(spoken, text)
+    return text
+
+
 class BrowserTTS:
     """Passthrough: the client synthesizes locally from this text."""
     name = "browser"
 
     def synthesize(self, narration: str) -> dict:
-        return {"mode": "browser", "text": narration}
+        return {"mode": "browser", "text": normalize_for_speech(narration)}
 
 
 # Transient statuses worth retrying per segment (rate limits, upstream hiccups). A long
@@ -63,7 +78,8 @@ def openai_speech(text: str) -> bytes:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
     model = s.get("tts_model") or "gpt-4o-mini-tts"
     voice = s.get("tts_voice") or "alloy"
-    body = {"model": model, "voice": voice, "input": text, "response_format": "mp3"}
+    body = {"model": model, "voice": voice, "input": normalize_for_speech(text),
+            "response_format": "mp3"}
     if model == "gpt-4o-mini-tts":
         body["instructions"] = prompts.get("tts_instructions")
     last_err = "unknown error"

@@ -9,6 +9,12 @@ import { AudioProvider, useAudio } from '@/audio/AudioProvider';
 import { isHandoffEligible, registerEligibleHandoff } from '@/audio/handoffState';
 import { useListeningHandoffRecovery } from '@/audio/identity';
 import { ProjectProvider } from '@/store/project';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { ListeningProvider } from '@/store/listening';
+
+// Playback-mode opt-ins must not leak across tests in this file.
+afterEach(() => AsyncStorage.removeItem('rc.audioPlayback'));
 
 const doneJob: AudioJob = {
   id: 'audio-job',
@@ -50,7 +56,9 @@ test('queued listening audio is appended without interrupting current playback',
 
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><QueueProbe /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><QueueProbe /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
@@ -70,7 +78,9 @@ test('the first queued listening track starts automatically', async () => {
 
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><QueueProbe /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><QueueProbe /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
@@ -90,7 +100,9 @@ test('a grounded preview plays when TrackPlayer is idle', async () => {
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 
@@ -114,7 +126,9 @@ test('a grounded preview is dropped while another track is active', async () => 
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 
@@ -142,7 +156,9 @@ test('preview cues keep playing while automatic final narration is preparing', a
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   audio.enqueueJob(
@@ -176,7 +192,9 @@ test('a new preview queues behind a preview already speaking', async () => {
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 
@@ -206,7 +224,9 @@ test('final narration removes queued cues but lets the active cue finish', async
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 
@@ -223,7 +243,61 @@ test('final narration removes queued cues but lets the active cue finish', async
   expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
 
+test('full-track mode (the default) waits for the stitched file and carries the narration', async () => {
+  // Segments land while the job runs, but nothing plays until the final url exists — the
+  // whole point of the default mode (polish plan I.1): full duration, lock-proof, rewind
+  // across the entire response. The added track carries narration for sentence-jumping.
+  const running: AudioJob = {
+    ...doneJob,
+    status: 'running',
+    segments_done: 1,
+    segments_total: 2,
+    url: null,
+    segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
+  };
+  jest.mocked(api.getAudioJob)
+    .mockResolvedValueOnce({ job: running })
+    .mockResolvedValueOnce({ job: doneJob });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValue([]);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-full', title: 'Paper', text: 'Canonical response.' },
+    'audio-job',
+    'project-a',
+    'chat-job-full',
+  );
+
+  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1), { timeout: 4000 });
+  // Exactly one add — the complete stitched track; the in-flight segment never played.
+  expect(TrackPlayer.add).toHaveBeenCalledTimes(1);
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({
+    id: 'turn-full',
+    url: expect.stringContaining('/api/audio/abc.mp3'),
+    narration: 'Spoken answer.',
+  }));
+  expect(TrackPlayer.add).not.toHaveBeenCalledWith(
+    expect.objectContaining({ segmentIndex: 0 }),
+  );
+});
+
 test('progressive narration starts segment one before the final segment is ready', async () => {
+  // Progressive playback is opt-in now (Settings -> Audio); 'full' is the default.
+  await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
   const firstSegment: AudioJob = {
     ...doneJob,
     status: 'running',
@@ -257,7 +331,9 @@ test('progressive narration starts segment one before the final segment is ready
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   audio.enqueueJob(
@@ -280,6 +356,8 @@ test('progressive narration starts segment one before the final segment is ready
 });
 
 test('manual Listen also begins from the first progressive segment', async () => {
+  // Progressive playback is opt-in now (Settings -> Audio); 'full' is the default.
+  await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
   const partial: AudioJob = {
     ...doneJob,
     status: 'running',
@@ -310,7 +388,9 @@ test('manual Listen also begins from the first progressive segment', async () =>
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   let playing!: Promise<void>;
@@ -331,6 +411,8 @@ test('manual Listen also begins from the first progressive segment', async () =>
 });
 
 test('first progressive segment drops queued cues without interrupting the active cue', async () => {
+  // Progressive playback is opt-in now (Settings -> Audio); 'full' is the default.
+  await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
   const readySegment: AudioJob = {
     ...doneJob,
     segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
@@ -350,7 +432,9 @@ test('first progressive segment drops queued cues without interrupting the activ
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 
@@ -377,7 +461,9 @@ test('cancellation removes a track whose add finishes after the queue was cleare
 
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><QueueProbe /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><QueueProbe /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
@@ -407,7 +493,9 @@ test('regeneration replaces stale slot audio and queues the new handoff version'
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   audio.enqueueJob(
@@ -445,7 +533,9 @@ test('regeneration keeps the active slot playing and appends its replacement', a
   }
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><Capture /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   audio.enqueueJob(
@@ -503,7 +593,9 @@ test('polling failure retains eligibility and recovers automatically after provi
   }
   const first = await renderAsync(
     <ProjectProvider>
-      <AudioProvider><RecoveryProbe /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><RecoveryProbe /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
   await waitFor(
@@ -515,7 +607,9 @@ test('polling failure retains eligibility and recovers automatically after provi
 
   await renderAsync(
     <ProjectProvider>
-      <AudioProvider><RecoveryProbe /></AudioProvider>
+      <ListeningProvider>
+        <AudioProvider><RecoveryProbe /></AudioProvider>
+      </ListeningProvider>
     </ProjectProvider>,
   );
 

@@ -241,20 +241,27 @@ dependency on the codex→Figma step).
 
 ## Phase I — listening pipeline: single stitched track + coherent cues (backend + mobile)
 
-1. **Back to one full track.** Segmented incremental playback loses too much: no full
+1. **Full track as a selectable playback mode** *(revised at implementation time — the
+   user wants to explore both)*. Segmented incremental playback loses a lot: no full
    response duration while playing, playback dies on background/lock state changes, and
-   rewind can't cross the current segment's start. Revert playback to the **complete
-   stitched file**: keep segment synthesis and incremental progress reporting
-   (`app/audio_jobs.py` already stitches the final mp3), but the client
-   (`audio/AudioProvider.tsx`) waits for the job's final `url` instead of playing
-   segments as they land. (Seamless client-side stitching was considered and rejected as
-   a heavier lift than waiting.) Preview cues cover the wait.
-2. **Exactly one "ready" handoff.** Today up to ~4 distinct cues can announce the
-   response before it plays — disconnected and incoherent. Audit the cue pipeline
-   (`app/preview_jobs.py`, `mobile/src/audio/usePreviewCues.ts`): cues play strictly in
-   sequence, at most one final handoff line immediately precedes the main track, and
-   pending cues are skipped once the stitched track is ready. The transition must feel
-   authored, not evented.
+   rewind can't cross the current segment's start. Instead of a hard revert, playback is
+   now a **device-local setting** (Settings → Audio → Narration playback): **Full track**
+   (default — the client waits for the job's final stitched `url`; `app/audio_jobs.py`
+   already produces it; preview cues cover the wait; the track carries the narration text
+   so sentence-jump and the transcript span the whole response) vs. **Progressive**
+   (segments play as they land — faster to first audio, the old behavior). Stored in
+   AsyncStorage (`rc.audioPlayback` via `store/listening.tsx`), captured per preparation
+   so mid-prep flips can't mix paths. (Seamless client-side stitching was considered and
+   rejected as a heavier lift than waiting.)
+2. **No stacked "ready" announcements.** Today up to ~4 distinct cues can announce the
+   response before it plays — disconnected and incoherent. Root cause: the synthesis-phase
+   progress source told every cue "the full spoken response is now ready and begins
+   playing immediately" (written for progressive playback, where the first segment did
+   mean playback). Fix (`app/preview_jobs.py` + the cue prompt): the progress source
+   carries an honest parts count and never claims readiness; the prompt forbids
+   ready/imminent announcements outright — playback starting IS the transition; the
+   coordinator treats "ready" as the audio job actually settling (not the first segment),
+   and pending cues are still suppressed at that moment.
 3. **Richer, external-context cues.** While the full track renders, cues should deliver
    information *external to the paper* rather than paraphrasing it: agentic lookups on
    author affiliations, the authors' other notable works (related or interestingly not),
