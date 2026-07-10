@@ -4,7 +4,7 @@
 // so this ships with zero new native dependency / no EAS rebuild required.
 
 import { memo, useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { PixelRatio, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -27,6 +27,11 @@ const INITIAL_SCALE = 0.65;
 // double the per-edge view count, so on dense graphs only significant edges keep theirs.
 const LABEL_MIN_SCALE = 0.5;
 const ARROWS_ON_ALL_EDGES_MAX = 120;
+// Android allocates a hardware layer for the WHOLE view in device pixels (not the clipped
+// viewport), so rasterizing an oversized canvas would trade jank for OOM/dropped-layer risk
+// on exactly the dense graphs this targets. Budget the layer and only hold it during
+// gestures — allocated on touch-down, released on lift.
+const RASTER_LAYER_BUDGET_BYTES = 32 * 1024 * 1024;
 
 export function GraphCanvas({
   nodes,
@@ -85,7 +90,16 @@ export function GraphCanvas({
     if (viewport.w > 0 && viewport.h > 0) centerView(viewport.w, viewport.h, false);
   }, [viewport.w, viewport.h, centerView]);
 
+  // Rasterize only while a finger is down (see RASTER_LAYER_BUDGET_BYTES): a counter over
+  // both gestures' begin/finalize flips ONE piece of JS state on the 0<->1 transitions.
+  const [gestureActive, setGestureActive] = useState(false);
+  const activeTouches = useSharedValue(0);
+
   const pan = Gesture.Pan()
+    .onBegin(() => {
+      activeTouches.value += 1;
+      if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
+    })
     .onStart(() => {
       startX.value = translateX.value;
       startY.value = translateY.value;
@@ -93,17 +107,35 @@ export function GraphCanvas({
     .onUpdate((e) => {
       translateX.value = startX.value + e.translationX;
       translateY.value = startY.value + e.translationY;
+    })
+    .onFinalize(() => {
+      activeTouches.value -= 1;
+      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
     });
 
   const pinch = Gesture.Pinch()
+    .onBegin(() => {
+      activeTouches.value += 1;
+      if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
+    })
     .onStart(() => {
       startScale.value = scale.value;
     })
     .onUpdate((e) => {
       scale.value = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale.value * e.scale));
+    })
+    .onFinalize(() => {
+      activeTouches.value -= 1;
+      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
     });
 
   const composed = Gesture.Simultaneous(pan, pinch);
+
+  // RGBA bytes for a full-canvas layer at this device's density; oversized canvases keep the
+  // plain View path (the LOD + arrowhead cuts still apply there).
+  const rasterizable =
+    Platform.OS === 'android' &&
+    width * height * PixelRatio.get() ** 2 * 4 <= RASTER_LAYER_BUDGET_BYTES;
 
   const canvasStyle = useAnimatedStyle(() => ({
     transform: [
@@ -129,10 +161,11 @@ export function GraphCanvas({
     <View style={styles.viewport} onLayout={onLayout}>
       <GestureDetector gesture={composed}>
         <Animated.View
-          // Rasterizing the whole canvas turns pan/zoom into a texture transform instead of
-          // re-drawing hundreds of Views per frame. Slight blur while pinch-zooming past the
+          // Rasterizing the canvas turns pan/zoom into a texture transform instead of
+          // re-drawing hundreds of Views per frame — but only while a gesture is live and
+          // only within the layer budget above. Slight blur while pinch-zooming past the
           // captured resolution is the accepted trade.
-          renderToHardwareTextureAndroid
+          renderToHardwareTextureAndroid={rasterizable && gestureActive}
           style={[{ width, height, position: 'absolute' }, canvasStyle]}>
           {edges.map((edge, i) => {
             const a = positions[edge.source];

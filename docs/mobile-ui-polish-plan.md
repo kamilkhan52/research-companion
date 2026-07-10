@@ -112,6 +112,9 @@ choppy on the phone:
 
 1. **Hardware rasterization** (`renderToHardwareTextureAndroid` on the animated canvas):
    pan/zoom becomes a texture transform instead of re-drawing hundreds of Views per frame.
+   Gated twice: only while a gesture is live (layer allocated on touch-down, released on
+   lift) and only when the full canvas fits a 32 MiB device-pixel layer budget — Android
+   allocates the layer for the whole view, so an unbounded canvas would trade jank for OOM.
    Accepted trade: slight blur while pinch-zooming past the captured resolution.
 2. **Label level-of-detail**: node labels hide below ~0.5 zoom (unreadable there anyway;
    each is a laid-out Text). Driven by a `useAnimatedReaction` on the UI-thread scale that
