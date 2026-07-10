@@ -43,6 +43,13 @@ function ensureMathJax(): boolean {
   if (mathJaxBroken) return false;
   if (mathDocument) return true;
   try {
+    // mathjax-full/js/components/version.js reads its own version via `eval('require')` at
+    // module load. Hermes has no `require` in eval scope, so importing mathjax throws
+    // (ReferenceError: Property 'require' doesn't exist) and every equation silently stays on
+    // the texToPlain fallback — even once react-native-svg is linked. Pre-defining
+    // PACKAGE_VERSION makes version.js take its literal branch and skip the eval entirely (the
+    // value is cosmetic — it's only exported as VERSION). `??=` so we never clobber a real one.
+    (globalThis as unknown as { PACKAGE_VERSION?: string }).PACKAGE_VERSION ??= '3.2.1';
     /* eslint-disable @typescript-eslint/no-var-requires */
     const { mathjax } = require('mathjax-full/js/mathjax');
     const { TeX } = require('mathjax-full/js/input/tex');
