@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from . import agent, agent_harness, audio_jobs, config, logging_config, preview_jobs, sessions
 from .agent import AgentError
+from .models import Turn
 from .jobs import Job, JobRegistry, new_id, now_iso
 
 # runner(slug, history) yields the same event dicts as agent_harness.stream_agentic_events:
@@ -373,16 +374,18 @@ STOP_MARKER = "> Stopped by you — the response above is partial."
 
 
 def _record_cancelled(job: ChatJob, partial_text: str) -> None:
-    """Settle a stopped turn: record whatever canonical text already streamed, marked as
-    stopped, and skip audio/cue work entirely. An empty partial records nothing — the user's
-    message simply has no reply yet, exactly as if the turn had never started. A stopped
-    partial never advances session state (a half-streamed proposal is not a proposal)."""
+    """Settle a stopped turn: record EXACTLY the canonical text the user watched stream
+    (agent.canonical_prefix — the same extraction that fed job.items, so protocol scaffolding
+    like a bare '### CANONICAL ###' never lands in the transcript), marked as stopped, and
+    skip audio/cue work entirely. A turn stopped before any visible text records nothing —
+    the user's message simply has no reply yet. A stopped partial never advances session
+    state (a half-streamed proposal is not a proposal)."""
     with _registry.lock:
         job.timings["analysis_complete"] = now_iso()
-    turn = agent.parse(partial_text) if partial_text.strip() else None
-    if turn and turn.canonical.strip():
-        turn.canonical = turn.canonical.rstrip() + f"\n\n{STOP_MARKER}"
-        turn.proposed_commit = None
+    shown = agent.canonical_prefix(partial_text)
+    if shown:
+        turn = Turn(role="assistant", canonical=f"{shown}\n\n{STOP_MARKER}",
+                    state_signal="in_discussion")
         _, assistant_index = sessions.record_assistant(
             job.slug, turn, delivery_mode=job.delivery_mode, chat_job_id=job.id)
         with _registry.lock:

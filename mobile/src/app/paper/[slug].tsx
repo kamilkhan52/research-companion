@@ -736,9 +736,10 @@ function DiscussionThread({
   ), []);
 
   const renderSend = useCallback(() => {
-    if (state === 'notes_drafted' && !editing) return null;
     // While a response is generating, the send slot becomes Stop (polish plan F.1): the
     // server records whatever streamed so far marked as stopped, and the turn settles early.
+    // Checked BEFORE the notes_drafted null return so a running request-changes turn can be
+    // stopped too — that state hides the send button, not the ability to stop.
     if (stream.streaming) {
       return (
         <Pressable
@@ -749,6 +750,7 @@ function DiscussionThread({
         </Pressable>
       );
     }
+    if (state === 'notes_drafted' && !editing) return null;
     const canSend = !!inputText.trim() && !disabled;
     return (
       <Pressable
@@ -1024,12 +1026,24 @@ function ComposeFirst({
   if (opening.isLoading) return <Centered loading />;
 
   if (stream.streaming) {
+    // The opening turn streams without the composer, so Stop needs its own affordance here
+    // (polish plan F.1 — every streaming turn must be stoppable).
     return (
-      <ScrollView contentContainerStyle={styles.streamingOnly}>
-        <Card style={styles.assistantCard}>
-          <StreamingTurnBody items={stream.items} />
-        </Card>
-      </ScrollView>
+      <View style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.streamingOnly}>
+          <Card style={styles.assistantCard}>
+            <StreamingTurnBody items={stream.items} />
+          </Card>
+        </ScrollView>
+        <View style={styles.startFooter}>
+          <Button
+            title="Stop"
+            variant="ghost"
+            onPress={() => void stream.stop()}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </View>
     );
   }
 

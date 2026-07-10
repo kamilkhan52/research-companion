@@ -81,6 +81,28 @@ def test_cancel_mid_stream_records_partial_marked_as_stopped(temp_project):
     assert chat_jobs.STOP_MARKER in records[-1]["canonical"]
 
 
+def test_cancel_with_only_protocol_scaffolding_records_nothing(temp_project):
+    """A partial that contains only the protocol marker showed the user NOTHING (the stream
+    surfaces agent.canonical_prefix, which is empty here) — so stop must record nothing, not
+    the scaffolding via agent.parse's whole-content fallback."""
+    slug = _session_with_reply()
+    gate = threading.Event()
+    runner = _gated_runner([{"type": "text", "text": "### CANONICAL ###\n"}], gate, [])
+
+    job = chat_jobs.start_turn(slug, runner=runner)
+    deadline = time.time() + 5
+    while not chat_jobs.get_job(job.id).cancelled and time.time() < deadline:
+        chat_jobs.request_cancel(job.id)
+        time.sleep(0.02)
+    gate.set()
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.turn is None
+    records = sessions.read_records(slug)
+    assert records[-1]["role"] == "user"
+
+
 def test_cancel_before_any_text_records_nothing(temp_project):
     slug = _session_with_reply()
     gate = threading.Event()
