@@ -6,14 +6,22 @@ import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   View,
 } from 'react-native';
+import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
-import { useBaseUrl, useProjectState, useProjects, useRecentSessions } from '@/api/queries';
+import {
+  useBaseUrl,
+  useProjectState,
+  useProjects,
+  useRecentSessions,
+  useRemovePaper,
+} from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
@@ -59,6 +67,28 @@ export default function LibraryScreen() {
 
   const stateQuery = useProjectState(activePid);
   const activeProject = projects?.find((p) => p.id === activePid);
+  const removePaper = useRemovePaper(activePid);
+
+  // Swipe reveals the trash; this confirm is the human approval the backend's git commit
+  // rides on ("agent proposes, human commits" — here the human does both).
+  function confirmRemove(paper: Paper) {
+    Alert.alert(
+      'Remove paper?',
+      `“${paper.title}” will be removed from this project. Its notes are kept and marked as removed.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            removePaper.mutate(paper.slug, {
+              onError: (e) => Alert.alert('Could not remove the paper', (e as Error).message),
+            });
+          },
+        },
+      ],
+    );
+  }
 
   const papers = useMemo(() => stateQuery.data?.papers ?? [], [stateQuery.data]);
   const counts = useMemo(() => {
@@ -196,6 +226,7 @@ export default function LibraryScreen() {
                     key={p.slug}
                     paper={p}
                     onPress={() => router.push(`/paper/${encodeURIComponent(p.slug)}`)}
+                    onRemove={() => confirmRemove(p)}
                   />
                 ))}
               </View>
@@ -277,7 +308,15 @@ function formatActivityTime(timestamp: string): string {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function PaperRow({ paper, onPress }: { paper: Paper; onPress: () => void }) {
+function PaperRow({
+  paper,
+  onPress,
+  onRemove,
+}: {
+  paper: Paper;
+  onPress: () => void;
+  onRemove: () => void;
+}) {
   const stateKey = paperStateKey(paper);
   const meta = stateMeta[stateKey] ?? stateMeta.unread;
   const action =
@@ -287,6 +326,22 @@ function PaperRow({ paper, onPress }: { paper: Paper; onPress: () => void }) {
         ? 'Read'
         : 'Resume';
   return (
+    <ReanimatedSwipeable
+      overshootRight={false}
+      rightThreshold={40}
+      renderRightActions={(_progress, _translation, methods) => (
+        <Pressable
+          onPress={() => {
+            methods.close();
+            onRemove();
+          }}
+          style={styles.removeAction}
+          accessibilityLabel={`Remove ${paper.title}`}>
+          <View style={styles.removeActionInner}>
+            <Icon name="trash-2" size={19} color={colors.danger} />
+          </View>
+        </Pressable>
+      )}>
     <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.8 }}>
       <Card style={styles.paperRow}>
         <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
@@ -308,6 +363,7 @@ function PaperRow({ paper, onPress }: { paper: Paper; onPress: () => void }) {
         </View>
       </Card>
     </Pressable>
+    </ReanimatedSwipeable>
   );
 }
 
@@ -375,5 +431,16 @@ const styles = StyleSheet.create({
   paperMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },
   rowAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  removeAction: { justifyContent: 'center', alignItems: 'center', width: 76 },
+  removeActionInner: {
+    width: 48,
+    height: 48,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    backgroundColor: 'rgba(229, 115, 140, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   empty: { paddingVertical: space.xxl * 1.5, paddingHorizontal: space.lg, alignItems: 'center' },
 });

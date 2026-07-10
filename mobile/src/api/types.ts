@@ -344,6 +344,9 @@ export interface GraphStatus {
   total_papers: number;
   retrievable_papers: number;
   stale_papers: string[];
+  /** Project nodes still in the stored graph whose papers left the reading list (also
+   *  included in stale_papers so the rebuild affordance lights up). */
+  removed_papers: string[];
   missing_text_papers: string[];
 }
 

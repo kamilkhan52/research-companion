@@ -187,3 +187,17 @@ export function useAddPaper(pid: string) {
     },
   });
 }
+
+export function useRemovePaper(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => api.removePaper(pid as string, slug),
+    onSuccess: () => {
+      if (!pid) return;
+      qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+      qc.invalidateQueries({ queryKey: keys.graph(pid) });
+      qc.invalidateQueries({ queryKey: keys.projects });
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+    },
+  });
+}

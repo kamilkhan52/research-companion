@@ -77,6 +77,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
             total_papers: job.graph!.nodes.filter((n) => n.kind === 'project').length,
             retrievable_papers: 0,
             stale_papers: [],
+            removed_papers: [],
             missing_text_papers: [],
           },
           build: job,

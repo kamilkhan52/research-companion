@@ -599,6 +599,15 @@ def status(papers: list[Paper]) -> dict:
         if not cached or cached.get("content_hash") != chash or cached.get("status") == "error":
             stale.append(p.slug)
     g = data.get("graph") or {}
+    # A stored graph can also be stale in the OTHER direction: a project node whose paper has
+    # since been REMOVED from the reading list. Surface those as stale too, so the rebuild
+    # affordance lights up instead of the Map serving nodes that 404 when opened.
+    current = {p.slug for p in papers}
+    removed = sorted({
+        n["slug"] for n in (g.get("nodes") or [])
+        if n.get("kind") == "project" and n.get("slug") and n["slug"] not in current
+    })
+    stale.extend(removed)
     return {
         "has_graph": data.get("graph") is not None,
         "built_at": g.get("built_at"),
@@ -606,6 +615,7 @@ def status(papers: list[Paper]) -> dict:
         "total_papers": len(papers),
         "retrievable_papers": len(papers) - len(missing_text),
         "stale_papers": stale,
+        "removed_papers": removed,
         "missing_text_papers": missing_text,
     }
 

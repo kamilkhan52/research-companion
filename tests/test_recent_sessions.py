@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import config, projects, sessions
 from app.models import Turn
+from tests.conftest import add_paper
 
 
 def test_session_index_updates_are_serialized_and_preserved(temp_project, monkeypatch):
@@ -57,8 +58,11 @@ def test_every_authored_turn_advances_session_activity(temp_project, monkeypatch
 
 
 def test_recent_sessions_are_cross_project_and_sorted(temp_project):
+    # Paper-kind sessions only surface while their paper is still on the reading list
+    # (removed papers are filtered — see projects.recent_sessions), so register both.
     first = projects.project_path(temp_project)
     (first / "project.json").write_text(json.dumps({"id": temp_project, "name": "First"}))
+    add_paper(temp_project, "older", "Older Paper")
     sessions.start_session("older", "Older Paper")
     index = sessions.session_index()
     index["older"]["updated_at"] = "2026-07-07T10:00:00+00:00"
@@ -70,7 +74,8 @@ def test_recent_sessions_are_cross_project_and_sorted(temp_project):
     (second / ".state").mkdir()
     (second / "sessions").mkdir()
     (second / "corpus").mkdir()
-    (second / "reading-list.md").write_text("# Reading list\n")
+    (second / "reading-list.md").write_text(
+        "# Reading list\n\n## Group\n\n**Newer Paper** — *unread*\n<!-- slug: newer -->\n")
     (second / "project.json").write_text(json.dumps({"id": second_pid, "name": "Second"}))
     token = config.set_active_project(second_pid)
     try:
