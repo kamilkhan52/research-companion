@@ -23,16 +23,14 @@ export function GraphCanvas({
   selectedId,
   highlightIds,
   onSelectNode,
-  layoutBounds,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
   selectedId: string | null;
   highlightIds: Set<string> | null;
   onSelectNode: (node: GraphNode) => void;
-  layoutBounds?: { width: number; height: number };
 }) {
-  const { positions, width, height } = useGraphLayout(nodes, edges, layoutBounds);
+  const { positions, width, height } = useGraphLayout(nodes, edges);
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
   const translateX = useSharedValue(0);

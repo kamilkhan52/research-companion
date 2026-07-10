@@ -81,7 +81,7 @@ export default function LibraryScreen() {
 
   const header = (
     <TabHeader
-      title="Research Companion"
+      title="Paradigm"
       actions={[
         { name: 'settings', onPress: () => router.push('/settings'), accessibilityLabel: 'Settings' },
       ]}
@@ -105,13 +105,11 @@ export default function LibraryScreen() {
     <Screen edges={['top']}>
       {header}
 
+      {/* Counts live in the progress card right below; the pill stays single-line once a
+          project is selected and only hints when there is nothing selected yet. */}
       <ProjectPill
         name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
-        subtitle={
-          activeProject
-            ? `${activeProject.paper_count} papers · ${activeProject.read_count} complete`
-            : 'Tap to choose or create'
-        }
+        subtitle={activeProject ? undefined : 'Tap to choose or create'}
         onPress={() => setSwitcherOpen(true)}
       />
 
@@ -222,7 +220,7 @@ function ProjectPill({
   onPress,
 }: {
   name: string;
-  subtitle: string;
+  subtitle?: string;
   onPress: () => void;
 }) {
   return (
@@ -235,9 +233,11 @@ function ProjectPill({
         <Text variant="heading" numberOfLines={1}>
           {name}
         </Text>
-        <Text variant="caption" numberOfLines={1}>
-          {subtitle}
-        </Text>
+        {subtitle ? (
+          <Text variant="caption" numberOfLines={1}>
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
       <Icon name="chevron-down" size={18} color={colors.muted} />
     </Pressable>

@@ -13,11 +13,7 @@ export function nodeRadius(node: GraphNode): number {
   return base + weight * 2.4;
 }
 
-export function useGraphLayout(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  serverBounds?: { width: number; height: number },
-): LayoutResult {
+export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutResult {
   // Fast path: the server precomputed positions (temporal layout). Use them directly — no
   // client-side O(n²) simulation, so the screen renders instantly at any size. Only kicks in
   // when every rendered node has coordinates; otherwise we fall back to the client sim below.
@@ -33,13 +29,18 @@ export function useGraphLayout(
     }
     const MARGIN = 80;
     const W = 1500;
-    const H = Math.min(2200, serverBounds?.height ?? 2200);
     const xs = nodes.map((n) => n.x as number);
     const ys = nodes.map((n) => n.y as number);
     const xmin = Math.min(...xs);
     const xspan = Math.max(1, Math.max(...xs) - xmin);
     const ymin = Math.min(...ys);
     const yspan = Math.max(1, Math.max(...ys) - ymin);
+    // Derive canvas height from the data's own aspect instead of a fixed tall canvas:
+    // stretching every visible subset onto ~2200px of y inflated vertical distances, so
+    // time-distant citations rendered as very long vertical edges. Clamped so extreme spans
+    // can't flatten to a strip; the per-axis rescale stays monotonic, so the temporal
+    // top-to-bottom order is untouched.
+    const H = Math.min(2200, Math.round(W * Math.min(1.15, Math.max(0.55, yspan / xspan))));
     const positions: Record<string, { x: number; y: number }> = {};
     for (const n of nodes) {
       positions[n.id] = {
@@ -48,7 +49,7 @@ export function useGraphLayout(
       };
     }
     return { positions, width: W, height: H };
-  }, [nodes, serverBounds?.height]);
+  }, [nodes]);
 
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
   const edgeInputs = useMemo(

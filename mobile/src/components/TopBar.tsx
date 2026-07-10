@@ -17,8 +17,9 @@ export function TabHeader({
 }: {
   title: string;
   subtitle?: string;
-  /** Right-side Feather icon buttons, rendered borderless per the proposal's tab headers. */
-  actions?: { name: IconName; onPress: () => void; accessibilityLabel: string }[];
+  /** Right-side Feather icon buttons, rendered borderless per the proposal's tab headers.
+   * `badge` overlays a small amber dot (e.g. "the graph is stale") on the icon. */
+  actions?: { name: IconName; onPress: () => void; accessibilityLabel: string; badge?: boolean }[];
 }) {
   return (
     <View style={styles.tabHeader}>
@@ -35,15 +36,17 @@ export function TabHeader({
       {actions?.length ? (
         <View style={styles.tabActions}>
           {actions.map((a) => (
-            <UIIconButton
-              key={a.accessibilityLabel}
-              name={a.name}
-              size={21}
-              color={colors.muted}
-              filled={false}
-              onPress={a.onPress}
-              accessibilityLabel={a.accessibilityLabel}
-            />
+            <View key={a.accessibilityLabel}>
+              <UIIconButton
+                name={a.name}
+                size={21}
+                color={colors.muted}
+                filled={false}
+                onPress={a.onPress}
+                accessibilityLabel={a.accessibilityLabel}
+              />
+              {a.badge ? <View style={styles.badge} /> : null}
+            </View>
           ))}
         </View>
       ) : null}
@@ -94,6 +97,15 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   tabActions: { flexDirection: 'row', gap: 2, marginTop: 4 },
+  badge: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.amber,
+  },
   bar: {
     flexDirection: 'row',
     alignItems: 'center',
