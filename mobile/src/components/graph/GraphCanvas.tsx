@@ -7,10 +7,12 @@ import { memo, useCallback, useEffect, useState } from 'react';
 import { PixelRatio, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   runOnJS,
   useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
+  withDecay,
   withTiming,
 } from 'react-native-reanimated';
 
@@ -27,6 +29,9 @@ const INITIAL_SCALE = 0.65;
 // double the per-edge view count, so on dense graphs only significant edges keep theirs.
 const LABEL_MIN_SCALE = 0.5;
 const ARROWS_ON_ALL_EDGES_MAX = 120;
+// Momentum panning may not fling the canvas entirely off-screen: at least this many px of
+// it stay reachable in each axis when a decay settles.
+const FLING_KEEP_VISIBLE_PX = 80;
 // Android allocates a hardware layer for the WHOLE view in device pixels (not the clipped
 // viewport), so rasterizing an oversized canvas would trade jank for OOM/dropped-layer risk
 // on exactly the dense graphs this targets. Budget the layer and only hold it during
@@ -95,8 +100,14 @@ export function GraphCanvas({
   const [gestureActive, setGestureActive] = useState(false);
   const activeTouches = useSharedValue(0);
 
+  // One-finger drag only: two-finger movement belongs to the pinch, whose focal-follow term
+  // pans for free — letting both write the translate every frame makes them fight (jitter).
   const pan = Gesture.Pan()
+    .maxPointers(1)
     .onBegin(() => {
+      // A touch-down grabs a canvas that's still gliding (decay) — stop it where it is.
+      cancelAnimation(translateX);
+      cancelAnimation(translateY);
       activeTouches.value += 1;
       if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
     })
@@ -108,21 +119,52 @@ export function GraphCanvas({
       translateX.value = startX.value + e.translationX;
       translateY.value = startY.value + e.translationY;
     })
+    .onEnd((e) => {
+      // Momentum (polish plan J.2): glide with the release velocity like a scroll view —
+      // essential when panning zoomed-in — clamped so a fling can't strand the canvas
+      // fully off-screen. Bounds derive from screen-space canvas extents: the view scales
+      // about its own center C, so its edges sit at t + C ± s·(size/2).
+      const s = scale.value;
+      const minX = FLING_KEEP_VISIBLE_PX - width / 2 - (s * width) / 2;
+      const maxX = viewport.w - FLING_KEEP_VISIBLE_PX - width / 2 + (s * width) / 2;
+      const minY = FLING_KEEP_VISIBLE_PX - height / 2 - (s * height) / 2;
+      const maxY = viewport.h - FLING_KEEP_VISIBLE_PX - height / 2 + (s * height) / 2;
+      translateX.value = withDecay({ velocity: e.velocityX, clamp: [minX, maxX] });
+      translateY.value = withDecay({ velocity: e.velocityY, clamp: [minY, maxY] });
+    })
     .onFinalize(() => {
       activeTouches.value -= 1;
       if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
     });
 
+  const startFocalX = useSharedValue(0);
+  const startFocalY = useSharedValue(0);
   const pinch = Gesture.Pinch()
     .onBegin(() => {
+      cancelAnimation(translateX);
+      cancelAnimation(translateY);
       activeTouches.value += 1;
       if (activeTouches.value === 1) runOnJS(setGestureActive)(true);
     })
-    .onStart(() => {
+    .onStart((e) => {
       startScale.value = scale.value;
+      startX.value = translateX.value;
+      startY.value = translateY.value;
+      startFocalX.value = e.focalX;
+      startFocalY.value = e.focalY;
     })
     .onUpdate((e) => {
-      scale.value = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale.value * e.scale));
+      // Focal-anchored zoom (polish plan J.1). RN scales the canvas about its own center
+      // C = (width/2, height/2), so a canvas point p renders at t + C + s·(p − C). Keeping
+      // the point that started under the fingers glued to the CURRENT focal solves to
+      //   t' = f_now − C − (s'/s0)·(f0 − t0 − C)
+      // — the f_now term also gives two-finger panning. Focal coords are stable because
+      // the detector hangs on the untransformed viewport, not the canvas itself.
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale.value * e.scale));
+      const k = next / startScale.value;
+      scale.value = next;
+      translateX.value = e.focalX - width / 2 - k * (startFocalX.value - startX.value - width / 2);
+      translateY.value = e.focalY - height / 2 - k * (startFocalY.value - startY.value - height / 2);
     })
     .onFinalize(() => {
       activeTouches.value -= 1;
@@ -158,8 +200,11 @@ export function GraphCanvas({
   const arrowsOnAll = edges.length <= ARROWS_ON_ALL_EDGES_MAX;
 
   return (
-    <View style={styles.viewport} onLayout={onLayout}>
-      <GestureDetector gesture={composed}>
+    // The detector hangs on the untransformed viewport (not the canvas): pinch focal
+    // coordinates stay in a stable space while the canvas moves under the fingers, and
+    // pans register anywhere in the viewport even when the zoomed-out canvas is small.
+    <GestureDetector gesture={composed}>
+    <View style={styles.viewport} onLayout={onLayout} collapsable={false}>
         <Animated.View
           // Rasterizing the canvas turns pan/zoom into a texture transform instead of
           // re-drawing hundreds of Views per frame — but only while a gesture is live and
@@ -201,7 +246,6 @@ export function GraphCanvas({
             );
           })}
         </Animated.View>
-      </GestureDetector>
 
       <Pressable
         onPress={() => centerView(viewport.w, viewport.h, true)}
@@ -212,6 +256,7 @@ export function GraphCanvas({
         <Text variant="caption" color={colors.text}>Reset view</Text>
       </Pressable>
     </View>
+    </GestureDetector>
   );
 }
 
