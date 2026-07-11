@@ -205,28 +205,49 @@ class BackfillJob(Job):
 
 _backfill_registry: JobRegistry[BackfillJob] = JobRegistry("cover-backfill", max_finished=1)
 
+# (pid, slug) pairs whose render failed this process — a coverless-but-unfetchable paper (404,
+# non-PDF, corrupt). Remembered so a later pass doesn't re-download it every app session (it has
+# no cover file, so the exists() check alone wouldn't skip it). Resets on process restart, which
+# gives a genuinely-transient failure one fresh attempt.
+_backfill_failed: set[tuple[str, str]] = set()
+
+
+def _backfill_project(job: BackfillJob, pid: str) -> None:
+    """Backfill one project's covers (the active project is already bound to `pid`). Per-paper
+    errors are contained so one bad paper doesn't stop the project; the caller contains a bad
+    project so it doesn't stop the pass."""
+    for paper in store.list_papers():
+        if not store.corpus_path(paper.slug).exists():
+            continue  # not retrieved -> no PDF was ever downloaded
+        with _backfill_registry.lock:
+            job.scanned += 1
+        if cover_path(paper.slug).exists() or (pid, paper.slug) in _backfill_failed:
+            continue  # already have it, or already failed this process
+        try:
+            _render_and_cache(paper.slug)
+            with _backfill_registry.lock:
+                job.rendered += 1
+        except Exception as e:  # noqa: BLE001 — best-effort; a missing cover is fine
+            log.info("cover backfill skip %s/%s: %s", pid, paper.slug, str(e)[:120])
+            _backfill_failed.add((pid, paper.slug))
+            with _backfill_registry.lock:
+                job.skipped += 1
+        time.sleep(BACKFILL_PACE_S)  # pace only after an actual download attempt
+
 
 def _backfill_work(job: BackfillJob) -> None:
-    for proj in projects.list_projects():
+    try:
+        projs = projects.list_projects()
+    except Exception as e:  # noqa: BLE001 — nothing to backfill if we can't enumerate
+        log.warning("cover backfill: could not enumerate projects: %s", str(e)[:120])
+        return
+    for proj in projs:
         pid = proj["id"]
         token = config.set_active_project(pid)
         try:
-            for paper in store.list_papers():
-                if not store.corpus_path(paper.slug).exists():
-                    continue  # not retrieved -> no PDF was ever downloaded
-                with _backfill_registry.lock:
-                    job.scanned += 1
-                if cover_path(paper.slug).exists():
-                    continue  # already have it
-                try:
-                    _render_and_cache(paper.slug)
-                    with _backfill_registry.lock:
-                        job.rendered += 1
-                except Exception as e:  # noqa: BLE001 — best-effort; a missing cover is fine
-                    log.info("cover backfill skip %s/%s: %s", pid, paper.slug, str(e)[:120])
-                    with _backfill_registry.lock:
-                        job.skipped += 1
-                time.sleep(BACKFILL_PACE_S)  # pace network + CPU across the one-shot pass
+            _backfill_project(job, pid)
+        except Exception as e:  # noqa: BLE001 — one unreadable project must not abort the rest
+            log.info("cover backfill: project %s skipped: %s", pid, str(e)[:120])
         finally:
             config.reset_active_project(token)
     log.info("cover backfill done scanned=%d rendered=%d skipped=%d",
