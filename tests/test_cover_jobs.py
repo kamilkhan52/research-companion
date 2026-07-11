@@ -119,6 +119,27 @@ def test_ensure_unavailable_without_source(temp_project, monkeypatch):
     assert cover_jobs.ensure("nope") == "unavailable"
 
 
+def test_render_from_pdf_caches(temp_project):
+    assert cover_jobs.render_from_pdf("paper-y", _make_pdf()) is True
+    dst = cover_jobs.cover_path("paper-y")
+    assert dst.exists() and dst.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_from_pdf_skips_when_cached(temp_project):
+    p = cover_jobs.cover_path("already")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"sentinel")
+    assert cover_jobs.render_from_pdf("already", _make_pdf()) is False
+    assert p.read_bytes() == b"sentinel"  # not overwritten
+
+
+def test_render_from_pdf_none_and_garbage_are_noops(temp_project):
+    assert cover_jobs.render_from_pdf("none", None) is False
+    assert cover_jobs.render_from_pdf("bad", b"not a pdf at all") is False  # never raises
+    assert not cover_jobs.cover_path("none").exists()
+    assert not cover_jobs.cover_path("bad").exists()
+
+
 def test_work_renders_and_caches(temp_project, monkeypatch):
     monkeypatch.setattr(store, "arxiv_id_for", lambda s: "1234.5678")
     monkeypatch.setattr(cover_jobs, "_download_pdf", lambda url: _make_pdf())

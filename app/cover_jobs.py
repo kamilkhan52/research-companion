@@ -139,6 +139,26 @@ def _work(job: CoverJob) -> None:
     log.info("cover rendered slug=%s bytes=%d", job.slug, len(png))
 
 
+def render_from_pdf(slug: str, pdf: bytes | None) -> bool:
+    """Best-effort: rasterize + cache a cover from PDF bytes already in hand — e.g. the bytes
+    retrieval just downloaded to extract text — so a freshly-retrieved paper never hits the
+    separate on-demand download in ensure(). Idempotent (skips an already-cached cover) and never
+    raises: a cover is cosmetic and must not affect the retrieval it rides along with. Returns
+    True only when it wrote a new cover."""
+    if not pdf or cover_path(slug).exists():
+        return False
+    try:
+        png = _render_first_page(pdf)
+        dst = cover_path(slug)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(dst, png)
+        log.info("cover rendered from retrieval slug=%s bytes=%d", slug, len(png))
+        return True
+    except Exception as e:  # noqa: BLE001 — cosmetic; log and move on
+        log.info("cover render-from-pdf skipped slug=%s: %s", slug, str(e)[:120])
+        return False
+
+
 def ensure(slug: str) -> str:
     """Return the cover's status for the active project, starting a render job if needed:
       * "ready"       — the PNG is cached at cover_path(slug); serve it.

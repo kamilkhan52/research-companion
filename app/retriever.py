@@ -199,23 +199,27 @@ def _arxiv_id_via_web(title: str) -> str | None:
 
 def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None,
              min_score: float = 0.62) -> dict:
-    """Return {full_text, arxiv_id, source, matched_title, score, candidates?}.
+    """Return {full_text, arxiv_id, source, matched_title, score, pdf_bytes, candidates?}.
 
     Resolution order: explicit pdf_url > explicit arxiv_id > title search on arXiv.
-    On a weak title match, returns candidates so the UI can ask the user to confirm.
+    On a weak title match, returns candidates so the UI can ask the user to confirm. `pdf_bytes`
+    carries the raw downloaded PDF so a caller can reuse it (e.g. render a cover) without a second
+    download; it's absent on the needs-confirmation branch.
     """
     if pdf_url:
         data = _fetch(pdf_url)
         return {"full_text": _extract_pdf(data), "arxiv_id": None,
-                "source": pdf_url, "matched_title": title, "score": 1.0}
+                "source": pdf_url, "matched_title": title, "score": 1.0, "pdf_bytes": data}
 
     if arxiv_id:
         m = _ARXIV_ID_RE.search(arxiv_id)
         aid = m.group(0) if m else arxiv_id
         url = f"https://arxiv.org/pdf/{aid}"
         try:
-            return {"full_text": _extract_pdf(_fetch(url)), "arxiv_id": aid,
-                    "source": f"https://arxiv.org/abs/{aid}", "matched_title": title, "score": 1.0}
+            data = _fetch(url)
+            return {"full_text": _extract_pdf(data), "arxiv_id": aid,
+                    "source": f"https://arxiv.org/abs/{aid}", "matched_title": title,
+                    "score": 1.0, "pdf_bytes": data}
         except RetrievalError:
             # A supplied arXiv id can be wrong — especially ids extracted from a bibliography by
             # the graph pipeline (often malformed or hallucinated). Rather than hard-fail, fall
@@ -232,9 +236,10 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         aid = _arxiv_id_via_web(title)
         if not aid:
             raise
-        return {"full_text": _extract_pdf(_fetch(f"https://arxiv.org/pdf/{aid}")),
+        data = _fetch(f"https://arxiv.org/pdf/{aid}")
+        return {"full_text": _extract_pdf(data),
                 "arxiv_id": aid, "source": f"https://arxiv.org/abs/{aid}",
-                "matched_title": title, "score": 0.9}
+                "matched_title": title, "score": 0.9, "pdf_bytes": data}
     if not candidates:
         raise RetrievalError(
             "No arXiv match. This paper may not be on arXiv (e.g. an OSDI/SOSP-only paper). "
@@ -242,6 +247,7 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
     best = candidates[0]
     if best["score"] < min_score:
         return {"needs_confirmation": True, "candidates": candidates[:5], "title": title}
-    return {"full_text": _extract_pdf(_fetch(best["pdf_url"])), "arxiv_id": best["arxiv_id"],
+    data = _fetch(best["pdf_url"])
+    return {"full_text": _extract_pdf(data), "arxiv_id": best["arxiv_id"],
             "source": f"https://arxiv.org/abs/{best['arxiv_id']}",
-            "matched_title": best["title"], "score": best["score"]}
+            "matched_title": best["title"], "score": best["score"], "pdf_bytes": data}
