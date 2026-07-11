@@ -9,7 +9,7 @@ import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-nativ
 
 import { InlineMath, MathBlock } from '@/components/MathView';
 import { stripPseudoToolTags } from '@/lib/toolTags';
-import { Text } from '@/ui';
+import { Icon, Text } from '@/ui';
 import { colors, fonts, space } from '@/theme/tokens';
 
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
@@ -254,11 +254,27 @@ function Inline({
           ) : t.type === 'code' ? (
             <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</RNText>
           ) : t.type === 'link' ? (
-            <RNText
-              style={{ color: colors.mint, textDecorationLine: 'underline' }}
-              onPress={() => onLinkPress(t.href ?? '', t.text)}>
-              {t.text}
-            </RNText>
+            t.href?.startsWith('rc-paper:') ? (
+              // A project paper — a *relationship* (design system: violet), rendered as a
+              // purpose-built reference: small paper glyph + violet semibold name, no underline.
+              // Tapping opens the paper's action sheet (via the rc-paper link handler).
+              <RNText
+                onPress={() => onLinkPress(t.href ?? '', t.text)}
+                style={{
+                  color: colors.violet,
+                  fontFamily: serif ? fonts.serifSemiBold : fonts.bodySemiBold,
+                }}>
+                <Icon name="book-open" size={serif ? 13 : 12} color={colors.violet} />
+                {' '}
+                {t.text}
+              </RNText>
+            ) : (
+              <RNText
+                style={{ color: colors.mint, textDecorationLine: 'underline' }}
+                onPress={() => onLinkPress(t.href ?? '', t.text)}>
+                {t.text}
+              </RNText>
+            )
           ) : t.type === 'bold' ? (
             <RNText style={{ fontFamily: serif ? fonts.serifSemiBold : fonts.bodyBold }}>
               {t.text}
