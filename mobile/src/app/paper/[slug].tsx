@@ -813,8 +813,9 @@ function DiscussionThread({
   }, [editing, state, stream.streaming, transcript]);
 
   // Drop a chosen passage into the reply as a Markdown blockquote and focus the composer. Only
-  // offered when a composer exists (not on a committed session).
-  const canQuote = state !== 'committed';
+  // offered when a reply composer exists: not on a committed session, and not while editing a
+  // user message (there the composer holds that message's draft — quoting would corrupt it).
+  const canQuote = state !== 'committed' && !editing;
   const quoteIntoReply = useCallback((quoted: string) => {
     const block = quoted.trim().split('\n').map((l) => `> ${l}`).join('\n');
     const existing = inputText.trim();

@@ -33,6 +33,21 @@ test('a highlighted range switches scope and Quote passes just that substring', 
   expect(onQuote).toHaveBeenCalledWith('beta');
 });
 
+test('reopening on a different answer clears the prior selection', () => {
+  const onQuote = jest.fn();
+  const { rerender } = render(
+    <SelectTextSheet visible text={TEXT} onClose={() => {}} onQuote={onQuote} />,
+  );
+  selectRange(6, 10); // "beta"
+  expect(screen.getByText('Quote selection')).toBeTruthy();
+  // The sheet stays mounted; the parent reuses it for a different answer.
+  const OTHER = 'A completely different response.';
+  rerender(<SelectTextSheet visible text={OTHER} onClose={() => {}} onQuote={onQuote} />);
+  expect(screen.getByText('Quote all')).toBeTruthy();
+  fireEvent.press(screen.getByText('Quote all'));
+  expect(onQuote).toHaveBeenCalledWith(OTHER);
+});
+
 test('no onQuote (committed session) hides the Quote action, keeps Copy', () => {
   render(<SelectTextSheet visible text={TEXT} onClose={() => {}} />);
   expect(screen.getByText('Copy all')).toBeTruthy();

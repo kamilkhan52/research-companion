@@ -7,7 +7,7 @@
 // Modal (no RNGH in the path), where native selection is reliable and its range is observable —
 // so we can copy the selection or drop it into the reply as a Markdown blockquote.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 
@@ -28,6 +28,12 @@ export function SelectTextSheet({
   onQuote?: (quoted: string) => void;
 }) {
   const [sel, setSel] = useState({ start: 0, end: 0 });
+  // The sheet stays mounted (the parent just toggles `visible`), so clear any prior selection
+  // whenever it opens or the answer changes — otherwise stale indices would slice a phantom
+  // substring out of the new text before the reader has touched anything.
+  useEffect(() => {
+    setSel({ start: 0, end: 0 });
+  }, [visible, text]);
   const selected = sel.end > sel.start ? text.slice(sel.start, sel.end).trim() : '';
   const target = selected || text;
   const scope = selected ? 'selection' : 'all';
