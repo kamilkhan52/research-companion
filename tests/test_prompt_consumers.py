@@ -28,7 +28,9 @@ def test_agent_harness_resolves_both_tool_guidance_prompts(monkeypatch):
     agent_harness.build_notes_editor(model=model)
 
     assert captured[0]["system_prompt"] == "analysis system\n\nlive analyst guidance"
-    assert captured[1]["system_prompt"] == "live notes editor\n\nlive notes guidance"
+    assert captured[1]["system_prompt"] == (
+        "live notes editor\n\n" + agent.MATH_MARKDOWN_CONTRACT + "\n\nlive notes guidance"
+    )
 
 
 def test_retrieval_hunt_resolves_and_renders_registry_prompt(monkeypatch):
@@ -79,7 +81,11 @@ def test_analysis_and_narration_compose_self_contained_guidance(monkeypatch):
     monkeypatch.setattr(agent.assembler, "build_context", lambda slug: "paper context")
 
     system = agent._system_for("paper")
-    assert system.startswith("analysis instructions\n\ndescribe every referenced item in place")
+    assert system.startswith("analysis instructions\n\nMath formatting contract:")
+    assert "TeX inline math as `\\( ... \\)`" in system
+    assert "display math as `\\[ ... \\]`" in system
+    assert "Do not use single-dollar delimiters" in system
+    assert "describe every referenced item in place" in system
 
     captured = {}
     monkeypatch.setattr(agent.config, "load_settings", lambda: {"model": "model"})

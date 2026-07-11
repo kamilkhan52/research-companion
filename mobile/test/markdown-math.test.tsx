@@ -34,6 +34,16 @@ test('$$ display math is recognized', async () => {
   expect(screen.getByText('α + β')).toBeTruthy();
 });
 
+test('single-dollar inline math is accepted for compatibility', async () => {
+  await renderAsync(<Markdown text={'The update $x_i = x_i + 1$ is applied.'} />);
+  expect(screen.getByText('xᵢ = xᵢ + 1')).toBeTruthy();
+});
+
+test('currency dollar signs are not parsed as math delimiters', async () => {
+  await renderAsync(<Markdown text={'It costs $10–$20 per hour, not $5.'} />);
+  expect(screen.getByText(/\$10–\$20 per hour, not \$5\./)).toBeTruthy();
+});
+
 test('leaked tool tags render as muted status lines, not markup', async () => {
   await renderAsync(
     <Markdown
