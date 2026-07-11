@@ -5,11 +5,32 @@
 //    self-contained SVG whose glyphs are paths, so no fonts, no WebView, and it renders as a
 //    native view via react-native-svg (fast inside the inverted chat list, crisp at any zoom).
 //  - `texToPlain` — a modest unicode approximation used wherever SVG isn't available: the
-//    pre-rebuild dev client (react-native-svg is a native module — guarded require below,
-//    same pattern as lib/haptics), a MathJax failure, or jest.
+//    pre-rebuild dev client (react-native-svg's native views aren't linked yet — the
+//    `svgNativeLinked` probe below gates on that, not just the JS require), a MathJax failure,
+//    or jest.
 //
 // Never import 'react-native-svg' directly elsewhere — take `SvgXml` from here so the
 // availability guard stays in one place.
+
+// react-native-svg's JS resolves even when its NATIVE side isn't linked (e.g. the pre-rebuild
+// dev client, which bundles the JS but has no RNSVG native views). Rendering an <SvgXml> then
+// hard-crashes at mount — `Can't find ViewManager 'RNSVGPath'`. So the JS `require` succeeding
+// is NOT enough; we must confirm the native module is present. On the New Architecture that's
+// the TurboModule RNSVGRenderableModule (react-native-svg registers it alongside its view
+// managers); on the old bridge it's the legacy view-manager config. Both are non-throwing
+// probes — `.get`, not `.getEnforcing` — and reflect the same native lib the RNSVG* views need.
+function svgNativeLinked(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const RN = require('react-native');
+    if (RN?.TurboModuleRegistry?.get) {
+      return RN.TurboModuleRegistry.get('RNSVGRenderableModule') != null;
+    }
+    return !!RN?.UIManager?.hasViewManagerConfig?.('RNSVGPath');
+  } catch {
+    return false;
+  }
+}
 
 let cachedSvgXml: unknown | null | undefined;
 
@@ -17,7 +38,7 @@ export function getSvgXml(): unknown | null {
   if (cachedSvgXml === undefined) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      cachedSvgXml = require('react-native-svg').SvgXml ?? null;
+      cachedSvgXml = (svgNativeLinked() ? require('react-native-svg').SvgXml : null) ?? null;
     } catch {
       cachedSvgXml = null;
     }
