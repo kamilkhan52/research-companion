@@ -57,6 +57,7 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { SelectTextSheet } from '@/components/chat/SelectTextSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { GeneratingBar } from '@/components/NarrationTranscript';
@@ -768,16 +769,21 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
 
-  // Long-press a USER message for its actions (Copy + Edit). Assistant answers don't route here
-  // — their long-press starts text selection instead (renderBubble disables the bubble's
-  // long-press; the answer's own action row carries Copy). Rendered through the app's own
-  // OptionsSheet — the native action sheet ignores the design language (polish plan F.5:
-  // OptionsSheet is the only menu idiom anywhere in the app).
+  // Long-press behaviour splits by author. An assistant answer opens the Select-text sheet so a
+  // passage can be highlighted and quoted (reliable native selection off the gesture-handler
+  // list — see SelectTextSheet). A user message opens the OptionsSheet menu (Copy + Edit) — it
+  // has no other copy affordance and Edit lives there. (Menus are the app's only menu idiom,
+  // polish plan F.5 — never the native action sheet.)
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
+  const [selectText, setSelectText] = useState<string | null>(null);
   const onLongPressMessage = useCallback((_context: unknown, message: DiscussionMessage) => {
     const entry = message.entry;
-    if (!entry || entry.role !== 'user') return;
-    const copyText = entry.text;
+    if (!entry) return;
+    if (entry.role === 'assistant') {
+      setSelectText(entry.canonical);
+      return;
+    }
+    if (entry.role !== 'user') return;
     // No editing once committed: that state's toolbar has no composer, so an edit could
     // neither be typed nor cancelled (reopen the discussion instead).
     const canEdit =
@@ -790,7 +796,7 @@ function DiscussionThread({
         key: 'copy',
         title: 'Copy',
         icon: 'copy',
-        onPress: () => void Clipboard.setStringAsync(copyText),
+        onPress: () => void Clipboard.setStringAsync(entry.text),
       },
     ];
     if (canEdit) {
@@ -805,6 +811,18 @@ function DiscussionThread({
     setMsgMenu(options);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, stream.streaming, transcript]);
+
+  // Drop a chosen passage into the reply as a Markdown blockquote and focus the composer. Only
+  // offered when a composer exists (not on a committed session).
+  const canQuote = state !== 'committed';
+  const quoteIntoReply = useCallback((quoted: string) => {
+    const block = quoted.trim().split('\n').map((l) => `> ${l}`).join('\n');
+    const existing = inputText.trim();
+    onChangeText(existing ? `${existing}\n\n${block}\n\n` : `${block}\n\n`);
+    setSelectText(null);
+    setTimeout(() => inputRef.current?.focus(), 50);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputText, onChangeText]);
 
   // A persisted edit can outlive its window (e.g. the notes were committed from another
   // device while an edit draft sat here). Committed state has no composer to show or cancel
@@ -839,29 +857,12 @@ function DiscussionThread({
     );
   }, [pid, slug, title, favorites, handleRetry]);
 
-  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => {
-    // Assistant answers (left) are long-press-to-select-text, not a menu: the body's Markdown is
-    // `selectable`, so the reader can highlight a passage to quote. Copy already lives on the
-    // answer's own action row, so no menu is lost. User messages (right) keep their long-press
-    // menu (Copy + Edit) — they have no other copy affordance.
-    //
-    // The library wraps the bubble in `<Pressable onPress onLongPress {...touchableProps}>`.
-    // Nulling only onLongPress isn't enough: onPress stays live, so the Pressable still claims
-    // the touch responder and the nested Text never gets the native long-press that starts
-    // Android's selection ActionMode. `pointerEvents: 'box-none'` makes the Pressable itself a
-    // non-target while its children (selectable text, the action-row buttons, links) stay
-    // interactive — so selection begins and Copy/Listen/Retry still work.
-    // (Caveat: this rides the default Bubble path. If a `reactions` prop is ever enabled the
-    // Bubble switches to a GestureDetector path that ignores touchableProps — revisit then.)
-    const isAssistant = props.position === 'left';
-    return (
-      <Bubble
-        {...props}
-        wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
-        touchableProps={isAssistant ? { pointerEvents: 'box-none' } : props.touchableProps}
-      />
-    );
-  }, []);
+  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
+    <Bubble
+      {...props}
+      wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
+    />
+  ), []);
 
   const renderSend = useCallback(() => {
     // While a response is generating, the send slot becomes Stop (polish plan F.1): the
@@ -1032,6 +1033,12 @@ function DiscussionThread({
       visible={!!msgMenu}
       onClose={() => setMsgMenu(null)}
       options={msgMenu ?? []}
+    />
+    <SelectTextSheet
+      visible={selectText != null}
+      text={selectText ?? ''}
+      onClose={() => setSelectText(null)}
+      onQuote={canQuote ? quoteIntoReply : undefined}
     />
     </>
   );
@@ -1377,7 +1384,7 @@ function AssistantBody({
 
   return (
     <View style={styles.assistantBody}>
-      <Markdown text={canonical} selectable />
+      <Markdown text={canonical} />
       {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
       {audioError ? (
         <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>

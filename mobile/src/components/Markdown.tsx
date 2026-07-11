@@ -57,18 +57,7 @@ function buildTitleMatcher(papers: { title: string; slug: string }[]): TitleMatc
   };
 }
 
-export function Markdown({
-  text,
-  onLinkPress,
-  selectable = false,
-}: {
-  text: string;
-  onLinkPress?: LinkHandler;
-  // When true, block text is OS-selectable so the reader can highlight and quote a passage
-  // (assistant responses — the long-press-to-select affordance). The caller must also stop the
-  // enclosing pressable from swallowing the long-press, or selection never begins.
-  selectable?: boolean;
-}) {
+export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
   // Old transcripts may carry leaked `<search for="…">` pseudo tool tags (G.2); the backend
   // cleans new ones before recording, this pass cleans the archive at render time.
   const blocks = useMemo(() => parseBlocks(stripPseudoToolTags(text)), [text]);
@@ -80,7 +69,7 @@ export function Markdown({
     <TitleMatcherContext.Provider value={matcher}>
       <View style={{ gap: space.sm }}>
         {blocks.map((block, i) => (
-          <Block key={i} block={block} onLinkPress={handleLink} selectable={selectable} />
+          <Block key={i} block={block} onLinkPress={handleLink} />
         ))}
       </View>
     </TitleMatcherContext.Provider>
@@ -187,22 +176,11 @@ const HEADING_STYLES: Record<number, object> = {
   4: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 22 },
 };
 
-function Block({
-  block,
-  onLinkPress,
-  selectable = false,
-}: {
-  block: Block;
-  onLinkPress: LinkHandler;
-  selectable?: boolean;
-}) {
-  // `selectable` on a Text applies to its nested Text children, so setting it on each block's
-  // outer Text covers the inline spans within.
+function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
   switch (block.kind) {
     case 'heading':
       return (
         <Text
-          selectable={selectable}
           style={[
             HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
             { color: colors.text, marginTop: space.xs },
@@ -212,14 +190,14 @@ function Block({
       );
     case 'paragraph':
       return (
-        <Text variant="serifBody" selectable={selectable}>
+        <Text variant="serifBody">
           <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text variant="serifItalic" selectable={selectable}>
+          <Text variant="serifItalic">
             <Inline text={block.text} onLinkPress={onLinkPress} />
           </Text>
         </View>
@@ -227,9 +205,7 @@ function Block({
     case 'code':
       return (
         <View style={styles.code}>
-          <Text selectable={selectable} style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>
-            {block.text}
-          </Text>
+          <Text style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>{block.text}</Text>
         </View>
       );
     case 'math':
@@ -242,7 +218,7 @@ function Block({
               <Text variant="serifBody" color={colors.mint} style={{ width: 22 }}>
                 {block.ordered ? `${idx + 1}.` : '•'}
               </Text>
-              <Text variant="serifBody" selectable={selectable} style={{ flex: 1 }}>
+              <Text variant="serifBody" style={{ flex: 1 }}>
                 <Inline text={item} onLinkPress={onLinkPress} />
               </Text>
             </View>
