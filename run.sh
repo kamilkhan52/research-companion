@@ -39,10 +39,10 @@ PORT="${RC_PORT:-8000}"
 # loop. A reload is a full process restart, so it drops in-memory job registries and kills any
 # in-flight background job (chat/audio/graph/preview) — fine for iterating on code, but avoid
 # saving while a long job you care about is running. Still one worker (invariant 6 holds).
-EXTRA=()
 if [ "${RC_RELOAD:-}" = "1" ]; then
-  EXTRA+=(--reload --reload-dir app)
+  echo "Serving on http://${HOST}:${PORT} with app auto-reload"
+  exec ./.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT" --reload --reload-dir app "$@"
 fi
 
 echo "Serving on http://${HOST}:${PORT}  (open http://localhost:${PORT} on this machine)"
-exec ./.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT" "${EXTRA[@]}" "$@"
+exec ./.venv/bin/uvicorn app.main:app --host "$HOST" --port "$PORT" "$@"
