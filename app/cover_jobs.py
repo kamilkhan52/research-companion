@@ -14,12 +14,14 @@ session index and usage ledger) and are git-ignored.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
+import httpx
 
-from . import config, logging_config, retriever, store
+from . import config, logging_config, store
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id
 
@@ -29,6 +31,15 @@ log = logging_config.get("cover")
 # thumbnail (≈250px at 3x density), but rendering wider keeps the same cache crisp if a larger
 # "big icon" reuses it later. A first page at this width is a ~150–250KB PNG.
 COVER_WIDTH_PX = 900
+
+# Hard resource ceilings. This job runs in the single uvicorn process (invariant 6) against a
+# remotely-supplied PDF, so an oversized download or a pathological page must not be able to OOM
+# and take the whole service down. The download is byte-capped; the raster is capped on both a
+# single dimension and total pixels, so an extreme aspect ratio (a tiny width would otherwise make
+# the width-target zoom enormous) can't blow up the pixmap allocation.
+COVER_MAX_PDF_BYTES = 40_000_000   # matches retrieval_agent's PDF ceiling
+COVER_MAX_DIM = 5_000              # cap on either output dimension (px)
+COVER_MAX_PIXELS = 4_000_000       # cap on total output pixels
 
 _registry: JobRegistry[CoverJob] = JobRegistry("cover", max_finished=None)
 
@@ -63,15 +74,51 @@ def _pdf_url_for(slug: str) -> str | None:
     return src
 
 
+def _download_pdf(url: str) -> bytes:
+    """Stream a PDF with a hard byte ceiling. A cover is fetched once and cached, but this runs in
+    the single shared process, so an oversized/malicious source must not be able to exhaust memory:
+    reject an over-limit Content-Length up front and stop the stream the moment it crosses the cap.
+    Raises CoverError on any transport error or when the limit is exceeded."""
+    headers = {"User-Agent": "research-companion/1.0 (paper cover render)"}
+    try:
+        with httpx.stream("GET", url, headers=headers, timeout=60, follow_redirects=True) as r:
+            r.raise_for_status()
+            declared = r.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > COVER_MAX_PDF_BYTES:
+                raise CoverError(f"PDF too large ({declared} bytes)")
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in r.iter_bytes():
+                total += len(chunk)
+                if total > COVER_MAX_PDF_BYTES:
+                    raise CoverError(f"PDF exceeds {COVER_MAX_PDF_BYTES}-byte cover limit")
+                chunks.append(chunk)
+    except httpx.HTTPError as e:
+        raise CoverError(f"Download failed for {url}: {e}") from e
+    return b"".join(chunks)
+
+
 def _render_first_page(pdf: bytes) -> bytes:
-    """PNG bytes of page 1 rasterized to COVER_WIDTH_PX wide. Raises CoverError on a PDF with no
-    pages; PyMuPDF raises on malformed input (caught by the job runner and marked terminal)."""
+    """PNG bytes of page 1, rasterized toward COVER_WIDTH_PX wide but clamped so no single
+    dimension exceeds COVER_MAX_DIM and total pixels stay under COVER_MAX_PIXELS. Raises CoverError
+    on a PDF with no pages or a degenerate page; PyMuPDF raises on malformed input (caught by the
+    job runner and marked terminal)."""
     doc = fitz.open(stream=pdf, filetype="pdf")
     try:
         if doc.page_count < 1:
             raise CoverError("PDF has no pages")
         page = doc.load_page(0)
-        zoom = COVER_WIDTH_PX / page.rect.width
+        w, h = page.rect.width, page.rect.height
+        if not (math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0):
+            raise CoverError("PDF page has invalid dimensions")
+        zoom = COVER_WIDTH_PX / w
+        # Clamp an extreme aspect ratio: bound the tall dimension, then total pixels.
+        if h * zoom > COVER_MAX_DIM:
+            zoom = COVER_MAX_DIM / h
+        if (w * zoom) * (h * zoom) > COVER_MAX_PIXELS:
+            zoom *= math.sqrt(COVER_MAX_PIXELS / ((w * zoom) * (h * zoom)))
+        if w * zoom < 1 or h * zoom < 1:
+            raise CoverError("PDF page too degenerate to render")
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
         return pix.tobytes("png")
     finally:
@@ -82,7 +129,7 @@ def _work(job: CoverJob) -> None:
     url = _pdf_url_for(job.slug)
     if not url:
         raise CoverError(f"No PDF source for paper '{job.slug}'")
-    data = retriever._fetch(url)
+    data = _download_pdf(url)
     if not data.startswith(b"%PDF"):
         raise CoverError(f"Source for '{job.slug}' is not a PDF")
     png = _render_first_page(data)
