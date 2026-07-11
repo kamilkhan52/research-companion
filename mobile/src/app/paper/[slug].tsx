@@ -841,16 +841,24 @@ function DiscussionThread({
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => {
     // Assistant answers (left) are long-press-to-select-text, not a menu: the body's Markdown is
-    // `selectable`, and here we override the bubble Pressable's onLongPress to undefined so it
-    // stops swallowing the gesture and native text selection can start. Copy already lives on
-    // the answer's own action row, so no menu is lost. User messages (right) keep their
-    // long-press menu (Copy + Edit) — they have no other copy affordance.
+    // `selectable`, so the reader can highlight a passage to quote. Copy already lives on the
+    // answer's own action row, so no menu is lost. User messages (right) keep their long-press
+    // menu (Copy + Edit) — they have no other copy affordance.
+    //
+    // The library wraps the bubble in `<Pressable onPress onLongPress {...touchableProps}>`.
+    // Nulling only onLongPress isn't enough: onPress stays live, so the Pressable still claims
+    // the touch responder and the nested Text never gets the native long-press that starts
+    // Android's selection ActionMode. `pointerEvents: 'box-none'` makes the Pressable itself a
+    // non-target while its children (selectable text, the action-row buttons, links) stay
+    // interactive — so selection begins and Copy/Listen/Retry still work.
+    // (Caveat: this rides the default Bubble path. If a `reactions` prop is ever enabled the
+    // Bubble switches to a GestureDetector path that ignores touchableProps — revisit then.)
     const isAssistant = props.position === 'left';
     return (
       <Bubble
         {...props}
         wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
-        touchableProps={isAssistant ? { onLongPress: undefined } : props.touchableProps}
+        touchableProps={isAssistant ? { pointerEvents: 'box-none' } : props.touchableProps}
       />
     );
   }, []);
