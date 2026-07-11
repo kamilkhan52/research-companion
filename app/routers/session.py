@@ -342,7 +342,8 @@ async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
     store.write_full_text(slug, paper.title, full_text,
                           {"slug": slug, "source": f"upload:{file.filename}"})
-    cover_jobs.render_from_pdf(slug, data)  # reuse the uploaded PDF for the cover
+    # Reuse the uploaded PDF for the cover, off the event loop (CPU-bound rasterization).
+    await asyncio.to_thread(cover_jobs.render_from_pdf, slug, data)
     return {"ok": True, "retrieved": True}
 
 
