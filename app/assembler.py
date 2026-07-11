@@ -25,6 +25,10 @@ def build_review_context() -> str:
     else:
         parts.append("# Per-paper Notes\n\nNo papers have been read in full yet.")
     parts.append("# The full reading list (papers not yet read carry their abstract)\n\n"
+                 "(Whenever you name ANY paper on this list, render that name as a markdown link "
+                 "to its `link:` target below (an `rc-paper:<slug>`), verbatim — including in the "
+                 "rewritten SYNTHESIS — so the reader can tap it. Link the first mention in each "
+                 "section; never invent a slug for a paper that isn't listed.)\n\n"
                  + store.reading_list_overview())
     return "\n\n---\n\n".join(parts)
 

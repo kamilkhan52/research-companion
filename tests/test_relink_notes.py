@@ -81,3 +81,23 @@ def test_linkify_prefers_longer_alias():
                             _P("Sarathi", "sarathi")])
     out = linkify("We compare Sarathi-Serve to baselines.", amap)
     assert "[Sarathi-Serve](rc-paper:sarathi-serve)" in out
+
+
+def test_linkify_skips_tilde_and_multibacktick_and_unclosed_fences():
+    amap = build_alias_map([_P("Orca", "orca")])
+    assert linkify("~~~\nOrca\n~~~", amap) == "~~~\nOrca\n~~~"           # tilde fence
+    assert linkify("``Orca ` x``", amap) == "``Orca ` x``"              # multi-backtick span
+    assert linkify("```\nOrca\nnever closed", amap) == "```\nOrca\nnever closed"  # unclosed fence
+
+
+def test_linkify_does_not_corrupt_reference_or_image_links():
+    amap = build_alias_map([_P("Orca", "orca")])
+    assert linkify("see [Orca][paper] now", amap) == "see [Orca][paper] now"   # reference link
+    assert linkify("![Orca](img.png)", amap) == "![Orca](img.png)"             # image
+    assert linkify("[Orca]", amap) == "[Orca]"                                 # shortcut ref
+
+
+def test_linkify_respects_unicode_word_boundaries():
+    amap = build_alias_map([_P("Orca", "orca")])
+    assert linkify("αOrcaβ appears", amap) == "αOrcaβ appears"   # inside a Greek-adjacent token
+    assert "[Orca](rc-paper:orca)" in linkify("_Orca_ in italics", amap)  # emphasis still links

@@ -34,8 +34,49 @@ from app import config, projects, store  # noqa: E402
 # A paper "system name" or slug shorter than this is too generic to match safely.
 MIN_ALIAS_LEN = 4
 
-# Segments matching left alone: fenced code, inline code, an existing markdown link, an html tag.
-_PROTECTED = re.compile(r"```.*?```|`[^`]*`|\[[^\]]*\]\([^)]*\)|<[^>]+>", re.DOTALL)
+# A line-leading code fence: ``` or ~~~ (length >= 3), variable length.
+_FENCE_LINE = re.compile(r"[ \t]*(`{3,}|~{3,})")
+
+# Inline constructs to leave untouched inside a prose (non-fenced) region:
+#   `code` / ``code with ` inside`` (N backticks … N backticks),
+#   an inline/reference/shortcut/image link — the WHOLE construct incl. destination, so we never
+#   linkify link text or a URL, nor split `[Orca][ref]` into invalid nesting, and an html tag.
+_INLINE_PROTECT = re.compile(
+    r"(`+)(?:.|\n)*?\1"
+    r"|!?\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?"
+    r"|<[^>]+>",
+    re.DOTALL,
+)
+
+
+def _iter_fenced(text: str):
+    """Yield (chunk, is_code): line-leading ``` / ~~~ fenced blocks are code (an unclosed fence
+    runs to EOF); everything else is prose. Closing fence must match the opening char and be at
+    least as long."""
+    lines = text.splitlines(keepends=True)
+    buf: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        m = _FENCE_LINE.match(lines[i])
+        if not m:
+            buf.append(lines[i])
+            i += 1
+            continue
+        if buf:
+            yield "".join(buf), False
+            buf = []
+        fchar, flen = m.group(1)[0], len(m.group(1))
+        code = [lines[i]]
+        i += 1
+        while i < n:
+            code.append(lines[i])
+            close = _FENCE_LINE.match(lines[i])
+            i += 1
+            if close and close.group(1)[0] == fchar and len(close.group(1)) >= flen:
+                break
+        yield "".join(code), True
+    if buf:
+        yield "".join(buf), False
 
 
 def build_alias_map(papers, curated: dict[str, str] | None = None) -> dict[str, str]:
@@ -71,8 +112,10 @@ def linkify(text: str, alias_map: dict[str, str], exclude_slug: str | None = Non
     if not usable:
         return text
     # Longest alias first so a full title wins over its shorter system-name prefix at one spot.
+    # Boundaries reject a match inside a word Unicode-aware: `[^\W_]` is a letter/digit (underscore
+    # excluded so markdown emphasis `_Orca_` still links), so "αOrcaβ" and "Orca2" don't match.
     body = "|".join(re.escape(a) for a in sorted(usable, key=len, reverse=True))
-    pattern = re.compile(rf"(?<![A-Za-z0-9])({body})(?![A-Za-z0-9])", re.IGNORECASE)
+    pattern = re.compile(rf"(?<![^\W_])({body})(?![^\W_])", re.IGNORECASE)
     # Seed with slugs already linked in the text, so a paper linked once elsewhere isn't linked
     # again and re-running the migration is a no-op (idempotent).
     linked: set[str] = set(re.findall(r"rc-paper:([a-z0-9-]+)", text))
@@ -92,13 +135,17 @@ def linkify(text: str, alias_map: dict[str, str], exclude_slug: str | None = Non
 
         return pattern.sub(repl, seg)
 
-    out, pos = [], 0
-    for prot in _PROTECTED.finditer(text):
-        out.append(link_segment(text[pos:prot.start()]))
-        out.append(prot.group(0))  # protected — unchanged
-        pos = prot.end()
-    out.append(link_segment(text[pos:]))
-    return "".join(out)
+    def link_prose(prose: str) -> str:
+        out, pos = [], 0
+        for prot in _INLINE_PROTECT.finditer(prose):
+            out.append(link_segment(prose[pos:prot.start()]))
+            out.append(prot.group(0))  # inline code / link / tag — unchanged
+            pos = prot.end()
+        out.append(link_segment(prose[pos:]))
+        return "".join(out)
+
+    return "".join(chunk if is_code else link_prose(chunk)
+                   for chunk, is_code in _iter_fenced(text))
 
 
 def _relink_file(path: Path, new_text: str, original: str, dry_run: bool) -> bool:
