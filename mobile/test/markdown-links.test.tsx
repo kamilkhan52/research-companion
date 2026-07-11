@@ -14,7 +14,8 @@ test('renders inline links and routes taps to the handler with href + label', as
   // Emphasis still parses around the link.
   expect(screen.getByText('bold')).toBeTruthy();
 
-  await fireEventAsync.press(screen.getByText('the Transformer'));
+  // Paper refs render a leading paper glyph before the name, so match on a substring.
+  await fireEventAsync.press(screen.getByText(/the Transformer/));
   expect(onLinkPress).toHaveBeenCalledWith('rc-paper:transformer', 'the Transformer');
 });
 
@@ -46,7 +47,7 @@ test('an exact known paper title becomes a live rc-paper link', async () => {
       />
     </PaperIndexContext.Provider>,
   );
-  await fireEventAsync.press(screen.getByText('DistServe: Disaggregating Prefill and Decoding'));
+  await fireEventAsync.press(screen.getByText(/DistServe: Disaggregating Prefill and Decoding/));
   expect(onLinkPress).toHaveBeenCalledWith(
     'rc-paper:distserve',
     'DistServe: Disaggregating Prefill and Decoding',
@@ -63,7 +64,7 @@ test('title matching is case-insensitive but never fuzzy or short', async () => 
       />
     </PaperIndexContext.Provider>,
   );
-  await fireEventAsync.press(screen.getByText('distserve: disaggregating prefill and decoding'));
+  await fireEventAsync.press(screen.getByText(/distserve: disaggregating prefill and decoding/));
   expect(onLinkPress).toHaveBeenCalledWith(
     'rc-paper:distserve',
     'distserve: disaggregating prefill and decoding',
