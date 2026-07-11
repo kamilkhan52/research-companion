@@ -40,11 +40,12 @@ MIN_ALIAS_LEN = 4
 _FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})")
 _FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*(?:\n|\r\n)?\Z")
 
-# Inline constructs to leave untouched in prose: an inline/reference/shortcut/image link (the WHOLE
-# construct incl. destination, so we never linkify link text or a URL nor split `[Orca][ref]` into
-# invalid nesting) and an html tag. Both are linear (no nested quantifiers → no backtracking).
-# Backtick code spans are handled by a separate linear scanner (regex there risks ReDoS).
-_LINK_OR_TAG = re.compile(r"!?\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?|<[^>]+>", re.DOTALL)
+# An html tag on a single line (bounded so it can't run away).
+_TAG = re.compile(r"<[^>\n]+>")
+
+# A link destination/reference longer than this on one line isn't a real link — cap the scan so
+# the pass stays linear on adversarial input (real note URLs are far shorter).
+_DEST_SCAN_CAP = 2048
 
 
 def _iter_fenced(text: str):
@@ -115,6 +116,76 @@ def _code_span_intervals(prose: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _link_extent(s: str, close_bracket: int) -> int:
+    """Given a `]` at `close_bracket`, the index just past the whole link construct: `](dest)` or
+    `][ref]` on the same line, else just the shortcut `]`. Destination scan is line- and
+    cap-bounded, so this is O(1) per link."""
+    k = close_bracket + 1
+    if k < len(s) and s[k] in "([":
+        closer = ")" if s[k] == "(" else "]"
+        limit = min(len(s), k + _DEST_SCAN_CAP)
+        end = s.find(closer, k + 1, limit)
+        newline = s.find("\n", k + 1, limit)
+        if end != -1 and (newline == -1 or end < newline):
+            return end + 1
+    return close_bracket + 1  # shortcut/unclosed tail — protect only the [ … ] text
+
+
+def _protected_spans(prose: str) -> list[tuple[int, int]]:
+    """Merged `[start, end)` ranges to leave untouched: inline code spans, links/images (the WHOLE
+    construct, incl. any code span inside the link text — so a link is never split), and html tags.
+    One linear pass: code spans are precomputed and skipped; `[`/`]` are matched with a stack so
+    even `[[[[…` is O(n)."""
+    code = _code_span_intervals(prose)
+    spans = list(code)
+    stack: list[int] = []           # start index of each unmatched '[' (or '!' of an image)
+    n, i, ci = len(prose), 0, 0
+    while i < n:
+        while ci < len(code) and code[ci][1] <= i:
+            ci += 1
+        if ci < len(code) and code[ci][0] <= i < code[ci][1]:
+            i = code[ci][1]         # skip an inline code span (its brackets don't count)
+            continue
+        c = prose[i]
+        if c == "<":
+            m = _TAG.match(prose, i)
+            if m:
+                spans.append((i, m.end()))
+                i = m.end()
+                continue
+        elif c == "!" and i + 1 < n and prose[i + 1] == "[":
+            stack.append(i)
+            i += 2
+            continue
+        elif c == "[":
+            stack.append(i)
+            i += 1
+            continue
+        elif c == "]":
+            if stack:
+                start = stack.pop()
+                end = _link_extent(prose, i)
+                spans.append((start, end))
+                i = end
+                continue
+        i += 1
+    return _merge_intervals(spans)
+
+
+def _merge_intervals(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+    spans.sort()
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def build_alias_map(papers, curated: dict[str, str] | None = None) -> dict[str, str]:
     """Lowercased alias -> slug. Aliases: full title, title head before the first colon, the slug,
     and the slug with hyphens spaced. `curated` overrides/extends (its entries win)."""
@@ -171,24 +242,15 @@ def linkify(text: str, alias_map: dict[str, str], exclude_slug: str | None = Non
 
         return pattern.sub(repl, seg)
 
-    def link_gap(seg: str) -> str:
-        """Linkify a stretch of prose that contains no code spans, passing links/tags through."""
-        out, pos = [], 0
-        for prot in _LINK_OR_TAG.finditer(seg):  # linear (bounded char classes)
-            out.append(link_segment(seg[pos:prot.start()]))
-            out.append(prot.group(0))
-            pos = prot.end()
-        out.append(link_segment(seg[pos:]))
-        return "".join(out)
-
     def link_prose(prose: str) -> str:
-        """Linkify prose, passing inline code spans (precomputed in one linear pass) untouched."""
+        """Linkify the plain-text gaps between protected spans (code spans, whole links/images,
+        html tags), which are computed in one linear pass."""
         out, pos = [], 0
-        for start, end in _code_span_intervals(prose):
-            out.append(link_gap(prose[pos:start]))
-            out.append(prose[start:end])  # code span — unchanged
+        for start, end in _protected_spans(prose):
+            out.append(link_segment(prose[pos:start]))
+            out.append(prose[start:end])  # protected — unchanged
             pos = end
-        out.append(link_gap(prose[pos:]))
+        out.append(link_segment(prose[pos:]))
         return "".join(out)
 
     return "".join(chunk if is_code else link_prose(chunk)

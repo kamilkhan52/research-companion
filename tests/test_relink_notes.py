@@ -151,3 +151,21 @@ def test_linkify_is_linear_over_many_backtick_runs():
     out = linkify(text, amap)
     assert time.perf_counter() - start < 1.0
     assert "[Orca](rc-paper:orca)" in out
+
+
+def test_linkify_does_not_corrupt_a_link_containing_a_code_span():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # The whole link is protected — the code span inside must not split it (past corruption:
+    # [[Orca](rc-paper:orca) `x`](dest)).
+    assert linkify("[Orca `x`](dest)", amap) == "[Orca `x`](dest)"
+    assert linkify("[Orca `x`][ref]", amap) == "[Orca `x`][ref]"
+    assert linkify("![Orca `x`](img.png)", amap) == "![Orca `x`](img.png)"
+
+
+def test_linkify_is_linear_over_unmatched_brackets_and_dests():
+    amap = build_alias_map([_P("Orca", "orca")])
+    for text in ("[" * 40000 + " Orca", "[a](" * 20000 + " Orca"):
+        start = time.perf_counter()
+        out = linkify(text, amap)
+        assert time.perf_counter() - start < 1.0
+        assert "[Orca](rc-paper:orca)" in out
