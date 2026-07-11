@@ -3,6 +3,7 @@ uvicorn[standard]>=0.29
 httpx>=0.27
 pyjwt[crypto]>=2.8
 pypdf>=4.2
+pymupdf>=1.24            # rasterize a paper's first PDF page to a cover image (app/cover_jobs.py)
 feedparser>=6.0
 python-dotenv>=1.0
 python-multipart>=0.0.9   # FastAPI file/form uploads (user-supplied paper PDFs)

@@ -313,6 +313,21 @@ def arxiv_id_for(slug: str) -> str:
     return ""
 
 
+_SOURCE_META_RE = re.compile(r"^- source:\s*(?P<url>\S+)", re.M)
+
+
+def source_url_for(slug: str) -> str:
+    """The source URL recorded in the corpus file's meta header ("" if none / not retrieved).
+    Set when the paper was retrieved from an explicit PDF/abstract URL rather than an arXiv id;
+    lets callers that need the original PDF (e.g. cover rendering) recover it for non-arXiv
+    papers. Deterministic file read — no network (invariant 3)."""
+    p = corpus_path(slug)
+    if not p.exists():
+        return ""
+    m = _SOURCE_META_RE.search(p.read_text(encoding="utf-8", errors="ignore")[:2000])
+    return m.group("url").strip() if m else ""
+
+
 def reading_list_overview() -> str:
     """Compact list of every paper (group, title, status) so the agent can situate the
     current paper relative to the others.

@@ -196,6 +196,18 @@ export const startGraphBuild = (pid: string, force = false) =>
 export const getGraphBuildStatus = (pid: string) =>
   apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`);
 
+/** Render status for a paper's first-page cover image. `pending` -> poll again; `ready` ->
+ *  load paperCoverImageUrl; `unavailable` -> no fetchable PDF (fall back to an icon). */
+export const getPaperCover = (pid: string, slug: string) =>
+  apiGet<{ status: 'ready' | 'pending' | 'unavailable' }>(
+    `${P(pid)}/papers/${encodeURIComponent(slug)}/cover`,
+  );
+
+/** Absolute, ?token-authed URL for a paper's cached cover PNG (for <Image>). Only meaningful
+ *  once getPaperCover reports `ready`; 404s before then. */
+export const paperCoverImageUrl = (pid: string, slug: string): string =>
+  mediaUrl(`${P(pid)}/papers/${encodeURIComponent(slug)}/cover.png`);
+
 /** Absolute URL for a media path (relative like "/api/audio/<hash>.mp3"), with ?token for
  *  the audio player which can't send an Authorization header. */
 export function mediaUrl(relativePath: string): string {
