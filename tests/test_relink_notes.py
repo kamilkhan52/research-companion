@@ -197,3 +197,15 @@ def test_linkify_protects_reference_definitions():
     # A `[label]: dest` definition line (and the reference use) must be left intact.
     text = "[p]: https://ex.test/Orca\n\nSee [p]."
     assert linkify(text, amap) == text
+
+
+def test_linkify_protects_multiline_link_and_definition_titles():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # CommonMark allows the title to start on the next line — the paper name in it must be left be.
+    inline = '[impl](https://ex.test/src\n  "Orca implementation") then Orca'
+    assert (linkify(inline, amap)
+            == '[impl](https://ex.test/src\n  "Orca implementation") then [Orca](rc-paper:orca)')
+    image = '![alt](https://ex.test/i\n  "Orca")'
+    assert linkify(image, amap) == image
+    refdef = '[p]: https://ex.test/src\n  "Orca implementation"\n\nSee [p].'
+    assert linkify(refdef, amap) == refdef
