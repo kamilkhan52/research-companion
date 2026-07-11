@@ -101,3 +101,37 @@ def test_linkify_respects_unicode_word_boundaries():
     amap = build_alias_map([_P("Orca", "orca")])
     assert linkify("αOrcaβ appears", amap) == "αOrcaβ appears"   # inside a Greek-adjacent token
     assert "[Orca](rc-paper:orca)" in linkify("_Orca_ in italics", amap)  # emphasis still links
+
+
+def test_linkify_unmatched_backtick_is_linear_and_literal():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # A lone unmatched backtick followed by many newlines must not hang (linear scan) and the
+    # trailing name is plain text, so it links.
+    out = linkify("`" + "\n" * 500 + "Orca", amap)
+    assert "[Orca](rc-paper:orca)" in out
+
+
+def test_linkify_unequal_backtick_runs_do_not_form_a_span():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # Open run of 2, next run of 3 — different length, so no code span; Orca is literal text.
+    assert "[Orca](rc-paper:orca)" in linkify("``Orca``` tail", amap)
+
+
+def test_fence_closer_must_be_bare():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # "```stillcode" mid-block is NOT a closer, so both in-block mentions stay code; ``` closes it.
+    out = linkify("```\ncode Orca\n```stillcode\nmore Orca\n```\nprose Orca\n", amap)
+    assert out.count("rc-paper:orca") == 1
+    assert "prose [Orca](rc-paper:orca)" in out and "code Orca\n" in out  # in-block untouched
+
+
+def test_fence_requires_shallow_indentation():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # A 4-space-indented ``` is not a fence, so it must not protect the rest of the doc to EOF.
+    assert "[Orca](rc-paper:orca)" in linkify("    ```\nplain Orca text", amap)
+
+
+def test_shorter_fence_does_not_close_a_longer_opener():
+    amap = build_alias_map([_P("Orca", "orca")])
+    out = linkify("````\nin code Orca\n```\nstill code Orca\n````\nprose Orca\n", amap)
+    assert out.count("rc-paper:orca") == 1 and "prose [Orca](rc-paper:orca)" in out

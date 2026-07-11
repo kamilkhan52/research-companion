@@ -34,30 +34,28 @@ from app import config, projects, store  # noqa: E402
 # A paper "system name" or slug shorter than this is too generic to match safely.
 MIN_ALIAS_LEN = 4
 
-# A line-leading code fence: ``` or ~~~ (length >= 3), variable length.
-_FENCE_LINE = re.compile(r"[ \t]*(`{3,}|~{3,})")
+# A code fence (CommonMark): 0–3 spaces of indentation, then a run of >= 3 backticks or tildes.
+# An opener may carry an info string; a *closer* must be bare (only trailing whitespace after the
+# run), same fence char, and at least as long.
+_FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})")
+_FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*(?:\n|\r\n)?\Z")
 
-# Inline constructs to leave untouched inside a prose (non-fenced) region:
-#   `code` / ``code with ` inside`` (N backticks … N backticks),
-#   an inline/reference/shortcut/image link — the WHOLE construct incl. destination, so we never
-#   linkify link text or a URL, nor split `[Orca][ref]` into invalid nesting, and an html tag.
-_INLINE_PROTECT = re.compile(
-    r"(`+)(?:.|\n)*?\1"
-    r"|!?\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?"
-    r"|<[^>]+>",
-    re.DOTALL,
-)
+# Inline constructs to leave untouched in prose: an inline/reference/shortcut/image link (the WHOLE
+# construct incl. destination, so we never linkify link text or a URL nor split `[Orca][ref]` into
+# invalid nesting) and an html tag. Both are linear (no nested quantifiers → no backtracking).
+# Backtick code spans are handled by a separate linear scanner (regex there risks ReDoS).
+_LINK_OR_TAG = re.compile(r"!?\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])?|<[^>]+>", re.DOTALL)
 
 
 def _iter_fenced(text: str):
-    """Yield (chunk, is_code): line-leading ``` / ~~~ fenced blocks are code (an unclosed fence
-    runs to EOF); everything else is prose. Closing fence must match the opening char and be at
-    least as long."""
+    """Yield (chunk, is_code): a ``` / ~~~ fenced block is code (an unclosed fence runs to EOF);
+    everything else is prose. Only 0–3-space-indented fences count (a 4-space line is indented
+    text, not a fence), and a closer must be bare, same char, and at least as long as the opener."""
     lines = text.splitlines(keepends=True)
     buf: list[str] = []
     i, n = 0, len(lines)
     while i < n:
-        m = _FENCE_LINE.match(lines[i])
+        m = _FENCE_OPEN.match(lines[i])
         if not m:
             buf.append(lines[i])
             i += 1
@@ -70,13 +68,31 @@ def _iter_fenced(text: str):
         i += 1
         while i < n:
             code.append(lines[i])
-            close = _FENCE_LINE.match(lines[i])
+            close = _FENCE_CLOSE.match(lines[i])
             i += 1
             if close and close.group(1)[0] == fchar and len(close.group(1)) >= flen:
                 break
         yield "".join(code), True
     if buf:
         yield "".join(buf), False
+
+
+def _code_span_end(prose: str, run_start: int, run_len: int) -> int | None:
+    """Index just past the closing backtick run for a code span opened by `run_len` backticks at
+    `run_start`, or None if there is no closing run of exactly that length. Linear — each character
+    is visited once, so there is no catastrophic backtracking."""
+    k, n = run_start + run_len, len(prose)
+    while k < n:
+        if prose[k] != "`":
+            k += 1
+            continue
+        j = k
+        while j < n and prose[j] == "`":
+            j += 1
+        if j - k == run_len:  # a run of exactly the opening length closes the span
+            return j
+        k = j  # a run of a different length can't close it — skip past and keep looking
+    return None
 
 
 def build_alias_map(papers, curated: dict[str, str] | None = None) -> dict[str, str]:
@@ -136,12 +152,37 @@ def linkify(text: str, alias_map: dict[str, str], exclude_slug: str | None = Non
         return pattern.sub(repl, seg)
 
     def link_prose(prose: str) -> str:
-        out, pos = [], 0
-        for prot in _INLINE_PROTECT.finditer(prose):
-            out.append(link_segment(prose[pos:prot.start()]))
-            out.append(prot.group(0))  # inline code / link / tag — unchanged
-            pos = prot.end()
-        out.append(link_segment(prose[pos:]))
+        """Linkify prose left to right, passing through backtick code spans, links, and html tags
+        untouched. A single linear pass — no regex backtracking."""
+        out: list[str] = []
+        i, n, text_start = 0, len(prose), 0
+
+        def flush(end: int) -> None:
+            if end > text_start:
+                out.append(link_segment(prose[text_start:end]))
+
+        while i < n:
+            ch = prose[i]
+            if ch == "`":
+                run = i
+                while i < n and prose[i] == "`":
+                    i += 1
+                end = _code_span_end(prose, run, i - run)
+                if end is not None:  # a real code span — protect it
+                    flush(run)
+                    out.append(prose[run:end])
+                    i = text_start = end
+                # else: unmatched backticks are literal text; leave text_start, keep scanning
+                continue
+            if ch in "![<":
+                m = _LINK_OR_TAG.match(prose, i)
+                if m:
+                    flush(i)
+                    out.append(m.group(0))
+                    i = text_start = m.end()
+                    continue
+            i += 1
+        flush(n)
         return "".join(out)
 
     return "".join(chunk if is_code else link_prose(chunk)
