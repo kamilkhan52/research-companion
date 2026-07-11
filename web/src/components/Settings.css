@@ -17,5 +17,14 @@
 .prompts-row { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .now-playing { position: fixed; z-index: 40; bottom: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--space-sm); padding: 10px max(16px, env(safe-area-inset-left)); background: var(--panel); border-top: 1px solid var(--line); }
 .now-playing-title { flex: 1; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; color: var(--text); background: none; border: 0; font: inherit; }
+.now-playing-title small { display: block; color: var(--muted); }
 .player-screen { display: flex; min-height: 60vh; flex-direction: column; gap: var(--space-md); align-items: flex-start; padding: var(--space-lg); }
 .player-screen article { max-width: 700px; white-space: pre-wrap; }
+.player-screen h2 { margin: 0; font: 500 30px/1.2 var(--font-serif); }
+.player-scrubber { width: 100%; accent-color: var(--cyan); }
+.player-time { width: 100%; display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.player-controls { width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; }
+.player-play { min-width: 110px; }
+.player-options { width: 100%; display: flex; justify-content: space-between; align-items: center; }
+.player-options select { margin-left: 8px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); color: var(--text); }
+@media (max-width: 640px) { .now-playing { bottom: 58px; } }

@@ -2,23 +2,23 @@
    Deep ink surfaces, restrained electric-cyan + violet glow, calm body text. */
 
 :root {
-  --bg:        #07080e;
-  --bg2:       #0b0d16;
-  --panel:     #11141f;
-  --panel2:    #161a28;
-  --panel-active: #1c2233;
-  --line:      rgba(125, 145, 200, 0.14);
-  --line2:     rgba(125, 145, 200, 0.26);
+  --bg:        #0b0d12;
+  --bg2:       #11141c;
+  --panel:     #151922;
+  --panel2:    #1b202b;
+  --panel-active: #222936;
+  --line:      rgba(153, 163, 183, 0.14);
+  --line2:     rgba(153, 163, 183, 0.28);
 
-  --text:      #e9edf7;
-  --muted:     #909bb6;
+  --text:      #f3f0e8;
+  --muted:     #99a3b7;
 
-  --cyan:      #34e7e0;
-  --cyan-ink:  #062b2a;
-  --violet:    #9b7bff;
-  --green:     #4ee6a0;
-  --amber:     #ffce6b;
-  --danger:    #ff6f8c;
+  --cyan:      #65d6b4;
+  --cyan-ink:  #0a231b;
+  --violet:    #9b8afb;
+  --green:     #65d6b4;
+  --amber:     #e4b85c;
+  --danger:    #e5738c;
 
   --radius-sm: 11px;
   --radius-md: 16px;
@@ -31,7 +31,8 @@
   --space-xl: 24px;
   --space-xxl: 32px;
 
-  --font-display: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Manrope", ui-sans-serif, system-ui, sans-serif;
   --font-body:    "Manrope", ui-sans-serif, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif:   "Newsreader", Georgia, serif;
   --font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Library } from '@/components/Library';
 import { Graph } from '@/components/Graph';
 import { Discussion } from '@/components/Discussion';
@@ -9,6 +9,7 @@ import { AudioProvider } from '@/audio/AudioProvider';
 import { NowPlaying, Player } from '@/audio/AudioPlayer';
 import { AuthGate } from '@/components/AuthGate';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { LibraryProvider } from '@/hooks/useLibrary';
 
 type View = 'library' | 'graph' | 'discover' | 'notes' | 'player' | 'settings' | 'paper';
 
@@ -24,20 +25,34 @@ function parseHash(): Route {
   if (raw === 'discover') return { view: 'discover' };
   if (raw === 'player') return { view: 'player' };
   if (raw === 'settings') return { view: 'settings' };
-  if (raw.startsWith('notes/')) return { view: 'notes', param: raw.slice(6) };
-  if (raw.startsWith('paper/')) return { view: 'paper', param: raw.slice(6) };
+  if (raw.startsWith('notes/')) return { view: 'notes', param: decodeRouteParam(raw.slice(6)) };
+  if (raw.startsWith('paper/')) return { view: 'paper', param: decodeRouteParam(raw.slice(6)) };
   return { view: 'library' };
+}
+
+function decodeRouteParam(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function routeHash(route: Route): string {
+  if (route.view === 'paper' || route.view === 'notes') return `${route.view}/${encodeURIComponent(route.param ?? '')}`;
+  return route.view === 'library' ? 'library' : route.view;
 }
 
 export function App() {
   const [route, setRoute] = useState<Route>(parseHash);
   const [authenticated, setAuthenticated] = useState(false);
+  const lastContentRoute = useRef<Route>(route.view === 'settings' ? { view: 'library' } : route);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
+
+  useEffect(() => {
+    if (route.view !== 'settings') lastContentRoute.current = route;
+  }, [route]);
 
   const navigate = useCallback((hash: string) => {
     window.location.hash = hash;
@@ -51,21 +66,36 @@ export function App() {
 
   if (!authenticated) return <div className="auth-container"><AuthGate onAuthenticated={() => setAuthenticated(true)} /></div>;
 
-  return <ErrorBoundary><AudioProvider>(
+  const contentRoute = route.view === 'settings' ? lastContentRoute.current : route;
+  return <ErrorBoundary><LibraryProvider><AudioProvider>
     <>
       <TopBar
-        title="Research Companion"
+        title="Paradigm"
         showBack={route.view !== 'library' && route.view !== 'settings'}
         onBack={() => navigate('library')}
         onSettings={() => navigate('settings')}
       />
+      <PrimaryNav route={contentRoute} navigate={navigate} />
       <main className="app-main">
-        <ViewRouter route={route.view === 'settings' ? { view: 'library' } : route} navigate={navigate} />
+        <ViewRouter route={contentRoute} navigate={navigate} />
       </main>
-      {route.view === 'settings' && <Settings onClose={() => navigate('library')} />}
+      {route.view === 'settings' && <Settings onClose={() => navigate(routeHash(lastContentRoute.current))} />}
       <NowPlaying onOpen={() => navigate('player')} />
     </>
-  </AudioProvider></ErrorBoundary>;
+  </AudioProvider></LibraryProvider></ErrorBoundary>;
+}
+
+function PrimaryNav({ route, navigate }: { route: Route; navigate: (hash: string) => void }) {
+  const items: { view: View; label: string; hash: string }[] = [
+    { view: 'library', label: 'Library', hash: 'library' },
+    { view: 'discover', label: 'Discover', hash: 'discover' },
+    { view: 'notes', label: 'Notes', hash: 'notes/working' },
+    { view: 'graph', label: 'Map', hash: 'graph' },
+  ];
+  return <nav className="primary-nav" aria-label="Primary">
+    {items.map((item) => <button key={item.view} className={route.view === item.view ? 'active' : ''}
+      aria-current={route.view === item.view ? 'page' : undefined} onClick={() => navigate(item.hash)}>{item.label}</button>)}
+  </nav>;
 }
 
 function TopBar({
@@ -113,16 +143,11 @@ function ViewRouter({
     case 'discover':
       return <Discovery onNavigate={navigate} />;
     case 'notes':
-      return <Notes target={route.param ?? 'working'} />;
+      return <Notes target={route.param ?? 'working'} onNavigate={navigate} />;
     case 'player':
       return <Player />;
     case 'settings':
-      return (
-        <div className="placeholder-view">
-          <h2>Settings</h2>
-          <p className="muted">Coming in Phase 6.</p>
-        </div>
-      );
+      return null;
     default:
       return null;
   }

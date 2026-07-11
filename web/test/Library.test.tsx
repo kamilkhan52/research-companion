@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Library } from '@/components/Library';
+import { LibraryProvider } from '@/hooks/useLibrary';
 import { afterEach, vi } from 'vitest';
 
 const mockProjects = [
@@ -28,6 +29,10 @@ const mockState = {
   ],
 };
 
+function renderLibrary(onNavigate = vi.fn()) {
+  return render(<LibraryProvider><Library onNavigate={onNavigate} /></LibraryProvider>);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
@@ -36,7 +41,7 @@ afterEach(() => {
 describe('Library', () => {
   it('shows loading spinner initially', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
     expect(screen.getByText(/loading library/i)).toBeInTheDocument();
   });
 
@@ -46,29 +51,25 @@ describe('Library', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(mockState) } as Response);
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('My Research (1/3)')).toBeInTheDocument();
     });
   });
 
-  it('renders paper cards grouped by group', async () => {
+  it('renders the flat mobile-parity paper list', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve({ projects: mockProjects }) } as Response)
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(mockState) } as Response);
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
-    await waitFor(() => {
-      expect(screen.getByText('TRANSFORMERS')).toBeInTheDocument();
-      expect(screen.getByText('PRETRAINING')).toBeInTheDocument();
-    });
-
-    expect(screen.getByText('Attention Is All You Need')).toBeInTheDocument();
+    expect(await screen.findByText('Attention Is All You Need')).toBeInTheDocument();
     expect(screen.getByText('Language Models are Few-Shot Learners')).toBeInTheDocument();
     expect(screen.getByText('BERT: Pre-training of Deep Bidirectional Transformers')).toBeInTheDocument();
+    expect(screen.queryByText('TRANSFORMERS')).not.toBeInTheDocument();
   });
 
   it('shows status badges with correct labels', async () => {
@@ -77,7 +78,7 @@ describe('Library', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(mockState) } as Response);
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('Read')).toBeInTheDocument();
@@ -95,7 +96,7 @@ describe('Library', () => {
       } as Response);
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('Start this project')).toBeInTheDocument();
@@ -104,7 +105,7 @@ describe('Library', () => {
 
   it('shows error message and retry button on fetch failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('Network error')).toBeInTheDocument();
@@ -119,7 +120,7 @@ describe('Library', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
     const user = userEvent.setup();
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByLabelText('New project')).toBeInTheDocument();
@@ -141,7 +142,7 @@ describe('Library', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
     const user = userEvent.setup();
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('Network error')).toBeInTheDocument();
@@ -164,7 +165,7 @@ describe('Library', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetch);
 
     const user = userEvent.setup();
-    render(<Library onNavigate={vi.fn()} />);
+    renderLibrary();
 
     await waitFor(() => {
       expect(screen.getByText('Request failed (404)')).toBeInTheDocument();
@@ -188,7 +189,7 @@ describe('Library', () => {
 
     const onNavigate = vi.fn();
     const user = userEvent.setup();
-    render(<Library onNavigate={onNavigate} />);
+    renderLibrary(onNavigate);
 
     await waitFor(() => {
       expect(screen.getByText('Attention Is All You Need')).toBeInTheDocument();

@@ -9,7 +9,10 @@ const api = vi.hoisted(() => ({
   saveNotes: vi.fn(), startNotesAgentJob: vi.fn(),
 }));
 
-vi.mock('@/hooks/useLibrary', () => ({ useActivePid: () => [active.pid, vi.fn()] }));
+vi.mock('@/hooks/useLibrary', () => ({
+  useActivePid: () => [active.pid, vi.fn()],
+  usePaperIndex: () => [],
+}));
 vi.mock('@/api/endpoints', () => api);
 
 beforeEach(() => {
@@ -25,7 +28,7 @@ describe('Notes agent proposals', () => {
       job: { id: 'notes-1', status: 'done', result: '# Recovered proposal', error: null },
     });
 
-    render(<Notes target="working" />);
+    render(<Notes target="working" onNavigate={vi.fn()} />);
     await screen.findByRole('heading', { name: 'Agent proposal' });
     expect(screen.getByText('Recovered proposal')).toBeInTheDocument();
     expect(api.saveNotes).not.toHaveBeenCalled();
@@ -39,7 +42,7 @@ describe('Notes agent proposals', () => {
     api.getNotesJob.mockResolvedValue({ job: { id: 'notes-2', status: 'done', result: '# New proposal', error: null } });
 
     const user = userEvent.setup();
-    render(<Notes target="working" />);
+    render(<Notes target="working" onNavigate={vi.fn()} />);
     await screen.findByText('Existing notes');
     await user.click(screen.getByRole('button', { name: 'Agent' }));
     await user.type(screen.getByPlaceholderText(/instructions for the agent/i), 'Make it concise');

@@ -154,11 +154,45 @@
   background: linear-gradient(180deg, var(--panel), #0f1320);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 14px 15px;
+  padding: 0;
   margin-bottom: var(--space-sm);
-  cursor: pointer;
   transition: transform 0.14s ease, border-color 0.14s, box-shadow 0.14s;
 }
+
+.paper-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.paper-card-body { display: flex; flex-direction: column; gap: 7px; }
+.paper-action { color: var(--cyan); font-size: 13px; font-weight: 700; white-space: nowrap; }
+.paper-remove { align-self: stretch; border: 0; border-left: 1px solid var(--line); padding: 0 14px; background: rgba(229, 115, 140, .06); color: var(--danger); cursor: pointer; }
+.paper-remove:hover { background: rgba(229, 115, 140, .13); }
+
+.continue-card {
+  width: 100%; display: flex; flex-direction: column; gap: 5px; margin-bottom: var(--space-md);
+  padding: 20px; text-align: left; color: var(--text); background: var(--panel); border: 1px solid var(--line2);
+  border-radius: var(--radius-lg); cursor: pointer;
+}
+.continue-card strong { font: 500 23px/1.2 var(--font-serif); }
+.continue-label { color: var(--cyan); font-weight: 700; }
+
+.progress-card { margin-bottom: var(--space-md); padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.progress-card div { display: flex; justify-content: space-between; gap: 12px; }
+.progress-card progress { width: 100%; height: 8px; margin-top: 12px; accent-color: var(--cyan); }
+
+.library-filters { display: flex; gap: 8px; overflow-x: auto; margin-bottom: var(--space-lg); }
+.library-filters button { white-space: nowrap; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); padding: 7px 12px; cursor: pointer; }
+.library-filters button.active { color: var(--cyan); border-color: rgba(101, 214, 180, .4); background: rgba(101, 214, 180, .1); }
 
 .paper-card:hover {
   border-color: var(--line2);

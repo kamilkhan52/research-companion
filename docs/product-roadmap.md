@@ -43,13 +43,14 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 5.1 | Retrieve missing project papers during graph builds | — | Planned |
 | 6.1 | Native Markdown + equation rendering | — | Planned |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Planned |
-| W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
-| W.2 | Web rebuild: Library | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
+| W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Complete |
+| W.2 | Web rebuild: Library | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | Complete |
 | W.3 | Web rebuild: Graph (high-perf canvas) | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
 | W.4 | Web rebuild: Discussion + notes review | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | Merged |
 | W.5 | Web rebuild: Discovery + Notes | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | Merged |
-| W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | In review |
-| W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | In review |
+| W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
+| W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
+| W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 
 ## Locked product decisions
 

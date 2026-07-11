@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import {
   getLatestNotesJob,
   getNotes,
@@ -12,19 +10,13 @@ import {
 } from '@/api/endpoints';
 import { ApiError } from '@/api/client';
 import { useActivePid } from '@/hooks/useLibrary';
+import { RichMarkdown } from '@/components/RichMarkdown';
 import './Notes.css';
 
-interface Props { target: string; }
+interface Props { target: string; onNavigate: (hash: string) => void; }
 type Mode = 'view' | 'edit';
 
-function markdown(markdownText: string): string {
-  return DOMPurify.sanitize(marked.parse(markdownText) as string, {
-    ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'a', 'span', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
-    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
-  });
-}
-
-export function Notes({ target }: Props) {
+export function Notes({ target, onNavigate }: Props) {
   const [activePid] = useActivePid();
   const [data, setData] = useState<NotesData | null>(null);
   const [mode, setMode] = useState<Mode>('view');
@@ -52,6 +44,11 @@ export function Notes({ target }: Props) {
     if (job.status === 'error') setError(job.error || 'Agent edit failed');
   }, []);
 
+  const editKey = activePid ? `rc.draft.v1:${activePid}:notes:${target}:manual-edit` : '';
+  const instructionKey = activePid ? `rc.draft.v1:${activePid}:notes:${target}:agent-instruction` : '';
+  useEffect(() => { if (editKey && mode === 'edit') localStorage.setItem(editKey, editText); }, [editKey, editText, mode]);
+  useEffect(() => { if (instructionKey) { if (agentPrompt) localStorage.setItem(instructionKey, agentPrompt); else localStorage.removeItem(instructionKey); } }, [agentPrompt, instructionKey]);
+
   useEffect(() => {
     const pid = activePid;
     const expectedTarget = target;
@@ -72,7 +69,11 @@ export function Notes({ target }: Props) {
       .then(([notes, latest]) => {
         if (cancelled || !current(pid, expectedTarget)) return;
         setData(notes);
-        setEditText(notes.markdown || '');
+        const savedEdit = localStorage.getItem(editKey);
+        setEditText(savedEdit ?? notes.markdown ?? '');
+        if (savedEdit !== null) setMode('edit');
+        const savedInstruction = localStorage.getItem(instructionKey);
+        if (savedInstruction) { setAgentPrompt(savedInstruction); setAgentOpen(true); }
         applyJob(latest.job);
       })
       .catch((caught) => {
@@ -80,7 +81,7 @@ export function Notes({ target }: Props) {
       })
       .finally(() => { if (!cancelled && current(pid, expectedTarget)) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activePid, applyJob, current, target]);
+  }, [activePid, applyJob, current, editKey, instructionKey, target]);
 
   // One in-flight poll at a time. Terminal jobs are fetched from the server before state is
   // updated, so a late "running" response cannot erase a proposal that is ready for review.
@@ -121,6 +122,7 @@ export function Notes({ target }: Props) {
       if (current(activePid, target)) {
         setData({ ...data, markdown: editText });
         setMode('view');
+        if (editKey) localStorage.removeItem(editKey);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -137,6 +139,7 @@ export function Notes({ target }: Props) {
       if (current(activePid, target)) {
         setAgentJob(job);
         setAgentPrompt('');
+        if (instructionKey) localStorage.removeItem(instructionKey);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -178,7 +181,7 @@ export function Notes({ target }: Props) {
             <button className="btn ghost" onClick={() => setAgentOpen((open) => !open)}>Agent</button>
           </> : <>
             <button className="btn primary" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-            <button className="btn ghost" onClick={() => { setEditText(data.markdown || ''); setMode('view'); }}>Cancel</button>
+            <button className="btn ghost" onClick={() => { if (editText === data.markdown || window.confirm('Discard your unsaved notes edits?')) { setEditText(data.markdown || ''); setMode('view'); if (editKey) localStorage.removeItem(editKey); } }}>Cancel</button>
           </>}
         </div>
       </div>
@@ -198,16 +201,16 @@ export function Notes({ target }: Props) {
       {agentJob?.status === 'running' && <div className="lc-loading"><span className="spinner" /> Agent is editing…</div>}
       {proposalPreview !== null && <div className="agent-proposal">
         <h4>Agent proposal</h4>
-        <div className="notes-body" style={{ marginBottom: 'var(--space-md)', maxHeight: 300, overflowY: 'auto' }}
-          dangerouslySetInnerHTML={{ __html: markdown(proposalPreview) }} />
+        <RichMarkdown className="notes-body proposal-preview" text={proposalPreview} onNavigate={onNavigate} />
         <div className="notes-agent-actions">
           <button className="btn primary" onClick={() => void applyProposal()} disabled={saving}>Apply proposal</button>
+          <button className="btn ghost" onClick={() => { setEditText(proposalPreview); setMode('edit'); setProposalPreview(null); }}>Edit first</button>
           <button className="btn ghost" onClick={() => { setProposalPreview(null); setAgentJob(null); }}>Discard</button>
         </div>
       </div>}
 
       {mode === 'view'
-        ? <div className="notes-body" dangerouslySetInnerHTML={{ __html: markdown(data.markdown || '') }} />
+        ? <RichMarkdown className="notes-body" text={data.markdown || ''} onNavigate={onNavigate} />
         : <textarea className="notes-editor" value={editText} onChange={(event) => setEditText(event.target.value)} />}
     </div>
   );

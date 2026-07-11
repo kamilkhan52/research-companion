@@ -7,12 +7,18 @@ const active = vi.hoisted(() => ({ pid: 'project-1' as string | null }));
 const api = vi.hoisted(() => ({
   approve: vi.fn(), continueJob: vi.fn(), finishJob: vi.fn(), getActiveChatJob: vi.fn(),
   getChatJob: vi.fn(), getLatestRetrievalJob: vi.fn(), getOpeningDraft: vi.fn(),
+  getFavoriteModels: vi.fn(), getRelated: vi.fn(), cancelChatJob: vi.fn(),
   getRetrievalJob: vi.fn(), getReview: vi.fn(), getSession: vi.fn(), reopen: vi.fn(),
+  continueDiscussion: vi.fn(), setSessionMode: vi.fn(),
   replyJob: vi.fn(), requestChangesJob: vi.fn(), retryJob: vi.fn(), startJob: vi.fn(),
   startRetrievalJob: vi.fn(),
 }));
 
-vi.mock('@/hooks/useLibrary', () => ({ useActivePid: () => [active.pid, vi.fn()] }));
+vi.mock('@/hooks/useLibrary', () => ({
+  useActivePid: () => [active.pid, vi.fn()],
+  useProjectDefaults: () => ({ model: 'model/test', narrationModel: '' }),
+  usePaperIndex: () => [],
+}));
 vi.mock('@/api/endpoints', () => api);
 vi.mock('@/audio/AudioProvider', () => ({ useAudio: () => ({ playText: vi.fn() }) }));
 
@@ -31,6 +37,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getActiveChatJob.mockResolvedValue({ job: null });
   api.getLatestRetrievalJob.mockResolvedValue({ job: null });
+  api.getFavoriteModels.mockResolvedValue({ models: [] });
   api.getOpeningDraft.mockImplementation((_pid: string, slug: string) => Promise.resolve({
     title: `Opening ${slug}`, prompt: `Discuss ${slug}`, model: 'model/test',
   }));

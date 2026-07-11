@@ -3,9 +3,9 @@
 This document tracks the phased rebuild of the web client from a single vanilla JS file to a
 React + Vite SPA with feature parity with the mobile app.
 
-**Merge target:** All web rebuild PRs merge into the `web-rebuild` long-running branch.
-When all phases are complete and validated, `web-rebuild` will be merged into `main` in a
-single final PR.
+The phased rebuild was integrated through the `web-rebuild` branch and merged to `main` in
+[PR #43](https://github.com/kamilkhan52/research-companion/pull/43). Further web work branches
+directly from `main`.
 
 ## Architecture
 
@@ -19,13 +19,14 @@ single final PR.
 
 | Phase | Branch | PR | Status |
 |---|---|---|---|
-| 1 | `web/foundation` | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | In review |
-| 2 | `web/library` | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | In review |
+| 1 | `web/foundation` | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Merged |
+| 2 | `web/library` | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | Merged |
 | 3 | `web/graph` | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
 | 4 | `web/discussion` | [#24](https://github.com/kamilkhan52/research-companion/pull/24) | Merged |
 | 5 | `web/discovery-notes` | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | Merged |
-| 6 | `web/settings-audio` | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | In review |
-| 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | In review |
+| 6 | `web/settings-audio` | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Merged |
+| 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Merged |
+| 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 
 ## Phase 1 — Foundation
 

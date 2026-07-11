@@ -9,10 +9,11 @@ interface UseGraphState {
   hasGraph: boolean;
   totalPapers: number;
   readyPapers: number;
+  stalePapers: string[];
   loading: boolean;
   error: string | null;
   refetch: () => void;
-  startBuild: () => void;
+  startBuild: (force?: boolean) => void;
 }
 
 export function useGraph(pid: string | null): UseGraphState {
@@ -20,7 +21,7 @@ export function useGraph(pid: string | null): UseGraphState {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
@@ -38,27 +39,36 @@ export function useGraph(pid: string | null): UseGraphState {
   // Poll build status
   useEffect(() => {
     if (!pid || !data?.build || data.build.status !== 'running') {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
       return;
     }
-    pollRef.current = setInterval(() => {
-      getGraphBuildStatus(pid)
+    let cancelled = false;
+    const poll = () => {
+      pollRef.current = setTimeout(() => {
+        getGraphBuildStatus(pid)
         .then((r) => {
+          if (cancelled) return;
           setData((prev) => prev ? { ...prev, build: r.build } : null);
-          if (r.build && r.build.status !== 'running' && pollRef.current) {
-            clearInterval(pollRef.current);
+          if (r.build && r.build.status !== 'running') {
             pollRef.current = null;
             setTick((t) => t + 1); // refetch full graph
+          } else {
+            poll();
           }
         })
-        .catch(() => {}); // polling failures are best-effort
-    }, 2000);
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+        .catch(() => { if (!cancelled) poll(); }); // polling failures are best-effort
+      }, 2000);
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    };
   }, [pid, data?.build?.status]);
 
-  const startBuild = useCallback(() => {
+  const startBuild = useCallback((force = false) => {
     if (!pid) return;
-    buildGraph(pid)
+    buildGraph(pid, force)
       .then((r) => setData((prev) => prev ? { ...prev, build: r.build } : null))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [pid]);
@@ -70,6 +80,7 @@ export function useGraph(pid: string | null): UseGraphState {
     hasGraph: data?.status?.has_graph ?? false,
     totalPapers: data?.status?.total_papers ?? 0,
     readyPapers: data?.status?.retrievable_papers ?? 0,
+    stalePapers: data?.status?.stale_papers ?? [],
     loading,
     error,
     refetch,

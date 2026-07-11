@@ -3,6 +3,7 @@ import { useGraph } from '@/hooks/useGraph';
 import { useActivePid } from '@/hooks/useLibrary';
 import { GraphEngine } from '@/graph/engine';
 import type { GraphNode, GraphRecommendation } from '@/api/graph-types';
+import { addPaper } from '@/api/endpoints';
 import './Graph.css';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
@@ -20,7 +21,7 @@ interface Props {
 
 export function Graph({ onNavigate }: Props) {
   const [activePid] = useActivePid();
-  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, loading, error, refetch, startBuild } = useGraph(activePid);
+  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, stalePapers, loading, error, refetch, startBuild } = useGraph(activePid);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GraphEngine | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -115,7 +116,7 @@ export function Graph({ onNavigate }: Props) {
         {build && build.status === 'running' ? (
           <BuildProgress build={build} />
         ) : totalPapers > 0 ? (
-          <button className="btn primary" onClick={startBuild}>
+          <button className="btn primary" onClick={() => startBuild()}>
             Build graph
           </button>
         ) : (
@@ -129,6 +130,7 @@ export function Graph({ onNavigate }: Props) {
 
   return (
     <div className="graph-screen">
+      {stalePapers.length > 0 && build?.status !== 'running' && <div className="graph-stale"><span>{stalePapers.length} papers changed since this map was built.</span><button className="btn ghost" onClick={() => startBuild(true)}>Rebuild map</button></div>}
       <div className="graph-controls">
         <input
           className="graph-search"
@@ -158,7 +160,7 @@ export function Graph({ onNavigate }: Props) {
       {build && build.status === 'error' && (
         <div className="build-progress build-progress-compact" style={{ position: 'absolute', bottom: 'var(--space-md)', left: 'var(--space-md)', right: 'var(--space-md)' }}>
           <p className="build-progress-error">{build.error || 'Build failed'}</p>
-          <button className="btn ghost" onClick={startBuild}>Rebuild</button>
+          <button className="btn ghost" onClick={() => startBuild()}>Rebuild</button>
         </div>
       )}
 
@@ -171,7 +173,7 @@ export function Graph({ onNavigate }: Props) {
       )}
 
       {recommendations.length > 0 && (
-        <RecommendationsPanel recs={recommendations.slice(0, 6)} />
+        <RecommendationsPanel recs={recommendations.slice(0, 6)} pid={activePid} />
       )}
     </div>
   );
@@ -254,7 +256,14 @@ function BuildProgress({
   );
 }
 
-function RecommendationsPanel({ recs }: { recs: GraphRecommendation[] }) {
+function RecommendationsPanel({ recs, pid }: { recs: GraphRecommendation[]; pid: string | null }) {
+  const [added, setAdded] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  async function add(rec: GraphRecommendation) {
+    if (!pid) return;
+    try { await addPaper(pid, rec.title, rec.arxiv_id || undefined); setAdded((previous) => new Set(previous).add(rec.id)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+  }
   return (
     <div className="recs-panel">
       <h4>Recommended</h4>
@@ -267,9 +276,11 @@ function RecommendationsPanel({ recs }: { recs: GraphRecommendation[] }) {
                 <span key={i} className="recs-reason">{rr}</span>
               ))}
             </div>
+            <button className="btn ghost" disabled={added.has(r.id)} onClick={() => void add(r)}>{added.has(r.id) ? 'Added ✓' : '+ Add'}</button>
           </div>
         ))}
       </div>
+      {error && <p className="build-progress-error">{error}</p>}
     </div>
   );
 }
