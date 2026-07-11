@@ -341,7 +341,8 @@ def reading_list_overview() -> str:
         if e["group"] != group:
             group = e["group"]
             lines.append(f"\n### {group}")
-        lines.append(f"- {e['title']} — *{e['status']}* (slug: {e['slug']})")
+        lines.append(f"- {e['title']} — *{e['status']}* (slug: {e['slug']}; "
+                     f"link: rc-paper:{e['slug']})")
         if e["abstract"] and not has_notes(e["slug"]):
             lines.append(f"  Abstract: {e['abstract']}")
     return "\n".join(lines).strip()

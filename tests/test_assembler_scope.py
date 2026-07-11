@@ -26,6 +26,13 @@ def _setup(temp_project):
     store.append_notes_block("unrelated", "Unrelated Paper", "Unrelated finding: X beats Y.")
 
 
+def test_both_contexts_carry_the_paper_link_instruction_and_targets(temp_project):
+    add_paper(temp_project, "orca", "Orca: A Serving System", full_text="t")
+    for ctx in (assembler.build_context("orca"), assembler.build_review_context()):
+        assert "rc-paper:orca" in ctx          # verbatim link target per reading-list entry
+        assert "link to its `link:` target" in ctx or "markdown link" in ctx
+
+
 def test_default_related_scope_excludes_unrelated_notes(temp_project, monkeypatch):
     _setup(temp_project)
     _settings(monkeypatch, "related")

@@ -146,7 +146,7 @@ def test_add_entry_stores_a_supplied_abstract(temp_project):
 def test_overview_carries_the_abstract_of_an_unread_paper(temp_project):
     _write_list(f"**Orca: A Serving System** — *unread*\n\nAbstract: {ABSTRACT}\n")
     overview = store.reading_list_overview()
-    assert "- Orca: A Serving System — *unread* (slug: orca)" in overview
+    assert "- Orca: A Serving System — *unread* (slug: orca; link: rc-paper:orca)" in overview
     assert f"  Abstract: {ABSTRACT}" in overview
 
 
@@ -155,7 +155,7 @@ def test_overview_drops_the_abstract_once_the_paper_has_notes(temp_project):
     store.write_full_text("orca", "Orca", "Full text.", {"slug": "orca"})
     store.append_notes_block("orca", "Orca", "## Notes\n\nIteration-level scheduling wins.")
     overview = store.reading_list_overview()
-    assert "- Orca: A Serving System — *read* (slug: orca)" in overview
+    assert "- Orca: A Serving System — *read* (slug: orca; link: rc-paper:orca)" in overview
     assert "Abstract:" not in overview
 
 
