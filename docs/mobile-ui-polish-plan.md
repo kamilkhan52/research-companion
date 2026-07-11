@@ -309,6 +309,14 @@ follows K1; the frames' "Listening mode" header is legacy context — Phase F re
 - Skia canvas for the Map, only if it still stutters after Phases D and J on-device.
 - Reading-list categorization revisit: define a reliable (predictable, user-approvable)
   method before restoring Library group headers (Phase F.6).
+- Long-tap-to-select text in an assistant response (so a passage can be quoted in a reply).
+  Deferred: no *simple* inline fix exists — the discussion list is a react-native-gesture-
+  handler `FlatList` with a per-row `ReanimatedSwipeable`, so RNGH captures touches natively
+  and fights Android's TextView selection (in-list `selectable` gave flaky long-press + stray
+  word-selection on scroll; `pointerEvents` can't win an RNGH-level conflict). A dedicated
+  selectable sheet worked but was rejected as too heavy (PR #60, closed). Revisit only if a
+  lightweight inline approach appears (e.g. RNGH gesture coordination, or a library update that
+  makes list-embedded selection reliable). The bottom-of-answer Copy icon already covers copy.
 
 ## Verification
 
