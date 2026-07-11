@@ -62,33 +62,52 @@ def _bounded_close(s: str, open_at: int, closer: str) -> int:
 
 
 def _paren_close(s: str, open_paren: int) -> int:
-    """Index of the `)` that closes the `(` at `open_paren`, honoring balanced nested parens and
-    backslash escapes (`.../Foo_(bar)` and `.../foo\\)bar` are valid CommonMark destinations) — or
-    -1 if unbalanced or past the cap. The construct may span lines (CommonMark allows the optional
-    title to begin on the next line); the cap keeps it bounded. Fast path (plain destination, no
-    escape or nesting) uses C-level `find`; escaped/nested destinations take a bounded escape-aware
-    depth walk. Bounded, so the pass stays linear."""
+    """Index of the `)` that closes the inline-link tail `(destination "title")` opened at
+    `open_paren`, or -1 if it isn't a valid tail within the cap. Parses per CommonMark: an optional
+    `<…>` or balanced/escaped bare destination, then an optional quoted (`"…"`, `'…'`) or
+    parenthesized title — parens INSIDE a quoted title are literal and don't affect balancing — then
+    `)`. May span lines (a title can begin on the next line); the cap keeps it bounded and linear."""
     limit = min(len(s), open_paren + 1 + _DEST_SCAN_CAP)
-    first_close = s.find(")", open_paren + 1, limit)
-    if first_close == -1:
-        return -1  # no ')' at all — keeps '[a](' * n linear
-    if (s.find("\\", open_paren + 1, first_close) == -1
-            and s.find("(", open_paren + 1, first_close) == -1):
-        return first_close  # plain destination: the first ')' closes it
-    depth, i = 0, open_paren
-    while i < limit:
-        ch = s[i]
-        if ch == "\\":       # a backslash escapes the next char (\( , \) , …)
-            i += 2
-            continue
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return i
+    if s.find(")", open_paren + 1, limit) == -1:
+        return -1  # no ')' within the cap — not a link; keeps '[a](' * n linear via C-level find
+
+    i = open_paren + 1
+    while i < limit and s[i] in " \t\n":       # whitespace before the destination
         i += 1
-    return -1
+    if i < limit and s[i] == "<":              # angle-bracket destination (no newline inside)
+        end = s.find(">", i + 1, limit)
+        if end == -1 or "\n" in s[i + 1:end]:
+            return -1
+        i = end + 1
+    else:                                       # bare destination: to whitespace / an unbalanced )
+        depth = 0
+        while i < limit:
+            ch = s[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch in " \t\n":
+                break
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    break                        # this ')' closes the tail (destination only)
+                depth -= 1
+            i += 1
+    while i < limit and s[i] in " \t\n":        # whitespace before an optional title
+        i += 1
+    if i < limit and s[i] in "\"'(":            # a title: parens inside it are literal
+        title_close = ")" if s[i] == "(" else s[i]
+        i += 1
+        while i < limit and s[i] != title_close:
+            i += 2 if s[i] == "\\" else 1
+        if i >= limit:
+            return -1                            # unterminated title
+        i += 1
+        while i < limit and s[i] in " \t\n":
+            i += 1
+    return i if i < limit and s[i] == ")" else -1
 
 
 def _iter_fenced(text: str):

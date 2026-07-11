@@ -209,3 +209,15 @@ def test_linkify_protects_multiline_link_and_definition_titles():
     assert linkify(image, amap) == image
     refdef = '[p]: https://ex.test/src\n  "Orca implementation"\n\nSee [p].'
     assert linkify(refdef, amap) == refdef
+
+
+def test_linkify_protects_titles_containing_parentheses():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # Parens inside a quoted title are literal — they must not confuse destination balancing.
+    link = '[impl](https://ex.test/src\n  "Orca (implementation") then Orca'
+    assert (linkify(link, amap)
+            == '[impl](https://ex.test/src\n  "Orca (implementation") then [Orca](rc-paper:orca)')
+    image = '![alt](https://ex.test/i\n  "details ) Orca")'
+    assert linkify(image, amap) == image
+    # Same-line title with parens, plus a paren-balanced destination alongside it.
+    assert linkify('[a](u "t) Orca") Orca', amap) == '[a](u "t) Orca") [Orca](rc-paper:orca)'
