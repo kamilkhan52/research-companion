@@ -313,11 +313,13 @@ function tokenizeInline(input: string): InlineToken[] {
   // Math is matched first — TeX is full of `_` and `*` that the emphasis rules would chew
   // up. `\( … \)` is the inline output contract; `\[ … \]` / `$$ … $$` occurring
   // mid-paragraph render inline too (the block form is handled in parseBlocks). Conservatively
-  // accept `$ … $` as compatibility syntax: surrounding whitespace and an obvious math signal
-  // are required so ordinary currency prose does not make distant dollar signs consume text.
+  // accept `$ … $` as compatibility syntax: surrounding whitespace and a strong math signal
+  // (a variable, TeX command, script, equality, or Greek letter) are required, and the body may
+  // not start with a digit. Escaped dollars and numeric spans stay prose, so prices cannot
+  // consume the text between them. Numeric equations must use the explicit `\( … \)` contract.
   // Then link `[label](href)`, so its label isn't consumed by emphasis parsing.
   const re =
-    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\$(?!\$|\s)(?=[^$\n]*(?:[A-Za-z\\_^=+*/<>]|[\u0370-\u03ff]))([^$\n]*?\S)\$(?!\$))|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|(?<!\\)\$(?!\$|\s|\d)(?=[^$\n]*(?:[A-Za-z\\_^=]|[\u0370-\u03ff]))([^$\n]*?\S)(?<!\\)\$(?!\$))|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {

@@ -44,6 +44,16 @@ test('currency dollar signs are not parsed as math delimiters', async () => {
   expect(screen.getByText(/\$10–\$20 per hour, not \$5\./)).toBeTruthy();
 });
 
+test('escaped and slash-separated currency are not parsed as math', async () => {
+  await renderAsync(<Markdown text={'Quoted prices are \\$10 and \\$20; rates are $10/$20.'} />);
+  expect(screen.getByText(/\\\$10 and \\\$20; rates are \$10\/\$20\./)).toBeTruthy();
+});
+
+test('abbreviated currency ranges are not parsed as math', async () => {
+  await renderAsync(<Markdown text={'Funding rose from $5M-$8M, then from $5k–$10k.'} />);
+  expect(screen.getByText(/\$5M-\$8M, then from \$5k–\$10k\./)).toBeTruthy();
+});
+
 test('leaked tool tags render as muted status lines, not markup', async () => {
   await renderAsync(
     <Markdown

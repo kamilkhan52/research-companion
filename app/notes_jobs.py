@@ -155,7 +155,8 @@ def _default_events(target: str, prompt: str):
         return agent_harness.stream_agent_events(agent_harness.build_notes_editor(), prompt)
 
     def _single_shot():
-        messages = [{"role": "system", "content": prompts.get("notes_editor")},
+        system = prompts.get("notes_editor") + "\n\n" + agent.MATH_MARKDOWN_CONTRACT
+        messages = [{"role": "system", "content": system},
                     {"role": "user", "content": prompt}]
         pieces: list[str] = []
         for piece in agent.stream_messages(messages, max_tokens=16000, operation="notes"):
