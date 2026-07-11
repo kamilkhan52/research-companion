@@ -181,3 +181,19 @@ def test_linkify_handles_balanced_parens_in_link_destination():
     # A paper name inside a URL with nested parens must stay protected; only the trailing one links.
     out = linkify("[x](http://a.com/(a)Orca(b)) then Orca", amap)
     assert out == "[x](http://a.com/(a)Orca(b)) then [Orca](rc-paper:orca)"
+
+
+def test_linkify_honors_escaped_parens_in_destination():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # An escaped ')' is URL content, not the closer; an escaped '(' must not raise depth.
+    assert (linkify(r"[p](https://ex.test/foo\)Orca) then Orca", amap)
+            == r"[p](https://ex.test/foo\)Orca) then [Orca](rc-paper:orca)")
+    assert (linkify(r"[p](https://ex.test/foo\(Orca) tail Orca", amap)
+            == r"[p](https://ex.test/foo\(Orca) tail [Orca](rc-paper:orca)")
+
+
+def test_linkify_protects_reference_definitions():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # A `[label]: dest` definition line (and the reference use) must be left intact.
+    text = "[p]: https://ex.test/Orca\n\nSee [p]."
+    assert linkify(text, amap) == text

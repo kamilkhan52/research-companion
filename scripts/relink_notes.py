@@ -44,6 +44,11 @@ _FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*(?:\n|\r\n)?\Z")
 # so the pass stays linear on adversarial input (real note URLs and tags are far shorter).
 _DEST_SCAN_CAP = 2048
 
+# A link reference DEFINITION line: 0–3 indent, `[label]:`, then the destination (+optional title)
+# to end of line. Protect the whole line so a paper name in the destination isn't linkified. `^`
+# is multiline-anchored, so it only tries at line starts (no quadratic retry).
+_REF_DEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:[^\n]*")
+
 
 def _bounded_close(s: str, open_at: int, closer: str) -> int:
     """Index of the first `closer` after `open_at`, within the current line and _DEST_SCAN_CAP
@@ -56,22 +61,26 @@ def _bounded_close(s: str, open_at: int, closer: str) -> int:
 
 
 def _paren_close(s: str, open_paren: int) -> int:
-    """Index of the `)` that closes the `(` at `open_paren`, honoring balanced nested parens (a
-    link destination like `.../Foo_(bar)` is valid CommonMark) — or -1 if unbalanced, spanning a
-    newline, or past the cap. Fast path (the common no-nesting case) uses C-level `find`; only a
-    genuinely nested destination walks with depth. Bounded, so O(1) per link."""
+    """Index of the `)` that closes the `(` at `open_paren`, honoring balanced nested parens and
+    backslash escapes (`.../Foo_(bar)` and `.../foo\\)bar` are valid CommonMark destinations) — or
+    -1 if unbalanced, spanning a newline, or past the cap. Fast path (plain destination, no escape
+    or nesting) uses C-level `find`; escaped/nested destinations take a bounded escape-aware depth
+    walk. Bounded, so the pass stays linear."""
     limit = min(len(s), open_paren + 1 + _DEST_SCAN_CAP)
     first_close = s.find(")", open_paren + 1, limit)
     if first_close == -1:
-        return -1
-    newline = s.find("\n", open_paren + 1, first_close)
-    if newline != -1:
-        return -1
-    if s.find("(", open_paren + 1, first_close) == -1:
-        return first_close  # no nested '(' before the first ')': it is the closer
+        return -1  # no ')' at all — keeps '[a](' * n linear
+    if s.find("\n", open_paren + 1, first_close) != -1:
+        return -1  # newline before any ')'
+    if (s.find("\\", open_paren + 1, first_close) == -1
+            and s.find("(", open_paren + 1, first_close) == -1):
+        return first_close  # plain destination: the first ')' closes it
     depth, i = 0, open_paren
     while i < limit:
         ch = s[i]
+        if ch == "\\":       # a backslash escapes the next char (\( , \) , …)
+            i += 2
+            continue
         if ch == "\n":
             return -1
         if ch == "(":
@@ -167,11 +176,12 @@ def _link_extent(s: str, close_bracket: int) -> int:
 
 def _protected_spans(prose: str) -> list[tuple[int, int]]:
     """Merged `[start, end)` ranges to leave untouched: inline code spans, links/images (the WHOLE
-    construct, incl. any code span inside the link text — so a link is never split), and html tags.
-    One linear pass: code spans are precomputed and skipped; `[`/`]` are matched with a stack so
-    even `[[[[…` is O(n)."""
+    construct, incl. any code span inside the link text — so a link is never split), reference-link
+    definition lines, and html tags. One linear pass: code spans are precomputed and skipped;
+    `[`/`]` are matched with a stack so even `[[[[…` is O(n)."""
     code = _code_span_intervals(prose)
     spans = list(code)
+    spans += [(m.start(), m.end()) for m in _REF_DEF.finditer(prose)]  # `[label]: url "title"`
     stack: list[int] = []           # start index of each unmatched '[' (or '!' of an image)
     n, i, ci = len(prose), 0, 0
     while i < n:
