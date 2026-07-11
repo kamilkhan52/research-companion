@@ -8,7 +8,7 @@
   align-items: center;
   gap: 10px;
   padding: max(env(safe-area-inset-top), 12px) 14px 11px;
-  background: rgba(7, 8, 14, 0.78);
+  background: rgba(11, 13, 18, 0.88);
   backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--line);
 }
@@ -38,10 +38,7 @@
   font-weight: 600;
   font-size: 16px;
   letter-spacing: 0.02em;
-  background: linear-gradient(92deg, #d9fbf8, var(--cyan) 40%, var(--violet));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -77,11 +74,47 @@
 /* ---- main content ---- */
 
 .app-main {
-  padding: 16px 13px 0;
-  max-width: 860px;
+  padding: 20px 18px 88px;
+  max-width: 1060px;
   margin: 0 auto;
   flex: 1;
   width: 100%;
+}
+
+.primary-nav {
+  position: sticky;
+  top: 64px;
+  z-index: 15;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(11, 13, 18, 0.86);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+
+.primary-nav button {
+  min-width: 92px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 600 13px var(--font-body);
+  cursor: pointer;
+}
+
+.primary-nav button:hover,
+.primary-nav button.active {
+  color: var(--cyan);
+  background: rgba(101, 214, 180, 0.10);
+  border-color: rgba(101, 214, 180, 0.28);
+}
+
+@media (max-width: 640px) {
+  .primary-nav { position: fixed; inset: auto 0 0; top: auto; justify-content: space-around; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .primary-nav button { min-width: 0; flex: 1; padding-inline: 6px; }
 }
 
 /* ---- placeholder ---- */

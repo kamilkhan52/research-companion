@@ -5,6 +5,8 @@ export interface SessionTurn {
   state_signal?: string;
   proposed_commit?: unknown;
   narration?: string;
+  assistant_index?: number;
+  delivery_mode?: 'reading' | 'listening';
 }
 
 export interface SessionPaper {
@@ -19,12 +21,14 @@ export interface Session {
   state: string | null;
   transcript: SessionTurn[];
   model?: string;
+  reading_mode: import('./types').ReadingMode;
+  accepted_drafts?: { kind: 'reply' | 'revision'; text: string }[];
 }
 
 export interface OpeningDraft {
   title: string;
   prompt: string;
-  model: string;
+  model: string | null;
 }
 
 export interface TurnDelta {

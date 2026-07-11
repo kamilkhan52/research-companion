@@ -1,5 +1,5 @@
-import { apiGet, apiPost } from '@/api/client';
-import type { Project, ProjectState } from '@/api/types';
+import { apiDelete, apiGet, apiPost } from '@/api/client';
+import type { FavoriteModel, ModelOption, Project, ProjectState, ReadingMode, RecentSession } from '@/api/types';
 import type { GraphResponse, GraphBuildJob } from '@/api/graph-types';
 import type { Session, OpeningDraft, ReviewResponse } from '@/api/session-types';
 
@@ -15,12 +15,19 @@ export function createProject(name: string): Promise<{ project: Project }> {
   return apiPost('/api/projects', { name });
 }
 
+export function getRecentSessions(limit = 20) {
+  return apiGet<{ sessions: RecentSession[] }>(`/api/recent-sessions?limit=${limit}`);
+}
+
+export function getModels() { return apiGet<{ models: ModelOption[] }>('/api/models'); }
+export function getFavoriteModels() { return apiGet<{ models: FavoriteModel[] }>('/api/favorite_models'); }
+
 export function getGraph(pid: string): Promise<GraphResponse> {
   return apiGet(`/api/projects/${encodeURIComponent(pid)}/graph`);
 }
 
-export function buildGraph(pid: string): Promise<{ build: GraphBuildJob }> {
-  return apiPost(`/api/projects/${encodeURIComponent(pid)}/graph/build`, {});
+export function buildGraph(pid: string, force = false): Promise<{ build: GraphBuildJob }> {
+  return apiPost(`/api/projects/${encodeURIComponent(pid)}/graph/build`, { force });
 }
 
 export function getGraphBuildStatus(pid: string): Promise<{ build: GraphBuildJob }> {
@@ -41,6 +48,14 @@ export function reopen(pid: string, slug: string): Promise<{ state: string; tran
   return apiPost(`${P(pid)}/reopen`, { slug });
 }
 
+export function continueDiscussion(pid: string, slug: string) {
+  return apiPost<{ state: string | null }>(`${P(pid)}/continue_discussion`, { slug });
+}
+
+export function setSessionMode(pid: string, slug: string, mode: ReadingMode) {
+  return apiPost<{ mode: ReadingMode }>(`${P(pid)}/session_mode`, { slug, mode });
+}
+
 export function approve(pid: string, slug: string, body?: Record<string, unknown>) {
   return apiPost<{ result: unknown }>(`${P(pid)}/approve`, { slug, ...body });
 }
@@ -52,27 +67,29 @@ export function getReview(pid: string, slug: string): Promise<ReviewResponse> {
 // Job-based turn endpoints — long/LLM operations run server-side, client polls.
 // See CLAUDE.md invariant 1: never use connection-tied SSE for minutes-long operations.
 
-export function startJob(pid: string, body: { slug: string; prompt?: string; model?: string }) {
+interface DeliveryOptions { delivery_mode?: 'reading' | 'listening'; model?: string | null; }
+
+export function startJob(pid: string, body: { slug: string; prompt?: string; mode?: ReadingMode } & DeliveryOptions) {
   return apiPost<{ job: { id: string } }>(`${P(pid)}/chat/start_job`, body);
 }
 
-export function replyJob(pid: string, body: { slug: string; text: string }) {
+export function replyJob(pid: string, body: { slug: string; text: string } & DeliveryOptions) {
   return apiPost<{ job: { id: string } }>(`${P(pid)}/reply_job`, body);
 }
 
-export function continueJob(pid: string, slug: string) {
-  return apiPost<{ job: { id: string } }>(`${P(pid)}/continue_job`, { slug });
+export function continueJob(pid: string, slug: string, options: DeliveryOptions = {}) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/continue_job`, { slug, ...options });
 }
 
-export function retryJob(pid: string, body: { slug: string; assistant_index: number; model?: string | null }) {
+export function retryJob(pid: string, body: { slug: string; assistant_index: number } & DeliveryOptions) {
   return apiPost<{ job: { id: string } }>(`${P(pid)}/retry_job`, body);
 }
 
-export function finishJob(pid: string, slug: string) {
-  return apiPost<{ job: { id: string } }>(`${P(pid)}/finish_job`, { slug });
+export function finishJob(pid: string, slug: string, options: DeliveryOptions = {}) {
+  return apiPost<{ job: { id: string } }>(`${P(pid)}/finish_job`, { slug, ...options });
 }
 
-export function requestChangesJob(pid: string, body: { slug: string; text: string }) {
+export function requestChangesJob(pid: string, body: { slug: string; text: string } & DeliveryOptions) {
   return apiPost<{ job: { id: string } }>(`${P(pid)}/request_changes_job`, body);
 }
 
@@ -84,6 +101,15 @@ export interface ChatJob {
   turn: { role: string; canonical?: string; text?: string; state_signal?: string; proposed_commit?: unknown } | null;
   items: (TextItem | ToolItem)[];
   error: string | null;
+  cancelled?: boolean;
+  delivery_mode?: 'reading' | 'listening';
+  assistant_index?: number | null;
+  audio_job_id?: string | null;
+  audio_error?: string | null;
+  preview_job_ids?: string[];
+  preview_complete?: boolean;
+  preview_phase?: string | null;
+  preview_progress?: Record<string, unknown>;
 }
 
 export function getChatJob(pid: string, jobId: string): Promise<{ job: ChatJob }> {
@@ -92,6 +118,10 @@ export function getChatJob(pid: string, jobId: string): Promise<{ job: ChatJob }
 
 export function getActiveChatJob(pid: string, slug: string): Promise<{ job: ChatJob | null }> {
   return apiGet(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+}
+
+export function cancelChatJob(pid: string, jobId: string) {
+  return apiPost<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 }
 
 // Paper retrieval (pre-discussion) is a background job for the same reason chat turns are:
@@ -150,8 +180,20 @@ export function startDiscovery(pid: string, goals: string) {
   return apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
 }
 
-export function addPaper(pid: string, title: string, arxivId?: string) {
-  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined });
+export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string) {
+  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined });
+}
+
+export function removePaper(pid: string, slug: string) {
+  return apiDelete<{ removed: string; notes_kept: boolean }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`);
+}
+
+export interface RelatedWork {
+  id: string; kind: 'project' | 'external'; slug: string | null; title: string; year: number | null;
+  venue: string; arxiv_id: string | null; url: string | null; direction: 'builds_on' | 'built_on_by'; reason: string;
+}
+export function getRelated(pid: string, slug: string) {
+  return apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 }
 
 // Notes edits are explicit human commits. The agent job is deliberately proposal-only until

@@ -5,6 +5,26 @@
   min-height: 0;
 }
 
+.discussion-toolbar { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+.discussion-toolbar > div:first-child { flex: 1; min-width: 200px; }
+.discussion-toolbar h2 { margin: 2px 0 0; font: 500 22px/1.2 var(--font-serif); }
+.session-controls { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.session-controls.compact { display: flex; flex: 2; margin: 0; }
+.session-controls label { display: flex; min-width: 130px; flex: 1; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px; }
+.session-controls select, .session-controls input { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel2); color: var(--text); font: 12px var(--font-body); }
+.related-panel { margin-bottom: 14px; padding: 16px; border: 1px solid var(--line2); border-radius: var(--radius-md); background: var(--panel); }
+.related-head { display: flex; justify-content: space-between; align-items: center; }
+.related-panel article { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.related-panel article p, .related-panel article span { grid-column: 1; margin: 0; }
+.related-panel article .btn { grid-column: 2; grid-row: 1 / span 3; align-self: center; text-decoration: none; }
+.discussion-state-banner, .stop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: rgba(101, 214, 180, .07); }
+.btn.danger { color: var(--danger); border-color: rgba(229, 115, 140, .4); }
+
+@media (max-width: 760px) {
+  .session-controls, .session-controls.compact { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .session-controls label:last-of-type { grid-column: 1 / -1; }
+}
+
 .chat-scroll {
   flex: 1;
   overflow-y: auto;

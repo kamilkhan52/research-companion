@@ -11,7 +11,7 @@ import './Discovery.css';
 
 interface Props { onNavigate: (hash: string) => void; }
 
-export function Discovery(_props: Props) {
+export function Discovery({ onNavigate }: Props) {
   const [activePid] = useActivePid();
   const [goals, setGoals] = useState('');
   const [job, setJob] = useState<DiscoveryJob | null>(null);
@@ -25,18 +25,19 @@ export function Discovery(_props: Props) {
   const [specificArxiv, setSpecificArxiv] = useState('');
   const scopeRef = useRef({ pid: activePid });
   scopeRef.current = { pid: activePid };
+  const goalsKey = activePid ? `rc.draft.v1:${activePid}:discovery:goals` : '';
 
   const load = useCallback(async () => {
     const pid = activePid;
     if (!pid) return null;
     const response = await getDiscovery(pid);
     if (scopeRef.current.pid !== pid) return null;
-    setGoals(response.goals || response.result?.goals || '');
+    setGoals(localStorage.getItem(goalsKey) ?? response.goals ?? response.result?.goals ?? '');
     setSuggestions(response.result?.suggestions || []);
     setJob(response.job);
     if (response.job?.status === 'error') setError(response.job.error || 'Discovery failed');
     return response;
-  }, [activePid]);
+  }, [activePid, goalsKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,18 +86,19 @@ export function Discovery(_props: Props) {
     try {
       const response = await startDiscovery(activePid, goals.trim());
       if (scopeRef.current.pid === activePid) setJob(response.job);
+      localStorage.removeItem(goalsKey);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
   }
 
-  async function add(title: string, arxivId?: string) {
+  async function add(title: string, arxivId?: string, abstract?: string) {
     if (!activePid) return;
     const id = arxivId || title;
     setAddingId(id);
     setError(null);
     try {
-      await addPaper(activePid, title, arxivId);
+      await addPaper(activePid, title, arxivId, abstract);
       setAdded((previous) => new Set(previous).add(id));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -113,7 +115,10 @@ export function Discovery(_props: Props) {
     <div className="discovery">
       <section className="discovery-section">
         <h3>What do you want to understand?</h3>
-        <textarea className="discovery-goals" value={goals} onChange={(event) => setGoals(event.target.value)}
+        <textarea className="discovery-goals" value={goals} onChange={(event) => {
+          setGoals(event.target.value);
+          if (goalsKey) localStorage.setItem(goalsKey, event.target.value);
+        }}
           placeholder="e.g. transformer attention mechanisms, efficient model training…" />
         <button className="btn primary" onClick={beginDiscovery} disabled={job?.status === 'running' || !goals.trim()}>
           {job?.status === 'running' ? `Discovering… ${job.phase || ''}` : 'Start discovery'}
@@ -139,7 +144,7 @@ export function Discovery(_props: Props) {
                   </div>
                   <p className="suggestion-abstract muted">{suggestion.abstract?.slice(0, 200)}{(suggestion.abstract?.length ?? 0) > 200 ? '…' : ''}</p>
                 </div>
-                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id)} disabled={added.has(id) || addingId === id}>
+                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract)} disabled={added.has(id) || addingId === id}>
                   {added.has(id) ? 'Added ✓' : addingId === id ? 'Adding…' : '+ Add'}
                 </button>
               </div>;
@@ -161,6 +166,7 @@ export function Discovery(_props: Props) {
           setSpecificArxiv('');
         }}>Add to reading list</button>
       </section>
+      {added.size > 0 && <button className="btn primary discovery-library-link" onClick={() => onNavigate('library')}>Go to library · {added.size} added</button>}
     </div>
   );
 }

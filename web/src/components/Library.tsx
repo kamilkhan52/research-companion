@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
-import { createProject } from '@/api/endpoints';
-import type { Paper } from '@/api/types';
+import { useState, useMemo, useEffect } from 'react';
+import { createProject, getRecentSessions, removePaper } from '@/api/endpoints';
+import type { Paper, RecentSession } from '@/api/types';
 import { useLibrary } from '@/hooks/useLibrary';
 import './Library.css';
 
@@ -24,26 +24,55 @@ const STATE_COLORS: Record<string, string> = {
   committed: 'green',
 };
 
+type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
+const FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'All' }, { key: 'toread', label: 'To read' },
+  { key: 'inprogress', label: 'In progress' }, { key: 'done', label: 'Done' },
+];
+
 function paperStatus(p: Paper): string {
   if (p.list_status === 'read' || p.session_state === 'committed') return 'committed';
   return p.session_state || 'unread';
+}
+
+function bucket(p: Paper): Exclude<StatusFilter, 'all'> {
+  const state = paperStatus(p);
+  if (state === 'committed') return 'done';
+  if (state === 'in_discussion' || state === 'notes_drafted') return 'inprogress';
+  return 'toread';
 }
 
 export function Library({ onNavigate }: Props) {
   const { projects, activePid, setActivePid, state, loading, error, refetch } = useLibrary();
   const [newName, setNewName] = useState('');
   const [showNew, setShowNew] = useState(false);
+  const [filter, setFilter] = useState<StatusFilter>('all');
+  const [recent, setRecent] = useState<RecentSession[]>([]);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const grouped = useMemo(() => {
-    if (!state?.papers) return [];
-    const map = new Map<string, Paper[]>();
-    for (const p of state.papers) {
-      const g = p.group || 'Ungrouped';
-      if (!map.has(g)) map.set(g, []);
-      map.get(g)!.push(p);
-    }
-    return Array.from(map, ([group, papers]) => ({ group, papers }));
-  }, [state]);
+  useEffect(() => {
+    if (loading || !activePid || !state) return;
+    void getRecentSessions()
+      .then(({ sessions }) => setRecent(Array.isArray(sessions) ? sessions : []))
+      .catch(() => setRecent([]));
+  }, [activePid, loading, state]);
+  const papers = state?.papers ?? [];
+  const counts = useMemo(() => {
+    const result = { all: papers.length, toread: 0, inprogress: 0, done: 0 };
+    papers.forEach((paper) => { result[bucket(paper)] += 1; });
+    return result;
+  }, [papers]);
+  const visiblePapers = filter === 'all' ? papers : papers.filter((paper) => bucket(paper) === filter);
+  const continueSession = recent.find((session) => session.kind === 'paper' && session.state !== 'committed');
+
+  async function confirmRemove(paper: Paper) {
+    if (!activePid || !window.confirm(`Remove “${paper.title}” from this project? Its notes will be kept and marked as removed.`)) return;
+    setRemoving(paper.slug); setActionError(null);
+    try { await removePaper(activePid, paper.slug); refetch();
+    } catch (caught) { setActionError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setRemoving(null); }
+  }
 
   if (loading) {
     return (
@@ -62,7 +91,6 @@ export function Library({ onNavigate }: Props) {
             activePid={activePid || ''}
             onSelect={setActivePid}
             onNew={() => setShowNew(true)}
-            onNavigate={onNavigate}
           />
         )}
         <div className="lc-empty">
@@ -115,7 +143,6 @@ export function Library({ onNavigate }: Props) {
         activePid={activePid}
         onSelect={setActivePid}
         onNew={() => setShowNew(true)}
-        onNavigate={onNavigate}
       />
 
       {showNew && (
@@ -138,7 +165,23 @@ export function Library({ onNavigate }: Props) {
         />
       )}
 
-      {!state ? null : grouped.length === 0 ? (
+      {continueSession && <button className="continue-card" onClick={() => {
+        setActivePid(continueSession.project_id);
+        onNavigate(`paper/${encodeURIComponent(continueSession.slug)}`);
+      }}><span className="continue-label">Continue reading</span><strong>{continueSession.title}</strong>
+        <span className="muted">{continueSession.project_name} · {new Date(continueSession.updated_at).toLocaleString()}</span></button>}
+
+      {state && state.project.paper_count ? <section className="progress-card">
+        <div><strong>Project progress</strong><span className="muted">{state.project.read_count ?? 0} of {state.project.paper_count} complete</span></div>
+        <progress value={state.project.read_count ?? 0} max={state.project.paper_count} />
+      </section> : null}
+
+      {papers.length > 0 && <div className="library-filters" aria-label="Paper status filters">
+        {FILTERS.map((item) => <button key={item.key} className={filter === item.key ? 'active' : ''} onClick={() => setFilter(item.key)}>{item.label} {counts[item.key]}</button>)}
+      </div>}
+      {actionError && <p className="build-progress-error">{actionError}</p>}
+
+      {!state ? null : papers.length === 0 ? (
         <div className="lc-empty">
           <h3>Start this project</h3>
           <p className="muted">
@@ -148,29 +191,15 @@ export function Library({ onNavigate }: Props) {
             Find papers
           </button>
         </div>
-      ) : (
-        <div className="paper-list">
-          {grouped.map(({ group, papers }) => (
-            <div key={group} className="paper-group">
-              <div className="group-header">{group.toUpperCase()}</div>
-              {papers.map((p) => (
-                <div
-                  key={p.slug}
-                  className="paper-card"
-                  onClick={() => onNavigate(`paper/${encodeURIComponent(p.slug)}`)}
-                >
-                  <div className="paper-card-body">
-                    <div className="paper-card-title">{p.title}</div>
-                    <div className="paper-card-slug muted">{p.slug}</div>
-                  </div>
-                  <StatusBadge paper={p} />
-                  <span className="paper-card-chevron">›</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
+      ) : visiblePapers.length === 0 ? <p className="lc-empty muted">No papers match this filter.</p> : <div className="paper-list">
+        {visiblePapers.map((paper) => <article key={paper.slug} className="paper-card">
+          <button className="paper-open" onClick={() => onNavigate(`paper/${encodeURIComponent(paper.slug)}`)}>
+            <div className="paper-card-body"><StatusBadge paper={paper} /><div className="paper-card-title">{paper.title}</div></div>
+            <span className="paper-action">{bucket(paper) === 'done' ? 'Open' : bucket(paper) === 'toread' ? 'Read' : 'Resume'} ›</span>
+          </button>
+          <button className="paper-remove" aria-label={`Remove ${paper.title}`} disabled={removing === paper.slug} onClick={() => void confirmRemove(paper)}>Remove</button>
+        </article>)}
+      </div>}
     </div>
   );
 }
@@ -180,13 +209,11 @@ function ProjectBar({
   activePid,
   onSelect,
   onNew,
-  onNavigate,
 }: {
   projects: { id: string; name: string; paper_count: number; read_count: number }[];
   activePid: string;
   onSelect: (pid: string) => void;
   onNew: () => void;
-  onNavigate: (hash: string) => void;
 }) {
   return (
     <div className="project-bar">
@@ -206,20 +233,6 @@ function ProjectBar({
         + New
       </button>
 
-      <div className="project-nav">
-        <button className="nav-btn" onClick={() => onNavigate('discover')} aria-label="Discover">
-          <span className="nav-icon">⌕</span>
-          <span className="nav-label">Discover</span>
-        </button>
-        <button className="nav-btn" onClick={() => onNavigate('notes/working')} aria-label="Notes">
-          <span className="nav-icon">✎</span>
-          <span className="nav-label">Notes</span>
-        </button>
-        <button className="nav-btn" onClick={() => onNavigate('graph')} aria-label="Graph">
-          <span className="nav-icon">✦</span>
-          <span className="nav-label">Graph</span>
-        </button>
-      </div>
     </div>
   );
 }

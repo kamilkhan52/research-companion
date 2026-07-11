@@ -1,43 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import {
   approve,
+  cancelChatJob,
+  continueDiscussion,
   continueJob,
   finishJob,
   getActiveChatJob,
   getChatJob,
+  getFavoriteModels,
   getLatestRetrievalJob,
   getOpeningDraft,
   getRetrievalJob,
   getReview,
+  getRelated,
   getSession,
   reopen,
   replyJob,
   requestChangesJob,
   retryJob,
+  setSessionMode,
   startJob,
   startRetrievalJob,
 } from '@/api/endpoints';
-import type { ChatJob, RetrievalJob } from '@/api/endpoints';
+import type { ChatJob, RelatedWork, RetrievalJob } from '@/api/endpoints';
+import type { FavoriteModel, ReadingMode, SessionState } from '@/api/types';
 import type { OpeningDraft, ReviewResponse, Session, SessionTurn } from '@/api/session-types';
 import { ApiError } from '@/api/client';
-import { useActivePid } from '@/hooks/useLibrary';
+import { useActivePid, useProjectDefaults } from '@/hooks/useLibrary';
 import { useAudio } from '@/audio/AudioProvider';
+import { RichMarkdown } from '@/components/RichMarkdown';
 import './Discussion.css';
 
 interface Props { slug: string; onNavigate: (hash: string) => void; }
 type View = 'compose' | 'chat' | 'review' | 'start';
 interface WatchableJob { id: string; status: 'running' | 'done' | 'error'; }
-
-marked.setOptions({ breaks: true });
-
-function sanitize(html: string): string {
-  return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['h1','h2','h3','h4','p','br','strong','em','code','pre','blockquote','ul','ol','li','a','span','table','thead','tbody','tr','th','td'],
-    ALLOWED_ATTR: ['href','target','rel','class'],
-  });
-}
 
 /** One request at a time. A terminal snapshot invalidates the watch synchronously, so an older
  * response can never overwrite it. Network blips retry; a 404 signals the caller to reconcile
@@ -111,15 +107,22 @@ function useJobWatcher<T extends WatchableJob>(
 
 export function Discussion({ slug, onNavigate }: Props) {
   const [activePid] = useActivePid();
+  const defaults = useProjectDefaults();
   const [view, setView] = useState<View>('compose');
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [paperTitle, setPaperTitle] = useState('');
+  const [sessionState, setSessionState] = useState<SessionState>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retrievalError, setRetrievalError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
   const [draft, setDraft] = useState<OpeningDraft | null>(null);
   const [model, setModel] = useState('');
+  const [favorites, setFavorites] = useState<FavoriteModel[]>([]);
+  const [readingMode, setReadingMode] = useState<ReadingMode>('balanced');
+  const [deliveryMode, setDeliveryMode] = useState<'reading' | 'listening'>(() => localStorage.getItem('rc_delivery_mode') === 'listening' ? 'listening' : 'reading');
+  const [related, setRelated] = useState<RelatedWork[] | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [notesBlock, setNotesBlock] = useState('');
   const [synthesis, setSynthesis] = useState('');
@@ -141,6 +144,22 @@ export function Discussion({ slug, onNavigate }: Props) {
     .join('');
 
   useEffect(() => {
+    void getFavoriteModels()
+      .then(({ models }) => setFavorites(Array.isArray(models) ? models : []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { if (!model && defaults.model) setModel(defaults.model); }, [defaults.model, model]);
+  useEffect(() => { localStorage.setItem('rc_delivery_mode', deliveryMode); }, [deliveryMode]);
+  useEffect(() => {
+    const key = activePid ? `rc.draft.v1:${activePid}:discussion:${slug}:reply` : '';
+    if (key) setReply(localStorage.getItem(key) || '');
+  }, [activePid, slug]);
+  useEffect(() => {
+    const key = activePid ? `rc.draft.v1:${activePid}:discussion:${slug}:reply` : '';
+    if (key) { if (reply) localStorage.setItem(key, reply); else localStorage.removeItem(key); }
+  }, [activePid, reply, slug]);
+
+  useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [turns, streamText]);
 
@@ -159,7 +178,8 @@ export function Discussion({ slug, onNavigate }: Props) {
   const applySession = useCallback((session: Session) => {
     setPaperTitle(session.paper.title);
     setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
-    setModel(session.model || '');
+    setSessionState(session.state as SessionState);
+    setReadingMode(session.reading_mode || 'balanced');
   }, []);
 
   const fetchCanonicalSession = useCallback(async () => {
@@ -180,7 +200,7 @@ export function Discussion({ slug, onNavigate }: Props) {
     const opening = await getOpeningDraft(pid, expectedSlug);
     if (routeRef.current.pid !== pid || routeRef.current.slug !== expectedSlug) return;
     setDraft(opening);
-    setModel(opening.model);
+    setModel(opening.model || '');
     setView('compose');
   }, [activePid, slug]);
 
@@ -198,6 +218,7 @@ export function Discussion({ slug, onNavigate }: Props) {
     setError(null);
     setRetrievalError(null);
     setCandidates([]);
+    setRelated(null);
 
     const initialize = async () => {
       if (!activePid) return;
@@ -246,7 +267,8 @@ export function Discussion({ slug, onNavigate }: Props) {
     if (!job || job.status === 'running') return;
     setWorking(false);
     void fetchCanonicalSession().then((session) => {
-      if (job.status !== 'done' || localStorage.getItem('rc_autoplay') !== '1' || !session) return;
+      const shouldPlay = job.delivery_mode === 'listening' || localStorage.getItem('rc_autoplay') === '1';
+      if (job.status !== 'done' || !shouldPlay || !session) return;
       const assistantIndex = session.transcript.reduce((count, turn) => count + (turn.role === 'assistant' ? 1 : 0), 0) - 1;
       const lastAssistant = [...session.transcript].reverse().find((turn) => turn.role === 'assistant');
       if (lastAssistant?.canonical) void playText({ id: `${slug}:${assistantIndex}`, title: session.paper.title, text: lastAssistant.canonical });
@@ -317,6 +339,29 @@ export function Discussion({ slug, onNavigate }: Props) {
     }
   }
 
+  async function stopGeneration() {
+    if (!activePid || !chatWatch.job?.id) return;
+    setStopping(true);
+    try { await cancelChatJob(activePid, chatWatch.job.id); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setStopping(false); }
+  }
+
+  async function changeReadingMode(next: ReadingMode) {
+    if (!activePid) return;
+    const previous = readingMode;
+    setReadingMode(next);
+    try { await setSessionMode(activePid, slug, next); }
+    catch (caught) { setReadingMode(previous); setError(caught instanceof Error ? caught.message : String(caught)); }
+  }
+
+  async function showRelated() {
+    if (!activePid) return;
+    if (related) { setRelated(null); return; }
+    try { setRelated((await getRelated(activePid, slug)).related); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+  }
+
   async function handleApprove() {
     if (!activePid) return;
     try {
@@ -331,7 +376,7 @@ export function Discussion({ slug, onNavigate }: Props) {
     const text = prompt('What should change?');
     if (!text || !activePid) return;
     setView('chat');
-    await submitJob(() => requestChangesJob(activePid, { slug, text }));
+    await submitJob(() => requestChangesJob(activePid, { slug, text, delivery_mode: deliveryMode, model: model || null }));
   }
 
   async function handleReopen() {
@@ -345,7 +390,14 @@ export function Discussion({ slug, onNavigate }: Props) {
     }
   }
 
+  async function handleContinueCommitted() {
+    if (!activePid) return;
+    try { await continueDiscussion(activePid, slug); setSessionState('in_discussion'); setView('chat'); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+  }
+
   const lastIsUser = turns.length > 0 && turns[turns.length - 1]?.role === 'user';
+  const delivery = { delivery_mode: deliveryMode, model: model || null } as const;
 
   if (view === 'start') {
     const retrievalRunning = retrievalWatch.job?.status === 'running';
@@ -409,11 +461,13 @@ export function Discussion({ slug, onNavigate }: Props) {
     return (
       <div className="discussion"><div className="compose-panel">
         <h3>{draft.title ? `Start — ${draft.title}` : 'Start reading'}</h3>
-        <p className="muted">Edit the opening prompt and pick a model for the first response.</p>
+        <p className="muted">Choose how the analyst should meet you, then edit the opening prompt if needed.</p>
+        <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
+          onDeliveryMode={setDeliveryMode} model={model} onModel={setModel} favorites={favorites} />
         <textarea className="compose-textarea" value={draft.prompt} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} />
         <div className="btn-row"><button className="btn primary" onClick={() => {
           setView('chat');
-          void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, model }));
+          void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, mode: readingMode, ...delivery }));
         }} disabled={working}>Generate first response</button></div>
       </div></div>
     );
@@ -421,49 +475,88 @@ export function Discussion({ slug, onNavigate }: Props) {
 
   return (
     <div className="discussion">
+      <header className="discussion-toolbar">
+        <div><span className="muted">{sessionState === 'committed' ? 'Read' : 'Discussion'}</span><h2>{paperTitle}</h2></div>
+        <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
+          onDeliveryMode={setDeliveryMode} model={model} onModel={setModel} favorites={favorites} compact />
+        <button className="btn ghost" onClick={() => void showRelated()}>Related works</button>
+      </header>
+      {related && <RelatedPanel related={related} onNavigate={onNavigate} onClose={() => setRelated(null)} />}
+      {sessionState === 'committed' && <div className="discussion-state-banner"><span>This reading is complete.</span><button className="btn primary" onClick={() => void handleContinueCommitted()}>Continue discussion</button></div>}
       <div className="chat-scroll" ref={chatRef}>
         {turns.length === 0 && !working
           ? <div className="lc-empty"><p className="muted">No turns yet.</p></div>
           : turns.map((turn, index) => <TurnBubble key={index} turn={turn} index={index} turns={turns} onRetry={(assistantIndex, retryModel) => {
               chatWatch.clear();
-              void submitJob(() => retryJob(activePid!, { slug, assistant_index: assistantIndex, model: retryModel || null }));
-            }} onListen={(assistantIndex, text) => void playText({ id: `${slug}:${assistantIndex}`, title: paperTitle || slug, text })} />)}
-        {working && <StreamBubble text={streamText} />}
+              void submitJob(() => retryJob(activePid!, { slug, assistant_index: assistantIndex, ...delivery, model: retryModel ?? delivery.model }));
+            }} currentModel={model} onListen={(assistantIndex, text) => void playText({ id: `${slug}:${assistantIndex}`, title: paperTitle || slug, text })} onNavigate={onNavigate} />)}
+        {working && <StreamBubble text={streamText} onNavigate={onNavigate} />}
       </div>
+      {working && <div className="stop-row">
+        {deliveryMode === 'listening' && chatWatch.job?.preview_phase && <span className="muted">Preparing listening cues · {chatWatch.job.preview_phase}</span>}
+        <button className="btn ghost danger" onClick={() => void stopGeneration()} disabled={stopping}>{stopping ? 'Stopping…' : 'Stop response'}</button>
+      </div>}
       {!working && <div className="composer">
         {lastIsUser ? (
           <div className="gen-note"><span className="muted">No response yet.</span>
-            <button className="btn ghost" onClick={() => submitJob(() => continueJob(activePid!, slug))}>Generate response</button>
-            <button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button>
+            <button className="btn ghost" onClick={() => submitJob(() => continueJob(activePid!, slug, delivery))}>Generate response</button>
+            <button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug, delivery))}>We're done — draft notes</button>
           </div>
         ) : (<>
           <div className="composer-row"><textarea className="composer-input" placeholder="Type your reply…" value={reply}
             onChange={(event) => { setReply(event.target.value); event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 140)}px`; }}
             onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-              const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text }));
+              const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text, ...delivery }));
             } }} rows={1} />
-            <button className="btn primary" onClick={() => { const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text })); }} disabled={!reply.trim()}>Send</button></div>
-          <div className="composer-actions"><button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug))}>We're done — draft notes</button></div>
+            <button className="btn primary" onClick={() => { const text = reply.trim(); if (!text) return; setTurns((previous) => [...previous, { role: 'user', text }]); setReply(''); void submitJob(() => replyJob(activePid!, { slug, text, ...delivery })); }} disabled={!reply.trim()}>Send</button></div>
+          <div className="composer-actions"><button className="btn ghost" onClick={() => submitJob(() => finishJob(activePid!, slug, delivery))}>We're done — draft notes</button></div>
         </>)}
       </div>}
     </div>
   );
 }
 
-function TurnBubble({ turn, index, turns, onRetry, onListen }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void; onListen: (idx: number, text: string) => void }) {
+function SessionControls({ readingMode, onReadingMode, deliveryMode, onDeliveryMode, model, onModel, favorites, compact = false }: {
+  readingMode: ReadingMode; onReadingMode: (mode: ReadingMode) => void; deliveryMode: 'reading' | 'listening';
+  onDeliveryMode: (mode: 'reading' | 'listening') => void; model: string; onModel: (model: string) => void;
+  favorites: FavoriteModel[]; compact?: boolean;
+}) {
+  return <div className={`session-controls ${compact ? 'compact' : ''}`}>
+    <label><span>Reading mode</span><select value={readingMode} onChange={(event) => void onReadingMode(event.target.value as ReadingMode)}>
+      <option value="balanced">Balanced</option><option value="background">Background-heavy</option>
+      <option value="technical">Technical</option><option value="detailed">Detailed</option>
+    </select></label>
+    <label><span>Response</span><select value={deliveryMode} onChange={(event) => onDeliveryMode(event.target.value as 'reading' | 'listening')}>
+      <option value="reading">Reading</option><option value="listening">Listening</option>
+    </select></label>
+    <label><span>Model (next response)</span><input list="favorite-models" value={model} onChange={(event) => onModel(event.target.value)} placeholder="Default model" /></label>
+    <datalist id="favorite-models">{favorites.map((favorite) => <option key={favorite.id} value={favorite.id}>{favorite.label}</option>)}</datalist>
+  </div>;
+}
+
+function RelatedPanel({ related, onNavigate, onClose }: { related: RelatedWork[]; onNavigate: (hash: string) => void; onClose: () => void }) {
+  return <aside className="related-panel"><div className="related-head"><h3>Related works</h3><button className="icon-btn" onClick={onClose} aria-label="Close related works">✕</button></div>
+    {related.length === 0 ? <p className="muted">No significant related works are available yet.</p> : related.map((work) => <article key={work.id}>
+      <strong>{work.title}</strong><p>{work.reason}</p><span className="muted">{work.direction === 'builds_on' ? 'Builds on this paper' : 'Built on by this paper'}{work.year ? ` · ${work.year}` : ''}</span>
+      {work.slug ? <button className="btn ghost" onClick={() => onNavigate(`paper/${encodeURIComponent(work.slug!)}`)}>Open paper</button>
+        : work.url && /^https?:/i.test(work.url) ? <a className="btn ghost" href={work.url} target="_blank" rel="noopener noreferrer">Open source</a> : null}
+    </article>)}</aside>;
+}
+
+function TurnBubble({ turn, index, turns, onRetry, onListen, onNavigate, currentModel }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void; onListen: (idx: number, text: string) => void; onNavigate: (hash: string) => void; currentModel: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (turn.role === 'user') return <div className="turn"><div className="turn-who">You</div><div className="bubble user"><div className="turn-text">{turn.text}</div></div></div>;
   const assistantIndex = turns.slice(0, index + 1).filter((entry) => entry.role === 'assistant').length - 1;
   const signal = turn.state_signal === 'ready_to_draft_notes' ? <span className="turn-signal">ready to draft notes</span> : null;
   return <div className="turn"><div className="turn-who"><span>Companion{signal}</span></div>
-    <div className="bubble assistant"><div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitize(marked.parse(turn.canonical || '') as string) }} /></div>
+    <div className="bubble assistant"><RichMarkdown className="turn-text" text={turn.canonical || ''} onNavigate={onNavigate} /></div>
     <div className="turn-actions"><button className="btn ghost" onClick={() => onListen(assistantIndex, turn.canonical || '')}>Listen</button><button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
       {menuOpen && <div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(assistantIndex); setMenuOpen(false); }}>Retry</div>
-        <div className="turn-menu-item" onClick={() => { onRetry(assistantIndex, ''); setMenuOpen(false); }}>Retry with current model</div></div>}</div>
+        <div className="turn-menu-item" onClick={() => { onRetry(assistantIndex, currentModel || undefined); setMenuOpen(false); }}>Retry with {currentModel || 'default model'}</div></div>}</div>
   </div>;
 }
 
-function StreamBubble({ text }: { text: string }) {
+function StreamBubble({ text, onNavigate }: { text: string; onNavigate: (hash: string) => void }) {
   if (!text) return <div className="turn"><div className="turn-who">Companion</div><div className="bubble assistant"><div className="lc-loading"><span className="spinner" /> Thinking…</div></div></div>;
-  return <div className="turn"><div className="turn-who">Companion</div><div className="bubble assistant"><div className="turn-text" dangerouslySetInnerHTML={{ __html: sanitize(marked.parse(text) as string) }} /></div></div>;
+  return <div className="turn"><div className="turn-who">Companion</div><div className="bubble assistant"><RichMarkdown className="turn-text" text={text} onNavigate={onNavigate} /></div></div>;
 }

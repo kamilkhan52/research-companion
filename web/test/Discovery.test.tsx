@@ -12,6 +12,7 @@ vi.mock('@/api/endpoints', () => api);
 beforeEach(() => {
   active.pid = 'project-1';
   vi.clearAllMocks();
+  localStorage.clear();
   api.getDiscovery.mockResolvedValue({
     goals: 'Learn retrieval', job: null,
     result: { goals: 'Learn retrieval', suggestions: [{
@@ -27,7 +28,9 @@ describe('Discovery', () => {
     render(<Discovery onNavigate={vi.fn()} />);
     await screen.findByText('Paper One');
     await user.click(screen.getByRole('button', { name: '+ Add' }));
-    await waitFor(() => expect(api.addPaper).toHaveBeenCalledWith('project-1', 'Paper One', '2501.00001'));
+    await waitFor(() => expect(api.addPaper).toHaveBeenCalledWith(
+      'project-1', 'Paper One', '2501.00001', 'A useful paper.',
+    ));
   });
 
   it('starts the background discovery job with trimmed goals', async () => {

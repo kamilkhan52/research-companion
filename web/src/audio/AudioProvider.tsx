@@ -6,7 +6,7 @@ import { useActivePid } from '@/hooks/useLibrary';
 interface Request { id: string; title: string; text: string; }
 interface Current { id: string; title: string; narration: string; }
 interface Prep { title: string; stage: string; done: number; total: number; }
-interface AudioContextValue { playText: (request: Request) => Promise<void>; current: Current | null; prep: Prep | null; playing: boolean; toggle: () => void; dismiss: () => void; error: string | null; }
+interface AudioContextValue { playText: (request: Request) => Promise<void>; current: Current | null; prep: Prep | null; playing: boolean; position: number; duration: number; rate: number; toggle: () => void; dismiss: () => void; seekTo: (seconds: number) => void; seekBy: (seconds: number) => void; seekSentence: (direction: -1 | 1) => void; setRate: (rate: number) => void; error: string | null; }
 const AudioContext = createContext<AudioContextValue | null>(null);
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -16,20 +16,38 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [prep, setPrep] = useState<Prep | null>(null);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [rate, setRateState] = useState(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const generation = useRef(0);
 
   useEffect(() => () => { audioRef.current?.pause(); window.speechSynthesis?.cancel(); }, []);
 
   const dismiss = useCallback(() => {
     generation.current += 1; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel();
-    setCurrent(null); setPrep(null); setPlaying(false);
+    speechRef.current = null; setCurrent(null); setPrep(null); setPlaying(false); setPosition(0); setDuration(0);
   }, []);
   const toggle = useCallback(() => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio) {
+      if (speechRef.current) { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); else window.speechSynthesis.pause(); setPlaying(!window.speechSynthesis.paused); }
+      return;
+    }
     if (audio.paused) void audio.play(); else audio.pause();
   }, []);
+  const seekTo = useCallback((seconds: number) => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, Math.min(seconds, audioRef.current.duration || seconds)); }, []);
+  const seekBy = useCallback((seconds: number) => { if (audioRef.current) seekTo(audioRef.current.currentTime + seconds); }, [seekTo]);
+  const setRate = useCallback((next: number) => { setRateState(next); if (audioRef.current) audioRef.current.playbackRate = next; }, []);
+  const seekSentence = useCallback((direction: -1 | 1) => {
+    if (!audioRef.current || !current?.narration || !duration) return;
+    const ends = [...current.narration.matchAll(/[^.!?]+[.!?]+|[^.!?]+$/g)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+    const char = (position / duration) * current.narration.length;
+    const index = Math.max(0, ends.findIndex((sentence) => char < sentence.end));
+    const target = ends[Math.max(0, Math.min(ends.length - 1, index + direction))];
+    if (target) seekTo((target.start / current.narration.length) * duration);
+  }, [current?.narration, duration, position, seekTo]);
 
   const playText = useCallback(async ({ id, title, text }: Request) => {
     if (current?.id === id && audioRef.current) { toggle(); return; }
@@ -41,7 +59,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       if (!live()) return;
       if (settings.speech_provider === 'browser') {
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.onend = () => { if (live()) setPlaying(false); };
+        utterance.rate = rate; speechRef.current = utterance;
+        utterance.onend = () => { if (live()) setPlaying(false); speechRef.current = null; };
         window.speechSynthesis.speak(utterance);
         setCurrent({ id, title, narration: text }); setPrep(null); setPlaying(true); return;
       }
@@ -61,12 +80,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       if (job.status === 'error' || !job.url) throw new Error(job.error || 'Could not prepare audio.');
       const audio = new Audio(job.url);
       audio.onplay = () => setPlaying(true); audio.onpause = () => setPlaying(false); audio.onended = () => setPlaying(false);
+      audio.ontimeupdate = () => setPosition(audio.currentTime); audio.ondurationchange = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0); audio.playbackRate = rate;
       audioRef.current?.pause(); audioRef.current = audio;
       setCurrent({ id, title, narration: job.narration || text }); setPrep(null); await audio.play();
     } catch (caught) { if (live()) { setPrep(null); setError(caught instanceof Error ? caught.message : 'Could not prepare audio.'); } }
-  }, [activePid, current?.id, toggle]);
+  }, [activePid, current?.id, rate, toggle]);
 
-  return <AudioContext.Provider value={{ playText, current, prep, playing, toggle, dismiss, error }}>{children}</AudioContext.Provider>;
+  return <AudioContext.Provider value={{ playText, current, prep, playing, position, duration, rate, toggle, dismiss, seekTo, seekBy, seekSentence, setRate, error }}>{children}</AudioContext.Provider>;
 }
 
 export function useAudio() {
