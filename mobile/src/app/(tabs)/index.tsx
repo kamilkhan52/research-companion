@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
+import { backfillCovers } from '@/api/endpoints';
 import {
   useBaseUrl,
   useProjectState,
@@ -31,6 +32,9 @@ import { Button, Card, Chip, Icon, ProgressBar, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space, stateMeta } from '@/theme/tokens';
 
 type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
+
+// Fire the cover backfill at most once per app session (survives Library remounts/tab switches).
+let coverBackfillFired = false;
 
 const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -66,6 +70,15 @@ export default function LibraryScreen() {
       setActivePid(projects[0].id);
     }
   }, [ready, activePid, projects, setActivePid]);
+
+  // Warm covers for pre-existing papers once the app has a server, so a resume/Continue-reading
+  // panel never waits on an on-demand render. Fire-and-forget; the server dedups this pass.
+  useEffect(() => {
+    if (hasUrl && !coverBackfillFired) {
+      coverBackfillFired = true;
+      void backfillCovers().catch(() => undefined);
+    }
+  }, [hasUrl]);
 
   const stateQuery = useProjectState(activePid);
   const activeProject = projects?.find((p) => p.id === activePid);
