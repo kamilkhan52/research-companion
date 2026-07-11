@@ -20,6 +20,10 @@ from . import assembler, config, llm, prompts, sessions
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
+MATH_MARKDOWN_CONTRACT = (
+    "Math formatting contract: write TeX inline math as `\\( ... \\)` and display math as "
+    "`\\[ ... \\]`. Do not use single-dollar delimiters."
+)
 # A marker is a whole line naming one section. The protocol says "###NAME###", but on long
 # turns models drift into markdown headings ("## NAME", "# NAME"), so accept any heading
 # depth with an optional trailing hash run rather than losing the draft.
@@ -31,9 +35,10 @@ def _system_for(slug: str) -> str:
     """The system prompt + assembled context for a turn (review chat vs paper chat)."""
     access = prompts.get("self_contained_research")
     if slug == REVIEW_SLUG:
-        return (prompts.get("review_system") + "\n\n" + access
+        return (prompts.get("review_system") + "\n\n" + MATH_MARKDOWN_CONTRACT + "\n\n" + access
                 + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug))
-    return (prompts.get("analysis_system") + _mode_layer(slug) + "\n\n" + access
+    return (prompts.get("analysis_system") + _mode_layer(slug) + "\n\n"
+            + MATH_MARKDOWN_CONTRACT + "\n\n" + access
             + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug))
 
 

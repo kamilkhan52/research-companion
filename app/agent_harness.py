@@ -96,7 +96,8 @@ def build_notes_editor(model: Model | None = None) -> Agent:
     """The notes-editing agent: same research tools as the analyst (plus the project's own
     notes, which a notes edit legitimately needs), governed by the notes_editor prompt. Output
     is the full revised markdown document — no section protocol."""
-    system = prompts.get("notes_editor") + "\n\n" + prompts.get("notes_tool_guidance")
+    system = (prompts.get("notes_editor") + "\n\n" + agent_mod.MATH_MARKDOWN_CONTRACT
+              + "\n\n" + prompts.get("notes_tool_guidance"))
     tools = TOOLS + [research_tools.read_paper_notes, research_tools.read_working_notes]
     return Agent(model or _openrouter_model(), system_prompt=system, tools=tools,
                  output_type=str, retries=2)

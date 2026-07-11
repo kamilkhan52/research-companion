@@ -85,7 +85,7 @@ type Block =
   | { kind: 'math'; tex: string };
 
 // A paragraph that is nothing but one display-math span renders as a standalone equation
-// block: `\[ … \]` or `$$ … $$` (the analyst produces both).
+// block: `\[ … \]` (the output contract) or `$$ … $$` (compatibility with existing text).
 const DISPLAY_MATH_RE = /^(?:\\\[([\s\S]+)\\\]|\$\$([\s\S]+)\$\$)$/;
 
 function parseBlocks(src: string): Block[] {
@@ -311,22 +311,25 @@ function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToke
 function tokenizeInline(input: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   // Math is matched first — TeX is full of `_` and `*` that the emphasis rules would chew
-  // up. `\( … \)` is inline; `\[ … \]` / `$$ … $$` occurring mid-paragraph render inline
-  // too (the block form is handled in parseBlocks). Single-`$` is deliberately NOT math:
-  // it collides with prices in ordinary prose.
+  // up. `\( … \)` is the inline output contract; `\[ … \]` / `$$ … $$` occurring
+  // mid-paragraph render inline too (the block form is handled in parseBlocks). Conservatively
+  // accept `$ … $` as compatibility syntax: surrounding whitespace and a strong math signal
+  // (a variable, TeX command, script, equality, or Greek letter) are required, and the body may
+  // not start with a digit. Escaped dollars and numeric spans stay prose, so prices cannot
+  // consume the text between them. Numeric equations must use the explicit `\( … \)` contract.
   // Then link `[label](href)`, so its label isn't consumed by emphasis parsing.
   const re =
-    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|(?<!\\)\$(?!\$|\s|\d)(?=[^$\n]*(?:[A-Za-z\\_^=]|[\u0370-\u03ff]))([^$\n]*?\S)(?<!\\)\$(?!\$))|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {
     if (m.index > last) tokens.push({ type: 'text', text: input.slice(last, m.index) });
     if (m[1] !== undefined) {
-      tokens.push({ type: 'math', text: (m[2] ?? m[3] ?? m[4]).trim() });
-    } else if (m[6] !== undefined) tokens.push({ type: 'link', text: m[6], href: m[7] });
-    else if (m[9] !== undefined) tokens.push({ type: 'bold', text: m[9] });
-    else if (m[11] !== undefined) tokens.push({ type: 'code', text: m[11] });
-    else if (m[13] !== undefined) tokens.push({ type: 'italic', text: m[13] });
+      tokens.push({ type: 'math', text: (m[2] ?? m[3] ?? m[4] ?? m[5]).trim() });
+    } else if (m[7] !== undefined) tokens.push({ type: 'link', text: m[7], href: m[8] });
+    else if (m[10] !== undefined) tokens.push({ type: 'bold', text: m[10] });
+    else if (m[12] !== undefined) tokens.push({ type: 'code', text: m[12] });
+    else if (m[14] !== undefined) tokens.push({ type: 'italic', text: m[14] });
     last = re.lastIndex;
   }
   if (last < input.length) tokens.push({ type: 'text', text: input.slice(last) });

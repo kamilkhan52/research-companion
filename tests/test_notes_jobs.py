@@ -163,3 +163,19 @@ def test_edit_prompt_contains_document_and_instruction(temp_project):
     assert "Original." in seen["prompt"]
     assert "make it shorter" in seen["prompt"]
     assert "Paper One" in seen["prompt"]
+
+
+def test_default_notes_editor_includes_math_contract(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(notes_jobs.agent_harness, "AGENTIC_ENABLED", False)
+    monkeypatch.setattr(notes_jobs.prompts, "get", lambda key: "custom notes editor")
+
+    def fake_stream(messages, **kwargs):
+        captured["messages"] = messages
+        yield "revised notes"
+
+    monkeypatch.setattr(notes_jobs.agent, "stream_messages", fake_stream)
+    events = list(notes_jobs._default_events("working", "edit prompt"))
+
+    assert notes_jobs.agent.MATH_MARKDOWN_CONTRACT in captured["messages"][0]["content"]
+    assert events[-1] == {"type": "final", "text": "revised notes"}
