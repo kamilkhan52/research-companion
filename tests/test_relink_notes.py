@@ -164,8 +164,13 @@ def test_linkify_does_not_corrupt_a_link_containing_a_code_span():
 
 def test_linkify_is_linear_over_unmatched_brackets_and_dests():
     amap = build_alias_map([_P("Orca", "orca")])
-    for text in ("[" * 40000 + " Orca", "[a](" * 20000 + " Orca"):
+    for text in ("[" * 40000 + " Orca", "[a](" * 20000 + " Orca", "<" * 40000 + " Orca"):
         start = time.perf_counter()
         out = linkify(text, amap)
         assert time.perf_counter() - start < 1.0
         assert "[Orca](rc-paper:orca)" in out
+
+
+def test_linkify_protects_inside_an_html_tag():
+    amap = build_alias_map([_P("Orca", "orca")])
+    assert linkify("<span data-x=Orca>", amap) == "<span data-x=Orca>"  # Orca inside a tag

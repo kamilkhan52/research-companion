@@ -40,12 +40,18 @@ MIN_ALIAS_LEN = 4
 _FENCE_OPEN = re.compile(r" {0,3}(`{3,}|~{3,})")
 _FENCE_CLOSE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*(?:\n|\r\n)?\Z")
 
-# An html tag on a single line (bounded so it can't run away).
-_TAG = re.compile(r"<[^>\n]+>")
-
-# A link destination/reference longer than this on one line isn't a real link — cap the scan so
-# the pass stays linear on adversarial input (real note URLs are far shorter).
+# A link destination/reference or html tag longer than this on one line isn't real — cap the scan
+# so the pass stays linear on adversarial input (real note URLs and tags are far shorter).
 _DEST_SCAN_CAP = 2048
+
+
+def _bounded_close(s: str, open_at: int, closer: str) -> int:
+    """Index of the first `closer` after `open_at`, within the current line and _DEST_SCAN_CAP
+    chars — or -1. Cap + line bound keep each call O(1), so scanning many openers stays linear."""
+    limit = min(len(s), open_at + 1 + _DEST_SCAN_CAP)
+    end = s.find(closer, open_at + 1, limit)
+    newline = s.find("\n", open_at + 1, limit)
+    return end if end != -1 and (newline == -1 or end < newline) else -1
 
 
 def _iter_fenced(text: str):
@@ -122,11 +128,8 @@ def _link_extent(s: str, close_bracket: int) -> int:
     cap-bounded, so this is O(1) per link."""
     k = close_bracket + 1
     if k < len(s) and s[k] in "([":
-        closer = ")" if s[k] == "(" else "]"
-        limit = min(len(s), k + _DEST_SCAN_CAP)
-        end = s.find(closer, k + 1, limit)
-        newline = s.find("\n", k + 1, limit)
-        if end != -1 and (newline == -1 or end < newline):
+        end = _bounded_close(s, k, ")" if s[k] == "(" else "]")
+        if end != -1:
             return end + 1
     return close_bracket + 1  # shortcut/unclosed tail — protect only the [ … ] text
 
@@ -148,10 +151,10 @@ def _protected_spans(prose: str) -> list[tuple[int, int]]:
             continue
         c = prose[i]
         if c == "<":
-            m = _TAG.match(prose, i)
-            if m:
-                spans.append((i, m.end()))
-                i = m.end()
+            gt = _bounded_close(prose, i, ">")
+            if gt > i + 1:  # a non-empty <…> on one line
+                spans.append((i, gt + 1))
+                i = gt + 1
                 continue
         elif c == "!" and i + 1 < n and prose[i + 1] == "[":
             stack.append(i)
