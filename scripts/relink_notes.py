@@ -77,22 +77,42 @@ def _iter_fenced(text: str):
         yield "".join(buf), False
 
 
-def _code_span_end(prose: str, run_start: int, run_len: int) -> int | None:
-    """Index just past the closing backtick run for a code span opened by `run_len` backticks at
-    `run_start`, or None if there is no closing run of exactly that length. Linear — each character
-    is visited once, so there is no catastrophic backtracking."""
-    k, n = run_start + run_len, len(prose)
-    while k < n:
-        if prose[k] != "`":
-            k += 1
+def _code_span_intervals(prose: str) -> list[tuple[int, int]]:
+    """`[start, end)` char ranges covered by inline code spans, computed in a single **linear**
+    pass (O(n) total — no per-run rescans). A run of L backticks opens a span closed by the next
+    run of exactly L backticks; runs of other lengths in between don't close it, and an unmatched
+    run is literal text."""
+    runs: list[tuple[int, int]] = []  # (start, end) of each maximal backtick run
+    i, n = 0, len(prose)
+    while i < n:
+        if prose[i] == "`":
+            j = i
+            while j < n and prose[j] == "`":
+                j += 1
+            runs.append((i, j))
+            i = j
+        else:
+            i += 1
+
+    # For each run, the index of the next run of the SAME length (its potential closer), in one
+    # reverse pass — so matching below is O(#runs), not O(#runs × n).
+    next_same: list[int | None] = [None] * len(runs)
+    last_at_len: dict[int, int] = {}
+    for idx in range(len(runs) - 1, -1, -1):
+        length = runs[idx][1] - runs[idx][0]
+        next_same[idx] = last_at_len.get(length)
+        last_at_len[length] = idx
+
+    spans: list[tuple[int, int]] = []
+    idx = 0
+    while idx < len(runs):
+        closer = next_same[idx]
+        if closer is None:
+            idx += 1  # unmatched opener — literal
             continue
-        j = k
-        while j < n and prose[j] == "`":
-            j += 1
-        if j - k == run_len:  # a run of exactly the opening length closes the span
-            return j
-        k = j  # a run of a different length can't close it — skip past and keep looking
-    return None
+        spans.append((runs[idx][0], runs[closer][1]))
+        idx = closer + 1  # runs between opener and closer are inside the span
+    return spans
 
 
 def build_alias_map(papers, curated: dict[str, str] | None = None) -> dict[str, str]:
@@ -151,38 +171,24 @@ def linkify(text: str, alias_map: dict[str, str], exclude_slug: str | None = Non
 
         return pattern.sub(repl, seg)
 
+    def link_gap(seg: str) -> str:
+        """Linkify a stretch of prose that contains no code spans, passing links/tags through."""
+        out, pos = [], 0
+        for prot in _LINK_OR_TAG.finditer(seg):  # linear (bounded char classes)
+            out.append(link_segment(seg[pos:prot.start()]))
+            out.append(prot.group(0))
+            pos = prot.end()
+        out.append(link_segment(seg[pos:]))
+        return "".join(out)
+
     def link_prose(prose: str) -> str:
-        """Linkify prose left to right, passing through backtick code spans, links, and html tags
-        untouched. A single linear pass — no regex backtracking."""
-        out: list[str] = []
-        i, n, text_start = 0, len(prose), 0
-
-        def flush(end: int) -> None:
-            if end > text_start:
-                out.append(link_segment(prose[text_start:end]))
-
-        while i < n:
-            ch = prose[i]
-            if ch == "`":
-                run = i
-                while i < n and prose[i] == "`":
-                    i += 1
-                end = _code_span_end(prose, run, i - run)
-                if end is not None:  # a real code span — protect it
-                    flush(run)
-                    out.append(prose[run:end])
-                    i = text_start = end
-                # else: unmatched backticks are literal text; leave text_start, keep scanning
-                continue
-            if ch in "![<":
-                m = _LINK_OR_TAG.match(prose, i)
-                if m:
-                    flush(i)
-                    out.append(m.group(0))
-                    i = text_start = m.end()
-                    continue
-            i += 1
-        flush(n)
+        """Linkify prose, passing inline code spans (precomputed in one linear pass) untouched."""
+        out, pos = [], 0
+        for start, end in _code_span_intervals(prose):
+            out.append(link_gap(prose[pos:start]))
+            out.append(prose[start:end])  # code span — unchanged
+            pos = end
+        out.append(link_gap(prose[pos:]))
         return "".join(out)
 
     return "".join(chunk if is_code else link_prose(chunk)

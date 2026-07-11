@@ -1,9 +1,10 @@
 """The notes-relink migration's deterministic linkifier (scripts/relink_notes)."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
-from scripts.relink_notes import build_alias_map, linkify
+from scripts.relink_notes import _code_span_intervals, build_alias_map, linkify
 
 
 @dataclass
@@ -135,3 +136,18 @@ def test_shorter_fence_does_not_close_a_longer_opener():
     amap = build_alias_map([_P("Orca", "orca")])
     out = linkify("````\nin code Orca\n```\nstill code Orca\n````\nprose Orca\n", amap)
     assert out.count("rc-paper:orca") == 1 and "prose [Orca](rc-paper:orca)" in out
+
+
+def test_code_span_intervals_pairs_equal_runs():
+    assert _code_span_intervals("`a`b``c") == [(0, 3)]     # `a` spans; trailing `` unmatched
+    assert _code_span_intervals("`x``y```z") == []          # 1,2,3 lengths never pair
+
+
+def test_linkify_is_linear_over_many_backtick_runs():
+    # Thousands of runs must stay fast (single-pass interval scan, no per-run rescans).
+    amap = build_alias_map([_P("Orca", "orca")])
+    text = ("`x " * 20000) + "trailing Orca"
+    start = time.perf_counter()
+    out = linkify(text, amap)
+    assert time.perf_counter() - start < 1.0
+    assert "[Orca](rc-paper:orca)" in out
