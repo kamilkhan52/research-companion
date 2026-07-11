@@ -34,6 +34,16 @@ test('$$ display math is recognized', async () => {
   expect(screen.getByText('α + β')).toBeTruthy();
 });
 
+test('selectable prop makes block text OS-selectable for quoting', async () => {
+  await renderAsync(<Markdown text={'A quotable passage.'} selectable />);
+  expect(screen.UNSAFE_queryAllByProps({ selectable: true }).length).toBeGreaterThan(0);
+});
+
+test('block text is not selectable by default', async () => {
+  await renderAsync(<Markdown text={'A quotable passage.'} />);
+  expect(screen.UNSAFE_queryAllByProps({ selectable: true }).length).toBe(0);
+});
+
 test('leaked tool tags render as muted status lines, not markup', async () => {
   await renderAsync(
     <Markdown

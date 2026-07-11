@@ -768,18 +768,19 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
 
-  // Long-press a message for its actions (copy everywhere; edit on user replies). Rendered
-  // through the app's own OptionsSheet — the native action sheet ignores the design language
-  // (polish plan F.5: OptionsSheet is the only menu idiom anywhere in the app).
+  // Long-press a USER message for its actions (Copy + Edit). Assistant answers don't route here
+  // — their long-press starts text selection instead (renderBubble disables the bubble's
+  // long-press; the answer's own action row carries Copy). Rendered through the app's own
+  // OptionsSheet — the native action sheet ignores the design language (polish plan F.5:
+  // OptionsSheet is the only menu idiom anywhere in the app).
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
   const onLongPressMessage = useCallback((_context: unknown, message: DiscussionMessage) => {
     const entry = message.entry;
-    if (!entry) return;
-    const copyText = entry.role === 'user' ? entry.text : entry.canonical;
+    if (!entry || entry.role !== 'user') return;
+    const copyText = entry.text;
     // No editing once committed: that state's toolbar has no composer, so an edit could
     // neither be typed nor cancelled (reopen the discussion instead).
     const canEdit =
-      entry.role === 'user' &&
       state !== 'committed' &&
       !stream.streaming &&
       !editing &&
@@ -838,12 +839,21 @@ function DiscussionThread({
     );
   }, [pid, slug, title, favorites, handleRetry]);
 
-  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
-    <Bubble
-      {...props}
-      wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
-    />
-  ), []);
+  const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => {
+    // Assistant answers (left) are long-press-to-select-text, not a menu: the body's Markdown is
+    // `selectable`, and here we override the bubble Pressable's onLongPress to undefined so it
+    // stops swallowing the gesture and native text selection can start. Copy already lives on
+    // the answer's own action row, so no menu is lost. User messages (right) keep their
+    // long-press menu (Copy + Edit) — they have no other copy affordance.
+    const isAssistant = props.position === 'left';
+    return (
+      <Bubble
+        {...props}
+        wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
+        touchableProps={isAssistant ? { onLongPress: undefined } : props.touchableProps}
+      />
+    );
+  }, []);
 
   const renderSend = useCallback(() => {
     // While a response is generating, the send slot becomes Stop (polish plan F.1): the
@@ -1359,7 +1369,7 @@ function AssistantBody({
 
   return (
     <View style={styles.assistantBody}>
-      <Markdown text={canonical} />
+      <Markdown text={canonical} selectable />
       {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
       {audioError ? (
         <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
