@@ -147,3 +147,97 @@ def test_work_renders_and_caches(temp_project, monkeypatch):
     cover_jobs._work(job)
     dst = cover_jobs.cover_path("paper-x")
     assert dst.exists() and dst.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def _backfill_fixtures(tmp_path, monkeypatch, papers, cached):
+    """Set up a single fake project with `papers` (all retrieved) where `cached` already have a
+    cover; stub out projects/store/time so _backfill_work runs offline."""
+    from app.models import Paper
+
+    (tmp_path / "corpus").mkdir()
+    for slug in papers:
+        (tmp_path / "corpus" / f"{slug}.md").write_text("x", encoding="utf-8")
+    covers = tmp_path / "covers"
+    covers.mkdir()
+    for slug in cached:
+        (covers / f"{slug}.png").write_bytes(b"cached")
+
+    monkeypatch.setattr(cover_jobs.projects, "list_projects", lambda: [{"id": "P"}])
+    monkeypatch.setattr(cover_jobs.store, "list_papers",
+                        lambda: [Paper(slug=s, title=s, group="g", list_status="unread")
+                                 for s in papers])
+    monkeypatch.setattr(cover_jobs.store, "corpus_path",
+                        lambda slug: tmp_path / "corpus" / f"{slug}.md")
+    monkeypatch.setattr(cover_jobs, "cover_path", lambda slug: covers / f"{slug}.png")
+    monkeypatch.setattr(cover_jobs.time, "sleep", lambda *_a: None)
+    cover_jobs._backfill_failed.clear()  # module-level; isolate from other tests
+
+
+def test_backfill_renders_only_coverless_retrieved(tmp_path, monkeypatch):
+    _backfill_fixtures(tmp_path, monkeypatch, papers=["a", "b"], cached=["a"])
+    rendered: list[str] = []
+    monkeypatch.setattr(cover_jobs, "_render_and_cache", lambda slug: rendered.append(slug))
+
+    job = cover_jobs.BackfillJob(id="bf")
+    cover_jobs._backfill_work(job)
+
+    assert rendered == ["b"]  # "a" already cached, skipped
+    assert (job.scanned, job.rendered, job.skipped) == (2, 1, 0)
+
+
+def test_backfill_counts_render_failures_as_skips(tmp_path, monkeypatch):
+    _backfill_fixtures(tmp_path, monkeypatch, papers=["b"], cached=[])
+
+    def boom(slug):
+        raise cover_jobs.CoverError("no source")
+
+    monkeypatch.setattr(cover_jobs, "_render_and_cache", boom)
+    job = cover_jobs.BackfillJob(id="bf2")
+    cover_jobs._backfill_work(job)
+
+    assert (job.scanned, job.rendered, job.skipped) == (1, 0, 1)
+
+
+def test_backfill_does_not_retry_a_failed_paper_on_the_next_pass(tmp_path, monkeypatch):
+    _backfill_fixtures(tmp_path, monkeypatch, papers=["b"], cached=[])
+    attempts: list[str] = []
+
+    def boom(slug):
+        attempts.append(slug)
+        raise cover_jobs.CoverError("no source")
+
+    monkeypatch.setattr(cover_jobs, "_render_and_cache", boom)
+    cover_jobs._backfill_work(cover_jobs.BackfillJob(id="p1"))
+    cover_jobs._backfill_work(cover_jobs.BackfillJob(id="p2"))
+
+    assert attempts == ["b"]  # second pass skips it via the negative cache, no re-download
+
+
+def test_backfill_isolates_a_failing_project(tmp_path, monkeypatch):
+    from app import config
+    from app.models import Paper
+
+    (tmp_path / "corpus").mkdir()
+    (tmp_path / "corpus" / "b.md").write_text("x", encoding="utf-8")
+    covers = tmp_path / "covers"
+    covers.mkdir()
+
+    def list_papers():
+        if config.active_project_id() == "P1":
+            raise RuntimeError("unreadable project")
+        return [Paper(slug="b", title="b", group="g", list_status="unread")]
+
+    monkeypatch.setattr(cover_jobs.projects, "list_projects",
+                        lambda: [{"id": "P1"}, {"id": "P2"}])
+    monkeypatch.setattr(cover_jobs.store, "list_papers", list_papers)
+    monkeypatch.setattr(cover_jobs.store, "corpus_path", lambda slug: tmp_path / "corpus" / f"{slug}.md")
+    monkeypatch.setattr(cover_jobs, "cover_path", lambda slug: covers / f"{slug}.png")
+    monkeypatch.setattr(cover_jobs.time, "sleep", lambda *_a: None)
+    cover_jobs._backfill_failed.clear()
+    rendered: list[str] = []
+    monkeypatch.setattr(cover_jobs, "_render_and_cache", lambda slug: rendered.append(slug))
+
+    cover_jobs._backfill_work(cover_jobs.BackfillJob(id="bf"))
+
+    assert rendered == ["b"]                    # P1 raised, P2 still backfilled
+    assert config.active_project_id() is None   # contextvar restored, no leak

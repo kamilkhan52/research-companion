@@ -13,6 +13,15 @@ router = APIRouter()
 project_router = make_project_router()
 
 
+@router.post("/api/covers/backfill")
+def backfill_covers():
+    """Start (or join) a one-shot pass that renders covers for every retrieved-but-coverless paper
+    across all projects, so pre-existing papers have their cover ready before they're first shown.
+    Returns immediately; the client fires this once on load (idempotent + deduped server-side)."""
+    job = cover_jobs.start_backfill()
+    return {"status": job.status}
+
+
 @project_router.get("/papers/{slug}/cover")
 def get_cover_status(pid: str, slug: str):
     """Render status for a paper's cover image: `ready` (fetch `/cover.png`), `pending` (a render

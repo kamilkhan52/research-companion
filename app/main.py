@@ -77,6 +77,7 @@ async def authenticate(request: Request, call_next):
 app.include_router(system.router)
 app.include_router(settings.router)
 app.include_router(catalogue.router)
+app.include_router(covers.router)
 app.include_router(projects_api.router)
 app.include_router(usage.router)
 app.include_router(audio.router)

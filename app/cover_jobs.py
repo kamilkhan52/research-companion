@@ -15,17 +15,22 @@ session index and usage ledger) and are git-ignored.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
 import httpx
 
-from . import config, logging_config, store
+from . import config, logging_config, projects, store
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id
 
 log = logging_config.get("cover")
+
+# Pace between downloads in the cross-project backfill — polite to arXiv and keeps the one-shot
+# pass from saturating the single worker's network.
+BACKFILL_PACE_S = 1.5
 
 # Rasterization width in pixels. The only current consumer is the ~84pt-wide Continue-reading
 # thumbnail (≈250px at 3x density), but rendering wider keeps the same cache crisp if a larger
@@ -125,18 +130,28 @@ def _render_first_page(pdf: bytes) -> bytes:
         doc.close()
 
 
-def _work(job: CoverJob) -> None:
-    url = _pdf_url_for(job.slug)
-    if not url:
-        raise CoverError(f"No PDF source for paper '{job.slug}'")
-    data = _download_pdf(url)
-    if not data.startswith(b"%PDF"):
-        raise CoverError(f"Source for '{job.slug}' is not a PDF")
-    png = _render_first_page(data)
-    dst = cover_path(job.slug)
+def _write_cover(slug: str, png: bytes) -> None:
+    dst = cover_path(slug)
     dst.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(dst, png)
-    log.info("cover rendered slug=%s bytes=%d", job.slug, len(png))
+
+
+def _render_and_cache(slug: str) -> None:
+    """Download the paper's PDF and cache its first-page cover. Raises CoverError when there's no
+    fetchable source, the source isn't a PDF, or rendering fails. Shared by the on-demand job and
+    the backfill."""
+    url = _pdf_url_for(slug)
+    if not url:
+        raise CoverError(f"No PDF source for paper '{slug}'")
+    data = _download_pdf(url)
+    if not data.startswith(b"%PDF"):
+        raise CoverError(f"Source for '{slug}' is not a PDF")
+    _write_cover(slug, _render_first_page(data))
+    log.info("cover rendered slug=%s", slug)
+
+
+def _work(job: CoverJob) -> None:
+    _render_and_cache(job.slug)
 
 
 def render_from_pdf(slug: str, pdf: bytes | None) -> bool:
@@ -148,11 +163,8 @@ def render_from_pdf(slug: str, pdf: bytes | None) -> bool:
     if not pdf or cover_path(slug).exists():
         return False
     try:
-        png = _render_first_page(pdf)
-        dst = cover_path(slug)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(dst, png)
-        log.info("cover rendered from retrieval slug=%s bytes=%d", slug, len(png))
+        _write_cover(slug, _render_first_page(pdf))
+        log.info("cover rendered from retrieval slug=%s bytes=%d", slug, len(pdf))
         return True
     except Exception as e:  # noqa: BLE001 — cosmetic; log and move on
         log.info("cover render-from-pdf skipped slug=%s: %s", slug, str(e)[:120])
@@ -175,3 +187,78 @@ def ensure(slug: str) -> str:
         return "unavailable"
     _registry.start_or_join(slug, lambda: CoverJob(id=new_id(), slug=slug), _work)
     return "pending"
+
+
+# ---- eager backfill ----------------------------------------------------------------------------
+# Papers retrieved before covers existed have text cached but no cover, so they would render
+# on-demand (a brief spinner) the first time they're shown. This one-shot pass renders those up
+# front across every project, so a resume/Continue-reading panel never waits. It's the only place
+# that walks all projects, so it lives here rather than in a request handler.
+
+
+@dataclass
+class BackfillJob(Job):
+    scanned: int = 0     # retrieved papers examined
+    rendered: int = 0    # covers newly written
+    skipped: int = 0     # coverless papers with no fetchable source / a render failure
+
+
+_backfill_registry: JobRegistry[BackfillJob] = JobRegistry("cover-backfill", max_finished=1)
+
+# (pid, slug) pairs whose render failed this process — a coverless-but-unfetchable paper (404,
+# non-PDF, corrupt). Remembered so a later pass doesn't re-download it every app session (it has
+# no cover file, so the exists() check alone wouldn't skip it). Resets on process restart, which
+# gives a genuinely-transient failure one fresh attempt.
+_backfill_failed: set[tuple[str, str]] = set()
+
+
+def _backfill_project(job: BackfillJob, pid: str) -> None:
+    """Backfill one project's covers (the active project is already bound to `pid`). Per-paper
+    errors are contained so one bad paper doesn't stop the project; the caller contains a bad
+    project so it doesn't stop the pass."""
+    for paper in store.list_papers():
+        if not store.corpus_path(paper.slug).exists():
+            continue  # not retrieved -> no PDF was ever downloaded
+        with _backfill_registry.lock:
+            job.scanned += 1
+        if cover_path(paper.slug).exists() or (pid, paper.slug) in _backfill_failed:
+            continue  # already have it, or already failed this process
+        try:
+            _render_and_cache(paper.slug)
+            with _backfill_registry.lock:
+                job.rendered += 1
+        except Exception as e:  # noqa: BLE001 — best-effort; a missing cover is fine
+            log.info("cover backfill skip %s/%s: %s", pid, paper.slug, str(e)[:120])
+            _backfill_failed.add((pid, paper.slug))
+            with _backfill_registry.lock:
+                job.skipped += 1
+        time.sleep(BACKFILL_PACE_S)  # pace only after an actual download attempt
+
+
+def _backfill_work(job: BackfillJob) -> None:
+    try:
+        projs = projects.list_projects()
+    except Exception as e:  # noqa: BLE001 — nothing to backfill if we can't enumerate
+        log.warning("cover backfill: could not enumerate projects: %s", str(e)[:120])
+        return
+    for proj in projs:
+        pid = proj["id"]
+        token = config.set_active_project(pid)
+        try:
+            _backfill_project(job, pid)
+        except Exception as e:  # noqa: BLE001 — one unreadable project must not abort the rest
+            log.info("cover backfill: project %s skipped: %s", pid, str(e)[:120])
+        finally:
+            config.reset_active_project(token)
+    log.info("cover backfill done scanned=%d rendered=%d skipped=%d",
+             job.scanned, job.rendered, job.skipped)
+
+
+def start_backfill() -> BackfillJob:
+    """Start (or join) a one-shot background pass that renders covers for every retrieved-but-
+    coverless paper across all projects. Deduped (at most one running), paced, and best-effort —
+    a paper whose PDF can't be re-fetched is simply left to its icon fallback. Cheap to re-invoke:
+    once everything is covered it's just a stat scan. App-global scope (walks every project itself,
+    rebinding the active-project contextvar per project — invariant 2)."""
+    return _backfill_registry.start_or_join(
+        "all", lambda: BackfillJob(id=new_id()), _backfill_work, project_id=None)

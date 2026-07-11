@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
+import { backfillCovers } from '@/api/endpoints';
 import {
   useBaseUrl,
   useProjectState,
@@ -31,6 +32,11 @@ import { Button, Card, Chip, Icon, ProgressBar, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space, stateMeta } from '@/theme/tokens';
 
 type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
+
+// The base URL the cover backfill has already succeeded for (module-level so it survives Library
+// remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
+// to a different/reachable server — is retried on the next mount rather than silently skipped.
+let coverBackfillDoneFor: string | null = null;
 
 const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -53,7 +59,8 @@ function filterBucket(p: Paper): Exclude<StatusFilter, 'all'> {
 export default function LibraryScreen() {
   const router = useRouter();
   const { activePid, setActivePid, ready } = useActiveProject();
-  const hasUrl = !!useBaseUrl();
+  const baseUrl = useBaseUrl();
+  const hasUrl = !!baseUrl;
   const projectsQuery = useProjects();
   const projects = projectsQuery.data;
   const recentQuery = useRecentSessions();
@@ -66,6 +73,19 @@ export default function LibraryScreen() {
       setActivePid(projects[0].id);
     }
   }, [ready, activePid, projects, setActivePid]);
+
+  // Warm covers for pre-existing papers once the app has a server, so a resume/Continue-reading
+  // panel never waits on an on-demand render. Mark the URL done only after the POST succeeds, so a
+  // transient failure retries on the next mount. Server dedups, so an extra attempt is harmless.
+  useEffect(() => {
+    if (baseUrl && coverBackfillDoneFor !== baseUrl) {
+      backfillCovers()
+        .then(() => {
+          coverBackfillDoneFor = baseUrl;
+        })
+        .catch(() => undefined);
+    }
+  }, [baseUrl]);
 
   const stateQuery = useProjectState(activePid);
   const activeProject = projects?.find((p) => p.id === activePid);

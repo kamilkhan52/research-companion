@@ -196,6 +196,12 @@ export const startGraphBuild = (pid: string, force = false) =>
 export const getGraphBuildStatus = (pid: string) =>
   apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`);
 
+/** Kick a one-shot, server-deduped pass that renders covers for every retrieved-but-coverless
+ *  paper across all projects, so pre-existing papers don't render on-demand when first shown.
+ *  Fire-and-forget; safe to call repeatedly (cheap stat scan once everything is covered). */
+export const backfillCovers = () =>
+  apiPost<{ status: string }>('/api/covers/backfill', {});
+
 /** Render status for a paper's first-page cover image. `pending` -> poll again; `ready` ->
  *  load paperCoverImageUrl; `unavailable` -> no fetchable PDF (fall back to an icon). */
 export const getPaperCover = (pid: string, slug: string) =>
