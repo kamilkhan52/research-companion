@@ -23,6 +23,7 @@ import {
   useRemovePaper,
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
+import { PaperCover } from '@/components/PaperCover';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { useActiveProject } from '@/store/project';
@@ -292,9 +293,7 @@ function ContinueCard({ session, onPress }: { session: RecentSession; onPress: (
           Continue reading
         </Text>
         <View style={styles.continueBody}>
-          <View style={styles.thumb}>
-            <Icon name="file-text" size={26} color={colors.bg} />
-          </View>
+          <PaperCover projectId={session.project_id} slug={session.slug} width={84} height={104} />
           <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
             <Text variant="serifTitle" numberOfLines={3}>
               {session.title}
@@ -407,14 +406,6 @@ const styles = StyleSheet.create({
   continueWrap: { marginBottom: space.md },
   continueCard: { gap: space.md, borderColor: colors.line2 },
   continueBody: { flexDirection: 'row', gap: space.lg },
-  thumb: {
-    width: 84,
-    height: 104,
-    borderRadius: radius.md,
-    backgroundColor: colors.text,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   resumeBtn: { alignSelf: 'flex-end', height: 42, paddingHorizontal: space.lg, marginTop: space.xs },
   progressCard: { gap: space.md, marginBottom: space.md },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },

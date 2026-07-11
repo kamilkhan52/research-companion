@@ -19,6 +19,7 @@ from .auth import AuthError
 from .routers import (
     audio,
     catalogue,
+    covers,
     discovery,
     graph,
     notes,
@@ -82,6 +83,7 @@ app.include_router(audio.router)
 app.include_router(projects_api.project_router)
 app.include_router(usage.project_router)
 app.include_router(session.project_router)
+app.include_router(covers.project_router)
 app.include_router(notes.project_router)
 app.include_router(discovery.project_router)
 app.include_router(graph.project_router)

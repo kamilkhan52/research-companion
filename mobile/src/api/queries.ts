@@ -26,6 +26,7 @@ export const keys = {
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
   notes: (pid: string, target: string) => ['project', pid, 'notes', target] as const,
   usage: (pid: string) => ['project', pid, 'usage'] as const,
+  paperCover: (pid: string, slug: string) => ['project', pid, 'cover', slug] as const,
 };
 
 export function useProjects() {
@@ -43,6 +44,20 @@ export function useRecentSessions() {
     queryKey: keys.recentSessions,
     queryFn: async () => (await api.getRecentSessions()).sessions,
     enabled: hasUrl,
+  });
+}
+
+/** A paper's first-page cover status. Polls only while the backend is rendering (`pending`);
+ *  once terminal (`ready`/`unavailable`) it settles and, being cached server-side, resolves
+ *  instantly on later mounts. */
+export function usePaperCover(pid: string | null, slug: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && slug ? keys.paperCover(pid, slug) : ['project', 'none', 'cover'],
+    queryFn: async () => (await api.getPaperCover(pid as string, slug as string)).status,
+    enabled: hasUrl && !!pid && !!slug,
+    refetchInterval: (query) => (query.state.data === 'pending' ? 1500 : false),
+    staleTime: 60_000,
   });
 }
 
