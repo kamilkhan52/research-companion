@@ -96,6 +96,14 @@ below (an in-project `rc-paper:<slug>` target opens that paper's discussion; an 
 opens its source), so the reader can tap straight through. You may still note it is in the \
 Related works menu.
 
+More broadly: whenever you name ANY paper that is on this project's reading list — not just the \
+related works — render that name as a markdown link to its `link:` target (an `rc-paper:<slug>`) \
+given in the reading-list context below. Use the target verbatim; link the first mention in each \
+section (repeats need not be relinked). This makes every project paper the reader taps through to \
+its own discussion. Apply the same linking in the NOTES_BLOCK and SYNTHESIS you produce, so the \
+written record is navigable too. Only link papers that appear in the provided context with a \
+`link:` target — never invent a slug or link a paper that isn't listed.
+
 Return your response using THIS EXACT format and nothing else:
 
 ###CANONICAL###
