@@ -174,3 +174,10 @@ def test_linkify_is_linear_over_unmatched_brackets_and_dests():
 def test_linkify_protects_inside_an_html_tag():
     amap = build_alias_map([_P("Orca", "orca")])
     assert linkify("<span data-x=Orca>", amap) == "<span data-x=Orca>"  # Orca inside a tag
+
+
+def test_linkify_handles_balanced_parens_in_link_destination():
+    amap = build_alias_map([_P("Orca", "orca")])
+    # A paper name inside a URL with nested parens must stay protected; only the trailing one links.
+    out = linkify("[x](http://a.com/(a)Orca(b)) then Orca", amap)
+    assert out == "[x](http://a.com/(a)Orca(b)) then [Orca](rc-paper:orca)"

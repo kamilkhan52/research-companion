@@ -47,11 +47,41 @@ _DEST_SCAN_CAP = 2048
 
 def _bounded_close(s: str, open_at: int, closer: str) -> int:
     """Index of the first `closer` after `open_at`, within the current line and _DEST_SCAN_CAP
-    chars — or -1. Cap + line bound keep each call O(1), so scanning many openers stays linear."""
+    chars — or -1. Cap + line bound keep each call O(1), so scanning many openers stays linear.
+    Used for `>` (tags) and `]` (reference labels, which can't contain an unescaped `]`)."""
     limit = min(len(s), open_at + 1 + _DEST_SCAN_CAP)
     end = s.find(closer, open_at + 1, limit)
     newline = s.find("\n", open_at + 1, limit)
     return end if end != -1 and (newline == -1 or end < newline) else -1
+
+
+def _paren_close(s: str, open_paren: int) -> int:
+    """Index of the `)` that closes the `(` at `open_paren`, honoring balanced nested parens (a
+    link destination like `.../Foo_(bar)` is valid CommonMark) — or -1 if unbalanced, spanning a
+    newline, or past the cap. Fast path (the common no-nesting case) uses C-level `find`; only a
+    genuinely nested destination walks with depth. Bounded, so O(1) per link."""
+    limit = min(len(s), open_paren + 1 + _DEST_SCAN_CAP)
+    first_close = s.find(")", open_paren + 1, limit)
+    if first_close == -1:
+        return -1
+    newline = s.find("\n", open_paren + 1, first_close)
+    if newline != -1:
+        return -1
+    if s.find("(", open_paren + 1, first_close) == -1:
+        return first_close  # no nested '(' before the first ')': it is the closer
+    depth, i = 0, open_paren
+    while i < limit:
+        ch = s[i]
+        if ch == "\n":
+            return -1
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
 
 
 def _iter_fenced(text: str):
@@ -127,8 +157,9 @@ def _link_extent(s: str, close_bracket: int) -> int:
     `][ref]` on the same line, else just the shortcut `]`. Destination scan is line- and
     cap-bounded, so this is O(1) per link."""
     k = close_bracket + 1
-    if k < len(s) and s[k] in "([":
-        end = _bounded_close(s, k, ")" if s[k] == "(" else "]")
+    if k < len(s):
+        end = _paren_close(s, k) if s[k] == "(" else (
+            _bounded_close(s, k, "]") if s[k] == "[" else -1)
         if end != -1:
             return end + 1
     return close_bracket + 1  # shortcut/unclosed tail — protect only the [ … ] text
