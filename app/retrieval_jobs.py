@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import config, retrieval_agent, retriever, store
+from . import config, cover_jobs, retrieval_agent, retriever, store
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -80,6 +80,8 @@ def start_retrieval(
         if result:
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
                      result.get("source"))
+            # Reuse the PDF retrieval just downloaded to render the cover — no second download.
+            cover_jobs.render_from_pdf(slug, result.get("pdf_bytes"))
             with _registry.lock:
                 job.phase = "done"
                 job.retrieved = True

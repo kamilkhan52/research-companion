@@ -18,6 +18,7 @@ from .. import (
     agent_harness,
     chat_jobs,
     config,
+    cover_jobs,
     graph,
     preview_jobs,
     prompts,
@@ -231,6 +232,7 @@ def start_paper(req: StartReq):
     store.write_full_text(req.slug, paper.title, res["full_text"], {
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
     })
+    cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # reuse the just-downloaded PDF
     return {"ok": True, "retrieved": True}
 
 
@@ -293,6 +295,8 @@ async def start_paper_stream(req: StartReq):
         if res:
             store.write_full_text(req.slug, paper.title, res["full_text"], {
                 "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source")})
+            # Render the cover from the just-downloaded PDF, off the event loop (CPU-bound).
+            await asyncio.to_thread(cover_jobs.render_from_pdf, req.slug, res.get("pdf_bytes"))
             yield _sse({"type": "done", "retrieved": True})
             return
         # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
@@ -338,6 +342,8 @@ async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
     store.write_full_text(slug, paper.title, full_text,
                           {"slug": slug, "source": f"upload:{file.filename}"})
+    # Reuse the uploaded PDF for the cover, off the event loop (CPU-bound rasterization).
+    await asyncio.to_thread(cover_jobs.render_from_pdf, slug, data)
     return {"ok": True, "retrieved": True}
 
 

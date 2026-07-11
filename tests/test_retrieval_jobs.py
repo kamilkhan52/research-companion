@@ -50,6 +50,30 @@ def test_retrieval_persists_text_without_a_polling_client(temp_project):
     assert retrieval_jobs.latest_for("p1").id == job.id
 
 
+def test_retrieval_renders_cover_from_downloaded_pdf(temp_project):
+    # A cover rides along on the PDF retrieval already downloaded — no second fetch.
+    import fitz
+    from app import cover_jobs
+
+    _unretrieved_paper(temp_project)
+    doc = fitz.open()
+    doc.new_page(width=612, height=792)
+    pdf = doc.tobytes()
+    doc.close()
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {
+            "full_text": "retrieved paper text",
+            "arxiv_id": "2401.00001",
+            "source": "https://arxiv.org/abs/2401.00001",
+            "pdf_bytes": pdf,
+        },
+    )
+    _settled(job.id)
+    assert cover_jobs.cover_path("p1").exists()
+
+
 def test_confirmation_candidates_survive_as_terminal_job_result(temp_project):
     _unretrieved_paper(temp_project)
     candidates = [{"arxiv_id": "2401.1", "title": "Candidate", "score": 0.7}]
