@@ -5,10 +5,9 @@ anything recorded."""
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
-
 from app import agent, prompts, sessions
 from app.routers import session as session_routes
+from fastapi import HTTPException
 
 
 def _started(slug: str = "p") -> str:

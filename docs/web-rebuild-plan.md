@@ -26,7 +26,7 @@ directly from `main`.
 | 5 | `web/discovery-notes` | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | Merged |
 | 6 | `web/settings-audio` | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Merged |
 | 7 | `web/auth-polish` | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Merged |
-| 8 | `codex/web-mobile-parity` | — | In progress |
+| 8 | `codex/web-mobile-parity` | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 
 ## Phase 1 — Foundation
 

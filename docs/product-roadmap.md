@@ -50,7 +50,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.5 | Web rebuild: Discovery + Notes | [#25](https://github.com/kamilkhan52/research-companion/pull/25) | Merged |
 | W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
-| W.8 | Web/mobile product parity and loose-link repair | — | In progress |
+| W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 
 ## Locked product decisions
 
