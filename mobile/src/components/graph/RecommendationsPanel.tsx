@@ -33,10 +33,12 @@ export function RecommendationsPanel({
 }) {
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
-  // Fresh page each time the sheet is (re)opened, not wherever browsing left off last time.
+  // Fresh page each time the sheet is (re)opened, not wherever browsing left off last time —
+  // also on a project switch, since this stays mounted and `visible` can stay true across one
+  // (the sheet doesn't force-close just because the active project changed underneath it).
   useEffect(() => {
     if (visible) setVisibleLimit(PAGE_SIZE);
-  }, [visible]);
+  }, [visible, pid]);
 
   const pageRecs = recommendations.slice(0, visibleLimit);
   const canShowMore = visibleLimit < Math.min(MAX_VISIBLE, recommendations.length);
