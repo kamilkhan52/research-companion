@@ -39,9 +39,13 @@ export function OptionsSheet({
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.card} onPress={(e) => e.stopPropagation()}>
-          <ScrollView bounces={false} style={{ flexGrow: 0 }}>
+      <View style={styles.backdrop}>
+        {/* Dismiss layer behind the card as a sibling, not an ancestor Pressable wrapping it —
+           see RelatedWorksSheet.tsx for the on-device confirmation of why an ancestor Pressable
+           blocks the ScrollView's drag-to-scroll below. */}
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.card}>
+          <ScrollView bounces={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
             {title ? (
               <Text variant="overline" color={colors.violet} style={styles.title}>
                 {title}
@@ -62,12 +66,16 @@ export function OptionsSheet({
                   }}
                   disabled={opt.disabled}
                   accessibilityRole="menuitem"
-                  accessibilityState={{ selected: !!opt.selected, disabled: !!opt.disabled }}
+                  accessibilityState={{
+                    selected: !!opt.selected,
+                    disabled: !!opt.disabled,
+                  }}
                   style={({ pressed }) => [
                     styles.row,
                     pressed && { backgroundColor: colors.elevated },
                     opt.disabled && { opacity: 0.45 },
-                  ]}>
+                  ]}
+                >
                   <View style={[styles.badge, opt.selected && styles.badgeSelected]}>
                     <Icon
                       name={opt.selected ? 'check' : opt.icon}
@@ -76,10 +84,7 @@ export function OptionsSheet({
                     />
                   </View>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text
-                      variant="heading"
-                      numberOfLines={1}
-                      color={opt.accent ?? colors.text}>
+                    <Text variant="heading" numberOfLines={1} color={opt.accent ?? colors.text}>
                       {opt.title}
                     </Text>
                     {opt.subtitle ? (
@@ -92,8 +97,8 @@ export function OptionsSheet({
               </View>
             ))}
           </ScrollView>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -113,9 +118,18 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
     maxHeight: '75%',
   },
-  title: { paddingHorizontal: space.lg, paddingTop: space.md, paddingBottom: space.xs },
+  title: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: space.xs,
+  },
   subtitle: { paddingHorizontal: space.lg, paddingBottom: space.sm },
-  divider: { height: 1, backgroundColor: colors.line, marginVertical: space.sm, marginHorizontal: space.lg },
+  divider: {
+    height: 1,
+    backgroundColor: colors.line,
+    marginVertical: space.sm,
+    marginHorizontal: space.lg,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -5,10 +5,11 @@
 // Recommendations panel), since a user can reach any external node directly from the canvas.
 
 import { useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphEdge, GraphNode } from '@/api/types';
+import { BottomSheet } from '@/components/BottomSheet';
 import { Chip, Icon, Text } from '@/ui';
 import { colors, radius, space, stateMeta } from '@/theme/tokens';
 
@@ -29,21 +30,12 @@ export function NodeDetailSheet({
 }) {
   if (!node) return null;
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        {/* Keyed by node.id: this sheet stays mounted across different nodes (the parent just
-           swaps the `node` prop), so per-node local state (e.g. "just added") must reset when
-           the node changes rather than leaking from whichever node was viewed previously. */}
-        <SheetContent
-          key={node.id}
-          pid={pid}
-          node={node}
-          edges={edges}
-          nodesById={nodesById}
-          onOpenPaper={onOpenPaper}
-        />
-      </Pressable>
-    </Modal>
+    <BottomSheet visible onClose={onClose} maxHeightPct={85} style={{ paddingBottom: space.xl }}>
+      {/* Keyed by node.id: this sheet stays mounted across different nodes (the parent just
+         swaps the `node` prop), so per-node local state (e.g. "just added") must reset when
+         the node changes rather than leaking from whichever node was viewed previously. */}
+      <SheetContent key={node.id} pid={pid} node={node} edges={edges} nodesById={nodesById} onOpenPaper={onOpenPaper} />
+    </BottomSheet>
   );
 }
 
@@ -66,13 +58,17 @@ function SheetContent({
   const citedBy = edges.filter((e) => e.target === node.id);
   const citesOthers = node.kind === 'project' ? edges.filter((e) => e.source === node.id) : [];
   const link =
-    node.url || (node.arxiv_id ? `https://arxiv.org/abs/${node.arxiv_id}` : null) ||
+    node.url ||
+    (node.arxiv_id ? `https://arxiv.org/abs/${node.arxiv_id}` : null) ||
     (node.doi ? `https://doi.org/${node.doi}` : null);
 
   async function handleAdd() {
     if (!pid || added) return;
     try {
-      await addPaper.mutateAsync({ title: node.title, arxivId: node.arxiv_id ?? undefined });
+      await addPaper.mutateAsync({
+        title: node.title,
+        arxivId: node.arxiv_id ?? undefined,
+      });
       setAdded(true);
     } catch {
       // surfaced inline via addPaper.isError
@@ -80,114 +76,115 @@ function SheetContent({
   }
 
   return (
-    <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-      <View style={styles.handle} />
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={styles.headerRow}>
+    // flexShrink (RN's default is 0, unlike web CSS) + minHeight: 0 bound this against the
+    // sheet's maxHeight cap instead of rendering at full natural content size — see
+    // RelatedWorksSheet.tsx for the on-device confirmation.
+    <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+      <View style={styles.headerRow}>
+        <Chip
+          label={node.kind === 'project' ? 'In this project' : 'External reference'}
+          color={node.kind === 'project' ? colors.mint : colors.violet}
+        />
+        {node.kind === 'project' && node.list_status ? (
           <Chip
-            label={node.kind === 'project' ? 'In this project' : 'External reference'}
-            color={node.kind === 'project' ? colors.mint : colors.violet}
+            label={stateMeta[node.list_status]?.label ?? node.list_status}
+            color={stateMeta[node.list_status]?.color ?? colors.muted}
           />
-          {node.kind === 'project' && node.list_status ? (
-            <Chip
-              label={stateMeta[node.list_status]?.label ?? node.list_status}
-              color={stateMeta[node.list_status]?.color ?? colors.muted}
-            />
-          ) : null}
-        </View>
+        ) : null}
+      </View>
 
-        <Text variant="editorial" style={{ marginTop: space.sm }}>
-          {node.title}
+      <Text variant="editorial" style={{ marginTop: space.sm }}>
+        {node.title}
+      </Text>
+
+      {node.authors.length > 0 ? (
+        <Text variant="caption" style={{ marginTop: 6 }}>
+          {node.authors.slice(0, 6).join(', ')}
+          {node.authors.length > 6 ? ', et al.' : ''}
         </Text>
+      ) : null}
+      {node.venue || node.year ? (
+        <Text variant="caption" style={{ marginTop: 2 }}>
+          {[node.venue, node.year].filter(Boolean).join(' · ')}
+        </Text>
+      ) : null}
 
-        {node.authors.length > 0 ? (
-          <Text variant="caption" style={{ marginTop: 6 }}>
-            {node.authors.slice(0, 6).join(', ')}
-            {node.authors.length > 6 ? ', et al.' : ''}
-          </Text>
+      <View style={styles.statsRow}>
+        <Stat label="Cited by" value={String(node.cited_by_project_count)} />
+        <Stat label="Significant in" value={String(node.significant_cited_by_count)} />
+        {node.kind === 'project' ? <Stat label="Cites" value={String(node.cites_count)} /> : null}
+        {typeof node.citation_count === 'number' ? (
+          <Stat label="Citations overall" value={node.citation_count.toLocaleString()} />
         ) : null}
-        {(node.venue || node.year) ? (
-          <Text variant="caption" style={{ marginTop: 2 }}>
-            {[node.venue, node.year].filter(Boolean).join(' · ')}
+      </View>
+
+      {node.kind === 'project' ? (
+        <Pressable onPress={() => node.slug && onOpenPaper(node.slug)} style={styles.discussBtn}>
+          <Text variant="heading" color={colors.mintInk}>
+            Open Discussion
           </Text>
-        ) : null}
-
-        <View style={styles.statsRow}>
-          <Stat label="Cited by" value={String(node.cited_by_project_count)} />
-          <Stat label="Significant in" value={String(node.significant_cited_by_count)} />
-          {node.kind === 'project' ? <Stat label="Cites" value={String(node.cites_count)} /> : null}
-          {typeof node.citation_count === 'number' ? (
-            <Stat label="Citations overall" value={node.citation_count.toLocaleString()} />
-          ) : null}
-        </View>
-
-        {node.kind === 'project' ? (
-          <Pressable onPress={() => node.slug && onOpenPaper(node.slug)} style={styles.discussBtn}>
-            <Text variant="heading" color={colors.mintInk}>
-              Open Discussion
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={handleAdd}
+          disabled={added || addPaper.isPending}
+          style={[styles.discussBtn, added && styles.discussBtnDone]}
+          accessibilityLabel={added ? `${node.title} added to project` : `Add ${node.title} to project`}
+        >
+          {addPaper.isPending ? (
+            <ActivityIndicator color={colors.mintInk} />
+          ) : (
+            <Text variant="heading" color={added ? colors.mint : colors.mintInk}>
+              {added ? 'Added to reading list' : 'Add to project'}
             </Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            onPress={handleAdd}
-            disabled={added || addPaper.isPending}
-            style={[styles.discussBtn, added && styles.discussBtnDone]}
-            accessibilityLabel={added ? `${node.title} added to project` : `Add ${node.title} to project`}>
-            {addPaper.isPending ? (
-              <ActivityIndicator color={colors.mintInk} />
-            ) : (
-              <Text variant="heading" color={added ? colors.mint : colors.mintInk}>
-                {added ? 'Added to reading list' : 'Add to project'}
-              </Text>
-            )}
-          </Pressable>
-        )}
+          )}
+        </Pressable>
+      )}
 
-        {link ? (
-          <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
-            <Icon name="external-link" size={16} color={colors.text} />
-            <Text variant="heading">Open source</Text>
-          </Pressable>
-        ) : null}
-        {addPaper.isError ? (
-          <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
-            {(addPaper.error as Error).message}
-          </Text>
-        ) : null}
+      {link ? (
+        <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
+          <Icon name="external-link" size={16} color={colors.text} />
+          <Text variant="heading">Open source</Text>
+        </Pressable>
+      ) : null}
+      {addPaper.isError ? (
+        <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+          {(addPaper.error as Error).message}
+        </Text>
+      ) : null}
 
-        {citedBy.length > 0 ? (
-          <Section title={`Cited by (${citedBy.length})`}>
-            {citedBy.map((edge, i) => (
-              <EdgeRow
-                key={i}
-                edge={edge}
-                otherNode={nodesById[edge.source]}
-                onPress={() => nodesById[edge.source]?.slug && onOpenPaper(nodesById[edge.source].slug!)}
-              />
-            ))}
-          </Section>
-        ) : null}
+      {citedBy.length > 0 ? (
+        <Section title={`Cited by (${citedBy.length})`}>
+          {citedBy.map((edge, i) => (
+            <EdgeRow
+              key={i}
+              edge={edge}
+              otherNode={nodesById[edge.source]}
+              onPress={() => nodesById[edge.source]?.slug && onOpenPaper(nodesById[edge.source].slug!)}
+            />
+          ))}
+        </Section>
+      ) : null}
 
-        {citesOthers.length > 0 ? (
-          <Section title={`Cites (${citesOthers.length})`}>
-            {citesOthers.map((edge, i) => (
-              <EdgeRow
-                key={i}
-                edge={edge}
-                otherNode={nodesById[edge.target]}
-                onPress={() =>
-                  nodesById[edge.target]?.kind === 'project' && nodesById[edge.target]?.slug
-                    ? onOpenPaper(nodesById[edge.target].slug!)
-                    : undefined
-                }
-              />
-            ))}
-          </Section>
-        ) : null}
+      {citesOthers.length > 0 ? (
+        <Section title={`Cites (${citesOthers.length})`}>
+          {citesOthers.map((edge, i) => (
+            <EdgeRow
+              key={i}
+              edge={edge}
+              otherNode={nodesById[edge.target]}
+              onPress={() =>
+                nodesById[edge.target]?.kind === 'project' && nodesById[edge.target]?.slug
+                  ? onOpenPaper(nodesById[edge.target].slug!)
+                  : undefined
+              }
+            />
+          ))}
+        </Section>
+      ) : null}
 
-        <View style={{ height: space.xl }} />
-      </ScrollView>
-    </Pressable>
+      <View style={{ height: space.xl }} />
+    </ScrollView>
   );
 }
 
@@ -226,8 +223,16 @@ function EdgeRow({
   return (
     <Pressable
       onPress={tappable ? onPress : undefined}
-      style={[styles.edgeRow, edge.significant && styles.edgeRowSignificant]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+      style={[styles.edgeRow, edge.significant && styles.edgeRowSignificant]}
+    >
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          marginBottom: 4,
+        }}
+      >
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={2}>
           {otherNode?.title ?? '(unknown)'}
         </Text>
@@ -248,25 +253,6 @@ function EdgeRow({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: space.lg,
-    paddingBottom: space.xl,
-    maxHeight: '85%',
-  },
-  handle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.line2,
-    alignSelf: 'center',
-    marginBottom: space.md,
-  },
   headerRow: { flexDirection: 'row', gap: space.sm },
   statsRow: { flexDirection: 'row', gap: space.xl, marginTop: space.lg },
   stat: { alignItems: 'flex-start' },
@@ -290,7 +276,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  discussBtnDone: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.mint },
+  discussBtnDone: {
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: colors.mint,
+  },
   edgeRow: {
     backgroundColor: colors.elevated,
     borderRadius: radius.md,
