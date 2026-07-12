@@ -14,6 +14,7 @@ import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { TabHeader } from '@/components/TopBar';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
+import { useGraphSettings } from '@/store/graphSettings';
 import { Button, Card, Chip, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -26,6 +27,24 @@ const FILTERS: { key: FilterKind; label: string }[] = [
   { key: 'significant', label: 'Significant' },
 ];
 
+// Pagination: a project's full reference graph can run into the hundreds of external nodes, so
+// rather than render everything (or a fixed heuristic subset) we show a page at a time and let
+// "Show more" grow it, capped well short of "the whole graph" to keep the canvas responsive.
+const PAGE_SIZE = 20;
+const MAX_VISIBLE = 100;
+
+/** Most load-bearing papers first, so pagination surfaces the ones worth seeing before the
+ *  long tail: project papers, then by how significantly/broadly they're cited, then by overall
+ *  citation count. */
+function rankNode(a: GraphNode, b: GraphNode): number {
+  if (a.kind !== b.kind) return a.kind === 'project' ? -1 : 1;
+  if (b.significant_cited_by_count !== a.significant_cited_by_count) {
+    return b.significant_cited_by_count - a.significant_cited_by_count;
+  }
+  if (b.cited_by_project_count !== a.cited_by_project_count) return b.cited_by_project_count - a.cited_by_project_count;
+  return (b.citation_count ?? 0) - (a.citation_count ?? 0);
+}
+
 export default function GraphScreen() {
   const router = useRouter();
   // `?focus=<slug>` (from the paper action sheet's "Show in Map") selects that node once
@@ -34,13 +53,29 @@ export default function GraphScreen() {
   const { activePid } = useActiveProject();
   const graphQuery = useGraph(activePid);
   const build = useGraphBuild(activePid);
+  const { allowAllFilter } = useGraphSettings();
 
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [filter, setFilter] = useState<FilterKind>('all');
+  const [filter, setFilter] = useState<FilterKind>('significant');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showRecs, setShowRecs] = useState(false);
-  const [showAll, setShowAll] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+
+  const filters = useMemo(() => (allowAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')), [allowAllFilter]);
+
+  // The "All" chip only exists behind the Settings toggle above — if it gets turned off while
+  // "All" is selected, fall back to the default rather than leaving the screen on a filter that
+  // no longer has a visible chip.
+  useEffect(() => {
+    if (filter === 'all' && !allowAllFilter) setFilter('significant');
+  }, [filter, allowAllFilter]);
+
+  // A filter/search change starts a fresh page rather than keeping whatever limit was reached
+  // browsing the previous set.
+  useEffect(() => {
+    setVisibleLimit(PAGE_SIZE);
+  }, [filter, query]);
 
   const data = graphQuery.data;
   const graph = data?.graph ?? null;
@@ -83,31 +118,25 @@ export default function GraphScreen() {
           String(n.year ?? '').includes(q),
       );
     }
-    return ns;
+    return [...ns].sort(rankNode);
   }, [graph, filter, query]);
 
   const isFiltering = !!query.trim() || filter !== 'all';
 
-  // What actually gets rendered. A filter/search CULLS to the matching nodes (not "render all
-  // and dim" — that was rendering 700+ views even for the 'significant' tab, the cause of the
-  // slow tabs). With no filter we default to a focused subgraph (project papers + significant /
-  // well-connected externals) unless "show all" is on. Edges are kept only between visible nodes.
+  // What actually gets rendered: the current filter/search's matches, paginated (not "render all
+  // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
+  // tabs). Edges are kept only between visible nodes.
   const visibleGraph = useMemo(() => {
-    if (!graph) return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
-    const withEdges = (keep: Set<string>, ns: GraphNode[]) => ({
-      nodes: ns,
-      edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
-    });
-    if (isFiltering) return withEdges(new Set(filteredNodes.map((n) => n.id)), filteredNodes);
-    if (showAll) return { nodes: graph.nodes, edges: graph.edges };
-    const keep = new Set<string>();
-    for (const n of graph.nodes) {
-      if (n.kind === 'project' || n.significant_cited_by_count > 0 || n.cited_by_project_count >= 2) {
-        keep.add(n.id);
-      }
-    }
-    return withEdges(keep, graph.nodes.filter((n) => keep.has(n.id)));
-  }, [graph, isFiltering, filteredNodes, showAll]);
+    const nodes = filteredNodes.slice(0, visibleLimit);
+    const keep = new Set(nodes.map((n) => n.id));
+    return { nodes, edges: (graph?.edges ?? []).filter((e) => keep.has(e.source) && keep.has(e.target)) };
+  }, [graph, filteredNodes, visibleLimit]);
+
+  const canShowMore = visibleLimit < MAX_VISIBLE && filteredNodes.length > visibleGraph.nodes.length;
+  const hitCap = visibleLimit >= MAX_VISIBLE && filteredNodes.length > visibleGraph.nodes.length;
+  function showMore() {
+    setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE));
+  }
 
   const staleCount = status?.stale_papers.length ?? 0;
 
@@ -182,19 +211,25 @@ export default function GraphScreen() {
             query={query}
             onQueryChange={setQuery}
             showSearch={showSearch}
+            filters={filters}
             filter={filter}
             onFilterChange={setFilter}
             resultCount={isFiltering ? filteredNodes.length : null}
           />
 
-          {!isFiltering && graph.nodes.length > visibleGraph.nodes.length ? (
-            <Pressable onPress={() => setShowAll((v) => !v)} style={styles.focusToggle}>
+          {canShowMore ? (
+            <Pressable onPress={showMore} style={styles.focusToggle}>
               <Text variant="caption" color={colors.mint}>
-                {showAll
-                  ? `Showing all ${graph.nodes.length} · tap to focus`
-                  : `Focused: ${visibleGraph.nodes.length} key papers · tap to show all ${graph.nodes.length}`}
+                Showing {visibleGraph.nodes.length} of {filteredNodes.length} · tap for{' '}
+                {Math.min(visibleLimit + PAGE_SIZE, MAX_VISIBLE) - visibleLimit} more
               </Text>
             </Pressable>
+          ) : hitCap ? (
+            <View style={styles.focusToggle}>
+              <Text variant="caption" color={colors.muted}>
+                Showing the top {MAX_VISIBLE} of {filteredNodes.length} · narrow the filter or search for more
+              </Text>
+            </View>
           ) : null}
 
           <GraphCanvas
@@ -303,6 +338,7 @@ function FilterBar({
   query,
   onQueryChange,
   showSearch,
+  filters,
   filter,
   onFilterChange,
   resultCount,
@@ -310,6 +346,7 @@ function FilterBar({
   query: string;
   onQueryChange: (v: string) => void;
   showSearch: boolean;
+  filters: { key: FilterKind; label: string }[];
   filter: FilterKind;
   onFilterChange: (f: FilterKind) => void;
   resultCount: number | null;
@@ -330,7 +367,7 @@ function FilterBar({
       ) : null}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.sm }}>
         <View style={{ flexDirection: 'row', gap: space.sm }}>
-          {FILTERS.map((f) => (
+          {filters.map((f) => (
             <Chip
               key={f.key}
               label={f.label}

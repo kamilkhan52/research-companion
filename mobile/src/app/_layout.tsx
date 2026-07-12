@@ -30,6 +30,7 @@ import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
+import { GraphSettingsProvider } from '@/store/graphSettings';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -81,6 +82,7 @@ export default function RootLayout() {
           <QueryClientProvider client={queryClient}>
             <ProjectProvider>
               <ListeningProvider>
+                <GraphSettingsProvider>
                 <AudioProvider>
                 <PaperEntityProvider>
                 <StatusBar style="light" />
@@ -104,6 +106,7 @@ export default function RootLayout() {
                 </View>
                 </PaperEntityProvider>
                 </AudioProvider>
+                </GraphSettingsProvider>
               </ListeningProvider>
             </ProjectProvider>
           </QueryClientProvider>
