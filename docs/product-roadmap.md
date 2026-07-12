@@ -35,14 +35,14 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
-| 3.3 | Playback position restoration | — | Planned |
-| 3.4 | Responsive drawer and project/navigation layout | — | Planned |
+| 3.3 | Playback position restoration | — | Next |
+| 3.4 | Responsive drawer and project/navigation layout | [#40](https://github.com/kamilkhan52/research-companion/pull/40) | Superseded by the shipped bottom-tab navigation shell |
 | 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
 | 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Merged — device pass pending |
-| 4.2 | Real sheets, centralized motion, developer tuning | — | Planned |
-| 5.1 | Retrieve missing project papers during graph builds | — | Planned |
-| 6.1 | Native Markdown + equation rendering | — | Planned |
-| 6.2 | arXiv HTML figure extraction and response figure cards | — | Planned |
+| 4.2 | Real sheets, centralized motion, developer tuning | [#68](https://github.com/kamilkhan52/research-companion/pull/68) | Partial — shared swipe-dismiss sheets shipped; global motion tuning deferred |
+| 5.1 | Retrieve missing project papers during graph builds | — | Queued after 3.3 |
+| 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65) | Partial — TeX/SVG rendering shipped; parser replacement deferred |
+| 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred until after 5.1 |
 | W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Complete |
 | W.2 | Web rebuild: Library | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | Complete |
 | W.3 | Web rebuild: Graph (high-perf canvas) | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
@@ -51,6 +51,25 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
 | W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
+
+## Current execution decisions (2026-07-12)
+
+Two fixes are active in separate Claude Code worktrees and are intentionally excluded from this
+queue: responsive display-equation layout and Map pinch-release stability ([#70](https://github.com/kamilkhan52/research-companion/pull/70)). Their owners complete device verification, review, and merge.
+
+The next repository-owned work is deliberately narrow and sequential:
+
+1. **3.3 Playback position restoration.** Complete and merge this before starting another product
+   change.
+2. **5.1 Missing-paper retrieval for graph builds.** Retrieve confidently sourced missing paper
+   text through the existing background-job pipeline, while preserving approval and project-context
+   invariants.
+
+The remaining ideas are not silently pending: retrieval-phase spoken cues (2.2b), global motion
+tuning (the remainder of 4.2), wholesale Markdown-parser replacement (the remainder of 6.1), arXiv
+HTML figure cards (6.2), and deferred iOS acceptance passes stay deferred until explicitly
+reprioritized. Playback restoration and graph input completion are the only scheduled product items
+after the two externally owned fixes.
 
 ## Locked product decisions
 

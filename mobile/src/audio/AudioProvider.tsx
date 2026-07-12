@@ -16,6 +16,10 @@ import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import {
+  clearPlaybackSnapshot,
+  readPlaybackSnapshot,
+} from '../../playback-persistence';
 
 interface PlayRequest {
   id: string; // stable key for the message (e.g. `${slug}:${index}`)
@@ -129,12 +133,47 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // stitched track (duration visible, lock/background-proof, whole-response rewind);
   // 'progressive' plays segments as they land (starts sooner). Captured per preparation
   // via this ref so flipping the setting mid-prep can't mix the two paths.
-  const { playbackMode } = useListeningMode();
+  const { listeningMode, playbackMode } = useListeningMode();
+  const restoreWithAutoplay = useRef(listeningMode);
   const playbackModeRef = useRef(playbackMode);
   playbackModeRef.current = playbackMode;
 
   useEffect(() => {
-    setupPlayer().catch(() => {});
+    let active = true;
+    const restore = async () => {
+      await setupPlayer();
+      const snapshot = await readPlaybackSnapshot();
+      if (!snapshot) return;
+      const existing = await TrackPlayer.getActiveTrack();
+      if (existing && !String(existing.id ?? '').startsWith('preview:')) {
+        if (!active) return;
+        const slotId = String(existing.slotId ?? existing.id);
+        setCurrentId(slotId);
+        setCurrentTitle(existing.title != null ? String(existing.title) : null);
+        if (restoreWithAutoplay.current) await TrackPlayer.play();
+        return;
+      }
+
+      if (snapshot.duration > 0
+          && snapshot.position >= Math.max(0, snapshot.duration - 1)) {
+        await clearPlaybackSnapshot();
+        return;
+      }
+      const queue = await TrackPlayer.getQueue();
+      if (!active || queue.length) return;
+      await TrackPlayer.add(snapshot.tracks.map((track) => ({
+        ...track,
+        url: track.sourceUrl ? apiUrl(track.sourceUrl) : track.url,
+        headers: authHeaders(),
+      })));
+      if (!active) return;
+      await TrackPlayer.seekTo(snapshot.position);
+      setCurrentId(snapshot.slotId);
+      setCurrentTitle(snapshot.title || null);
+      if (restoreWithAutoplay.current) await TrackPlayer.play();
+    };
+    void restore().catch(() => {});
+    return () => { active = false; };
   }, []);
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
@@ -224,6 +263,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             await TrackPlayer.add({
               id: `${id}|${nextJob.id}|segment:${segment.index}`,
               slotId: id,
+              sourceUrl: segment.url,
               segmentIndex: segment.index,
               sentenceText: segment.text,
               url: apiUrl(segment.url),
@@ -284,6 +324,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         await TrackPlayer.reset();
         await TrackPlayer.add({
           id,
+          slotId: id,
+          sourceUrl: job.url,
           url: apiUrl(job.url),
           title,
           // The full narration rides on the track so sentence-jump and the transcript
@@ -438,6 +480,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               await TrackPlayer.add({
                 id: `${request.id}|${audioJobId}|segment:${segment.index}`,
                 slotId: request.id,
+                sourceUrl: segment.url,
                 segmentIndex: segment.index,
                 sentenceText: segment.text,
                 url: apiUrl(segment.url),
@@ -525,6 +568,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           const existingTrack = await TrackPlayer.getActiveTrack();
           await TrackPlayer.add({
             id: request.id,
+            slotId: request.id,
+            sourceUrl: finalUrl,
             url: apiUrl(finalUrl),
             title: request.title,
             narration: finalNarration,
@@ -567,6 +612,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback(async () => {
     cancelPrep();
+    await clearPlaybackSnapshot().catch(() => {});
     setCurrentId(null);
     setCurrentTitle(null);
     const reset = () => TrackPlayer.reset().catch(() => {});
