@@ -7,6 +7,7 @@
 
 import { useState } from 'react';
 import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useAddPaper, useRelatedWorks } from '@/api/queries';
 import type { RelatedWork } from '@/api/types';
@@ -30,37 +31,47 @@ export function RelatedWorksSheet({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
-          <Text variant="editorial" style={{ marginBottom: 4 }}>
-            Related works
-          </Text>
-          <Text variant="caption" style={{ marginBottom: space.md }}>
-            The works this paper leans on most, and project papers that build on it
-          </Text>
-
-          {related.isLoading ? (
-            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
-          ) : !related.data?.length ? (
-            <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
-              Nothing yet — build the reference graph to populate this menu.
+      {/* react-native-gesture-handler patches Android's root touch dispatch, but a Modal
+         portals its content into a separate native view hierarchy that isn't covered by
+         the app's single root-level GestureHandlerRootView (mobile/src/app/_layout.tsx) —
+         on Android that silently breaks drag gestures (the ScrollView below never gets a
+         clean pan) while plain taps still resolve, which is exactly why "can't scroll" is
+         the only symptom. RNGH's own docs call for a nested GestureHandlerRootView per Modal. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.handle} />
+            <Text variant="editorial" style={{ marginBottom: 4 }}>
+              Related works
             </Text>
-          ) : (
-            // flexShrink (not a % maxHeight) is what actually bounds the ScrollView here:
-            // the sheet is content-sized under a maxHeight cap, so a percentage resolves
-            // against an unconstrained parent and the list silently refuses to scroll
-            // (polish plan H.4 — the on-device "can't scroll related works" bug).
-            <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1 }}>
-              <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-                {related.data.map((work) => (
-                  <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
-                ))}
-              </View>
-            </ScrollView>
-          )}
+            <Text variant="caption" style={{ marginBottom: space.md }}>
+              The works this paper leans on most, and project papers that build on it
+            </Text>
+
+            {related.isLoading ? (
+              <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+            ) : !related.data?.length ? (
+              <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+                Nothing yet — build the reference graph to populate this menu.
+              </Text>
+            ) : (
+              // flexShrink (not a % maxHeight) is what bounds the ScrollView: the sheet is
+              // content-sized under a maxHeight cap, so a percentage resolves against an
+              // unconstrained parent. minHeight: 0 overrides the flex item's automatic
+              // minimum (content) size so it can actually shrink past that, not just to it.
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+                <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+                  {related.data.map((work) => (
+                    <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

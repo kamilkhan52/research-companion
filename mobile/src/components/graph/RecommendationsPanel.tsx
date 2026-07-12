@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
@@ -27,32 +28,40 @@ export function RecommendationsPanel({
 }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
-          <Text variant="editorial" style={{ marginBottom: 4 }}>
-            Recommended additions
-          </Text>
-          <Text variant="caption" style={{ marginBottom: space.md }}>
-            High-signal papers connected to your project
-          </Text>
-
-          {recommendations.length === 0 ? (
-            <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
-              No strong recommendations yet — build (or rebuild) the graph once more papers have
-              been read.
+      {/* Same Android + RNGH + Modal gesture-routing fix as RelatedWorksSheet.tsx: a Modal's
+         content lives outside the app's single root-level GestureHandlerRootView, which
+         breaks drag gestures (this ScrollView) while taps keep working. Nested wrapper per
+         RNGH's own guidance for gesture handlers inside a Modal. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.handle} />
+            <Text variant="editorial" style={{ marginBottom: 4 }}>
+              Recommended additions
             </Text>
-          ) : (
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: '100%' }}>
-              <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-                {recommendations.map((rec) => (
-                  <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
-                ))}
-              </View>
-            </ScrollView>
-          )}
+            <Text variant="caption" style={{ marginBottom: space.md }}>
+              High-signal papers connected to your project
+            </Text>
+
+            {recommendations.length === 0 ? (
+              <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+                No strong recommendations yet — build (or rebuild) the graph once more papers have
+                been read.
+              </Text>
+            ) : (
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+                <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+                  {recommendations.map((rec) => (
+                    <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
