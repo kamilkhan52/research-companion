@@ -177,6 +177,15 @@ export function GraphCanvas({
       startFocalY.value = e.focalY;
     })
     .onUpdate((e) => {
+      // Bail on any frame that isn't genuinely 2-finger: `focalX`/`focalY` are the midpoint of
+      // whichever pointers are CURRENTLY down, so the instant one finger lifts (still mid-
+      // gesture, before onEnd/onFinalize fires) that midpoint jumps to the one remaining
+      // finger's own raw position — no longer the pinch's true center. `e.scale` stays correct
+      // (it's a distance ratio, unaffected by which pointer dropped), so applying that jumped
+      // focal point produced the reported bug: right zoom level, snapped-to-wrong-place on
+      // release. Simplest fix is to just ignore degraded frames — scale/translate hold at
+      // their last good 2-finger values until the gesture actually ends.
+      if (e.numberOfPointers < 2) return;
       // Focal-anchored zoom (polish plan J.1). RN scales the canvas about its own center
       // C = (width/2, height/2), so a canvas point p renders at t + C + s·(p − C). Keeping
       // the point that started under the fingers glued to the CURRENT focal solves to
