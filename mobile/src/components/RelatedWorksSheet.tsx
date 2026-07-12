@@ -6,10 +6,11 @@
 // works menu" and the menu will actually contain X.
 
 import { useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddPaper, useRelatedWorks } from '@/api/queries';
 import type { RelatedWork } from '@/api/types';
+import { BottomSheet } from '@/components/BottomSheet';
 import { Card, Icon, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -29,39 +30,33 @@ export function RelatedWorksSheet({
   const related = useRelatedWorks(pid, slug, visible); // fetch only once the menu opens
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
-          <Text variant="editorial" style={{ marginBottom: 4 }}>
-            Related works
-          </Text>
-          <Text variant="caption" style={{ marginBottom: space.md }}>
-            The works this paper leans on most, and project papers that build on it
-          </Text>
+    <BottomSheet visible={visible} onClose={onClose}>
+      <Text variant="editorial" style={{ marginBottom: 4 }}>
+        Related works
+      </Text>
+      <Text variant="caption" style={{ marginBottom: space.md }}>
+        The works this paper leans on most, and project papers that build on it
+      </Text>
 
-          {related.isLoading ? (
-            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
-          ) : !related.data?.length ? (
-            <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
-              Nothing yet — build the reference graph to populate this menu.
-            </Text>
-          ) : (
-            // flexShrink (not a % maxHeight) is what actually bounds the ScrollView here:
-            // the sheet is content-sized under a maxHeight cap, so a percentage resolves
-            // against an unconstrained parent and the list silently refuses to scroll
-            // (polish plan H.4 — the on-device "can't scroll related works" bug).
-            <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1 }}>
-              <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-                {related.data.map((work) => (
-                  <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
-                ))}
-              </View>
-            </ScrollView>
-          )}
-        </Pressable>
-      </Pressable>
-    </Modal>
+      {related.isLoading ? (
+        <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+      ) : !related.data?.length ? (
+        <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+          Nothing yet — build the reference graph to populate this menu.
+        </Text>
+      ) : (
+        // flexShrink (not flex:1 or a % maxHeight) bounds the ScrollView against the sheet's
+        // own content-driven maxHeight cap; minHeight: 0 lets it shrink past its content's
+        // automatic minimum size. Confirmed correct on-device (frameH < contentH).
+        <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+          <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+            {related.data.map((work) => (
+              <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
+            ))}
+          </View>
+        </ScrollView>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -83,12 +78,17 @@ function RelatedCard({
     work.direction === 'builds_on' ? 'builds on it' : 'builds on this paper',
     inProject ? (work.list_status === 'read' ? 'in project · read' : 'in project') : 'external',
     work.citation_count ? `~${work.citation_count.toLocaleString()} citations` : null,
-  ].filter(Boolean).join(' · ');
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   async function handleAdd() {
     if (!pid || added) return;
     try {
-      await addPaper.mutateAsync({ title: work.title, arxivId: work.arxiv_id ?? undefined });
+      await addPaper.mutateAsync({
+        title: work.title,
+        arxivId: work.arxiv_id ?? undefined,
+      });
       setAdded(true);
     } catch {
       // surfaced inline via addPaper.isError
@@ -97,8 +97,12 @@ function RelatedCard({
 
   return (
     <Card style={styles.card}>
-      <Text variant="serifTitle" numberOfLines={3}>{work.title}</Text>
-      <Text variant="caption" style={{ marginTop: 4 }}>{meta}</Text>
+      <Text variant="serifTitle" numberOfLines={3}>
+        {work.title}
+      </Text>
+      <Text variant="caption" style={{ marginTop: 4 }}>
+        {meta}
+      </Text>
       {work.reason ? (
         <View style={{ marginTop: space.sm }}>
           <Text variant="label" color={colors.violet}>
@@ -115,19 +119,27 @@ function RelatedCard({
           <Pressable
             onPress={() => onOpenPaper(work.slug!)}
             style={[styles.actionBtn, styles.actionBtnPrimary]}
-            accessibilityLabel={`Open ${work.title}`}>
-            <Text variant="caption" color={colors.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>Open discussion</Text>
+            accessibilityLabel={`Open ${work.title}`}
+          >
+            <Text variant="caption" color={colors.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>
+              Open discussion
+            </Text>
           </Pressable>
         ) : (
           <Pressable
             onPress={handleAdd}
             disabled={added || addPaper.isPending}
             style={[styles.actionBtn, added ? { borderColor: colors.mint } : styles.actionBtnPrimary]}
-            accessibilityLabel={`Add ${work.title} to project`}>
+            accessibilityLabel={`Add ${work.title} to project`}
+          >
             {addPaper.isPending ? (
               <ActivityIndicator size="small" color={colors.mintInk} />
             ) : (
-              <Text variant="caption" color={added ? colors.mint : colors.mintInk} style={added ? null : { fontFamily: fonts.bodySemiBold }}>
+              <Text
+                variant="caption"
+                color={added ? colors.mint : colors.mintInk}
+                style={added ? null : { fontFamily: fonts.bodySemiBold }}
+              >
                 {added ? 'Added' : 'Add to project'}
               </Text>
             )}
@@ -137,9 +149,12 @@ function RelatedCard({
           <Pressable
             onPress={() => Linking.openURL(link)}
             style={styles.actionBtn}
-            accessibilityLabel={`Open source for ${work.title}`}>
+            accessibilityLabel={`Open source for ${work.title}`}
+          >
             <Icon name="external-link" size={12} color={colors.muted} />
-            <Text variant="caption" color={colors.muted}>Open source</Text>
+            <Text variant="caption" color={colors.muted}>
+              Open source
+            </Text>
           </Pressable>
         ) : null}
       </View>
@@ -153,26 +168,13 @@ function RelatedCard({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: space.lg,
-    maxHeight: '75%',
-  },
-  handle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.line2,
-    alignSelf: 'center',
-    marginBottom: space.md,
-  },
   card: { borderColor: colors.line2 },
-  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.md, alignItems: 'center' },
+  actions: {
+    flexDirection: 'row',
+    gap: space.sm,
+    marginTop: space.md,
+    alignItems: 'center',
+  },
   actionBtn: {
     height: 38,
     paddingHorizontal: space.lg,

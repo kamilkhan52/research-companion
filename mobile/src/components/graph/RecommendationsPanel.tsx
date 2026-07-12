@@ -5,10 +5,11 @@
 // this sheet, since that's the whole point of a recommendation.
 
 import { useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
+import { BottomSheet } from '@/components/BottomSheet';
 import { Card, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -26,34 +27,28 @@ export function RecommendationsPanel({
   onSelect: (rec: GraphRecommendation) => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
-          <Text variant="editorial" style={{ marginBottom: 4 }}>
-            Recommended additions
-          </Text>
-          <Text variant="caption" style={{ marginBottom: space.md }}>
-            High-signal papers connected to your project
-          </Text>
+    <BottomSheet visible={visible} onClose={onClose}>
+      <Text variant="editorial" style={{ marginBottom: 4 }}>
+        Recommended additions
+      </Text>
+      <Text variant="caption" style={{ marginBottom: space.md }}>
+        High-signal papers connected to your project
+      </Text>
 
-          {recommendations.length === 0 ? (
-            <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
-              No strong recommendations yet — build (or rebuild) the graph once more papers have
-              been read.
-            </Text>
-          ) : (
-            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: '100%' }}>
-              <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-                {recommendations.map((rec) => (
-                  <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
-                ))}
-              </View>
-            </ScrollView>
-          )}
-        </Pressable>
-      </Pressable>
-    </Modal>
+      {recommendations.length === 0 ? (
+        <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+          No strong recommendations yet — build (or rebuild) the graph once more papers have been read.
+        </Text>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+          <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+            {recommendations.map((rec) => (
+              <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
+            ))}
+          </View>
+        </ScrollView>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -72,7 +67,10 @@ function RecommendationCard({
   async function handleAdd() {
     if (!pid || added) return;
     try {
-      await addPaper.mutateAsync({ title: rec.title, arxivId: rec.arxiv_id ?? undefined });
+      await addPaper.mutateAsync({
+        title: rec.title,
+        arxivId: rec.arxiv_id ?? undefined,
+      });
       setAdded(true);
     } catch {
       // surfaced inline below via addPaper.isError; nothing else to do here
@@ -82,12 +80,18 @@ function RecommendationCard({
   return (
     <Pressable onPress={onSelect}>
       <Card style={styles.card}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'flex-start',
+            gap: space.sm,
+          }}
+        >
           <View style={{ flex: 1 }}>
             <Text variant="heading" numberOfLines={2}>
               {rec.title}
             </Text>
-            {(rec.venue || rec.year) ? (
+            {rec.venue || rec.year ? (
               <Text variant="caption" style={{ marginTop: 2 }}>
                 {[rec.venue, rec.year].filter(Boolean).join(' · ')}
               </Text>
@@ -113,11 +117,16 @@ function RecommendationCard({
           disabled={added || addPaper.isPending}
           hitSlop={6}
           style={[styles.addBtn, added && styles.addBtnDone]}
-          accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}>
+          accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}
+        >
           {addPaper.isPending ? (
             <ActivityIndicator size="small" color={colors.mintInk} />
           ) : (
-            <Text variant="caption" color={added ? colors.mint : colors.mintInk} style={added ? null : { fontFamily: fonts.bodySemiBold }}>
+            <Text
+              variant="caption"
+              color={added ? colors.mint : colors.mintInk}
+              style={added ? null : { fontFamily: fonts.bodySemiBold }}
+            >
               {added ? 'Added to reading list' : '+ Add'}
             </Text>
           )}
@@ -133,24 +142,6 @@ function RecommendationCard({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: colors.line,
-    padding: space.lg,
-    maxHeight: '75%',
-  },
-  handle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.line2,
-    alignSelf: 'center',
-    marginBottom: space.md,
-  },
   card: { borderColor: colors.line2 },
   scoreBadge: {
     borderWidth: 1,
@@ -171,5 +162,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addBtnDone: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.mint, alignSelf: 'stretch' },
+  addBtnDone: {
+    backgroundColor: colors.elevated,
+    borderWidth: 1,
+    borderColor: colors.mint,
+    alignSelf: 'stretch',
+  },
 });
