@@ -16,6 +16,9 @@ export interface PlaybackSnapshot {
 }
 
 export const PLAYBACK_SNAPSHOT_KEY: string;
+export function checkpointPlayback(
+  player: typeof import('react-native-track-player').default,
+): Promise<void>;
 export function clearPlaybackSnapshot(): Promise<void>;
 export function readPlaybackSnapshot(): Promise<PlaybackSnapshot | null>;
 export function savePlaybackProgress(

@@ -7,6 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
 import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-track-player';
 
 import { apiUrl, authHeaders } from '@/api/client';
@@ -17,6 +18,7 @@ import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoff
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import {
+  checkpointPlayback,
   clearPlaybackSnapshot,
   readPlaybackSnapshot,
 } from '../../playback-persistence';
@@ -133,8 +135,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // stitched track (duration visible, lock/background-proof, whole-response rewind);
   // 'progressive' plays segments as they land (starts sooner). Captured per preparation
   // via this ref so flipping the setting mid-prep can't mix the two paths.
-  const { listeningMode, playbackMode } = useListeningMode();
-  const restoreWithAutoplay = useRef(listeningMode);
+  const { playbackMode } = useListeningMode();
   const playbackModeRef = useRef(playbackMode);
   playbackModeRef.current = playbackMode;
 
@@ -146,11 +147,14 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       if (!snapshot) return;
       const existing = await TrackPlayer.getActiveTrack();
       if (existing && !String(existing.id ?? '').startsWith('preview:')) {
+        await TrackPlayer.pause().catch(() => {});
         if (!active) return;
         const slotId = String(existing.slotId ?? existing.id);
         setCurrentId(slotId);
         setCurrentTitle(existing.title != null ? String(existing.title) : null);
-        if (restoreWithAutoplay.current) await TrackPlayer.play();
+        if (typeof existing.narration === 'string') {
+          setNarrationById((value) => ({ ...value, [slotId]: existing.narration }));
+        }
         return;
       }
 
@@ -170,10 +174,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       await TrackPlayer.seekTo(snapshot.position);
       setCurrentId(snapshot.slotId);
       setCurrentTitle(snapshot.title || null);
-      if (restoreWithAutoplay.current) await TrackPlayer.play();
+      const narration = snapshot.tracks.find((track) => track.narration)?.narration;
+      if (narration) setNarrationById((value) => ({ ...value, [snapshot.slotId]: narration }));
     };
     void restore().catch(() => {});
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') void checkpointPlayback(TrackPlayer).catch(() => {});
+    });
+    return () => subscription.remove();
   }, []);
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
@@ -222,6 +234,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         const { state } = await TrackPlayer.getPlaybackState();
         if (state === State.Playing) {
           await TrackPlayer.pause();
+          await checkpointPlayback(TrackPlayer).catch(() => {});
         } else {
           if (state === State.Ended) await TrackPlayer.seekTo(0);
           await TrackPlayer.play();
@@ -266,6 +279,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               sourceUrl: segment.url,
               segmentIndex: segment.index,
               sentenceText: segment.text,
+              narration: nextJob.narration ?? undefined,
               url: apiUrl(segment.url),
               title,
               artist: 'Reading Companion',
@@ -483,6 +497,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
                 sourceUrl: segment.url,
                 segmentIndex: segment.index,
                 sentenceText: segment.text,
+                narration: nextJob.narration ?? undefined,
                 url: apiUrl(segment.url),
                 title: request.title,
                 artist: 'Reading Companion',

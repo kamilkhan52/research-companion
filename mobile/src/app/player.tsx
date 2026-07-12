@@ -17,6 +17,7 @@ import TrackPlayer, {
 
 import { useAudio } from '@/audio/AudioProvider';
 import { SKIP_SECONDS } from '@/audio/setup';
+import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
 import { Icon, IconButton, Screen, Text } from '@/ui';
@@ -45,6 +46,7 @@ export default function PlayerScreen() {
   async function togglePlay() {
     if (playing) {
       await TrackPlayer.pause();
+      await checkpointPlayback(TrackPlayer).catch(() => {});
     } else {
       if (state === State.Ended) await TrackPlayer.seekTo(0);
       await TrackPlayer.play();

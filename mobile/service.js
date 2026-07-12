@@ -4,7 +4,11 @@
 const TrackPlayer = require('react-native-track-player').default;
 const { Event } = require('react-native-track-player');
 const { seekSentence } = require('./sentence-seek');
-const { clearPlaybackSnapshot, savePlaybackProgress } = require('./playback-persistence');
+const {
+  checkpointPlayback,
+  clearPlaybackSnapshot,
+  savePlaybackProgress,
+} = require('./playback-persistence');
 
 const SKIP_SECONDS = 15;
 const PROGRESS_SAVE_INTERVAL_MS = 5000;
@@ -12,7 +16,10 @@ let lastProgressSavedAt = 0;
 
 module.exports = async function () {
   TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
-  TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
+  TrackPlayer.addEventListener(Event.RemotePause, async () => {
+    await TrackPlayer.pause();
+    await checkpointPlayback(TrackPlayer).catch(() => {});
+  });
   TrackPlayer.addEventListener(Event.RemoteStop, async () => {
     await clearPlaybackSnapshot().catch(() => {});
     await TrackPlayer.stop();

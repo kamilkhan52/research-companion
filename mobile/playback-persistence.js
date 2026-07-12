@@ -61,6 +61,19 @@ function savePlaybackProgress(player, event) {
   });
 }
 
+async function checkpointPlayback(player) {
+  const [activeIndex, progress] = await Promise.all([
+    player.getActiveTrackIndex(),
+    player.getProgress(),
+  ]);
+  if (!Number.isInteger(activeIndex)) return;
+  await savePlaybackProgress(player, {
+    track: activeIndex,
+    position: progress.position,
+    duration: progress.duration,
+  });
+}
+
 async function readPlaybackSnapshot() {
   await persistenceTail;
   try {
@@ -81,6 +94,7 @@ async function readPlaybackSnapshot() {
 
 module.exports = {
   PLAYBACK_SNAPSHOT_KEY,
+  checkpointPlayback,
   clearPlaybackSnapshot,
   readPlaybackSnapshot,
   savePlaybackProgress,

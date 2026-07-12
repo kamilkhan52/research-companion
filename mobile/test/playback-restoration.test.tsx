@@ -99,7 +99,7 @@ test('provider restores the stable item and position without autoplay when Liste
   await waitFor(() => expect(currentId).toBe('project-a:paper-a:2'));
 });
 
-test('provider autoplays a restored item only when Listening is on', async () => {
+test('provider always restores paused even when Listening is on', async () => {
   await setBaseUrl('https://api.test');
   await AsyncStorage.setItem('rc.listeningMode', 'true');
   await AsyncStorage.setItem(PLAYBACK_SNAPSHOT_KEY, JSON.stringify({
@@ -121,7 +121,7 @@ test('provider autoplays a restored item only when Listening is on', async () =>
   await renderAsync(<Wrapper><></></Wrapper>);
 
   await waitFor(() => expect(TrackPlayer.seekTo).toHaveBeenCalledWith(7));
-  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
 
 test('queue-end cleanup wins over an in-flight progress write', async () => {
@@ -142,4 +142,38 @@ test('queue-end cleanup wins over an in-flight progress write', async () => {
   await Promise.all([save, clear]);
 
   await expect(AsyncStorage.getItem(PLAYBACK_SNAPSHOT_KEY)).resolves.toBeNull();
+});
+
+test('an existing native track is forced paused and exposed after relaunch', async () => {
+  await AsyncStorage.setItem(PLAYBACK_SNAPSHOT_KEY, JSON.stringify({
+    version: 1,
+    slotId: 'project-a:paper-a:2',
+    title: 'Paper A',
+    position: 9,
+    duration: 120,
+    tracks: [{
+      id: 'project-a:paper-a:2',
+      slotId: 'project-a:paper-a:2',
+      sourceUrl: '/api/audio/final.mp3',
+      title: 'Paper A',
+    }],
+  }));
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({
+    id: 'project-a:paper-a:2',
+    slotId: 'project-a:paper-a:2',
+    title: 'Paper A',
+    narration: 'Spoken answer.',
+  } as never);
+  let audio!: ReturnType<typeof useAudio>;
+  function Probe() {
+    audio = useAudio();
+    return null;
+  }
+
+  await renderAsync(<Wrapper><Probe /></Wrapper>);
+
+  await waitFor(() => expect(TrackPlayer.pause).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(audio.currentId).toBe('project-a:paper-a:2'));
+  expect(audio.narrationById['project-a:paper-a:2']).toBe('Spoken answer.');
+  expect(TrackPlayer.play).not.toHaveBeenCalled();
 });
