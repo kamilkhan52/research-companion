@@ -71,11 +71,12 @@ export default function GraphScreen() {
     if (filter === 'all' && !allowAllFilter) setFilter('significant');
   }, [filter, allowAllFilter]);
 
-  // A filter/search change starts a fresh page rather than keeping whatever limit was reached
-  // browsing the previous set.
+  // A filter/search change (or switching to a different project's graph — this tab stays
+  // mounted across the Library's project switch) starts a fresh page rather than keeping
+  // whatever limit was reached browsing the previous set.
   useEffect(() => {
     setVisibleLimit(PAGE_SIZE);
-  }, [filter, query]);
+  }, [filter, query, activePid]);
 
   const data = graphQuery.data;
   const graph = data?.graph ?? null;
@@ -126,14 +127,23 @@ export default function GraphScreen() {
   // What actually gets rendered: the current filter/search's matches, paginated (not "render all
   // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
   // tabs). Edges are kept only between visible nodes.
+  const pagedNodes = useMemo(() => filteredNodes.slice(0, visibleLimit), [filteredNodes, visibleLimit]);
+
   const visibleGraph = useMemo(() => {
-    const nodes = filteredNodes.slice(0, visibleLimit);
+    // A node explicitly opened (via "Show in Map" or a Recommendations pick) must actually
+    // render on the canvas even if it doesn't pass the current filter/page — e.g. a project
+    // paper with no "significant" citations is invisible under the default filter, but the
+    // detail sheet it opens implies "you're now looking at this one."
+    const nodes =
+      selectedNode && graph?.nodes.some((n) => n.id === selectedNode.id) && !pagedNodes.some((n) => n.id === selectedNode.id)
+        ? [...pagedNodes, selectedNode]
+        : pagedNodes;
     const keep = new Set(nodes.map((n) => n.id));
     return { nodes, edges: (graph?.edges ?? []).filter((e) => keep.has(e.source) && keep.has(e.target)) };
-  }, [graph, filteredNodes, visibleLimit]);
+  }, [graph, pagedNodes, selectedNode]);
 
-  const canShowMore = visibleLimit < MAX_VISIBLE && filteredNodes.length > visibleGraph.nodes.length;
-  const hitCap = visibleLimit >= MAX_VISIBLE && filteredNodes.length > visibleGraph.nodes.length;
+  const canShowMore = visibleLimit < MAX_VISIBLE && filteredNodes.length > pagedNodes.length;
+  const hitCap = visibleLimit >= MAX_VISIBLE && filteredNodes.length > pagedNodes.length;
   function showMore() {
     setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE));
   }
@@ -220,7 +230,7 @@ export default function GraphScreen() {
           {canShowMore ? (
             <Pressable onPress={showMore} style={styles.focusToggle}>
               <Text variant="caption" color={colors.mint}>
-                Showing {visibleGraph.nodes.length} of {filteredNodes.length} · tap for{' '}
+                Showing {pagedNodes.length} of {filteredNodes.length} · tap for{' '}
                 {Math.min(visibleLimit + PAGE_SIZE, MAX_VISIBLE) - visibleLimit} more
               </Text>
             </Pressable>
