@@ -79,7 +79,12 @@ export function BottomSheet({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <GestureHandlerRootView style={styles.gestureRoot}>
+        {/* box-none: this wrapper spans the full screen (flex:1) and sits on top of the dismiss
+           Pressable above in z-order, so without box-none its own empty space would win Android's
+           touch hit-test over any tap that isn't on the sheet itself, swallowing backdrop taps
+           before they reach the dismiss layer. box-none lets those pass through to it while the
+           sheet/handle underneath still receive touches normally. */}
+        <GestureHandlerRootView pointerEvents="box-none" style={styles.gestureRoot}>
           <Animated.View style={[styles.sheet, { maxHeight: `${maxHeightPct}%` }, style, animatedStyle]}>
             <GestureDetector gesture={pan}>
               <View style={styles.handleHitArea}>
