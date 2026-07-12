@@ -6,7 +6,11 @@ import { setBaseUrl } from '@/api/config';
 import { AudioProvider, useAudio } from '@/audio/AudioProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
-import { PLAYBACK_SNAPSHOT_KEY } from '../playback-persistence';
+import {
+  clearPlaybackSnapshot,
+  PLAYBACK_SNAPSHOT_KEY,
+  savePlaybackProgress,
+} from '../playback-persistence';
 
 const playbackService = require('../service') as () => Promise<void>;
 
@@ -118,4 +122,24 @@ test('provider autoplays a restored item only when Listening is on', async () =>
 
   await waitFor(() => expect(TrackPlayer.seekTo).toHaveBeenCalledWith(7));
   await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+});
+
+test('queue-end cleanup wins over an in-flight progress write', async () => {
+  let releaseQueue!: () => void;
+  const queueReady = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  jest.mocked(TrackPlayer.getQueue).mockImplementationOnce(async () => {
+    await queueReady;
+    return [{
+      id: 'project-a:paper-a:2',
+      slotId: 'project-a:paper-a:2',
+      sourceUrl: '/api/audio/final.mp3',
+    }] as never;
+  });
+
+  const save = savePlaybackProgress(TrackPlayer, { track: 0, position: 10, duration: 100 });
+  const clear = clearPlaybackSnapshot();
+  releaseQueue();
+  await Promise.all([save, clear]);
+
+  await expect(AsyncStorage.getItem(PLAYBACK_SNAPSHOT_KEY)).resolves.toBeNull();
 });
