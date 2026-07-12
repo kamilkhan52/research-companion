@@ -4,14 +4,19 @@
 // reading list (unread, lazily retrieved later — same as any other paper) without leaving
 // this sheet, since that's the whole point of a recommendation.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
-import { Card, Text } from '@/ui';
+import { Button, Card, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
+
+// Shown a page at a time rather than the full ranked list at once — a project can accumulate
+// well over a hundred candidate recommendations, most of which are low-signal tail entries.
+const PAGE_SIZE = 20;
+const MAX_VISIBLE = 100;
 
 export function RecommendationsPanel({
   pid,
@@ -26,6 +31,18 @@ export function RecommendationsPanel({
   onClose: () => void;
   onSelect: (rec: GraphRecommendation) => void;
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+
+  // Fresh page each time the sheet is (re)opened, not wherever browsing left off last time —
+  // also on a project switch, since this stays mounted and `visible` can stay true across one
+  // (the sheet doesn't force-close just because the active project changed underneath it).
+  useEffect(() => {
+    if (visible) setVisibleLimit(PAGE_SIZE);
+  }, [visible, pid]);
+
+  const pageRecs = recommendations.slice(0, visibleLimit);
+  const canShowMore = visibleLimit < Math.min(MAX_VISIBLE, recommendations.length);
+
   return (
     <BottomSheet visible={visible} onClose={onClose}>
       <Text variant="editorial" style={{ marginBottom: 4 }}>
@@ -42,9 +59,16 @@ export function RecommendationsPanel({
       ) : (
         <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
           <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-            {recommendations.map((rec) => (
+            {pageRecs.map((rec) => (
               <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
             ))}
+            {canShowMore ? (
+              <Button
+                title={`Show more (${pageRecs.length} of ${recommendations.length})`}
+                variant="ghost"
+                onPress={() => setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE))}
+              />
+            ) : null}
           </View>
         </ScrollView>
       )}

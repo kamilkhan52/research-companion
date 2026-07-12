@@ -23,6 +23,7 @@ import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import { useGraphSettings } from '@/store/graphSettings';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -52,6 +53,7 @@ export default function SettingsScreen() {
   const [priorScope, setPriorScope] = useState<'related' | 'all'>('related');
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
+  const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
 
   // Sync local fields from the server exactly once, on first successful load — NOT on every
   // settings.data change. A background refetch (e.g. right after saveSettings invalidates the
@@ -238,6 +240,20 @@ export default function SettingsScreen() {
                     />
                   </>
                 ) : null}
+              </Section>
+
+              {/* Map */}
+              <Section title="Map">
+                <Label text="'All' filter" hint="applies immediately, stored on this device" />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Toggle label="Hidden" active={!allowAllFilter} onPress={() => setAllowAllFilter(false)} />
+                  <Toggle label="Shown" active={allowAllFilter} onPress={() => setAllowAllFilter(true)} />
+                </View>
+                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                  The reference graph defaults to a "Significant" filter, paginated 20 papers at a
+                  time. A project's full graph can run into the hundreds of external references —
+                  turn this on to also offer an "All" filter chip there.
+                </Text>
               </Section>
 
               {/* Research agent — web-search provider keys for the analyst's tools */}

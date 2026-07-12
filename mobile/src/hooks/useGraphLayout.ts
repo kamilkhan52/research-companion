@@ -7,10 +7,17 @@ import { useMemo } from 'react';
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { computeForceLayout, type LayoutResult } from '@/graph/layout';
 
+// Sizes are a significance tier, not a raw citation tally: how many project papers cite this
+// one *significantly* (the same signal the "Significant" filter and NodeDetailSheet's "Significant
+// in" stat use) — capped so one runaway outlier can't dominate the canvas. Project papers get a
+// bigger flat base (they're "your" papers regardless of citation stats) and grow on the same scale.
+const SIGNIFICANCE_STEP = 2.6;
+const MAX_SIGNIFICANCE_WEIGHT = 8;
+
 export function nodeRadius(node: GraphNode): number {
-  const base = node.kind === 'project' ? 22 : 13;
-  const weight = Math.min(node.cited_by_project_count, 8);
-  return base + weight * 2.4;
+  const base = node.kind === 'project' ? 20 : 11;
+  const tier = Math.min(node.significant_cited_by_count, MAX_SIGNIFICANCE_WEIGHT);
+  return base + tier * SIGNIFICANCE_STEP;
 }
 
 export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutResult {
