@@ -28,10 +28,8 @@ export function RecommendationsPanel({
 }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      {/* Same Android + RNGH + Modal gesture-routing fix as RelatedWorksSheet.tsx: a Modal's
-         content lives outside the app's single root-level GestureHandlerRootView, which
-         breaks drag gestures (this ScrollView) while taps keep working. Nested wrapper per
-         RNGH's own guidance for gesture handlers inside a Modal. */}
+      {/* Same defensive wrapper as RelatedWorksSheet.tsx — see the comment there for why this
+         is included but not confirmed to be the actual fix for a plain ScrollView. */}
       <GestureHandlerRootView style={{ flex: 1 }}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>

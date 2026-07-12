@@ -31,12 +31,12 @@ export function RelatedWorksSheet({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      {/* react-native-gesture-handler patches Android's root touch dispatch, but a Modal
-         portals its content into a separate native view hierarchy that isn't covered by
-         the app's single root-level GestureHandlerRootView (mobile/src/app/_layout.tsx) —
-         on Android that silently breaks drag gestures (the ScrollView below never gets a
-         clean pan) while plain taps still resolve, which is exactly why "can't scroll" is
-         the only symptom. RNGH's own docs call for a nested GestureHandlerRootView per Modal. */}
+      {/* Defensive: RNGH's own docs require a nested GestureHandlerRootView inside a Modal on
+         Android, since Modal portals into a separate native root outside the app's single
+         root-level one (mobile/src/app/_layout.tsx). That's documented for RNGH-registered
+         gestures specifically (GestureDetector/Gesture.*) — this ScrollView is plain RN, so
+         it isn't confirmed this is what was blocking its scroll. Included because it's safe
+         and correct regardless; not a substitute for on-device confirmation of the real fix. */}
       <GestureHandlerRootView style={{ flex: 1 }}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
@@ -55,10 +55,12 @@ export function RelatedWorksSheet({
                 Nothing yet — build the reference graph to populate this menu.
               </Text>
             ) : (
-              // flexShrink (not a % maxHeight) is what bounds the ScrollView: the sheet is
+              // flexShrink (not a % maxHeight) is meant to bound the ScrollView: the sheet is
               // content-sized under a maxHeight cap, so a percentage resolves against an
-              // unconstrained parent. minHeight: 0 overrides the flex item's automatic
-              // minimum (content) size so it can actually shrink past that, not just to it.
+              // unconstrained parent. minHeight: 0 is a defensive addition (removes any
+              // automatic-minimum-size floor on the shrink) but isn't confirmed to be the
+              // missing piece — flexShrink alone already shipped in 6e38b62 and the sheet was
+              // still reported unscrollable, so treat this as unverified until device-tested.
               <ScrollView
                 showsVerticalScrollIndicator={false}
                 style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
