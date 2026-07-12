@@ -15,7 +15,7 @@ import { TabHeader } from '@/components/TopBar';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
-import { Button, Card, Chip, Screen, Text } from '@/ui';
+import { Button, Card, Chip, Icon, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
@@ -142,10 +142,16 @@ export default function GraphScreen() {
     return { nodes, edges: (graph?.edges ?? []).filter((e) => keep.has(e.source) && keep.has(e.target)) };
   }, [graph, pagedNodes, selectedNode]);
 
-  const canShowMore = visibleLimit < MAX_VISIBLE && filteredNodes.length > pagedNodes.length;
+  // The stepper is only worth showing once there's more than a single page to move between.
+  const showPager = filteredNodes.length > PAGE_SIZE;
+  const canIncrease = visibleLimit < Math.min(MAX_VISIBLE, filteredNodes.length);
+  const canDecrease = visibleLimit > PAGE_SIZE;
   const hitCap = visibleLimit >= MAX_VISIBLE && filteredNodes.length > pagedNodes.length;
-  function showMore() {
+  function increaseVisible() {
     setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE));
+  }
+  function decreaseVisible() {
+    setVisibleLimit((v) => Math.max(v - PAGE_SIZE, PAGE_SIZE));
   }
 
   const staleCount = status?.stale_papers.length ?? 0;
@@ -227,19 +233,33 @@ export default function GraphScreen() {
             resultCount={isFiltering ? filteredNodes.length : null}
           />
 
-          {canShowMore ? (
-            <Pressable onPress={showMore} style={styles.focusToggle}>
-              <Text variant="caption" color={colors.mint}>
-                Showing {pagedNodes.length} of {filteredNodes.length} · tap for{' '}
-                {Math.min(visibleLimit + PAGE_SIZE, MAX_VISIBLE) - visibleLimit} more
+          {showPager ? (
+            <View style={styles.pager}>
+              <Pressable
+                onPress={decreaseVisible}
+                disabled={!canDecrease}
+                hitSlop={8}
+                accessibilityLabel="Show fewer papers"
+                style={[styles.pagerBtn, !canDecrease && styles.pagerBtnDisabled]}>
+                <Icon name="minus" size={14} color={canDecrease ? colors.text : colors.muted} />
+              </Pressable>
+              <Text variant="caption" color={colors.muted} style={{ marginHorizontal: space.sm }}>
+                Showing {pagedNodes.length} of {filteredNodes.length}
               </Text>
-            </Pressable>
-          ) : hitCap ? (
-            <View style={styles.focusToggle}>
-              <Text variant="caption" color={colors.muted}>
-                Showing the top {MAX_VISIBLE} of {filteredNodes.length} · narrow the filter or search for more
-              </Text>
+              <Pressable
+                onPress={increaseVisible}
+                disabled={!canIncrease}
+                hitSlop={8}
+                accessibilityLabel="Show more papers"
+                style={[styles.pagerBtn, !canIncrease && styles.pagerBtnDisabled]}>
+                <Icon name="plus" size={14} color={canIncrease ? colors.text : colors.muted} />
+              </Pressable>
             </View>
+          ) : null}
+          {hitCap ? (
+            <Text variant="caption" color={colors.muted} style={{ textAlign: 'center', marginTop: 4 }}>
+              Capped at {MAX_VISIBLE} · narrow the filter or search to see the rest
+            </Text>
           ) : null}
 
           <GraphCanvas
@@ -426,16 +446,29 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: colors.mint, borderRadius: 3 },
-  focusToggle: {
+  pager: {
+    flexDirection: 'row',
+    alignItems: 'center',
     alignSelf: 'center',
     marginTop: space.sm,
-    paddingHorizontal: space.md,
+    paddingHorizontal: space.xs,
     paddingVertical: space.xs,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.line2,
     backgroundColor: colors.elevated,
   },
+  pagerBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.line2,
+  },
+  pagerBtnDisabled: { opacity: 0.4 },
   filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
   searchInput: {
     backgroundColor: colors.elevated,

@@ -21,9 +21,15 @@ import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
 import { Icon, Text } from '@/ui';
 import { colors, radius as radiusTokens, space } from '@/theme/tokens';
 
-const MIN_SCALE = 0.3;
+// Low enough that "fit the whole graph" (computeFitScale below) is reachable by pinch too —
+// the visible node set's own bounding box is often wider/taller than 0.3x would show.
+const MIN_SCALE = 0.15;
 const MAX_SCALE = 2.5;
+// Fallback only, for the single frame before the viewport is measured — real sizing always
+// comes from computeFitScale once onLayout fires.
 const INITIAL_SCALE = 0.65;
+// Margin so the outermost nodes/labels aren't flush against the viewport edge.
+const FIT_PADDING = 0.92;
 // Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Labels below this zoom are
 // unreadable anyway, and each is a laid-out Text — shed them while zoomed out. Arrowheads
 // double the per-edge view count, so on dense graphs only significant edges keep theirs.
@@ -61,6 +67,19 @@ export function GraphCanvas({
   const startY = useSharedValue(0);
   const startScale = useSharedValue(INITIAL_SCALE);
 
+  // The default (and "Reset view") scale always fits the current visible node set's whole
+  // bounding box into the viewport, rather than a fixed constant — the box's aspect ratio (and
+  // so the scale needed to show all of it) shifts as filters/pagination change which nodes are
+  // visible.
+  const computeFitScale = useCallback(
+    (w: number, h: number) => {
+      if (!width || !height || !w || !h) return INITIAL_SCALE;
+      const fit = Math.min(w / width, h / height) * FIT_PADDING;
+      return Math.min(MAX_SCALE, Math.max(MIN_SCALE, fit));
+    },
+    [width, height],
+  );
+
   const centerView = useCallback(
     (w: number, h: number, animated: boolean) => {
       // RN scales a transformed view around its OWN center, so the canvas's center point
@@ -70,11 +89,12 @@ export function GraphCanvas({
       // visibly mis-centers the graph on load/reset.)
       const tx = w / 2 - width / 2;
       const ty = h / 2 - height / 2;
+      const fitScale = computeFitScale(w, h);
       translateX.value = animated ? withTiming(tx) : tx;
       translateY.value = animated ? withTiming(ty) : ty;
-      scale.value = animated ? withTiming(INITIAL_SCALE) : INITIAL_SCALE;
+      scale.value = animated ? withTiming(fitScale) : fitScale;
     },
-    [width, height, translateX, translateY, scale],
+    [width, height, computeFitScale, translateX, translateY, scale],
   );
 
   const onLayout = useCallback(
