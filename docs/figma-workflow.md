@@ -125,19 +125,28 @@ Newsreader
 
 ## Working from generated screenshots
 
-Generated PNGs are proposal references, not the source of truth. Keep them in `docs/ui-redesign-proposal/` or `docs/chat-redesign-proposal/` when they are useful for handoff, but build the Figma version as editable layers.
+Generated PNGs are temporary proposal references, not the source of truth. The editable Figma
+frame is the durable design record.
 
-Current generated reference folders:
+Keep candidate images outside the repository while exploring (for example under
+`/private/tmp/research-companion-figma-candidates/`). After choosing a direction:
 
-- `docs/ui-redesign-proposal/`
-- `docs/chat-redesign-proposal/`
+- recreate and validate the selected design as editable Figma layers;
+- delete rejected candidates and duplicate exports;
+- delete the selected PNG too unless it is still needed for a specific review or handoff;
+- if a PNG must remain in `docs/`, keep only the selected final reference and document why it is
+  retained.
+
+There are currently no generated proposal-image folders tracked or retained locally for this
+project. The frames listed above are the source of truth.
 
 When a missing app state has not been designed yet:
 
 1. Generate the screenshot proposal first.
-2. Save it under `docs/ui-redesign-proposal/` with a numbered, descriptive filename.
+2. Keep candidate variants in a temporary directory outside the repository.
 3. Recreate the state as an editable Figma frame.
 4. Validate the Figma frame visually.
+5. Delete the temporary candidates once the frame is accepted.
 
 ## Live app review
 
@@ -184,4 +193,3 @@ When committing this guide or proposal assets:
    ```sh
    git commit -m "docs: add figma workflow guide"
    ```
-
