@@ -74,8 +74,7 @@ acceptance cases.
 The remaining ideas are not silently pending: retrieval-phase spoken cues (2.2b), global motion
 tuning (the remainder of 4.2), wholesale Markdown-parser replacement (the remainder of 6.1), arXiv
 HTML figure cards (6.2), and deferred iOS acceptance passes stay deferred until explicitly
-reprioritized. Playback restoration and graph input completion are the only scheduled product items
-after the two externally owned fixes.
+reprioritized. Phase 5.1 is the only scheduled product item.
 
 ## Locked product decisions
 
