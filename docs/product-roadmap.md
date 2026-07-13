@@ -35,7 +35,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — device pass pending |
 | 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
-| 3.3 | Playback position restoration | [#71](https://github.com/kamilkhan52/research-companion/pull/71) | In review |
+| 3.3 | Playback position restoration | [#71](https://github.com/kamilkhan52/research-companion/pull/71) | Complete — Android passed |
 | 3.4 | Responsive drawer and project/navigation layout | [#40](https://github.com/kamilkhan52/research-companion/pull/40) | Superseded by the shipped bottom-tab navigation shell |
 | 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device pass pending |
 | 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Merged — device pass pending |
