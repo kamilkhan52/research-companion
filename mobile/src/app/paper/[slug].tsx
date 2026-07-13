@@ -57,8 +57,10 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { AgentActivity } from '@/components/AgentActivity';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
+import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { TopBar } from '@/components/TopBar';
@@ -67,6 +69,7 @@ import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
@@ -210,6 +213,7 @@ export default function DiscussionScreen() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
   const readingMode = session.data?.reading_mode ?? 'balanced';
+  const paperUrl = session.data?.paper ? fullPaperUrl(session.data.paper) : null;
   const switchMode = useCallback(async (mode: ReadingMode) => {
     if (!pid || !slug || mode === readingMode) return;
     try {
@@ -263,6 +267,7 @@ export default function DiscussionScreen() {
             onViewNotes={() => slug && router.push(`/notes/${encodeURIComponent(slug)}`)}
             onRelatedWorks={() => setShowRelated(true)}
             onGraph={() => router.push('/graph')}
+            paperUrl={paperUrl}
             showFinishReading={hasSession && state !== 'notes_drafted' && state !== 'committed'}
             finishReadingDisabled={stream.streaming}
             onFinishReading={() => void finishReadingFromMenu()}
@@ -368,6 +373,7 @@ function OverflowMenu({
   onViewNotes,
   onRelatedWorks,
   onGraph,
+  paperUrl,
   showFinishReading,
   finishReadingDisabled,
   onFinishReading,
@@ -385,6 +391,7 @@ function OverflowMenu({
   onViewNotes: () => void;
   onRelatedWorks: () => void;
   onGraph: () => void;
+  paperUrl: string | null;
   showFinishReading: boolean;
   finishReadingDisabled: boolean;
   onFinishReading: () => void;
@@ -414,6 +421,16 @@ function OverflowMenu({
       onPress: onGraph,
     },
   ];
+  if (paperUrl) {
+    options.unshift({
+      key: 'paper',
+      title: 'Open full paper',
+      subtitle: paperUrl.includes('arxiv.org/pdf/') ? 'PDF' : 'Source page',
+      icon: 'external-link',
+      accent: colors.mint,
+      onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
+    });
+  }
   if (showFinishReading) {
     options.push({
       key: 'finish',
@@ -524,6 +541,20 @@ const MODE_OPTIONS: { mode: ReadingMode; icon: IconName; subtitle: string }[] = 
   { mode: 'background', icon: 'book-open', subtitle: 'New to this area — explain the groundwork' },
   { mode: 'technical', icon: 'cpu', subtitle: 'Expert — skip basics, engage the math' },
   { mode: 'detailed', icon: 'list', subtitle: 'Thorough walkthrough, nothing skipped' },
+];
+
+type OpeningTemplateKey = ReadingMode | 'custom';
+const OPENING_TEMPLATE_OPTIONS: {
+  key: OpeningTemplateKey;
+  title: string;
+  description: string;
+  icon: IconName;
+}[] = [
+  { key: 'balanced', title: 'Balanced', description: 'A clear overview with context and technical substance.', icon: 'circle' },
+  { key: 'background', title: 'Background-heavy', description: 'Build the groundwork and explain unfamiliar ideas as they appear.', icon: 'book-open' },
+  { key: 'technical', title: 'Technical', description: 'Skip the basics and engage closely with methods, math, and assumptions.', icon: 'cpu' },
+  { key: 'detailed', title: 'Detailed', description: 'Walk through the paper thoroughly without compressing key steps.', icon: 'list' },
+  { key: 'custom', title: 'Customize prompt', description: 'Edit the complete opening instruction and control it directly.', icon: 'edit-3' },
 ];
 
 function ModePickerSheet({
@@ -1058,8 +1089,8 @@ function ComposeFirst({
     draftKey(pid, 'discussion', slug, 'source'),
     initialSource ?? '',
   );
-  const prompt = promptDraft.value;
-  const setPrompt = promptDraft.setValue;
+  const customPrompt = promptDraft.value;
+  const setCustomPrompt = promptDraft.setValue;
   const [starting, setStarting] = useState(false);
   const [retrieveError, setRetrieveError] = useState<string | null>(null);
   // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
@@ -1067,11 +1098,13 @@ function ComposeFirst({
   const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
   const manualSource = sourceDraft.value;
   const setManualSource = sourceDraft.setValue;
-  const [showCustomize, setShowCustomize] = useState(false);
-  // Reading mode for this session (polish plan H.3): one-tap presets for how the analyst
-  // should pitch the explanation — the on-the-go alternative to editing the prompt. Sent
-  // with the chat start; switchable later from the kebab menu.
-  const [mode, setMode] = useState<ReadingMode>('balanced');
+  // Every Reading Mode is a visible prompt template. Customize Prompt is a peer template
+  // that exposes the complete composed prompt and deliberately applies no hidden mode layer.
+  const [template, setTemplate] = useState<OpeningTemplateKey>('balanced');
+  const presetPrompt = template === 'custom'
+    ? ''
+    : opening.data?.templates?.[template] ?? opening.data?.prompt ?? '';
+  const prompt = template === 'custom' ? customPrompt : presetPrompt;
   // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
   // sees what's happening during a fetch instead of an opaque spinner.
   const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
@@ -1083,10 +1116,17 @@ function ComposeFirst({
   }, [initialSource, sourceDraft.hasDraft, sourceDraft.ready, sourceDraft.setValue]);
 
   useEffect(() => {
-    if (promptDraft.submitted && sessionState && opening.data?.prompt === promptDraft.value) {
+    if (promptDraft.submitted && sessionState && opening.data?.prompt === customPrompt) {
       void promptDraft.clear(opening.data.prompt);
     }
-  }, [opening.data?.prompt, promptDraft.clear, promptDraft.submitted, promptDraft.value, sessionState]);
+  }, [customPrompt, opening.data?.prompt, promptDraft.clear, promptDraft.submitted, sessionState]);
+
+  function selectTemplate(next: OpeningTemplateKey) {
+    if (next === 'custom' && !promptDraft.hasDraft) {
+      setCustomPrompt(prompt || opening.data?.prompt || '');
+    }
+    setTemplate(next);
+  }
 
   async function start(source?: { arxiv_id?: string; pdf_url?: string }, sourceText?: string) {
     setStarting(true);
@@ -1112,18 +1152,18 @@ function ComposeFirst({
       if (!ok) return;
       if (sourceText) await sourceDraft.clear('');
       setCandidates(null);
-      await promptDraft.markSubmitted();
+      if (template === 'custom') await promptDraft.markSubmitted();
       await stream.run(
         chatStartPath,
         {
           slug,
           prompt,
           model: selectedModel ?? opening.data?.model ?? undefined,
-          mode: mode === 'balanced' ? undefined : mode,
+          mode: template === 'custom' || template === 'balanced' ? undefined : template,
         },
         undefined,
         async () => {
-          await promptDraft.clear(opening.data?.prompt ?? '');
+          if (template === 'custom') await promptDraft.clear(opening.data?.prompt ?? '');
           await sourceDraft.clear('');
         },
       );
@@ -1178,17 +1218,21 @@ function ComposeFirst({
           </Text>
         </Card>
 
-        {/* Reading mode (polish plan H.3): quick presets, switchable later from the menu. */}
+        {/* Reading Modes are first-turn prompt templates; Customize is the full-control peer. */}
         <View style={{ marginTop: space.lg }}>
-          <Text variant="overline">Reading mode</Text>
-          <View style={styles.modeRow}>
-            {(Object.keys(READING_MODE_LABELS) as ReadingMode[]).map((m) => (
-              <Chip
-                key={m}
-                label={READING_MODE_LABELS[m]}
-                selected={mode === m}
-                dot={false}
-                onPress={() => setMode(m)}
+          <Text variant="overline">Reading modes</Text>
+          <Text variant="caption" style={{ marginTop: space.xs }}>
+            Choose how the opening instructions should be written.
+          </Text>
+          <View style={styles.promptTemplates}>
+            {OPENING_TEMPLATE_OPTIONS.map((option) => (
+              <PromptTemplateOption
+                key={option.key}
+                title={option.title}
+                description={option.description}
+                icon={option.icon}
+                selected={template === option.key}
+                onPress={() => selectTemplate(option.key)}
               />
             ))}
           </View>
@@ -1206,7 +1250,7 @@ function ComposeFirst({
           </View>
         ) : null}
 
-        {showCustomize ? (
+        {template === 'custom' ? (
           <View style={{ marginTop: space.lg }}>
             <Text variant="overline">Opening prompt</Text>
             <Text variant="caption" style={{ marginBottom: space.sm, marginTop: space.xs }}>
@@ -1214,7 +1258,7 @@ function ComposeFirst({
             </Text>
             <TextInput
               value={prompt}
-              onChangeText={setPrompt}
+              onChangeText={setCustomPrompt}
               multiline
               style={styles.promptInput}
               placeholder="Opening prompt…"
@@ -1246,7 +1290,7 @@ function ComposeFirst({
 
         {/* Manual source fallback — surfaced when retrieval needs help (error/candidates) or
             the user opened customization; hidden on the clean default path. */}
-        {retrieveError || candidates?.length || showCustomize ? (
+        {retrieveError || candidates?.length || template === 'custom' ? (
         <View style={{ marginTop: space.lg }}>
           <Text variant="overline">Provide a source</Text>
           <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
@@ -1272,7 +1316,7 @@ function ComposeFirst({
         ) : null}
       </ScrollView>
 
-      {/* Sticky footer per the frame: primary start + quiet customize, side by side. */}
+      {/* Sticky primary action; prompt customization is one of the Reading Mode choices. */}
       <View style={styles.startFooter}>
         <Button
           title={starting ? 'Fetching paper…' : 'Start reading'}
@@ -1282,12 +1326,6 @@ function ComposeFirst({
           )}
           loading={starting}
           disabled={!prompt.trim()}
-          style={{ flex: 1.2 }}
-        />
-        <Button
-          title="Customize prompt"
-          variant="ghost"
-          onPress={() => setShowCustomize((v) => !v)}
           style={{ flex: 1 }}
         />
       </View>
@@ -1472,11 +1510,16 @@ function SmoothMarkdown({ text }: { text: string }) {
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
 // agent UIs conventionally show it — rather than pinning all tools above all text. The streamed
-// text itself is the progress indicator; no separate status line or footer note.
+// Before text or a tool arrives, the shared activity component makes the pending response
+// explicit without exposing internal model-state language.
 function StreamingTurnBody({ items }: { items: StreamItem[] }) {
+  const visibleItems = items.filter((item) => item.kind === 'tool' || item.text.trim().length > 0);
+  if (visibleItems.length === 0) {
+    return <AgentActivity status="Preparing a response…" testID="assistant-activity" />;
+  }
   return (
     <View style={styles.assistantBody}>
-      {items.map((it, i) =>
+      {visibleItems.map((it, i) =>
         it.kind === 'text' ? (
           <SmoothMarkdown key={i} text={it.text} />
         ) : (
@@ -1499,7 +1542,7 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 
 const styles = StyleSheet.create({
   composeFirst: { padding: space.md },
-  modeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm },
+  promptTemplates: { gap: space.sm, marginTop: space.md },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {

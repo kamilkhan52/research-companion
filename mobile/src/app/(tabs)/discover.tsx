@@ -25,6 +25,7 @@ import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
+import { fullPaperUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -288,6 +289,7 @@ function SuggestionCard({
   const addPaper = useAddPaper(pid);
   const [added, setAdded] = useState(false);
   const [showAbstract, setShowAbstract] = useState(false);
+  const paperUrl = fullPaperUrl(s);
 
   const authors = s.authors.length > 2 ? `${s.authors[0]} et al.` : s.authors.join(', ');
   const meta = [
@@ -345,13 +347,15 @@ function SuggestionCard({
             {showAbstract ? 'Hide abstract' : 'Abstract'}
           </Text>
         </Pressable>
-        <Pressable
-          onPress={() => Linking.openURL(s.url)}
-          style={styles.actionBtn}
-          accessibilityLabel={`Open ${s.title} on arXiv`}>
-          <Icon name="external-link" size={13} color={colors.muted} />
-          <Text variant="caption" color={colors.muted}>arXiv</Text>
-        </Pressable>
+        {paperUrl ? (
+          <Pressable
+            onPress={() => Linking.openURL(paperUrl)}
+            style={styles.actionBtn}
+            accessibilityLabel={`Open full paper for ${s.title}`}>
+            <Icon name="external-link" size={13} color={colors.muted} />
+            <Text variant="caption" color={colors.muted}>Full paper</Text>
+          </Pressable>
+        ) : null}
         <View style={{ flex: 1 }} />
         <Button
           title={added ? 'Added' : 'Add'}

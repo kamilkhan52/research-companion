@@ -19,6 +19,7 @@ import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { LinkHandlerContext, PaperIndexContext, type LinkHandler } from '@/components/Markdown';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { useActiveProject } from '@/store/project';
+import { fullPaperUrl } from '@/lib/paperLinks';
 import { colors, stateMeta } from '@/theme/tokens';
 
 const PaperActionsContext = createContext<((slug: string) => void) | null>(null);
@@ -58,6 +59,7 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
   );
 
   const paper: Paper | undefined = slug ? papers?.find((p) => p.slug === slug) : undefined;
+  const paperUrl = paper ? fullPaperUrl(paper) : null;
   const options = useMemo<SheetOption[]>(() => {
     if (!slug) return [];
     const close = () => setSlug(null);
@@ -106,20 +108,20 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
         router.navigate(`/graph?focus=${encodeURIComponent(slug)}&t=${Date.now()}`);
       },
     });
-    if (paper?.arxiv_id) {
+    if (paperUrl) {
       opts.push({
         key: 'source',
-        title: 'Open source',
-        subtitle: `arxiv.org/abs/${paper.arxiv_id}`,
+        title: 'Open full paper',
+        subtitle: paperUrl.includes('arxiv.org/pdf/') ? 'PDF' : 'Source page',
         icon: 'external-link',
         onPress: () => {
           close();
-          void Linking.openURL(`https://arxiv.org/abs/${paper.arxiv_id}`).catch(() => undefined);
+          void Linking.openURL(paperUrl).catch(() => undefined);
         },
       });
     }
     return opts;
-  }, [slug, paper?.has_notes, paper?.arxiv_id, router]);
+  }, [slug, paper?.has_notes, paperUrl, router]);
 
   const stateKey = paper ? (paper.session_state ?? (paper.list_status === 'read' ? 'committed' : 'unread')) : null;
   const stateLabel = paper ? (stateMeta[stateKey ?? 'unread'] ?? stateMeta.unread).label : undefined;

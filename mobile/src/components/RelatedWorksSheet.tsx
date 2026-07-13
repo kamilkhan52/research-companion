@@ -13,6 +13,7 @@ import type { RelatedWork } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Card, Icon, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
+import { fullPaperUrl } from '@/lib/paperLinks';
 
 export function RelatedWorksSheet({
   pid,
@@ -72,7 +73,7 @@ function RelatedCard({
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
   const inProject = work.kind === 'project' && !!work.slug;
-  const link = work.url ?? (work.arxiv_id ? `https://arxiv.org/abs/${work.arxiv_id}` : null);
+  const link = fullPaperUrl(work);
   const meta = [
     work.year ?? null,
     work.direction === 'builds_on' ? 'builds on it' : 'builds on this paper',
@@ -149,11 +150,11 @@ function RelatedCard({
           <Pressable
             onPress={() => Linking.openURL(link)}
             style={styles.actionBtn}
-            accessibilityLabel={`Open source for ${work.title}`}
+            accessibilityLabel={`Open full paper for ${work.title}`}
           >
             <Icon name="external-link" size={12} color={colors.muted} />
             <Text variant="caption" color={colors.muted}>
-              Open source
+              Open full paper
             </Text>
           </Pressable>
         ) : null}

@@ -5,12 +5,13 @@
 // this sheet, since that's the whole point of a recommendation.
 
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { useAddPaper } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
-import { Button, Card, Text } from '@/ui';
+import { fullPaperUrl } from '@/lib/paperLinks';
+import { Button, Card, Icon, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 // Shown a page at a time rather than the full ranked list at once — a project can accumulate
@@ -87,6 +88,7 @@ function RecommendationCard({
 }) {
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
+  const paperUrl = fullPaperUrl(rec);
 
   async function handleAdd() {
     if (!pid || added) return;
@@ -136,25 +138,43 @@ function RecommendationCard({
           ))}
         </View>
 
-        <Pressable
-          onPress={handleAdd}
-          disabled={added || addPaper.isPending}
-          hitSlop={6}
-          style={[styles.addBtn, added && styles.addBtnDone]}
-          accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}
-        >
-          {addPaper.isPending ? (
-            <ActivityIndicator size="small" color={colors.mintInk} />
-          ) : (
-            <Text
-              variant="caption"
-              color={added ? colors.mint : colors.mintInk}
-              style={added ? null : { fontFamily: fonts.bodySemiBold }}
+        <View style={styles.actions}>
+          {paperUrl ? (
+            <Pressable
+              onPress={(event) => {
+                event.stopPropagation();
+                void Linking.openURL(paperUrl).catch(() => undefined);
+              }}
+              style={styles.paperBtn}
+              accessibilityLabel={`Open full paper for ${rec.title}`}
             >
-              {added ? 'Added to reading list' : '+ Add'}
-            </Text>
-          )}
-        </Pressable>
+              <Icon name="external-link" size={13} color={colors.muted} />
+              <Text variant="caption">Full paper</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            onPress={(event) => {
+              event.stopPropagation();
+              void handleAdd();
+            }}
+            disabled={added || addPaper.isPending}
+            hitSlop={6}
+            style={[styles.addBtn, added && styles.addBtnDone]}
+            accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}
+          >
+            {addPaper.isPending ? (
+              <ActivityIndicator size="small" color={colors.mintInk} />
+            ) : (
+              <Text
+                variant="caption"
+                color={added ? colors.mint : colors.mintInk}
+                style={added ? null : { fontFamily: fonts.bodySemiBold }}
+              >
+                {added ? 'Added to reading list' : '+ Add'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
         {addPaper.isError ? (
           <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
             {(addPaper.error as Error).message}
@@ -176,12 +196,22 @@ const styles = StyleSheet.create({
     minWidth: 44,
     alignItems: 'center',
   },
+  actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: space.sm, marginTop: space.md },
+  paperBtn: {
+    height: 40,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line2,
+    paddingHorizontal: space.lg,
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   addBtn: {
-    marginTop: space.md,
     height: 40,
     borderRadius: radius.pill,
     backgroundColor: colors.mint,
-    alignSelf: 'flex-end',
     paddingHorizontal: space.lg,
     alignItems: 'center',
     justifyContent: 'center',
@@ -190,6 +220,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.mint,
-    alignSelf: 'stretch',
   },
 });

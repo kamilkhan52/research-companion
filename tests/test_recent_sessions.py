@@ -5,7 +5,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from app import config, projects, sessions
+from app import config, projects, sessions, store
 from app.models import Turn
 
 from tests.conftest import add_paper
@@ -93,3 +93,18 @@ def test_recent_sessions_are_cross_project_and_sorted(temp_project):
         (temp_project, "older"),
     ]
     assert recent[0]["project_name"] == "Second"
+
+
+def test_recent_session_includes_whole_paper_links(temp_project):
+    add_paper(temp_project, "linked", "Linked Paper")
+    store.write_full_text(
+        "linked",
+        "Linked Paper",
+        "body",
+        {"slug": "linked", "source": "https://example.com/paper.pdf"},
+    )
+    sessions.start_session("linked", "Linked Paper")
+
+    item = next(entry for entry in projects.recent_sessions() if entry["slug"] == "linked")
+    assert item["source_url"] == "https://example.com/paper.pdf"
+    assert item["arxiv_id"] == ""

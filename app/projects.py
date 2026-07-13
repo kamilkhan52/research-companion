@@ -167,7 +167,8 @@ def recent_sessions(limit: int = 20) -> list[dict]:
         token = config.set_active_project(pid)
         try:
             index = sessions.session_index()
-            current_slugs = {p.slug for p in store.list_papers()}
+            papers_by_slug = {p.slug: p for p in store.list_papers()}
+            current_slugs = set(papers_by_slug)
         finally:
             config.reset_active_project(token)
         for slug, meta in index.items():
@@ -180,6 +181,7 @@ def recent_sessions(limit: int = 20) -> list[dict]:
             # removal re-touches the index, so filtering at read time is the reliable spot.
             if meta.get("kind", "paper") == "paper" and slug not in current_slugs:
                 continue
+            paper = papers_by_slug.get(slug)
             out.append({
                 "project_id": pid,
                 "project_name": project["name"],
@@ -189,6 +191,8 @@ def recent_sessions(limit: int = 20) -> list[dict]:
                 "state": meta.get("state"),
                 "started_at": meta.get("started_at"),
                 "updated_at": updated_at,
+                "arxiv_id": paper.arxiv_id if paper else "",
+                "source_url": paper.source_url if paper else "",
             })
     out.sort(key=lambda item: item["updated_at"], reverse=True)
     return out[:limit]

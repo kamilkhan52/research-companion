@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -28,7 +29,8 @@ import { PaperCover } from '@/components/PaperCover';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Chip, Icon, ProgressBar, Screen, Text } from '@/ui';
+import { fullPaperUrl } from '@/lib/paperLinks';
+import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space, stateMeta } from '@/theme/tokens';
 
 type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
@@ -306,6 +308,7 @@ function ProjectPill({
 
 function ContinueCard({ session, onPress }: { session: RecentSession; onPress: () => void }) {
   const meta = stateMeta[session.state ?? 'unread'] ?? stateMeta.unread;
+  const paperUrl = fullPaperUrl(session);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.continueWrap, pressed && { opacity: 0.85 }]}>
       <Card style={styles.continueCard}>
@@ -321,7 +324,19 @@ function ContinueCard({ session, onPress }: { session: RecentSession; onPress: (
             <Text variant="caption" numberOfLines={1}>
               {meta.label} · {session.project_name} · {formatActivityTime(session.updated_at)}
             </Text>
-            <Button title="Resume" icon="play" onPress={onPress} style={styles.resumeBtn} />
+            <View style={styles.continueActions}>
+              <Button title="Resume" icon="play" onPress={onPress} style={styles.resumeBtn} />
+              {paperUrl ? (
+                <IconButton
+                  name="external-link"
+                  accessibilityLabel={`Open full paper for ${session.title}`}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    void Linking.openURL(paperUrl).catch(() => undefined);
+                  }}
+                />
+              ) : null}
+            </View>
           </View>
         </View>
       </Card>
@@ -352,6 +367,7 @@ function PaperRow({
       : stateKey === 'unread' || stateKey === 'retrieving'
         ? 'Read'
         : 'Resume';
+  const paperUrl = fullPaperUrl(paper);
   return (
     <ReanimatedSwipeable
       overshootRight={false}
@@ -383,6 +399,17 @@ function PaperRow({
           </Text>
         </View>
         <View style={styles.rowAction}>
+          {paperUrl ? (
+            <IconButton
+              name="external-link"
+              filled={false}
+              accessibilityLabel={`Open full paper for ${paper.title}`}
+              onPress={(event) => {
+                event.stopPropagation();
+                void Linking.openURL(paperUrl).catch(() => undefined);
+              }}
+            />
+          ) : null}
           <Text variant="label" color={colors.mint} style={{ fontFamily: fonts.bodySemiBold }}>
             {action}
           </Text>
@@ -426,7 +453,8 @@ const styles = StyleSheet.create({
   continueWrap: { marginBottom: space.md },
   continueCard: { gap: space.md, borderColor: colors.line2 },
   continueBody: { flexDirection: 'row', gap: space.lg },
-  resumeBtn: { alignSelf: 'flex-end', height: 42, paddingHorizontal: space.lg, marginTop: space.xs },
+  continueActions: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: space.sm, marginTop: space.xs },
+  resumeBtn: { height: 42, paddingHorizontal: space.lg },
   progressCard: { gap: space.md, marginBottom: space.md },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   filters: { marginBottom: space.lg, flexGrow: 0 },

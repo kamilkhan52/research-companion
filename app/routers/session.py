@@ -206,12 +206,37 @@ def opening_draft(slug: str):
     model = config.load_settings().get("model")
     stored = sessions.get_opening(slug)
     if slug == REVIEW_SLUG:
-        return {"prompt": stored or prompts.get("review_opening"), "model": model, "title": REVIEW_TITLE}
-    p = store.get_paper(slug)
-    if not p:
-        raise HTTPException(status_code=404, detail="Unknown paper")
-    prompt = stored or prompts.get("opening_message").replace("{title}", p.title)
-    return {"prompt": prompt, "model": model, "title": p.title}
+        base = prompts.get("review_opening")
+        title = REVIEW_TITLE
+    else:
+        p = store.get_paper(slug)
+        if not p:
+            raise HTTPException(status_code=404, detail="Unknown paper")
+        base = prompts.get("opening_message").replace("{title}", p.title)
+        title = p.title
+    return {
+        "prompt": stored or base,
+        "templates": _opening_prompt_templates(base),
+        "model": model,
+        "title": title,
+    }
+
+
+def _opening_prompt_templates(base: str) -> dict[str, str]:
+    """Compose the visible first-turn prompt for every Reading Mode.
+
+    The mode prompt files remain the editable source of truth. Presets partially write the
+    initial instruction by appending their guidance to the common opening; Customize Prompt
+    can then expose the complete composed text for unrestricted editing in the client.
+    """
+    templates = {"balanced": base}
+    for mode in ("background", "technical", "detailed"):
+        templates[mode] = (
+            base
+            + "\n\n[READING MODE GUIDANCE FOR THIS OPENING]\n"
+            + prompts.get(f"reading_mode_{mode}").strip()
+        )
+    return templates
 
 
 @project_router.post("/start")
