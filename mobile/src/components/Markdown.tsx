@@ -80,13 +80,45 @@ type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'paragraph'; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
-  | { kind: 'quote'; text: string }
+  | { kind: 'quote'; blocks: Block[] }
   | { kind: 'code'; text: string }
   | { kind: 'math'; tex: string };
 
 // A paragraph that is nothing but one display-math span renders as a standalone equation
 // block: `\[ … \]` (the output contract) or `$$ … $$` (compatibility with existing text).
 const DISPLAY_MATH_RE = /^(?:\\\[([\s\S]+)\\\]|\$\$([\s\S]+)\$\$)$/;
+
+/** A math span that occupies its whole source line belongs to block layout even when the model
+ * used inline delimiters (`\( … \)`). This matters especially inside Markdown blockquotes:
+ * keeping a long standalone formula inside an RN Text node makes it an indivisible inline view,
+ * where it can neither wrap nor host a horizontal ScrollView. */
+function standaloneMathAt(lines: string[], index: number): { tex: string; next: number } | null {
+  const line = lines[index].trim();
+  const inline = /^\\\(([\s\S]+)\\\)$/.exec(line);
+  if (inline) return { tex: inline[1].trim(), next: index + 1 };
+
+  for (const [open, close] of [['\\[', '\\]'], ['$$', '$$']] as const) {
+    if (!line.startsWith(open)) continue;
+    const first = line.slice(open.length);
+    if (first.endsWith(close)) {
+      return { tex: first.slice(0, -close.length).trim(), next: index + 1 };
+    }
+    // A closer followed by prose is not a standalone math block; leave the whole line to the
+    // inline tokenizer instead of scanning ahead and accidentally swallowing later content.
+    if (first.includes(close)) return null;
+    const body = [first];
+    for (let i = index + 1; i < lines.length; i++) {
+      const part = lines[i].trim();
+      if (part.endsWith(close)) {
+        body.push(part.slice(0, -close.length));
+        return { tex: body.join('\n').trim(), next: i + 1 };
+      }
+      if (part.includes(close)) return null;
+      body.push(lines[i]);
+    }
+  }
+  return null;
+}
 
 function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\r\n/g, '\n').split('\n');
@@ -98,6 +130,13 @@ function parseBlocks(src: string): Block[] {
 
     if (line.trim() === '') {
       i++;
+      continue;
+    }
+
+    const math = standaloneMathAt(lines, i);
+    if (math) {
+      blocks.push({ kind: 'math', tex: math.tex });
+      i = math.next;
       continue;
     }
 
@@ -129,7 +168,9 @@ function parseBlocks(src: string): Block[] {
         buf.push(lines[i].replace(/^>\s?/, ''));
         i++;
       }
-      blocks.push({ kind: 'quote', text: buf.join(' ') });
+      // Parse the quote's contents recursively so formula-only quote lines become MathBlock
+      // children with a bounded scroll viewport instead of clipped InlineMath inside Text.
+      blocks.push({ kind: 'quote', blocks: parseBlocks(buf.join('\n')) });
       continue;
     }
 
@@ -153,7 +194,8 @@ function parseBlocks(src: string): Block[] {
       !/^(#{1,4})\s+/.test(lines[i]) &&
       !lines[i].startsWith('>') &&
       !lines[i].trim().startsWith('```') &&
-      !/^\s*([-*]|\d+\.)\s+/.test(lines[i])
+      !/^\s*([-*]|\d+\.)\s+/.test(lines[i]) &&
+      !standaloneMathAt(lines, i)
     ) {
       buf.push(lines[i].trim());
       i++;
@@ -197,9 +239,15 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
     case 'quote':
       return (
         <View style={styles.quote}>
-          <Text variant="serifItalic">
-            <Inline text={block.text} onLinkPress={onLinkPress} />
-          </Text>
+          {block.blocks.map((child, index) => (
+            child.kind === 'paragraph' ? (
+              <Text key={index} variant="serifItalic">
+                <Inline text={child.text} onLinkPress={onLinkPress} />
+              </Text>
+            ) : (
+              <Block key={index} block={child} onLinkPress={onLinkPress} />
+            )
+          ))}
         </View>
       );
     case 'code':
@@ -358,6 +406,7 @@ const styles = StyleSheet.create({
     borderLeftColor: colors.violet,
     paddingLeft: space.md,
     paddingVertical: 2,
+    gap: space.sm,
   },
   code: {
     backgroundColor: colors.elevated,

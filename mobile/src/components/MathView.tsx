@@ -3,10 +3,11 @@
 // unicode approximation (lib/math.texToPlain) on the pre-rebuild dev client (no SVG native
 // module yet), on MathJax parse failures, and in jest.
 
-import { ScrollView, Text as RNText, View } from 'react-native';
+import { useState } from 'react';
+import { LayoutChangeEvent, ScrollView, Text as RNText, useWindowDimensions, View } from 'react-native';
 
-import { getSvgXml, texToPlain, texToSvg } from '@/lib/math';
-import { colors, fonts } from '@/theme/tokens';
+import { fitMathBlock, getSvgXml, texToPlain, texToSvg } from '@/lib/math';
+import { colors, fonts, space } from '@/theme/tokens';
 
 // MathJax sizes its SVG in ex units of its own font (~0.45em); scale against the enclosing
 // font size so inline math sits naturally in serif body text.
@@ -18,13 +19,14 @@ export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: num
   }> | null;
   const rendered = SvgXml ? texToSvg(tex, false) : null;
   if (!SvgXml || !rendered) {
-    return <RNText style={{ fontFamily: fonts.serifItalic }}>{texToPlain(tex)}</RNText>;
+    return <RNText testID="inline-math" style={{ fontFamily: fonts.serifItalic }}>{texToPlain(tex)}</RNText>;
   }
   const ex = fontSize * EX_TO_PX;
   // An inline View inside Text flows with the line on both platforms; the translateY drops
   // the box by the formula's depth so its baseline meets the text baseline.
   return (
     <View
+      testID="inline-math"
       style={{
         width: rendered.widthEx * ex,
         height: rendered.heightEx * ex,
@@ -43,6 +45,15 @@ export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: num
 }
 
 export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: number }) {
+  // These hooks must run even while a streamed TeX span is temporarily incomplete. If they
+  // lived after the fallback return, the same component could render plain text on one frame
+  // and SVG on the next, changing its hook count and crashing React.
+  const { width: windowW } = useWindowDimensions();
+  const [measuredW, setMeasuredW] = useState(0);
+  const onLayout = (e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    if (w && Math.abs(w - measuredW) > 0.5) setMeasuredW(w);
+  };
   const SvgXml = getSvgXml() as React.ComponentType<{
     xml: string; width: number; height: number; color?: string;
   }> | null;
@@ -50,30 +61,63 @@ export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: numb
   if (!SvgXml || !rendered) {
     return (
       <RNText
+        testID="math-block"
         style={{
           fontFamily: fonts.serifItalic,
           fontSize,
           lineHeight: fontSize * 1.5,
           color: colors.text,
           textAlign: 'center',
+          width: '100%',
         }}>
         {texToPlain(tex)}
       </RNText>
     );
   }
   const ex = fontSize * EX_TO_PX;
-  const width = rendered.widthEx * ex;
-  const height = rendered.heightEx * ex;
-  // Wide equations scroll horizontally inside their own strip instead of wrapping or
-  // squeezing — same rule the notes tables follow.
+  const naturalW = rendered.widthEx * ex;
+  const naturalH = rendered.heightEx * ex;
+  // Measure the column so we can fit responsively: equations that fit render at natural size,
+  // slightly-oversized ones scale down (SVG is lossless), and only genuinely huge derivations
+  // fall back to a horizontal scroll strip. (Math can't wrap — MathJax emits one indivisible
+  // SVG path group — so scale-then-scroll is the reflow story.)
+  // Constrain to the narrower of the measured column and the physical screen: an equation must
+  // never exceed the screen even if an ancestor is content-sized (grows to the formula's width).
+  // Pre-layout (measuredW 0) falls back to the window width, so the first frame is bounded too.
+  const fallbackW = Math.max(windowW - space.xl * 2, 1);
+  const fit = fitMathBlock(naturalW, naturalH, Math.min(measuredW || fallbackW, windowW));
+  const svg = <SvgXml xml={rendered.svg} width={fit.width} height={fit.height} color={colors.text} />;
+
+  if (!fit.scroll) {
+    return (
+      <View
+        testID="math-block"
+        onLayout={onLayout}
+        style={{ alignSelf: 'stretch', width: '100%', maxWidth: '100%', alignItems: 'center', paddingVertical: 2 }}
+        accessible
+        accessibilityLabel={tex}>
+        {svg}
+      </View>
+    );
+  }
+  // Too wide to shrink readably: scroll horizontally, left-aligned, with a persistent scrollbar
+  // (Android) / indicator so the truncation reads as "swipe to see more", not "broken".
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingVertical: 2 }}
+    <View
+      testID="math-block"
+      onLayout={onLayout}
+      style={{ alignSelf: 'stretch', width: '100%', maxWidth: '100%' }}
       accessible
       accessibilityLabel={tex}>
-      <SvgXml xml={rendered.svg} width={width} height={height} color={colors.text} />
-    </ScrollView>
+      <ScrollView
+        testID="math-block-scroll"
+        horizontal
+        style={{ width: '100%', maxWidth: '100%' }}
+        showsHorizontalScrollIndicator
+        persistentScrollbar
+        contentContainerStyle={{ paddingVertical: 2, paddingRight: 8 }}>
+        {svg}
+      </ScrollView>
+    </View>
   );
 }
