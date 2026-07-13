@@ -162,6 +162,14 @@ export function GraphCanvas({
 
   const startFocalX = useSharedValue(0);
   const startFocalY = useSharedValue(0);
+  // Android's ACTION_POINTER_UP MotionEvent still includes the departing pointer in
+  // pointerCount, even though ScaleGestureDetector has already recomputed its focus without
+  // that pointer. Therefore the update produced by the same native event can report
+  // numberOfPointers === 2 while focalX/Y has collapsed onto the one remaining finger. RNGH
+  // sends onTouchesUp before processing/dispatching that update, so this flag identifies the
+  // corrupted release frame more reliably than numberOfPointers alone. The next real MOVE
+  // clears it, preserving legitimate 3 -> 2 pointer transitions.
+  const pinchPointerUpPending = useSharedValue(false);
   const pinch = Gesture.Pinch()
     .onBegin(() => {
       cancelAnimation(translateX);
@@ -175,8 +183,18 @@ export function GraphCanvas({
       startY.value = translateY.value;
       startFocalX.value = e.focalX;
       startFocalY.value = e.focalY;
+      pinchPointerUpPending.value = false;
+    })
+    .onTouchesMove(() => {
+      pinchPointerUpPending.value = false;
+    })
+    .onTouchesUp(() => {
+      pinchPointerUpPending.value = true;
     })
     .onUpdate((e) => {
+      // Ignore both ordinary one-finger updates and Android's ACTION_POINTER_UP update, whose
+      // pointer count is stale but whose focal point has already jumped to the remaining finger.
+      if (pinchPointerUpPending.value || e.numberOfPointers < 2) return;
       // Focal-anchored zoom (polish plan J.1). RN scales the canvas about its own center
       // C = (width/2, height/2), so a canvas point p renders at t + C + s·(p − C). Keeping
       // the point that started under the fingers glued to the CURRENT focal solves to
