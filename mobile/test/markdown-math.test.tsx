@@ -5,7 +5,7 @@
 import { renderAsync, screen } from '@testing-library/react-native';
 
 import { Markdown } from '@/components/Markdown';
-import { texToPlain, texToSvg } from '@/lib/math';
+import { fitMathBlock, texToPlain, texToSvg } from '@/lib/math';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 
 jest.mock('@/lib/math', () => ({
@@ -18,7 +18,35 @@ test('display-math paragraphs render as a math block (fallback text)', async () 
     <Markdown text={'Equation follows.\n\n\\[ s^* = \\arg\\min_{s} L(s) \\]\n\nDone.'} />,
   );
   expect(screen.getByText(/s\* = arg\s?min/)).toBeTruthy();
+  expect(screen.getByTestId('math-block')).toBeTruthy();
   expect(screen.queryByText(/\\arg/)).toBeNull();
+});
+
+test('standalone inline-delimited math in a quote is promoted to a scroll-capable block', async () => {
+  await renderAsync(
+    <Markdown text={'> \\(Q(w \\cdot s) \\cdot \\frac{x}{s} = \\Delta \\cdot \\operatorname{Round}(w)\\)'} />,
+  );
+  expect(screen.getByTestId('math-block')).toBeTruthy();
+  expect(screen.queryByTestId('inline-math')).toBeNull();
+});
+
+test('multiple quoted equation lines each become a math block', async () => {
+  await renderAsync(<Markdown text={'> \\(a = b + c\\)\n> \\(d = e + f\\)'} />);
+  expect(screen.getAllByTestId('math-block')).toHaveLength(2);
+  expect(screen.queryByTestId('inline-math')).toBeNull();
+});
+
+test('display math is split from surrounding prose even without blank lines', async () => {
+  await renderAsync(<Markdown text={'Before.\n\\[ a + b = c \\]\nAfter.'} />);
+  expect(screen.getByText('Before.')).toBeTruthy();
+  expect(screen.getByTestId('math-block')).toBeTruthy();
+  expect(screen.getByText('After.')).toBeTruthy();
+});
+
+test('genuinely inline math remains inline within prose', async () => {
+  await renderAsync(<Markdown text={'The value \\(x_i\\) is updated.'} />);
+  expect(screen.getByTestId('inline-math')).toBeTruthy();
+  expect(screen.queryByTestId('math-block')).toBeNull();
 });
 
 test('inline math flows inside a paragraph and its underscores are not emphasis', async () => {
@@ -90,6 +118,21 @@ test('texToSvg produces a sized, themable SVG (real MathJax)', () => {
   expect(out!.heightEx).toBeGreaterThan(1);
   // Nonsense TeX degrades to null (caller falls back to texToPlain), never throws.
   expect(jestActual.texToSvg('\\undefinedmacro{', true)).toBeNull();
+});
+
+test('fitMathBlock fits, scales, or scrolls a display equation by width', () => {
+  // Pre-layout (availW 0) and equations that fit render natural size, no scroll.
+  expect(fitMathBlock(200, 40, 0)).toEqual({ width: 200, height: 40, scroll: false });
+  expect(fitMathBlock(200, 40, 300)).toEqual({ width: 200, height: 40, scroll: false });
+  // Moderately too wide → scaled to fit exactly (width == avail), height scaled, still no scroll.
+  const scaled = fitMathBlock(400, 40, 300); // scale 0.75 ≥ 0.6
+  expect(scaled.scroll).toBe(false);
+  expect(scaled.width).toBeCloseTo(300);
+  expect(scaled.height).toBeCloseTo(30);
+  // Far too wide (scale < minScale) → natural size + horizontal scroll.
+  expect(fitMathBlock(1000, 40, 300)).toEqual({ width: 1000, height: 40, scroll: true });
+  // The minScale boundary is inclusive (scale exactly 0.6 still scales rather than scrolls).
+  expect(fitMathBlock(500, 40, 300).scroll).toBe(false);
 });
 
 // Keep the import "used" — the mock above replaces getSvgXml but the actual texToSvg/texToPlain

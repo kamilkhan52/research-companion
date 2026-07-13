@@ -55,6 +55,36 @@ export interface RenderedMath {
   depthEx: number;
 }
 
+export interface MathFit {
+  /** Pixel width to draw the SVG at. */
+  width: number;
+  /** Pixel height to draw the SVG at. */
+  height: number;
+  /** True when the equation is too wide to shrink readably and should scroll horizontally. */
+  scroll: boolean;
+}
+
+/**
+ * Decide how a display equation lays out against the available column width:
+ *   - fits as-is                       → natural size, centered (scroll:false)
+ *   - moderately too wide (≥ minScale) → scaled down to fit exactly, centered (scroll:false)
+ *   - far too wide (< minScale)        → natural size, horizontal scroll (scroll:true)
+ * SVG scales losslessly, so shrinking a slightly-oversized formula reads better than a
+ * scroll strip; reserve scrolling for long derivations that would otherwise become unreadably
+ * tiny. `availW` of 0 (pre-layout) renders natural size — the first onLayout settles it.
+ */
+export function fitMathBlock(
+  naturalW: number,
+  naturalH: number,
+  availW: number,
+  minScale = 0.6,
+): MathFit {
+  if (!availW || naturalW <= availW) return { width: naturalW, height: naturalH, scroll: false };
+  const scale = availW / naturalW;
+  if (scale >= minScale) return { width: availW, height: naturalH * scale, scroll: false };
+  return { width: naturalW, height: naturalH, scroll: true };
+}
+
 // MathJax document, created lazily so app startup never pays the init cost.
 let mathDocument: { convert: (tex: string, options: { display: boolean }) => unknown } | null = null;
 let mathAdaptor: { outerHTML: (node: unknown) => string; firstChild: (node: unknown) => unknown } | null = null;
