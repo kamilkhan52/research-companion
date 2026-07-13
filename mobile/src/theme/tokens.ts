@@ -22,6 +22,7 @@ export const colors = {
   violet: '#9B8AFB',
   amber: '#E4B85C',
   danger: '#E5738C',
+  scrim: 'rgba(0,0,0,0.55)',
 } as const;
 
 export const fonts = {

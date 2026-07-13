@@ -39,6 +39,15 @@ def test_start_request_sets_the_mode(temp_project):
     assert "mode" in session_routes.ChatStartReq.model_fields
 
 
+def test_opening_prompt_templates_partially_write_each_mode(temp_project):
+    templates = session_routes._opening_prompt_templates("BASE OPENING")
+    assert set(templates) == {"balanced", "background", "technical", "detailed"}
+    assert templates["balanced"] == "BASE OPENING"
+    for mode in ("background", "technical", "detailed"):
+        assert templates[mode].startswith("BASE OPENING")
+        assert prompts.get(f"reading_mode_{mode}").strip() in templates[mode]
+
+
 def test_mode_endpoint_requires_a_session(temp_project):
     with pytest.raises(HTTPException) as e:
         session_routes.session_mode(session_routes.ModeReq(slug="ghost", mode="technical"))

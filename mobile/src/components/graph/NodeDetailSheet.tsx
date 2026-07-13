@@ -12,6 +12,7 @@ import type { GraphEdge, GraphNode } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Chip, Icon, Text } from '@/ui';
 import { colors, radius, space, stateMeta } from '@/theme/tokens';
+import { fullPaperUrl } from '@/lib/paperLinks';
 
 export function NodeDetailSheet({
   pid,
@@ -57,10 +58,7 @@ function SheetContent({
 
   const citedBy = edges.filter((e) => e.target === node.id);
   const citesOthers = node.kind === 'project' ? edges.filter((e) => e.source === node.id) : [];
-  const link =
-    node.url ||
-    (node.arxiv_id ? `https://arxiv.org/abs/${node.arxiv_id}` : null) ||
-    (node.doi ? `https://doi.org/${node.doi}` : null);
+  const link = fullPaperUrl(node);
 
   async function handleAdd() {
     if (!pid || added) return;
@@ -144,7 +142,7 @@ function SheetContent({
       {link ? (
         <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
           <Icon name="external-link" size={16} color={colors.text} />
-          <Text variant="heading">Open source</Text>
+          <Text variant="heading">Open full paper</Text>
         </Pressable>
       ) : null}
       {addPaper.isError ? (

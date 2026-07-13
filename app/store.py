@@ -273,6 +273,7 @@ def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
             has_notes=has_notes(slug),
             session_state=session_states.get(slug),
             arxiv_id=e["arxiv_id"],
+            source_url=source_url_for(slug),
         ))
     return papers
 

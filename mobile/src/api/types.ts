@@ -30,6 +30,8 @@ export interface RecentSession {
   state: SessionState;
   started_at: string | null;
   updated_at: string;
+  arxiv_id?: string;
+  source_url?: string;
 }
 
 /** A paper (Paper.to_dict()). */
@@ -44,6 +46,8 @@ export interface Paper {
   session_state: SessionState;
   /** The entry's arxiv id when reading-list.md carries one ("" otherwise). */
   arxiv_id: string;
+  /** Original PDF/source URL recorded when the paper was retrieved ("" otherwise). */
+  source_url?: string;
   // The review pseudo-paper carries an extra kind field.
   kind?: string;
 }
@@ -107,6 +111,7 @@ export interface Session {
 /** GET /api/projects/{pid}/opening_draft/{slug} */
 export interface OpeningDraft {
   prompt: string;
+  templates?: Record<ReadingMode, string>;
   model: string | null;
   title: string;
 }

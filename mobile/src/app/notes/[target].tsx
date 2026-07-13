@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -21,14 +22,17 @@ import {
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { saveNotes } from '@/api/endpoints';
-import { keys, useNotes } from '@/api/queries';
+import { keys, useNotes, useProjectState } from '@/api/queries';
 import type { StreamItem } from '@/api/types';
 import { Markdown } from '@/components/Markdown';
+import { AgentActivity } from '@/components/AgentActivity';
+import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
-import { Button, Card, Icon, Screen, Text } from '@/ui';
+import { fullPaperUrl } from '@/lib/paperLinks';
+import { Button, Card, Icon, IconButton, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type Mode = 'view' | 'edit';
@@ -42,6 +46,7 @@ export default function NotesScreen() {
   const { activePid: pid } = useActiveProject();
 
   const notes = useNotes(pid, target ?? null);
+  const projectState = useProjectState(pid);
   const agent = useNotesAgent(pid, target ?? null);
   const editDraft = usePersistedDraft<string | null>(
     pid && target ? draftKey(pid, 'notes', target, 'manual-edit') : null,
@@ -60,9 +65,12 @@ export default function NotesScreen() {
   const setInstruction = instructionDraft.setValue;
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   const markdown = notes.data?.markdown ?? '';
   const title = notes.data?.title ?? (target === 'working' ? 'Working notes' : 'Notes');
+  const paper = target === 'working' ? undefined : projectState.data?.papers.find((item) => item.slug === target);
+  const paperUrl = paper ? fullPaperUrl(paper) : null;
 
   // Reattach to an agent edit already in flight for this document (navigated away and back).
   useEffect(() => {
@@ -151,6 +159,35 @@ export default function NotesScreen() {
   }
 
   const showProposal = agent.proposal !== null && mode === 'view';
+  const actions: SheetOption[] = [];
+  if (paperUrl) {
+    actions.push({
+      key: 'paper',
+      title: 'Open full paper',
+      subtitle: paperUrl.includes('arxiv.org/pdf/') ? 'PDF' : 'Source page',
+      icon: 'external-link',
+      accent: colors.mint,
+      onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
+    });
+  }
+  actions.push(
+    {
+      key: 'edit',
+      title: 'Edit directly',
+      subtitle: 'Change the markdown yourself',
+      icon: 'edit-3',
+      disabled: agent.running,
+      onPress: () => startEdit(markdown),
+    },
+    {
+      key: 'revise',
+      title: 'Propose revision',
+      subtitle: 'Ask the analyst, then review before applying',
+      icon: 'zap',
+      disabled: agent.running || !markdown.trim(),
+      onPress: () => setAsking(true),
+    },
+  );
 
   return (
     <Screen edges={['top']}>
@@ -158,6 +195,22 @@ export default function NotesScreen() {
         title={title}
         subtitle={showProposal ? 'Proposed revision — review before applying' : 'Notes'}
         onBack={router.canGoBack() ? () => router.back() : undefined}
+        right={
+          mode === 'view' && !asking && !showProposal ? (
+            <IconButton
+              name="more-vertical"
+              onPress={() => setActionsOpen(true)}
+              accessibilityLabel="Notes actions"
+            />
+          ) : undefined
+        }
+      />
+
+      <OptionsSheet
+        visible={actionsOpen}
+        onClose={() => setActionsOpen(false)}
+        title="Notes actions"
+        options={actions}
       />
 
       {!pid || !target ? (
@@ -274,26 +327,7 @@ export default function NotesScreen() {
                 />
               </View>
             </View>
-          ) : (
-            <View style={styles.footerRow}>
-              <Button
-                title="Edit directly"
-                variant="ghost"
-                icon="edit-3"
-                onPress={() => startEdit(markdown)}
-                disabled={agent.running}
-                style={{ flex: 1 }}
-              />
-              <Button
-                title="Propose revision"
-                variant="ghost"
-                icon="zap"
-                onPress={() => setAsking(true)}
-                disabled={agent.running || !markdown.trim()}
-                style={{ flex: 1 }}
-              />
-            </View>
-          )}
+          ) : null}
         </KeyboardAvoidingView>
       )}
     </Screen>
@@ -309,13 +343,12 @@ function AgentProgress({ items }: { items: StreamItem[] }) {
     [items],
   );
   return (
-    <Card style={styles.progressCard}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <ActivityIndicator color={colors.mint} size="small" />
-        <Text variant="caption" color={colors.muted}>
-          {chars > 0 ? `Revising… ${chars} characters drafted` : 'The analyst is working on it…'}
-        </Text>
-      </View>
+    <View style={styles.progressCard}>
+      <AgentActivity
+        emphasis="panel"
+        status="Preparing a notes revision…"
+        detail={chars > 0 ? `${chars} characters drafted` : 'The analyst is reviewing the current notes.'}
+      />
       {tools.slice(-3).map((t, i) => (
         <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
           <Icon name="tool" size={12} color={colors.mint} />
@@ -325,7 +358,7 @@ function AgentProgress({ items }: { items: StreamItem[] }) {
           </Text>
         </View>
       ))}
-    </Card>
+    </View>
   );
 }
 
