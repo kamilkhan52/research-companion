@@ -7,6 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
 import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-track-player';
 
 import { apiUrl, authHeaders } from '@/api/client';
@@ -16,6 +17,11 @@ import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import {
+  checkpointPlayback,
+  clearPlaybackSnapshot,
+  readPlaybackSnapshot,
+} from '../../playback-persistence';
 
 interface PlayRequest {
   id: string; // stable key for the message (e.g. `${slug}:${index}`)
@@ -134,7 +140,52 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   playbackModeRef.current = playbackMode;
 
   useEffect(() => {
-    setupPlayer().catch(() => {});
+    let active = true;
+    const restore = async () => {
+      await setupPlayer();
+      const snapshot = await readPlaybackSnapshot();
+      if (!snapshot) return;
+      const existing = await TrackPlayer.getActiveTrack();
+      if (existing && !String(existing.id ?? '').startsWith('preview:')) {
+        await TrackPlayer.pause().catch(() => {});
+        if (!active) return;
+        const slotId = String(existing.slotId ?? existing.id);
+        setCurrentId(slotId);
+        setCurrentTitle(existing.title != null ? String(existing.title) : null);
+        if (typeof existing.narration === 'string') {
+          setNarrationById((value) => ({ ...value, [slotId]: existing.narration }));
+        }
+        return;
+      }
+
+      if (snapshot.duration > 0
+          && snapshot.position >= Math.max(0, snapshot.duration - 1)) {
+        await clearPlaybackSnapshot();
+        return;
+      }
+      const queue = await TrackPlayer.getQueue();
+      if (!active || queue.length) return;
+      await TrackPlayer.add(snapshot.tracks.map((track) => ({
+        ...track,
+        url: track.sourceUrl ? apiUrl(track.sourceUrl) : track.url,
+        headers: authHeaders(),
+      })));
+      if (!active) return;
+      await TrackPlayer.seekTo(snapshot.position);
+      setCurrentId(snapshot.slotId);
+      setCurrentTitle(snapshot.title || null);
+      const narration = snapshot.tracks.find((track) => track.narration)?.narration;
+      if (narration) setNarrationById((value) => ({ ...value, [snapshot.slotId]: narration }));
+    };
+    void restore().catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') void checkpointPlayback(TrackPlayer).catch(() => {});
+    });
+    return () => subscription.remove();
   }, []);
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
@@ -183,6 +234,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         const { state } = await TrackPlayer.getPlaybackState();
         if (state === State.Playing) {
           await TrackPlayer.pause();
+          await checkpointPlayback(TrackPlayer).catch(() => {});
         } else {
           if (state === State.Ended) await TrackPlayer.seekTo(0);
           await TrackPlayer.play();
@@ -224,8 +276,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             await TrackPlayer.add({
               id: `${id}|${nextJob.id}|segment:${segment.index}`,
               slotId: id,
+              sourceUrl: segment.url,
               segmentIndex: segment.index,
               sentenceText: segment.text,
+              narration: nextJob.narration ?? undefined,
               url: apiUrl(segment.url),
               title,
               artist: 'Reading Companion',
@@ -284,6 +338,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         await TrackPlayer.reset();
         await TrackPlayer.add({
           id,
+          slotId: id,
+          sourceUrl: job.url,
           url: apiUrl(job.url),
           title,
           // The full narration rides on the track so sentence-jump and the transcript
@@ -438,8 +494,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               await TrackPlayer.add({
                 id: `${request.id}|${audioJobId}|segment:${segment.index}`,
                 slotId: request.id,
+                sourceUrl: segment.url,
                 segmentIndex: segment.index,
                 sentenceText: segment.text,
+                narration: nextJob.narration ?? undefined,
                 url: apiUrl(segment.url),
                 title: request.title,
                 artist: 'Reading Companion',
@@ -525,6 +583,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           const existingTrack = await TrackPlayer.getActiveTrack();
           await TrackPlayer.add({
             id: request.id,
+            slotId: request.id,
+            sourceUrl: finalUrl,
             url: apiUrl(finalUrl),
             title: request.title,
             narration: finalNarration,
@@ -567,6 +627,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback(async () => {
     cancelPrep();
+    await clearPlaybackSnapshot().catch(() => {});
     setCurrentId(null);
     setCurrentTitle(null);
     const reset = () => TrackPlayer.reset().catch(() => {});

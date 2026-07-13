@@ -34,6 +34,8 @@ export const Event = {
   RemotePrevious: 'remote-previous',
   RemoteNext: 'remote-next',
   PlaybackActiveTrackChanged: 'playback-active-track-changed',
+  PlaybackProgressUpdated: 'playback-progress-updated',
+  PlaybackQueueEnded: 'playback-queue-ended',
 } as const;
 
 export const trackPlayerMock = {

@@ -17,6 +17,7 @@ import TrackPlayer, {
   usePlaybackState,
   useProgress,
 } from 'react-native-track-player';
+import { checkpointPlayback } from '../../playback-persistence';
 
 import { useAudio } from '@/audio/AudioProvider';
 import { prepLabel } from '@/components/NarrationTranscript';
@@ -99,6 +100,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
             onPress={async () => {
               if (playing) {
                 await TrackPlayer.pause();
+                await checkpointPlayback(TrackPlayer).catch(() => {});
               } else {
                 const { state: s } = await TrackPlayer.getPlaybackState();
                 if (s === State.Ended) await TrackPlayer.seekTo(0);
