@@ -21,7 +21,7 @@ interface Props {
 
 export function Graph({ onNavigate }: Props) {
   const [activePid] = useActivePid();
-  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, stalePapers, retrievalCandidates, loading, error, refetch, startBuild } = useGraph(activePid);
+  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, stalePapers, retrievalCandidates, retrievalErrors, loading, error, refetch, startBuild } = useGraph(activePid);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GraphEngine | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -30,6 +30,7 @@ export function Graph({ onNavigate }: Props) {
 
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
+  const changedStalePapers = stalePapers.filter((slug) => !retrievalErrors[slug]);
   const hasSemanticScholarData = edges.some((edge) =>
     edge.provenance?.includes('semantic_scholar')
   );
@@ -136,8 +137,9 @@ export function Graph({ onNavigate }: Props) {
 
   return (
     <div className="graph-screen">
-      {stalePapers.length > 0 && build?.status !== 'running' && <div className="graph-stale"><span>{stalePapers.length} papers changed since this map was built.</span><button className="btn ghost" onClick={() => startBuild(true)}>Rebuild map</button></div>}
+      {changedStalePapers.length > 0 && build?.status !== 'running' && <div className="graph-stale"><span>{changedStalePapers.length} papers changed since this map was built.</span><button className="btn ghost" onClick={() => startBuild(true)}>Rebuild map</button></div>}
       <RetrievalConfirmations candidates={retrievalCandidates} onConfirm={(slug, id) => startBuild(false, { [slug]: id })} />
+      {build?.status !== 'running' && <RetrievalErrors errors={retrievalErrors} onRetry={() => startBuild(false)} />}
       <div className="graph-controls">
         <input
           className="graph-search"
@@ -215,6 +217,26 @@ function RetrievalConfirmations({
           {candidate.title} · arXiv:{candidate.arxiv_id}
         </button>
       )))}
+    </div>
+  );
+}
+
+function RetrievalErrors({
+  errors,
+  onRetry,
+}: {
+  errors: Record<string, string>;
+  onRetry: () => void;
+}) {
+  const entries = Object.entries(errors);
+  if (!entries.length) return null;
+  return (
+    <div className="graph-confirmations graph-retrieval-errors">
+      <strong>Some papers could not be retrieved</strong>
+      {entries.map(([slug, detail]) => (
+        <span key={slug} className="build-progress-error">{slug}: {detail}</span>
+      ))}
+      <button className="btn ghost" onClick={onRetry}>Retry missing papers</button>
     </div>
   );
 }

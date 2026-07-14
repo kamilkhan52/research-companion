@@ -43,6 +43,10 @@
   background: rgba(228, 184, 92, .07);
 }
 
+.graph-retrieval-errors {
+  border-color: var(--danger);
+}
+
 /* ---- controls ---- */
 
 .graph-controls {

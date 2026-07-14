@@ -130,7 +130,10 @@ def test_retrieval_failure_is_per_paper_and_retried_next_build(temp_project):
 
     first = list(graph.build_graph(papers, extract_fn=_extractor([]), retrieval_fn=fail))
     assert first[-1]["type"] == "done"
-    assert graph.status(papers)["retrieval_errors"] == {"missing": "download failed"}
+    failed_status = graph.status(papers)
+    assert failed_status["has_graph"] is True
+    assert failed_status["retrieval_errors"] == {"missing": "download failed"}
+    assert failed_status["stale_papers"] == ["missing"]
 
     list(graph.build_graph(papers, extract_fn=_extractor([]), retrieval_fn=fail))
     assert calls == 2

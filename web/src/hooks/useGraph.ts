@@ -11,6 +11,7 @@ interface UseGraphState {
   readyPapers: number;
   stalePapers: string[];
   retrievalCandidates: Record<string, GraphRetrievalCandidate[]>;
+  retrievalErrors: Record<string, string>;
   loading: boolean;
   error: string | null;
   refetch: () => void;
@@ -85,6 +86,7 @@ export function useGraph(pid: string | null): UseGraphState {
     retrievalCandidates: data?.build?.retrieval_candidates
       ?? data?.status?.retrieval_candidates
       ?? {},
+    retrievalErrors: data?.status?.retrieval_errors ?? {},
     loading,
     error,
     refetch,

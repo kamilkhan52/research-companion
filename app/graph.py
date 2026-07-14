@@ -884,6 +884,12 @@ def status(papers: list[Paper]) -> dict:
                 if paper.slug not in stale:
                     stale.append(paper.slug)
     retrievals = {p.slug: graph_store.get_retrieval(data, p.slug) or {} for p in papers}
+    # Retrieval failures are intentionally retryable on the next build. Include them in the
+    # existing rebuild-needed contract so clients cannot strand a missing paper after a partial
+    # graph succeeds; the dedicated error map supplies the user-facing reason.
+    for slug, record in retrievals.items():
+        if record.get("status") == "error" and slug not in stale:
+            stale.append(slug)
     return {
         "has_graph": data.get("graph") is not None,
         "built_at": g.get("built_at"),
