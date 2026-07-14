@@ -32,7 +32,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
 | 2.2a | Contextual cue continuity during narration prep | [#30](https://github.com/kamilkhan52/research-companion/pull/30) | Merged — initial Android pass; final cue handoff pending |
 | 2.2b | Retrieval-phase spoken cues (arXiv hunt) | — | Deferred |
-| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — Android transcript/sentence controls passed; remaining playback checks pending |
+| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28), [#75](https://github.com/kamilkhan52/research-companion/pull/75) | Complete — Android transcript/sentence controls passed; direct-seek confirmation pending |
 | 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
 | 3.3 | Playback position restoration | [#71](https://github.com/kamilkhan52/research-companion/pull/71) | Complete — Android passed |
