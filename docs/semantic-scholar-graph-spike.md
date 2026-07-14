@@ -104,9 +104,9 @@ the local, relation-specific significance decision.
    cache source resolution/reference pages independently of the LLM extraction, enrich matched
    references with identifiers/contexts/intents/provenance, and include metadata-only edges
    without calling them locally significant.
-3. **Fast skeleton lifecycle (Phase 5.2, in progress):** persist the metadata graph before
-   optional full-text enrichment, exposing completeness/provenance in job and API state without
-   bloating the frequently polled job snapshot.
+3. **Fast skeleton lifecycle (Phase 5.2, [#80](https://github.com/kamilkhan52/research-companion/pull/80)):**
+   persist the metadata graph before optional full-text enrichment, exposing completeness and
+   provenance in job/API state without bloating the frequently polled job snapshot.
 4. **Bounded node expansion:** background jobs for outbound references and incoming citations,
    with explicit one-hop controls and graph-size limits.
 5. **Map evidence UI:** attribution plus clear metadata/context-verified/full-text-verified states.

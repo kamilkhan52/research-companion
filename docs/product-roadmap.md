@@ -45,7 +45,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 5.0 | Semantic Scholar graph metadata foundation | [#77](https://github.com/kamilkhan52/research-companion/pull/77) | Complete |
 | 5.0a | Semantic Scholar graph metadata cache and merge | [#78](https://github.com/kamilkhan52/research-companion/pull/78) | Complete |
 | 5.1 | Retrieve missing project papers during graph builds | [#79](https://github.com/kamilkhan52/research-companion/pull/79) | Complete |
-| 5.2 | Fast graph-skeleton lifecycle and completeness state | — | In progress |
+| 5.2 | Fast graph-skeleton lifecycle and completeness state | [#80](https://github.com/kamilkhan52/research-companion/pull/80) | Complete |
 | 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65), [#73](https://github.com/kamilkhan52/research-companion/pull/73) | Partial — TeX/SVG and responsive scale/scroll shipped; parser replacement deferred |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred |
 | W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Complete |
@@ -84,9 +84,9 @@ and project-context invariants. Retrieved text remains graph-only derived state;
 require explicit source confirmation, individual failures do not abort the build, and progress
 separates total, ready, and analyzed papers.
 
-Phase **5.2 Fast graph-skeleton lifecycle** is active. Persist the metadata/cached-analysis map
-before missing-paper retrieval and full-text enrichment, expose its completeness in job/API state,
-and let mobile and web render that useful map while enrichment continues. Bounded one-hop node
+Phase **5.2 Fast graph-skeleton lifecycle** ([#80](https://github.com/kamilkhan52/research-companion/pull/80)) persists the metadata/cached-analysis map
+before missing-paper retrieval and full-text enrichment, exposes its completeness in job/API state,
+and lets mobile and web render that useful map while enrichment continues. Bounded one-hop node
 expansion remains the next graph candidate; figure cards and other deferred polish still require
 explicit reprioritization.
 
