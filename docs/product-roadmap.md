@@ -67,7 +67,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.9 | Author/affiliation map view — design proposal (Figma) | [#89](https://github.com/kamilkhan52/research-companion/pull/89) | Proposal ready — awaiting sign-off |
 | U.7b | Web-paper link consistency: prompt example + client repair | [#90](https://github.com/kamilkhan52/research-companion/pull/90) | Complete |
 | U.10 | Map retrieval-errors: small dismissible indicator + details sheet | [#91](https://github.com/kamilkhan52/research-companion/pull/91) | Complete |
-| U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | — | Planned |
+| U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | [#92](https://github.com/kamilkhan52/research-companion/pull/92) | Complete |
 | U.12 | Long-press assistant response opens the actions menu | — | Planned |
 | U.13 | Composer input growth keeps rounded corners bounded | — | Planned |
 | U.14 | Retry forks the conversation + minimal branch selector | — | Planned |

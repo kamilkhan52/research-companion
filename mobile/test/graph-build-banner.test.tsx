@@ -1,4 +1,4 @@
-import { renderAsync, screen } from '@testing-library/react-native';
+import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
 
 import { BuildProgressBanner } from '@/app/(tabs)/graph';
 import { Marquee } from '@/ui/Marquee';
@@ -14,11 +14,13 @@ const base = {
   retrievalErrors: {},
 };
 
-test('build banner separates status badge, steps, and the current paper line', async () => {
+test('build banner separates status hint, steps, and the current paper line', async () => {
   await renderAsync(<BuildProgressBanner progress={base as never} />);
 
-  // The skeleton state is a compact badge, not a sentence prefix.
-  expect(screen.getByText('✓ Fast map ready')).toBeTruthy();
+  // The skeleton becoming usable is a transient hint (U.11), not a permanent badge.
+  expect(
+    screen.getByText('Fast map ready — explore it now; enrichment keeps improving it in the background.'),
+  ).toBeTruthy();
   expect(screen.getByText('Building map…')).toBeTruthy();
 
   // Discovery-style steps.
@@ -34,14 +36,27 @@ test('build banner separates status badge, steps, and the current paper line', a
   expect(screen.getByText('10 of 12 ready · 4 analyzed')).toBeTruthy();
 });
 
-test('metadata phase shows no skeleton badge and the mapping verb', async () => {
+test('metadata phase shows no skeleton hint and the mapping verb', async () => {
   await renderAsync(
     <BuildProgressBanner
       progress={{ ...base, phase: 'metadata', graphStage: null } as never}
     />,
   );
-  expect(screen.queryByText('✓ Fast map ready')).toBeNull();
+  expect(screen.queryByText(/Fast map ready/)).toBeNull();
   expect(screen.getByText('Mapping references')).toBeTruthy();
+});
+
+test('tapping a build step explains what the stage does', async () => {
+  await renderAsync(
+    <BuildProgressBanner progress={{ ...base, graphStage: null } as never} />,
+  );
+  await fireEventAsync.press(screen.getByLabelText('What does Retrieved mean?'));
+  expect(screen.getByText(/full text fetched so citations can actually be verified/)).toBeTruthy();
+  // A newer hint replaces it; tapping the hint dismisses.
+  await fireEventAsync.press(screen.getByLabelText('What does Enriched mean?'));
+  expect(screen.queryByText(/full text fetched/)).toBeNull();
+  await fireEventAsync.press(screen.getByLabelText('Dismiss hint'));
+  expect(screen.queryByText(/read in full to verify/)).toBeNull();
 });
 
 test('marquee renders its full text and exposes it to accessibility', async () => {

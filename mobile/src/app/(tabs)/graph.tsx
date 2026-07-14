@@ -3,7 +3,7 @@
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
@@ -524,16 +524,58 @@ export function RetrievalErrors({
 // phones. Status, phase, and the paper being worked on each get their own line; the paper
 // title auto-scrolls (Marquee) instead of clipping.
 const BUILD_STEPS = [
-  { key: 'metadata', label: 'Mapped', verb: 'Mapping references' },
-  { key: 'retrieval', label: 'Retrieved', verb: 'Retrieving' },
-  { key: 'extraction', label: 'Enriched', verb: 'Enriching' },
+  {
+    key: 'metadata',
+    label: 'Mapped',
+    verb: 'Mapping references',
+    hint: 'Mapped — the map is sketched from reference metadata first, so there is something to explore right away.',
+  },
+  {
+    key: 'retrieval',
+    label: 'Retrieved',
+    verb: 'Retrieving',
+    hint: 'Retrieved — missing papers get their full text fetched so citations can actually be verified.',
+  },
+  {
+    key: 'extraction',
+    label: 'Enriched',
+    verb: 'Enriching',
+    hint: 'Enriched — each paper is read in full to verify who really cites whom, and why it matters.',
+  },
 ] as const;
+
+const SKELETON_HINT =
+  'Fast map ready — explore it now; enrichment keeps improving it in the background.';
+
+// Hints auto-hide after a few beats (U.11: informative, never squatting). One shared timer —
+// a new hint replaces the old one.
+const HINT_MS = 6000;
 
 export function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
   const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
   const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
   const skeletonReady = progress?.graphStage === 'skeleton';
   const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
+
+  const [hint, setHint] = useState<string | null>(null);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHint = useCallback((text: string) => {
+    setHint(text);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => setHint(null), HINT_MS);
+  }, []);
+  useEffect(() => () => {
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+  }, []);
+  // The skeleton becoming usable is announced ONCE as a transient hint, not a permanent badge.
+  const skeletonAnnounced = useRef(false);
+  useEffect(() => {
+    if (skeletonReady && !skeletonAnnounced.current) {
+      skeletonAnnounced.current = true;
+      showHint(SKELETON_HINT);
+    }
+  }, [skeletonReady, showHint]);
+
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
@@ -541,9 +583,6 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
           Building map…
         </Text>
-        {/* The fast skeleton being usable is a state, not part of a sentence: a compact badge
-            instead of a prefix glued onto whatever the worker is doing. */}
-        {skeletonReady ? <Chip label="✓ Fast map ready" color={colors.mint} /> : null}
       </View>
       {progress ? (
         <>
@@ -551,7 +590,13 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
             {BUILD_STEPS.map((step, i) => {
               const state = i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending';
               return (
-                <View key={step.key} style={styles.buildStep}>
+                <Pressable
+                  key={step.key}
+                  style={styles.buildStep}
+                  onPress={() => showHint(step.hint)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`What does ${step.label} mean?`}
+                >
                   {i > 0 ? (
                     <View style={[styles.buildStepLine, state !== 'pending' && styles.buildStepLineDone]} />
                   ) : null}
@@ -565,10 +610,17 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
                   <Text variant="caption" color={state === 'pending' ? colors.muted : colors.text}>
                     {step.label}
                   </Text>
-                </View>
+                </Pressable>
               );
             })}
           </View>
+          {hint ? (
+            <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
+              <Text variant="caption" color={colors.mint} style={{ marginTop: space.sm }}>
+                {hint}
+              </Text>
+            </Pressable>
+          ) : null}
           {progress.currentTitle ? (
             <View style={{ marginTop: space.sm }}>
               <Text variant="caption" color={colors.muted}>
