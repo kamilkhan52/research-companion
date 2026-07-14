@@ -138,6 +138,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/covers/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Backfill Covers
+         * @description Start (or join) a one-shot pass that renders covers for every retrieved-but-coverless paper
+         *     across all projects, so pre-existing papers have their cover ready before they're first shown.
+         *     Returns immediately; the client fires this once on load (idempotent + deduped server-side).
+         */
+        post: operations["backfill_covers_api_covers_backfill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -270,6 +292,28 @@ export interface paths {
         get: operations["get_audio_job_api_audio_jobs__job_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audio/jobs/{job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Audio Job
+         * @description Cancel an in-flight preparation: the job flips to `cancelled` immediately and the worker
+         *     stops spending on narration/TTS at its next checkpoint. Cancelling an already-finished job
+         *     is a no-op that returns its final snapshot.
+         */
+        post: operations["cancel_audio_job_api_audio_jobs__job_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -433,6 +477,63 @@ export interface paths {
          *     fires the first turn separately via /api/chat/start_stream.
          */
         post: operations["start_paper_api_projects__pid__start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/retrieval/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Retrieval Job
+         * @description Start or join connection-independent paper retrieval and return immediately.
+         */
+        post: operations["start_retrieval_job_api_projects__pid__retrieval_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/retrieval/jobs/latest/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest Retrieval Job
+         * @description Latest retained retrieval for re-entry, including terminal candidates/errors.
+         */
+        get: operations["latest_retrieval_job_api_projects__pid__retrieval_jobs_latest__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/retrieval/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieval Job Status */
+        get: operations["retrieval_job_status_api_projects__pid__retrieval_jobs__job_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -975,6 +1076,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/papers/{slug}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Cover Status
+         * @description Render status for a paper's cover image: `ready` (fetch `/cover.png`), `pending` (a render
+         *     job is running — poll again), or `unavailable` (no fetchable PDF source, or render failed —
+         *     fall back to the icon). Cheap and idempotent; a cached cover never spawns a job.
+         */
+        get: operations["get_cover_status_api_projects__pid__papers__slug__cover_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/papers/{slug}/cover.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Cover Image
+         * @description The cached first-page PNG. 404 until the render job has finished (client polls
+         *     `/cover` for status). Immutable once produced — a paper's first page never changes.
+         */
+        get: operations["get_cover_image_api_projects__pid__papers__slug__cover_png_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/notes/jobs/active/{target}": {
         parameters: {
             query?: never;
@@ -988,6 +1132,26 @@ export interface paths {
          *     reattach instead of finding a silent screen.
          */
         get: operations["notes_job_active_api_projects__pid__notes_jobs_active__target__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/notes/jobs/latest/{target}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Notes Job Latest
+         * @description Most recent retained proposal, whether it is still running or ready to apply.
+         */
+        get: operations["notes_job_latest_api_projects__pid__notes_jobs_latest__target__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1325,6 +1489,10 @@ export interface components {
              * @default false
              */
             force: boolean;
+            /** Retrieval Sources */
+            retrieval_sources?: {
+                [key: string]: string;
+            };
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1441,6 +1609,8 @@ export interface components {
             parallel_api_key?: string | null;
             /** Firecrawl Api Key */
             firecrawl_api_key?: string | null;
+            /** Semantic Scholar Api Key */
+            semantic_scholar_api_key?: string | null;
             /** Prior Notes Scope */
             prior_notes_scope?: string | null;
         };
@@ -1686,6 +1856,26 @@ export interface operations {
         };
     };
     favorite_models_api_favorite_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    backfill_covers_api_covers_backfill_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1972,6 +2162,37 @@ export interface operations {
             };
         };
     };
+    cancel_audio_job_api_audio_jobs__job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     audio_api_audio__name__get: {
         parameters: {
             query?: never;
@@ -2208,6 +2429,105 @@ export interface operations {
                 "application/json": components["schemas"]["StartReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_retrieval_job_api_projects__pid__retrieval_jobs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    latest_retrieval_job_api_projects__pid__retrieval_jobs_latest__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retrieval_job_status_api_projects__pid__retrieval_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -3194,7 +3514,103 @@ export interface operations {
             };
         };
     };
+    get_cover_status_api_projects__pid__papers__slug__cover_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_cover_image_api_projects__pid__papers__slug__cover_png_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     notes_job_active_api_projects__pid__notes_jobs_active__target__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    notes_job_latest_api_projects__pid__notes_jobs_latest__target__get: {
         parameters: {
             query?: never;
             header?: never;

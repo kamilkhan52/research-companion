@@ -13,9 +13,12 @@ Each poll is an independent short request, robust to tunnels, network blips, and
 backgrounded. Progress is real — the narrating stage, then synthesized-segments done/total —
 so the UI can show an honest progress bar.
 
-Jobs are keyed by a hash of (voice settings + canonical text): re-requesting the same message
+Jobs are DEDUPED by a hash of (voice settings + canonical text): re-requesting the same message
 joins the in-flight job instead of starting a duplicate, and a finished result is answered
-instantly from the narration/mp3 caches without a thread.
+instantly from the narration/mp3 caches without a thread. Each attempt's job id is unique,
+so a cancel aimed at one attempt can never hit the fresh attempt a retry created under the
+same dedup key (job_id_for stays the deterministic pre-start handle; chat_jobs reconciles the
+recorded id with the started attempt's real id).
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ from pathlib import Path
 
 from . import agent, config, sessions, tts, usage
 from .fileio import atomic_write_bytes
-from .jobs import Job, JobRegistry, now_iso
+from .jobs import Job, JobRegistry, new_id, now_iso
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (shared with the /api/audio route)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,6 +92,16 @@ def get_job(job_id: str) -> AudioJob | None:
     return _registry.get(job_id, project_id=None)
 
 
+def cancel_job(job_id: str) -> AudioJob | None:
+    """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
+    its next checkpoint — before the narration call and between TTS segments — so at most one
+    in-flight upstream call completes after this returns. Because jobs are deduped by content
+    hash, cancelling also cancels for any other client joined to the same text (acceptable for
+    the single-household deployment). Segments already synthesized stay in the cache, so a
+    re-request resumes rather than restarting from zero."""
+    return _registry.cancel(job_id, project_id=None)
+
+
 def start_job(text: str, billing_project: str | None = None,
               narrate_fn: NarrateFn | None = None,
               synth_fn: SynthFn | None = None) -> AudioJob:
@@ -115,13 +128,21 @@ def start_job(text: str, billing_project: str | None = None,
         parts = tts.split_for_tts(narration)
         segments = _segment_metadata(parts, existing_only=True)
         return _registry.put(jid, AudioJob(
-            id=jid, status="done", stage="synthesizing", narration=narration,
+            id=new_id(), status="done", stage="synthesizing", narration=narration,
             url=f"/api/audio/{audio_cache_path(narration).name}",
             segments=segments, segments_done=len(segments), segments_total=len(parts),
             finished_at=now_iso()),
             project_id=None)
 
     def work(job: AudioJob) -> None:
+        # Cancellation checkpoints bracket every paid upstream call (narration LLM, each TTS
+        # segment): a cancel lands within one call's latency, and the worker exits without
+        # marking done (the registry already flipped the job to `cancelled`).
+        def cancelled() -> bool:
+            return _registry.is_cancelled(job)
+
+        if cancelled():
+            return
         narration = sessions.get_cached_narration(text)
         if narration is None:
             # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
@@ -134,6 +155,8 @@ def start_job(text: str, billing_project: str | None = None,
             finally:
                 config.reset_active_project(token)
             sessions.cache_narration(text, narration)
+        if cancelled():
+            return
         with _registry.lock:
             job.narration = narration
             job.stage = "synthesizing"
@@ -154,6 +177,8 @@ def start_job(text: str, billing_project: str | None = None,
         else:
             chunks: list[bytes] = []
             for index, part in enumerate(parts):
+                if cancelled():
+                    return
                 segment_path = segment_cache_path(part)
                 if not segment_path.exists():
                     atomic_write_bytes(segment_path, synth_fn(part))
@@ -173,4 +198,4 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"
 
-    return _registry.start_or_join(jid, lambda: AudioJob(id=jid), work, project_id=None)
+    return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work, project_id=None)

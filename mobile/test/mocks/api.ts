@@ -13,6 +13,9 @@ export const speak = unexpected('speak');
 export const narrate = unexpected('narrate');
 export const startAudioJob = unexpected('startAudioJob');
 export const getAudioJob = unexpected('getAudioJob');
+export const cancelAudioJob = jest.fn(async (id: string) => ({
+  job: { id, status: 'cancelled' },
+}));
 export const listProjects = jest.fn(async () => ({ projects: [] }));
 export const getRecentSessions = jest.fn(async () => ({ sessions: [] }));
 export const backfillCovers = jest.fn(async () => ({ status: 'running' }));

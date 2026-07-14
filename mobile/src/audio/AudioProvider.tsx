@@ -37,6 +37,8 @@ export interface PrepState {
   /** synthesized segments so far / total (0/0 until the synthesizing stage sizes the work). */
   done: number;
   total: number;
+  /** The server job id, once known — what cancelPrep POSTs to stop paid synthesis. */
+  jobId?: string;
 }
 
 interface AudioContextValue {
@@ -117,6 +119,33 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [playbackStartedAtById, setPlaybackStartedAtById] = useState<Record<string, string>>({});
   const prepRef = useRef<PrepState | null>(null);
   prepRef.current = prep;
+  // When cancel arrives before the server job id is known (startAudioJob still in flight),
+  // the intent is parked here keyed by the generations it kills; the in-flight run cancels
+  // the job it receives before exiting. A generation superseded by a NEW play request is
+  // deliberately absent: abandoning keeps the server job running into the cache.
+  // Separate refs per pipeline: the manual playText loop and the queued listening loop can
+  // overlap, and each must consume ONLY its own intent — a shared object let whichever loop
+  // unwound first clear the other's intent, leaking that job's paid synthesis.
+  const cancelIntentGen = useRef<number | null>(null);
+  const cancelIntentQueueGen = useRef<number | null>(null);
+
+  /** Cancel a server job with retries across the network blips this app expects (tunnel
+   *  drops, backgrounding): a cancel the UI already showed must not silently die on one
+   *  failed POST while the backend keeps billing. Resolves true once acknowledged; a 404
+   *  counts (server restarted — the in-memory job is already gone). */
+  const cancelServerJob = useCallback(async (jobId: string): Promise<boolean> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await api.cancelAudioJob(jobId);
+        return true;
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        if (status !== undefined) return status === 404;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    return false;
+  }, []);
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
   const queueGeneration = useRef(0);
@@ -201,6 +230,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   });
 
   const cancelPrep = useCallback(() => {
+    // Also stop the SERVER job (fire-and-forget): before this, cancel only stopped the client
+    // watching while the backend kept billing narration/TTS for audio nobody wanted. Segments
+    // already synthesized stay cached, so a later re-tap resumes instead of restarting.
+    const jobId = prepRef.current?.jobId;
+    if (jobId) void cancelServerJob(jobId);
+    // Park intent unconditionally (generation-keyed, so it can only fire for the run being
+    // cancelled right now): covers windows where the visible prep's jobId is stale or absent —
+    // e.g. a queued preparation whose first poll hasn't landed. Double-cancel is idempotent.
+    cancelIntentGen.current = generation.current;
+    cancelIntentQueueGen.current = queueGeneration.current;
     generation.current += 1;
     queueGeneration.current += 1;
     automaticPrepIdRef.current = null;
@@ -211,7 +250,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     // Serialize cleanup after any in-flight native add. If cancellation wins while an add is
     // pending, that stale add completes before this removal runs.
     playerTail.current = playerTail.current.then(removeUpcoming, removeUpcoming);
-  }, []);
+  }, [cancelServerJob]);
 
   const applyJob = useCallback((id: string, title: string, job: AudioJob) => {
     if (job.narration) {
@@ -223,6 +262,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       stage: job.stage,
       done: job.segments_done,
       total: job.segments_total,
+      jobId: job.id,
     });
   }, []);
 
@@ -296,7 +336,21 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           }
         };
         let { job } = await api.startAudioJob(text, billingProject);
-        if (!live()) return;
+        // Cancel raced ahead of the job id becoming known: without this, the stale-generation
+        // exit below would leak a running billed job the user believes is cancelled.
+        const abandonIfCancelled = () => {
+          if (cancelIntentGen.current === gen && job.status === 'running') {
+            // Clear the intent only once the server acknowledged; a failed POST keeps it so
+            // a later exit point (or nothing — it is generation-keyed) can't leak the job.
+            void cancelServerJob(job.id).then((ok) => {
+              if (ok && cancelIntentGen.current === gen) cancelIntentGen.current = null;
+            });
+          }
+        };
+        if (!live()) {
+          abandonIfCancelled();
+          return;
+        }
         applyJob(id, title, job);
         await appendSegments(job);
 
@@ -304,7 +358,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         let restarts = 0;
         while (job.status === 'running') {
           await sleep(POLL_MS);
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           try {
             job = (await api.getAudioJob(job.id)).job;
             pollFailures = 0;
@@ -320,11 +377,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               throw e;
             }
           }
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           applyJob(id, title, job);
           await appendSegments(job);
         }
 
+        if (job.status === 'cancelled') {
+          if (live()) setPrep(null);   // cancelled elsewhere; wind down without an error row
+          return;
+        }
         if (job.status === 'error' || !job.url) {
           fail(job.error ?? 'Could not prepare audio.');
           return;
@@ -362,7 +426,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         fail((e as Error).message ?? 'Could not prepare audio.');
       }
     },
-    [currentId, applyJob],
+    [currentId, applyJob, cancelServerJob],
   );
 
   const playPreview = useCallback(async (id: string, title: string, url: string) => {
@@ -529,14 +593,29 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           if ((e as { status?: number }).status !== 404) throw e;
           job = (await api.startAudioJob(request.text, billingProject)).job;
         }
-        if (!live()) return;
+        // Mirror of playText's early-dismiss race: cancel intent parked before the job id was
+        // known must still stop the billed server job.
+        const abandonIfCancelled = () => {
+          if (cancelIntentQueueGen.current === queueGen && job.status === 'running') {
+            void cancelServerJob(job.id).then((ok) => {
+              if (ok && cancelIntentQueueGen.current === queueGen) cancelIntentQueueGen.current = null;
+            });
+          }
+        };
+        if (!live()) {
+          abandonIfCancelled();
+          return;
+        }
         applyJob(request.id, request.title, job);
         await appendSegments(job);
 
         let pollFailures = 0;
         while (job.status === 'running') {
           await sleep(POLL_MS);
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           try {
             job = (await api.getAudioJob(job.id)).job;
             pollFailures = 0;
@@ -545,9 +624,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
                 && ++pollFailures < MAX_POLL_FAILURES) continue;
             throw e;
           }
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           applyJob(request.id, request.title, job);
           await appendSegments(job);
+        }
+        if (job.status === 'cancelled') {
+          if (live()) setPrep(null);
+          return;
         }
         if (job.status === 'error' || !job.url) {
           terminalAudioFailure = true;
@@ -623,7 +709,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         automaticPrepIdRef.current = null;
       }
     });
-  }, [applyJob]);
+  }, [applyJob, cancelServerJob]);
 
   const dismiss = useCallback(async () => {
     cancelPrep();

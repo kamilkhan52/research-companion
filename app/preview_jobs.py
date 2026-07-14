@@ -342,8 +342,10 @@ def _audio_progress(audio_job) -> tuple[str, dict, bool]:
         return "unavailable", {"remaining_known": False}, True
     # Playback is the COMPLETE stitched file (polish plan I.1) — the client no longer plays
     # segments as they land — so cues keep flowing (and pending ones get suppressed) until
-    # the job actually settles, not at the first synthesized segment.
-    ready = audio_job.status in ("done", "error")
+    # the job actually settles, not at the first synthesized segment. Every terminal status
+    # counts as settled — a cancelled preparation must stop the cue cadence too, or the
+    # coordinator would keep launching paid cue generations forever.
+    ready = audio_job.status != "running"
     if audio_job.stage == "synthesizing":
         total = int(audio_job.segments_total or 0)
         done = int(audio_job.segments_done or 0)

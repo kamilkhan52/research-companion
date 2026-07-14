@@ -616,3 +616,91 @@ test('polling failure retains eligibility and recovers automatically after provi
   await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(isHandoffEligible('chat-job-1')).resolves.toBe(false));
 });
+
+// ---- U.4: cancelling a preparation also cancels the SERVER job ----
+
+test('cancelPrep POSTs the server cancel for the known job id', async () => {
+  await setBaseUrl('https://api.test');
+  const runningJob: AudioJob = {
+    ...doneJob,
+    id: 'audio-job',
+    status: 'running',
+    stage: 'synthesizing',
+    segments_done: 0,
+    segments_total: 3,
+    url: null,
+  };
+  jest.mocked(api.getAudioJob).mockResolvedValue({ job: runningJob });
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.None } as never);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined as never);
+
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><QueueProbe /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  await fireEventAsync.press(screen.getByLabelText('Queue response'));
+  // The provider learned the server job id from its first poll (applyJob).
+  await waitFor(() => expect(api.getAudioJob).toHaveBeenCalled());
+
+  await fireEventAsync.press(screen.getByLabelText('Cancel queue'));
+  await waitFor(() => expect(api.cancelAudioJob).toHaveBeenCalledWith('audio-job'));
+});
+
+test('cancelPrep without a known server job is purely local', async () => {
+  await setBaseUrl('https://api.test');
+  jest.mocked(api.cancelAudioJob).mockClear();
+
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><QueueProbe /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  await fireEventAsync.press(screen.getByLabelText('Cancel queue'));
+  expect(api.cancelAudioJob).not.toHaveBeenCalled();
+});
+
+test('cancel racing ahead of the start request still cancels the created job', async () => {
+  await setBaseUrl('https://api.test');
+  jest.mocked(api.cancelAudioJob).mockClear();
+  let releaseStart: (value: { job: AudioJob }) => void = () => {};
+  const gate = new Promise<{ job: AudioJob }>((resolve) => { releaseStart = resolve; });
+  jest.mocked(api.startAudioJob).mockReturnValueOnce(gate as never);
+
+  function PlayProbe() {
+    const audio = useAudio();
+    return (
+      <>
+        <Pressable
+          accessibilityLabel="Play message"
+          onPress={() => void audio.playText({ id: 'm1', title: 'Paper', text: 'Long answer.' })}
+        />
+        <Pressable accessibilityLabel="Cancel prep" onPress={audio.cancelPrep} />
+      </>
+    );
+  }
+
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><PlayProbe /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  await fireEventAsync.press(screen.getByLabelText('Play message'));
+  // Cancel while startAudioJob is still in flight — no server job id is known yet.
+  await fireEventAsync.press(screen.getByLabelText('Cancel prep'));
+  expect(api.cancelAudioJob).not.toHaveBeenCalled();
+
+  // The POST finally returns a running job; the stale run must cancel it, not leak it.
+  await act(async () => {
+    releaseStart({
+      job: { ...doneJob, id: 'raced-job', status: 'running', segments_done: 0, url: null },
+    });
+  });
+  await waitFor(() => expect(api.cancelAudioJob).toHaveBeenCalledWith('raced-job'));
+});

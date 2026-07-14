@@ -267,3 +267,120 @@ def test_normalize_for_speech_pronounces_arxiv_as_archive():
     # Word-bounded: identifiers that merely contain the letters stay intact.
     assert tts.normalize_for_speech("the arxival record") == "the arxival record"
     assert tts.BrowserTTS().synthesize("see arXiv")["text"] == "see archive"
+
+
+# ---- cooperative cancellation (U.4: the client's cancel button) ----
+
+def _long_text() -> str:
+    # Enough sentences that split_for_tts yields multiple segments.
+    return " ".join(f"Sentence number {i} is here." for i in range(400))
+
+
+def test_cancel_flips_status_immediately_and_stops_paid_synthesis():
+    started = threading.Event()
+    release = threading.Event()
+    synth_calls: list[str] = []
+
+    def gated_synth(part: str) -> bytes:
+        synth_calls.append(part)
+        started.set()
+        assert release.wait(timeout=5.0)
+        return fake_synth(part)
+
+    job = audio_jobs.start_job(_long_text(), narrate_fn=lambda t: t, synth_fn=gated_synth)
+    assert started.wait(timeout=5.0)  # worker is inside the first segment call
+
+    cancelled = audio_jobs.cancel_job(job.id)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"          # visible to the next poll immediately
+    assert cancelled.finished_at is not None
+
+    calls_at_cancel = len(synth_calls)
+    release.set()
+
+    # The worker exits at its next checkpoint: the in-flight segment completes, no further
+    # segment is synthesized, and the terminal status stays 'cancelled' (never 'done'/'error').
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        time.sleep(0.02)
+        if len(synth_calls) == calls_at_cancel:
+            break
+    time.sleep(0.1)
+    final = audio_jobs.get_job(job.id)
+    assert final is not None
+    assert final.status == "cancelled"
+    assert final.url is None
+    assert len(synth_calls) == calls_at_cancel
+
+
+def test_cancelled_key_is_free_for_an_immediate_retry():
+    release = threading.Event()
+
+    def gated_synth(part: str) -> bytes:
+        assert release.wait(timeout=5.0)
+        return fake_synth(part)
+
+    text = "Retry after cancel."
+    job = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=gated_synth)
+    audio_jobs.cancel_job(job.id)
+    release.set()
+
+    retry = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=fake_synth)
+    assert retry.id != "" and retry.status in {"running", "done"}
+    settled = _wait_until_settled(retry.id)
+    assert settled.status == "done"
+    assert settled.url
+
+
+def test_cancel_of_finished_job_is_a_noop_and_unknown_id_is_none():
+    job = audio_jobs.start_job("Tiny.", narrate_fn=fake_narrate, synth_fn=fake_synth)
+    settled = _wait_until_settled(job.id)
+    assert settled.status == "done"
+    again = audio_jobs.cancel_job(job.id)
+    assert again is not None and again.status == "done"  # finished result is preserved
+    assert audio_jobs.cancel_job("no-such-job") is None
+
+
+def test_cancel_route_returns_snapshot_and_404s_unknown(monkeypatch):
+    from app.routers import audio as audio_routes
+    from fastapi import HTTPException
+
+    release = threading.Event()
+
+    def gated_synth(part: str) -> bytes:
+        assert release.wait(timeout=5.0)
+        return fake_synth(part)
+
+    job = audio_jobs.start_job("Route cancel.", narrate_fn=fake_narrate, synth_fn=gated_synth)
+    resp = audio_routes.cancel_audio_job(job.id)
+    assert resp["job"]["status"] == "cancelled"
+    release.set()
+
+    with pytest.raises(HTTPException) as err:
+        audio_routes.cancel_audio_job("does-not-exist")
+    assert err.value.status_code == 404
+
+
+def test_late_cancel_of_old_attempt_never_hits_the_retry():
+    """Attempt ids are unique under one dedup key, so a cancel aimed at a cancelled attempt
+    (e.g. a client unwinding late) can never kill the fresh attempt a retry created."""
+    release = threading.Event()
+
+    def gated_synth(part: str) -> bytes:
+        assert release.wait(timeout=5.0)
+        return fake_synth(part)
+
+    text = "Late cancel."
+    first = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=gated_synth)
+    audio_jobs.cancel_job(first.id)
+
+    retry = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=fake_synth)
+    assert retry.id != first.id
+    release.set()
+
+    stale = audio_jobs.cancel_job(first.id)   # late duplicate cancel from the old client loop
+    assert stale is not None and stale.id == first.id and stale.status == "cancelled"
+
+    settled = _wait_until_settled(retry.id)
+    assert settled.status == "done"
+    assert settled.url

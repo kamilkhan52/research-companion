@@ -1409,7 +1409,7 @@ function AssistantBody({
   return (
     <View style={styles.assistantBody}>
       <Markdown text={canonical} />
-      {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} /> : null}
+      {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} onCancel={audio.cancelPrep} /> : null}
       {audioError ? (
         <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
           Audio failed: {audioError}

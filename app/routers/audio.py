@@ -75,6 +75,17 @@ def get_audio_job(job_id: str):
     return {"job": job.to_dict()}
 
 
+@router.post("/api/audio/jobs/{job_id}/cancel")
+def cancel_audio_job(job_id: str):
+    """Cancel an in-flight preparation: the job flips to `cancelled` immediately and the worker
+    stops spending on narration/TTS at its next checkpoint. Cancelling an already-finished job
+    is a no-op that returns its final snapshot."""
+    job = audio_jobs.cancel_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown audio job")
+    return {"job": job.to_dict()}
+
+
 @router.get("/api/audio/{name}")
 def audio(name: str):
     if not re.fullmatch(r"[0-9a-f]{40}\.mp3", name):

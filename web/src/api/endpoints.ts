@@ -240,7 +240,7 @@ export function getLatestNotesJob(pid: string, target: string) {
 
 export interface AudioJob {
   id: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'cancelled';
   stage: 'narrating' | 'synthesizing';
   segments_done: number;
   segments_total: number;
@@ -255,4 +255,10 @@ export function startAudioJob(text: string, project?: string | null) {
 
 export function getAudioJob(jobId: string) {
   return apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(jobId)}`);
+}
+
+/** Cancel an in-flight preparation server-side; the worker stops paid TTS at its next
+ *  checkpoint. No-op when the job already finished. */
+export function cancelAudioJob(jobId: string) {
+  return apiPost<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 }
