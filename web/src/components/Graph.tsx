@@ -31,6 +31,7 @@ export function Graph({ onNavigate }: Props) {
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
   const changedStalePapers = stalePapers.filter((slug) => !retrievalErrors[slug]);
+  const needsEnrichment = graph?.stage === 'skeleton' && build?.status !== 'running';
   const hasSemanticScholarData = edges.some((edge) =>
     edge.provenance?.includes('semantic_scholar')
   );
@@ -137,6 +138,7 @@ export function Graph({ onNavigate }: Props) {
 
   return (
     <div className="graph-screen">
+      {needsEnrichment && <div className="graph-stale"><span>Fast map ready. Continue to retrieve missing papers and verify full-text citation evidence.</span><button className="btn ghost" onClick={() => startBuild(false)}>Continue enrichment</button></div>}
       {changedStalePapers.length > 0 && build?.status !== 'running' && <div className="graph-stale"><span>{changedStalePapers.length} papers changed since this map was built.</span><button className="btn ghost" onClick={() => startBuild(true)}>Rebuild map</button></div>}
       <RetrievalConfirmations candidates={retrievalCandidates} onConfirm={(slug, id) => startBuild(false, { [slug]: id })} />
       {build?.status !== 'running' && <RetrievalErrors errors={retrievalErrors} onRetry={() => startBuild(false)} />}
@@ -300,17 +302,38 @@ function NodeDetail({
 function BuildProgress({
   build, compact,
 }: {
-  build: { status: string; total: number; ready: number; done: number; current_title: string | null; current_slug: string | null; error: string | null };
+  build: {
+    status: string;
+    phase: string;
+    total: number;
+    ready: number;
+    done: number;
+    current_title: string | null;
+    current_slug: string | null;
+    graph_stage: 'skeleton' | 'enriched' | null;
+    graph?: { stage: 'skeleton' | 'enriched' } | null;
+    error: string | null;
+  };
   compact?: boolean;
 }) {
   const pct = build.ready > 0 ? Math.round((build.done / build.ready) * 100) : 0;
+  const fastMapReady = build.graph_stage === 'skeleton' || build.graph?.stage === 'skeleton';
+  const activity = fastMapReady
+    ? build.phase === 'retrieval'
+      ? 'Fast map ready — retrieving missing papers'
+      : build.phase === 'extraction'
+        ? 'Fast map ready — enriching citation evidence'
+        : 'Fast map ready — preparing enrichment'
+    : build.phase === 'metadata'
+      ? 'Mapping Semantic Scholar references'
+      : 'Building reference map';
   return (
     <div className={`build-progress ${compact ? 'build-progress-compact' : ''}`}>
       <div className="build-progress-bar">
         <div className="build-progress-fill" style={{ width: `${pct}%` }} />
       </div>
       <p className="muted">
-        {build.ready} of {build.total} ready — {build.done} analyzed
+        {activity} · {build.ready} of {build.total} ready — {build.done} analyzed
         {build.current_title ? ` — ${build.current_title}` : ''}
       </p>
       {build.error && <p className="build-progress-error">{build.error}</p>}

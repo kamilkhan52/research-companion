@@ -63,15 +63,6 @@ export default function GraphScreen() {
   const [showRecs, setShowRecs] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
-  const filters = useMemo(() => (allowAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')), [allowAllFilter]);
-
-  // The "All" chip only exists behind the Settings toggle above — if it gets turned off while
-  // "All" is selected, fall back to the default rather than leaving the screen on a filter that
-  // no longer has a visible chip.
-  useEffect(() => {
-    if (filter === 'all' && !allowAllFilter) setFilter('significant');
-  }, [filter, allowAllFilter]);
-
   // A filter/search change (or switching to a different project's graph — this tab stays
   // mounted across the Library's project switch) starts a fresh page rather than keeping
   // whatever limit was reached browsing the previous set.
@@ -83,6 +74,21 @@ export default function GraphScreen() {
   const graph = data?.graph ?? null;
   const recommendations = data?.recommendations ?? [];
   const status = data?.status ?? null;
+  const showAllFilter = allowAllFilter || graph?.stage === 'skeleton';
+  const filters = useMemo(
+    () => (showAllFilter ? FILTERS : FILTERS.filter((f) => f.key !== 'all')),
+    [showAllFilter],
+  );
+
+  // A metadata-only skeleton cannot have locally significant edges by design, so show its full
+  // map instead of leaving the default Significant filter on an apparently empty canvas. Once
+  // enrichment finishes, restore the normal Settings-controlled visibility of the All filter.
+  useEffect(() => {
+    if (graph?.stage === 'skeleton' && filter === 'significant') setFilter('all');
+    else if (graph?.stage !== 'skeleton' && filter === 'all' && !allowAllFilter) {
+      setFilter('significant');
+    }
+  }, [filter, allowAllFilter, graph?.stage]);
   const hasSemanticScholarData = useMemo(
     () => graph?.edges.some((edge) => edge.provenance?.includes('semantic_scholar')) ?? false,
     [graph],
@@ -163,6 +169,10 @@ export default function GraphScreen() {
   const retrievalErrors = status?.retrieval_errors ?? {};
   const retrievalErrorCount = Object.keys(retrievalErrors).length;
   const changedPaperCount = status?.stale_papers.filter((slug) => !retrievalErrors[slug]).length ?? 0;
+  const needsEnrichment = Boolean(
+    (status?.graph_needs_enrichment || graph?.stage === 'skeleton') && !build.building,
+  );
+  const needsBuildAttention = staleCount > 0 || needsEnrichment;
   const retrievalCandidates = build.progress?.retrievalCandidates
     ?? status?.retrieval_candidates
     ?? {};
@@ -197,10 +207,13 @@ export default function GraphScreen() {
           },
           {
             name: 'refresh-cw',
-            badge: staleCount > 0,
+            badge: needsBuildAttention,
             onPress: () => {
-              if (staleCount > 0) {
+              if (needsBuildAttention) {
                 const reasons = [
+                  needsEnrichment
+                    ? 'The fast map is ready, but full-text enrichment did not finish.'
+                    : '',
                   retrievalErrorCount > 0
                     ? `${retrievalErrorCount} paper source${retrievalErrorCount === 1 ? '' : 's'} could not be retrieved.`
                     : '',
@@ -209,19 +222,21 @@ export default function GraphScreen() {
                     : '',
                 ].filter(Boolean).join(' ');
                 Alert.alert(
-                  'Rebuild reference graph?',
-                  `${reasons} Rebuild to retry or refresh the affected papers.`,
+                  needsEnrichment ? 'Finish graph enrichment?' : 'Rebuild reference graph?',
+                  `${reasons} ${needsEnrichment ? 'Continue' : 'Rebuild'} to process the affected papers.`,
                   [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
-                    { text: 'Rebuild', onPress: () => build.run(false) },
+                    { text: needsEnrichment ? 'Continue' : 'Rebuild', onPress: () => build.run(false) },
                   ],
                 );
               } else {
                 void graphQuery.refetch();
               }
             },
-            accessibilityLabel: staleCount > 0 ? 'Refresh graph (rebuild available)' : 'Refresh graph',
+            accessibilityLabel: needsBuildAttention
+              ? 'Refresh graph (build action available)'
+              : 'Refresh graph',
           },
           { name: 'zap', onPress: () => setShowRecs(true), accessibilityLabel: 'Recommendations' },
         ]}
@@ -241,6 +256,8 @@ export default function GraphScreen() {
       ) : (
         <>
           {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
+
+          {needsEnrichment ? <SkeletonResume build={build} /> : null}
 
           <RetrievalConfirmations candidates={retrievalCandidates} build={build} />
 
@@ -405,6 +422,23 @@ function RetrievalConfirmations({
   );
 }
 
+function SkeletonResume({ build }: { build: GraphBuildState }) {
+  return (
+    <Card style={styles.confirmationCard}>
+      <Text variant="heading">Fast map ready</Text>
+      <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+        Continue to retrieve missing papers and verify citation evidence from full text.
+      </Text>
+      <Button
+        title="Continue enrichment"
+        variant="ghost"
+        onPress={() => build.run(false)}
+        style={{ marginTop: space.sm }}
+      />
+    </Card>
+  );
+}
+
 function RetrievalErrors({
   errors,
   build,
@@ -434,12 +468,24 @@ function RetrievalErrors({
 
 function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
   const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
+  const current = progress?.currentTitle ? ` “${progress.currentTitle}”` : '';
+  const activity = !progress
+    ? 'Building graph…'
+    : progress.graphStage === 'skeleton'
+      ? progress.phase === 'retrieval'
+        ? `Fast map ready · retrieving${current}…`
+        : progress.phase === 'extraction'
+          ? `Fast map ready · enriching${current}…`
+          : 'Fast map ready · preparing enrichment…'
+      : progress.phase === 'metadata'
+        ? `Mapping references${current}…`
+        : 'Building graph…';
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
         <ActivityIndicator color={colors.mint} />
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
-          {progress?.currentTitle ? `Analyzing "${progress.currentTitle}"…` : 'Building graph…'}
+          {activity}
         </Text>
       </View>
       {progress ? (

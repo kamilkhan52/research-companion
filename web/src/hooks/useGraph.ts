@@ -24,6 +24,8 @@ export function useGraph(pid: string | null): UseGraphState {
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedSnapshotRef = useRef<string | null>(null);
+  const loadingSnapshotRef = useRef<string | null>(null);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
@@ -33,7 +35,13 @@ export function useGraph(pid: string | null): UseGraphState {
     setLoading(true);
     setError(null);
     getGraph(pid)
-      .then((d) => { if (!cancelled) { setData(d); setLoading(false); } })
+      .then((d) => {
+        if (!cancelled) {
+          loadedSnapshotRef.current = d.graph?.revision ?? null;
+          setData(d);
+          setLoading(false);
+        }
+      })
       .catch((e) => { if (!cancelled) { setError(e instanceof Error ? e.message : String(e)); setLoading(false); } });
     return () => { cancelled = true; };
   }, [pid, tick]);
@@ -48,9 +56,36 @@ export function useGraph(pid: string | null): UseGraphState {
     const poll = () => {
       pollRef.current = setTimeout(() => {
         getGraphBuildStatus(pid)
-        .then((r) => {
+        .then(async (r) => {
           if (cancelled) return;
-          setData((prev) => prev ? { ...prev, build: r.build } : null);
+          const snapshotId = r.build?.graph_stage === 'skeleton'
+            ? r.build.graph_revision
+            : null;
+          let snapshot: GraphResponse | null = null;
+          if (
+            snapshotId
+            && loadedSnapshotRef.current !== snapshotId
+            && loadingSnapshotRef.current !== snapshotId
+          ) {
+            loadingSnapshotRef.current = snapshotId;
+            try {
+              snapshot = await getGraph(pid);
+            } finally {
+              loadingSnapshotRef.current = null;
+            }
+          }
+          if (cancelled) return;
+          if (
+            snapshot
+            && snapshotId
+            && snapshot.graph?.revision === snapshotId
+            && snapshot.graph.stage === 'skeleton'
+          ) {
+            loadedSnapshotRef.current = snapshotId;
+            setData(snapshot);
+          } else {
+            setData((prev) => prev ? { ...prev, build: r.build } : null);
+          }
           if (r.build && r.build.status !== 'running') {
             pollRef.current = null;
             setTick((t) => t + 1); // refetch full graph
@@ -76,10 +111,10 @@ export function useGraph(pid: string | null): UseGraphState {
   }, [pid]);
 
   return {
-    graph: data?.graph ?? null,
-    recommendations: data?.recommendations ?? [],
+    graph: data?.build?.graph ?? data?.graph ?? null,
+    recommendations: data?.build?.recommendations ?? data?.recommendations ?? [],
     build: data?.build ?? null,
-    hasGraph: data?.status?.has_graph ?? false,
+    hasGraph: Boolean(data?.build?.graph ?? data?.graph),
     totalPapers: data?.status?.total_papers ?? 0,
     readyPapers: data?.status?.retrievable_papers ?? 0,
     stalePapers: data?.status?.stale_papers ?? [],

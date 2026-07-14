@@ -9,9 +9,14 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
+import { getGraph, getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
 import { keys } from '@/api/queries';
-import type { GraphBuildJob, GraphResponse, GraphRetrievalCandidate } from '@/api/types';
+import type {
+  GraphBuildJob,
+  GraphResponse,
+  GraphRetrievalCandidate,
+  ReferenceGraph,
+} from '@/api/types';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -29,6 +34,8 @@ export type PaperBuildStatus =
   | 'error';
 
 export interface GraphBuildProgress {
+  phase: GraphBuildJob['phase'];
+  graphStage: ReferenceGraph['stage'] | null;
   total: number;
   ready: number;
   done: number;
@@ -52,6 +59,8 @@ function toProgress(job: GraphBuildJob): GraphBuildProgress {
   const perPaper: Record<string, PaperBuildStatus> = {};
   for (const [slug, s] of Object.entries(job.per_paper)) perPaper[slug] = s.status;
   return {
+    phase: job.phase,
+    graphStage: job.graph_stage ?? job.graph?.stage ?? null,
     total: job.total,
     ready: job.ready,
     done: job.done,
@@ -68,6 +77,11 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   const [error, setError] = useState<string | null>(null);
   // Guards a start against a fast double-tap in the same tick (before `building` re-renders).
   const startingRef = useRef(false);
+  const loadedSnapshotRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    loadedSnapshotRef.current = null;
+  }, [pid]);
 
   // Apply a job snapshot from the server: update progress, and when the job has finished, tear
   // down polling (by flipping `building` off) and push the final graph into the query cache so
@@ -79,28 +93,61 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         return;
       }
       setProgress(toProgress(job));
-      if (job.status === 'running') {
-        setBuilding(true);
-        return;
+      const snapshotRevision = job.graph_revision;
+      if (
+        pid
+        && job.graph_stage === 'skeleton'
+        && snapshotRevision
+        && loadedSnapshotRef.current !== snapshotRevision
+      ) {
+        loadedSnapshotRef.current = snapshotRevision;
+        void getGraph(pid)
+          .then((response) => {
+            // A final job snapshot can arrive while this one-off skeleton fetch is in flight.
+            // Never let the slower, older response overwrite the enriched graph.
+            if (
+              loadedSnapshotRef.current === snapshotRevision
+              && response.graph?.revision === snapshotRevision
+              && response.graph.stage === 'skeleton'
+            ) {
+              qc.setQueryData(keys.graph(pid), response);
+            }
+          })
+          .catch(() => {
+            if (loadedSnapshotRef.current === snapshotRevision) {
+              loadedSnapshotRef.current = null;
+            }
+          });
       }
-      // done | error
-      setBuilding(false);
-      if (job.status === 'error') setError(job.error ?? 'Graph build failed.');
-      if (job.status === 'done' && job.graph && pid) {
+      if (job.graph && pid) {
+        loadedSnapshotRef.current = job.graph.revision;
         qc.setQueryData<GraphResponse>(keys.graph(pid), (old) => ({
           graph: job.graph,
           recommendations: job.recommendations ?? [],
-          status: old?.status ?? {
+          status: old?.status ? {
+            ...old.status,
             has_graph: true,
             built_at: job.graph!.built_at,
             model: job.graph!.model,
-            total_papers: job.graph!.nodes.filter((n) => n.kind === 'project').length,
-            retrievable_papers: 0,
+            graph_revision: job.graph!.revision,
+            graph_stage: job.graph!.stage,
+            graph_completeness: job.graph!.completeness,
+            graph_needs_enrichment: job.graph!.stage === 'skeleton',
+          } : {
+            has_graph: true,
+            built_at: job.graph!.built_at,
+            model: job.graph!.model,
+            graph_revision: job.graph!.revision,
+            graph_stage: job.graph!.stage,
+            graph_completeness: job.graph!.completeness,
+            graph_needs_enrichment: job.graph!.stage === 'skeleton',
+            total_papers: job.graph!.completeness.total_papers,
+            retrievable_papers: job.graph!.completeness.ready_papers,
             stale_papers: [],
             removed_papers: [],
             missing_text_papers: [],
             semantic_scholar_enabled: false,
-            semantic_scholar_papers: 0,
+            semantic_scholar_papers: job.graph!.completeness.metadata_papers,
             semantic_scholar_stale_papers: [],
             retrieval_candidates: {},
             retrieval_errors: {},
@@ -108,6 +155,13 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
           build: job,
         }));
       }
+      if (job.status === 'running') {
+        setBuilding(true);
+        return;
+      }
+      // done | error
+      setBuilding(false);
+      if (job.status === 'error') setError(job.error ?? 'Graph build failed.');
       if (pid) qc.invalidateQueries({ queryKey: keys.graph(pid) });
     },
     [pid, qc],
@@ -142,6 +196,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       setError(null);
       setBuilding(true); // optimistic: disables the button immediately; applyJob corrects it
       setProgress({
+        phase: 'preparing', graphStage: null,
         total: 0, ready: 0, done: 0, currentTitle: null, perPaper: {},
         retrievalCandidates: {},
       });

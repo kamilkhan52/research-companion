@@ -353,5 +353,48 @@ def test_provider_builds_edges_for_a_paper_without_cached_full_text(temp_project
 
     assert events[0]["total"] == 1
     assert events[0]["ready"] == 0
+    skeleton = next(event for event in events if event["type"] == "skeleton")
+    assert skeleton["graph"]["stage"] == "skeleton"
+    assert skeleton["graph"]["completeness"] == {
+        "total_papers": 1,
+        "metadata_papers": 1,
+        "ready_papers": 0,
+        "analyzed_papers": 0,
+        "metadata_only_edges": 1,
+        "full_text_edges": 0,
+    }
     assert len(events[-1]["graph"]["edges"]) == 1
     assert events[-1]["graph"]["edges"][0]["provenance"] == ["semantic_scholar"]
+
+
+def test_metadata_skeleton_is_persisted_before_full_text_extraction(temp_project):
+    add_paper(temp_project, "source", "Source Paper", full_text="Text.")
+    papers = store.list_papers(sessions.session_states())
+    extraction_calls: list[str] = []
+
+    def extract_fn(slug: str, title: str, full_text: str, model: str) -> dict:
+        extraction_calls.append(slug)
+        return {
+            "slug": slug, "content_hash": graph_store.content_hash(full_text),
+            "extracted_at": "t", "model": model, "status": "done", "references": [],
+            "error": "",
+        }
+
+    events = graph.build_graph(
+        papers,
+        extract_fn=extract_fn,
+        metadata_fn=lambda _paper: provider_record([{
+            "paper_id": "s2-target", "title": "Metadata Target",
+            "contexts": [], "intents": [], "is_influential": False,
+        }]),
+    )
+    for event in events:
+        if event["type"] == "skeleton":
+            break
+
+    assert extraction_calls == []
+    persisted = graph_store.load()["graph"]
+    assert persisted["stage"] == "skeleton"
+    assert len(persisted["edges"]) == 1
+    assert persisted["edges"][0]["full_text_verified"] is False
+    events.close()

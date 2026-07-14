@@ -28,6 +28,7 @@ import json
 import math
 import os
 import re
+import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -894,6 +895,10 @@ def status(papers: list[Paper]) -> dict:
         "has_graph": data.get("graph") is not None,
         "built_at": g.get("built_at"),
         "model": g.get("model"),
+        "graph_revision": g.get("revision"),
+        "graph_stage": g.get("stage") or ("enriched" if g else None),
+        "graph_completeness": g.get("completeness"),
+        "graph_needs_enrichment": g.get("stage") == "skeleton",
         "total_papers": len(papers),
         "retrievable_papers": len(papers) - len(missing_text),
         "stale_papers": stale,
@@ -933,6 +938,90 @@ def retrieve_missing_graph_paper(paper: Paper, provider_record: dict | None) -> 
     return retriever.retrieve(
         paper.title, arxiv_id=arxiv_id or None, min_score=0.86
     )
+
+
+def _fresh_cached_extractions(
+    papers: list[Paper], data: dict
+) -> dict[str, dict]:
+    """Return only full-text extractions that still match the paper text available now."""
+    fresh: dict[str, dict] = {}
+    for paper in papers:
+        full_text = (
+            store.read_full_text(paper.slug)
+            if store.corpus_path(paper.slug).exists()
+            else _graph_retrieved_text(data, paper)
+        )
+        cached = graph_store.get_paper_extraction(data, paper.slug)
+        if (
+            full_text
+            and cached
+            and cached.get("status") == "done"
+            and cached.get("content_hash") == graph_store.content_hash(full_text)
+        ):
+            fresh[paper.slug] = cached
+    return fresh
+
+
+def _provider_metadata(papers: list[Paper], data: dict) -> dict[str, dict]:
+    return {
+        paper.slug: record for paper in papers
+        if (record := graph_store.get_provider_paper(
+            data, "semantic_scholar", paper.slug
+        )) is not None
+    }
+
+
+def _persist_graph_snapshot(
+    papers: list[Paper],
+    data: dict,
+    model: str,
+    extractions: dict[str, dict],
+    provider_metadata: dict[str, dict],
+    *,
+    stage: str,
+    ready: int,
+    annotate_citations: bool,
+) -> tuple[dict, list[dict]]:
+    """Assemble and atomically persist one visible graph lifecycle snapshot."""
+    combined = merge_reference_sources(papers, extractions, provider_metadata)
+    nodes, edges = build_nodes_and_edges(papers, combined)
+    if annotate_citations:
+        citations.annotate_nodes(nodes, data["citations"])  # best-effort, cached
+    recs = score_recommendations(nodes, edges, len(papers))
+    layout = graph_layout.compute_layout(nodes, edges)
+    metadata_papers = sum(
+        1 for record in provider_metadata.values() if record.get("status") == "done"
+    )
+    analyzed_papers = sum(
+        1 for extraction in extractions.values() if extraction.get("status") == "done"
+    )
+    graph_payload = {
+        "built_at": _now(),
+        "revision": uuid.uuid4().hex,
+        "model": model,
+        "stage": stage,
+        "completeness": {
+            "total_papers": len(papers),
+            "metadata_papers": metadata_papers,
+            "ready_papers": ready,
+            "analyzed_papers": analyzed_papers,
+            "metadata_only_edges": sum(
+                1 for edge in edges
+                if "semantic_scholar" in (edge.get("provenance") or [])
+                and not edge.get("full_text_verified")
+            ),
+            "full_text_edges": sum(
+                1 for edge in edges if edge.get("full_text_verified")
+            ),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "layout": layout,
+    }
+    graph_store.set_graph(data, graph_payload)
+    graph_store.set_recommendations(data, recs)
+    graph_store.save(data)
+    return graph_payload, recs
 
 
 def build_graph(papers: list[Paper], force: bool = False,
@@ -1010,6 +1099,27 @@ def build_graph(papers: list[Paper], force: bool = False,
                 "status": provider_record.get("status"), "cached": not needs_provider,
                 "error": provider_record.get("error") or None,
             }
+
+    # Publish the cheap metadata/cached-analysis map before any missing-paper downloads or LLM
+    # extraction. If the remaining enrichment is interrupted, users still retain this useful,
+    # explicitly incomplete snapshot and a later build resumes from the independent caches.
+    provider_metadata = _provider_metadata(papers, data)
+    skeleton_extractions = _fresh_cached_extractions(papers, data)
+    skeleton_graph, skeleton_recommendations = _persist_graph_snapshot(
+        papers,
+        data,
+        model,
+        skeleton_extractions,
+        provider_metadata,
+        stage="skeleton",
+        ready=ready,
+        annotate_citations=False,
+    )
+    yield {
+        "type": "skeleton",
+        "graph": skeleton_graph,
+        "recommendations": skeleton_recommendations,
+    }
 
     retrieval_fetcher = retrieval_fn or retrieve_missing_graph_paper
     retrieval_sources = retrieval_sources or {}
@@ -1113,20 +1223,15 @@ def build_graph(papers: list[Paper], force: bool = False,
     extractions = {
         slug: ext for slug, ext in data["papers"].items() if slug in retrievable_slugs
     }
-    provider_metadata = {
-        p.slug: record for p in papers
-        if (record := graph_store.get_provider_paper(
-            data, "semantic_scholar", p.slug
-        )) is not None
-    }
-    combined = merge_reference_sources(papers, extractions, provider_metadata)
-    nodes, edges = build_nodes_and_edges(papers, combined)
-    citations.annotate_nodes(nodes, data["citations"])  # global counts; best-effort, cached
-    recs = score_recommendations(nodes, edges, len(papers))
-    layout = graph_layout.compute_layout(nodes, edges)  # adds x/y to each node (temporal Y)
-    graph_payload = {"built_at": _now(), "model": model, "nodes": nodes, "edges": edges,
-                     "layout": layout}
-    graph_store.set_graph(data, graph_payload)
-    graph_store.set_recommendations(data, recs)
-    graph_store.save(data)
+    provider_metadata = _provider_metadata(papers, data)
+    graph_payload, recs = _persist_graph_snapshot(
+        papers,
+        data,
+        model,
+        extractions,
+        provider_metadata,
+        stage="enriched",
+        ready=ready,
+        annotate_citations=True,
+    )
     yield {"type": "done", "graph": graph_payload, "recommendations": recs}
