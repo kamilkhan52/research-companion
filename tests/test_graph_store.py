@@ -55,3 +55,20 @@ def test_load_handles_corrupt_json_gracefully(temp_project):
     graph_store._file().write_text("{not valid json", encoding="utf-8")
     data = graph_store.load()
     assert data["papers"] == {}
+
+
+def test_provider_metadata_roundtrips_independently(temp_project):
+    data = graph_store.load()
+    graph_store.set_provider_paper(
+        data,
+        "semantic_scholar",
+        "paper-a",
+        {"status": "done", "source_key": "ARXIV:2401.00001", "references": []},
+    )
+    graph_store.save(data)
+
+    reloaded = graph_store.load()
+    assert graph_store.get_provider_paper(
+        reloaded, "semantic_scholar", "paper-a"
+    )["source_key"] == "ARXIV:2401.00001"
+    assert reloaded["papers"] == {}

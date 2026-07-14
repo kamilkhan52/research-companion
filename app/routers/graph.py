@@ -14,7 +14,8 @@ project_router = make_project_router()
 
 
 class GraphBuildReq(BaseModel):
-    force: bool = False   # re-extract every retrievable paper, ignoring the content-hash cache
+    # Refresh provider metadata and re-extract every retrievable paper, ignoring both caches.
+    force: bool = False
 
 
 @project_router.get("/graph")

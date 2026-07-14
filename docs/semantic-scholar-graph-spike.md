@@ -100,9 +100,10 @@ the local, relation-specific significance decision.
 
 1. **Provider foundation:** secure setting, shared cumulative request pacer, typed normalization,
    retry/error behavior, and tests. No graph-output change.
-2. **Metadata cache and merge:** cache source resolution/reference pages independently of the
-   LLM extraction, enrich matched references with identifiers/contexts/intents/provenance, and
-   include metadata-only edges without calling them locally significant.
+2. **Metadata cache and merge ([#78](https://github.com/kamilkhan52/research-companion/pull/78)):**
+   cache source resolution/reference pages independently of the LLM extraction, enrich matched
+   references with identifiers/contexts/intents/provenance, and include metadata-only edges
+   without calling them locally significant.
 3. **Fast skeleton lifecycle:** persist the metadata graph before optional full-text enrichment,
    exposing completeness/provenance in job and API state.
 4. **Bounded node expansion:** background jobs for outbound references and incoming citations,

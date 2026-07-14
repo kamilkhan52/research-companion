@@ -4,7 +4,7 @@
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
@@ -82,6 +82,10 @@ export default function GraphScreen() {
   const graph = data?.graph ?? null;
   const recommendations = data?.recommendations ?? [];
   const status = data?.status ?? null;
+  const hasSemanticScholarData = useMemo(
+    () => graph?.edges.some((edge) => edge.provenance?.includes('semantic_scholar')) ?? false,
+    [graph],
+  );
 
   // Recover in-progress builds on (re)open: if loading the graph reveals a build still running
   // server-side (e.g. the app was minimized during it), re-attach to it so the progress UI
@@ -270,6 +274,18 @@ export default function GraphScreen() {
             onSelectNode={setSelectedNode}
           />
 
+          {hasSemanticScholarData ? (
+            <Pressable
+              onPress={() => void Linking.openURL('https://www.semanticscholar.org/')}
+              accessibilityRole="link"
+              accessibilityLabel="Open Semantic Scholar"
+              style={styles.attribution}>
+              <Text variant="caption" color={colors.muted}>
+                Reference metadata provided by Semantic Scholar ↗
+              </Text>
+            </Pressable>
+          ) : null}
+
           {build.error ? <ErrorBanner detail={build.error} onDismiss={build.clearError} /> : null}
         </>
       )}
@@ -309,9 +325,11 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
       </Text>
       <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
         {status
-          ? `Build it from this project's ${status.retrievable_papers} paper${status.retrievable_papers === 1 ? '' : 's'}. ` +
-            'Each paper is read once by an LLM to extract its bibliography and how significantly it uses each ' +
-            'reference — the result is cached, so future rebuilds only cost tokens on papers that changed.'
+          ? status.semantic_scholar_enabled
+            ? `Build a fast reference map for ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'} ` +
+              'from Semantic Scholar metadata, then enrich papers with cached full text to verify citation context and significance.'
+            : `Build it from this project's ${status.retrievable_papers} paper${status.retrievable_papers === 1 ? '' : 's'}. ` +
+              'Each paper with cached full text is read once to extract its bibliography and citation significance.'
           : 'Papers are analyzed to find how they cite each other and which outside work they depend on.'}
       </Text>
       {build.error ? (
@@ -319,10 +337,16 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
           {build.error}
         </Text>
       ) : null}
-      <Button title="Build graph" onPress={() => build.run(false)} disabled={!status || status.retrievable_papers === 0} />
-      {status && status.retrievable_papers === 0 ? (
+      <Button
+        title="Build graph"
+        onPress={() => build.run(false)}
+        disabled={!status || status.total_papers === 0 || (
+          status.retrievable_papers === 0 && !status.semantic_scholar_enabled
+        )}
+      />
+      {status && status.retrievable_papers === 0 && !status.semantic_scholar_enabled ? (
         <Text variant="caption" style={{ marginTop: space.md, textAlign: 'center' }}>
-          No papers in this project have cached full text yet — open one in Discussion first.
+          No papers have cached full text yet. Open one in Discussion, or configure Semantic Scholar in Settings.
         </Text>
       ) : null}
     </View>
@@ -482,4 +506,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   resultCount: { justifyContent: 'center', paddingHorizontal: 4 },
+  attribution: {
+    alignSelf: 'center',
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
+  },
 });
