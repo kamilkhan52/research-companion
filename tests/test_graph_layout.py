@@ -168,3 +168,26 @@ def test_ranked_overflow_never_interleaves_with_unranked_rows():
             dx = pts[i][0] - pts[j][0]
             dy = pts[i][1] - pts[j][1]
             assert (dx * dx + dy * dy) ** 0.5 >= 50.0, (nodes[i]["id"], nodes[j]["id"])
+
+
+def test_dense_cohort_in_a_many_year_graph_never_sinks_below_its_rank_region():
+    """Round-5 review case: 35 year ranks force narrow bands; a 40-paper highly-cited cohort
+    must widen the canvas into more columns rather than overflow below zero-cited papers or
+    into the unranked band."""
+    nodes = [_node(f"year{y}", year=1988 + y, citations=0) for y in range(35)]
+    nodes.extend(_node(f"hot{i}", year=2024, citations=1000) for i in range(40))
+    nodes.append(_node("mystery", year=2024))
+    graph_layout.compute_layout(nodes, [])
+    band_top = graph_layout.HEIGHT - graph_layout._MARGIN - graph_layout._UNRANKED_BAND
+    hot_ys = [n["y"] for n in nodes if n["id"].startswith("hot")]
+    zero_ys = [n["y"] for n in nodes if n["id"].startswith("year")]
+    # Every highly-cited paper stays above every zero-cited paper and above the band.
+    assert max(hot_ys) < min(zero_ys)
+    assert max(hot_ys) < band_top
+    # And nothing overlaps.
+    pts = [(n["x"], n["y"]) for n in nodes]
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            dx = pts[i][0] - pts[j][0]
+            dy = pts[i][1] - pts[j][1]
+            assert (dx * dx + dy * dy) ** 0.5 >= 50.0

@@ -82,24 +82,48 @@ def compute_layout(nodes: list[dict], edges: list[dict]) -> dict:
     adj = [(idx[e["source"]], idx[e["target"]]) for e in edges
            if e.get("source") in idx and e.get("target") in idx]
 
-    # --- Rule 1: X = year rank bands, oldest left -> newest right. The canvas widens first
-    #     if bands would sit closer than ~1.4 minimum separations, so neighboring bands can
-    #     never crowd each other.
+    # --- Rule 1: X = year rank bands, oldest left -> newest right. Column count per band is
+    #     sized from COHORT DENSITY: the worst-case year must fit its ranked papers within the
+    #     ranked region's rows, so the canvas widens (more columns per band) before packing
+    #     would ever have to push a paper below its citation rank. Bands always keep one
+    #     min-separation of clearance from their neighbors.
     min_sep = 56.0
+    top = _MARGIN
+    ranked_bottom = HEIGHT - _MARGIN - _UNRANKED_BAND - _UNRANKED_GAP
+    band_top = HEIGHT - _MARGIN - _UNRANKED_BAND
+    rows_avail = max(1, int((ranked_bottom - top) // min_sep))
+
     years = [_year_of(nd) for nd in nodes]
+    cites = [_citations_of(nd) for nd in nodes]
     year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
     n_ranks = max(1, len(year_rank) - 1)
-    width = max(WIDTH, 2 * _MARGIN + n_ranks * min_sep * 1.4)
+
+    ranked_cohort: dict[int, int] = {}
+    undated_ranked = 0
+    for i in range(n):
+        if cites[i] is None:
+            continue
+        if years[i] is None:
+            undated_ranked += 1
+        else:
+            ranked_cohort[years[i]] = ranked_cohort.get(years[i], 0) + 1
+    # Undated ranked nodes join SOME band; bound the worst case by adding them all to the
+    # densest one (pessimistic, but undated nodes are typically few).
+    worst_cohort = (max(ranked_cohort.values()) if ranked_cohort else 0) + undated_ranked
+    n_cols = max(1, math.ceil(worst_cohort / rows_avail))
+
+    gap_needed = (n_cols + 0.4) * min_sep
+    width = max(WIDTH, 2 * _MARGIN + n_ranks * gap_needed)
     left, right = _MARGIN, width - _MARGIN
     gap = (right - left) / max(1, n_ranks)
 
     def band_base(rank: int) -> float:
         return left + rank / n_ranks * (right - left) if year_rank else width / 2
 
-    # Columns inside a band: spaced min_sep apart, spanning at most (gap - min_sep) so the
-    # nearest columns of ADJACENT bands are still >= min_sep apart in X.
+    # Use any extra width for more columns (fewer rows per cohort), still keeping one
+    # min-separation of clearance between the nearest columns of adjacent bands.
     col_span = max(0.0, min(gap * 0.9, gap - min_sep)) if year_rank else (right - left)
-    n_cols = max(1, int(col_span // min_sep) + 1)
+    n_cols = max(n_cols, max(1, int(col_span // min_sep) + 1))
 
     def column_x(base: float, col: int) -> float:
         return base + (col - (n_cols - 1) / 2) * min_sep
@@ -129,10 +153,6 @@ def compute_layout(nodes: list[dict], edges: list[dict]) -> dict:
 
     # --- Rule 2: target Y from log-scaled citation impact (most-cited at the top); unknown
     #     counts head for the bottom band.
-    top = _MARGIN
-    ranked_bottom = HEIGHT - _MARGIN - _UNRANKED_BAND - _UNRANKED_GAP
-    band_top = HEIGHT - _MARGIN - _UNRANKED_BAND
-    cites = [_citations_of(nd) for nd in nodes]
     known = [c for c in cites if c is not None]
     cmax_log = math.log10(1 + (max(known) if known else 0)) or 1.0
 
@@ -154,14 +174,28 @@ def compute_layout(nodes: list[dict], edges: list[dict]) -> dict:
         ranked = sorted((i for i in members if cites[i] is not None),
                         key=lambda i: (target_y(cites[i]), nodes[i]["id"]))
         cursor = [top - min_sep] * n_cols
+        placed_in_col: list[list[int]] = [[] for _ in range(n_cols)]
         for i in ranked:
             t = target_y(cites[i])
             # The column where this node lands closest to its target (ties: leftmost).
             col = min(range(n_cols), key=lambda c: (max(t, cursor[c] + min_sep), c))
             y = max(t, cursor[col] + min_sep)
             cursor[col] = y
+            placed_in_col[col].append(i)
             px[i] = column_x(base, col)
             py[i] = y
+        # A bottom-heavy cohort (e.g. many zero-cited papers whose target IS the ranked
+        # floor) can only pack downward past the region; shift such a column's run back up
+        # into the ranked region — order inside the column is preserved, and columns are
+        # sized (above) so the run always fits.
+        for col in range(n_cols):
+            overflow = cursor[col] - ranked_bottom
+            if overflow > 0 and placed_in_col[col]:
+                slack = py[placed_in_col[col][0]] - top
+                shift = min(overflow, max(0.0, slack))
+                for i in placed_in_col[col]:
+                    py[i] -= shift
+                cursor[col] -= shift
 
         # Unknowns continue down the SAME column cursors (below any ranked overflow into the
         # band region), starting no higher than the band top — so a deep ranked cohort can
