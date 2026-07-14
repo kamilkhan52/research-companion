@@ -1,4 +1,4 @@
-import { renderAsync, screen } from '@testing-library/react-native';
+import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
 
 import { Markdown } from '@/components/Markdown';
 
@@ -37,4 +37,34 @@ test('paper links join icon and title with a non-breaking space', async () => {
   // rendered tree: the narrow no-break glue char must be present in the link's text run.
   const tree = JSON.stringify(screen.toJSON());
   expect(tree).toContain('\u202f');
+});
+
+// U.7b — models sometimes write the link target INSIDE the brackets; repair, don't render
+// literal bracket soup.
+test('malformed bracket links are repaired into tappable links', async () => {
+  const onLinkPress = jest.fn();
+  await renderAsync(
+    <Markdown
+      text={'Compare [PIM-LLM (rc-paper:pim-llm)] and [KIVI (https://arxiv.org/abs/2402.02750)].'}
+      onLinkPress={onLinkPress}
+    />,
+  );
+  await fireEventAsync.press(screen.getByText(/PIM-LLM/));
+  expect(onLinkPress).toHaveBeenCalledWith('rc-paper:pim-llm', 'PIM-LLM');
+  expect(screen.queryByText(/\[KIVI/)).toBeNull();
+});
+
+test('a legitimate parenthetical inside a proper link label is untouched', async () => {
+  const onLinkPress = jest.fn();
+  await renderAsync(
+    <Markdown
+      text={'See [GPTQ (Frantar et al., 2022)](https://arxiv.org/abs/2210.17323) for details.'}
+      onLinkPress={onLinkPress}
+    />,
+  );
+  await fireEventAsync.press(screen.getByText(/GPTQ \(Frantar et al\., 2022\)/));
+  expect(onLinkPress).toHaveBeenCalledWith(
+    'https://arxiv.org/abs/2210.17323',
+    'GPTQ (Frantar et al., 2022)',
+  );
 });
