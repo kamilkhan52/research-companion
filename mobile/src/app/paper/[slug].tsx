@@ -42,7 +42,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths, turnJobPaths } from '@/api/endpoints';
-import { useAddPaper, useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
+import { useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
 import type { ChatJob, FavoriteModel, ReadingMode, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
@@ -58,6 +58,7 @@ import {
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { AgentActivity } from '@/components/AgentActivity';
+import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
@@ -121,13 +122,16 @@ export default function DiscussionScreen() {
   useEffect(() => {
     if (routePid && routePid !== activePid) setActivePid(routePid);
   }, [activePid, routePid, setActivePid]);
-  const addPaper = useAddPaper(pid ?? '');
 
   // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` (or get
   // linkified from an exact title mention) and open the paper action sheet — hop to its
   // discussion, notes, or Map spot; external references (a URL/arXiv link) prompt to open
   // the source or add it to the reading list.
   const showPaperActions = usePaperActions();
+  // External references open a real action sheet (ExternalRefSheet) with live membership,
+  // replacing the old bare Alert — the flow Kamil asked for: agent cites a web-found paper,
+  // the reader taps it and adds it to the project right from the discussion.
+  const [externalRef, setExternalRef] = useState<ExternalRef | null>(null);
   const handleReferenceLink = useCallback<LinkHandler>((href, label) => {
     if (href.startsWith('rc-paper:')) {
       const s = href.slice('rc-paper:'.length);
@@ -135,22 +139,8 @@ export default function DiscussionScreen() {
       return;
     }
     if (!/^https?:\/\//i.test(href)) return;
-    const arxiv = href.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i);
-    Alert.alert(label || 'External reference', href, [
-      { text: 'Open link', onPress: () => void Linking.openURL(href).catch(() => undefined) },
-      {
-        text: 'Add to reading list',
-        onPress: () => {
-          if (!pid) return;
-          void addPaper.mutateAsync({
-            title: label || href,
-            arxivId: arxiv ? arxiv[1] : undefined,
-          }).catch(() => undefined);
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }, [addPaper, pid, showPaperActions]);
+    setExternalRef({ href, label });
+  }, [showPaperActions]);
 
   const session = useSession(pid, slug ?? null);
   const settings = useSettings();
@@ -261,6 +251,7 @@ export default function DiscussionScreen() {
 
   return (
     <LinkHandlerContext.Provider value={handleReferenceLink}>
+    <ExternalRefSheet pid={pid} refItem={externalRef} onClose={() => setExternalRef(null)} />
     <Screen edges={['top']}>
       <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
       <TopBar

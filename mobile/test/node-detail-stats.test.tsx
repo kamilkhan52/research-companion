@@ -24,7 +24,7 @@ const projectNode: GraphNode = {
 };
 
 async function renderSheet(node: GraphNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0 } } });
   await renderAsync(
     <QueryClientProvider client={client}>
       <NodeDetailSheet

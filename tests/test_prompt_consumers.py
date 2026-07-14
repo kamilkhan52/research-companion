@@ -99,3 +99,18 @@ def test_analysis_and_narration_compose_self_contained_guidance(monkeypatch):
     assert captured["messages"][0]["content"] == (
         "narration instructions\n\ndescribe every referenced item in place"
     )
+
+
+def test_prompts_instruct_linking_web_found_papers():
+    """U.7: external papers the agent finds on the web must arrive as tappable markdown links
+    (the app turns them into an open-or-add sheet). Pin the instruction in both the analysis
+    system prompt and the agentic tool guidance so a prompt edit can't silently drop it."""
+    from app import prompts
+
+    analysis = prompts.get("analysis_system")
+    assert "arxiv.org/abs" in analysis
+    assert "Never fabricate a URL" in analysis
+
+    guidance = prompts.get("analyst_tool_guidance")
+    assert "markdown link" in guidance
+    assert "arxiv.org/abs" in guidance
