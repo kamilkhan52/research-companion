@@ -108,13 +108,16 @@ function SheetContent({
       ) : null}
 
       <View style={styles.statsRow}>
-        <Stat label="Cited by" value={String(node.cited_by_project_count)} />
-        <Stat label="Significant in" value={String(node.significant_cited_by_count)} />
+        <Stat label="Cited in project" value={String(node.cited_by_project_count)} />
+        <Stat label="Significant citations" value={String(node.significant_cited_by_count)} />
         {node.kind === 'project' ? <Stat label="Cites" value={String(node.cites_count)} /> : null}
         {typeof node.citation_count === 'number' ? (
-          <Stat label="Citations overall" value={node.citation_count.toLocaleString()} />
+          <Stat label="Overall citations" value={node.citation_count.toLocaleString()} />
         ) : null}
       </View>
+      <Text variant="caption" color={colors.muted} style={{ marginTop: space.sm }}>
+        Significant: cited as a baseline, extension, or dependency
+      </Text>
 
       {node.kind === 'project' ? (
         <Pressable onPress={() => node.slug && onOpenPaper(node.slug)} style={styles.discussBtn}>
@@ -186,13 +189,15 @@ function SheetContent({
   );
 }
 
+// Label sits ABOVE the number: number-first tiles read as one phrase across the row
+// ("10 Significant in" instead of "Significant in: 10") when labels wrap or tiles sit close.
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.stat}>
+    <View style={styles.stat} accessible accessibilityLabel={`${label}: ${value}`}>
+      <Text variant="caption">{label}</Text>
       <Text variant="title" style={{ fontSize: 24 }} color={colors.violet}>
         {value}
       </Text>
-      <Text variant="caption">{label}</Text>
     </View>
   );
 }
@@ -252,7 +257,7 @@ function EdgeRow({
 
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', gap: space.sm },
-  statsRow: { flexDirection: 'row', gap: space.xl, marginTop: space.lg },
+  statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.lg, rowGap: space.md, marginTop: space.lg },
   stat: { alignItems: 'flex-start' },
   linkBtn: {
     marginTop: space.sm,
