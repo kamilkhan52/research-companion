@@ -136,3 +136,20 @@ def test_dense_unknown_cohorts_pack_without_breaking_time_order():
     # The band grew the canvas downward instead of overflowing.
     assert layout["height"] > graph_layout.HEIGHT
     assert max(p[1] for p in pts) < layout["height"]
+
+
+def test_dense_ranked_cohorts_pack_without_overlap():
+    """Round-3 review stress case: 50 same-year nodes with the SAME citation count (common for
+    recent zero-cited references) must never overlap — packing, not relaxation, guarantees it."""
+    nodes = [_node(f"r{i}", year=2024, citations=100) for i in range(50)]
+    nodes.extend(_node(f"o{i}", year=2023, citations=100) for i in range(50))
+    graph_layout.compute_layout(nodes, [])
+    pts = [(n["x"], n["y"]) for n in nodes]
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            dx = pts[i][0] - pts[j][0]
+            dy = pts[i][1] - pts[j][1]
+            assert (dx * dx + dy * dy) ** 0.5 >= 50.0
+    # Year ordering still strict.
+    assert max(n["x"] for n in nodes if n["id"].startswith("o")) < min(
+        n["x"] for n in nodes if n["id"].startswith("r"))
