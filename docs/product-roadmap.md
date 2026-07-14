@@ -66,7 +66,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete — Android passed |
 | U.9 | Author/affiliation map view — design proposal (Figma) | [#89](https://github.com/kamilkhan52/research-companion/pull/89) | Proposal ready — awaiting sign-off |
 | U.7b | Web-paper link consistency: prompt example + client repair | [#90](https://github.com/kamilkhan52/research-companion/pull/90) | Complete |
-| U.10 | Map retrieval-errors: small dismissible indicator + details sheet | — | Planned |
+| U.10 | Map retrieval-errors: small dismissible indicator + details sheet | [#91](https://github.com/kamilkhan52/research-companion/pull/91) | Complete |
 | U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | — | Planned |
 | U.12 | Long-press assistant response opens the actions menu | — | Planned |
 | U.13 | Composer input growth keeps rounded corners bounded | — | Planned |
