@@ -63,7 +63,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.5 | Recommendations reflect live project membership (Discover + Map) | [#85](https://github.com/kamilkhan52/research-companion/pull/85) | Complete |
 | U.6 | Map build status UI: staged progress + marquee for long titles | [#86](https://github.com/kamilkhan52/research-companion/pull/86) | Complete |
 | U.7 | Agent-cited external papers tappable/addable from discussion | [#87](https://github.com/kamilkhan52/research-companion/pull/87) | Complete |
-| U.8 | Graph layout rules rework (litmaps-informed) | — | Planned |
+| U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete |
 | U.9 | Author/affiliation map view — design proposal (Figma) | — | Planned |
 
 ## Current execution decisions (2026-07-14)
