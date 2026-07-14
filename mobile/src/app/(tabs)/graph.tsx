@@ -481,14 +481,22 @@ export function RetrievalErrors({
         <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
           The map still works; these papers just have no full text yet.
         </Text>
-        <View style={{ marginTop: space.md, gap: space.sm }}>
-          {entries.map(([slug, detail]) => (
-            <View key={slug}>
-              <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
-              <Text variant="caption" color={colors.muted}>{detail}</Text>
-            </View>
-          ))}
-        </View>
+        {/* Bounded against the sheet's height cap (see RelatedWorksSheet.tsx for the RN
+            flexShrink/minHeight incantation) so a long error list scrolls and never pushes
+            Retry/Dismiss out of the viewport. */}
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          style={{ flexGrow: 0, flexShrink: 1, minHeight: 0, marginTop: space.md }}
+        >
+          <View style={{ gap: space.sm }}>
+            {entries.map(([slug, detail]) => (
+              <View key={slug}>
+                <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
+                <Text variant="caption" color={colors.muted}>{detail}</Text>
+              </View>
+            ))}
+          </View>
+        </ScrollView>
         <Button
           title="Retry missing papers"
           onPress={() => {
