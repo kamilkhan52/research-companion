@@ -22,6 +22,7 @@ from .jobs import Job, JobRegistry, now_iso
 
 @dataclass
 class BuildJob(Job):
+    phase: str = "preparing"
     total: int = 0
     ready: int = 0
     done: int = 0
@@ -29,6 +30,10 @@ class BuildJob(Job):
     current_title: str | None = None
     per_paper: dict = field(default_factory=dict)  # slug -> {status, cached, error}
     retrieval_candidates: dict = field(default_factory=dict)  # slug -> confirmation candidates
+    graph_stage: str | None = None
+    graph_completeness: dict | None = None
+    graph_revision: str | None = None
+    graph_updated_at: str | None = None
     graph: dict | None = None
     recommendations: list | None = None
 
@@ -78,9 +83,11 @@ def start_build(pid: str, force: bool = False,
 def _apply_event(job: BuildJob, event: dict) -> None:
     etype = event["type"]
     if etype == "start":
+        job.phase = "preparing"
         job.total = event["total"]
         job.ready = event.get("ready", 0)
     elif etype == "extracting":
+        job.phase = "extraction"
         job.current_slug = event["slug"]
         job.current_title = event["title"]
         job.per_paper[event["slug"]] = {"status": "extracting", "error": None}
@@ -91,6 +98,7 @@ def _apply_event(job: BuildJob, event: dict) -> None:
             "error": event.get("error"),
         }
     elif etype == "metadata":
+        job.phase = "metadata"
         job.current_slug = event["slug"]
         job.current_title = event["title"]
         job.per_paper[event["slug"]] = {"status": "metadata", "error": None}
@@ -100,6 +108,7 @@ def _apply_event(job: BuildJob, event: dict) -> None:
             "error": event.get("error"),
         }
     elif etype == "retrieving":
+        job.phase = "retrieval"
         job.current_slug = event["slug"]
         job.current_title = event["title"]
         job.per_paper[event["slug"]] = {"status": "retrieving", "error": None}
@@ -111,11 +120,22 @@ def _apply_event(job: BuildJob, event: dict) -> None:
         }
         if event.get("candidates"):
             job.retrieval_candidates[event["slug"]] = event["candidates"]
+    elif etype == "skeleton":
+        job.phase = "skeleton_ready"
+        job.graph_stage = event["graph"]["stage"]
+        job.graph_completeness = event["graph"]["completeness"]
+        job.graph_revision = event["graph"]["revision"]
+        job.graph_updated_at = event["graph"]["built_at"]
     elif etype == "done":
         # status/finished_at are set by the registry once work() returns; the graph itself is
         # already persisted by graph.build_graph before this event.
         job.graph = event["graph"]
         job.recommendations = event["recommendations"]
+        job.graph_stage = event["graph"]["stage"]
+        job.graph_completeness = event["graph"]["completeness"]
+        job.graph_revision = event["graph"]["revision"]
+        job.graph_updated_at = event["graph"]["built_at"]
+        job.phase = "complete"
         job.current_slug = None
         job.current_title = None
     elif etype == "error":

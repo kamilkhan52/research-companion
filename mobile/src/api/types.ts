@@ -365,11 +365,23 @@ export interface GraphEdge {
 
 export interface ReferenceGraph {
   built_at: string;
+  revision: string;
   model: string;
+  stage: 'skeleton' | 'enriched';
+  completeness: GraphCompleteness;
   nodes: GraphNode[];
   edges: GraphEdge[];
   /** Canvas bounds for the server-precomputed node positions, when present. */
   layout?: { width: number; height: number };
+}
+
+export interface GraphCompleteness {
+  total_papers: number;
+  metadata_papers: number;
+  ready_papers: number;
+  analyzed_papers: number;
+  metadata_only_edges: number;
+  full_text_edges: number;
 }
 
 /** Cheap, no-LLM status check: which papers still need (re)extraction. */
@@ -377,6 +389,10 @@ export interface GraphStatus {
   has_graph: boolean;
   built_at: string | null;
   model: string | null;
+  graph_revision: string | null;
+  graph_stage: 'skeleton' | 'enriched' | null;
+  graph_completeness: GraphCompleteness | null;
+  graph_needs_enrichment: boolean;
   total_papers: number;
   retrievable_papers: number;
   stale_papers: string[];
@@ -411,6 +427,7 @@ export interface GraphBuildPaperStatus {
  * connection open, so it survives the app being backgrounded/reconnected/relaunched. */
 export interface GraphBuildJob {
   status: 'running' | 'done' | 'error';
+  phase: 'preparing' | 'metadata' | 'skeleton_ready' | 'retrieval' | 'extraction' | 'complete';
   total: number;
   ready: number;
   done: number;
@@ -418,6 +435,10 @@ export interface GraphBuildJob {
   current_title: string | null;
   per_paper: Record<string, GraphBuildPaperStatus>;
   retrieval_candidates: Record<string, GraphRetrievalCandidate[]>;
+  graph_stage: 'skeleton' | 'enriched' | null;
+  graph_completeness: GraphCompleteness | null;
+  graph_revision: string | null;
+  graph_updated_at: string | null;
   graph: ReferenceGraph | null;
   recommendations: GraphRecommendation[] | null;
   error: string | null;

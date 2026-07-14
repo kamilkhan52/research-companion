@@ -45,6 +45,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 5.0 | Semantic Scholar graph metadata foundation | [#77](https://github.com/kamilkhan52/research-companion/pull/77) | Complete |
 | 5.0a | Semantic Scholar graph metadata cache and merge | [#78](https://github.com/kamilkhan52/research-companion/pull/78) | Complete |
 | 5.1 | Retrieve missing project papers during graph builds | [#79](https://github.com/kamilkhan52/research-companion/pull/79) | Complete |
+| 5.2 | Fast graph-skeleton lifecycle and completeness state | — | In progress |
 | 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65), [#73](https://github.com/kamilkhan52/research-companion/pull/73) | Partial — TeX/SVG and responsive scale/scroll shipped; parser replacement deferred |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred |
 | W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Complete |
@@ -83,9 +84,11 @@ and project-context invariants. Retrieved text remains graph-only derived state;
 require explicit source confirmation, individual failures do not abort the build, and progress
 separates total, ready, and analyzed papers.
 
-No follow-up product slice is scheduled automatically. The next graph candidates are the fast
-skeleton lifecycle and bounded one-hop node expansion recorded in the Semantic Scholar spike;
-figure cards and the remaining deferred polish should be reprioritized explicitly.
+Phase **5.2 Fast graph-skeleton lifecycle** is active. Persist the metadata/cached-analysis map
+before missing-paper retrieval and full-text enrichment, expose its completeness in job/API state,
+and let mobile and web render that useful map while enrichment continues. Bounded one-hop node
+expansion remains the next graph candidate; figure cards and other deferred polish still require
+explicit reprioritization.
 
 Rows 2.2a, 2.3, 4.0, and 4.1 retain a pending device-pass record. Before scheduling new device
 work, reconcile those rows with checks Kamil has already completed and record only the remaining
@@ -506,6 +509,12 @@ Continue after per-paper failures. Report total project papers separately from r
 papers using “N of M ready” language. Preserve incremental extraction caches and job resumability.
 Retrieved full text is stored only as graph-derived state; source confirmation never edits the
 git-backed reading list or corpus.
+
+Persist an explicitly marked skeleton snapshot as soon as provider metadata is ready. Polling job
+snapshots expose only the small lifecycle/completeness marker; clients fetch the persisted graph
+once per collision-proof snapshot revision instead of transferring the full graph on every
+progress poll. An interrupted skeleton remains explicitly resumable after a server restart. Replace
+the skeleton atomically with the enriched graph after retrieval and full-text analysis complete.
 
 ## Phase 6 — equations and figures
 

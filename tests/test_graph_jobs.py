@@ -71,10 +71,20 @@ def test_status_is_queryable_while_the_job_is_still_running(temp_project):
     # Poll almost immediately: the job should already be visible and "running", proving a
     # caller doesn't need to wait for completion to see live progress (this is the polling
     # contract the mobile client relies on).
-    time.sleep(0.02)
+    deadline = time.time() + 1.0
     job = graph_jobs.get_job(temp_project)
+    while job and job.graph_stage is None and time.time() < deadline:
+        time.sleep(0.01)
+        job = graph_jobs.get_job(temp_project)
     assert job is not None
     assert job.status == "running"
+    assert job.graph is None  # keep the frequently polled job snapshot lightweight
+    assert job.graph_stage == "skeleton"
+    assert job.graph_completeness is not None
+    assert job.graph_revision is not None
+    assert job.graph_updated_at is not None
+    assert graph_store.load()["graph"]["stage"] == "skeleton"
+    assert job.phase in {"skeleton_ready", "extraction"}
 
     _wait_until_done(temp_project)
 
