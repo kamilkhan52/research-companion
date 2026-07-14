@@ -190,3 +190,22 @@ def test_papers_without_cached_full_text_are_skipped_not_errored(temp_project):
     assert events[0]["ready"] == 0  # total project papers and analyzable papers stay distinct
     st = graph.status(papers)
     assert st["missing_text_papers"] == [store.derive_slug("Unretrieved Paper")]
+
+
+def test_skeleton_snapshot_uses_cached_citation_counts(temp_project):
+    """U.8 round-2 fix: the fast skeleton is published without network fetches, but it must
+    still apply citation counts the cache ALREADY knows — otherwise the whole skeleton lays
+    out in the unranked band while stamped with the semantic layout marker."""
+    add_paper(temp_project, "a", "Paper A", full_text="A's full text with references.")
+    papers = store.list_papers(sessions.session_states())
+
+    # Seed the persisted citation cache before the build (as a prior enriched build would).
+    data = graph_store.load()
+    data["citations"]["a"] = 1234
+    graph_store.save(data)
+
+    events = list(graph.build_graph(papers, extract_fn=fake_extractor([])))
+    skeleton = next(event for event in events if event["type"] == "skeleton")
+    node_a = next(n for n in skeleton["graph"]["nodes"] if n["id"] == "a")
+    assert node_a["citation_count"] == 1234
+    assert skeleton["graph"]["layout"]["algo"] == "semantic-v2"

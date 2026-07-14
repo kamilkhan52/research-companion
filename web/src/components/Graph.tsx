@@ -59,6 +59,18 @@ export function Graph({ onNavigate }: Props) {
     return edges;
   }, [edges, filter]);
 
+  // Server layouts place fresh skeletons far from the identity viewport (e.g. an all-unknown
+  // build packs everything near the canvas bottom), which rendered as a BLANK map until the
+  // user clicked Fit. Auto-fit once per graph revision whenever server coordinates exist.
+  const lastFitKey = useRef<string | null>(null);
+  const fitServerLayout = useCallback((engine: GraphEngine | null) => {
+    if (!engine || !nodes.some((n) => n.x !== undefined && n.y !== undefined)) return;
+    const key = graph?.revision ?? `${nodes.length}`;
+    if (lastFitKey.current === key) return;
+    lastFitKey.current = key;
+    engine.zoomToFit();
+  }, [nodes, graph?.revision]);
+
   const setCanvasRef = useCallback((el: HTMLCanvasElement | null) => {
     if (!el) return;
     canvasRef.current = el;
@@ -70,6 +82,7 @@ export function Graph({ onNavigate }: Props) {
     // Feed data if already loaded (canvas mounts after data resolves)
     if (nodes.length > 0) {
       engine.setData(nodes, filteredEdges, recommendations);
+      fitServerLayout(engine);
     }
     if (highlightedIds) {
       engine.setOptions({ highlightedNodeIds: highlightedIds });
@@ -86,8 +99,9 @@ export function Graph({ onNavigate }: Props) {
   useEffect(() => {
     if (nodes.length > 0 && engineRef.current) {
       engineRef.current.setData(nodes, filteredEdges, recommendations);
+      fitServerLayout(engineRef.current);
     }
-  }, [nodes, filteredEdges, recommendations]);
+  }, [nodes, filteredEdges, recommendations, fitServerLayout]);
 
   if (loading) {
     return (
@@ -166,7 +180,19 @@ export function Graph({ onNavigate }: Props) {
         </button>
       </div>
 
-      <canvas ref={setCanvasRef} className="graph-canvas" />
+      <div className="graph-canvas-wrap">
+        <canvas ref={setCanvasRef} className="graph-canvas" />
+        {/* Axis legend for the server layout's semantics (app/graph_layout.py rules:
+            X = publication time, Y = citation impact). Gated on the layout ALGO marker, not
+            mere coordinate presence — persisted legacy layouts (force-directed X) would be
+            mislabeled by these axes until their next rebuild. */}
+        {graph?.layout?.algo === 'semantic-v2' && (
+          <>
+            <span className="graph-axis graph-axis-x">older → newer</span>
+            <span className="graph-axis graph-axis-y">↑ more cited</span>
+          </>
+        )}
+      </div>
 
       {hasSemanticScholarData && (
         <a

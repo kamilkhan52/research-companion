@@ -50,14 +50,18 @@ export function GraphCanvas({
   selectedId,
   highlightIds,
   onSelectNode,
+  layoutAlgo,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
   selectedId: string | null;
   highlightIds: Set<string> | null;
   onSelectNode: (node: GraphNode) => void;
+  /** graph.layout.algo from the server — axis legends render only for 'semantic-v2'. */
+  layoutAlgo?: string | null;
 }) {
-  const { positions, width, height } = useGraphLayout(nodes, edges);
+  const { positions, width, height, semantic } = useGraphLayout(nodes, edges);
+  const showAxes = !!semantic && layoutAlgo === 'semantic-v2';
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
   const translateX = useSharedValue(0);
@@ -296,6 +300,20 @@ export function GraphCanvas({
         <Icon name="rotate-ccw" size={13} color={colors.text} />
         <Text variant="caption" color={colors.text}>Reset view</Text>
       </Pressable>
+
+      {/* Axis legend — the layout's semantics (graph_layout.py rules: X = publication time,
+          Y = citation impact) made visible, so positions read as information, not accident.
+          Hidden for legacy graphs still on the client force-sim fallback (no semantic axes). */}
+      {showAxes ? (
+        <>
+          <View pointerEvents="none" style={styles.axisX}>
+            <Text variant="caption" color={colors.muted}>older → newer</Text>
+          </View>
+          <View pointerEvents="none" style={styles.axisY}>
+            <Text variant="caption" color={colors.muted}>↑ more cited</Text>
+          </View>
+        </>
+      ) : null}
     </View>
     </GestureDetector>
   );
@@ -450,6 +468,18 @@ const NodeCircle = memo(function NodeCircle({
 
 const styles = StyleSheet.create({
   viewport: { flex: 1, overflow: 'hidden' },
+  axisX: {
+    position: 'absolute',
+    bottom: space.sm,
+    alignSelf: 'center',
+    opacity: 0.85,
+  },
+  axisY: {
+    position: 'absolute',
+    top: space.sm,
+    left: space.md,
+    opacity: 0.85,
+  },
   resetBtn: {
     position: 'absolute',
     right: space.md,

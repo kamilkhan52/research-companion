@@ -1,24 +1,48 @@
 """Server-side graph layout, computed once per build and stored in the graph JSON so the client
-renders instantly (no O(n^2) force sim on the phone's JS thread) and every client agrees on
-node positions.
+renders instantly (no force sim on the phone's JS thread) and every client agrees on positions.
 
-Layout style (Litmaps-like): the Y axis is TIME — older papers sit near the top, more recent
-ones toward the bottom — so recency is readable at a glance. The X axis is force-directed
-(connected papers pull together, everything repels) so clusters form horizontally within each
-time band. Repulsion uses a spatial grid (only nearby nodes push on each other), keeping the
-whole thing O(n) per iteration rather than O(n^2), so 700+ nodes lay out in well under a second.
+THE LAYOUT RULES (U.8 — Litmaps-informed, and deliberately explainable in one sentence each):
+
+  1. X = publication time. Distinct years get evenly spaced vertical bands, oldest at the LEFT,
+     newest at the RIGHT (Litmaps' default X axis). Year rank — not linear year — because
+     citation-graph years cluster hard; linear spacing left huge dead stretches and packed
+     recent years into a sliver. Undated nodes inherit the average X of their graph neighbors
+     (they live in the timeframe of the papers that cite them) instead of a mystery band.
+  2. Y = citation impact. log10(1 + overall citations), most-cited at the TOP (Litmaps'
+     default Y axis) — so the influential papers a reader has heard of float up, and the
+     top-right corner is "recent + influential". Nodes with an unknown citation count sit in
+     a band at the bottom: visually "unranked", not fake-zero-cited.
+  3. No force simulation and no iterative relaxation. Both axes carry meaning, so nothing may
+     push a node somewhere semantically wrong; the previous force-directed X was exactly the
+     "what is the positioning logic?" illegibility this replaces. Edges consequently read
+     left→right (older work ← cited by newer work).
+  4. Overlap is impossible by construction: every year band is a small set of COLUMNS spaced
+     one min-separation apart (never wider than the band, and the canvas widens first if year
+     bands would crowd each other), and nodes are packed greedily down the columns — ranked
+     nodes at (or just below) their citation-target Y in target order, unknown-citation nodes
+     row by row inside the bottom band, which grows the canvas downward when a cohort
+     outgrows it. Any two nodes therefore differ by at least the minimum separation in X
+     (different columns/bands) or in Y (same column). Dense same-year/same-citation cohorts —
+     the common "many recent zero-cited references" case — pack instead of colliding.
+
+Everything is deterministic so rebuilds don't reshuffle the map. Clients draw axis
+legends from these semantics ("older → newer", "↑ more cited"); if the rules here change, the
+legends in mobile GraphCanvas / web Graph must change with them.
 """
 from __future__ import annotations
 
 import math
-import random
 import re
 
 WIDTH = 2200.0
 HEIGHT = 2200.0
 _MARGIN = 80.0
-_ITERATIONS = 140
 _ARXIV_RE = re.compile(r"^(\d{2})(\d{2})\.\d{4,5}")
+
+# The bottom strip reserved for unknown-citation nodes (rule 2), separated from the ranked
+# region by a small gap so "bottom of the ranking" and "unranked" don't blur together.
+_UNRANKED_BAND = 140.0
+_UNRANKED_GAP = 60.0
 
 
 def _year_of(node: dict) -> int | None:
@@ -35,143 +59,162 @@ def _year_of(node: dict) -> int | None:
     return None
 
 
-def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> dict:
-    """Mutate `nodes`, adding rounded 'x'/'y' screen coordinates, and return the canvas bounds
-    {'width','height'}. Deterministic (seeded) so rebuilds don't reshuffle the graph."""
+def _citations_of(node: dict) -> int | None:
+    c = node.get("citation_count")
+    return c if isinstance(c, int) and c >= 0 else None
+
+
+# Stamped into the graph JSON's layout dict. Clients show the axis legends ONLY for this
+# value: coordinates persisted by older algorithms (force-directed X) carry different meaning,
+# and labeling them "older → newer / more cited" would be wrong until the next rebuild.
+LAYOUT_ALGO = "semantic-v2"
+
+
+def compute_layout(nodes: list[dict], edges: list[dict]) -> dict:
+    """Mutate `nodes`, adding rounded 'x'/'y' screen coordinates per the module rules, and
+    return the canvas bounds + algo marker {'width','height','algo'}. Fully deterministic —
+    the packing needs no randomness at all."""
     n = len(nodes)
     if n == 0:
-        return {"width": WIDTH, "height": HEIGHT}
+        return {"width": WIDTH, "height": HEIGHT, "algo": LAYOUT_ALGO}
 
-    rnd = random.Random(seed)
     idx = {nd["id"]: i for i, nd in enumerate(nodes)}
-
-    # --- Y = time, by year RANK rather than linear year value: distinct years get evenly
-    #     spaced bands. Linear mapping made edge lengths wildly uneven — a citation graph's
-    #     years cluster hard (most papers within a few years, a few from decades back), so
-    #     linear left huge empty stretches that stretched some edges across half the canvas
-    #     while packing recent years (and their edges) into a sliver. Rank spacing keeps the
-    #     old->new reading while bounding how long a cross-year edge can get.
-    #     Undated nodes go in a band just above the timeline so they read as "unknown date".
-    years = [_year_of(nd) for nd in nodes]
-    year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
-    n_ranks = max(1, len(year_rank) - 1)
-    top, bottom = _MARGIN, HEIGHT - _MARGIN
-    undated_y = top * 0.6
-
-    def target_y(y: int | None) -> float:
-        return undated_y if y is None else top + year_rank[y] / n_ranks * (bottom - top)
-
-    ty = [target_y(y) for y in years]
-
     adj = [(idx[e["source"]], idx[e["target"]]) for e in edges
            if e.get("source") in idx and e.get("target") in idx]
 
-    # --- X init: project papers evenly spaced; every other node starts at the average X of its
-    #     graph neighbors (+ jitter). Starting connected nodes together matters more than the
-    #     springs: with random init the springs have to drag nodes across the whole canvas and
-    #     never fully converge, leaving most edges enormously long.
-    px = [WIDTH / 2.0] * n
-    projects = [i for i, nd in enumerate(nodes) if nd.get("kind") == "project"]
-    for k, i in enumerate(projects):
-        px[i] = _MARGIN + (k + 0.5) / max(1, len(projects)) * (WIDTH - 2 * _MARGIN)
-    neighbor_x: dict[int, list[float]] = {}
-    for a, b in adj:
-        neighbor_x.setdefault(b, []).append(px[a])
-        neighbor_x.setdefault(a, []).append(px[b])
+    # --- Rule 1: X = year rank bands, oldest left -> newest right. Column count per band is
+    #     sized from COHORT DENSITY: the worst-case year must fit its ranked papers within the
+    #     ranked region's rows, so the canvas widens (more columns per band) before packing
+    #     would ever have to push a paper below its citation rank. Bands always keep one
+    #     min-separation of clearance from their neighbors.
+    min_sep = 56.0
+    top = _MARGIN
+    ranked_bottom = HEIGHT - _MARGIN - _UNRANKED_BAND - _UNRANKED_GAP
+    band_top = HEIGHT - _MARGIN - _UNRANKED_BAND
+    rows_avail = max(1, int((ranked_bottom - top) // min_sep))
+
+    years = [_year_of(nd) for nd in nodes]
+    cites = [_citations_of(nd) for nd in nodes]
+    year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
+    n_ranks = max(1, len(year_rank) - 1)
+
+    ranked_cohort: dict[int, int] = {}
+    undated_ranked = 0
     for i in range(n):
-        if i in neighbor_x and nodes[i].get("kind") != "project":
-            px[i] = sum(neighbor_x[i]) / len(neighbor_x[i]) + rnd.uniform(-90, 90)
-        elif nodes[i].get("kind") != "project":
-            px[i] = rnd.uniform(_MARGIN, WIDTH - _MARGIN)
-    py = [ty[i] + rnd.uniform(-15, 15) for i in range(n)]
+        if cites[i] is None:
+            continue
+        if years[i] is None:
+            undated_ranked += 1
+        else:
+            ranked_cohort[years[i]] = ranked_cohort.get(years[i], 0) + 1
+    # Undated ranked nodes join SOME band; bound the worst case by adding them all to the
+    # densest one (pessimistic, but undated nodes are typically few).
+    worst_cohort = (max(ranked_cohort.values()) if ranked_cohort else 0) + undated_ranked
+    n_cols = max(1, math.ceil(worst_cohort / rows_avail))
 
-    cell = 140.0            # repulsion neighborhood radius
-    k_rep = 5000.0          # repulsion strength
-    ideal = 110.0           # spring rest length
-    for it in range(_ITERATIONS):
-        cool = 1.0 - it / _ITERATIONS
-        fx = [0.0] * n
-        fy = [0.0] * n
+    gap_needed = (n_cols + 0.4) * min_sep
+    width = max(WIDTH, 2 * _MARGIN + n_ranks * gap_needed)
+    left, right = _MARGIN, width - _MARGIN
+    gap = (right - left) / max(1, n_ranks)
 
-        # Grid-bucketed repulsion: only nodes within neighboring cells push on each other.
-        grid: dict[tuple[int, int], list[int]] = {}
-        for i in range(n):
-            grid.setdefault((int(px[i] // cell), int(py[i] // cell)), []).append(i)
-        for (cx, cy), members in grid.items():
-            neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                         for m in grid.get((cx + dx, cy + dy), [])]
-            for i in members:
-                for j in neighbors:
-                    if j <= i:
-                        continue
-                    ddx = px[i] - px[j]
-                    ddy = py[i] - py[j]
-                    d2 = ddx * ddx + ddy * ddy + 0.01
-                    f = k_rep / d2
-                    fxi, fyi = f * ddx, f * ddy
-                    fx[i] += fxi
-                    fy[i] += fyi
-                    fx[j] -= fxi
-                    fy[j] -= fyi
+    def band_base(rank: int) -> float:
+        return left + rank / n_ranks * (right - left) if year_rank else width / 2
 
-        # Edge springs pull citing/cited papers together.
+    # Use any extra width for more columns (fewer rows per cohort), still keeping one
+    # min-separation of clearance between the nearest columns of adjacent bands.
+    col_span = max(0.0, min(gap * 0.9, gap - min_sep)) if year_rank else (right - left)
+    n_cols = max(n_cols, max(1, int(col_span // min_sep) + 1))
+
+    def column_x(base: float, col: int) -> float:
+        return base + (col - (n_cols - 1) / 2) * min_sep
+
+    # Undated nodes inherit the average X of their graph neighbors (two passes so chains
+    # settle), then snap to the nearest year band; isolated undated nodes take the center.
+    band_of = [0.0] * n
+    approx_x = [width / 2] * n
+    for i in range(n):
+        if years[i] is not None:
+            approx_x[i] = band_base(year_rank[years[i]])
+            band_of[i] = approx_x[i]
+    undated = [i for i in range(n) if years[i] is None]
+    if undated:
+        neighbor: dict[int, list[int]] = {}
         for a, b in adj:
-            ddx = px[a] - px[b]
-            ddy = py[a] - py[b]
-            d = math.sqrt(ddx * ddx + ddy * ddy) + 0.01
-            f = (d - ideal) * 0.2
-            fxi, fyi = f * ddx / d, f * ddy / d
-            fx[a] -= fxi
-            fy[a] -= fyi
-            fx[b] += fxi
-            fy[b] += fyi
+            neighbor.setdefault(a, []).append(b)
+            neighbor.setdefault(b, []).append(a)
+        for _ in range(2):
+            for i in undated:
+                anchors = [approx_x[j] for j in neighbor.get(i, [])]
+                if anchors:
+                    approx_x[i] = sum(anchors) / len(anchors)
+        bases = sorted({band_base(r) for r in year_rank.values()}) or [width / 2]
+        for i in undated:
+            band_of[i] = min(bases, key=lambda b: abs(b - approx_x[i]))
 
-        # Integrate: X moves freely (with cooling + a step cap); Y is pulled SOFTLY toward the
-        # node's time band. Soft (not hard) pinning matters: a hard pin flattens each year into
-        # a 1D line, which forces crowded years to spread enormously wide in X (very long
-        # edges). A gentle pull keeps old->new reading top->bottom while letting clusters form
-        # as compact 2D blobs.
-        max_step = 45.0 * cool
-        for i in range(n):
-            px[i] += max(-max_step, min(max_step, fx[i] * 0.02))
-            py[i] += max(-max_step, min(max_step, fy[i] * 0.02))
-            py[i] += (ty[i] - py[i]) * 0.06
+    # --- Rule 2: target Y from log-scaled citation impact (most-cited at the top); unknown
+    #     counts head for the bottom band.
+    known = [c for c in cites if c is not None]
+    cmax_log = math.log10(1 + (max(known) if known else 0)) or 1.0
 
-    # Minimum-separation pass: the sim reduces crowding but the Y-pin can leave same-year
-    # neighbors nearly on top of each other (edges "too short" to read). Push any pair closer
-    # than MIN_SEP apart along X only (preserving the temporal Y), a few sweeps until settled.
-    MIN_SEP = 60.0
-    for _ in range(24):
-        moved = False
-        grid: dict[tuple[int, int], list[int]] = {}
-        for i in range(n):
-            grid.setdefault((int(px[i] // MIN_SEP), int(py[i] // MIN_SEP)), []).append(i)
-        for (cx, cy), members in grid.items():
-            neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                         for m in grid.get((cx + dx, cy + dy), [])]
-            for i in members:
-                for j in neighbors:
-                    if j <= i:
-                        continue
-                    ddx = px[i] - px[j]
-                    ddy = py[i] - py[j]
-                    d = math.sqrt(ddx * ddx + ddy * ddy)
-                    if d < MIN_SEP:
-                        push = (MIN_SEP - d) / 2 + 0.5
-                        direction = 1.0 if (ddx > 0 or (ddx == 0 and i > j)) else -1.0
-                        px[i] += direction * push
-                        px[j] -= direction * push
-                        moved = True
-        if not moved:
-            break
+    def target_y(c: int) -> float:
+        frac = math.log10(1 + c) / cmax_log  # 0 (uncited) .. 1 (most cited)
+        return top + (1.0 - frac) * (ranked_bottom - top)
 
-    # Translate X to start at the margin, growing the canvas if needed rather than rescaling —
-    # squeezing back into a fixed width would undo the minimum separation in dense year bands.
-    xmin = min(px)
-    xspan = max(px) - xmin
-    width = max(WIDTH, xspan + 2 * _MARGIN)
-    offset = _MARGIN + (width - 2 * _MARGIN - xspan) / 2  # center when narrower than the canvas
+    # --- Rules 3+4: deterministic column packing per band. Ranked nodes are placed in target-Y
+    #     order at max(target, cursor + min_sep) on whichever column keeps them closest to
+    #     their target; unknowns then pack row-by-row from the band top. Separation holds by
+    #     construction (see module docstring), with zero iteration.
+    px = [0.0] * n
+    py = [0.0] * n
+    max_y_placed = band_top
+    by_band: dict[float, list[int]] = {}
+    for i in range(n):
+        by_band.setdefault(band_of[i], []).append(i)
+    for base, members in sorted(by_band.items()):
+        ranked = sorted((i for i in members if cites[i] is not None),
+                        key=lambda i: (target_y(cites[i]), nodes[i]["id"]))
+        cursor = [top - min_sep] * n_cols
+        placed_in_col: list[list[int]] = [[] for _ in range(n_cols)]
+        for i in ranked:
+            t = target_y(cites[i])
+            # The column where this node lands closest to its target (ties: leftmost).
+            col = min(range(n_cols), key=lambda c: (max(t, cursor[c] + min_sep), c))
+            y = max(t, cursor[col] + min_sep)
+            cursor[col] = y
+            placed_in_col[col].append(i)
+            px[i] = column_x(base, col)
+            py[i] = y
+        # A bottom-heavy cohort (e.g. many zero-cited papers whose target IS the ranked
+        # floor) can only pack downward past the region; shift such a column's run back up
+        # into the ranked region — order inside the column is preserved, and columns are
+        # sized (above) so the run always fits.
+        for col in range(n_cols):
+            overflow = cursor[col] - ranked_bottom
+            if overflow > 0 and placed_in_col[col]:
+                slack = py[placed_in_col[col][0]] - top
+                shift = min(overflow, max(0.0, slack))
+                for i in placed_in_col[col]:
+                    py[i] -= shift
+                cursor[col] -= shift
+
+        # Unknowns continue down the SAME column cursors (below any ranked overflow into the
+        # band region), starting no higher than the band top — so a deep ranked cohort can
+        # never interleave with the unranked rows.
+        unknown = sorted((i for i in members if cites[i] is None), key=lambda i: nodes[i]["id"])
+        band_start = band_top + _UNRANKED_GAP * 0.5
+        ucursor = [max(band_start - min_sep, cursor[c]) for c in range(n_cols)]
+        for i in unknown:
+            col = min(range(n_cols), key=lambda c: (ucursor[c], c))
+            y = ucursor[col] + min_sep
+            ucursor[col] = y
+            px[i] = column_x(base, col)
+            py[i] = y
+        if members:
+            max_y_placed = max(max_y_placed, max(py[i] for i in members))
+
+    height = max(HEIGHT, max_y_placed + _MARGIN)
+
     for i, nd in enumerate(nodes):
-        nd["x"] = round(offset + px[i] - xmin, 1)
+        nd["x"] = round(px[i], 1)
         nd["y"] = round(py[i], 1)
-    return {"width": round(width, 1), "height": HEIGHT}
+    return {"width": round(width, 1), "height": round(height, 1), "algo": LAYOUT_ALGO}
