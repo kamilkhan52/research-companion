@@ -43,6 +43,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 4.3 | Reading-mode prompt templates, full-paper access, and assistant activity | [#72](https://github.com/kamilkhan52/research-companion/pull/72) | Complete |
 | 4.4 | Stable Map pinch-release positioning | [#70](https://github.com/kamilkhan52/research-companion/pull/70) | Complete |
 | 5.0 | Semantic Scholar graph metadata foundation | [#77](https://github.com/kamilkhan52/research-companion/pull/77) | Complete |
+| 5.0a | Semantic Scholar graph metadata cache and merge | [#78](https://github.com/kamilkhan52/research-companion/pull/78) | Complete |
 | 5.1 | Retrieve missing project papers during graph builds | — | Next queued item |
 | 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65), [#73](https://github.com/kamilkhan52/research-companion/pull/73) | Partial — TeX/SVG and responsive scale/scroll shipped; parser replacement deferred |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred until after 5.1 |
@@ -70,6 +71,11 @@ The Semantic Scholar comparison and provider foundation are recorded as **5.0**
 identity/reference metadata layer; cached local full-text analysis remains authoritative for
 project-specific citation significance. Provider influence and intent stay separate from the
 existing `significant` verdict.
+
+Phase **5.0a** ([#78](https://github.com/kamilkhan52/research-companion/pull/78)) persists
+provider references independently, merges identifiers and provider evidence into full-text
+edges, and permits clearly marked metadata-only edges before full text is available. It does
+not retrieve missing paper text; that remains Phase 5.1.
 
 The next repository-owned product change is **5.1 Missing-paper retrieval for graph builds**.
 Retrieve confidently sourced missing-paper text through the existing background-job pipeline while
@@ -481,6 +487,10 @@ provider provenance and attribution. Its account-wide request limit is enforced 
 shared client pacer. Provider contexts, intents, and influence metadata are evidence rather than
 replacements for the existing project-specific full-text significance analysis. The comparison
 and rollout slices are documented in [`semantic-scholar-graph-spike.md`](semantic-scholar-graph-spike.md).
+
+Provider source resolution and reference pages are cached independently from LLM extraction.
+Metadata-only edges remain non-significant until local full-text analysis verifies the relation;
+mobile and web Map views attribute Semantic Scholar whenever such data is displayed.
 
 Parse and retain arXiv/source metadata in reading-list entries. Extend graph jobs with retrieval and
 extraction phases: confidently matched missing papers are fetched without creating a discussion;
