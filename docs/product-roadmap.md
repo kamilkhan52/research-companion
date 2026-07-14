@@ -56,7 +56,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
 | W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
-| U.1 | Map stat tiles: label-first layout + unambiguous stat labels | — | Complete |
+| U.1 | Map stat tiles: label-first layout + unambiguous stat labels | [#81](https://github.com/kamilkhan52/research-companion/pull/81) | Complete |
 | U.2 | Fix literal `---` artifacts in notes/discussion rendering | — | Planned |
 | U.3 | Keep paper-link icon on the same line as the title's first word | — | Planned |
 | U.4 | Cancel control for in-flight audio synthesis jobs | — | Planned |
