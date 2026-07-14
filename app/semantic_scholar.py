@@ -68,6 +68,15 @@ class RequestPacer:
 _PACER = RequestPacer()
 
 
+def paced_request(
+    request: Callable[[], httpx.Response],
+    *,
+    pacer: RequestPacer | None = None,
+) -> httpx.Response:
+    """Run any Semantic Scholar request through the account-wide pacing boundary."""
+    return (pacer or _PACER).call(request)
+
+
 def api_key() -> str:
     return (
         os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
@@ -113,7 +122,9 @@ def _request(
     response: httpx.Response | None = None
     for attempt in range(MAX_RETRIES):
         try:
-            response = pacer.call(lambda: client.get(path, params=params, headers=headers))
+            response = paced_request(
+                lambda: client.get(path, params=params, headers=headers), pacer=pacer
+            )
         except httpx.HTTPError as exc:
             if attempt + 1 == MAX_RETRIES:
                 raise SemanticScholarError(f"Semantic Scholar request failed: {exc}") from exc
