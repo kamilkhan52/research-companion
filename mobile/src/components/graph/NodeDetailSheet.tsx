@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { useAddPaper } from '@/api/queries';
+import { useAddPaper, useProjectMembership } from '@/api/queries';
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Chip, Icon, Text } from '@/ui';
@@ -55,13 +55,17 @@ function SheetContent({
 }) {
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
+  // The graph snapshot can lag the reading list (e.g. the paper was added from Discover a
+  // moment ago): an "external" node that is already in the project must not offer Add.
+  const { isInProject } = useProjectMembership(pid);
+  const inProject = added || isInProject({ arxivId: node.arxiv_id, title: node.title });
 
   const citedBy = edges.filter((e) => e.target === node.id);
   const citesOthers = node.kind === 'project' ? edges.filter((e) => e.source === node.id) : [];
   const link = fullPaperUrl(node);
 
   async function handleAdd() {
-    if (!pid || added) return;
+    if (!pid || inProject) return;
     try {
       await addPaper.mutateAsync({
         title: node.title,
@@ -128,15 +132,15 @@ function SheetContent({
       ) : (
         <Pressable
           onPress={handleAdd}
-          disabled={added || addPaper.isPending}
-          style={[styles.discussBtn, added && styles.discussBtnDone]}
-          accessibilityLabel={added ? `${node.title} added to project` : `Add ${node.title} to project`}
+          disabled={inProject || addPaper.isPending}
+          style={[styles.discussBtn, inProject && styles.discussBtnDone]}
+          accessibilityLabel={inProject ? `${node.title} is in this project` : `Add ${node.title} to project`}
         >
           {addPaper.isPending ? (
             <ActivityIndicator color={colors.mintInk} />
           ) : (
-            <Text variant="heading" color={added ? colors.mint : colors.mintInk}>
-              {added ? 'Added to reading list' : 'Add to project'}
+            <Text variant="heading" color={inProject ? colors.mint : colors.mintInk}>
+              {added ? 'Added to reading list' : inProject ? 'Already in this project' : 'Add to project'}
             </Text>
           )}
         </Pressable>

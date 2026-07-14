@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { useAddPaper } from '@/api/queries';
+import { useAddPaper, useProjectMembership } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { fullPaperUrl } from '@/lib/paperLinks';
@@ -88,10 +88,14 @@ function RecommendationCard({
 }) {
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
+  // Recommendations come from the last graph build; membership must track the LIVE reading
+  // list so papers added since (from any surface) stop offering "+ Add".
+  const { isInProject } = useProjectMembership(pid);
+  const inProject = added || isInProject({ arxivId: rec.arxiv_id, title: rec.title });
   const paperUrl = fullPaperUrl(rec);
 
   async function handleAdd() {
-    if (!pid || added) return;
+    if (!pid || inProject) return;
     try {
       await addPaper.mutateAsync({
         title: rec.title,
@@ -157,20 +161,20 @@ function RecommendationCard({
               event.stopPropagation();
               void handleAdd();
             }}
-            disabled={added || addPaper.isPending}
+            disabled={inProject || addPaper.isPending}
             hitSlop={6}
-            style={[styles.addBtn, added && styles.addBtnDone]}
-            accessibilityLabel={added ? `${rec.title} added to project` : `Add ${rec.title} to project`}
+            style={[styles.addBtn, inProject && styles.addBtnDone]}
+            accessibilityLabel={inProject ? `${rec.title} is in this project` : `Add ${rec.title} to project`}
           >
             {addPaper.isPending ? (
               <ActivityIndicator size="small" color={colors.mintInk} />
             ) : (
               <Text
                 variant="caption"
-                color={added ? colors.mint : colors.mintInk}
-                style={added ? null : { fontFamily: fonts.bodySemiBold }}
+                color={inProject ? colors.mint : colors.mintInk}
+                style={inProject ? null : { fontFamily: fonts.bodySemiBold }}
               >
-                {added ? 'Added to reading list' : '+ Add'}
+                {added ? 'Added to reading list' : inProject ? 'In project' : '+ Add'}
               </Text>
             )}
           </Pressable>

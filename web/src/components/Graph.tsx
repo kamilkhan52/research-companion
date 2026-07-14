@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useGraph } from '@/hooks/useGraph';
-import { useActivePid } from '@/hooks/useLibrary';
+import { useActivePid, useLibrary, useProjectMembership } from '@/hooks/useLibrary';
 import { GraphEngine } from '@/graph/engine';
 import type { GraphNode, GraphRecommendation, GraphRetrievalCandidate } from '@/api/graph-types';
 import { addPaper } from '@/api/endpoints';
@@ -344,9 +344,11 @@ function BuildProgress({
 function RecommendationsPanel({ recs, pid }: { recs: GraphRecommendation[]; pid: string | null }) {
   const [added, setAdded] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const { isInProject } = useProjectMembership();
+  const { refetch } = useLibrary();
   async function add(rec: GraphRecommendation) {
     if (!pid) return;
-    try { await addPaper(pid, rec.title, rec.arxiv_id || undefined); setAdded((previous) => new Set(previous).add(rec.id)); }
+    try { await addPaper(pid, rec.title, rec.arxiv_id || undefined); setAdded((previous) => new Set(previous).add(rec.id)); refetch(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
   }
   return (
@@ -361,7 +363,7 @@ function RecommendationsPanel({ recs, pid }: { recs: GraphRecommendation[]; pid:
                 <span key={i} className="recs-reason">{rr}</span>
               ))}
             </div>
-            <button className="btn ghost" disabled={added.has(r.id)} onClick={() => void add(r)}>{added.has(r.id) ? 'Added ✓' : '+ Add'}</button>
+            <button className="btn ghost" disabled={added.has(r.id) || isInProject({ arxivId: r.arxiv_id, title: r.title })} onClick={() => void add(r)}>{added.has(r.id) ? 'Added ✓' : isInProject({ arxivId: r.arxiv_id, title: r.title }) ? 'In project' : '+ Add'}</button>
           </div>
         ))}
       </div>

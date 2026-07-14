@@ -6,7 +6,7 @@ import {
   type DiscoveryJob,
   type DiscoverySuggestion,
 } from '@/api/endpoints';
-import { useActivePid } from '@/hooks/useLibrary';
+import { useActivePid, useLibrary, useProjectMembership } from '@/hooks/useLibrary';
 import './Discovery.css';
 
 interface Props { onNavigate: (hash: string) => void; }
@@ -20,6 +20,8 @@ export function Discovery({ onNavigate }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [added, setAdded] = useState<Set<string>>(new Set());
+  const { isInProject } = useProjectMembership();
+  const { refetch } = useLibrary();
   const [addingId, setAddingId] = useState<string | null>(null);
   const [specificTitle, setSpecificTitle] = useState('');
   const [specificArxiv, setSpecificArxiv] = useState('');
@@ -100,6 +102,7 @@ export function Discovery({ onNavigate }: Props) {
     try {
       await addPaper(activePid, title, arxivId, abstract);
       setAdded((previous) => new Set(previous).add(id));
+      refetch();  // membership everywhere else updates immediately
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -134,6 +137,7 @@ export function Discovery({ onNavigate }: Props) {
           <div className="suggestion-list">
             {visibleSuggestions.map((suggestion) => {
               const id = suggestion.arxiv_id || suggestion.title;
+              const inLibrary = added.has(id) || isInProject({ arxivId: suggestion.arxiv_id, title: suggestion.title });
               return <div key={id} className="suggestion-card">
                 <div className="suggestion-body">
                   <div className="suggestion-title">{suggestion.title}</div>
@@ -144,8 +148,8 @@ export function Discovery({ onNavigate }: Props) {
                   </div>
                   <p className="suggestion-abstract muted">{suggestion.abstract?.slice(0, 200)}{(suggestion.abstract?.length ?? 0) > 200 ? '…' : ''}</p>
                 </div>
-                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract)} disabled={added.has(id) || addingId === id}>
-                  {added.has(id) ? 'Added ✓' : addingId === id ? 'Adding…' : '+ Add'}
+                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract)} disabled={inLibrary || addingId === id}>
+                  {added.has(id) ? 'Added ✓' : inLibrary ? 'In library' : addingId === id ? 'Adding…' : '+ Add'}
                 </button>
               </div>;
             })}
