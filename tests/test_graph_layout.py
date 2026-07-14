@@ -153,3 +153,18 @@ def test_dense_ranked_cohorts_pack_without_overlap():
     # Year ordering still strict.
     assert max(n["x"] for n in nodes if n["id"].startswith("o")) < min(
         n["x"] for n in nodes if n["id"].startswith("r"))
+
+
+def test_ranked_overflow_never_interleaves_with_unranked_rows():
+    """Round-4 review case: a single-column band whose ranked cohort overflows toward the
+    unranked band must not land unknowns between/atop the overflowed ranked nodes."""
+    nodes = [_node(f"year{y}", year=y, citations=1) for y in range(1990, 2024)]  # many bands
+    nodes.extend(_node(f"z{i}", year=2024, citations=0) for i in range(40))
+    nodes.extend(_node(f"u{i}", year=2024) for i in range(6))
+    graph_layout.compute_layout(nodes, [])
+    pts = [(n["x"], n["y"]) for n in nodes]
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            dx = pts[i][0] - pts[j][0]
+            dy = pts[i][1] - pts[j][1]
+            assert (dx * dx + dy * dy) ** 0.5 >= 50.0, (nodes[i]["id"], nodes[j]["id"])

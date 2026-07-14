@@ -163,11 +163,18 @@ def compute_layout(nodes: list[dict], edges: list[dict]) -> dict:
             px[i] = column_x(base, col)
             py[i] = y
 
+        # Unknowns continue down the SAME column cursors (below any ranked overflow into the
+        # band region), starting no higher than the band top — so a deep ranked cohort can
+        # never interleave with the unranked rows.
         unknown = sorted((i for i in members if cites[i] is None), key=lambda i: nodes[i]["id"])
-        for k, i in enumerate(unknown):
-            row, col = divmod(k, n_cols)
+        band_start = band_top + _UNRANKED_GAP * 0.5
+        ucursor = [max(band_start - min_sep, cursor[c]) for c in range(n_cols)]
+        for i in unknown:
+            col = min(range(n_cols), key=lambda c: (ucursor[c], c))
+            y = ucursor[col] + min_sep
+            ucursor[col] = y
             px[i] = column_x(base, col)
-            py[i] = band_top + _UNRANKED_GAP * 0.5 + row * min_sep
+            py[i] = y
         if members:
             max_y_placed = max(max_y_placed, max(py[i] for i in members))
 
