@@ -61,12 +61,18 @@ def _citations_of(node: dict) -> int | None:
     return c if isinstance(c, int) and c >= 0 else None
 
 
+# Stamped into the graph JSON's layout dict. Clients show the axis legends ONLY for this
+# value: coordinates persisted by older algorithms (force-directed X) carry different meaning,
+# and labeling them "older → newer / more cited" would be wrong until the next rebuild.
+LAYOUT_ALGO = "semantic-v2"
+
+
 def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> dict:
     """Mutate `nodes`, adding rounded 'x'/'y' screen coordinates per the module rules, and
-    return the canvas bounds {'width','height'}. Deterministic (seeded)."""
+    return the canvas bounds + algo marker {'width','height','algo'}. Deterministic (seeded)."""
     n = len(nodes)
     if n == 0:
-        return {"width": WIDTH, "height": HEIGHT}
+        return {"width": WIDTH, "height": HEIGHT, "algo": LAYOUT_ALGO}
 
     rnd = random.Random(seed)
     idx = {nd["id"]: i for i, nd in enumerate(nodes)}
@@ -122,10 +128,15 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
 
     # --- Rule 4: deterministic minimum-separation sweeps, nudging along Y (each node stays in
     #     its year band). Clamping happens INSIDE the sweep — a post-hoc clamp would re-stack
-    #     everything it pinned to a margin — and a node pinned against a canvas edge hands its
-    #     remaining push to X instead.
+    #     everything it pinned to a margin — and a node pinned against its bound hands the
+    #     remaining push to X instead. Bounds are PER CLASS: ranked nodes may not be pushed
+    #     down into the unranked band, and unranked nodes may not escape upward out of it —
+    #     either would silently falsify the Y axis.
     min_sep = 56.0
-    y_min, y_max = _MARGIN * 0.5, HEIGHT - _MARGIN * 0.25
+    band_top = HEIGHT - _MARGIN - _UNRANKED_BAND
+    y_lo = [(_MARGIN * 0.5) if cites[i] is not None else band_top for i in range(n)]
+    y_hi = [(ranked_bottom + _UNRANKED_GAP * 0.5) if cites[i] is not None
+            else HEIGHT - _MARGIN * 0.25 for i in range(n)]
     for _ in range(30):
         moved = False
         grid: dict[tuple[int, int], list[int]] = {}
@@ -145,8 +156,8 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
                         continue
                     push = (min_sep - d) / 2 + 0.5
                     direction = 1.0 if (ddy > 0 or (ddy == 0 and i > j)) else -1.0
-                    new_i = max(y_min, min(y_max, py[i] + direction * push))
-                    new_j = max(y_min, min(y_max, py[j] - direction * push))
+                    new_i = max(y_lo[i], min(y_hi[i], py[i] + direction * push))
+                    new_j = max(y_lo[j], min(y_hi[j], py[j] - direction * push))
                     absorbed = abs(new_i - py[i]) + abs(new_j - py[j])
                     py[i], py[j] = new_i, new_j
                     remainder = 2 * push - absorbed
@@ -161,4 +172,4 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
     for i, nd in enumerate(nodes):
         nd["x"] = round(px[i], 1)
         nd["y"] = round(py[i], 1)
-    return {"width": WIDTH, "height": HEIGHT}
+    return {"width": WIDTH, "height": HEIGHT, "algo": LAYOUT_ALGO}

@@ -81,4 +81,27 @@ def test_deterministic_across_runs():
 
 
 def test_empty_graph_is_safe():
-    assert graph_layout.compute_layout([], []) == {"width": graph_layout.WIDTH, "height": graph_layout.HEIGHT}
+    assert graph_layout.compute_layout([], []) == {
+        "width": graph_layout.WIDTH, "height": graph_layout.HEIGHT, "algo": graph_layout.LAYOUT_ALGO,
+    }
+
+
+def test_crowded_unknowns_stay_inside_the_unranked_band():
+    """Collision relief must not falsify the Y axis: a pile of unknown-citation nodes may
+    spread along X, but never escape upward past the band boundary into ranked territory."""
+    nodes = [_node(f"u{i}", year=2024) for i in range(14)]
+    nodes.append(_node("zero", year=2024, citations=0))
+    graph_layout.compute_layout(nodes, [])
+    band_top = graph_layout.HEIGHT - graph_layout._MARGIN - graph_layout._UNRANKED_BAND
+    by_id = {n["id"]: n for n in nodes}
+    for n in nodes:
+        if n["id"] != "zero":
+            assert n["y"] >= band_top - 0.1
+    # And the ranked zero-citation node stays above every unranked one.
+    assert by_id["zero"]["y"] < min(n["y"] for n in nodes if n["id"] != "zero")
+
+
+def test_layout_is_stamped_with_the_algo_marker():
+    nodes = [_node("a", year=2020, citations=5)]
+    layout = graph_layout.compute_layout(nodes, [])
+    assert layout["algo"] == "semantic-v2"

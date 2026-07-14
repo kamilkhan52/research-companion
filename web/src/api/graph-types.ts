@@ -54,7 +54,7 @@ export interface ReferenceGraph {
   completeness: GraphCompleteness;
   nodes: GraphNode[];
   edges: GraphEdge[];
-  layout?: { width: number; height: number };
+  layout?: { width: number; height: number; algo?: string };
 }
 
 export interface GraphCompleteness {

@@ -96,7 +96,7 @@ def _fetch_missing(
     #    that actually influence recommendations (most-cited-in-project first), and stop at the
     #    first 429 (the endpoint stays throttled once it starts).
     titled = [n for n in missing if not _external_id(n) and n["id"] not in cache
-              and n.get("kind") == "external" and len(n.get("title", "")) >= 15]
+              and len(n.get("title", "")) >= 15]
     titled.sort(key=lambda n: (n.get("significant_cited_by_count", 0),
                                n.get("cited_by_project_count", 0)), reverse=True)
     for n in titled[:MAX_TITLE_LOOKUPS]:

@@ -309,6 +309,7 @@ export default function GraphScreen() {
             selectedId={selectedNode?.id ?? null}
             highlightIds={null}
             onSelectNode={setSelectedNode}
+            layoutAlgo={graph?.layout?.algo ?? null}
           />
 
           {hasSemanticScholarData ? (

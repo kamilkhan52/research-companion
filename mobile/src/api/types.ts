@@ -372,8 +372,10 @@ export interface ReferenceGraph {
   completeness: GraphCompleteness;
   nodes: GraphNode[];
   edges: GraphEdge[];
-  /** Canvas bounds for the server-precomputed node positions, when present. */
-  layout?: { width: number; height: number };
+  /** Canvas bounds + layout algorithm marker for the server-precomputed positions. Clients
+   *  show the axis legends only for algo 'semantic-v2' (X = time, Y = citation impact) —
+   *  older persisted layouts carry different meaning until the next rebuild. */
+  layout?: { width: number; height: number; algo?: string };
 }
 
 export interface GraphCompleteness {
