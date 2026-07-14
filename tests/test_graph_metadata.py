@@ -153,6 +153,27 @@ def test_provider_identifier_matches_a_project_paper_without_title_similarity():
     assert not any(node["kind"] == "external" for node in nodes)
 
 
+def test_conflicting_arxiv_id_vetoes_project_title_match():
+    papers = [
+        paper("source", "Source Paper"),
+        paper("project-target", "Identical Title", arxiv_id="2401.00001"),
+    ]
+    metadata = {
+        "source": provider_record([{
+            "paper_id": "different-paper", "title": "Identical Title",
+            "arxiv_id": "2401.99999", "contexts": [], "intents": [],
+            "is_influential": False,
+        }])
+    }
+
+    combined = graph.merge_reference_sources(papers, {}, metadata)
+    nodes, edges = graph.build_nodes_and_edges(papers, combined)
+
+    assert edges[0]["target"] != "project-target"
+    assert edges[0]["target"] == "ext:arxiv:2401.99999"
+    assert len([node for node in nodes if node["kind"] == "external"]) == 1
+
+
 def test_provider_identifier_and_title_only_mentions_dedupe_to_one_external_node():
     papers = [paper("a", "Paper A"), paper("b", "Paper B")]
     extractions = {
@@ -195,6 +216,29 @@ def test_conflicting_identifiers_do_not_collapse_only_because_titles_match():
     nodes, edges = graph.build_nodes_and_edges(papers, extractions)
 
     assert len([node for node in nodes if node["kind"] == "external"]) == 2
+    assert len(edges) == 2
+
+
+def test_matching_strong_alias_dedupes_even_when_another_identifier_conflicts():
+    papers = [paper("a", "Paper A"), paper("b", "Paper B")]
+    extractions = {
+        "a": {"status": "done", "references": [{
+            "title": "First Metadata", "arxiv_id": "2401.00001", "doi": "10.1/one",
+            "significant": False,
+        }]},
+        "b": {"status": "done", "references": [{
+            "title": "Second Metadata", "arxiv_id": "2401.00001", "doi": "10.1/two",
+            "significant": False,
+        }]},
+    }
+
+    nodes, edges = graph.build_nodes_and_edges(papers, extractions)
+
+    external = [node for node in nodes if node["kind"] == "external"]
+    assert len(external) == 1
+    assert external[0]["title"] == "First Metadata"
+    assert external[0]["doi"] == "10.1/one"
+    assert external[0]["cited_by_project_count"] == 2
     assert len(edges) == 2
 
 

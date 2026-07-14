@@ -351,6 +351,9 @@ def match_project_paper(ref: dict, papers: list[Paper]) -> str | None:
             paper_arxiv = re.sub(r"v\d+$", "", p.arxiv_id, flags=re.IGNORECASE)
             if ref_arxiv.lower() == paper_arxiv.lower():
                 return p.slug
+            # Conflicting strong identity is authoritative for this candidate: an identical
+            # or fuzzy-matching title must not turn a different paper into an in-project edge.
+            continue
         if titles_match(title, p.title):
             return p.slug
     return None
@@ -533,12 +536,21 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
             else:
                 keys = external_ref_keys(ref)
                 key = keys[0]
+                # An exact strong alias wins even if another provider identifier is noisy.
+                # Only title-only reuse needs the conflict veto.
                 target_id = next((
-                    candidate
+                    external_key_to_id[alias]
                     for alias in keys
-                    if (candidate := external_key_to_id.get(alias)) is not None
-                    and not _identifiers_conflict(ref, nodes[candidate])
+                    if not alias.startswith("title:") and alias in external_key_to_id
                 ), None)
+                if target_id is None:
+                    target_id = next((
+                        candidate
+                        for alias in keys
+                        if alias.startswith("title:")
+                        and (candidate := external_key_to_id.get(alias)) is not None
+                        and not _identifiers_conflict(ref, nodes[candidate])
+                    ), None)
                 if not target_id:
                     target_id = f"ext:{key}"
                     nodes[target_id] = {
