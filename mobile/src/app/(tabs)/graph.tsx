@@ -8,6 +8,7 @@ import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, T
 
 import { useGraph } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
+import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
@@ -441,7 +442,10 @@ function SkeletonResume({ build }: { build: GraphBuildState }) {
   );
 }
 
-function RetrievalErrors({
+// U.10: retrieval problems are worth knowing about, not worth a big red card squatting above
+// the map. A small amber indicator opens the details sheet; Dismiss shrinks it to a ghost
+// icon (still tappable later), and a NEW error set re-surfaces the full indicator.
+export function RetrievalErrors({
   errors,
   build,
 }: {
@@ -449,22 +453,61 @@ function RetrievalErrors({
   build: GraphBuildState;
 }) {
   const entries = Object.entries(errors);
+  const errorsKey = entries.map(([slug]) => slug).sort().join('|');
+  const [open, setOpen] = useState(false);
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   if (!entries.length || build.building) return null;
+  const dismissed = dismissedKey === errorsKey;
   return (
-    <Card style={[styles.confirmationCard, { borderColor: colors.danger }]}>
-      <Text variant="heading">Some papers could not be retrieved</Text>
-      {entries.map(([slug, detail]) => (
-        <Text key={slug} variant="caption" color={colors.danger} style={{ marginTop: space.xs }}>
-          {slug}: {detail}
+    <>
+      <View style={styles.retrievalIndicatorRow}>
+        <Pressable
+          onPress={() => setOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`${entries.length} papers could not be retrieved — show details`}
+          style={[styles.retrievalIndicator, dismissed && styles.retrievalIndicatorGhost]}
+        >
+          <Icon name="alert-circle" size={14} color={colors.amber} />
+          {!dismissed ? (
+            <Text variant="caption" color={colors.amber}>
+              {entries.length} not retrieved
+            </Text>
+          ) : null}
+        </Pressable>
+      </View>
+      <BottomSheet visible={open} onClose={() => setOpen(false)}>
+        <Text variant="heading">Papers that could not be retrieved</Text>
+        <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+          The map still works; these papers just have no full text yet.
         </Text>
-      ))}
-      <Button
-        title="Retry missing papers"
-        variant="ghost"
-        onPress={() => build.run(false)}
-        style={{ marginTop: space.sm }}
-      />
-    </Card>
+        <View style={{ marginTop: space.md, gap: space.sm }}>
+          {entries.map(([slug, detail]) => (
+            <View key={slug}>
+              <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
+              <Text variant="caption" color={colors.muted}>{detail}</Text>
+            </View>
+          ))}
+        </View>
+        <Button
+          title="Retry missing papers"
+          onPress={() => {
+            setOpen(false);
+            void build.run(false);
+          }}
+          style={{ marginTop: space.lg }}
+        />
+        <Button
+          title="Dismiss"
+          variant="ghost"
+          onPress={() => {
+            setDismissedKey(errorsKey);
+            setOpen(false);
+          }}
+          style={{ marginTop: space.sm }}
+        />
+      </BottomSheet>
+    </>
   );
 }
 
@@ -627,6 +670,24 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   banner: { margin: space.md, marginBottom: 0 },
+  retrievalIndicatorRow: { paddingHorizontal: space.md, paddingTop: space.sm, alignItems: 'flex-start' },
+  retrievalIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(228, 184, 92, 0.4)',
+    backgroundColor: 'rgba(228, 184, 92, 0.08)',
+  },
+  retrievalIndicatorGhost: {
+    opacity: 0.45,
+    backgroundColor: 'transparent',
+    borderColor: 'transparent',
+    paddingHorizontal: 4,
+  },
   buildStepsRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
