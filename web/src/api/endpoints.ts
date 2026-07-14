@@ -26,8 +26,15 @@ export function getGraph(pid: string): Promise<GraphResponse> {
   return apiGet(`/api/projects/${encodeURIComponent(pid)}/graph`);
 }
 
-export function buildGraph(pid: string, force = false): Promise<{ build: GraphBuildJob }> {
-  return apiPost(`/api/projects/${encodeURIComponent(pid)}/graph/build`, { force });
+export function buildGraph(
+  pid: string,
+  force = false,
+  retrievalSources: Record<string, string> = {},
+): Promise<{ build: GraphBuildJob }> {
+  return apiPost(`/api/projects/${encodeURIComponent(pid)}/graph/build`, {
+    force,
+    retrieval_sources: retrievalSources,
+  });
 }
 
 export function getGraphBuildStatus(pid: string): Promise<{ build: GraphBuildJob }> {

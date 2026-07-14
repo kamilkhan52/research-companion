@@ -158,6 +158,7 @@ def test_papers_without_cached_full_text_are_skipped_not_errored(temp_project):
     assert any(not p.retrieved for p in papers)
 
     events = list(graph.build_graph(papers, extract_fn=fake_extractor([])))
-    assert events[0]["total"] == 0  # nothing retrievable to extract
+    assert events[0]["total"] == 1
+    assert events[0]["ready"] == 0  # total project papers and analyzable papers stay distinct
     st = graph.status(papers)
     assert st["missing_text_papers"] == [store.derive_slug("Unretrieved Paper")]

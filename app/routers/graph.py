@@ -5,7 +5,7 @@ isn't waiting on the request (an earlier SSE-stream-IS-the-build design didn't s
 those). See CLAUDE.md invariant 1 and the docstrings in graph_jobs.py."""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import graph, graph_jobs, graph_store, sessions, store
 from . import make_project_router
@@ -16,6 +16,9 @@ project_router = make_project_router()
 class GraphBuildReq(BaseModel):
     # Refresh provider metadata and re-extract every retrievable paper, ignoring both caches.
     force: bool = False
+    # Explicit user-confirmed arXiv source per reading-list slug. Values are used only by the
+    # project-bound graph background job and never written into the git-backed reading list.
+    retrieval_sources: dict[str, str] = Field(default_factory=dict)
 
 
 @project_router.get("/graph")
@@ -50,5 +53,7 @@ def build_graph_start(pid: str, req: GraphBuildReq):
     """Starts a build in the background and returns its current snapshot immediately (does
     NOT block until it finishes). If a build is already running for this project, joins it
     (returns its current progress) rather than starting a duplicate."""
-    job = graph_jobs.start_build(pid, force=req.force)
+    job = graph_jobs.start_build(
+        pid, force=req.force, retrieval_sources=req.retrieval_sources
+    )
     return {"build": job.to_dict()}

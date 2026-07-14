@@ -44,9 +44,9 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 4.4 | Stable Map pinch-release positioning | [#70](https://github.com/kamilkhan52/research-companion/pull/70) | Complete |
 | 5.0 | Semantic Scholar graph metadata foundation | [#77](https://github.com/kamilkhan52/research-companion/pull/77) | Complete |
 | 5.0a | Semantic Scholar graph metadata cache and merge | [#78](https://github.com/kamilkhan52/research-companion/pull/78) | Complete |
-| 5.1 | Retrieve missing project papers during graph builds | — | Next queued item |
+| 5.1 | Retrieve missing project papers during graph builds | [#79](https://github.com/kamilkhan52/research-companion/pull/79) | Complete |
 | 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65), [#73](https://github.com/kamilkhan52/research-companion/pull/73) | Partial — TeX/SVG and responsive scale/scroll shipped; parser replacement deferred |
-| 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred until after 5.1 |
+| 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred |
 | W.1 | Web rebuild: Vite + React foundation + CI | [#20](https://github.com/kamilkhan52/research-companion/pull/20) | Complete |
 | W.2 | Web rebuild: Library | [#21](https://github.com/kamilkhan52/research-companion/pull/21) | Complete |
 | W.3 | Web rebuild: Graph (high-perf canvas) | [#23](https://github.com/kamilkhan52/research-companion/pull/23) | Merged |
@@ -75,11 +75,17 @@ existing `significant` verdict.
 Phase **5.0a** ([#78](https://github.com/kamilkhan52/research-companion/pull/78)) persists
 provider references independently, merges identifiers and provider evidence into full-text
 edges, and permits clearly marked metadata-only edges before full text is available. It does
-not retrieve missing paper text; that remains Phase 5.1.
+not retrieve missing paper text; that follow-up is completed by Phase 5.1.
 
-The next repository-owned product change is **5.1 Missing-paper retrieval for graph builds**.
-Retrieve confidently sourced missing-paper text through the existing background-job pipeline while
-preserving approval and project-context invariants.
+Phase **5.1** ([#79](https://github.com/kamilkhan52/research-companion/pull/79)) retrieves confidently
+sourced missing-paper text through the existing background-job pipeline while preserving approval
+and project-context invariants. Retrieved text remains graph-only derived state; ambiguous matches
+require explicit source confirmation, individual failures do not abort the build, and progress
+separates total, ready, and analyzed papers.
+
+No follow-up product slice is scheduled automatically. The next graph candidates are the fast
+skeleton lifecycle and bounded one-hop node expansion recorded in the Semantic Scholar spike;
+figure cards and the remaining deferred polish should be reprioritized explicitly.
 
 Rows 2.2a, 2.3, 4.0, and 4.1 retain a pending device-pass record. Before scheduling new device
 work, reconcile those rows with checks Kamil has already completed and record only the remaining
@@ -88,7 +94,7 @@ acceptance cases.
 The remaining ideas are not silently pending: retrieval-phase spoken cues (2.2b), global motion
 tuning (the remainder of 4.2), wholesale Markdown-parser replacement (the remainder of 6.1), arXiv
 HTML figure cards (6.2), and deferred iOS acceptance passes stay deferred until explicitly
-reprioritized. Phase 5.1 is the only scheduled product item.
+reprioritized.
 
 ## Locked product decisions
 
@@ -498,6 +504,8 @@ ambiguous papers are reported as needing source confirmation and can be resolved
 
 Continue after per-paper failures. Report total project papers separately from ready/analyzable
 papers using “N of M ready” language. Preserve incremental extraction caches and job resumability.
+Retrieved full text is stored only as graph-derived state; source confirmation never edits the
+git-backed reading list or corpus.
 
 ## Phase 6 — equations and figures
 

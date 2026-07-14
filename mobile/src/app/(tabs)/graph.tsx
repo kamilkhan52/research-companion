@@ -7,11 +7,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
-import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
+import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { TabHeader } from '@/components/TopBar';
+import { canStartGraphBuild } from '@/graph/buildAvailability';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -159,6 +160,12 @@ export default function GraphScreen() {
   }
 
   const staleCount = status?.stale_papers.length ?? 0;
+  const retrievalErrors = status?.retrieval_errors ?? {};
+  const retrievalErrorCount = Object.keys(retrievalErrors).length;
+  const changedPaperCount = status?.stale_papers.filter((slug) => !retrievalErrors[slug]).length ?? 0;
+  const retrievalCandidates = build.progress?.retrievalCandidates
+    ?? status?.retrieval_candidates
+    ?? {};
 
   function openPaper(slug: string) {
     setSelectedNode(null);
@@ -193,9 +200,17 @@ export default function GraphScreen() {
             badge: staleCount > 0,
             onPress: () => {
               if (staleCount > 0) {
+                const reasons = [
+                  retrievalErrorCount > 0
+                    ? `${retrievalErrorCount} paper source${retrievalErrorCount === 1 ? '' : 's'} could not be retrieved.`
+                    : '',
+                  changedPaperCount > 0
+                    ? `${changedPaperCount} paper${changedPaperCount === 1 ? '' : 's'} changed since the last build.`
+                    : '',
+                ].filter(Boolean).join(' ');
                 Alert.alert(
                   'Rebuild reference graph?',
-                  `${staleCount} paper${staleCount === 1 ? '' : 's'} changed since the last build.`,
+                  `${reasons} Rebuild to retry or refresh the affected papers.`,
                   [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
@@ -226,6 +241,10 @@ export default function GraphScreen() {
       ) : (
         <>
           {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
+
+          <RetrievalConfirmations candidates={retrievalCandidates} build={build} />
+
+          <RetrievalErrors errors={retrievalErrors} build={build} />
 
           <FilterBar
             query={query}
@@ -327,9 +346,9 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
         {status
           ? status.semantic_scholar_enabled
             ? `Build a fast reference map for ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'} ` +
-              'from Semantic Scholar metadata, then enrich papers with cached full text to verify citation context and significance.'
-            : `Build it from this project's ${status.retrievable_papers} paper${status.retrievable_papers === 1 ? '' : 's'}. ` +
-              'Each paper with cached full text is read once to extract its bibliography and citation significance.'
+              'from Semantic Scholar metadata, then retrieve missing full text when a confident arXiv source is available.'
+            : `Build it from this project's ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'}. ` +
+              'Cached full text is analyzed directly; missing text is retrieved from arXiv when a source can be matched confidently.'
           : 'Papers are analyzed to find how they cite each other and which outside work they depend on.'}
       </Text>
       {build.error ? (
@@ -337,24 +356,84 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
           {build.error}
         </Text>
       ) : null}
+      <RetrievalConfirmations
+        candidates={build.progress?.retrievalCandidates ?? status?.retrieval_candidates ?? {}}
+        build={build}
+      />
       <Button
         title="Build graph"
         onPress={() => build.run(false)}
-        disabled={!status || status.total_papers === 0 || (
-          status.retrievable_papers === 0 && !status.semantic_scholar_enabled
-        )}
+        disabled={!canStartGraphBuild(status)}
       />
-      {status && status.retrievable_papers === 0 && !status.semantic_scholar_enabled ? (
+      {status && status.retrievable_papers === 0 ? (
         <Text variant="caption" style={{ marginTop: space.md, textAlign: 'center' }}>
-          No papers have cached full text yet. Open one in Discussion, or configure Semantic Scholar in Settings.
+          Missing papers will be matched through arXiv. You will be asked to confirm any ambiguous source.
         </Text>
       ) : null}
     </View>
   );
 }
 
+function RetrievalConfirmations({
+  candidates,
+  build,
+}: {
+  candidates: Record<string, GraphRetrievalCandidate[]>;
+  build: GraphBuildState;
+}) {
+  const entries = Object.entries(candidates).filter(([, options]) => options.length > 0);
+  if (!entries.length || build.building) return null;
+  return (
+    <Card style={styles.confirmationCard}>
+      <Text variant="heading">Confirm paper sources</Text>
+      <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+        These matches were not confident enough to download automatically.
+      </Text>
+      {entries.map(([slug, options]) => (
+        <View key={slug} style={{ marginTop: space.md, gap: space.xs }}>
+          {options.slice(0, 3).map((candidate) => (
+            <Button
+              key={candidate.arxiv_id}
+              title={`${candidate.title} · arXiv:${candidate.arxiv_id}`}
+              variant="ghost"
+              onPress={() => build.run(false, { [slug]: candidate.arxiv_id })}
+            />
+          ))}
+        </View>
+      ))}
+    </Card>
+  );
+}
+
+function RetrievalErrors({
+  errors,
+  build,
+}: {
+  errors: Record<string, string>;
+  build: GraphBuildState;
+}) {
+  const entries = Object.entries(errors);
+  if (!entries.length || build.building) return null;
+  return (
+    <Card style={[styles.confirmationCard, { borderColor: colors.danger }]}>
+      <Text variant="heading">Some papers could not be retrieved</Text>
+      {entries.map(([slug, detail]) => (
+        <Text key={slug} variant="caption" color={colors.danger} style={{ marginTop: space.xs }}>
+          {slug}: {detail}
+        </Text>
+      ))}
+      <Button
+        title="Retry missing papers"
+        variant="ghost"
+        onPress={() => build.run(false)}
+        style={{ marginTop: space.sm }}
+      />
+    </Card>
+  );
+}
+
 function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
-  const pct = progress && progress.total > 0 ? progress.done / progress.total : 0;
+  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
@@ -369,7 +448,7 @@ function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['p
             <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
           </View>
           <Text variant="caption" style={{ marginTop: 4 }}>
-            {progress.done} / {progress.total} papers
+            {progress.ready} of {progress.total} ready · {progress.done} analyzed
           </Text>
         </>
       ) : null}
@@ -511,4 +590,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.xs,
   },
+  confirmationCard: { margin: space.md, marginBottom: 0 },
 });

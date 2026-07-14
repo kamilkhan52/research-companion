@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from . import config
@@ -40,6 +41,7 @@ def _empty() -> dict:
         # Provider metadata is cached independently from LLM/full-text extraction so a
         # provider refresh never invalidates or re-spends the scholarly analysis cache.
         "providers": {"semantic_scholar": {"papers": {}}},
+        "retrievals": {},     # slug -> graph-only derived retrieval status/metadata
     }
 
 
@@ -59,6 +61,7 @@ def load() -> dict:
     data.setdefault("citations", {})  # node id -> global citation count (Semantic Scholar cache)
     providers = data.setdefault("providers", {})
     providers.setdefault("semantic_scholar", {}).setdefault("papers", {})
+    data.setdefault("retrievals", {})
     return data
 
 
@@ -81,6 +84,32 @@ def get_provider_paper(data: dict, provider: str, slug: str) -> dict | None:
 
 def set_provider_paper(data: dict, provider: str, slug: str, record: dict) -> None:
     data.setdefault("providers", {}).setdefault(provider, {}).setdefault("papers", {})[slug] = record
+
+
+def _retrieved_text_file(slug: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9-]+", slug or ""):
+        raise ValueError("Invalid graph retrieval slug")
+    return config.state_dir() / "graph-corpus" / f"{slug}.txt"
+
+
+def get_retrieval(data: dict, slug: str) -> dict | None:
+    return data.get("retrievals", {}).get(slug)
+
+
+def set_retrieval(data: dict, slug: str, record: dict) -> None:
+    data.setdefault("retrievals", {})[slug] = record
+
+
+def write_retrieved_text(slug: str, text: str) -> None:
+    atomic_write_text(_retrieved_text_file(slug), text)
+
+
+def read_retrieved_text(slug: str) -> str:
+    path = _retrieved_text_file(slug)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def set_graph(data: dict, graph_payload: dict) -> None:

@@ -31,6 +31,22 @@
   color: var(--cyan);
 }
 
+.graph-confirmations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+  margin-bottom: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid rgba(228, 184, 92, .32);
+  border-radius: var(--radius-sm);
+  background: rgba(228, 184, 92, .07);
+}
+
+.graph-retrieval-errors {
+  border-color: var(--danger);
+}
+
 /* ---- controls ---- */
 
 .graph-controls {
