@@ -82,7 +82,12 @@ type Block =
   | { kind: 'list'; ordered: boolean; items: string[] }
   | { kind: 'quote'; blocks: Block[] }
   | { kind: 'code'; text: string }
-  | { kind: 'math'; tex: string };
+  | { kind: 'math'; tex: string }
+  | { kind: 'rule' };
+
+// Thematic break (`---` / `***` / `___`, optionally space-separated à la CommonMark). Models
+// separate sections with these constantly; without this rule they rendered as literal "---".
+const isThematicBreak = (line: string) => /^(-{3,}|_{3,}|\*{3,})$/.test(line.replace(/\s+/g, ''));
 
 // A paragraph that is nothing but one display-math span renders as a standalone equation
 // block: `\[ … \]` (the output contract) or `$$ … $$` (compatibility with existing text).
@@ -161,6 +166,14 @@ function parseBlocks(src: string): Block[] {
       continue;
     }
 
+    // Thematic break — must run before the list check: CommonMark gives `- - -` to the break,
+    // not to a bullet list.
+    if (isThematicBreak(line)) {
+      blocks.push({ kind: 'rule' });
+      i++;
+      continue;
+    }
+
     // Blockquote
     if (line.startsWith('>')) {
       const buf: string[] = [];
@@ -195,6 +208,7 @@ function parseBlocks(src: string): Block[] {
       !lines[i].startsWith('>') &&
       !lines[i].trim().startsWith('```') &&
       !/^\s*([-*]|\d+\.)\s+/.test(lines[i]) &&
+      !isThematicBreak(lines[i]) &&
       !standaloneMathAt(lines, i)
     ) {
       buf.push(lines[i].trim());
@@ -258,6 +272,8 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
       );
     case 'math':
       return <MathBlock tex={block.tex} />;
+    case 'rule':
+      return <View testID="md-rule" style={styles.rule} />;
     case 'list':
       return (
         <View style={{ gap: 4 }}>
@@ -313,7 +329,10 @@ function Inline({
                   fontFamily: serif ? fonts.serifSemiBold : fonts.bodySemiBold,
                 }}>
                 <Icon name="book-open" size={serif ? 13 : 12} color={colors.violet} />
-                {' '}
+                {/* U+202F narrow no-break space: the previous U+2009 thin space is a
+                    legal break point (UAX #14), so long lines wrapped BETWEEN the glyph
+                    and the title, stranding the icon at the end of the prior line. */}
+                {' '}
                 {t.text}
               </RNText>
             ) : (
@@ -401,6 +420,11 @@ function tokenizeInline(input: string): InlineToken[] {
 }
 
 const styles = StyleSheet.create({
+  rule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.line,
+    marginVertical: space.xs,
+  },
   quote: {
     borderLeftWidth: 3,
     borderLeftColor: colors.violet,
