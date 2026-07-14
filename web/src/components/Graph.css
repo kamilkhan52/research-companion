@@ -294,3 +294,22 @@
   border-radius: 4px;
   font-size: 10px;
 }
+
+/* U.6: build status split from the current paper; the title gets its own single line. */
+.build-fastmap-badge {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--mint, #35d0a5);
+  color: var(--mint, #35d0a5);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.build-current-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  margin-top: 2px;
+}

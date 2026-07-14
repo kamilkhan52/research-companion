@@ -20,9 +20,10 @@ import TrackPlayer, {
 import { checkpointPlayback } from '../../playback-persistence';
 
 import { useAudio } from '@/audio/AudioProvider';
+import { Marquee } from '@/ui/Marquee';
 import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { colors, fonts, radius, space } from '@/theme/tokens';
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -61,7 +62,10 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
               <Feather name="music" size={16} color={colors.mint} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text variant="heading" style={{ fontSize: 15 }} numberOfLines={1}>{title}</Text>
+              <Marquee
+                text={title}
+                textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: colors.text }}
+              />
               <Text variant="caption" color={colors.mint} numberOfLines={1}>
                 {prepLabel(stage, done, total)}
               </Text>
@@ -114,9 +118,10 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
           </Pressable>
 
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text variant="heading" style={{ fontSize: 15 }} numberOfLines={1}>
-              {track.title ?? 'Narration'}
-            </Text>
+            <Marquee
+              text={String(track.title ?? 'Narration')}
+              textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: colors.text }}
+            />
             <Text variant="caption" color={buffering ? colors.mint : undefined} numberOfLines={1}>
               {status}
             </Text>

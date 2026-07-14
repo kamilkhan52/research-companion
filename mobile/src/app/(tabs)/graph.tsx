@@ -17,6 +17,7 @@ import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
 import { Button, Card, Chip, Icon, Screen, Text } from '@/ui';
+import { Marquee } from '@/ui/Marquee';
 import { colors, fonts, radius, space } from '@/theme/tokens';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
@@ -466,31 +467,69 @@ function RetrievalErrors({
   );
 }
 
-function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
+// Build phases in pipeline order, discovery-style: the step row replaces the old single
+// concatenated status line ("Fast map ready · enriching “very long title…”") that truncated on
+// phones. Status, phase, and the paper being worked on each get their own line; the paper
+// title auto-scrolls (Marquee) instead of clipping.
+const BUILD_STEPS = [
+  { key: 'metadata', label: 'Mapped', verb: 'Mapping references' },
+  { key: 'retrieval', label: 'Retrieved', verb: 'Retrieving' },
+  { key: 'extraction', label: 'Enriched', verb: 'Enriching' },
+] as const;
+
+export function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
   const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
-  const current = progress?.currentTitle ? ` “${progress.currentTitle}”` : '';
-  const activity = !progress
-    ? 'Building graph…'
-    : progress.graphStage === 'skeleton'
-      ? progress.phase === 'retrieval'
-        ? `Fast map ready · retrieving${current}…`
-        : progress.phase === 'extraction'
-          ? `Fast map ready · enriching${current}…`
-          : 'Fast map ready · preparing enrichment…'
-      : progress.phase === 'metadata'
-        ? `Mapping references${current}…`
-        : 'Building graph…';
+  const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
+  const skeletonReady = progress?.graphStage === 'skeleton';
+  const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
         <ActivityIndicator color={colors.mint} />
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
-          {activity}
+          Building map…
         </Text>
+        {/* The fast skeleton being usable is a state, not part of a sentence: a compact badge
+            instead of a prefix glued onto whatever the worker is doing. */}
+        {skeletonReady ? <Chip label="✓ Fast map ready" color={colors.mint} /> : null}
       </View>
       {progress ? (
         <>
-          <View style={styles.progressTrack}>
+          <View style={styles.buildStepsRow}>
+            {BUILD_STEPS.map((step, i) => {
+              const state = i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending';
+              return (
+                <View key={step.key} style={styles.buildStep}>
+                  {i > 0 ? (
+                    <View style={[styles.buildStepLine, state !== 'pending' && styles.buildStepLineDone]} />
+                  ) : null}
+                  <View style={[styles.buildStepDot, state === 'done' && styles.buildStepDotDone]}>
+                    {state === 'done' ? (
+                      <Icon name="check" size={11} color={colors.mintInk} />
+                    ) : state === 'active' ? (
+                      <ActivityIndicator size="small" color={colors.mint} />
+                    ) : null}
+                  </View>
+                  <Text variant="caption" color={state === 'pending' ? colors.muted : colors.text}>
+                    {step.label}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
+          {progress.currentTitle ? (
+            <View style={{ marginTop: space.sm }}>
+              <Text variant="caption" color={colors.muted}>
+                {verb}
+              </Text>
+              <Marquee
+                text={progress.currentTitle}
+                textStyle={{ color: colors.text, fontSize: 14, lineHeight: 20 }}
+                accessibilityLabel={`${verb} ${progress.currentTitle}`}
+              />
+            </View>
+          ) : null}
+          <View style={[styles.progressTrack, { marginTop: space.sm }]}>
             <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
           </View>
           <Text variant="caption" style={{ marginTop: 4 }}>
@@ -587,6 +626,33 @@ const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   banner: { margin: space.md, marginBottom: 0 },
+  buildStepsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: space.md,
+  },
+  buildStep: { alignItems: 'center', gap: 4, flex: 1 },
+  buildStepLine: {
+    position: 'absolute',
+    top: 11,
+    right: '50%',
+    left: '-50%',
+    height: 2,
+    backgroundColor: colors.line,
+    zIndex: -1,
+  },
+  buildStepLineDone: { backgroundColor: colors.mint },
+  buildStepDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: colors.line,
+    backgroundColor: colors.elevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buildStepDotDone: { backgroundColor: colors.mint, borderColor: colors.mint },
   bannerLarge: { width: '100%', margin: 0 },
   progressTrack: {
     height: 6,
