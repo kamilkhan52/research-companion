@@ -107,9 +107,20 @@ export default function DiscussionScreen() {
   const qc = useQueryClient();
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
-  const { slug, source } = useLocalSearchParams<{ slug: string; source?: string }>();
-  const { activePid } = useActiveProject();
-  const pid = activePid;
+  const { slug, source, project } = useLocalSearchParams<{
+    slug: string;
+    source?: string;
+    project?: string;
+  }>();
+  const { activePid, setActivePid } = useActiveProject();
+  // Continue Reading can target a session in a different project. Prefer its explicit route
+  // parameter on the very first render, then synchronize the app-wide selection. That avoids
+  // a transient request for the same slug under the previously-active project.
+  const routePid = typeof project === 'string' && project ? project : null;
+  const pid = routePid ?? activePid;
+  useEffect(() => {
+    if (routePid && routePid !== activePid) setActivePid(routePid);
+  }, [activePid, routePid, setActivePid]);
   const addPaper = useAddPaper(pid ?? '');
 
   // Reference links in a response: in-project papers arrive as `rc-paper:<slug>` (or get
