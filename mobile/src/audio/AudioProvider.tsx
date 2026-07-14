@@ -123,7 +123,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // the intent is parked here keyed by the generations it kills; the in-flight run cancels
   // the job it receives before exiting. A generation superseded by a NEW play request is
   // deliberately absent: abandoning keeps the server job running into the cache.
-  const cancelIntent = useRef<{ gen: number; queueGen: number } | null>(null);
+  // Separate refs per pipeline: the manual playText loop and the queued listening loop can
+  // overlap, and each must consume ONLY its own intent — a shared object let whichever loop
+  // unwound first clear the other's intent, leaking that job's paid synthesis.
+  const cancelIntentGen = useRef<number | null>(null);
+  const cancelIntentQueueGen = useRef<number | null>(null);
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
   const queueGeneration = useRef(0);
@@ -216,7 +220,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     // Park intent unconditionally (generation-keyed, so it can only fire for the run being
     // cancelled right now): covers windows where the visible prep's jobId is stale or absent —
     // e.g. a queued preparation whose first poll hasn't landed. Double-cancel is idempotent.
-    cancelIntent.current = { gen: generation.current, queueGen: queueGeneration.current };
+    cancelIntentGen.current = generation.current;
+    cancelIntentQueueGen.current = queueGeneration.current;
     generation.current += 1;
     queueGeneration.current += 1;
     automaticPrepIdRef.current = null;
@@ -316,9 +321,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         // Cancel raced ahead of the job id becoming known: without this, the stale-generation
         // exit below would leak a running billed job the user believes is cancelled.
         const abandonIfCancelled = () => {
-          if (cancelIntent.current?.gen === gen && job.status === 'running') {
+          if (cancelIntentGen.current === gen && job.status === 'running') {
             void api.cancelAudioJob(job.id).catch(() => {});
-            cancelIntent.current = null;
+            cancelIntentGen.current = null;
           }
         };
         if (!live()) {
@@ -570,9 +575,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         // Mirror of playText's early-dismiss race: cancel intent parked before the job id was
         // known must still stop the billed server job.
         const abandonIfCancelled = () => {
-          if (cancelIntent.current?.queueGen === queueGen && job.status === 'running') {
+          if (cancelIntentQueueGen.current === queueGen && job.status === 'running') {
             void api.cancelAudioJob(job.id).catch(() => {});
-            cancelIntent.current = null;
+            cancelIntentQueueGen.current = null;
           }
         };
         if (!live()) {

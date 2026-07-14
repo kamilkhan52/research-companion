@@ -13,9 +13,12 @@ Each poll is an independent short request, robust to tunnels, network blips, and
 backgrounded. Progress is real — the narrating stage, then synthesized-segments done/total —
 so the UI can show an honest progress bar.
 
-Jobs are keyed by a hash of (voice settings + canonical text): re-requesting the same message
+Jobs are DEDUPED by a hash of (voice settings + canonical text): re-requesting the same message
 joins the in-flight job instead of starting a duplicate, and a finished result is answered
-instantly from the narration/mp3 caches without a thread.
+instantly from the narration/mp3 caches without a thread. Each attempt's job id is unique,
+so a cancel aimed at one attempt can never hit the fresh attempt a retry created under the
+same dedup key (job_id_for stays the deterministic pre-start handle; chat_jobs reconciles the
+recorded id with the started attempt's real id).
 """
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ from pathlib import Path
 
 from . import agent, config, sessions, tts, usage
 from .fileio import atomic_write_bytes
-from .jobs import Job, JobRegistry, now_iso
+from .jobs import Job, JobRegistry, new_id, now_iso
 
 AUDIO_DIR = config.APP_STATE_DIR / "audio"  # app-global (shared with the /api/audio route)
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,7 +128,7 @@ def start_job(text: str, billing_project: str | None = None,
         parts = tts.split_for_tts(narration)
         segments = _segment_metadata(parts, existing_only=True)
         return _registry.put(jid, AudioJob(
-            id=jid, status="done", stage="synthesizing", narration=narration,
+            id=new_id(), status="done", stage="synthesizing", narration=narration,
             url=f"/api/audio/{audio_cache_path(narration).name}",
             segments=segments, segments_done=len(segments), segments_total=len(parts),
             finished_at=now_iso()),
@@ -195,4 +198,4 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"
 
-    return _registry.start_or_join(jid, lambda: AudioJob(id=jid), work, project_id=None)
+    return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work, project_id=None)

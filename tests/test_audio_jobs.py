@@ -359,3 +359,28 @@ def test_cancel_route_returns_snapshot_and_404s_unknown(monkeypatch):
     with pytest.raises(HTTPException) as err:
         audio_routes.cancel_audio_job("does-not-exist")
     assert err.value.status_code == 404
+
+
+def test_late_cancel_of_old_attempt_never_hits_the_retry():
+    """Attempt ids are unique under one dedup key, so a cancel aimed at a cancelled attempt
+    (e.g. a client unwinding late) can never kill the fresh attempt a retry created."""
+    release = threading.Event()
+
+    def gated_synth(part: str) -> bytes:
+        assert release.wait(timeout=5.0)
+        return fake_synth(part)
+
+    text = "Late cancel."
+    first = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=gated_synth)
+    audio_jobs.cancel_job(first.id)
+
+    retry = audio_jobs.start_job(text, narrate_fn=fake_narrate, synth_fn=fake_synth)
+    assert retry.id != first.id
+    release.set()
+
+    stale = audio_jobs.cancel_job(first.id)   # late duplicate cancel from the old client loop
+    assert stale is not None and stale.id == first.id and stale.status == "cancelled"
+
+    settled = _wait_until_settled(retry.id)
+    assert settled.status == "done"
+    assert settled.url
