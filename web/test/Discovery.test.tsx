@@ -6,7 +6,11 @@ import { Discovery } from '@/components/Discovery';
 const active = vi.hoisted(() => ({ pid: 'project-1' as string | null }));
 const api = vi.hoisted(() => ({ addPaper: vi.fn(), getDiscovery: vi.fn(), startDiscovery: vi.fn() }));
 
-vi.mock('@/hooks/useLibrary', () => ({ useActivePid: () => [active.pid, vi.fn()] }));
+vi.mock('@/hooks/useLibrary', () => ({
+  useActivePid: () => [active.pid, vi.fn()],
+  useLibrary: () => ({ refetch: vi.fn() }),
+  useProjectMembership: () => ({ isInProject: () => false }),
+}));
 vi.mock('@/api/endpoints', () => api);
 
 beforeEach(() => {

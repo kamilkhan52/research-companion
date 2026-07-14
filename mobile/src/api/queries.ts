@@ -2,7 +2,7 @@
 // switching projects swaps caches cleanly. Mutations invalidate the relevant queries.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSyncExternalStore } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
@@ -180,6 +180,45 @@ export function useNotes(pid: string | null, target: string | null) {
     queryFn: () => api.getNotes(pid as string, target as string),
     enabled: !!pid && !!target && hasUrl,
   });
+}
+
+/** Strip an arXiv version suffix and normalize case so 2303.08774v2 matches 2303.08774. */
+export function normalizeArxivId(id: string | null | undefined): string | null {
+  const trimmed = (id ?? '').trim().toLowerCase().replace(/v\d+$/, '');
+  return trimmed || null;
+}
+
+const normalizeTitle = (title: string | null | undefined): string | null => {
+  const t = (title ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return t || null;
+};
+
+/** Live "is this paper already in the project?" test for every recommendation/add surface
+ *  (Discover, Map recommendations, external graph nodes). Recommendation lists are snapshots
+ *  from whenever their job ran; membership must instead follow the CURRENT reading list —
+ *  useAddPaper invalidates project state on success, so additions are reflected here
+ *  immediately and persist across list refreshes. Matches by arXiv id when both sides have
+ *  one, else by normalized exact title (consistent with the deterministic title-linkifier:
+ *  a false "already added" is worse than a missed one, so no fuzzy matching). */
+export function useProjectMembership(pid: string | null) {
+  const state = useProjectState(pid);
+  return useMemo(() => {
+    const byArxiv = new Set<string>();
+    const byTitle = new Set<string>();
+    for (const p of state.data?.papers ?? []) {
+      const a = normalizeArxivId(p.arxiv_id);
+      if (a) byArxiv.add(a);
+      const t = normalizeTitle(p.title);
+      if (t) byTitle.add(t);
+    }
+    const isInProject = (candidate: { arxivId?: string | null; title?: string | null }) => {
+      const a = normalizeArxivId(candidate.arxivId);
+      if (a && byArxiv.has(a)) return true;
+      const t = normalizeTitle(candidate.title);
+      return !!t && byTitle.has(t);
+    };
+    return { isInProject, ready: state.data != null };
+  }, [state.data]);
 }
 
 export function useAddPaper(pid: string) {

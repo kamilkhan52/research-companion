@@ -1,4 +1,4 @@
-import { createContext, createElement, useState, useEffect, useCallback, useContext, type ReactNode } from 'react';
+import { createContext, createElement, useState, useEffect, useCallback, useContext, useMemo, type ReactNode } from 'react';
 import { listProjects, getProjectState } from '@/api/endpoints';
 import type { Project, ProjectState } from '@/api/types';
 
@@ -35,6 +35,33 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
 export function usePaperIndex(): { title: string; slug: string }[] {
   return useContext(LibraryContext)?.state?.papers.map(({ title, slug }) => ({ title, slug })) ?? [];
+}
+
+/** Live "already in the project?" test for recommendation/add surfaces. Lists shown by
+ * Discovery and the Graph panel are snapshots from when their job ran; membership must follow
+ * the CURRENT reading list. Matches by arXiv id (version suffix stripped) or exact
+ * normalized title — no fuzzy matching, mirroring the mobile hook. */
+export function useProjectMembership() {
+  const papers = useContext(LibraryContext)?.state?.papers;
+  return useMemo(() => {
+    const normalizeId = (id?: string | null) => (id ?? '').trim().toLowerCase().replace(/v\d+$/, '') || null;
+    const normalizeTitle = (title?: string | null) => (title ?? '').toLowerCase().replace(/\s+/g, ' ').trim() || null;
+    const byArxiv = new Set<string>();
+    const byTitle = new Set<string>();
+    for (const paper of papers ?? []) {
+      const id = normalizeId(paper.arxiv_id);
+      if (id) byArxiv.add(id);
+      const title = normalizeTitle(paper.title);
+      if (title) byTitle.add(title);
+    }
+    const isInProject = (candidate: { arxivId?: string | null; title?: string | null }) => {
+      const id = normalizeId(candidate.arxivId);
+      if (id && byArxiv.has(id)) return true;
+      const title = normalizeTitle(candidate.title);
+      return !!title && byTitle.has(title);
+    };
+    return { isInProject };
+  }, [papers]);
 }
 
 export function useProjectDefaults() {

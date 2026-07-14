@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
-import { useAddPaper, useDiscovery } from '@/api/queries';
+import { useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
@@ -288,6 +288,10 @@ function SuggestionCard({
 }) {
   const addPaper = useAddPaper(pid);
   const [added, setAdded] = useState(false);
+  // Live membership: the suggestion list is a snapshot from when discovery ran, so a paper
+  // added since (from anywhere) must still show as in the library, not re-addable.
+  const { isInProject } = useProjectMembership(pid);
+  const inLibrary = added || isInProject({ arxivId: s.arxiv_id, title: s.title });
   const [showAbstract, setShowAbstract] = useState(false);
   const paperUrl = fullPaperUrl(s);
 
@@ -302,7 +306,7 @@ function SuggestionCard({
     .join(' · ');
 
   async function handleAdd() {
-    if (added) return;
+    if (inLibrary) return;
     try {
       await addPaper.mutateAsync({ title: s.title, arxivId: s.arxiv_id, abstract: s.abstract });
       setAdded(true);
@@ -358,13 +362,13 @@ function SuggestionCard({
         ) : null}
         <View style={{ flex: 1 }} />
         <Button
-          title={added ? 'Added' : 'Add'}
-          icon={added ? 'check' : 'plus'}
+          title={added ? 'Added' : inLibrary ? 'In library' : 'Add'}
+          icon={inLibrary ? 'check' : 'plus'}
           onPress={handleAdd}
           loading={addPaper.isPending}
-          disabled={added || addPaper.isPending}
+          disabled={inLibrary || addPaper.isPending}
           style={styles.addBtn}
-          accessibilityLabel={`Add ${s.title} to library`}
+          accessibilityLabel={inLibrary ? `${s.title} is in your library` : `Add ${s.title} to library`}
         />
       </View>
       {addPaper.isError ? (
