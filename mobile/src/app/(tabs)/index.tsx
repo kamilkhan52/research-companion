@@ -3,6 +3,7 @@
 // project. Tapping a paper opens its Discussion. Layout follows Figma frame `01 · Library`.
 
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,8 +17,9 @@ import {
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
-import { backfillCovers } from '@/api/endpoints';
+import { backfillCovers, getSession } from '@/api/endpoints';
 import {
+  keys,
   useBaseUrl,
   useProjectState,
   useProjects,
@@ -60,6 +62,7 @@ function filterBucket(p: Paper): Exclude<StatusFilter, 'all'> {
 
 export default function LibraryScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { activePid, setActivePid, ready } = useActiveProject();
   const baseUrl = useBaseUrl();
   const hasUrl = !!baseUrl;
@@ -131,9 +134,28 @@ export default function LibraryScreen() {
     (session) => session.kind === 'paper' && session.state !== 'committed',
   );
 
+  // The hero identifies exactly one likely next destination. Warm its transcript while the
+  // reader is still looking at the Library so opening it can render from TanStack Query's
+  // cache immediately; the normal session query will still refresh stale data in the
+  // background. This intentionally prefetches only the single hero, not every paper row.
+  useEffect(() => {
+    if (!continueSession) return;
+    const { project_id: projectId, slug } = continueSession;
+    void queryClient.prefetchQuery({
+      queryKey: keys.session(projectId, slug),
+      queryFn: () => getSession(projectId, slug),
+    });
+  }, [continueSession?.project_id, continueSession?.slug, queryClient]);
+
   const openRecentSession = (session: RecentSession) => {
     setActivePid(session.project_id);
-    router.push(`/paper/${encodeURIComponent(session.slug)}`);
+    // Carry the project explicitly as well as updating the persisted project selection. React
+    // state updates are asynchronous; without this, a cross-project Resume can briefly mount
+    // the paper route against the old project and request the wrong session before context
+    // catches up. The paper route adopts this project parameter immediately.
+    router.push(
+      `/paper/${encodeURIComponent(session.slug)}?project=${encodeURIComponent(session.project_id)}`,
+    );
   };
 
   const header = (

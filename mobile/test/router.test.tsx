@@ -1,13 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEventAsync, waitFor } from '@testing-library/react-native';
-import { Slot } from 'expo-router';
+import { Slot, useLocalSearchParams } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
 import { Text } from 'react-native';
 
 import LibraryScreen from '@/app/(tabs)/index';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
+import { keys } from '@/api/queries';
 import { ProjectProvider } from '@/store/project';
 
 const client = new QueryClient({
@@ -71,19 +72,49 @@ test('continues the latest unfinished session across projects', async () => {
       updated_at: '2026-07-07T00:00:00Z',
     }],
   });
+  const prefetchedSession = {
+    paper: {
+      slug: 'memory-paper',
+      title: 'Memory Paper',
+      group: '',
+      list_status: 'unread' as const,
+      cites: [],
+      retrieved: true,
+      has_notes: false,
+      session_state: 'in_discussion' as const,
+      arxiv_id: '',
+    },
+    state: 'in_discussion' as const,
+    reading_mode: 'balanced' as const,
+    transcript: [{ role: 'user' as const, text: 'Opening question' }],
+    accepted_drafts: [],
+  };
+  jest.mocked(api.getSession).mockResolvedValueOnce(prefetchedSession);
+
+  function PaperRoute() {
+    const { project } = useLocalSearchParams<{ project?: string }>();
+    return <Text>Paper route · {project}</Text>;
+  }
 
   const rendered = renderRouter(
     {
       _layout: TestLayout,
       index: LibraryScreen,
-      'paper/[slug]': () => <Text>Paper route</Text>,
+      'paper/[slug]': PaperRoute,
     },
     { initialUrl: '/' },
   );
 
   await waitFor(() => expect(screen.getByText('Memory Paper')).toBeTruthy());
+  // Prefetch starts from the visible hero, before the user taps it.
+  await waitFor(() => expect(api.getSession).toHaveBeenCalledWith('three-d-dram', 'memory-paper'));
+  await waitFor(() => {
+    expect(client.getQueryData(keys.session('three-d-dram', 'memory-paper')))
+      .toEqual(prefetchedSession);
+  });
   await fireEventAsync.press(screen.getByText('Memory Paper'));
 
   await waitFor(() => expect(rendered.getPathname()).toBe('/paper/memory-paper'));
+  expect(screen.getByText('Paper route · three-d-dram')).toBeTruthy();
   await waitFor(() => expect(AsyncStorage.getItem('rc.activeProject')).resolves.toBe('three-d-dram'));
 });
