@@ -38,9 +38,12 @@ export function ExternalRefSheet({
 
   if (!refItem) return null;
   const arxivId = parseArxivId(refItem.href);
-  // A label that is just the URL again is not a title; without a title, membership can only
-  // match by arXiv id.
-  const title = refItem.label && refItem.label !== refItem.href ? refItem.label : null;
+  // A label that is a URL (models often write "available at [arxiv.org/…](url)") is not a
+  // title; without a title, membership can only match by arXiv id, and an add falls back to
+  // an "arXiv <id>" placeholder (the discussion opens with the real paper title later).
+  const urlish = /^(https?:\/\/|www\.|arxiv\.org\b|doi\.org\b)/i;
+  const rawLabel = refItem.label?.trim();
+  const title = rawLabel && rawLabel !== refItem.href && !urlish.test(rawLabel) ? rawLabel : null;
   const added = addedHref === refItem.href;
   const inProject = added || isInProject({ arxivId, title });
 
@@ -48,7 +51,9 @@ export function ExternalRefSheet({
     if (!pid || inProject || addPaper.isPending) return;
     try {
       await addPaper.mutateAsync({
-        title: title ?? refItem!.href,
+        // Never store a URL as a reading-list title; the arXiv placeholder mirrors the
+        // Discover paste flow (retrieval fills in the real title).
+        title: title ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
         arxivId: arxivId ?? undefined,
       });
       setAddedHref(refItem!.href);

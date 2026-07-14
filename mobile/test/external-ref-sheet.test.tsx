@@ -72,3 +72,20 @@ test('a reference already in the project cannot be re-added', async () => {
   await waitFor(() => expect(screen.getByText('Already in this project')).toBeTruthy());
   expect(screen.queryByText('Add to reading list')).toBeNull();
 });
+
+test('a URL-shaped label is not treated as a title; add uses the arXiv placeholder', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: 'https://arxiv.org/abs/2211.10438', label: 'arxiv.org/abs/2211.10438' }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  await fireEventAsync.press(screen.getByText('Add to reading list'));
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith('proj', 'arXiv 2211.10438', undefined, '2211.10438', undefined),
+  );
+});

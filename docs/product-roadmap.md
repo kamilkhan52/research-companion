@@ -56,15 +56,21 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
 | W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
-| U.1 | Map stat tiles: label-first layout + unambiguous stat labels | [#81](https://github.com/kamilkhan52/research-companion/pull/81) | Complete |
-| U.2 | Fix literal `---` artifacts in notes/discussion rendering | [#82](https://github.com/kamilkhan52/research-companion/pull/82) | Complete |
-| U.3 | Keep paper-link icon on the same line as the title's first word | [#82](https://github.com/kamilkhan52/research-companion/pull/82) | Complete |
-| U.4 | Cancel control for in-flight audio synthesis jobs | [#83](https://github.com/kamilkhan52/research-companion/pull/83) | Complete |
-| U.5 | Recommendations reflect live project membership (Discover + Map) | [#85](https://github.com/kamilkhan52/research-companion/pull/85) | Complete |
-| U.6 | Map build status UI: staged progress + marquee for long titles | [#86](https://github.com/kamilkhan52/research-companion/pull/86) | Complete |
-| U.7 | Agent-cited external papers tappable/addable from discussion | [#87](https://github.com/kamilkhan52/research-companion/pull/87) | Complete |
-| U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete |
+| U.1 | Map stat tiles: label-first layout + unambiguous stat labels | [#81](https://github.com/kamilkhan52/research-companion/pull/81) | Complete — Android passed |
+| U.2 | Fix literal `---` artifacts in notes/discussion rendering | [#82](https://github.com/kamilkhan52/research-companion/pull/82) | Complete — Android passed |
+| U.3 | Keep paper-link icon on the same line as the title's first word | [#82](https://github.com/kamilkhan52/research-companion/pull/82) | Complete — Android passed |
+| U.4 | Cancel control for in-flight audio synthesis jobs | [#83](https://github.com/kamilkhan52/research-companion/pull/83) | Complete — device confirmation pending |
+| U.5 | Recommendations reflect live project membership (Discover + Map) | [#85](https://github.com/kamilkhan52/research-companion/pull/85) | Complete — Android passed |
+| U.6 | Map build status UI: staged progress + marquee for long titles | [#86](https://github.com/kamilkhan52/research-companion/pull/86) | Complete — device changes requested (→ U.11) |
+| U.7 | Agent-cited external papers tappable/addable from discussion | [#87](https://github.com/kamilkhan52/research-companion/pull/87) | Complete — partial on device; consistency → U.7b |
+| U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete — Android passed |
 | U.9 | Author/affiliation map view — design proposal (Figma) | [#89](https://github.com/kamilkhan52/research-companion/pull/89) | Proposal ready — awaiting sign-off |
+| U.7b | Web-paper link consistency: prompt example + client repair | — | Complete |
+| U.10 | Map retrieval-errors: small dismissible indicator + details sheet | — | Planned |
+| U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | — | Planned |
+| U.12 | Long-press assistant response opens the actions menu | — | Planned |
+| U.13 | Composer input growth keeps rounded corners bounded | — | Planned |
+| U.14 | Retry forks the conversation + minimal branch selector | — | Planned |
 
 ## Current execution decisions (2026-07-14)
 

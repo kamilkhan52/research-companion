@@ -391,7 +391,15 @@ function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToke
   return out;
 }
 
-function tokenizeInline(input: string): InlineToken[] {
+/** A common model malformation: the link target written INSIDE the brackets —
+ *  "[PIM-LLM (rc-paper:pim-llm)]" or "[Name (https://…)]" — invalid markdown that rendered as
+ *  literal bracketed text. Repaired into a proper link before tokenizing; a legitimate
+ *  parenthetical like "[GPTQ (Frantar et al., 2022)](url)" never matches because its
+ *  parenthetical does not start with a link scheme. */
+const MALFORMED_LINK_RE = /\[([^\[\]()]+?)\s*\(((?:rc-paper:|https?:\/\/)[^\s()]+)\)\]/g;
+
+function tokenizeInline(rawInput: string): InlineToken[] {
+  const input = rawInput.replace(MALFORMED_LINK_RE, '[$1]($2)');
   const tokens: InlineToken[] = [];
   // Math is matched first — TeX is full of `_` and `*` that the emphasis rules would chew
   // up. `\( … \)` is the inline output contract; `\[ … \]` / `$$ … $$` occurring
