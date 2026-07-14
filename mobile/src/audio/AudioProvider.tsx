@@ -119,6 +119,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [playbackStartedAtById, setPlaybackStartedAtById] = useState<Record<string, string>>({});
   const prepRef = useRef<PrepState | null>(null);
   prepRef.current = prep;
+  // When cancel arrives before the server job id is known (startAudioJob still in flight),
+  // the intent is parked here keyed by the generations it kills; the in-flight run cancels
+  // the job it receives before exiting. A generation superseded by a NEW play request is
+  // deliberately absent: abandoning keeps the server job running into the cache.
+  const cancelIntent = useRef<{ gen: number; queueGen: number } | null>(null);
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
   const queueGeneration = useRef(0);
@@ -208,6 +213,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     // already synthesized stay cached, so a later re-tap resumes instead of restarting.
     const jobId = prepRef.current?.jobId;
     if (jobId) void api.cancelAudioJob(jobId).catch(() => {});
+    else cancelIntent.current = { gen: generation.current, queueGen: queueGeneration.current };
     generation.current += 1;
     queueGeneration.current += 1;
     automaticPrepIdRef.current = null;
@@ -304,7 +310,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           }
         };
         let { job } = await api.startAudioJob(text, billingProject);
-        if (!live()) return;
+        // Cancel raced ahead of the job id becoming known: without this, the stale-generation
+        // exit below would leak a running billed job the user believes is cancelled.
+        const abandonIfCancelled = () => {
+          if (cancelIntent.current?.gen === gen && job.status === 'running') {
+            void api.cancelAudioJob(job.id).catch(() => {});
+            cancelIntent.current = null;
+          }
+        };
+        if (!live()) {
+          abandonIfCancelled();
+          return;
+        }
         applyJob(id, title, job);
         await appendSegments(job);
 
@@ -312,7 +329,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         let restarts = 0;
         while (job.status === 'running') {
           await sleep(POLL_MS);
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           try {
             job = (await api.getAudioJob(job.id)).job;
             pollFailures = 0;
@@ -328,7 +348,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               throw e;
             }
           }
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           applyJob(id, title, job);
           await appendSegments(job);
         }
@@ -541,14 +564,28 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           if ((e as { status?: number }).status !== 404) throw e;
           job = (await api.startAudioJob(request.text, billingProject)).job;
         }
-        if (!live()) return;
+        // Mirror of playText's early-dismiss race: cancel intent parked before the job id was
+        // known must still stop the billed server job.
+        const abandonIfCancelled = () => {
+          if (cancelIntent.current?.queueGen === queueGen && job.status === 'running') {
+            void api.cancelAudioJob(job.id).catch(() => {});
+            cancelIntent.current = null;
+          }
+        };
+        if (!live()) {
+          abandonIfCancelled();
+          return;
+        }
         applyJob(request.id, request.title, job);
         await appendSegments(job);
 
         let pollFailures = 0;
         while (job.status === 'running') {
           await sleep(POLL_MS);
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           try {
             job = (await api.getAudioJob(job.id)).job;
             pollFailures = 0;
@@ -557,7 +594,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
                 && ++pollFailures < MAX_POLL_FAILURES) continue;
             throw e;
           }
-          if (!live()) return;
+          if (!live()) {
+            abandonIfCancelled();
+            return;
+          }
           applyJob(request.id, request.title, job);
           await appendSegments(job);
         }

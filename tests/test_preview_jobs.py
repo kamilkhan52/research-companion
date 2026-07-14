@@ -166,6 +166,18 @@ def test_audio_progress_ready_only_when_the_job_settles(temp_project):
     assert ready_after is True
 
 
+def test_audio_progress_treats_cancelled_as_settled(temp_project):
+    """U.4: a cancelled preparation must stop the cue cadence like done/error — otherwise the
+    coordinator keeps launching paid cue generations against a job that will never finish."""
+    cancelled = type("Audio", (), {
+        "status": "cancelled", "stage": "synthesizing",
+        "segments_done": 1, "segments_total": 4,
+        "segments": [{"index": 0}],
+    })()
+    _, _, ready = preview_jobs._audio_progress(cancelled)
+    assert ready is True
+
+
 def test_external_sources_are_cached_and_fail_soft(temp_project, monkeypatch):
     from app import research_tools, store
 

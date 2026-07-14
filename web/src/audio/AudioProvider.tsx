@@ -25,11 +25,16 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // The in-flight server preparation job, so dismiss can cancel it (stop paid TTS), not
   // just stop watching. Cleared once the job settles.
   const prepJobId = useRef<string | null>(null);
+  // Cancel that arrives before the job id is known (startAudioJob still in flight) parks its
+  // intent here keyed by the generation it killed; the in-flight run cancels the job it
+  // receives before exiting.
+  const cancelIntent = useRef<number | null>(null);
 
   useEffect(() => () => { audioRef.current?.pause(); window.speechSynthesis?.cancel(); }, []);
 
   const dismiss = useCallback(() => {
     if (prepJobId.current) { void cancelAudioJob(prepJobId.current).catch(() => {}); prepJobId.current = null; }
+    else cancelIntent.current = generation.current;  // keyed to the exact run; harmless when idle
     generation.current += 1; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel();
     speechRef.current = null; setCurrent(null); setPrep(null); setPlaying(false); setPosition(0); setDuration(0);
   }, []);
@@ -69,9 +74,15 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         setCurrent({ id, title, narration: text }); setPrep(null); setPlaying(true); return;
       }
       let { job } = await startAudioJob(text, activePid);
+      const abandonIfCancelled = () => {
+        if (cancelIntent.current === run && job.status === 'running') {
+          void cancelAudioJob(job.id).catch(() => {});
+          cancelIntent.current = null;
+        }
+      };
       let restarts = 0;
       while (job.status === 'running') {
-        if (!live()) return;
+        if (!live()) { abandonIfCancelled(); return; }
         prepJobId.current = job.id;
         setPrep({ title, stage: job.stage, done: job.segments_done, total: job.segments_total });
         await delay(1000);
