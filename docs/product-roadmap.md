@@ -56,8 +56,22 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.6 | Web rebuild: Settings + Audio + Player | [#26](https://github.com/kamilkhan52/research-companion/pull/26) | Complete |
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
 | W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
+| U.1 | Map stat tiles: label-first layout + unambiguous stat labels | — | Complete |
+| U.2 | Fix literal `---` artifacts in notes/discussion rendering | — | Planned |
+| U.3 | Keep paper-link icon on the same line as the title's first word | — | Planned |
+| U.4 | Cancel control for in-flight audio synthesis jobs | — | Planned |
+| U.5 | Recommendations reflect live project membership (Discover + Map) | — | Planned |
+| U.6 | Map build status UI: staged progress + marquee for long titles | — | Planned |
+| U.7 | Agent-cited external papers tappable/addable from discussion | — | Planned |
+| U.8 | Graph layout rules rework (litmaps-informed) | — | Planned |
+| U.9 | Author/affiliation map view — design proposal (Figma) | — | Planned |
 
 ## Current execution decisions (2026-07-14)
+
+The **U.x rows** are the 2026-07-14 UX polish sweep from Kamil's on-device notes: one focused
+PR per row off `main`, mobile-first (web only when the fix is shared or trivially portable),
+reviewed per the standing review workflow before merge; U.9 is design-only (Figma proposal, no
+implementation until sign-off). Kamil runs a single device pass once the sweep lands.
 
 The previously active work is complete on `main`: Map pinch-release stability
 ([#70](https://github.com/kamilkhan52/research-companion/pull/70)), playback restoration
