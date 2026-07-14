@@ -213,7 +213,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     // already synthesized stay cached, so a later re-tap resumes instead of restarting.
     const jobId = prepRef.current?.jobId;
     if (jobId) void api.cancelAudioJob(jobId).catch(() => {});
-    else cancelIntent.current = { gen: generation.current, queueGen: queueGeneration.current };
+    // Park intent unconditionally (generation-keyed, so it can only fire for the run being
+    // cancelled right now): covers windows where the visible prep's jobId is stale or absent —
+    // e.g. a queued preparation whose first poll hasn't landed. Double-cancel is idempotent.
+    cancelIntent.current = { gen: generation.current, queueGen: queueGeneration.current };
     generation.current += 1;
     queueGeneration.current += 1;
     automaticPrepIdRef.current = null;

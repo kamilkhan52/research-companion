@@ -34,7 +34,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const dismiss = useCallback(() => {
     if (prepJobId.current) { void cancelAudioJob(prepJobId.current).catch(() => {}); prepJobId.current = null; }
-    else cancelIntent.current = generation.current;  // keyed to the exact run; harmless when idle
+    // Park intent unconditionally: it is keyed to the exact live generation, so it can only
+    // ever fire for the run being cancelled right now (covers the window where a NEW run's
+    // start request is in flight and prepJobId doesn't name it yet). Harmless when idle.
+    cancelIntent.current = generation.current;
     generation.current += 1; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel();
     speechRef.current = null; setCurrent(null); setPrep(null); setPlaying(false); setPosition(0); setDuration(0);
   }, []);
@@ -62,6 +65,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
     if (current?.id === id && audioRef.current) { toggle(); return; }
     const run = ++generation.current;
     const live = () => generation.current === run;
+    // A leftover id from the previous run must not be what a dismiss during THIS run's start
+    // window cancels (that job was deliberately abandoned to warm the cache).
+    prepJobId.current = null;
     setError(null); setPrep({ title, stage: 'starting', done: 0, total: 0 });
     try {
       const settings = await apiGet<{ speech_provider?: string }>('/api/settings');
