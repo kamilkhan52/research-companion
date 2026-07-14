@@ -318,24 +318,27 @@ function BuildProgress({
 }) {
   const pct = build.ready > 0 ? Math.round((build.done / build.ready) * 100) : 0;
   const fastMapReady = build.graph_stage === 'skeleton' || build.graph?.stage === 'skeleton';
-  const activity = fastMapReady
-    ? build.phase === 'retrieval'
-      ? 'Fast map ready — retrieving missing papers'
-      : build.phase === 'extraction'
-        ? 'Fast map ready — enriching citation evidence'
-        : 'Fast map ready — preparing enrichment'
-    : build.phase === 'metadata'
-      ? 'Mapping Semantic Scholar references'
-      : 'Building reference map';
+  // Status and the current paper are separate lines (mirrors mobile U.6): the old single
+  // sentence truncated badly once a long title was appended.
+  const activity = build.phase === 'retrieval'
+    ? 'Retrieving missing papers'
+    : build.phase === 'extraction'
+      ? 'Enriching citation evidence'
+      : build.phase === 'metadata'
+        ? 'Mapping Semantic Scholar references'
+        : 'Building reference map';
   return (
     <div className={`build-progress ${compact ? 'build-progress-compact' : ''}`}>
       <div className="build-progress-bar">
         <div className="build-progress-fill" style={{ width: `${pct}%` }} />
       </div>
       <p className="muted">
+        {fastMapReady ? <span className="build-fastmap-badge">✓ Fast map ready</span> : null}
         {activity} · {build.ready} of {build.total} ready — {build.done} analyzed
-        {build.current_title ? ` — ${build.current_title}` : ''}
       </p>
+      {build.current_title ? (
+        <p className="muted build-current-title" title={build.current_title}>{build.current_title}</p>
+      ) : null}
       {build.error && <p className="build-progress-error">{build.error}</p>}
     </div>
   );
