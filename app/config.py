@@ -192,6 +192,11 @@ _ENV_DEFAULTS = {
     # -> keyless DuckDuckGo). Keys optional; also read from env at call time (see research_tools).
     "parallel_api_key": os.environ.get("PARALLEL_API_KEY", "") or os.environ.get("PARALLEL_SEARCH_API_KEY", ""),
     "firecrawl_api_key": os.environ.get("FIRECRAWL_API_KEY", ""),
+    # scholarly metadata/citation edges. The approved account limit is cumulative across
+    # endpoints; app.semantic_scholar applies the shared below-1-RPS pacer.
+    "semantic_scholar_api_key": (
+        os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "") or os.environ.get("S2_API_KEY", "")
+    ),
     # which prior per-paper Notes go into every paper turn's context:
     #   "related" = only citation-related papers (compact); "all" = every paper read so far
     #   (richer cross-paper grounding for a single-project workflow; larger context per turn)
@@ -201,7 +206,7 @@ _ENV_DEFAULTS = {
 
 _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_model", "openai_api_key",
                  "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
-                 "firecrawl_api_key", "prior_notes_scope")
+                 "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
 
 # Serializes the read-modify-write of the shared settings file. A turn persisting its model
 # choice, a UI settings save, and a prompt-override edit all mutate the same file; without this

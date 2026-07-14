@@ -77,6 +77,20 @@ def test_clearing_an_api_key_makes_has_key_false(settings_file, monkeypatch):
     assert not config.has_api_key()
 
 
+def test_semantic_scholar_key_roundtrips_and_api_only_returns_a_hint(settings_file, monkeypatch):
+    monkeypatch.setitem(config._ENV_DEFAULTS, "semantic_scholar_api_key", "")
+    written = settings_routes.write_settings(
+        settings_routes.SettingsReq(semantic_scholar_api_key="s2-private-value")
+    )
+    assert written["has_semantic_scholar_key"] is True
+    assert config.load_settings()["semantic_scholar_api_key"] == "s2-private-value"
+
+    public = settings_routes.read_settings()
+    assert public["has_semantic_scholar_key"] is True
+    assert public["semantic_scholar_key_hint"] == "s2-pri…"
+    assert "s2-private-value" not in public.values()
+
+
 def test_patch_does_not_clobber_other_keys(settings_file):
     config.save_settings({"model": "m", "tts_voice": "alloy"})
     config.save_settings({"tts_voice": "verse"})  # only voice in this patch

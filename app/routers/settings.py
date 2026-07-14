@@ -21,6 +21,7 @@ class SettingsReq(BaseModel):
     tts_voice: str | None = None
     parallel_api_key: str | None = None    # web search provider (agent tools)
     firecrawl_api_key: str | None = None   # web search/fetch provider (agent tools)
+    semantic_scholar_api_key: str | None = None  # citation/reference metadata provider
     prior_notes_scope: str | None = None   # "related" | "all" — prior Notes in paper context
 
 
@@ -36,6 +37,7 @@ def read_settings():
     okey = s.get("openai_api_key") or ""
     pkey = s.get("parallel_api_key") or ""
     fkey = s.get("firecrawl_api_key") or ""
+    s2key = s.get("semantic_scholar_api_key") or ""
     return {
         "has_key": bool(key), "key_hint": (key[:6] + "…") if key else "",
         "model": s.get("model"), "narration_model": s.get("narration_model"),
@@ -46,6 +48,8 @@ def read_settings():
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
         "has_parallel_key": bool(pkey), "parallel_key_hint": (pkey[:6] + "…") if pkey else "",
         "has_firecrawl_key": bool(fkey), "firecrawl_key_hint": (fkey[:6] + "…") if fkey else "",
+        "has_semantic_scholar_key": bool(s2key),
+        "semantic_scholar_key_hint": (s2key[:6] + "…") if s2key else "",
         "prior_notes_scope": s.get("prior_notes_scope") or "related",
     }
 
@@ -62,6 +66,7 @@ def write_settings(req: SettingsReq):
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),
         "has_parallel_key": bool(merged.get("parallel_api_key")),
         "has_firecrawl_key": bool(merged.get("firecrawl_api_key")),
+        "has_semantic_scholar_key": bool(merged.get("semantic_scholar_api_key")),
         "prior_notes_scope": merged.get("prior_notes_scope") or "related",
     }
 

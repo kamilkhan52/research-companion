@@ -133,6 +133,8 @@ export interface Settings {
   parallel_key_hint: string;
   has_firecrawl_key: boolean;
   firecrawl_key_hint: string;
+  has_semantic_scholar_key: boolean;
+  semantic_scholar_key_hint: string;
   /** Which prior per-paper Notes go into each paper turn's context. */
   prior_notes_scope: 'related' | 'all';
 }

@@ -4,7 +4,7 @@ fake httpx client — zero network."""
 from __future__ import annotations
 
 import httpx
-from app import citations
+from app import citations, semantic_scholar
 from app.citations import _fetch_missing as real_fetch_missing
 
 
@@ -25,6 +25,14 @@ class FakeClient:
     def get(self, url, **kw):
         self.get_calls += 1
         return self._gets.pop(0)
+
+    def close(self):
+        pass
+
+
+class MatchClient:
+    def get(self, path, *, params, headers):
+        return _resp(200, {"data": [{"paperId": "match", "title": "Paper"}]})
 
     def close(self):
         pass
@@ -82,3 +90,27 @@ def test_cached_nodes_are_not_refetched():
     client = FakeClient(post_resp=_resp(500))  # would fail if called
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
     assert cache["a"] == 100
+
+
+def test_citation_and_metadata_requests_share_one_pacer():
+    now = [10.0]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    pacer = semantic_scholar.RequestPacer(interval=1.1, sleep=sleep, clock=lambda: now[0])
+    nodes = [_node("a", arxiv="2205.14135")]
+    real_fetch_missing(
+        nodes,
+        {},
+        FakeClient(post_resp=_resp(200, [{"citationCount": 4626}])),
+        sleep=lambda _: None,
+        pacer=pacer,
+    )
+    semantic_scholar.resolve_paper(
+        "Paper", key="private-key", client=MatchClient(), pacer=pacer
+    )
+
+    assert sleeps == [1.1]

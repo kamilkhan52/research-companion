@@ -48,6 +48,7 @@ export default function SettingsScreen() {
   const [openaiKey, setOpenaiKey] = useState('');
   const [parallelKey, setParallelKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
+  const [semanticScholarKey, setSemanticScholarKey] = useState('');
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
   const [priorScope, setPriorScope] = useState<'related' | 'all'>('related');
@@ -96,9 +97,13 @@ export default function SettingsScreen() {
     if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
     if (parallelKey.trim()) payload.parallel_api_key = parallelKey.trim();
     if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
+    if (semanticScholarKey.trim()) {
+      payload.semantic_scholar_api_key = semanticScholarKey.trim();
+    }
     await saveSettings.mutateAsync(payload);
     setApiKey('');
     setOpenaiKey('');
+    setSemanticScholarKey('');
   }
 
   return (
@@ -244,6 +249,26 @@ export default function SettingsScreen() {
 
               {/* Map */}
               <Section title="Map">
+                <Label
+                  text="Semantic Scholar API key"
+                  hint={settings.data?.has_semantic_scholar_key
+                    ? `set (${settings.data.semantic_scholar_key_hint})`
+                    : 'not set'}
+                />
+                <Field
+                  value={semanticScholarKey}
+                  onChangeText={setSemanticScholarKey}
+                  placeholder={settings.data?.has_semantic_scholar_key
+                    ? 'Replace key…'
+                    : 'Semantic Scholar API key'}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
+                  Enables fast paper identity, reference, citation-context, and influence
+                  metadata. Requests are cached and paced below the account's one-per-second
+                  cumulative limit. Graph results using this data will attribute Semantic Scholar.
+                </Text>
                 <Label text="'All' filter" hint="applies immediately, stored on this device" />
                 <View style={{ flexDirection: 'row', gap: space.sm }}>
                   <Toggle label="Hidden" active={!allowAllFilter} onPress={() => setAllowAllFilter(false)} />

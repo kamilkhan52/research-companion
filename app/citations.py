@@ -2,10 +2,10 @@
 higher limits). Feeds the recommendation score: an external work cited 5,000 times in the wild
 matters differently than one cited 30 times, even at the same in-project citation count.
 
-Two lookups, both best-effort:
-  * batch by id (ARXIV:/DOI:) — one POST covers up to 500 nodes; reliable and unthrottled.
-  * title match for nodes without ids — one GET per title and aggressively rate-limited without
-    a key, so it's paced, capped to the most promising nodes, and gives up quietly on 429s.
+Two lookups, both best-effort and routed through the shared account-wide request pacer:
+  * batch by id (ARXIV:/DOI:) — one POST covers up to 500 nodes.
+  * title match for nodes without ids — one GET per title, capped to the most promising nodes,
+    and gives up quietly on 429s.
 
 Results are cached in the graph store (node id -> count), so counts accumulate across builds
 and a paper is never looked up twice. Counts drift upward over time, but for ranking purposes
@@ -13,24 +13,21 @@ staleness is harmless.
 """
 from __future__ import annotations
 
-import os
 import time
 
 import httpx
 
-from . import config
+from . import semantic_scholar
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 S2_MATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search/match"
 BATCH_CHUNK = 500
 MAX_TITLE_LOOKUPS = 25          # per build; cached, so coverage grows build over build
-TITLE_LOOKUP_INTERVAL_S = 1.2   # pacing for the unauthenticated match endpoint
 TIMEOUT_S = 30.0
 
 
 def _api_key() -> str:
-    return (os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or os.environ.get("S2_API_KEY")
-            or config.load_settings().get("semantic_scholar_api_key") or "")
+    return semantic_scholar.api_key()
 
 
 def _headers() -> dict:
@@ -64,7 +61,14 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         n["citation_count"] = cache.get(n["id"])
 
 
-def _fetch_missing(nodes: list[dict], cache: dict, client: httpx.Client, sleep) -> None:
+def _fetch_missing(
+    nodes: list[dict],
+    cache: dict,
+    client: httpx.Client,
+    sleep,
+    *,
+    pacer: semantic_scholar.RequestPacer | None = None,
+) -> None:
     missing = [n for n in nodes if n["id"] not in cache]
 
     # 1) batch by external id — cheap, do every node that has one.
@@ -72,8 +76,16 @@ def _fetch_missing(nodes: list[dict], cache: dict, client: httpx.Client, sleep) 
     with_ids = [(n, eid) for n, eid in with_ids if eid]
     for start in range(0, len(with_ids), BATCH_CHUNK):
         chunk = with_ids[start:start + BATCH_CHUNK]
-        resp = client.post(S2_BATCH_URL, params={"fields": "citationCount"},
-                           headers=_headers(), json={"ids": [eid for _, eid in chunk]})
+        ids = [eid for _, eid in chunk]
+        resp = semantic_scholar.paced_request(
+            lambda ids=ids: client.post(
+                S2_BATCH_URL,
+                params={"fields": "citationCount"},
+                headers=_headers(),
+                json={"ids": ids},
+            ),
+            pacer=pacer,
+        )
         if resp.status_code != 200:
             break
         for (n, _eid), row in zip(chunk, resp.json(), strict=False):
@@ -88,8 +100,15 @@ def _fetch_missing(nodes: list[dict], cache: dict, client: httpx.Client, sleep) 
     titled.sort(key=lambda n: (n.get("significant_cited_by_count", 0),
                                n.get("cited_by_project_count", 0)), reverse=True)
     for n in titled[:MAX_TITLE_LOOKUPS]:
-        resp = client.get(S2_MATCH_URL, headers=_headers(),
-                          params={"query": n["title"], "fields": "citationCount,matchScore"})
+        title = n["title"]
+        resp = semantic_scholar.paced_request(
+            lambda title=title: client.get(
+                S2_MATCH_URL,
+                headers=_headers(),
+                params={"query": title, "fields": "citationCount,matchScore"},
+            ),
+            pacer=pacer,
+        )
         if resp.status_code == 429:
             break
         if resp.status_code == 200:
@@ -100,4 +119,3 @@ def _fetch_missing(nodes: list[dict], cache: dict, client: httpx.Client, sleep) 
                 cache[n["id"]] = None
         elif resp.status_code == 404:
             cache[n["id"]] = None  # definitive miss — don't retry every build
-        sleep(TITLE_LOOKUP_INTERVAL_S)

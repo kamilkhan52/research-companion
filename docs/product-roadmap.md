@@ -42,6 +42,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 4.2 | Real sheets, centralized motion, developer tuning | [#68](https://github.com/kamilkhan52/research-companion/pull/68) | Partial — shared swipe-dismiss sheets shipped; global motion tuning deferred |
 | 4.3 | Reading-mode prompt templates, full-paper access, and assistant activity | [#72](https://github.com/kamilkhan52/research-companion/pull/72) | Complete |
 | 4.4 | Stable Map pinch-release positioning | [#70](https://github.com/kamilkhan52/research-companion/pull/70) | Complete |
+| 5.0 | Semantic Scholar graph metadata foundation | [#77](https://github.com/kamilkhan52/research-companion/pull/77) | Complete |
 | 5.1 | Retrieve missing project papers during graph builds | — | Next queued item |
 | 6.1 | Native Markdown + equation rendering | [#53](https://github.com/kamilkhan52/research-companion/pull/53), [#65](https://github.com/kamilkhan52/research-companion/pull/65), [#73](https://github.com/kamilkhan52/research-companion/pull/73) | Partial — TeX/SVG and responsive scale/scroll shipped; parser replacement deferred |
 | 6.2 | arXiv HTML figure extraction and response figure cards | — | Deferred until after 5.1 |
@@ -54,14 +55,21 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | W.7 | Web rebuild: Auth + Polish | [#27](https://github.com/kamilkhan52/research-companion/pull/27) | Complete |
 | W.8 | Web/mobile product parity and loose-link repair | [#58](https://github.com/kamilkhan52/research-companion/pull/58) | Complete |
 
-## Current execution decisions (2026-07-13)
+## Current execution decisions (2026-07-14)
 
 The previously active work is complete on `main`: Map pinch-release stability
 ([#70](https://github.com/kamilkhan52/research-companion/pull/70)), playback restoration
 ([#71](https://github.com/kamilkhan52/research-companion/pull/71)), reading-mode prompt templates,
-full-paper access, and assistant activity ([#72](https://github.com/kamilkhan52/research-companion/pull/72)), and responsive long-equation layout
-([#73](https://github.com/kamilkhan52/research-companion/pull/73)). Their stale feature worktrees
-have been removed; no product feature branch or PR remains active.
+full-paper access, and assistant activity ([#72](https://github.com/kamilkhan52/research-companion/pull/72)), responsive long-equation layout
+([#73](https://github.com/kamilkhan52/research-companion/pull/73)), and Continue Reading session
+prefetch ([#76](https://github.com/kamilkhan52/research-companion/pull/76)). Their stale feature
+worktrees have been removed.
+
+The Semantic Scholar comparison and provider foundation are recorded as **5.0**
+([#77](https://github.com/kamilkhan52/research-companion/pull/77)). Semantic Scholar is the fast
+identity/reference metadata layer; cached local full-text analysis remains authoritative for
+project-specific citation significance. Provider influence and intent stay separate from the
+existing `significant` verdict.
 
 The next repository-owned product change is **5.1 Missing-paper retrieval for graph builds**.
 Retrieve confidently sourced missing-paper text through the existing background-job pipeline while
@@ -467,6 +475,12 @@ animations use the closest faster platform-supported transition rather than pret
 durations are tunable.
 
 ## Phase 5 — complete graph inputs
+
+Semantic Scholar provides the fast graph skeleton and scholarly identifiers, with explicit
+provider provenance and attribution. Its account-wide request limit is enforced through one
+shared client pacer. Provider contexts, intents, and influence metadata are evidence rather than
+replacements for the existing project-specific full-text significance analysis. The comparison
+and rollout slices are documented in [`semantic-scholar-graph-spike.md`](semantic-scholar-graph-spike.md).
 
 Parse and retain arXiv/source metadata in reading-list entries. Extend graph jobs with retrieval and
 extraction phases: confidently matched missing papers are fetched without creating a discussion;
