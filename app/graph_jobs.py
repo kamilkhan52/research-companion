@@ -52,13 +52,16 @@ def is_running(pid: str) -> bool:
 
 
 def start_build(pid: str, force: bool = False,
-                extract_fn: graph.ExtractFn = graph.extract_references_for_paper) -> BuildJob:
+                extract_fn: graph.ExtractFn = graph.extract_references_for_paper,
+                metadata_fn: graph.MetadataFn | None = None) -> BuildJob:
     """Start a build for `pid` in a background thread unless one is already running for it;
     either way returns the (new or in-flight) job. extract_fn is injectable (mirroring
     graph.build_graph) so tests drive a real background thread with no network calls."""
     def work(job: BuildJob) -> None:
         papers = store.list_papers(sessions.session_states())
-        for event in graph.build_graph(papers, force=force, extract_fn=extract_fn):
+        for event in graph.build_graph(
+            papers, force=force, extract_fn=extract_fn, metadata_fn=metadata_fn
+        ):
             with _registry.lock:
                 _apply_event(job, event)
 
@@ -79,6 +82,15 @@ def _apply_event(job: BuildJob, event: dict) -> None:
         job.done = event["done"]
         job.per_paper[event["slug"]] = {
             "status": "cached" if event["cached"] else event["status"],
+            "error": event.get("error"),
+        }
+    elif etype == "metadata":
+        job.current_slug = event["slug"]
+        job.current_title = event["title"]
+        job.per_paper[event["slug"]] = {"status": "metadata", "error": None}
+    elif etype == "metadata_progress":
+        job.per_paper[event["slug"]] = {
+            "status": "metadata_cached" if event["cached"] else event["status"],
             "error": event.get("error"),
         }
     elif etype == "done":

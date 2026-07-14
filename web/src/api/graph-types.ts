@@ -15,6 +15,7 @@ export interface GraphNode {
   significant_cited_by_count: number;
   cites_count: number;
   citation_count?: number | null;
+  provenance?: Array<'reading_list' | 'full_text' | 'semantic_scholar'>;
   x?: number;
   y?: number;
 }
@@ -33,6 +34,16 @@ export interface GraphEdge {
   contexts: string[];
   confidence: number;
   raw_text: string;
+  provenance?: Array<'full_text' | 'semantic_scholar'>;
+  full_text_verified?: boolean;
+  provider_evidence?: {
+    semantic_scholar?: {
+      paper_id: string | null;
+      contexts: string[];
+      intents: string[];
+      is_influential: boolean;
+    };
+  };
 }
 
 export interface ReferenceGraph {
@@ -51,10 +62,13 @@ export interface GraphStatus {
   retrievable_papers: number;
   stale_papers: string[];
   missing_text_papers: string[];
+  semantic_scholar_enabled: boolean;
+  semantic_scholar_papers: number;
+  semantic_scholar_stale_papers: string[];
 }
 
 export interface GraphBuildPaperStatus {
-  status: 'extracting' | 'cached' | 'done' | 'error';
+  status: 'metadata' | 'metadata_cached' | 'extracting' | 'cached' | 'done' | 'not_found' | 'error';
   error: string | null;
 }
 

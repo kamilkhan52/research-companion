@@ -15,7 +15,15 @@ import type { GraphBuildJob, GraphResponse } from '@/api/types';
 
 const POLL_INTERVAL_MS = 1500;
 
-export type PaperBuildStatus = 'pending' | 'extracting' | 'cached' | 'done' | 'error';
+export type PaperBuildStatus =
+  | 'pending'
+  | 'metadata'
+  | 'metadata_cached'
+  | 'extracting'
+  | 'cached'
+  | 'done'
+  | 'not_found'
+  | 'error';
 
 export interface GraphBuildProgress {
   total: number;
@@ -79,6 +87,9 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
             stale_papers: [],
             removed_papers: [],
             missing_text_papers: [],
+            semantic_scholar_enabled: false,
+            semantic_scholar_papers: 0,
+            semantic_scholar_stale_papers: [],
           },
           build: job,
         }));

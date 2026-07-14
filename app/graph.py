@@ -1,17 +1,19 @@
 """Reference graph: builds a citation graph for a project's papers.
 
-Pipeline (per paper, cached by content hash so rebuilds never re-spend tokens on
-unchanged papers):
-  1. One OpenRouter call (DeepSeek V4 Pro by default — see resolve_model) reads the paper's
+Pipeline (with independent provider and full-text caches):
+  1. Semantic Scholar resolves paper identity and supplies a fast outbound-reference skeleton.
+     These provider calls run inside the background graph job and are cached separately.
+  2. One OpenRouter call (DeepSeek V4 Pro by default — see resolve_model) reads the paper's
      cached full text and returns its bibliography as structured references, each with a
      few short verbatim body excerpts ("contexts") showing where/how it's cited, and a
      significance verdict: does the paper substantially use, extend, compare against, or
      depend on that work, as opposed to a passing bibliography mention. This is the one
-     expensive step, and the only one that touches the network — everything below is free.
-  2. Deterministic Python (no LLM, fully unit-testable) normalizes + dedupes references
+     expensive step.
+  3. Deterministic Python (no LLM, fully unit-testable) merges provider evidence without
+     allowing it to assign local significance, then normalizes + dedupes references
      across every paper in the project and matches them against the project's own papers
      by fuzzy title matching, producing the graph's nodes and edges.
-  3. Lightweight graph analysis scores each external node for recommendation: how many
+  4. Lightweight graph analysis scores each external node for recommendation: how many
      project papers cite it (and how many *significantly*), plus a simple bridge-ness proxy
      (does it connect citing papers that don't otherwise overlap much).
 
@@ -31,7 +33,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from . import citations, config, graph_layout, graph_store, llm, prompts, store
+from . import citations, config, graph_layout, graph_store, llm, prompts, semantic_scholar, store
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -312,15 +314,172 @@ def external_ref_key(ref: dict) -> str:
     return f"raw:{_norm_title(ref.get('raw_text') or '')[:80]}"
 
 
+def external_ref_keys(ref: dict) -> list[str]:
+    """Every usable identity alias, strongest first, for cross-source deduplication."""
+    keys: list[str] = []
+    if ref.get("arxiv_id"):
+        arxiv = re.sub(
+            r"v\d+$", "", str(ref["arxiv_id"]).strip().lower(), flags=re.IGNORECASE
+        )
+        keys.append(f"arxiv:{arxiv}")
+    if ref.get("doi"):
+        keys.append(f"doi:{str(ref['doi']).strip().lower()}")
+    title = _norm_title(ref.get("title") or "")
+    if title:
+        keys.append(f"title:{title}")
+    return list(dict.fromkeys(keys)) or [external_ref_key(ref)]
+
+
 def match_project_paper(ref: dict, papers: list[Paper]) -> str | None:
     """The slug of the in-project paper this reference points to, if any."""
     title = ref.get("title") or ""
-    if not title:
-        return None
     for p in papers:
+        if ref.get("arxiv_id") and p.arxiv_id:
+            ref_arxiv = re.sub(r"v\d+$", "", str(ref["arxiv_id"]), flags=re.IGNORECASE)
+            paper_arxiv = re.sub(r"v\d+$", "", p.arxiv_id, flags=re.IGNORECASE)
+            if ref_arxiv.lower() == paper_arxiv.lower():
+                return p.slug
         if titles_match(title, p.title):
             return p.slug
     return None
+
+
+def semantic_scholar_source_key(paper: Paper) -> str:
+    identifier = semantic_scholar.paper_identifier(arxiv_id=paper.arxiv_id)
+    return identifier or f"TITLE:{_norm_title(paper.title)}"
+
+
+def fetch_semantic_scholar_metadata(paper: Paper) -> dict:
+    """Resolve one source paper and fetch its outbound references.
+
+    This is called only from the project-bound graph background job. It deliberately returns
+    provider evidence without assigning the project's full-text significance verdict.
+    """
+    source_key = semantic_scholar_source_key(paper)
+    identifier = semantic_scholar.paper_identifier(arxiv_id=paper.arxiv_id)
+    resolved: dict = {
+        "paper_id": identifier,
+        "title": paper.title,
+        "external_ids": {"ArXiv": paper.arxiv_id} if paper.arxiv_id else {},
+    }
+    if not identifier:
+        match = semantic_scholar.resolve_paper(paper.title)
+        if not match or not titles_match(str(match.get("title") or ""), paper.title):
+            return {
+                "status": "not_found", "source_key": source_key, "fetched_at": _now(),
+                "paper": None, "references": [], "error": "",
+            }
+        identifier = str(match.get("paperId") or "").strip()
+        if not identifier:
+            return {
+                "status": "not_found", "source_key": source_key, "fetched_at": _now(),
+                "paper": None, "references": [], "error": "",
+            }
+        resolved = {
+            "paper_id": identifier,
+            "title": str(match.get("title") or paper.title),
+            "external_ids": match.get("externalIds") if isinstance(match.get("externalIds"), dict) else {},
+        }
+    return {
+        "status": "done", "source_key": source_key, "fetched_at": _now(),
+        "paper": resolved, "references": semantic_scholar.references(identifier), "error": "",
+    }
+
+
+def _references_match(local: dict, provider: dict) -> bool:
+    for field in ("arxiv_id", "doi"):
+        left = str(local.get(field) or "").strip().lower()
+        right = str(provider.get(field) or "").strip().lower()
+        if left and right:
+            if field == "arxiv_id":
+                left = re.sub(r"v\d+$", "", left, flags=re.IGNORECASE)
+                right = re.sub(r"v\d+$", "", right, flags=re.IGNORECASE)
+            return left == right
+    return titles_match(str(local.get("title") or ""), str(provider.get("title") or ""))
+
+
+def _provider_evidence(ref: dict) -> dict:
+    return {
+        "paper_id": ref.get("paper_id"),
+        "contexts": list(ref.get("contexts") or []),
+        "intents": list(ref.get("intents") or []),
+        "is_influential": bool(ref.get("is_influential")),
+    }
+
+
+def merge_reference_sources(
+    papers: list[Paper],
+    extractions: dict[str, dict],
+    provider_metadata: dict[str, dict],
+) -> dict[str, dict]:
+    """Merge provider identity/evidence into copies of cached full-text extractions.
+
+    Provider-only references become graph edges, but only a full-text reference can carry the
+    project-specific `significant` verdict. Neither source cache is mutated.
+    """
+    combined: dict[str, dict] = {}
+    for paper in papers:
+        local_extraction = extractions.get(paper.slug) or {}
+        local_done = local_extraction.get("status") == "done"
+        refs: list[dict] = []
+        if local_done:
+            for original in local_extraction.get("references") or []:
+                if isinstance(original, dict):
+                    refs.append({
+                        **original,
+                        "authors": list(original.get("authors") or []),
+                        "contexts": list(original.get("contexts") or []),
+                        "_provenance": ["full_text"],
+                    })
+
+        provider_record = provider_metadata.get(paper.slug) or {}
+        provider_refs = (
+            provider_record.get("references") or []
+            if provider_record.get("status") == "done"
+            else []
+        )
+        used_provider: set[int] = set()
+        for local_ref in refs:
+            for index, provider_ref in enumerate(provider_refs):
+                if index in used_provider or not isinstance(provider_ref, dict):
+                    continue
+                if not _references_match(local_ref, provider_ref):
+                    continue
+                used_provider.add(index)
+                local_ref["_provenance"].append("semantic_scholar")
+                local_ref["_provider_evidence"] = {
+                    "semantic_scholar": _provider_evidence(provider_ref)
+                }
+                for field in ("arxiv_id", "doi", "url", "venue", "year"):
+                    if not local_ref.get(field) and provider_ref.get(field):
+                        local_ref[field] = provider_ref[field]
+                if not local_ref.get("authors") and provider_ref.get("authors"):
+                    local_ref["authors"] = list(provider_ref["authors"])
+                for context in provider_ref.get("contexts") or []:
+                    local_ref.setdefault("contexts", [])
+                    if context not in local_ref["contexts"]:
+                        local_ref["contexts"].append(context)
+                local_ref["contexts"] = local_ref.get("contexts", [])[:4]
+                break
+
+        for index, provider_ref in enumerate(provider_refs):
+            if index in used_provider or not isinstance(provider_ref, dict):
+                continue
+            refs.append({
+                **provider_ref,
+                "significant": False,
+                "significance_reason": "",
+                "confidence": 0.5,
+                "raw_text": "",
+                "_provenance": ["semantic_scholar"],
+                "_provider_evidence": {
+                    "semantic_scholar": _provider_evidence(provider_ref)
+                },
+            })
+
+        if refs or local_done:
+            combined[paper.slug] = {"status": "done", "references": refs}
+    return combined
 
 
 # ---------- graph construction (pure function of cached extractions; no LLM) ----------
@@ -336,6 +495,7 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
         nodes[p.slug] = {
             "id": p.slug, "kind": "project", "slug": p.slug, "title": p.title,
             "authors": [], "venue": "", "year": None, "arxiv_id": None, "doi": None, "url": None,
+            "provenance": ["reading_list"],
             "group": p.group, "list_status": p.list_status,
             "cited_by_project_count": 0, "significant_cited_by_count": 0, "cites_count": 0,
         }
@@ -353,21 +513,26 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
         if slug not in project_slugs or extraction.get("status") != "done":
             continue
         for ref in extraction.get("references", []):
+            provenance = list(dict.fromkeys(ref.get("_provenance") or ["full_text"]))
+            full_text_verified = "full_text" in provenance
             target_slug = match_project_paper(ref, papers)
             if target_slug and target_slug != slug:
                 target_id = target_slug
             else:
-                key = external_ref_key(ref)
-                target_id = external_key_to_id.get(key)
+                keys = external_ref_keys(ref)
+                key = keys[0]
+                target_id = next(
+                    (external_key_to_id[k] for k in keys if k in external_key_to_id), None
+                )
                 if not target_id:
                     target_id = f"ext:{key}"
-                    external_key_to_id[key] = target_id
                     nodes[target_id] = {
                         "id": target_id, "kind": "external", "slug": None,
                         "title": ref.get("title") or (ref.get("raw_text", "")[:120] or "Untitled reference"),
                         "authors": ref.get("authors", []), "venue": ref.get("venue", ""),
                         "year": ref.get("year"), "arxiv_id": ref.get("arxiv_id"),
                         "doi": ref.get("doi"), "url": ref.get("url"),
+                        "provenance": list(provenance),
                         "group": None, "list_status": None,
                         "cited_by_project_count": 0, "significant_cited_by_count": 0, "cites_count": 0,
                     }
@@ -378,14 +543,20 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
                             ext_node[f] = ref.get(f)
                     if not ext_node.get("authors") and ref.get("authors"):
                         ext_node["authors"] = ref.get("authors")
+                    for source in provenance:
+                        if source not in ext_node["provenance"]:
+                            ext_node["provenance"].append(source)
+                for alias in keys:
+                    external_key_to_id.setdefault(alias, target_id)
 
             if target_id == slug:
                 continue  # a paper "citing itself" via a fuzzy-matched title glitch — skip
 
             pair = (slug, target_id)
-            significant = bool(ref.get("significant"))
-            reason = ref.get("significance_reason", "")
+            significant = full_text_verified and bool(ref.get("significant"))
+            reason = ref.get("significance_reason", "") if full_text_verified else ""
             contexts = ref.get("contexts", [])
+            provider_evidence = ref.get("_provider_evidence") or {}
             existing = edge_by_pair.get(pair)
             if existing is None:
                 edge_by_pair[pair] = {
@@ -395,6 +566,9 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
                     "contexts": list(contexts),
                     "confidence": ref.get("confidence", 0.5),
                     "raw_text": ref.get("raw_text", ""),
+                    "provenance": provenance,
+                    "full_text_verified": full_text_verified,
+                    "provider_evidence": provider_evidence,
                 }
             else:
                 # Prefer the significant verdict/reason if either mention was significant;
@@ -403,6 +577,24 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
                     existing["reason"] = reason
                 existing["significant"] = existing["significant"] or significant
                 existing["confidence"] = max(existing["confidence"], ref.get("confidence", 0.5))
+                existing["full_text_verified"] = (
+                    existing["full_text_verified"] or full_text_verified
+                )
+                for source in provenance:
+                    if source not in existing["provenance"]:
+                        existing["provenance"].append(source)
+                for provider, evidence in provider_evidence.items():
+                    current = existing["provider_evidence"].get(provider)
+                    if not current:
+                        existing["provider_evidence"][provider] = evidence
+                    else:
+                        current["is_influential"] = (
+                            current.get("is_influential") or evidence.get("is_influential")
+                        )
+                        for field in ("contexts", "intents"):
+                            for value in evidence.get(field) or []:
+                                if value not in current.setdefault(field, []):
+                                    current[field].append(value)
                 for c in contexts:
                     if c not in existing["contexts"]:
                         existing["contexts"].append(c)
@@ -626,6 +818,22 @@ def status(papers: list[Paper]) -> dict:
         if n.get("kind") == "project" and n.get("slug") and n["slug"] not in current
     })
     stale.extend(removed)
+    provider_enabled = bool(semantic_scholar.api_key())
+    provider_records = {
+        p.slug: graph_store.get_provider_paper(data, "semantic_scholar", p.slug) for p in papers
+    }
+    provider_stale = []
+    if provider_enabled:
+        for paper in papers:
+            record = provider_records[paper.slug]
+            if (
+                not record
+                or record.get("source_key") != semantic_scholar_source_key(paper)
+                or record.get("status") == "error"
+            ):
+                provider_stale.append(paper.slug)
+                if paper.slug not in stale:
+                    stale.append(paper.slug)
     return {
         "has_graph": data.get("graph") is not None,
         "built_at": g.get("built_at"),
@@ -635,20 +843,29 @@ def status(papers: list[Paper]) -> dict:
         "stale_papers": stale,
         "removed_papers": removed,
         "missing_text_papers": missing_text,
+        "semantic_scholar_enabled": provider_enabled,
+        "semantic_scholar_papers": sum(
+            1 for record in provider_records.values()
+            if record and record.get("status") == "done"
+        ),
+        "semantic_scholar_stale_papers": provider_stale,
     }
 
 
 # ---------- orchestration ----------
 
 ExtractFn = Callable[[str, str, str, str], dict]
+MetadataFn = Callable[[Paper], dict]
 
 
 def build_graph(papers: list[Paper], force: bool = False,
-                extract_fn: ExtractFn = extract_references_for_paper) -> Iterator[dict]:
-    """Generator: yields progress dicts as papers are (re)extracted, then a final
-    {"type": "done", "graph": ..., "recommendations": ...} dict. Only papers whose cached
-    full text changed (or that were never extracted, or previously errored) get a fresh LLM
-    call; everything else is served from the cache — incremental by construction.
+                extract_fn: ExtractFn = extract_references_for_paper,
+                metadata_fn: MetadataFn | None = None) -> Iterator[dict]:
+    """Generator: yields progress dicts, then the final graph and recommendations.
+
+    Provider references and full-text/LLM extraction use independent incremental caches.
+    Only a changed source identity (or force) refreshes provider metadata; only changed cached
+    full text (or force/a previous error) re-spends an LLM extraction.
 
     extract_fn is injectable so tests can drive the whole pipeline (matching, dedup, graph
     construction, recommendations) with fixture extraction data and zero network calls."""
@@ -657,6 +874,52 @@ def build_graph(papers: list[Paper], force: bool = False,
     retrievable = [p for p in papers if store.corpus_path(p.slug).exists()]
     total = len(retrievable)
     yield {"type": "start", "total": total, "model": model}
+
+    # Provider metadata is a separate, resumable cache. A missing key disables this phase
+    # cleanly; tests and other callers can inject a network-free metadata function explicitly.
+    metadata_fetcher = metadata_fn
+    if metadata_fetcher is None and semantic_scholar.api_key():
+        metadata_fetcher = fetch_semantic_scholar_metadata
+    if metadata_fetcher is not None:
+        for paper in papers:
+            source_key = semantic_scholar_source_key(paper)
+            cached_provider = graph_store.get_provider_paper(
+                data, "semantic_scholar", paper.slug
+            )
+            needs_provider = (
+                force
+                or not cached_provider
+                or cached_provider.get("source_key") != source_key
+                or cached_provider.get("status") == "error"
+            )
+            if needs_provider:
+                yield {"type": "metadata", "slug": paper.slug, "title": paper.title}
+                try:
+                    provider_record = metadata_fetcher(paper)
+                    if not isinstance(provider_record, dict):
+                        raise TypeError("metadata provider returned a non-object result")
+                    provider_record = {
+                        **provider_record,
+                        "source_key": source_key,
+                        "fetched_at": provider_record.get("fetched_at") or _now(),
+                        "error": str(provider_record.get("error") or "")[:400],
+                    }
+                except Exception as exc:
+                    provider_record = {
+                        "status": "error", "source_key": source_key, "fetched_at": _now(),
+                        "paper": None, "references": [], "error": str(exc)[:400],
+                    }
+                graph_store.set_provider_paper(
+                    data, "semantic_scholar", paper.slug, provider_record
+                )
+                graph_store.save(data)
+            else:
+                provider_record = cached_provider
+            yield {
+                "type": "metadata_progress", "slug": paper.slug,
+                "status": provider_record.get("status"), "cached": not needs_provider,
+                "error": provider_record.get("error") or None,
+            }
 
     done = 0
     for p in retrievable:
@@ -685,7 +948,14 @@ def build_graph(papers: list[Paper], force: bool = False,
 
     extractions = {slug: ext for slug, ext in data["papers"].items()
                    if slug in {p.slug for p in papers}}
-    nodes, edges = build_nodes_and_edges(papers, extractions)
+    provider_metadata = {
+        p.slug: record for p in papers
+        if (record := graph_store.get_provider_paper(
+            data, "semantic_scholar", p.slug
+        )) is not None
+    }
+    combined = merge_reference_sources(papers, extractions, provider_metadata)
+    nodes, edges = build_nodes_and_edges(papers, combined)
     citations.annotate_nodes(nodes, data["citations"])  # global counts; best-effort, cached
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)  # adds x/y to each node (temporal Y)

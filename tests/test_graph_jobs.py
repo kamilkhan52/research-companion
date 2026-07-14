@@ -119,6 +119,26 @@ def test_job_resolves_the_correct_project_context_from_its_own_thread(temp_proje
     assert finished.graph["nodes"]
 
 
+def test_provider_metadata_runs_in_the_job_project_context(temp_project):
+    add_paper(temp_project, "a", "Paper A", full_text="Text A.")
+    observed_projects: list[str | None] = []
+
+    def metadata_fn(_paper):
+        observed_projects.append(config.active_project_id())
+        return {"status": "done", "references": [], "error": ""}
+
+    graph_jobs.start_build(
+        temp_project, extract_fn=fake_extractor(), metadata_fn=metadata_fn
+    )
+    finished = _wait_until_done(temp_project)
+
+    assert finished.status == "done"
+    assert observed_projects == [temp_project]
+    assert graph_store.get_provider_paper(
+        graph_store.load(), "semantic_scholar", "a"
+    )["status"] == "done"
+
+
 def test_no_job_yet_returns_none(temp_project):
     assert graph_jobs.get_job(temp_project) is None
     assert graph_jobs.is_running(temp_project) is False

@@ -325,6 +325,8 @@ export interface GraphNode {
   cites_count: number;
   /** Global citation count (Semantic Scholar), when known; null/absent when not found. */
   citation_count?: number | null;
+  /** Evidence sources used to create or enrich this node. Absent on older cached graphs. */
+  provenance?: Array<'reading_list' | 'full_text' | 'semantic_scholar'>;
   // Server-precomputed layout position (temporal Y: recent toward the bottom). Present on
   // graphs built after layout was added; absent ones fall back to a client-side sim.
   x?: number;
@@ -349,6 +351,16 @@ export interface GraphEdge {
   contexts: string[];
   confidence: number;
   raw_text: string;
+  provenance?: Array<'full_text' | 'semantic_scholar'>;
+  full_text_verified?: boolean;
+  provider_evidence?: {
+    semantic_scholar?: {
+      paper_id: string | null;
+      contexts: string[];
+      intents: string[];
+      is_influential: boolean;
+    };
+  };
 }
 
 export interface ReferenceGraph {
@@ -372,11 +384,14 @@ export interface GraphStatus {
    *  included in stale_papers so the rebuild affordance lights up). */
   removed_papers: string[];
   missing_text_papers: string[];
+  semantic_scholar_enabled: boolean;
+  semantic_scholar_papers: number;
+  semantic_scholar_stale_papers: string[];
 }
 
 /** Per-paper status within an in-flight or finished build job. */
 export interface GraphBuildPaperStatus {
-  status: 'extracting' | 'cached' | 'done' | 'error';
+  status: 'metadata' | 'metadata_cached' | 'extracting' | 'cached' | 'done' | 'not_found' | 'error';
   error: string | null;
 }
 

@@ -17,8 +17,9 @@ def _offline_citations(monkeypatch):
     touch the network. Stub only the fetch step — annotate_nodes still runs for real, applying
     whatever counts a test seeded into the cache. Tests of the fetch itself call _fetch_missing
     directly with a fake client (bypassing this stub)."""
-    from app import citations
+    from app import citations, semantic_scholar
     monkeypatch.setattr(citations, "_fetch_missing", lambda nodes, cache, client, sleep: None)
+    monkeypatch.setattr(semantic_scholar, "api_key", lambda: "")
 
 
 @pytest.fixture

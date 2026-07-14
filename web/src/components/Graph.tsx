@@ -30,6 +30,9 @@ export function Graph({ onNavigate }: Props) {
 
   const nodes = graph?.nodes ?? [];
   const edges = graph?.edges ?? [];
+  const hasSemanticScholarData = edges.some((edge) =>
+    edge.provenance?.includes('semantic_scholar')
+  );
 
   const filteredNodes = useMemo(() => {
     let result = nodes;
@@ -156,6 +159,17 @@ export function Graph({ onNavigate }: Props) {
       </div>
 
       <canvas ref={setCanvasRef} className="graph-canvas" />
+
+      {hasSemanticScholarData && (
+        <a
+          className="graph-attribution"
+          href="https://www.semanticscholar.org/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Reference metadata provided by Semantic Scholar ↗
+        </a>
+      )}
 
       {build && build.status === 'error' && (
         <div className="build-progress build-progress-compact" style={{ position: 'absolute', bottom: 'var(--space-md)', left: 'var(--space-md)', right: 'var(--space-md)' }}>

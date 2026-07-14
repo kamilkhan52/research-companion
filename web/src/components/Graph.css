@@ -19,6 +19,18 @@
   cursor: grabbing;
 }
 
+.graph-attribution {
+  align-self: center;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.graph-attribution:hover {
+  color: var(--cyan);
+}
+
 /* ---- controls ---- */
 
 .graph-controls {
