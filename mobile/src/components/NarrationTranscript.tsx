@@ -10,7 +10,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
 
-import { splitSentences, type SentenceBoundary } from '../../sentence-seek';
+import { sentenceSeekPosition, splitSentences, type SentenceBoundary } from '../../sentence-seek';
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
 import { Text } from '@/ui';
@@ -147,10 +147,12 @@ export function RollingTranscript({ narration }: { narration: string }) {
         if (qi < 0) return;
         await TrackPlayer.skip(qi);
         const { duration: segDur } = await TrackPlayer.getProgress();
-        if (segDur > 0 && within > 0) await TrackPlayer.seekTo(within * segDur);
+        if (segDur > 0 && within > 0) {
+          await TrackPlayer.seekTo(sentenceSeekPosition(within * segDur));
+        }
       })();
     } else if (d > 0) {
-      void TrackPlayer.seekTo(ss[i].startFrac * d);
+      void TrackPlayer.seekTo(sentenceSeekPosition(ss[i].startFrac * d));
     }
   }, []);
   const handleLayout = useCallback((i: number, y: number, h: number) => {

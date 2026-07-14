@@ -30,15 +30,15 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | 1.3 | Self-contained figure/table/section descriptions | [#17](https://github.com/kamilkhan52/research-companion/pull/17) | Complete |
 | 2.1 | Device Listening mode + automatic queued audio | [#19](https://github.com/kamilkhan52/research-companion/pull/19) | Complete — Android passed; iOS deferred |
 | 2.2 | Grounded preview cues from the live response | [#22](https://github.com/kamilkhan52/research-companion/pull/22) | Complete — Android passed; iOS deferred |
-| 2.2a | Contextual cue continuity during narration prep | [#30](https://github.com/kamilkhan52/research-companion/pull/30) | Merged — device-pass record pending confirmation |
+| 2.2a | Contextual cue continuity during narration prep | [#30](https://github.com/kamilkhan52/research-companion/pull/30) | Merged — initial Android pass; final cue handoff pending |
 | 2.2b | Retrieval-phase spoken cues (arXiv hunt) | — | Deferred |
-| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — device-pass record pending confirmation |
+| 2.3 | Progressive TTS segments + sentence/headset controls | [#28](https://github.com/kamilkhan52/research-companion/pull/28) | Merged — Android transcript/sentence controls passed; remaining playback checks pending |
 | 3.1 | Recent sessions and activity timestamps | [#32](https://github.com/kamilkhan52/research-companion/pull/32) | Merged |
 | 3.2 | Authored-draft safety and reconciliation | [#31](https://github.com/kamilkhan52/research-companion/pull/31) | Merged |
 | 3.3 | Playback position restoration | [#71](https://github.com/kamilkhan52/research-companion/pull/71) | Complete — Android passed |
 | 3.4 | Responsive drawer and project/navigation layout | [#40](https://github.com/kamilkhan52/research-companion/pull/40) | Superseded by the shipped bottom-tab navigation shell |
-| 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Merged — device-pass record pending confirmation |
-| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Merged — device-pass record pending confirmation |
+| 4.0 | Discussion thread on a maintained chat library | [#33](https://github.com/kamilkhan52/research-companion/pull/33) | Complete — Android passed |
+| 4.1 | Full-width bubbles, overflow menu, retry-with-model, top model picker | [#34](https://github.com/kamilkhan52/research-companion/pull/34) | Complete — Android passed |
 | 4.2 | Real sheets, centralized motion, developer tuning | [#68](https://github.com/kamilkhan52/research-companion/pull/68) | Partial — shared swipe-dismiss sheets shipped; global motion tuning deferred |
 | 4.3 | Reading-mode prompt templates, full-paper access, and assistant activity | [#72](https://github.com/kamilkhan52/research-companion/pull/72) | Complete |
 | 4.4 | Stable Map pinch-release positioning | [#70](https://github.com/kamilkhan52/research-companion/pull/70) | Complete |
@@ -329,6 +329,13 @@ never restarts the current sentence, which is what the old within-a-grace-window
 search actually did. Already at the first sentence of the current segment still falls through
 to the existing skipToPrevious segment-crossing behavior unchanged.
 
+Android confirmation on 2026-07-13: transcript auto-follow remains current without a perceptible
+delay, and previous/next sentence controls otherwise behave well. Direct sentence seeks could
+occasionally begin after the first few words even though continuous playback included them. The
+follow-up fix intentionally seeks 0.75 seconds before the estimated sentence boundary to absorb
+character-proportion and MP3 seek imprecision; it needs one focused Android confirmation. Final
+cue handoff remains a separate untested 2.2a case. iOS remains deferred.
+
 ## Phase 3 — continuity and navigation
 
 ### 3.1 Recent sessions and activity timestamps
@@ -439,6 +446,14 @@ From the device pass on #33/#34:
   FlatList still corrects the viewport toward that offset as off-screen content resizes. Fixed
   with `maintainVisibleContentPosition` (`autoscrollToTopThreshold: 100`) so the list only keeps
   following while already near the latest message.
+
+#### Deferred interaction: selectable response text
+
+Long-press selection of arbitrary text inside assistant responses remains deferred after multiple
+approaches conflicted with chat scrolling and the message action menu. The shipped long-press
+actions, scrolling, and streaming pin behavior stay authoritative. Revisit selection as a focused
+interaction change with Android gesture tests rather than enabling React Native `selectable`
+wholesale inside the chat list.
 
 ### 4.2 Sheets and motion
 

@@ -1,6 +1,17 @@
 // Shared sentence parsing + seeking for the React UI and the headless TrackPlayer service.
 // Plain CommonJS keeps it loadable from service.js while sentence-seek.d.ts gives TS callers types.
 
+// Sentence boundaries are estimated from text proportions, and Android MP3 seeks may resolve a
+// little after their requested timestamp. Land slightly before semantic boundaries so the first
+// words are audible. This applies only to sentence jumps; scrubber and ±15s seeks remain exact.
+const SENTENCE_SEEK_PREROLL_SECONDS = 0.75;
+const SENTENCE_BOUNDARY_LOOKAHEAD_SECONDS = 0.5 + SENTENCE_SEEK_PREROLL_SECONDS;
+
+function sentenceSeekPosition(estimatedStart, prerollSeconds = SENTENCE_SEEK_PREROLL_SECONDS) {
+  if (!Number.isFinite(estimatedStart)) return 0;
+  return Math.max(0, estimatedStart - Math.max(0, prerollSeconds));
+}
+
 function splitSentences(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed) return [];
@@ -41,7 +52,9 @@ async function seekSentence(player, direction, fallbackSeconds = 15) {
   const starts = sentences.map((sentence) => sentence.startFrac * progress.duration);
   let target;
   if (direction > 0) {
-    target = starts.find((value) => value > progress.position + 0.5);
+    // Include the pre-roll in the semantic playhead. Otherwise a second press immediately after
+    // a sentence jump can rediscover the same boundary because the physical playhead is early.
+    target = starts.find((value) => value > progress.position + SENTENCE_BOUNDARY_LOOKAHEAD_SECONDS);
   } else {
     // Step to the sentence before the one currently playing — never just restart the
     // current sentence. "Currently playing" is the last sentence whose start is at or
@@ -49,12 +62,15 @@ async function seekSentence(player, direction, fallbackSeconds = 15) {
     // the first one), leave target unset so the skipToPrevious/segment-crossing fallback
     // below still runs, same as before.
     const currentIndex = starts.reduce(
-      (idx, value, i) => (value <= progress.position + 0.5 ? i : idx), 0,
+      (idx, value, i) => (
+        value <= progress.position + SENTENCE_BOUNDARY_LOOKAHEAD_SECONDS ? i : idx
+      ),
+      0,
     );
     target = currentIndex > 0 ? starts[currentIndex - 1] : undefined;
   }
   if (target != null) {
-    await player.seekTo(target);
+    await player.seekTo(sentenceSeekPosition(target));
     return 'sentence';
   }
   const skip = direction > 0 ? player.skipToNext : player.skipToPrevious;
@@ -70,4 +86,9 @@ async function seekSentence(player, direction, fallbackSeconds = 15) {
   return 'fallback';
 }
 
-module.exports = { splitSentences, seekSentence };
+module.exports = {
+  SENTENCE_SEEK_PREROLL_SECONDS,
+  sentenceSeekPosition,
+  splitSentences,
+  seekSentence,
+};

@@ -1,25 +1,72 @@
 import TrackPlayer from 'react-native-track-player';
 
-import { seekSentence, splitSentences } from '../sentence-seek';
+import {
+  SENTENCE_SEEK_PREROLL_SECONDS,
+  seekSentence,
+  sentenceSeekPosition,
+  splitSentences,
+} from '../sentence-seek';
 
 test('shared parser keeps dotted abbreviations inside a sentence', () => {
   expect(splitSentences('The O.P.T. model improves. Next result.').map((item) => item.text))
     .toEqual(['The O.P.T. model improves.', 'Next result.']);
 });
 
-test('sentence seek uses the next proportional boundary when metadata exists', async () => {
+test('semantic seek position adds bounded pre-roll without crossing track start', () => {
+  expect(sentenceSeekPosition(8)).toBe(8 - SENTENCE_SEEK_PREROLL_SECONDS);
+  expect(sentenceSeekPosition(0.4)).toBe(0);
+  expect(sentenceSeekPosition(8, -2)).toBe(8);
+});
+
+test('sentence seek pre-rolls the next proportional boundary when metadata exists', async () => {
+  const text = 'First sentence. Second sentence. Third sentence.';
+  const duration = 30;
+  const secondStart = splitSentences(text)[1].startFrac * duration;
   jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue({
-    sentenceText: 'First sentence. Second sentence. Third sentence.',
+    sentenceText: text,
   } as never);
   jest.mocked(TrackPlayer.getProgress).mockResolvedValue({
     position: 2,
-    duration: 30,
-    buffered: 30,
+    duration,
+    buffered: duration,
   });
 
   await expect(seekSentence(TrackPlayer, 1)).resolves.toBe('sentence');
-  expect(TrackPlayer.seekTo).toHaveBeenCalledWith(expect.any(Number));
+  expect(TrackPlayer.seekTo).toHaveBeenCalledWith(sentenceSeekPosition(secondStart));
   expect(TrackPlayer.seekBy).not.toHaveBeenCalled();
+});
+
+test('next sentence advances again from a pre-rolled boundary', async () => {
+  const text = 'First sentence. Second sentence. Third sentence.';
+  const duration = 30;
+  const sentences = splitSentences(text);
+  const secondStart = sentences[1].startFrac * duration;
+  const thirdStart = sentences[2].startFrac * duration;
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue({ sentenceText: text } as never);
+  jest.mocked(TrackPlayer.getProgress).mockResolvedValue({
+    position: sentenceSeekPosition(secondStart),
+    duration,
+    buffered: duration,
+  });
+
+  await expect(seekSentence(TrackPlayer, 1)).resolves.toBe('sentence');
+  expect(TrackPlayer.seekTo).toHaveBeenCalledWith(sentenceSeekPosition(thirdStart));
+});
+
+test('previous sentence interprets a pre-rolled playhead as the intended sentence', async () => {
+  const text = 'First sentence. Second sentence. Third sentence.';
+  const duration = 30;
+  const sentences = splitSentences(text);
+  const secondStart = sentences[1].startFrac * duration;
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue({ sentenceText: text } as never);
+  jest.mocked(TrackPlayer.getProgress).mockResolvedValue({
+    position: sentenceSeekPosition(secondStart),
+    duration,
+    buffered: duration,
+  });
+
+  await expect(seekSentence(TrackPlayer, -1)).resolves.toBe('sentence');
+  expect(TrackPlayer.seekTo).toHaveBeenCalledWith(0);
 });
 
 test('previous sentence steps fully to the sentence before the current one, not restarting it', async () => {
