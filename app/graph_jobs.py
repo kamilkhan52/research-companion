@@ -23,10 +23,12 @@ from .jobs import Job, JobRegistry, now_iso
 @dataclass
 class BuildJob(Job):
     total: int = 0
+    ready: int = 0
     done: int = 0
     current_slug: str | None = None
     current_title: str | None = None
     per_paper: dict = field(default_factory=dict)  # slug -> {status, cached, error}
+    retrieval_candidates: dict = field(default_factory=dict)  # slug -> confirmation candidates
     graph: dict | None = None
     recommendations: list | None = None
 
@@ -53,14 +55,17 @@ def is_running(pid: str) -> bool:
 
 def start_build(pid: str, force: bool = False,
                 extract_fn: graph.ExtractFn = graph.extract_references_for_paper,
-                metadata_fn: graph.MetadataFn | None = None) -> BuildJob:
+                metadata_fn: graph.MetadataFn | None = None,
+                retrieval_fn: graph.RetrievalFn | None = None,
+                retrieval_sources: dict[str, str] | None = None) -> BuildJob:
     """Start a build for `pid` in a background thread unless one is already running for it;
     either way returns the (new or in-flight) job. extract_fn is injectable (mirroring
     graph.build_graph) so tests drive a real background thread with no network calls."""
     def work(job: BuildJob) -> None:
         papers = store.list_papers(sessions.session_states())
         for event in graph.build_graph(
-            papers, force=force, extract_fn=extract_fn, metadata_fn=metadata_fn
+            papers, force=force, extract_fn=extract_fn, metadata_fn=metadata_fn,
+            retrieval_fn=retrieval_fn, retrieval_sources=retrieval_sources,
         ):
             with _registry.lock:
                 _apply_event(job, event)
@@ -74,6 +79,7 @@ def _apply_event(job: BuildJob, event: dict) -> None:
     etype = event["type"]
     if etype == "start":
         job.total = event["total"]
+        job.ready = event.get("ready", 0)
     elif etype == "extracting":
         job.current_slug = event["slug"]
         job.current_title = event["title"]
@@ -93,6 +99,18 @@ def _apply_event(job: BuildJob, event: dict) -> None:
             "status": "metadata_cached" if event["cached"] else event["status"],
             "error": event.get("error"),
         }
+    elif etype == "retrieving":
+        job.current_slug = event["slug"]
+        job.current_title = event["title"]
+        job.per_paper[event["slug"]] = {"status": "retrieving", "error": None}
+    elif etype == "retrieval_progress":
+        job.ready = event["ready"]
+        job.per_paper[event["slug"]] = {
+            "status": "retrieval_cached" if event["cached"] else event["status"],
+            "error": event.get("error"),
+        }
+        if event.get("candidates"):
+            job.retrieval_candidates[event["slug"]] = event["candidates"]
     elif etype == "done":
         # status/finished_at are set by the registry once work() returns; the graph itself is
         # already persisted by graph.build_graph before this event.

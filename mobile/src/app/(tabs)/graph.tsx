@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { useGraph } from '@/api/queries';
-import type { GraphEdge, GraphNode, GraphRecommendation, GraphStatus } from '@/api/types';
+import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
@@ -159,6 +159,9 @@ export default function GraphScreen() {
   }
 
   const staleCount = status?.stale_papers.length ?? 0;
+  const retrievalCandidates = build.progress?.retrievalCandidates
+    ?? status?.retrieval_candidates
+    ?? {};
 
   function openPaper(slug: string) {
     setSelectedNode(null);
@@ -226,6 +229,8 @@ export default function GraphScreen() {
       ) : (
         <>
           {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
+
+          <RetrievalConfirmations candidates={retrievalCandidates} build={build} />
 
           <FilterBar
             query={query}
@@ -337,6 +342,10 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
           {build.error}
         </Text>
       ) : null}
+      <RetrievalConfirmations
+        candidates={build.progress?.retrievalCandidates ?? status?.retrieval_candidates ?? {}}
+        build={build}
+      />
       <Button
         title="Build graph"
         onPress={() => build.run(false)}
@@ -353,8 +362,39 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
   );
 }
 
+function RetrievalConfirmations({
+  candidates,
+  build,
+}: {
+  candidates: Record<string, GraphRetrievalCandidate[]>;
+  build: GraphBuildState;
+}) {
+  const entries = Object.entries(candidates).filter(([, options]) => options.length > 0);
+  if (!entries.length || build.building) return null;
+  return (
+    <Card style={styles.confirmationCard}>
+      <Text variant="heading">Confirm paper sources</Text>
+      <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+        These matches were not confident enough to download automatically.
+      </Text>
+      {entries.map(([slug, options]) => (
+        <View key={slug} style={{ marginTop: space.md, gap: space.xs }}>
+          {options.slice(0, 3).map((candidate) => (
+            <Button
+              key={candidate.arxiv_id}
+              title={`${candidate.title} · arXiv:${candidate.arxiv_id}`}
+              variant="ghost"
+              onPress={() => build.run(false, { [slug]: candidate.arxiv_id })}
+            />
+          ))}
+        </View>
+      ))}
+    </Card>
+  );
+}
+
 function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
-  const pct = progress && progress.total > 0 ? progress.done / progress.total : 0;
+  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
@@ -369,7 +409,7 @@ function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['p
             <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
           </View>
           <Text variant="caption" style={{ marginTop: 4 }}>
-            {progress.done} / {progress.total} papers
+            {progress.ready} of {progress.total} ready · {progress.done} analyzed
           </Text>
         </>
       ) : null}
@@ -511,4 +551,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.xs,
   },
+  confirmationCard: { margin: space.md, marginBottom: 0 },
 });

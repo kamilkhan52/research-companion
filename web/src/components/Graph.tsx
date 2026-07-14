@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useGraph } from '@/hooks/useGraph';
 import { useActivePid } from '@/hooks/useLibrary';
 import { GraphEngine } from '@/graph/engine';
-import type { GraphNode, GraphRecommendation } from '@/api/graph-types';
+import type { GraphNode, GraphRecommendation, GraphRetrievalCandidate } from '@/api/graph-types';
 import { addPaper } from '@/api/endpoints';
 import './Graph.css';
 
@@ -21,7 +21,7 @@ interface Props {
 
 export function Graph({ onNavigate }: Props) {
   const [activePid] = useActivePid();
-  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, stalePapers, loading, error, refetch, startBuild } = useGraph(activePid);
+  const { graph, recommendations, build, hasGraph, totalPapers, readyPapers, stalePapers, retrievalCandidates, loading, error, refetch, startBuild } = useGraph(activePid);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GraphEngine | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
@@ -119,9 +119,12 @@ export function Graph({ onNavigate }: Props) {
         {build && build.status === 'running' ? (
           <BuildProgress build={build} />
         ) : totalPapers > 0 ? (
-          <button className="btn primary" onClick={() => startBuild()}>
-            Build graph
-          </button>
+          <>
+            <RetrievalConfirmations candidates={retrievalCandidates} onConfirm={(slug, id) => startBuild(false, { [slug]: id })} />
+            <button className="btn primary" onClick={() => startBuild()}>
+              Build graph
+            </button>
+          </>
         ) : (
           <button className="btn ghost" onClick={() => onNavigate('discover')}>
             Find papers
@@ -134,6 +137,7 @@ export function Graph({ onNavigate }: Props) {
   return (
     <div className="graph-screen">
       {stalePapers.length > 0 && build?.status !== 'running' && <div className="graph-stale"><span>{stalePapers.length} papers changed since this map was built.</span><button className="btn ghost" onClick={() => startBuild(true)}>Rebuild map</button></div>}
+      <RetrievalConfirmations candidates={retrievalCandidates} onConfirm={(slug, id) => startBuild(false, { [slug]: id })} />
       <div className="graph-controls">
         <input
           className="graph-search"
@@ -189,6 +193,28 @@ export function Graph({ onNavigate }: Props) {
       {recommendations.length > 0 && (
         <RecommendationsPanel recs={recommendations.slice(0, 6)} pid={activePid} />
       )}
+    </div>
+  );
+}
+
+function RetrievalConfirmations({
+  candidates,
+  onConfirm,
+}: {
+  candidates: Record<string, GraphRetrievalCandidate[]>;
+  onConfirm: (slug: string, arxivId: string) => void;
+}) {
+  const entries = Object.entries(candidates).filter(([, options]) => options.length > 0);
+  if (!entries.length) return null;
+  return (
+    <div className="graph-confirmations">
+      <strong>Confirm paper sources</strong>
+      <span className="muted">These matches were not confident enough to download automatically.</span>
+      {entries.flatMap(([slug, options]) => options.slice(0, 3).map((candidate) => (
+        <button key={`${slug}:${candidate.arxiv_id}`} className="btn ghost" onClick={() => onConfirm(slug, candidate.arxiv_id)}>
+          {candidate.title} · arXiv:{candidate.arxiv_id}
+        </button>
+      )))}
     </div>
   );
 }
@@ -252,17 +278,17 @@ function NodeDetail({
 function BuildProgress({
   build, compact,
 }: {
-  build: { status: string; total: number; done: number; current_title: string | null; current_slug: string | null; error: string | null };
+  build: { status: string; total: number; ready: number; done: number; current_title: string | null; current_slug: string | null; error: string | null };
   compact?: boolean;
 }) {
-  const pct = build.total > 0 ? Math.round((build.done / build.total) * 100) : 0;
+  const pct = build.ready > 0 ? Math.round((build.done / build.ready) * 100) : 0;
   return (
     <div className={`build-progress ${compact ? 'build-progress-compact' : ''}`}>
       <div className="build-progress-bar">
         <div className="build-progress-fill" style={{ width: `${pct}%` }} />
       </div>
       <p className="muted">
-        {pct}% — {build.done}/{build.total} papers
+        {build.ready} of {build.total} ready — {build.done} analyzed
         {build.current_title ? ` — ${build.current_title}` : ''}
       </p>
       {build.error && <p className="build-progress-error">{build.error}</p>}

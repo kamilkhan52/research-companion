@@ -33,7 +33,17 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
-from . import citations, config, graph_layout, graph_store, llm, prompts, semantic_scholar, store
+from . import (
+    citations,
+    config,
+    graph_layout,
+    graph_store,
+    llm,
+    prompts,
+    retriever,
+    semantic_scholar,
+    store,
+)
 from .models import Paper
 
 # ---------- model resolution ----------
@@ -362,6 +372,16 @@ def match_project_paper(ref: dict, papers: list[Paper]) -> str | None:
 def semantic_scholar_source_key(paper: Paper) -> str:
     identifier = semantic_scholar.paper_identifier(arxiv_id=paper.arxiv_id)
     return identifier or f"TITLE:{_norm_title(paper.title)}"
+
+
+def _graph_retrieved_text(data: dict, paper: Paper) -> str:
+    record = graph_store.get_retrieval(data, paper.slug) or {}
+    if (
+        record.get("status") != "done"
+        or record.get("source_key") != semantic_scholar_source_key(paper)
+    ):
+        return ""
+    return graph_store.read_retrieved_text(paper.slug)
 
 
 def fetch_semantic_scholar_metadata(paper: Paper) -> dict:
@@ -828,10 +848,12 @@ def status(papers: list[Paper]) -> dict:
     data = graph_store.load()
     stale, missing_text = [], []
     for p in papers:
-        if not store.corpus_path(p.slug).exists():
+        cached_text = _graph_retrieved_text(data, p)
+        if not store.corpus_path(p.slug).exists() and not cached_text:
             missing_text.append(p.slug)
             continue
-        chash = graph_store.content_hash(store.read_full_text(p.slug))
+        full_text = store.read_full_text(p.slug) or cached_text
+        chash = graph_store.content_hash(full_text)
         cached = graph_store.get_paper_extraction(data, p.slug)
         if not cached or cached.get("content_hash") != chash or cached.get("status") == "error":
             stale.append(p.slug)
@@ -861,6 +883,7 @@ def status(papers: list[Paper]) -> dict:
                 provider_stale.append(paper.slug)
                 if paper.slug not in stale:
                     stale.append(paper.slug)
+    retrievals = {p.slug: graph_store.get_retrieval(data, p.slug) or {} for p in papers}
     return {
         "has_graph": data.get("graph") is not None,
         "built_at": g.get("built_at"),
@@ -876,6 +899,14 @@ def status(papers: list[Paper]) -> dict:
             if record and record.get("status") == "done"
         ),
         "semantic_scholar_stale_papers": provider_stale,
+        "retrieval_candidates": {
+            slug: record.get("candidates") or [] for slug, record in retrievals.items()
+            if record.get("status") == "needs_confirmation"
+        },
+        "retrieval_errors": {
+            slug: record.get("error") for slug, record in retrievals.items()
+            if record.get("status") == "error" and record.get("error")
+        },
     }
 
 
@@ -883,11 +914,26 @@ def status(papers: list[Paper]) -> dict:
 
 ExtractFn = Callable[[str, str, str, str], dict]
 MetadataFn = Callable[[Paper], dict]
+RetrievalFn = Callable[[Paper, dict | None], dict]
+
+
+def retrieve_missing_graph_paper(paper: Paper, provider_record: dict | None) -> dict:
+    """Deterministically retrieve a high-confidence source into the graph-only cache."""
+    arxiv_id = paper.arxiv_id or ""
+    provider_paper = (provider_record or {}).get("paper") or {}
+    external_ids = provider_paper.get("external_ids") or {}
+    if not arxiv_id and isinstance(external_ids, dict):
+        arxiv_id = str(external_ids.get("ArXiv") or external_ids.get("ARXIV") or "")
+    return retriever.retrieve(
+        paper.title, arxiv_id=arxiv_id or None, min_score=0.86
+    )
 
 
 def build_graph(papers: list[Paper], force: bool = False,
                 extract_fn: ExtractFn = extract_references_for_paper,
-                metadata_fn: MetadataFn | None = None) -> Iterator[dict]:
+                metadata_fn: MetadataFn | None = None,
+                retrieval_fn: RetrievalFn | None = None,
+                retrieval_sources: dict[str, str] | None = None) -> Iterator[dict]:
     """Generator: yields progress dicts, then the final graph and recommendations.
 
     Provider references and full-text/LLM extraction use independent incremental caches.
@@ -898,9 +944,13 @@ def build_graph(papers: list[Paper], force: bool = False,
     construction, recommendations) with fixture extraction data and zero network calls."""
     data = graph_store.load()
     model = resolve_model()
-    retrievable = [p for p in papers if store.corpus_path(p.slug).exists()]
-    total = len(retrievable)
-    yield {"type": "start", "total": total, "model": model}
+    total = len(papers)
+    ready_slugs = {
+        p.slug for p in papers
+        if store.corpus_path(p.slug).exists() or _graph_retrieved_text(data, p)
+    }
+    ready = len(ready_slugs)
+    yield {"type": "start", "total": total, "ready": ready, "model": model}
 
     # Provider metadata is a separate, resumable cache. A missing key disables this phase
     # cleanly; tests and other callers can inject a network-free metadata function explicitly.
@@ -955,9 +1005,82 @@ def build_graph(papers: list[Paper], force: bool = False,
                 "error": provider_record.get("error") or None,
             }
 
+    retrieval_fetcher = retrieval_fn or retrieve_missing_graph_paper
+    retrieval_sources = retrieval_sources or {}
+    for paper in papers:
+        if store.corpus_path(paper.slug).exists():
+            continue
+        source_key = semantic_scholar_source_key(paper)
+        cached_retrieval = graph_store.get_retrieval(data, paper.slug)
+        cached_text = graph_store.read_retrieved_text(paper.slug)
+        cache_valid = bool(
+            cached_retrieval
+            and cached_retrieval.get("source_key") == source_key
+            and cached_retrieval.get("status") in {"done", "needs_confirmation"}
+            and (cached_retrieval.get("status") != "done" or cached_text)
+        )
+        needs_retrieval = force or paper.slug in retrieval_sources or not cache_valid
+        if needs_retrieval:
+            ready_slugs.discard(paper.slug)
+            yield {"type": "retrieving", "slug": paper.slug, "title": paper.title}
+            try:
+                selected_arxiv = retrieval_sources.get(paper.slug)
+                if selected_arxiv:
+                    result = retriever.retrieve(
+                        paper.title, arxiv_id=selected_arxiv, min_score=0.86
+                    )
+                else:
+                    result = retrieval_fetcher(
+                        paper,
+                        graph_store.get_provider_paper(data, "semantic_scholar", paper.slug),
+                    )
+                if not isinstance(result, dict):
+                    raise TypeError("retrieval returned a non-object result")
+                if result.get("needs_confirmation"):
+                    cached_retrieval = {
+                        "status": "needs_confirmation", "source_key": source_key,
+                        "fetched_at": _now(), "candidates": result.get("candidates") or [],
+                        "error": "",
+                    }
+                elif result.get("full_text"):
+                    graph_store.write_retrieved_text(paper.slug, str(result["full_text"]))
+                    cached_text = str(result["full_text"])
+                    cached_retrieval = {
+                        "status": "done", "source_key": source_key, "fetched_at": _now(),
+                        "arxiv_id": result.get("arxiv_id"), "source": result.get("source"),
+                        "candidates": [], "error": "",
+                    }
+                    ready_slugs.add(paper.slug)
+                else:
+                    raise ValueError("retrieval returned neither text nor candidates")
+            except Exception as exc:
+                cached_retrieval = {
+                    "status": "error", "source_key": source_key, "fetched_at": _now(),
+                    "candidates": [], "error": str(exc)[:400],
+                }
+            graph_store.set_retrieval(data, paper.slug, cached_retrieval)
+            graph_store.save(data)
+        ready = len(ready_slugs)
+        yield {
+            "type": "retrieval_progress", "slug": paper.slug,
+            "status": cached_retrieval.get("status"), "cached": not needs_retrieval,
+            "ready": ready, "total": total,
+            "candidates": cached_retrieval.get("candidates") or [],
+            "error": cached_retrieval.get("error") or None,
+        }
+
+    retrievable: list[tuple[Paper, str]] = []
+    for paper in papers:
+        text = (
+            store.read_full_text(paper.slug)
+            if store.corpus_path(paper.slug).exists()
+            else _graph_retrieved_text(data, paper)
+        )
+        if text:
+            retrievable.append((paper, text))
+
     done = 0
-    for p in retrievable:
-        full_text = store.read_full_text(p.slug)
+    for p, full_text in retrievable:
         chash = graph_store.content_hash(full_text)
         cached = graph_store.get_paper_extraction(data, p.slug)
         needs_run = (force or not cached or cached.get("content_hash") != chash
@@ -976,12 +1099,14 @@ def build_graph(papers: list[Paper], force: bool = False,
         else:
             extraction = cached
         done += 1
-        yield {"type": "progress", "done": done, "total": total, "slug": p.slug,
+        yield {"type": "progress", "done": done, "total": total, "ready": ready, "slug": p.slug,
                "status": extraction.get("status"), "cached": not needs_run,
                "error": extraction.get("error") or None}
 
-    extractions = {slug: ext for slug, ext in data["papers"].items()
-                   if slug in {p.slug for p in papers}}
+    retrievable_slugs = {paper.slug for paper, _text in retrievable}
+    extractions = {
+        slug: ext for slug, ext in data["papers"].items() if slug in retrievable_slugs
+    }
     provider_metadata = {
         p.slug: record for p in papers
         if (record := graph_store.get_provider_paper(

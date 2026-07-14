@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
 import { keys } from '@/api/queries';
-import type { GraphBuildJob, GraphResponse } from '@/api/types';
+import type { GraphBuildJob, GraphResponse, GraphRetrievalCandidate } from '@/api/types';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -19,6 +19,9 @@ export type PaperBuildStatus =
   | 'pending'
   | 'metadata'
   | 'metadata_cached'
+  | 'retrieving'
+  | 'retrieval_cached'
+  | 'needs_confirmation'
   | 'extracting'
   | 'cached'
   | 'done'
@@ -27,16 +30,18 @@ export type PaperBuildStatus =
 
 export interface GraphBuildProgress {
   total: number;
+  ready: number;
   done: number;
   currentTitle: string | null;
   perPaper: Record<string, PaperBuildStatus>;
+  retrievalCandidates: Record<string, GraphRetrievalCandidate[]>;
 }
 
 export interface GraphBuildState {
   building: boolean;
   progress: GraphBuildProgress | null;
   error: string | null;
-  run: (force?: boolean) => Promise<void>;
+  run: (force?: boolean, retrievalSources?: Record<string, string>) => Promise<void>;
   /** Re-attach to an already-running build (e.g. the screen just loaded a GraphResponse whose
    *  `build` is still running). No-op if the job isn't running. */
   resume: (job: GraphBuildJob | null | undefined) => void;
@@ -46,7 +51,14 @@ export interface GraphBuildState {
 function toProgress(job: GraphBuildJob): GraphBuildProgress {
   const perPaper: Record<string, PaperBuildStatus> = {};
   for (const [slug, s] of Object.entries(job.per_paper)) perPaper[slug] = s.status;
-  return { total: job.total, done: job.done, currentTitle: job.current_title, perPaper };
+  return {
+    total: job.total,
+    ready: job.ready,
+    done: job.done,
+    currentTitle: job.current_title,
+    perPaper,
+    retrievalCandidates: job.retrieval_candidates,
+  };
 }
 
 export function useGraphBuild(pid: string | null): GraphBuildState {
@@ -90,6 +102,8 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
             semantic_scholar_enabled: false,
             semantic_scholar_papers: 0,
             semantic_scholar_stale_papers: [],
+            retrieval_candidates: {},
+            retrieval_errors: {},
           },
           build: job,
         }));
@@ -122,14 +136,17 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   }, [building, pid, applyJob]);
 
   const run = useCallback(
-    async (force = false) => {
+    async (force = false, retrievalSources: Record<string, string> = {}) => {
       if (!pid || startingRef.current || building) return;
       startingRef.current = true;
       setError(null);
       setBuilding(true); // optimistic: disables the button immediately; applyJob corrects it
-      setProgress({ total: 0, done: 0, currentTitle: null, perPaper: {} });
+      setProgress({
+        total: 0, ready: 0, done: 0, currentTitle: null, perPaper: {},
+        retrievalCandidates: {},
+      });
       try {
-        const { build } = await startGraphBuild(pid, force);
+        const { build } = await startGraphBuild(pid, force, retrievalSources);
         applyJob(build);
       } catch (e) {
         setError((e as Error).message ?? 'Graph build failed.');

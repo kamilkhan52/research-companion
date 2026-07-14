@@ -139,6 +139,30 @@ def test_provider_metadata_runs_in_the_job_project_context(temp_project):
     )["status"] == "done"
 
 
+def test_missing_paper_retrieval_runs_in_the_job_project_context(temp_project):
+    reading_list = projects.project_path(temp_project) / "reading-list.md"
+    reading_list.write_text(
+        reading_list.read_text(encoding="utf-8")
+        + "\n**Missing Paper** — *unread*\n<!-- slug: missing -->\n",
+        encoding="utf-8",
+    )
+    observed_projects: list[str | None] = []
+
+    def retrieval_fn(_paper, _provider):
+        observed_projects.append(config.active_project_id())
+        return {"needs_confirmation": True, "candidates": []}
+
+    graph_jobs.start_build(
+        temp_project, extract_fn=fake_extractor(), retrieval_fn=retrieval_fn
+    )
+    finished = _wait_until_done(temp_project)
+
+    assert finished.status == "done"
+    assert observed_projects == [temp_project]
+    assert finished.total == 1
+    assert finished.ready == 0
+
+
 def test_no_job_yet_returns_none(temp_project):
     assert graph_jobs.get_job(temp_project) is None
     assert graph_jobs.is_running(temp_project) is False

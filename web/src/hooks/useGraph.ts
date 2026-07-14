@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getGraph, getGraphBuildStatus, buildGraph } from '@/api/endpoints';
-import type { GraphResponse, GraphBuildJob, ReferenceGraph, GraphRecommendation } from '@/api/graph-types';
+import type { GraphResponse, GraphBuildJob, GraphRetrievalCandidate, ReferenceGraph, GraphRecommendation } from '@/api/graph-types';
 
 interface UseGraphState {
   graph: ReferenceGraph | null;
@@ -10,10 +10,11 @@ interface UseGraphState {
   totalPapers: number;
   readyPapers: number;
   stalePapers: string[];
+  retrievalCandidates: Record<string, GraphRetrievalCandidate[]>;
   loading: boolean;
   error: string | null;
   refetch: () => void;
-  startBuild: (force?: boolean) => void;
+  startBuild: (force?: boolean, retrievalSources?: Record<string, string>) => void;
 }
 
 export function useGraph(pid: string | null): UseGraphState {
@@ -66,9 +67,9 @@ export function useGraph(pid: string | null): UseGraphState {
     };
   }, [pid, data?.build?.status]);
 
-  const startBuild = useCallback((force = false) => {
+  const startBuild = useCallback((force = false, retrievalSources: Record<string, string> = {}) => {
     if (!pid) return;
-    buildGraph(pid, force)
+    buildGraph(pid, force, retrievalSources)
       .then((r) => setData((prev) => prev ? { ...prev, build: r.build } : null))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [pid]);
@@ -81,6 +82,9 @@ export function useGraph(pid: string | null): UseGraphState {
     totalPapers: data?.status?.total_papers ?? 0,
     readyPapers: data?.status?.retrievable_papers ?? 0,
     stalePapers: data?.status?.stale_papers ?? [],
+    retrievalCandidates: data?.build?.retrieval_candidates
+      ?? data?.status?.retrieval_candidates
+      ?? {},
     loading,
     error,
     refetch,

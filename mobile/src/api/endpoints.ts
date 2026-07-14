@@ -190,8 +190,14 @@ export const getRelated = (pid: string, slug: string) =>
   apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 /** Start (or join) a server-side background build. Returns immediately with the job snapshot;
  *  the build keeps running regardless of what the client does. Poll getGraphBuildStatus. */
-export const startGraphBuild = (pid: string, force = false) =>
-  apiPost<GraphBuildStartResponse>(`${P(pid)}/graph/build`, { force });
+export const startGraphBuild = (
+  pid: string,
+  force = false,
+  retrievalSources: Record<string, string> = {},
+) => apiPost<GraphBuildStartResponse>(`${P(pid)}/graph/build`, {
+  force,
+  retrieval_sources: retrievalSources,
+});
 /** Poll for the current/most-recent build job's progress. Cheap; safe to call every ~1.5s. */
 export const getGraphBuildStatus = (pid: string) =>
   apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`);

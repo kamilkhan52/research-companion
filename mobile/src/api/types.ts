@@ -387,11 +387,22 @@ export interface GraphStatus {
   semantic_scholar_enabled: boolean;
   semantic_scholar_papers: number;
   semantic_scholar_stale_papers: string[];
+  retrieval_candidates: Record<string, GraphRetrievalCandidate[]>;
+  retrieval_errors: Record<string, string>;
+}
+
+export interface GraphRetrievalCandidate {
+  arxiv_id: string;
+  title: string;
+  score: number;
+  pdf_url?: string;
 }
 
 /** Per-paper status within an in-flight or finished build job. */
 export interface GraphBuildPaperStatus {
-  status: 'metadata' | 'metadata_cached' | 'extracting' | 'cached' | 'done' | 'not_found' | 'error';
+  status:
+    | 'metadata' | 'metadata_cached' | 'retrieving' | 'retrieval_cached'
+    | 'needs_confirmation' | 'extracting' | 'cached' | 'done' | 'not_found' | 'error';
   error: string | null;
 }
 
@@ -401,10 +412,12 @@ export interface GraphBuildPaperStatus {
 export interface GraphBuildJob {
   status: 'running' | 'done' | 'error';
   total: number;
+  ready: number;
   done: number;
   current_slug: string | null;
   current_title: string | null;
   per_paper: Record<string, GraphBuildPaperStatus>;
+  retrieval_candidates: Record<string, GraphRetrievalCandidate[]>;
   graph: ReferenceGraph | null;
   recommendations: GraphRecommendation[] | null;
   error: string | null;

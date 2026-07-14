@@ -351,6 +351,7 @@ def test_provider_builds_edges_for_a_paper_without_cached_full_text(temp_project
         }]),
     ))
 
-    assert events[0]["total"] == 0
+    assert events[0]["total"] == 1
+    assert events[0]["ready"] == 0
     assert len(events[-1]["graph"]["edges"]) == 1
     assert events[-1]["graph"]["edges"][0]["provenance"] == ["semantic_scholar"]
