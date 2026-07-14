@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { getAudioJob, startAudioJob } from '@/api/endpoints';
+import { cancelAudioJob, getAudioJob, startAudioJob } from '@/api/endpoints';
 import { ApiError, apiGet } from '@/api/client';
 import { useActivePid } from '@/hooks/useLibrary';
 
@@ -22,10 +22,14 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const generation = useRef(0);
+  // The in-flight server preparation job, so dismiss can cancel it (stop paid TTS), not
+  // just stop watching. Cleared once the job settles.
+  const prepJobId = useRef<string | null>(null);
 
   useEffect(() => () => { audioRef.current?.pause(); window.speechSynthesis?.cancel(); }, []);
 
   const dismiss = useCallback(() => {
+    if (prepJobId.current) { void cancelAudioJob(prepJobId.current).catch(() => {}); prepJobId.current = null; }
     generation.current += 1; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel();
     speechRef.current = null; setCurrent(null); setPrep(null); setPlaying(false); setPosition(0); setDuration(0);
   }, []);
@@ -68,6 +72,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       let restarts = 0;
       while (job.status === 'running') {
         if (!live()) return;
+        prepJobId.current = job.id;
         setPrep({ title, stage: job.stage, done: job.segments_done, total: job.segments_total });
         await delay(1000);
         try { ({ job } = await getAudioJob(job.id));
@@ -76,7 +81,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           else throw caught;
         }
       }
+      prepJobId.current = null;
       if (!live()) return;
+      if (job.status === 'cancelled') { setPrep(null); return; }
       if (job.status === 'error' || !job.url) throw new Error(job.error || 'Could not prepare audio.');
       const audio = new Audio(job.url);
       audio.onplay = () => setPlaying(true); audio.onpause = () => setPlaying(false); audio.onended = () => setPlaying(false);

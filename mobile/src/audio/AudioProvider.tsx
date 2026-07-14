@@ -37,6 +37,8 @@ export interface PrepState {
   /** synthesized segments so far / total (0/0 until the synthesizing stage sizes the work). */
   done: number;
   total: number;
+  /** The server job id, once known — what cancelPrep POSTs to stop paid synthesis. */
+  jobId?: string;
 }
 
 interface AudioContextValue {
@@ -201,6 +203,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   });
 
   const cancelPrep = useCallback(() => {
+    // Also stop the SERVER job (fire-and-forget): before this, cancel only stopped the client
+    // watching while the backend kept billing narration/TTS for audio nobody wanted. Segments
+    // already synthesized stay cached, so a later re-tap resumes instead of restarting.
+    const jobId = prepRef.current?.jobId;
+    if (jobId) void api.cancelAudioJob(jobId).catch(() => {});
     generation.current += 1;
     queueGeneration.current += 1;
     automaticPrepIdRef.current = null;
@@ -223,6 +230,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       stage: job.stage,
       done: job.segments_done,
       total: job.segments_total,
+      jobId: job.id,
     });
   }, []);
 
@@ -325,6 +333,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           await appendSegments(job);
         }
 
+        if (job.status === 'cancelled') {
+          if (live()) setPrep(null);   // cancelled elsewhere; wind down without an error row
+          return;
+        }
         if (job.status === 'error' || !job.url) {
           fail(job.error ?? 'Could not prepare audio.');
           return;
@@ -548,6 +560,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           if (!live()) return;
           applyJob(request.id, request.title, job);
           await appendSegments(job);
+        }
+        if (job.status === 'cancelled') {
+          if (live()) setPrep(null);
+          return;
         }
         if (job.status === 'error' || !job.url) {
           terminalAudioFailure = true;

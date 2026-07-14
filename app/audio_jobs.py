@@ -89,6 +89,16 @@ def get_job(job_id: str) -> AudioJob | None:
     return _registry.get(job_id, project_id=None)
 
 
+def cancel_job(job_id: str) -> AudioJob | None:
+    """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
+    its next checkpoint — before the narration call and between TTS segments — so at most one
+    in-flight upstream call completes after this returns. Because jobs are deduped by content
+    hash, cancelling also cancels for any other client joined to the same text (acceptable for
+    the single-household deployment). Segments already synthesized stay in the cache, so a
+    re-request resumes rather than restarting from zero."""
+    return _registry.cancel(job_id, project_id=None)
+
+
 def start_job(text: str, billing_project: str | None = None,
               narrate_fn: NarrateFn | None = None,
               synth_fn: SynthFn | None = None) -> AudioJob:
@@ -122,6 +132,14 @@ def start_job(text: str, billing_project: str | None = None,
             project_id=None)
 
     def work(job: AudioJob) -> None:
+        # Cancellation checkpoints bracket every paid upstream call (narration LLM, each TTS
+        # segment): a cancel lands within one call's latency, and the worker exits without
+        # marking done (the registry already flipped the job to `cancelled`).
+        def cancelled() -> bool:
+            return _registry.is_cancelled(job)
+
+        if cancelled():
+            return
         narration = sessions.get_cached_narration(text)
         if narration is None:
             # Bind a billing scope ONLY around the narration call, so its LLM spend attributes
@@ -134,6 +152,8 @@ def start_job(text: str, billing_project: str | None = None,
             finally:
                 config.reset_active_project(token)
             sessions.cache_narration(text, narration)
+        if cancelled():
+            return
         with _registry.lock:
             job.narration = narration
             job.stage = "synthesizing"
@@ -154,6 +174,8 @@ def start_job(text: str, billing_project: str | None = None,
         else:
             chunks: list[bytes] = []
             for index, part in enumerate(parts):
+                if cancelled():
+                    return
                 segment_path = segment_cache_path(part)
                 if not segment_path.exists():
                     atomic_write_bytes(segment_path, synth_fn(part))

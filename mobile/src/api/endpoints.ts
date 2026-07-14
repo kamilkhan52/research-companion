@@ -56,6 +56,10 @@ export const startAudioJob = (text: string, project?: string | null) =>
 /** Poll a preparation job's live progress. Cheap; safe to call every second. */
 export const getAudioJob = (id: string) =>
   apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}`);
+/** Cancel an in-flight preparation server-side: the job flips to 'cancelled' immediately and
+ *  the worker stops spending on narration/TTS at its next checkpoint. No-op when finished. */
+export const cancelAudioJob = (id: string) =>
+  apiPost<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}/cancel`, {});
 
 // ---------- projects (management) ----------
 

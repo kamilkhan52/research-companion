@@ -42,9 +42,9 @@ def new_id() -> str:
 @dataclass
 class Job:
     """Base for every job payload. Subclasses add their own progress/result fields. `status` is
-    the only lifecycle signal clients need: running -> done | error."""
+    the only lifecycle signal clients need: running -> done | error | cancelled."""
     id: str
-    status: str = "running"          # running | done | error
+    status: str = "running"          # running | done | error | cancelled
     error: str | None = None
     started_at: str = field(default_factory=now_iso)
     finished_at: str | None = None
@@ -61,6 +61,7 @@ J = TypeVar("J", bound=Job)
 # complete reset.
 _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
+_CANCELLED_ATTR = "_rc_cancelled"
 
 # Sentinel default for the project_id argument: "capture the ambient active project at call
 # time". Distinct from an explicit None (which means the app-global scope, e.g. audio).
@@ -154,6 +155,35 @@ class JobRegistry(Generic[J]):
                 return job
         return None
 
+    def cancel(self, job_id: str, *, project_id=_AMBIENT) -> J | None:
+        """Request cooperative cancellation of a running job (project-scoped like get()).
+
+        Threads can't be killed, so this marks the job terminal immediately — the client's next
+        poll sees `cancelled` — and sets a flag the worker checks via is_cancelled() at its own
+        checkpoints (typically between paid upstream calls) to stop doing further work. Because
+        `_running_for` only matches running jobs, the dedup key frees up right away; a stale
+        worker that hasn't noticed yet only ever finishes writing shared idempotent caches.
+        Returns the job (whatever its status — cancelling an already-finished job is a no-op),
+        or None when the id is unknown/not owned by this project."""
+        pid = _resolve_pid(project_id)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or getattr(job, _PID_ATTR, None) != pid:
+                return None
+            setattr(job, _CANCELLED_ATTR, True)
+            was_running = job.status == "running"
+            if was_running:
+                job.status = "cancelled"
+                job.finished_at = now_iso()
+        if was_running:
+            log.info("cancel %s job=%s", self.name, job.id[:8], extra=_log_tag(pid))
+        return job
+
+    def is_cancelled(self, job: J) -> bool:
+        """Whether cancel() was requested for this job. Workers poll this at checkpoints."""
+        with self._lock:
+            return bool(getattr(job, _CANCELLED_ATTR, False))
+
     def put(self, key: str, job: J, *, project_id=_AMBIENT) -> J:
         """Register an already-terminal job (e.g. a result served straight from cache) with no
         worker thread. Returns it."""
@@ -211,12 +241,16 @@ class JobRegistry(Generic[J]):
                 log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8], dur,
                             (job.error or "")[:200], extra=tag)
             else:
-                log.info("done %s job=%s in %.1fs", self.name, job.id[:8], dur, extra=tag)
+                # final == "cancelled" means the worker wound down after a cancel() request.
+                log.info("%s %s job=%s in %.1fs", final, self.name, job.id[:8], dur, extra=tag)
         except Exception as e:
             with self._lock:
-                job.status = "error"
-                job.error = str(e)[:400]
-                job.finished_at = now_iso()
+                # A cancelled job stays cancelled: the worker unwinding (often *because* it was
+                # cancelled mid-call) must not resurface to clients as an error.
+                if job.status != "cancelled":
+                    job.status = "error"
+                    job.error = str(e)[:400]
+                    job.finished_at = now_iso()
             log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
                         time.monotonic() - t0, str(e)[:200], extra=tag)
         finally:

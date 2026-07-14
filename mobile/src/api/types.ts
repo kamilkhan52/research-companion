@@ -535,7 +535,7 @@ export interface DiscoveryResponse {
  * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */
 export interface AudioJob {
   id: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'cancelled';
   stage: 'narrating' | 'synthesizing';
   segments_done: number;
   segments_total: number;

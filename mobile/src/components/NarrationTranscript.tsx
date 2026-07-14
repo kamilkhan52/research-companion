@@ -203,10 +203,13 @@ export function GeneratingBar({
   stage,
   done = 0,
   total = 0,
+  onCancel,
 }: {
   stage: 'starting' | 'narrating' | 'synthesizing';
   done?: number;
   total?: number;
+  /** Renders a small ✕ next to the progress label that cancels the preparation (U.4). */
+  onCancel?: () => void;
 }) {
   const x = useRef(new Animated.Value(0)).current;
   const determinate = stage === 'synthesizing' && total > 0;
@@ -228,9 +231,21 @@ export function GeneratingBar({
 
   return (
     <View style={styles.genWrap}>
-      <Text variant="caption" color={colors.mint}>
-        {prepLabel(stage, done, total)}
-      </Text>
+      <View style={styles.genLabelRow}>
+        <Text variant="caption" color={colors.mint} style={{ flex: 1 }} numberOfLines={1}>
+          {prepLabel(stage, done, total)}
+        </Text>
+        {onCancel ? (
+          <Pressable
+            onPress={onCancel}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Cancel audio preparation"
+            style={styles.genCancel}>
+            <Text variant="caption" color={colors.muted}>✕</Text>
+          </Pressable>
+        ) : null}
+      </View>
       <View style={styles.track}>
         {determinate ? (
           <View style={[styles.fill, { width: `${Math.round((done / total) * 100)}%` }]} />
@@ -254,6 +269,14 @@ const styles = StyleSheet.create({
   genWrap: {
     marginTop: space.md,
     gap: space.sm,
+  },
+  genLabelRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  genCancel: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.line,
   },
   track: {
     height: 3,
