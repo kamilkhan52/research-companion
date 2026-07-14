@@ -30,17 +30,30 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // receives before exiting.
   const cancelIntent = useRef<number | null>(null);
 
+  /** Cancel with retries across transient network failures (this deployment's tunnel drops
+   *  requests routinely); a 404 counts as done (server restart lost the in-memory job). */
+  const cancelServerJob = useCallback(async (jobId: string): Promise<boolean> => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try { await cancelAudioJob(jobId); return true; }
+      catch (caught) {
+        if (caught instanceof ApiError) return caught.status === 404;
+        await delay(1000 * (attempt + 1));
+      }
+    }
+    return false;
+  }, []);
+
   useEffect(() => () => { audioRef.current?.pause(); window.speechSynthesis?.cancel(); }, []);
 
   const dismiss = useCallback(() => {
-    if (prepJobId.current) { void cancelAudioJob(prepJobId.current).catch(() => {}); prepJobId.current = null; }
+    if (prepJobId.current) { void cancelServerJob(prepJobId.current); prepJobId.current = null; }
     // Park intent unconditionally: it is keyed to the exact live generation, so it can only
     // ever fire for the run being cancelled right now (covers the window where a NEW run's
     // start request is in flight and prepJobId doesn't name it yet). Harmless when idle.
     cancelIntent.current = generation.current;
     generation.current += 1; audioRef.current?.pause(); audioRef.current = null; window.speechSynthesis?.cancel();
     speechRef.current = null; setCurrent(null); setPrep(null); setPlaying(false); setPosition(0); setDuration(0);
-  }, []);
+  }, [cancelServerJob]);
   const toggle = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) {
@@ -82,8 +95,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       let { job } = await startAudioJob(text, activePid);
       const abandonIfCancelled = () => {
         if (cancelIntent.current === run && job.status === 'running') {
-          void cancelAudioJob(job.id).catch(() => {});
-          cancelIntent.current = null;
+          // Clear the intent only once acknowledged; a failed POST keeps it (generation-keyed,
+          // so it can never target a later run).
+          void cancelServerJob(job.id).then((ok) => {
+            if (ok && cancelIntent.current === run) cancelIntent.current = null;
+          });
         }
       };
       let restarts = 0;
@@ -108,7 +124,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       audioRef.current?.pause(); audioRef.current = audio;
       setCurrent({ id, title, narration: job.narration || text }); setPrep(null); await audio.play();
     } catch (caught) { if (live()) { setPrep(null); setError(caught instanceof Error ? caught.message : 'Could not prepare audio.'); } }
-  }, [activePid, current?.id, rate, toggle]);
+  }, [activePid, current?.id, rate, toggle, cancelServerJob]);
 
   return <AudioContext.Provider value={{ playText, current, prep, playing, position, duration, rate, toggle, dismiss, seekTo, seekBy, seekSentence, setRate, error }}>{children}</AudioContext.Provider>;
 }
