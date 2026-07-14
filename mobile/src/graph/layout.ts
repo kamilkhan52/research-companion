@@ -18,6 +18,9 @@ export interface LayoutResult {
   positions: Record<string, LayoutPoint>;
   width: number;
   height: number;
+  /** True when positions carry the server layout's meaning (X = time, Y = citation impact) —
+   *  the canvas only draws its axis legend then; a client force-sim fallback has no axes. */
+  semantic?: boolean;
 }
 
 interface ForceLayoutOptions {

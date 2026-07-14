@@ -327,7 +327,8 @@ export interface GraphNode {
   citation_count?: number | null;
   /** Evidence sources used to create or enrich this node. Absent on older cached graphs. */
   provenance?: Array<'reading_list' | 'full_text' | 'semantic_scholar'>;
-  // Server-precomputed layout position (temporal Y: recent toward the bottom). Present on
+  // Server-precomputed layout position (X = publication time, older→left; Y = citation
+  // impact, more-cited→top; see app/graph_layout.py). Present on
   // graphs built after layout was added; absent ones fall back to a client-side sim.
   x?: number;
   y?: number;

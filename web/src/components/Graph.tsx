@@ -166,7 +166,18 @@ export function Graph({ onNavigate }: Props) {
         </button>
       </div>
 
-      <canvas ref={setCanvasRef} className="graph-canvas" />
+      <div className="graph-canvas-wrap">
+        <canvas ref={setCanvasRef} className="graph-canvas" />
+        {/* Axis legend for the server layout's semantics (app/graph_layout.py rules:
+            X = publication time, Y = citation impact). Hidden for legacy graphs still on the
+            d3 force fallback, whose positions carry no meaning. */}
+        {nodes.some((n) => n.x !== undefined && n.y !== undefined) && (
+          <>
+            <span className="graph-axis graph-axis-x">older → newer</span>
+            <span className="graph-axis graph-axis-y">↑ more cited</span>
+          </>
+        )}
+      </div>
 
       {hasSemanticScholarData && (
         <a

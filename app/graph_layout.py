@@ -1,12 +1,29 @@
 """Server-side graph layout, computed once per build and stored in the graph JSON so the client
-renders instantly (no O(n^2) force sim on the phone's JS thread) and every client agrees on
-node positions.
+renders instantly (no force sim on the phone's JS thread) and every client agrees on positions.
 
-Layout style (Litmaps-like): the Y axis is TIME — older papers sit near the top, more recent
-ones toward the bottom — so recency is readable at a glance. The X axis is force-directed
-(connected papers pull together, everything repels) so clusters form horizontally within each
-time band. Repulsion uses a spatial grid (only nearby nodes push on each other), keeping the
-whole thing O(n) per iteration rather than O(n^2), so 700+ nodes lay out in well under a second.
+THE LAYOUT RULES (U.8 — Litmaps-informed, and deliberately explainable in one sentence each):
+
+  1. X = publication time. Distinct years get evenly spaced vertical bands, oldest at the LEFT,
+     newest at the RIGHT (Litmaps' default X axis). Year rank — not linear year — because
+     citation-graph years cluster hard; linear spacing left huge dead stretches and packed
+     recent years into a sliver. Undated nodes inherit the average X of their graph neighbors
+     (they live in the timeframe of the papers that cite them) instead of a mystery band.
+  2. Y = citation impact. log10(1 + overall citations), most-cited at the TOP (Litmaps'
+     default Y axis) — so the influential papers a reader has heard of float up, and the
+     top-right corner is "recent + influential". Nodes with an unknown citation count sit in
+     a band at the bottom: visually "unranked", not fake-zero-cited.
+  3. No force simulation. Both axes carry meaning, so nothing may push a node somewhere
+     semantically wrong; the previous force-directed X was exactly the "what is the
+     positioning logic?" illegibility this replaces. Edges consequently read left→right
+     (older work ← cited by newer work).
+  4. Overlap is resolved, not simulated: a deterministic minimum-separation sweep nudges
+     colliding nodes apart along Y (the continuous axis) inside their year band, spilling to
+     X only when a node is pinned against a canvas edge, with tiny seeded jitter so
+     single-year stacks don't form a perfect line.
+
+Everything is deterministic (seeded) so rebuilds don't reshuffle the map. Clients draw axis
+legends from these semantics ("older → newer", "↑ more cited"); if the rules here change, the
+legends in mobile GraphCanvas / web Graph must change with them.
 """
 from __future__ import annotations
 
@@ -17,8 +34,12 @@ import re
 WIDTH = 2200.0
 HEIGHT = 2200.0
 _MARGIN = 80.0
-_ITERATIONS = 140
 _ARXIV_RE = re.compile(r"^(\d{2})(\d{2})\.\d{4,5}")
+
+# The bottom strip reserved for unknown-citation nodes (rule 2), separated from the ranked
+# region by a small gap so "bottom of the ranking" and "unranked" don't blur together.
+_UNRANKED_BAND = 140.0
+_UNRANKED_GAP = 60.0
 
 
 def _year_of(node: dict) -> int | None:
@@ -35,117 +56,81 @@ def _year_of(node: dict) -> int | None:
     return None
 
 
+def _citations_of(node: dict) -> int | None:
+    c = node.get("citation_count")
+    return c if isinstance(c, int) and c >= 0 else None
+
+
 def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> dict:
-    """Mutate `nodes`, adding rounded 'x'/'y' screen coordinates, and return the canvas bounds
-    {'width','height'}. Deterministic (seeded) so rebuilds don't reshuffle the graph."""
+    """Mutate `nodes`, adding rounded 'x'/'y' screen coordinates per the module rules, and
+    return the canvas bounds {'width','height'}. Deterministic (seeded)."""
     n = len(nodes)
     if n == 0:
         return {"width": WIDTH, "height": HEIGHT}
 
     rnd = random.Random(seed)
     idx = {nd["id"]: i for i, nd in enumerate(nodes)}
-
-    # --- Y = time, by year RANK rather than linear year value: distinct years get evenly
-    #     spaced bands. Linear mapping made edge lengths wildly uneven — a citation graph's
-    #     years cluster hard (most papers within a few years, a few from decades back), so
-    #     linear left huge empty stretches that stretched some edges across half the canvas
-    #     while packing recent years (and their edges) into a sliver. Rank spacing keeps the
-    #     old->new reading while bounding how long a cross-year edge can get.
-    #     Undated nodes go in a band just above the timeline so they read as "unknown date".
-    years = [_year_of(nd) for nd in nodes]
-    year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
-    n_ranks = max(1, len(year_rank) - 1)
-    top, bottom = _MARGIN, HEIGHT - _MARGIN
-    undated_y = top * 0.6
-
-    def target_y(y: int | None) -> float:
-        return undated_y if y is None else top + year_rank[y] / n_ranks * (bottom - top)
-
-    ty = [target_y(y) for y in years]
-
     adj = [(idx[e["source"]], idx[e["target"]]) for e in edges
            if e.get("source") in idx and e.get("target") in idx]
 
-    # --- X init: project papers evenly spaced; every other node starts at the average X of its
-    #     graph neighbors (+ jitter). Starting connected nodes together matters more than the
-    #     springs: with random init the springs have to drag nodes across the whole canvas and
-    #     never fully converge, leaving most edges enormously long.
-    px = [WIDTH / 2.0] * n
-    projects = [i for i, nd in enumerate(nodes) if nd.get("kind") == "project"]
-    for k, i in enumerate(projects):
-        px[i] = _MARGIN + (k + 0.5) / max(1, len(projects)) * (WIDTH - 2 * _MARGIN)
-    neighbor_x: dict[int, list[float]] = {}
-    for a, b in adj:
-        neighbor_x.setdefault(b, []).append(px[a])
-        neighbor_x.setdefault(a, []).append(px[b])
-    for i in range(n):
-        if i in neighbor_x and nodes[i].get("kind") != "project":
-            px[i] = sum(neighbor_x[i]) / len(neighbor_x[i]) + rnd.uniform(-90, 90)
-        elif nodes[i].get("kind") != "project":
-            px[i] = rnd.uniform(_MARGIN, WIDTH - _MARGIN)
-    py = [ty[i] + rnd.uniform(-15, 15) for i in range(n)]
+    # --- Rule 1: X = year rank bands, oldest left -> newest right.
+    years = [_year_of(nd) for nd in nodes]
+    year_rank = {y: i for i, y in enumerate(sorted({y for y in years if y is not None}))}
+    n_ranks = max(1, len(year_rank) - 1)
+    left, right = _MARGIN, WIDTH - _MARGIN
+    band_halfwidth = min(60.0, (right - left) / max(1, n_ranks) * 0.35)
 
-    cell = 140.0            # repulsion neighborhood radius
-    k_rep = 5000.0          # repulsion strength
-    ideal = 110.0           # spring rest length
-    for it in range(_ITERATIONS):
-        cool = 1.0 - it / _ITERATIONS
-        fx = [0.0] * n
-        fy = [0.0] * n
+    px = [0.0] * n
+    dated = [i for i in range(n) if years[i] is not None]
+    for i in dated:
+        base = left + year_rank[years[i]] / n_ranks * (right - left) if year_rank else WIDTH / 2
+        px[i] = base + rnd.uniform(-band_halfwidth, band_halfwidth)
 
-        # Grid-bucketed repulsion: only nodes within neighboring cells push on each other.
-        grid: dict[tuple[int, int], list[int]] = {}
-        for i in range(n):
-            grid.setdefault((int(px[i] // cell), int(py[i] // cell)), []).append(i)
-        for (cx, cy), members in grid.items():
-            neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                         for m in grid.get((cx + dx, cy + dy), [])]
-            for i in members:
-                for j in neighbors:
-                    if j <= i:
-                        continue
-                    ddx = px[i] - px[j]
-                    ddy = py[i] - py[j]
-                    d2 = ddx * ddx + ddy * ddy + 0.01
-                    f = k_rep / d2
-                    fxi, fyi = f * ddx, f * ddy
-                    fx[i] += fxi
-                    fy[i] += fyi
-                    fx[j] -= fxi
-                    fy[j] -= fyi
-
-        # Edge springs pull citing/cited papers together.
+    # Undated nodes: average X of graph neighbors (two passes so chains of undated nodes
+    # settle), else the canvas center.
+    undated = [i for i in range(n) if years[i] is None]
+    if undated:
+        neighbor: dict[int, list[int]] = {}
         for a, b in adj:
-            ddx = px[a] - px[b]
-            ddy = py[a] - py[b]
-            d = math.sqrt(ddx * ddx + ddy * ddy) + 0.01
-            f = (d - ideal) * 0.2
-            fxi, fyi = f * ddx / d, f * ddy / d
-            fx[a] -= fxi
-            fy[a] -= fyi
-            fx[b] += fxi
-            fy[b] += fyi
+            neighbor.setdefault(a, []).append(b)
+            neighbor.setdefault(b, []).append(a)
+        for i in undated:
+            px[i] = WIDTH / 2 + rnd.uniform(-band_halfwidth, band_halfwidth)
+        for _ in range(2):
+            for i in undated:
+                anchors = [px[j] for j in neighbor.get(i, [])]
+                if anchors:
+                    px[i] = sum(anchors) / len(anchors) + rnd.uniform(-band_halfwidth / 2,
+                                                                      band_halfwidth / 2)
 
-        # Integrate: X moves freely (with cooling + a step cap); Y is pulled SOFTLY toward the
-        # node's time band. Soft (not hard) pinning matters: a hard pin flattens each year into
-        # a 1D line, which forces crowded years to spread enormously wide in X (very long
-        # edges). A gentle pull keeps old->new reading top->bottom while letting clusters form
-        # as compact 2D blobs.
-        max_step = 45.0 * cool
-        for i in range(n):
-            px[i] += max(-max_step, min(max_step, fx[i] * 0.02))
-            py[i] += max(-max_step, min(max_step, fy[i] * 0.02))
-            py[i] += (ty[i] - py[i]) * 0.06
+    # --- Rule 2: Y = log-scaled citation impact, most-cited at the top; unknowns in the
+    #     bottom band.
+    top = _MARGIN
+    ranked_bottom = HEIGHT - _MARGIN - _UNRANKED_BAND - _UNRANKED_GAP
+    cites = [_citations_of(nd) for nd in nodes]
+    known = [c for c in cites if c is not None]
+    cmax_log = math.log10(1 + (max(known) if known else 0)) or 1.0
 
-    # Minimum-separation pass: the sim reduces crowding but the Y-pin can leave same-year
-    # neighbors nearly on top of each other (edges "too short" to read). Push any pair closer
-    # than MIN_SEP apart along X only (preserving the temporal Y), a few sweeps until settled.
-    MIN_SEP = 60.0
-    for _ in range(24):
+    py = [0.0] * n
+    for i in range(n):
+        c = cites[i]
+        if c is None:
+            py[i] = HEIGHT - _MARGIN - rnd.uniform(0, _UNRANKED_BAND)
+        else:
+            frac = math.log10(1 + c) / cmax_log  # 0 (uncited) .. 1 (most cited)
+            py[i] = top + (1.0 - frac) * (ranked_bottom - top)
+
+    # --- Rule 4: deterministic minimum-separation sweeps, nudging along Y (each node stays in
+    #     its year band). Clamping happens INSIDE the sweep — a post-hoc clamp would re-stack
+    #     everything it pinned to a margin — and a node pinned against a canvas edge hands its
+    #     remaining push to X instead.
+    min_sep = 56.0
+    y_min, y_max = _MARGIN * 0.5, HEIGHT - _MARGIN * 0.25
+    for _ in range(30):
         moved = False
         grid: dict[tuple[int, int], list[int]] = {}
         for i in range(n):
-            grid.setdefault((int(px[i] // MIN_SEP), int(py[i] // MIN_SEP)), []).append(i)
+            grid.setdefault((int(px[i] // min_sep), int(py[i] // min_sep)), []).append(i)
         for (cx, cy), members in grid.items():
             neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
                          for m in grid.get((cx + dx, cy + dy), [])]
@@ -156,22 +141,24 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
                     ddx = px[i] - px[j]
                     ddy = py[i] - py[j]
                     d = math.sqrt(ddx * ddx + ddy * ddy)
-                    if d < MIN_SEP:
-                        push = (MIN_SEP - d) / 2 + 0.5
-                        direction = 1.0 if (ddx > 0 or (ddx == 0 and i > j)) else -1.0
-                        px[i] += direction * push
-                        px[j] -= direction * push
-                        moved = True
+                    if d >= min_sep:
+                        continue
+                    push = (min_sep - d) / 2 + 0.5
+                    direction = 1.0 if (ddy > 0 or (ddy == 0 and i > j)) else -1.0
+                    new_i = max(y_min, min(y_max, py[i] + direction * push))
+                    new_j = max(y_min, min(y_max, py[j] - direction * push))
+                    absorbed = abs(new_i - py[i]) + abs(new_j - py[j])
+                    py[i], py[j] = new_i, new_j
+                    remainder = 2 * push - absorbed
+                    if remainder > 0.5:
+                        dir_x = 1.0 if (ddx > 0 or (ddx == 0 and i > j)) else -1.0
+                        px[i] += dir_x * remainder / 2
+                        px[j] -= dir_x * remainder / 2
+                    moved = True
         if not moved:
             break
 
-    # Translate X to start at the margin, growing the canvas if needed rather than rescaling —
-    # squeezing back into a fixed width would undo the minimum separation in dense year bands.
-    xmin = min(px)
-    xspan = max(px) - xmin
-    width = max(WIDTH, xspan + 2 * _MARGIN)
-    offset = _MARGIN + (width - 2 * _MARGIN - xspan) / 2  # center when narrower than the canvas
     for i, nd in enumerate(nodes):
-        nd["x"] = round(offset + px[i] - xmin, 1)
+        nd["x"] = round(px[i], 1)
         nd["y"] = round(py[i], 1)
-    return {"width": round(width, 1), "height": HEIGHT}
+    return {"width": WIDTH, "height": HEIGHT}

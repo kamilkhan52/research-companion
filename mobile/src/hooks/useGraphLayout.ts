@@ -21,14 +21,15 @@ export function nodeRadius(node: GraphNode): number {
 }
 
 export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutResult {
-  // Fast path: the server precomputed positions (temporal layout). Use them directly — no
+  // Fast path: the server precomputed positions (semantic layout: X = time, Y = citation
+  // impact — see app/graph_layout.py rules). Use them directly — no
   // client-side O(n²) simulation, so the screen renders instantly at any size. Only kicks in
   // when every rendered node has coordinates; otherwise we fall back to the client sim below.
   //
   // The visible set is often a SUBSET of the graph the server laid out (focused view, filter
   // tabs), scattered across the full canvas — which reads as absurdly long edges on a phone.
   // So rescale the visible nodes' bounding box to a phone-sized canvas. The rescale is
-  // monotonic per axis, so relative positions — including the temporal top-to-bottom order —
+  // monotonic per axis, so relative positions — including both semantic axis orders —
   // are preserved exactly.
   const serverLayout = useMemo<LayoutResult | null>(() => {
     if (!nodes.length || !nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
@@ -45,8 +46,8 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     // Derive canvas height from the data's own aspect instead of a fixed tall canvas:
     // stretching every visible subset onto ~2200px of y inflated vertical distances, so
     // time-distant citations rendered as very long vertical edges. Clamped so extreme spans
-    // can't flatten to a strip; the per-axis rescale stays monotonic, so the temporal
-    // top-to-bottom order is untouched.
+    // can't flatten to a strip; the per-axis rescale stays monotonic, so both semantic
+    // axis orders are untouched.
     const H = Math.min(2200, Math.round(W * Math.min(1.15, Math.max(0.55, yspan / xspan))));
     const positions: Record<string, { x: number; y: number }> = {};
     for (const n of nodes) {
@@ -55,7 +56,7 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
         y: MARGIN + (((n.y as number) - ymin) / yspan) * (H - 2 * MARGIN),
       };
     }
-    return { positions, width: W, height: H };
+    return { positions, width: W, height: H, semantic: true };
   }, [nodes]);
 
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
