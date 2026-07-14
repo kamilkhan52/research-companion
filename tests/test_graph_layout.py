@@ -105,3 +105,34 @@ def test_layout_is_stamped_with_the_algo_marker():
     nodes = [_node("a", year=2020, citations=5)]
     layout = graph_layout.compute_layout(nodes, [])
     assert layout["algo"] == "semantic-v2"
+
+
+def test_dense_unknown_cohorts_pack_without_breaking_time_order():
+    """Round-2 review stress case: 20 unknown-citation nodes per year across many years must
+    neither overlap, nor escape the unranked band upward, nor invert year ordering in X."""
+    nodes = []
+    for year in range(2015, 2025):
+        nodes.extend(_node(f"u{year}-{i}", year=year) for i in range(20))
+    layout = graph_layout.compute_layout(nodes, [])
+
+    band_top = graph_layout.HEIGHT - graph_layout._MARGIN - graph_layout._UNRANKED_BAND
+    by_year_max_x = {}
+    by_year_min_x = {}
+    for n in nodes:
+        year = int(n["id"][1:5])
+        by_year_max_x[year] = max(by_year_max_x.get(year, -1e9), n["x"])
+        by_year_min_x[year] = min(by_year_min_x.get(year, 1e9), n["x"])
+        assert n["y"] >= band_top  # never escapes upward into ranked territory
+    # X ordering: every node of year Y sits left of every node of year Y+1.
+    for year in range(2015, 2024):
+        assert by_year_max_x[year] < by_year_min_x[year + 1]
+    # No overlapping pairs.
+    pts = [(n["x"], n["y"]) for n in nodes]
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            dx = pts[i][0] - pts[j][0]
+            dy = pts[i][1] - pts[j][1]
+            assert (dx * dx + dy * dy) ** 0.5 > 30.0
+    # The band grew the canvas downward instead of overflowing.
+    assert layout["height"] > graph_layout.HEIGHT
+    assert max(p[1] for p in pts) < layout["height"]

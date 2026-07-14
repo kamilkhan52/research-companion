@@ -16,10 +16,11 @@ THE LAYOUT RULES (U.8 — Litmaps-informed, and deliberately explainable in one 
      semantically wrong; the previous force-directed X was exactly the "what is the
      positioning logic?" illegibility this replaces. Edges consequently read left→right
      (older work ← cited by newer work).
-  4. Overlap is resolved, not simulated: a deterministic minimum-separation sweep nudges
-     colliding nodes apart along Y (the continuous axis) inside their year band, spilling to
-     X only when a node is pinned against a canvas edge, with tiny seeded jitter so
-     single-year stacks don't form a perfect line.
+  4. Overlap is resolved, not simulated. Ranked nodes get deterministic minimum-separation
+     sweeps along Y (the continuous axis); any spill to X is clamped inside the node's year
+     band so time ordering is never violated. Unknown-citation nodes are GRID-PACKED per year
+     inside the unranked band — Y there carries no meaning, so packing is free — and the band
+     grows downward (taller canvas) when a year's cohort outgrows it.
 
 Everything is deterministic (seeded) so rebuilds don't reshuffle the map. Clients draw axis
 legends from these semantics ("older → newer", "↑ more cited"); if the rules here change, the
@@ -86,10 +87,18 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
     left, right = _MARGIN, WIDTH - _MARGIN
     band_halfwidth = min(60.0, (right - left) / max(1, n_ranks) * 0.35)
 
+    gap = (right - left) / max(1, n_ranks)
+    x_cap = max(band_halfwidth, gap * 0.45)  # a node may never leave its year band (rule 4)
+
+    def band_base(rank: int) -> float:
+        return left + rank / n_ranks * (right - left) if year_rank else WIDTH / 2
+
     px = [0.0] * n
+    band_of = [0.0] * n  # each node's year-band center (undated: nearest inferred band)
     dated = [i for i in range(n) if years[i] is not None]
     for i in dated:
-        base = left + year_rank[years[i]] / n_ranks * (right - left) if year_rank else WIDTH / 2
+        base = band_base(year_rank[years[i]])
+        band_of[i] = base
         px[i] = base + rnd.uniform(-band_halfwidth, band_halfwidth)
 
     # Undated nodes: average X of graph neighbors (two passes so chains of undated nodes
@@ -108,6 +117,11 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
                 if anchors:
                     px[i] = sum(anchors) / len(anchors) + rnd.uniform(-band_halfwidth / 2,
                                                                       band_halfwidth / 2)
+        # Snap each undated node to its NEAREST year band so the grid packing and the X-spill
+        # clamp below have a well-defined band for it too.
+        bases = sorted({band_base(r) for r in year_rank.values()}) or [WIDTH / 2]
+        for i in undated:
+            band_of[i] = min(bases, key=lambda b: abs(b - px[i]))
 
     # --- Rule 2: Y = log-scaled citation impact, most-cited at the top; unknowns in the
     #     bottom band.
@@ -117,30 +131,43 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
     known = [c for c in cites if c is not None]
     cmax_log = math.log10(1 + (max(known) if known else 0)) or 1.0
 
-    py = [0.0] * n
-    for i in range(n):
-        c = cites[i]
-        if c is None:
-            py[i] = HEIGHT - _MARGIN - rnd.uniform(0, _UNRANKED_BAND)
-        else:
-            frac = math.log10(1 + c) / cmax_log  # 0 (uncited) .. 1 (most cited)
-            py[i] = top + (1.0 - frac) * (ranked_bottom - top)
-
-    # --- Rule 4: deterministic minimum-separation sweeps, nudging along Y (each node stays in
-    #     its year band). Clamping happens INSIDE the sweep — a post-hoc clamp would re-stack
-    #     everything it pinned to a margin — and a node pinned against its bound hands the
-    #     remaining push to X instead. Bounds are PER CLASS: ranked nodes may not be pushed
-    #     down into the unranked band, and unranked nodes may not escape upward out of it —
-    #     either would silently falsify the Y axis.
     min_sep = 56.0
     band_top = HEIGHT - _MARGIN - _UNRANKED_BAND
-    y_lo = [(_MARGIN * 0.5) if cites[i] is not None else band_top for i in range(n)]
-    y_hi = [(ranked_bottom + _UNRANKED_GAP * 0.5) if cites[i] is not None
-            else HEIGHT - _MARGIN * 0.25 for i in range(n)]
+
+    py = [0.0] * n
+    ranked_idx = [i for i in range(n) if cites[i] is not None]
+    for i in ranked_idx:
+        frac = math.log10(1 + cites[i]) / cmax_log  # 0 (uncited) .. 1 (most cited)
+        py[i] = top + (1.0 - frac) * (ranked_bottom - top)
+
+    # Unknown-citation nodes: deterministic per-year grid inside the unranked band. Columns
+    # fit within the year band (X ordering preserved); rows extend the band downward when a
+    # cohort outgrows it, growing the canvas rather than overlapping or escaping upward.
+    unknown_idx = [i for i in range(n) if cites[i] is None]
+    cols = max(1, int((2 * x_cap) // min_sep) + 1)
+    max_rows = 0
+    by_band: dict[float, list[int]] = {}
+    for i in unknown_idx:
+        by_band.setdefault(band_of[i], []).append(i)
+    for base, members in by_band.items():
+        members.sort(key=lambda i: nodes[i]["id"])  # deterministic
+        for k, i in enumerate(members):
+            row, col = divmod(k, cols)
+            px[i] = base + (col - (cols - 1) / 2) * min_sep
+            py[i] = band_top + _UNRANKED_GAP * 0.5 + row * min_sep
+            max_rows = max(max_rows, row + 1)
+    band_height = max(_UNRANKED_BAND, _UNRANKED_GAP * 0.5 + max_rows * min_sep)
+    height = HEIGHT + max(0.0, band_height - _UNRANKED_BAND)
+
+    # --- Rule 4 (ranked region): deterministic minimum-separation sweeps along Y, clamped
+    #     INSIDE the sweep (a post-hoc clamp re-stacked everything it pinned to a margin).
+    #     A node pinned against its Y bound hands the remaining push to X, clamped to its year
+    #     band so time ordering survives. Unknowns are already packed and never move.
+    y_lo, y_hi = _MARGIN * 0.5, ranked_bottom + _UNRANKED_GAP * 0.5
     for _ in range(30):
         moved = False
         grid: dict[tuple[int, int], list[int]] = {}
-        for i in range(n):
+        for i in ranked_idx:
             grid.setdefault((int(px[i] // min_sep), int(py[i] // min_sep)), []).append(i)
         for (cx, cy), members in grid.items():
             neighbors = [m for dx in (-1, 0, 1) for dy in (-1, 0, 1)
@@ -156,15 +183,17 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
                         continue
                     push = (min_sep - d) / 2 + 0.5
                     direction = 1.0 if (ddy > 0 or (ddy == 0 and i > j)) else -1.0
-                    new_i = max(y_lo[i], min(y_hi[i], py[i] + direction * push))
-                    new_j = max(y_lo[j], min(y_hi[j], py[j] - direction * push))
+                    new_i = max(y_lo, min(y_hi, py[i] + direction * push))
+                    new_j = max(y_lo, min(y_hi, py[j] - direction * push))
                     absorbed = abs(new_i - py[i]) + abs(new_j - py[j])
                     py[i], py[j] = new_i, new_j
                     remainder = 2 * push - absorbed
                     if remainder > 0.5:
                         dir_x = 1.0 if (ddx > 0 or (ddx == 0 and i > j)) else -1.0
-                        px[i] += dir_x * remainder / 2
-                        px[j] -= dir_x * remainder / 2
+                        px[i] = max(band_of[i] - x_cap,
+                                    min(band_of[i] + x_cap, px[i] + dir_x * remainder / 2))
+                        px[j] = max(band_of[j] - x_cap,
+                                    min(band_of[j] + x_cap, px[j] - dir_x * remainder / 2))
                     moved = True
         if not moved:
             break
@@ -172,4 +201,4 @@ def compute_layout(nodes: list[dict], edges: list[dict], *, seed: int = 42) -> d
     for i, nd in enumerate(nodes):
         nd["x"] = round(px[i], 1)
         nd["y"] = round(py[i], 1)
-    return {"width": WIDTH, "height": HEIGHT, "algo": LAYOUT_ALGO}
+    return {"width": WIDTH, "height": round(height, 1), "algo": LAYOUT_ALGO}

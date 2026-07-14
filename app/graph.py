@@ -990,6 +990,14 @@ def _persist_graph_snapshot(
     nodes, edges = build_nodes_and_edges(papers, combined)
     if annotate_citations:
         citations.annotate_nodes(nodes, data["citations"])  # best-effort, cached
+    else:
+        # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
+        # needs citation counts — apply whatever the cache already knows for free. Without
+        # this, every skeleton publish laid the WHOLE map out in the unranked band and
+        # stamped it semantic.
+        cache = data.get("citations") or {}
+        for node in nodes:
+            node["citation_count"] = cache.get(node["id"])
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)
     metadata_papers = sum(
