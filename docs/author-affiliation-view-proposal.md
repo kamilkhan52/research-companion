@@ -17,7 +17,8 @@ significant citations), not raw fame.
 
 | Signal | Availability today |
 |---|---|
-| Author names per node (project + external) | ✅ every graph node carries `authors: string[]` (S2 metadata + full-text extraction) |
+| Author names on EXTERNAL nodes | ✅ referenced works carry `authors: string[]` (S2 reference metadata + full-text extraction) |
+| Author names on PROJECT nodes | ❌ `build_nodes_and_edges` initializes project nodes with `authors: []` and nothing fills them — the papers that matter most are exactly the ones missing authors today. v1 must fetch/persist them (S2 paper lookup by the arXiv id that nodes carry since U.8, falling back to parsing the corpus header) |
 | Which papers each author appears on, in/out of project | ✅ derivable from the stored graph at read time |
 | Significant-citation weight per paper | ✅ `significant_cited_by_count` on nodes |
 | S2 `authorId` per author | ⚠️ present in S2 reference payloads but currently dropped at merge — must be kept to disambiguate "J. Smith" |
@@ -50,9 +51,11 @@ as a v2 concept only.
 
 ## Implementation sketch (for sizing, not for this PR)
 
-1. Backend: keep S2 `authorId` through the merge; add `authors_summary` to the stored graph
-   (computed in `build_nodes_and_edges` successor step); affiliation fetch+cache module
-   mirroring `citations.py` (best-effort, never blocks a build).
+1. Backend: populate project-node authors first (S2 paper lookup by arXiv id, cached like
+   citation counts; corpus-header parse as fallback) — without this no in-project ranking is
+   computable; keep S2 `authorId` through the merge; add `authors_summary` to the stored
+   graph; affiliation fetch+cache module mirroring `citations.py` (best-effort, never blocks
+   a build).
 2. API: `GET /api/projects/{pid}/graph/authors` → ranked authors + affiliation groups.
 3. Mobile: Authors/Labs segments on the Map screen; card board + author sheet. Web mirrors
    with a table.
