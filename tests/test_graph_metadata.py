@@ -181,6 +181,23 @@ def test_provider_identifier_and_title_only_mentions_dedupe_to_one_external_node
     assert len(edges) == 2
 
 
+def test_conflicting_identifiers_do_not_collapse_only_because_titles_match():
+    papers = [paper("a", "Paper A"), paper("b", "Paper B")]
+    extractions = {
+        "a": {"status": "done", "references": [{
+            "title": "A Shared Title", "arxiv_id": "2401.00001", "significant": False,
+        }]},
+        "b": {"status": "done", "references": [{
+            "title": "A Shared Title", "arxiv_id": "2401.99999", "significant": False,
+        }]},
+    }
+
+    nodes, edges = graph.build_nodes_and_edges(papers, extractions)
+
+    assert len([node for node in nodes if node["kind"] == "external"]) == 2
+    assert len(edges) == 2
+
+
 def test_provider_cache_is_independent_from_full_text_extraction(temp_project, monkeypatch):
     add_paper(temp_project, "source", "Source Paper", full_text="Version one.")
     papers = store.list_papers(sessions.session_states())

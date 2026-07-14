@@ -330,6 +330,18 @@ def external_ref_keys(ref: dict) -> list[str]:
     return list(dict.fromkeys(keys)) or [external_ref_key(ref)]
 
 
+def _identifiers_conflict(ref: dict, node: dict) -> bool:
+    for field in ("arxiv_id", "doi"):
+        left = str(ref.get(field) or "").strip().lower()
+        right = str(node.get(field) or "").strip().lower()
+        if field == "arxiv_id":
+            left = re.sub(r"v\d+$", "", left, flags=re.IGNORECASE)
+            right = re.sub(r"v\d+$", "", right, flags=re.IGNORECASE)
+        if left and right and left != right:
+            return True
+    return False
+
+
 def match_project_paper(ref: dict, papers: list[Paper]) -> str | None:
     """The slug of the in-project paper this reference points to, if any."""
     title = ref.get("title") or ""
@@ -521,9 +533,12 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
             else:
                 keys = external_ref_keys(ref)
                 key = keys[0]
-                target_id = next(
-                    (external_key_to_id[k] for k in keys if k in external_key_to_id), None
-                )
+                target_id = next((
+                    candidate
+                    for alias in keys
+                    if (candidate := external_key_to_id.get(alias)) is not None
+                    and not _identifiers_conflict(ref, nodes[candidate])
+                ), None)
                 if not target_id:
                     target_id = f"ext:{key}"
                     nodes[target_id] = {
@@ -898,6 +913,13 @@ def build_graph(papers: list[Paper], force: bool = False,
                     provider_record = metadata_fetcher(paper)
                     if not isinstance(provider_record, dict):
                         raise TypeError("metadata provider returned a non-object result")
+                    if provider_record.get("status") not in {"done", "not_found"}:
+                        raise ValueError("metadata provider returned an invalid status")
+                    if (
+                        provider_record.get("status") == "done"
+                        and not isinstance(provider_record.get("references"), list)
+                    ):
+                        raise TypeError("metadata provider references were not a list")
                     provider_record = {
                         **provider_record,
                         "source_key": source_key,
