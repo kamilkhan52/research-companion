@@ -109,10 +109,40 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
     return body
 
 
+def _friendly_http_error(status: int, raw: str, model: str | None) -> str:
+    """The user-facing message for an OpenRouter HTTP failure. Quota, key, and rate problems
+    read in the app's voice with the action to take — the raw provider payload stays in the
+    server log (U.22; the future credits layer will intercept these same cases). Unrecognized
+    statuses keep a short raw excerpt, which is diagnostic rather than noise."""
+    name = model or "the selected model"
+    if status == 401:
+        return "OpenRouter rejected the API key. Check it in Settings."
+    if status == 402:
+        return ("Your OpenRouter account is out of credits, so this request was declined. "
+                "Add credits at openrouter.ai, or switch to a cheaper model in Settings.")
+    if status == 403:
+        return (f"OpenRouter refused this request for {name} — the model may not be "
+                "available to your account. Try another model.")
+    if status == 404:
+        return f"OpenRouter doesn't recognize {name}. Pick another model in Settings."
+    if status == 429:
+        return (f"{name} is rate-limited right now. Wait a moment and retry, or switch "
+                "models in Settings.")
+    if status >= 500:
+        return (f"OpenRouter or the provider behind {name} is having trouble "
+                f"(HTTP {status}). This is usually brief — retry shortly.")
+    return f"OpenRouter error {status}: {raw[:200]}"
+
+
+_TRANSPORT_FRIENDLY = "Could not reach OpenRouter. Check the connection and retry."
+
+
 def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
     """POST the chat-completions body, retrying transient failures with backoff. Returns the
-    parsed JSON response; raises LLMError once retries are exhausted or the error is fatal."""
+    parsed JSON response; raises LLMError once retries are exhausted or the error is fatal.
+    Logs carry the raw provider payload; the raised LLMError carries the user-facing message."""
     last = "unknown error"
+    friendly = _TRANSPORT_FRIENDLY
     attempts = 0
     for attempt in range(tries):
         if attempt:
@@ -125,6 +155,7 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
                            headers=_headers(key), json=body, timeout=timeout)
         except httpx.HTTPError as e:
             last = f"OpenRouter request failed: {e}"
+            friendly = _TRANSPORT_FRIENDLY
             continue  # transport-level: always worth a retry
         if r.status_code == 200:
             try:
@@ -132,12 +163,13 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
             except ValueError as e:
                 raise LLMError(f"OpenRouter returned a non-JSON 200: {r.text[:400]}") from e
         last = f"OpenRouter error {r.status_code}: {r.text[:400]}"
+        friendly = _friendly_http_error(r.status_code, r.text, body.get("model"))
         if r.status_code not in _RETRY_STATUS:
             break  # fatal: don't count attempts we never made
     # `attempts` is what we actually tried (1 for a fatal first response, `tries` if exhausted).
     log.error("openrouter failed after %d attempt(s) (model=%s): %s",
               attempts, body.get("model"), last)
-    raise LLMError(last)
+    raise LLMError(friendly)
 
 
 def complete(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
@@ -192,6 +224,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
     url = f"{config.OPENROUTER_BASE}/chat/completions"
     emitted = False
     last = "unknown error"
+    friendly = _TRANSPORT_FRIENDLY
     attempts = 0
     for attempt in range(tries):
         if attempt:
@@ -208,10 +241,11 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                 if r.status_code != 200:
                     detail = r.read().decode("utf-8", "ignore")[:400]
                     last = f"OpenRouter error {r.status_code}: {detail}"
+                    friendly = _friendly_http_error(r.status_code, detail, body.get("model"))
                     if r.status_code in _RETRY_STATUS:
                         continue  # not billed — safe to retry, nothing to account
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
-                    raise LLMError(last)
+                    raise LLMError(friendly)
                 got_200 = True
                 gen_id = r.headers.get("x-generation-id") or None
                 for line in r.iter_lines():
@@ -238,6 +272,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             return  # stream finished cleanly
         except httpx.HTTPError as e:
             last = f"OpenRouter stream failed: {e}"
+            friendly = _TRANSPORT_FRIENDLY
             # A 200 generation is billed the moment OpenRouter accepts it (it can spend on hidden
             # reasoning before any content), so account it even if it dropped before a token — as
             # exact usage if the final chunk arrived, else pending. A non-200 attempt wasn't billed.
@@ -246,11 +281,11 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             if emitted:  # mid-stream: a retry would duplicate text, so fail fast
                 log.error("openrouter stream dropped after first token (model=%s): %s",
                           body.get("model"), last)
-                raise LLMError(last) from e
+                raise LLMError("The connection dropped mid-response. Retry the turn.") from e
             continue  # transport failure before any content — retry a fresh generation
     log.error("openrouter stream failed after %d attempt(s) (model=%s): %s",
               attempts, body.get("model"), last)
-    raise LLMError(last)
+    raise LLMError(friendly)
 
 
 # ---------- model catalogue (TTL-cached; shared by three callers) ----------

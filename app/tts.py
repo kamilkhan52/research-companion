@@ -69,6 +69,21 @@ _RETRYABLE = {429, 500, 502, 503, 504}
 _TRIES = 3
 
 
+def _friendly_tts_error(status: int, raw: str) -> str:
+    """User-facing message for an OpenAI speech failure — quota/key/rate problems in the
+    app's voice with the action to take, raw payload reserved for anyone reading raw (U.22)."""
+    if status == 401:
+        return "OpenAI rejected the speech API key. Check it in Settings → Speech."
+    if status == 429:
+        if "insufficient_quota" in raw:
+            return ("The OpenAI account is out of speech quota — audio can't be synthesized "
+                    "until it's topped up at platform.openai.com.")
+        return "OpenAI is rate-limiting speech synthesis. Wait a moment and retry."
+    if status >= 500:
+        return f"OpenAI's speech service is having trouble (HTTP {status}). Retry shortly."
+    return f"OpenAI TTS error {status}: {raw[:200]}"
+
+
 def openai_speech(text: str) -> bytes:
     """Synthesize one passage to mp3 bytes via OpenAI, retrying transient failures.
     Settings supply key/model/voice."""
@@ -82,7 +97,7 @@ def openai_speech(text: str) -> bytes:
             "response_format": "mp3"}
     if model == "gpt-4o-mini-tts":
         body["instructions"] = prompts.get("tts_instructions")
-    last_err = "unknown error"
+    last_err = "Could not reach OpenAI's speech service. Check the connection and retry."
     for attempt in range(_TRIES):
         if attempt:
             time.sleep(2 * attempt)
@@ -92,12 +107,11 @@ def openai_speech(text: str) -> bytes:
                 headers={"Authorization": f"Bearer {key}"},
                 json=body, timeout=120,
             )
-        except httpx.HTTPError as e:
-            last_err = f"OpenAI TTS request failed: {e}"
+        except httpx.HTTPError:
             continue
         if r.status_code == 200:
             return r.content
-        last_err = f"OpenAI TTS error {r.status_code}: {r.text[:300]}"
+        last_err = _friendly_tts_error(r.status_code, r.text)
         if r.status_code not in _RETRYABLE:
             break
     raise TTSError(last_err)

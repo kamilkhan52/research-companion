@@ -78,6 +78,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.19 | Map membership updates live at read time + incremental-rebuild wording | [#102](https://github.com/kamilkhan52/research-companion/pull/102) | Complete |
 | U.20 | Map timeline: project-node years + gap-fill from citing bibliographies | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete — dated nodes are strictly older-left→newer-right; undated inherit neighbor X |
 | U.21 | TopBar titles auto-scroll on overflow (truncation audit) | [#103](https://github.com/kamilkhan52/research-companion/pull/103) | Complete |
+| U.22 | Provider quota/key/rate failures read in the app's voice | [#104](https://github.com/kamilkhan52/research-companion/pull/104) | Complete |
 
 ## Current execution decisions (2026-07-14)
 

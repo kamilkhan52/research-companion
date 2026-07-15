@@ -436,3 +436,45 @@ def test_catalogue_cold_failure_is_single_flight(monkeypatch):
 
     assert calls["n"] == 1     # one shared upstream attempt for the whole wave
     assert len(errors) == 6    # every caller received the shared error outcome
+
+
+# ---- U.22: provider failures surface in the app's voice, raw payloads stay in the log ----
+
+def test_out_of_credits_reads_as_an_actionable_message(key, monkeypatch, rc_logs):
+    raw = '{"error":{"message":"Insufficient credits","code":402}}'
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(402, text=raw))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}])
+    msg = str(err.value)
+    assert "credits" in msg and "openrouter.ai" in msg
+    assert "Insufficient credits" not in msg          # raw payload is not user-facing
+    assert any(raw[:40] in m for m in _llm_msgs(rc_logs))  # ...but it IS in the server log
+
+
+def test_bad_key_message_points_at_settings(key, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(401, text='{"error":"bad key"}'))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert "API key" in str(err.value) and "Settings" in str(err.value)
+
+
+def test_rate_limit_exhausted_names_the_model(key, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(429, text="slow down"))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}], model="some/model", tries=2)
+    assert "rate-limited" in str(err.value)
+    assert "some/model" in str(err.value)
+
+
+def test_provider_5xx_reads_as_transient(key, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(503, text="upstream sad"))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}], tries=2)
+    assert "retry shortly" in str(err.value).lower()
+
+
+def test_unrecognized_status_keeps_a_short_raw_excerpt(key, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(418, text="teapot"))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert "418" in str(err.value) and "teapot" in str(err.value)
