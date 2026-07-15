@@ -256,7 +256,12 @@ export default function DiscussionScreen() {
       <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
       <TopBar
         title={session.data?.paper.title ?? 'Discussion'}
-        subtitle={state ? STATE_LABEL[state] : undefined}
+        // Year first: it situates the paper on the timeline before the workflow state (U.17).
+        subtitle={
+          [session.data?.paper.year, state ? STATE_LABEL[state] : undefined]
+            .filter(Boolean)
+            .join(' · ') || undefined
+        }
         onBack={() => router.back()}
         right={
           <OverflowMenu

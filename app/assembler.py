@@ -108,7 +108,14 @@ def build_context(slug: str) -> str:
 
     entry = store.entry_markdown(slug)
     if entry:
-        parts.append("# This paper's reading-list entry (authors, venue, context)\n\n" + entry)
+        head = "# This paper's reading-list entry (authors, venue, context)\n\n"
+        year = store.year_for(slug)
+        if year:
+            # Stated explicitly (not only encoded in the arXiv id) so the discussion reliably
+            # situates the paper on the timeline: what existed before it, what came after.
+            head += (f"Published: {year}. Situate the paper in time — note which related "
+                     "works predate or postdate it when weighing its contributions.\n\n")
+        parts.append(head + entry)
 
     return "\n\n---\n\n".join(parts)
 

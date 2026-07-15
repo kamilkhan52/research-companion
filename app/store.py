@@ -74,6 +74,7 @@ _H2_RE = re.compile(r"^##\s+(?P<group>.+?)\s*$")
 _SLUG_COMMENT_RE = re.compile(r"<!--\s*slug:\s*(?P<slug>[a-z0-9-]+)\s*-->", re.I)
 _CITES_COMMENT_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
 _ARXIV_COMMENT_RE = re.compile(r"<!--\s*arxiv:\s*(?P<arxiv_id>[^\s>]+?)\s*-->", re.I)
+_YEAR_COMMENT_RE = re.compile(r"<!--\s*year:\s*(?P<year>\d{4})\s*-->", re.I)
 _COMMENT_LINE_RE = re.compile(r"^\s*<!--.*-->\s*$")
 _ABSTRACT_LABEL_RE = re.compile(r"^Abstract:\s*(?P<head>.*)$", re.I)
 
@@ -101,6 +102,26 @@ _ABSTRACT_WRAP_COLS = 95
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+# arXiv ids date a paper for free: new-style `YYMM.NNNNN` (2007-present) and old-style
+# `archive/YYMMNNN` (1991-2007) both open with a two-digit year and month.
+_ARXIV_NEW_ID_RE = re.compile(r"^(\d{2})(\d{2})\.\d{4,5}")
+_ARXIV_OLD_ID_RE = re.compile(r"^[a-z-]+(?:\.[A-Z]{2})?/(\d{2})(\d{2})\d{3}", re.I)
+
+
+def year_from_arxiv_id(arxiv_id: str) -> int | None:
+    """Publication year encoded in an arXiv id (the month the first version appeared), or
+    None when the id is absent/unrecognized. Pure string parsing — no network."""
+    aid = (arxiv_id or "").strip()
+    m = _ARXIV_NEW_ID_RE.match(aid)
+    if m:
+        return 2000 + int(m.group(1))
+    m = _ARXIV_OLD_ID_RE.match(aid)
+    if m:
+        yy = int(m.group(1))
+        return 1900 + yy if yy >= 91 else 2000 + yy
+    return None
 
 
 def derive_slug(title: str) -> str:
@@ -193,6 +214,10 @@ def _parse_entries_uncached(rl: Path) -> list[dict]:
         else:
             e["cites"] = []
         e["arxiv_id"] = arxiv.group("arxiv_id") if arxiv else ""
+        # Publication year: an explicit `<!-- year: 2019 -->` (the escape hatch for non-arXiv
+        # papers) wins over the year encoded in the arXiv id.
+        year_c = _YEAR_COMMENT_RE.search(e["block"])
+        e["year"] = int(year_c.group("year")) if year_c else year_from_arxiv_id(e["arxiv_id"])
         e["abstract"] = _extract_abstract(block_lines)
     return entries
 
@@ -274,6 +299,7 @@ def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
             session_state=session_states.get(slug),
             arxiv_id=e["arxiv_id"],
             source_url=source_url_for(slug),
+            year=e["year"],
         ))
     return papers
 
@@ -314,6 +340,14 @@ def arxiv_id_for(slug: str) -> str:
     return ""
 
 
+def year_for(slug: str) -> int | None:
+    """The entry's publication year (explicit comment or arXiv id), or None."""
+    for e in _parse_entries():
+        if e["slug"] == slug:
+            return e["year"]
+    return None
+
+
 _SOURCE_META_RE = re.compile(r"^- source:\s*(?P<url>\S+)", re.M)
 
 
@@ -342,7 +376,10 @@ def reading_list_overview() -> str:
         if e["group"] != group:
             group = e["group"]
             lines.append(f"\n### {group}")
-        lines.append(f"- {e['title']} — *{e['status']}* (slug: {e['slug']}; "
+        # The year rides along so the agent can situate every paper on the corpus timeline
+        # (what predates/postdates what) without asking.
+        year = f" ({e['year']})" if e["year"] else ""
+        lines.append(f"- {e['title']}{year} — *{e['status']}* (slug: {e['slug']}; "
                      f"link: rc-paper:{e['slug']})")
         if e["abstract"] and not has_notes(e["slug"]):
             lines.append(f"  Abstract: {e['abstract']}")
@@ -499,7 +536,7 @@ class DuplicatePaperError(ValueError):
 
 
 def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
-              abstract: str | None = None) -> str:
+              abstract: str | None = None, year: int | None = None) -> str:
     """Append a new *unread* reading-list entry under `group` (created if it doesn't exist
     yet). Returns the new entry's slug. Deliberately does NOT retrieve full text or git-commit
     — this only edits reading-list.md (metadata), matching the rest of this module's "never
@@ -526,6 +563,10 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
     block = [f"**{title}** — *unread*"]
     if arxiv_id:
         block.append(f"<!-- arxiv: {arxiv_id.strip()} -->")
+    # Record the year only when the arXiv id can't already date the paper — the comment is
+    # the non-arXiv escape hatch, not a duplicate of what the id encodes.
+    if year and 1900 <= year <= 2100 and not year_from_arxiv_id(arxiv_id or ""):
+        block.append(f"<!-- year: {year} -->")
     abstract = re.sub(r"\s+", " ", abstract or "").strip()
     if abstract:
         block += ["", *_abstract_paragraph(abstract)]

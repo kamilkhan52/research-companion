@@ -1433,6 +1433,8 @@ export interface components {
             arxiv_id?: string | null;
             /** Abstract */
             abstract?: string | null;
+            /** Year */
+            year?: number | null;
         };
         /** ApproveReq */
         ApproveReq: {
@@ -1444,6 +1446,8 @@ export interface components {
             synthesis?: string | null;
             /** Summary */
             summary?: string | null;
+            /** Proposal Revision */
+            proposal_revision?: string | null;
         };
         /** Body_upload_paper_api_projects__pid__upload_paper_post */
         Body_upload_paper_api_projects__pid__upload_paper_post: {

@@ -14,6 +14,8 @@ export interface SessionPaper {
   title: string;
   retrieved: boolean;
   list_status: string;
+  /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
+  year?: number | null;
 }
 
 export interface Session {

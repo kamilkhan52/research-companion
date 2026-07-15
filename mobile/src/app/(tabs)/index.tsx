@@ -415,6 +415,12 @@ function PaperRow({
             <Text variant="caption" color={meta.color}>
               {meta.label}
             </Text>
+            {paper.year ? (
+              // The year anchors the paper on the corpus timeline at a glance (U.17).
+              <Text variant="caption" color={colors.muted}>
+                {'· '}{paper.year}
+              </Text>
+            ) : null}
           </View>
           <Text variant="heading" numberOfLines={3}>
             {paper.title}
