@@ -688,6 +688,16 @@ def _author_key(name: str) -> str:
     return re.sub(r"\s+", " ", name.replace(".", " ").strip()).casefold()
 
 
+# Bibliography extraction sometimes emits the trailing "et al." (and kin) of an author list as
+# if it were a person; without this it ranks as an author on the board.
+_NON_AUTHOR_KEYS = {"et al", "et al.", "et. al", "and others", "others", ""}
+
+
+def _is_real_author(name: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (name or "").strip())
+    return cleaned.casefold() not in _NON_AUTHOR_KEYS and any(c.isalpha() for c in cleaned)
+
+
 def author_board(graph: dict | None, openalex_cache: dict | None) -> list[dict]:
     """The ranked in-project author board (U.9 v1), computed from a stored graph snapshot at
     read time — pure, no network, no LLM.
@@ -710,6 +720,8 @@ def author_board(graph: dict | None, openalex_cache: dict | None) -> list[dict]:
         if node.get("kind") != "project":
             continue
         for name in node.get("authors") or []:
+            if not _is_real_author(name):
+                continue
             key = _author_key(name)
             entry = board.setdefault(key, {
                 "name": name, "affiliation": affiliation_by_key.get(key, ""),

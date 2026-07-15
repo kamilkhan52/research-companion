@@ -469,6 +469,38 @@ export interface GraphBuildStatusResponse {
   build: GraphBuildJob | null;
 }
 
+/** One paper on an author's card sheet (U.9). Project papers open their Discussion; external
+ *  ones get the U.5-aware Add button. */
+export interface AuthorPaper {
+  id: string;
+  slug: string | null;
+  title: string | null;
+  kind: 'project' | 'external';
+  year: number | null;
+}
+
+/** One author on the ranked board (GET …/graph/authors). Affiliation is "" when unknown
+ *  (the UI omits the line rather than showing "Unknown"). */
+export interface BoardAuthor {
+  name: string;
+  affiliation: string;
+  in_project_count: number;
+  significant_count: number;
+  external_count: number;
+  active_years: [number, number] | null;
+  activity: number;
+  papers: AuthorPaper[];
+}
+
+/** GET /api/projects/{pid}/graph/authors */
+export interface AuthorBoardResponse {
+  authors: BoardAuthor[];
+  /** Hidden-by-default explainer copy: what the activity score blends, and what "significant"
+   *  means (factors, not the formula). */
+  explainers: { activity: string; significant: string };
+  built_at: string | null;
+}
+
 /** POST /api/projects/{pid}/graph/build */
 export interface GraphBuildStartResponse {
   build: GraphBuildJob;

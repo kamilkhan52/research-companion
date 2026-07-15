@@ -162,7 +162,12 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       // done | error
       setBuilding(false);
       if (job.status === 'error') setError(job.error ?? 'Graph build failed.');
-      if (pid) qc.invalidateQueries({ queryKey: keys.graph(pid) });
+      if (pid) {
+        qc.invalidateQueries({ queryKey: keys.graph(pid) });
+        // A completed build refreshes authors/affiliations too (U.9) — an open Authors
+        // screen would otherwise keep showing the pre-build board.
+        qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+      }
     },
     [pid, qc],
   );

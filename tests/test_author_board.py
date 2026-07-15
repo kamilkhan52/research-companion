@@ -88,3 +88,12 @@ def test_empty_graph_and_explainers():
     assert author_board({"nodes": []}, {}) == []
     assert "weight 3" in AUTHOR_EXPLAINERS["activity"]
     assert "significant" in AUTHOR_EXPLAINERS["significant"].casefold()
+
+
+def test_et_al_and_junk_tokens_are_not_authors():
+    graph = {"nodes": [
+        project_node("awq", ["Song Han", "et al."]),
+        project_node("x", ["and others", "  ", "Ji Lin"]),
+    ]}
+    names = {e["name"] for e in author_board(graph, {})}
+    assert names == {"Song Han", "Ji Lin"}
