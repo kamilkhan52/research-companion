@@ -8,7 +8,8 @@ import { type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { IconButton as UIIconButton, Text, type IconName } from '@/ui';
-import { colors, space } from '@/theme/tokens';
+import { Marquee } from '@/ui/Marquee';
+import { colors, fonts, space } from '@/theme/tokens';
 
 export function TabHeader({
   title,
@@ -73,9 +74,12 @@ export function TopBar({
         ) : null}
       </View>
       <View style={styles.center}>
-        <Text variant="heading" style={{ fontSize: 18 }} numberOfLines={1} color={colors.mint}>
-          {title}
-        </Text>
+        {/* Long paper titles auto-scroll instead of clipping (U.21); short ones stay
+            static and centered. The stretch wrapper gives the marquee the full row width
+            (styles.center centers its children, which would shrink-wrap it). */}
+        <View style={{ alignSelf: 'stretch' }}>
+          <Marquee text={title} align="center" textStyle={styles.titleText} />
+        </View>
         {subtitle ? (
           <Text variant="caption" numberOfLines={1} style={{ marginTop: 1 }}>
             {subtitle}
@@ -118,5 +122,6 @@ const styles = StyleSheet.create({
   },
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
-  center: { flex: 1, alignItems: 'center' },
+  center: { flex: 1, minWidth: 0, alignItems: 'center' },
+  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 18, lineHeight: 24, color: colors.mint },
 });

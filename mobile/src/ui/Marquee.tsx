@@ -16,11 +16,15 @@ export function Marquee({
   textStyle,
   speed = DEFAULT_SPEED,
   accessibilityLabel,
+  align = 'left',
 }: {
   text: string;
   textStyle?: StyleProp<TextStyle>;
   speed?: number;
   accessibilityLabel?: string;
+  /** How STATIC (fitting) text sits in the container; overflowing text always glides from
+   *  the left. 'center' suits centered chrome like the TopBar title. */
+  align?: 'left' | 'center';
 }) {
   const offset = useRef(new Animated.Value(0)).current;
   const [containerWidth, setContainerWidth] = useState(0);
@@ -69,11 +73,21 @@ export function Marquee({
     >
       {/* Absolute + left-anchored so the text measures at its intrinsic width (Yoga sizes an
           absolutely positioned child to its content), letting onLayout report the true width
-          even when it exceeds the clipped container. */}
+          even when it exceeds the clipped container. Static centered text keeps the same
+          anchor and just offsets by the slack, so no re-layout jump when overflow flips. */}
       <Animated.Text
         numberOfLines={1}
         ellipsizeMode="clip"
-        style={[textStyle, { position: 'absolute', left: 0, transform: [{ translateX: offset }] }]}
+        style={[
+          textStyle,
+          {
+            position: 'absolute',
+            left: align === 'center' && !overflows && textWidth > 0
+              ? Math.max(0, (containerWidth - textWidth) / 2)
+              : 0,
+            transform: [{ translateX: offset }],
+          },
+        ]}
         onLayout={(e) => setTextWidth(e.nativeEvent.layout.width)}
       >
         {text}

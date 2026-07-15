@@ -76,6 +76,8 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.17 | Publication year surfaced in UI + agent context | [#99](https://github.com/kamilkhan52/research-companion/pull/99) | Complete — Android passed |
 | U.18 | Retrieval records paper identity; year backfill for existing entries | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete — real-vault backfill run (22/23 dated; `park` needs a manual pin) |
 | U.19 | Map membership updates live at read time + incremental-rebuild wording | [#102](https://github.com/kamilkhan52/research-companion/pull/102) | Complete |
+| U.20 | Map timeline: project-node years + gap-fill from citing bibliographies | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete — dated nodes are strictly older-left→newer-right; undated inherit neighbor X |
+| U.21 | TopBar titles auto-scroll on overflow (truncation audit) | [#103](https://github.com/kamilkhan52/research-companion/pull/103) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
