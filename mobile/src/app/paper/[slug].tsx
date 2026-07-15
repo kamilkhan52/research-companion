@@ -164,7 +164,7 @@ export default function DiscussionScreen() {
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
     audio.enqueueJob(
       {
-        id: messageAudioId(pid, slug, job.assistant_index),
+        id: messageAudioId(pid, slug, job.assistant_index, canonical),
         title: session.data?.paper.title ?? 'Narration',
         text: canonical,
       },
@@ -589,16 +589,15 @@ function ModePickerSheet({
 
 // ---------- the thread (library chat + lifecycle toolbar) ----------
 
-/** Audio identity for an assistant turn: branch-qualified (U.14) so branch A's loaded
- *  narration is never treated as branch B's — same turn position, different response. The
- *  unforked shape stays identical to messageAudioId so existing recovery ids keep matching. */
+/** Audio identity for an assistant turn — content-qualified via messageAudioId so EVERY
+ *  turn on every branch (not just the fork point) is distinct when its text differs (U.14
+ *  review: downstream replies inside a branch share indexes with the sibling branch too). */
 function branchAudioId(
   pid: string,
   slug: string,
   entry: Extract<TranscriptEntry, { role: 'assistant' }>,
 ): string {
-  const base = messageAudioId(pid, slug, entry.assistant_index);
-  return entry.branch_active ? `${base}#b${entry.branch_active}` : base;
+  return messageAudioId(pid, slug, entry.assistant_index, entry.canonical);
 }
 
 function DiscussionThread({
@@ -820,7 +819,9 @@ function DiscussionThread({
   // Regenerate an assistant turn (optionally with a different model), from its per-message
   // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
   // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
+  const canRetry = state !== 'committed';
   const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+    if (state === 'committed') return;
     const old = transcript.find(
       (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
     );
@@ -833,7 +834,7 @@ function DiscussionThread({
     }
     void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths.retry, slug, stream.run, transcript]);
+  }, [paths.retry, slug, state, stream.run, transcript]);
 
   async function approve() {
     setBusy(true);
@@ -916,7 +917,7 @@ function DiscussionThread({
         icon: 'headphones',
         onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
       });
-      if (!stream.streaming) {
+      if (!stream.streaming && canRetry) {
         options.push({
           key: 'retry',
           title: 'Retry',
@@ -957,6 +958,7 @@ function DiscussionThread({
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
+          canRetry={canRetry}
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
         />
@@ -972,7 +974,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, handleSwitchBranch, switchingBranch, stream.streaming]);
+  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1452,6 +1454,7 @@ function AssistantBody({
   title,
   favorites,
   onRetry,
+  canRetry,
   onSwitchBranch,
   switchDisabled,
 }: {
@@ -1460,6 +1463,7 @@ function AssistantBody({
   title: string;
   favorites: FavoriteModel[];
   onRetry: (assistantIndex: number, model?: string) => void;
+  canRetry: boolean;
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
 }) {
@@ -1558,12 +1562,14 @@ function AssistantBody({
           onPress={() => void copy()}
           accessibilityLabel="Copy this response"
         />
-        <MsgAction
-          icon="rotate-ccw"
-          label="Retry"
-          onPress={() => setRetryMenu(true)}
-          accessibilityLabel="Retry this response, optionally with a different model"
-        />
+        {canRetry ? (
+          <MsgAction
+            icon="rotate-ccw"
+            label="Retry"
+            onPress={() => setRetryMenu(true)}
+            accessibilityLabel="Retry this response, optionally with a different model"
+          />
+        ) : null}
       </View>
       <OptionsSheet
         visible={retryMenu}

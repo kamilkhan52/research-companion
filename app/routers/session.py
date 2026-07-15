@@ -420,6 +420,11 @@ def _prep_continue(req: FinishReq) -> None:
 
 def _prep_retry(req: RetryReq) -> None:
     _require_session(req.slug)
+    # Committed is a resting point: forking would archive the committed proposal and a later
+    # switch-back would re-offer Approve for notes already in git (duplicate commit).
+    if sessions.get_state(req.slug) == COMMITTED:
+        raise HTTPException(status_code=409,
+                            detail="Notes are committed — continue the discussion first.")
     # U.14: a retry forks the conversation instead of discarding the old response — the
     # previous tail is archived as a branch, switchable via /branch_switch.
     sessions.fork_before_assistant(req.slug, req.assistant_index)

@@ -3,9 +3,28 @@ import { useEffect } from 'react';
 import type { TranscriptEntry } from '@/api/types';
 import { isHandoffEligible } from '@/audio/handoffState';
 
-/** Stable across transcript refetches, navigation, and app relaunches. */
-export function messageAudioId(project: string, slug: string, assistantIndex: number): string {
-  return `${project}:${slug}:${assistantIndex}`;
+/** Stable across transcript refetches, navigation, and app relaunches. When the turn's
+ *  canonical text is provided, the id is CONTENT-QUALIFIED: retry branches (U.14) can hold
+ *  different text at the same assistant index, and audio identity (current track, prep,
+ *  narration/error caches, handoff recovery) must never treat one branch's narration as its
+ *  sibling's. Identical text hashes identically — which is correct: same words, same audio. */
+export function messageAudioId(
+  project: string,
+  slug: string,
+  assistantIndex: number,
+  canonical?: string,
+): string {
+  const base = `${project}:${slug}:${assistantIndex}`;
+  return canonical ? `${base}#c${contentTag(canonical)}` : base;
+}
+
+/** Tiny stable digest (djb2, base36) — an identity discriminator, not cryptography. */
+function contentTag(text: string): string {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 interface QueueRequest {
@@ -46,7 +65,7 @@ export function useListeningHandoffRecovery({
             || !(await isHandoffEligible(entry.chat_job_id))) continue;
         enqueueJob(
           {
-            id: messageAudioId(project, slug, entry.assistant_index),
+            id: messageAudioId(project, slug, entry.assistant_index, entry.canonical),
             title,
             text: entry.canonical,
           },
