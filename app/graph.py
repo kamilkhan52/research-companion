@@ -558,6 +558,12 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
             target_slug = match_project_paper(ref, papers)
             if target_slug and target_slug != slug:
                 target_id = target_slug
+                # A project paper the reading list can't date (no arXiv id, no year comment)
+                # is often dated by the bibliographies that cite it — fill the gap so the
+                # timeline X axis can place it (first mention wins, like external nodes).
+                ref_year = ref.get("year")
+                if nodes[target_slug].get("year") is None and isinstance(ref_year, int):
+                    nodes[target_slug]["year"] = ref_year
             else:
                 keys = external_ref_keys(ref)
                 key = keys[0]

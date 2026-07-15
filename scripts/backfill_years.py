@@ -8,8 +8,9 @@ script fills the gap **offline** (no network) from data the project already hold
 
   1. The corpus meta header's `- arxiv_id:` (recorded at retrieval): pinned back onto the
      entry as `<!-- arxiv -->`, which dates it for free.
-  2. The stored reference graph's node for the paper (provider/extraction metadata often
-     carries a year even for non-arXiv papers): recorded as `<!-- year -->`.
+  2. The graph cache's bibliography references that match the paper (other papers cite it
+     with a year, e.g. "Attention Is All You Need, 2017"): the majority year is recorded as
+     `<!-- year -->`.
 
 Anything still undated is listed — those are papers never retrieved and never graphed; pin a
 `<!-- year: NNNN -->` (or an arXiv id) by hand, or run scripts/backfill_abstracts.py first
@@ -30,17 +31,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from collections import Counter
+
 from app import config, graph_store, projects, store  # noqa: E402
+from app.graph import match_project_paper  # noqa: E402
+from app.models import Paper  # noqa: E402
 
 
-def _graph_year(slug: str) -> int | None:
-    """The stored graph node's year for a project paper, if a graph was ever built."""
-    graph = (graph_store.load().get("graph") or {})
-    for node in graph.get("nodes") or []:
-        if node.get("kind") == "project" and node.get("slug") == slug:
-            y = node.get("year")
-            return y if isinstance(y, int) else None
-    return None
+def _reference_year(paper: Paper) -> int | None:
+    """The majority year among cached bibliography references (any paper's extraction) that
+    match this project paper — non-circular: reference metadata is extracted from citing
+    papers' bibliographies, not derived from the reading list."""
+    years: list[int] = []
+    for ext in (graph_store.load().get("papers") or {}).values():
+        if not isinstance(ext, dict) or ext.get("status") != "done":
+            continue
+        for ref in ext.get("references") or []:
+            if isinstance(ref, dict) and match_project_paper(ref, [paper]) == paper.slug:
+                y = ref.get("year")
+                if isinstance(y, int) and 1900 <= y <= 2100:
+                    years.append(y)
+    return Counter(years).most_common(1)[0][0] if years else None
 
 
 def backfill(pid: str, dry_run: bool) -> tuple[int, list[str]]:
@@ -58,8 +69,8 @@ def backfill(pid: str, dry_run: bool) -> tuple[int, list[str]]:
             if not dry_run:
                 store.annotate_entry(p.slug, arxiv_id=corpus_id)
         else:
-            year = _graph_year(p.slug)
-            how = f"graph metadata → {year}" if year else ""
+            year = _reference_year(p)
+            how = f"cited with year {year} in graph bibliographies" if year else ""
             if year and not dry_run:
                 store.annotate_entry(p.slug, year=year)
         if year:

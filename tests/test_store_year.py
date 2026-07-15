@@ -117,6 +117,59 @@ def test_write_full_text_without_id_leaves_the_entry_alone(temp_project):
     assert store.corpus_arxiv_id_for(slug) == ""
 
 
+def test_authoritative_annotate_replaces_a_machine_resolved_id(temp_project):
+    """A wrong title-search match recorded on the entry must not outlive the user's
+    corrected retrieval with an explicit id."""
+    slug = store.add_entry("Mismatched Paper")
+    store.annotate_entry(slug, arxiv_id="2401.00001")           # machine-resolved, wrong
+    assert store.annotate_entry(slug, arxiv_id="1706.03762", authoritative=True) is True
+    assert store.arxiv_id_for(slug) == "1706.03762"
+    assert store.year_for(slug) == 2017
+
+
+def test_authoritative_annotate_ignores_version_suffix_differences(temp_project):
+    slug = store.add_entry("Versioned", arxiv_id="2211.10438")
+    assert store.annotate_entry(slug, arxiv_id="2211.10438v3", authoritative=True) is False
+    assert store.arxiv_id_for(slug) == "2211.10438"
+
+
+def test_authoritative_annotate_drops_a_contradicted_year_comment(temp_project):
+    slug = store.add_entry("Wrongly Dated", year=2024)
+    assert store.year_for(slug) == 2024
+    store.annotate_entry(slug, arxiv_id="1706.03762", authoritative=True)
+    assert store.year_for(slug) == 2017
+    assert "<!-- year:" not in store._reading_list().read_text(encoding="utf-8")
+
+
+def test_concurrent_annotations_do_not_lose_each_other(temp_project):
+    """Two retrieval jobs finishing at once each annotate their own entry; the whole-file
+    atomic replace must be serialized so the last writer doesn't discard the other's edit."""
+    import threading
+
+    from app import config
+
+    pid = config.active_project_id()
+    slugs = [store.add_entry(f"Concurrent Paper {i}") for i in range(6)]
+    ids = [f"220{i}.1000{i}" for i in range(6)]
+
+    def annotate(slug: str, aid: str) -> None:
+        # Threads don't inherit the active-project contextvar (invariant 2) — rebind like
+        # JobRegistry does for real retrieval workers.
+        config.set_active_project(pid)
+        store.annotate_entry(slug, arxiv_id=aid)
+
+    threads = [
+        threading.Thread(target=annotate, args=(slug, aid))
+        for slug, aid in zip(slugs, ids, strict=True)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for slug, aid in zip(slugs, ids, strict=True):
+        assert store.arxiv_id_for(slug) == aid
+
+
 def test_annotate_entry_keeps_abstract_and_block_shape(temp_project):
     slug = store.add_entry("Shaped Entry", abstract="A tidy abstract about things.")
     store.annotate_entry(slug, arxiv_id="2201.11705")

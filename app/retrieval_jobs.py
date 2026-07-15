@@ -80,6 +80,10 @@ def start_retrieval(
         if result:
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
                      result.get("source"))
+            # An id the user explicitly supplied corrects any machine-resolved one on the
+            # entry (a wrong title-search match must not outlive the correction).
+            if arxiv_id and result.get("arxiv_id"):
+                store.annotate_entry(slug, arxiv_id=result["arxiv_id"], authoritative=True)
             # Reuse the PDF retrieval just downloaded to render the cover — no second download.
             cover_jobs.render_from_pdf(slug, result.get("pdf_bytes"))
             with _registry.lock:

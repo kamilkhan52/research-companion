@@ -154,3 +154,17 @@ def test_project_nodes_carry_the_entry_year():
     nodes, _edges = build_nodes_and_edges([p], {"osdi-paper": done([])})
     node = next(nd for nd in nodes if nd["id"] == "osdi-paper")
     assert node["year"] == 2019
+
+
+def test_project_node_year_gap_fills_from_citing_bibliographies():
+    """U.18/U.20 — an undated project paper (no arXiv id, no year comment) is dated by the
+    references that cite it, so the timeline X axis can place it."""
+    papers = [paper("citing", "A Citing Paper"),
+              paper("attention", "Attention Is All You Need")]
+    extractions = {
+        "citing": done([{"title": "Attention Is All You Need", "year": 2017}]),
+        "attention": done([]),
+    }
+    nodes, _edges = build_nodes_and_edges(papers, extractions)
+    node = next(nd for nd in nodes if nd["id"] == "attention")
+    assert node["year"] == 2017
