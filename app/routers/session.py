@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
@@ -111,30 +112,51 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+# SSE turns are connection-tied and invisible to the chat JobRegistry, so the empty-fork
+# recovery in get_session must consult this in-process marker too — otherwise a session
+# refresh 30s into a slow SSE retry would restore the archived tail mid-generation and the
+# finishing turn would append after it (both responses in one transcript). Single-worker
+# process (CLAUDE.md invariant 6), so a set + lock is sufficient.
+_active_sse_turns: set[tuple[str | None, str]] = set()
+_active_sse_lock = threading.Lock()
+
+
+def _sse_turn_active(slug: str) -> bool:
+    with _active_sse_lock:
+        return (config.active_project_id(), slug) in _active_sse_turns
+
+
 def _turn_stream(slug: str, model: str | None = None):
     """Stream the analysis turn as SSE: incremental CANONICAL text, then a final 'done'
     event carrying the parsed+recorded turn. The user message must already be recorded."""
-    history = sessions.build_history(slug)
-    pieces: list[str] = []
-    sent = 0
+    key = (config.active_project_id(), slug)
+    with _active_sse_lock:
+        _active_sse_turns.add(key)
     try:
-        for piece in agent.stream_tokens(slug, history, model=model):
-            pieces.append(piece)
-            canon = agent.canonical_prefix("".join(pieces))
-            if len(canon) > sent:
-                yield _sse({"type": "delta", "text": canon[sent:]})
-                sent = len(canon)
-    except AgentError as e:
-        yield _sse({"type": "error", "detail": str(e)})
-        return
-    turn = agent.parse("".join(pieces))
-    if not turn.canonical.strip():
-        yield _sse({"type": "error", "detail":
-                    "The model returned an empty response. Try again, or switch the analysis "
-                    "model in Settings."})
-        return
-    sessions.record_assistant(slug, turn)
-    yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+        history = sessions.build_history(slug)
+        pieces: list[str] = []
+        sent = 0
+        try:
+            for piece in agent.stream_tokens(slug, history, model=model):
+                pieces.append(piece)
+                canon = agent.canonical_prefix("".join(pieces))
+                if len(canon) > sent:
+                    yield _sse({"type": "delta", "text": canon[sent:]})
+                    sent = len(canon)
+        except AgentError as e:
+            yield _sse({"type": "error", "detail": str(e)})
+            return
+        turn = agent.parse("".join(pieces))
+        if not turn.canonical.strip():
+            yield _sse({"type": "error", "detail":
+                        "The model returned an empty response. Try again, or switch the analysis "
+                        "model in Settings."})
+            return
+        sessions.record_assistant(slug, turn)
+        yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+    finally:
+        with _active_sse_lock:
+            _active_sse_turns.discard(key)
 
 
 async def _agentic_turn_stream(slug: str, model: str | None = None):
@@ -142,6 +164,18 @@ async def _agentic_turn_stream(slug: str, model: str | None = None):
     contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
     'tool' events announcing each research tool the model calls. The final answer is parsed from
     the agent's authoritative output."""
+    key = (config.active_project_id(), slug)
+    with _active_sse_lock:
+        _active_sse_turns.add(key)
+    try:
+        async for chunk in _agentic_turn_events(slug, model):
+            yield chunk
+    finally:
+        with _active_sse_lock:
+            _active_sse_turns.discard(key)
+
+
+async def _agentic_turn_events(slug: str, model: str | None = None):
     history = sessions.build_history(slug)
     pieces: list[str] = []
     sent = 0
@@ -192,7 +226,7 @@ def get_session(slug: str):
     # loses the worker's own rollback. If no turn is generating and an aged fork's active
     # tail is still empty, restore the branch it left (no-op otherwise; the grace window
     # keeps this from racing a retry that was just prepped).
-    if not chat_jobs.active_for(slug):
+    if not chat_jobs.active_for(slug) and not _sse_turn_active(slug):
         sessions.rollback_empty_fork(slug, min_age_s=30.0)
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
