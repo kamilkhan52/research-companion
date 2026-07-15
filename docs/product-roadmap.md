@@ -79,6 +79,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.20 | Map timeline: project-node years + gap-fill from citing bibliographies | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete — dated nodes are strictly older-left→newer-right; undated inherit neighbor X |
 | U.21 | TopBar titles auto-scroll on overflow (truncation audit) | [#103](https://github.com/kamilkhan52/research-companion/pull/103) | Complete |
 | U.22 | Provider quota/key/rate failures read in the app's voice | [#104](https://github.com/kamilkhan52/research-companion/pull/104) | Complete |
+| U.23 | Audio-loading card: eq bars, warm copy, real progress (Figma 64:157) | [#106](https://github.com/kamilkhan52/research-companion/pull/106) | Complete |
 | U.24 | Project forking — v1 design (`docs/project-forking-design.md`) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Design ready — 3 open questions for Kamil; implementation after sign-off |
 | U.25 | Marketplace/sharing vision recorded (design doc §Later; not scheduled) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Recorded |
 
