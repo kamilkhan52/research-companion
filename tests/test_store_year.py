@@ -68,3 +68,58 @@ def test_assembler_omits_year_line_when_unknown(temp_project):
     slug = store.add_entry("Undated Paper")
     ctx = assembler.build_context(slug)
     assert "Published:" not in ctx
+
+
+# ---- U.18: annotate_entry + retrieval write-through ----
+
+def test_annotate_entry_inserts_missing_arxiv_id_and_dates_the_entry(temp_project):
+    slug = store.add_entry("Resolved By Title Search")
+    assert store.annotate_entry(slug, arxiv_id="2201.11705") is True
+    assert store.arxiv_id_for(slug) == "2201.11705"
+    assert store.year_for(slug) == 2022
+    # The id already dates it — no redundant year comment.
+    assert "<!-- year:" not in store._reading_list().read_text(encoding="utf-8")
+
+
+def test_annotate_entry_never_overwrites_a_pinned_id(temp_project):
+    slug = store.add_entry("Pinned", arxiv_id="1706.03762")
+    assert store.annotate_entry(slug, arxiv_id="9999.99999") is False
+    assert store.arxiv_id_for(slug) == "1706.03762"
+
+
+def test_annotate_entry_year_for_non_arxiv_paper(temp_project):
+    slug = store.add_entry("Non Arxiv Work")
+    assert store.annotate_entry(slug, year=2019) is True
+    assert store.year_for(slug) == 2019
+    # Idempotent: a second call has nothing to add.
+    assert store.annotate_entry(slug, year=2020) is False
+    assert store.year_for(slug) == 2019
+
+
+def test_annotate_entry_unknown_slug_is_a_noop(temp_project):
+    assert store.annotate_entry("no-such-paper", arxiv_id="2201.11705") is False
+
+
+def test_write_full_text_records_resolved_arxiv_id_on_the_entry(temp_project):
+    slug = store.add_entry("Found On Arxiv By Title")
+    store.write_full_text(slug, "Found On Arxiv By Title", "body", {
+        "slug": slug, "arxiv_id": "2201.11705", "source": "https://arxiv.org/abs/2201.11705",
+    })
+    assert store.arxiv_id_for(slug) == "2201.11705"
+    assert store.year_for(slug) == 2022
+    assert store.corpus_arxiv_id_for(slug) == "2201.11705"
+
+
+def test_write_full_text_without_id_leaves_the_entry_alone(temp_project):
+    slug = store.add_entry("Uploaded Pdf")
+    store.write_full_text(slug, "Uploaded Pdf", "body", {"slug": slug, "source": "upload:x.pdf"})
+    assert store.arxiv_id_for(slug) == ""
+    assert store.corpus_arxiv_id_for(slug) == ""
+
+
+def test_annotate_entry_keeps_abstract_and_block_shape(temp_project):
+    slug = store.add_entry("Shaped Entry", abstract="A tidy abstract about things.")
+    store.annotate_entry(slug, arxiv_id="2201.11705")
+    assert store.abstract_for(slug) == "A tidy abstract about things."
+    # Re-parse still finds exactly one entry with the same slug.
+    assert [p.slug for p in store.list_papers()].count(slug) == 1

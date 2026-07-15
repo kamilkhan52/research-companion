@@ -349,6 +349,18 @@ def year_for(slug: str) -> int | None:
 
 
 _SOURCE_META_RE = re.compile(r"^- source:\s*(?P<url>\S+)", re.M)
+_CORPUS_ARXIV_RE = re.compile(r"^- arxiv_id:\s*(?P<aid>\S+)", re.M)
+
+
+def corpus_arxiv_id_for(slug: str) -> str:
+    """The arXiv id recorded in the corpus meta header at retrieval time ("" if none / not
+    retrieved). Papers retrieved before annotate_entry existed carry their resolved id only
+    here — the year backfill reads it back onto the entry."""
+    p = corpus_path(slug)
+    if not p.exists():
+        return ""
+    m = _CORPUS_ARXIV_RE.search(p.read_text(encoding="utf-8", errors="ignore")[:2000])
+    return m.group("aid").strip() if m else ""
 
 
 def source_url_for(slug: str) -> str:
@@ -431,6 +443,37 @@ def set_abstract(slug: str, abstract: str) -> bool:
     return True
 
 
+def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None = None) -> bool:
+    """Insert a missing `<!-- arxiv -->` and/or `<!-- year -->` comment on an entry. Existing
+    values are NEVER overwritten (they may be human-pinned), and a year comment is skipped when
+    the entry's effective arXiv id already dates the paper. Returns True if the file changed.
+    Metadata-only edit like add_entry/set_abstract: uncommitted, deterministic, offline."""
+    target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+    if not target:
+        return False
+    inserts: list[str] = []
+    effective_id = target["arxiv_id"]
+    if arxiv_id and not target["arxiv_id"]:
+        effective_id = arxiv_id.strip()
+        inserts.append(f"<!-- arxiv: {effective_id} -->")
+    if (year and 1900 <= year <= 2100 and target["year"] is None
+            and not year_from_arxiv_id(effective_id)):
+        inserts.append(f"<!-- year: {year} -->")
+    if not inserts:
+        return False
+
+    rl = _reading_list()
+    lines = rl.read_text(encoding="utf-8").splitlines()
+    start = target["line_index"]
+    # After the title line and any comments already pinned beneath it (same spot add_entry uses).
+    i = start + 1
+    while i < len(lines) and _COMMENT_LINE_RE.match(lines[i]):
+        i += 1
+    atomic_write_text(rl, "\n".join(lines[:i] + inserts + lines[i:]).rstrip() + "\n")
+    _parse_cache.pop(str(rl), None)
+    return True
+
+
 # ---- corpus full-text ----
 
 def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
@@ -444,6 +487,11 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     p = corpus_path(slug)
     atomic_write_text(p, "\n".join(lines))
     _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
+    # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
+    # the reading-list entry never had — record it there too, so the entry gains its year and
+    # every id-keyed feature (backfill, graph matching) sees it. Never overwrites a pinned id.
+    if meta.get("arxiv_id"):
+        annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
     return p
 
 

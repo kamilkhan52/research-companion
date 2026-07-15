@@ -144,3 +144,13 @@ def test_duplicate_citations_to_an_external_node_also_merge():
     ext = next(n for n in nodes if n["kind"] == "external")
     assert ext["cited_by_project_count"] == 1
     assert ext["significant_cited_by_count"] == 1
+
+
+def test_project_nodes_carry_the_entry_year():
+    """U.18 — the reading-list year (explicit comment or arXiv id) dates the project node, so
+    the semantic layout's timeline axis works for non-arXiv papers too."""
+    p = Paper(slug="osdi-paper", title="An OSDI Paper", group="Serving",
+              list_status="unread", year=2019)
+    nodes, _edges = build_nodes_and_edges([p], {"osdi-paper": done([])})
+    node = next(nd for nd in nodes if nd["id"] == "osdi-paper")
+    assert node["year"] == 2019

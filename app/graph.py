@@ -531,8 +531,9 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
         nodes[p.slug] = {
             "id": p.slug, "kind": "project", "slug": p.slug, "title": p.title,
             # The reading-list arXiv id rides along so citations.annotate_nodes can batch-fetch
-            # this paper's citation count (the semantic Y axis) and _year_of can date it.
-            "authors": [], "venue": "", "year": None, "arxiv_id": p.arxiv_id or None,
+            # this paper's citation count (the semantic Y axis) and _year_of can date it; the
+            # entry's own year (U.17/U.18) dates non-arXiv papers on the timeline X axis too.
+            "authors": [], "venue": "", "year": p.year, "arxiv_id": p.arxiv_id or None,
             "doi": None, "url": None,
             "provenance": ["reading_list"],
             "group": p.group, "list_status": p.list_status,
