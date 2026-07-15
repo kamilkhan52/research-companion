@@ -5,7 +5,7 @@
 // fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useMemo } from 'react';
-import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
+import { Linking, Platform, ScrollView, StyleSheet, Text as RNText, View } from 'react-native';
 
 import { InlineMath, MathBlock } from '@/components/MathView';
 import { stripPseudoToolTags } from '@/lib/toolTags';
@@ -79,11 +79,45 @@ export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: Li
 type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'paragraph'; text: string }
-  | { kind: 'list'; ordered: boolean; items: string[] }
+  | { kind: 'list'; ordered: boolean; items: ListItem[] }
   | { kind: 'quote'; blocks: Block[] }
   | { kind: 'code'; text: string }
   | { kind: 'math'; tex: string }
+  | { kind: 'table'; header: string[]; rows: string[][] }
   | { kind: 'rule' };
+
+// An ordered item keeps its SOURCE number: models separate numbered points with blank lines,
+// which splits one logical list into several one-item blocks — rendering positional indexes
+// made every one of them "1.".
+interface ListItem {
+  text: string;
+  num: number | null;
+}
+
+const HEADING_RE = /^(#{1,6})\s+(.*)$/;
+// Models glue the hashes to the title often enough ("###AWQ: Adoption…", plausibly bleed
+// from the ###MARKER### output protocol) that 2+ hashes with no space still count as a
+// heading. A single glued hash stays prose (#hashtag, #include).
+const GLUED_HEADING_RE = /^(#{2,6})([^#\s].*)$/;
+
+function matchHeading(line: string): { level: number; text: string } | null {
+  const m = HEADING_RE.exec(line) ?? GLUED_HEADING_RE.exec(line);
+  return m ? { level: m[1].length, text: m[2].trim() } : null;
+}
+
+// GFM pipe table: a header row containing `|` directly above a delimiter row of dashes/colons
+// and pipes (at least two columns — a one-column "table" is prose with a stray pipe).
+const TABLE_DELIM_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
+
+const tableStartAt = (lines: string[], i: number) =>
+  lines[i].includes('|') && i + 1 < lines.length && TABLE_DELIM_RE.test(lines[i + 1]);
+
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((cell) => cell.trim());
+}
 
 // Thematic break (`---` / `***` / `___`, optionally space-separated à la CommonMark). Models
 // separate sections with these constantly; without this rule they rendered as literal "---".
@@ -159,9 +193,9 @@ function parseBlocks(src: string): Block[] {
     }
 
     // Heading
-    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    const heading = matchHeading(line);
     if (heading) {
-      blocks.push({ kind: 'heading', level: heading[1].length, text: heading[2].trim() });
+      blocks.push({ kind: 'heading', level: heading.level, text: heading.text });
       i++;
       continue;
     }
@@ -171,6 +205,19 @@ function parseBlocks(src: string): Block[] {
     if (isThematicBreak(line)) {
       blocks.push({ kind: 'rule' });
       i++;
+      continue;
+    }
+
+    // Pipe table — before the list/paragraph checks so the delimiter row is consumed here.
+    if (tableStartAt(lines, i)) {
+      const header = splitTableRow(lines[i]);
+      i += 2; // header + delimiter
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        rows.push(splitTableRow(lines[i]));
+        i++;
+      }
+      blocks.push({ kind: 'table', header, rows });
       continue;
     }
 
@@ -190,9 +237,13 @@ function parseBlocks(src: string): Block[] {
     // List (unordered or ordered)
     if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
       const ordered = /^\s*\d+\.\s+/.test(line);
-      const items: string[] = [];
+      const items: ListItem[] = [];
       while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, ''));
+        const marker = /^\s*(?:[-*]|(\d+)\.)\s+/.exec(lines[i]);
+        items.push({
+          text: lines[i].replace(/^\s*([-*]|\d+\.)\s+/, ''),
+          num: marker?.[1] ? parseInt(marker[1], 10) : null,
+        });
         i++;
       }
       blocks.push({ kind: 'list', ordered, items });
@@ -204,11 +255,12 @@ function parseBlocks(src: string): Block[] {
     while (
       i < lines.length &&
       lines[i].trim() !== '' &&
-      !/^(#{1,4})\s+/.test(lines[i]) &&
+      !matchHeading(lines[i]) &&
       !lines[i].startsWith('>') &&
       !lines[i].trim().startsWith('```') &&
       !/^\s*([-*]|\d+\.)\s+/.test(lines[i]) &&
       !isThematicBreak(lines[i]) &&
+      !tableStartAt(lines, i) &&
       !standaloneMathAt(lines, i)
     ) {
       buf.push(lines[i].trim());
@@ -274,22 +326,93 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
       return <MathBlock tex={block.tex} />;
     case 'rule':
       return <View testID="md-rule" style={styles.rule} />;
-    case 'list':
+    case 'table':
+      return <MdTable block={block} onLinkPress={onLinkPress} />;
+    case 'list': {
+      const ordinals = block.items.map((item, idx) => listOrdinal(block, idx));
+      const markerWidth = Math.max(22, ...ordinals.map((o) => o.length * 9));
       return (
         <View style={{ gap: 4 }}>
           {block.items.map((item, idx) => (
             <View key={idx} style={styles.listItem}>
-              <Text variant="serifBody" color={colors.mint} style={{ width: 22 }}>
-                {block.ordered ? `${idx + 1}.` : '•'}
+              <Text variant="serifBody" color={colors.mint} style={{ width: markerWidth }}>
+                {ordinals[idx]}
               </Text>
               <Text variant="serifBody" style={{ flex: 1 }}>
-                <Inline text={item} onLinkPress={onLinkPress} />
+                <Inline text={item.text} onLinkPress={onLinkPress} />
               </Text>
             </View>
           ))}
         </View>
       );
+    }
   }
+}
+
+/** The marker for item `idx`. Ordered items keep their SOURCE number — a blank-line-separated
+ * "3." arrives as its own single-item block and must not restart at 1 — except lazy numbering
+ * (every marker repeats the same number), which CommonMark defines as auto-increment. */
+function listOrdinal(block: { ordered: boolean; items: ListItem[] }, idx: number): string {
+  if (!block.ordered) return '•';
+  const nums = block.items.map((item) => item.num);
+  const first = nums[0] ?? 1;
+  const lazy = block.items.length > 1 && nums.every((n) => n === first);
+  const num = lazy || nums[idx] == null ? first + idx : nums[idx];
+  return `${num}.`;
+}
+
+/** GFM pipe table inside its own horizontal viewport, so a wide table scrolls instead of
+ * crushing every column to unreadable slivers. Column widths come from a character-count
+ * heuristic (RN has no auto table layout); long cells wrap within their column. */
+function MdTable({
+  block,
+  onLinkPress,
+}: {
+  block: { header: string[]; rows: string[][] };
+  onLinkPress: LinkHandler;
+}) {
+  const nCols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
+  const widths: number[] = [];
+  for (let c = 0; c < nCols; c++) {
+    const chars = Math.max(
+      plainLength(block.header[c] ?? ''),
+      ...block.rows.map((row) => plainLength(row[c] ?? '')),
+    );
+    widths.push(Math.min(280, Math.max(72, 20 + chars * 6.4)));
+  }
+  const renderRow = (cells: string[], key: number | string, head = false) => (
+    <View key={key} style={[styles.tableRow, head && styles.tableHead]}>
+      {Array.from({ length: nCols }, (_, c) => (
+        <View key={c} style={[styles.tableCell, { width: widths[c] }]}>
+          <Text
+            variant="serifBody"
+            style={head ? { fontFamily: fonts.serifSemiBold } : undefined}>
+            <Inline text={cells[c] ?? ''} onLinkPress={onLinkPress} />
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+  return (
+    <ScrollView
+      testID="md-table"
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.tableWrap}>
+      <View>
+        {renderRow(block.header, 'head', true)}
+        {block.rows.map((row, r) => renderRow(row, r))}
+      </View>
+    </ScrollView>
+  );
+}
+
+/** Approximate visible length of a cell once link syntax and emphasis markers collapse. */
+function plainLength(cell: string): number {
+  return cell
+    .replace(/\[([^\]]*)\]\([^)\s]*\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .length;
 }
 
 /** Inline formatting: links, bold, italic (asterisk or underscore), and inline code.
@@ -309,9 +432,7 @@ function Inline({
   const matcher = useContext(TitleMatcherContext);
   let tokens = tokenizeInline(text);
   if (matcher) tokens = linkifyTitles(tokens, matcher);
-  return (
-    <>
-      {tokens.map((t, i) => (
+  const renderToken = (t: InlineToken, i: number) => (
         <Fragment key={i}>
           {t.type === 'math' ? (
             <InlineMath tex={t.text} />
@@ -343,36 +464,40 @@ function Inline({
               </RNText>
             )
           ) : t.type === 'bold' ? (
+            // Children inherit the bold face through RN Text nesting, so a link inside a
+            // bold span keeps its link styling on top of the inherited weight.
             <RNText style={{ fontFamily: serif ? fonts.serifSemiBold : fonts.bodyBold }}>
-              {t.text}
+              {t.children ? t.children.map(renderToken) : t.text}
             </RNText>
           ) : t.type === 'italic' ? (
             <RNText style={serif ? { fontFamily: fonts.serifItalic } : { fontStyle: 'italic' }}>
-              {t.text}
+              {t.children ? t.children.map(renderToken) : t.text}
             </RNText>
           ) : (
             <RNText>{t.text}</RNText>
           )}
         </Fragment>
-      ))}
-    </>
   );
+  return <>{tokens.map(renderToken)}</>;
 }
 
 interface InlineToken {
   type: 'text' | 'bold' | 'italic' | 'code' | 'link' | 'math';
   text: string;
   href?: string;
+  /** Emphasis content when it holds more than plain text (a link, code, or math inside a
+   *  bold/italic span); the common plain case leaves this unset and renders as before. */
+  children?: InlineToken[];
 }
 
 /** Split plain-text tokens on exact known-title mentions, turning each into an rc-paper
- *  link token. Code, link, and emphasis tokens pass through untouched, so an authored link
- *  label is never re-linkified. */
+ *  link token. Code and link tokens pass through untouched, so an authored link label is
+ *  never re-linkified; emphasis tokens recurse into their nested content. */
 function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToken[] {
   const out: InlineToken[] = [];
   for (const t of tokens) {
     if (t.type !== 'text') {
-      out.push(t);
+      out.push(t.children ? { ...t, children: linkifyTitles(t.children, matcher) } : t);
       continue;
     }
     let last = 0;
@@ -389,6 +514,15 @@ function linkifyTitles(tokens: InlineToken[], matcher: TitleMatcher): InlineToke
     else if (last < t.text.length) out.push({ type: 'text', text: t.text.slice(last) });
   }
   return out;
+}
+
+/** An emphasis span whose content is more than plain text ("**[label](url)** and more")
+ *  nests its parsed content as children; the emphasis regexes exclude their own delimiter
+ *  characters, so the recursion cannot revisit an emphasis branch and always terminates. */
+function emphasisToken(type: 'bold' | 'italic', content: string): InlineToken {
+  const kids = tokenizeInline(content);
+  const plain = kids.length === 1 && kids[0].type === 'text';
+  return plain ? { type, text: content } : { type, text: content, children: kids };
 }
 
 /** A common model malformation: the link target written INSIDE the brackets —
@@ -418,9 +552,9 @@ function tokenizeInline(rawInput: string): InlineToken[] {
     if (m[1] !== undefined) {
       tokens.push({ type: 'math', text: (m[2] ?? m[3] ?? m[4] ?? m[5]).trim() });
     } else if (m[7] !== undefined) tokens.push({ type: 'link', text: m[7], href: m[8] });
-    else if (m[10] !== undefined) tokens.push({ type: 'bold', text: m[10] });
+    else if (m[10] !== undefined) tokens.push(emphasisToken('bold', m[10]));
     else if (m[12] !== undefined) tokens.push({ type: 'code', text: m[12] });
-    else if (m[14] !== undefined) tokens.push({ type: 'italic', text: m[14] });
+    else if (m[14] !== undefined) tokens.push(emphasisToken('italic', m[14]));
     last = re.lastIndex;
   }
   if (last < input.length) tokens.push({ type: 'text', text: input.slice(last) });
@@ -448,4 +582,16 @@ const styles = StyleSheet.create({
     padding: space.md,
   },
   listItem: { flexDirection: 'row', gap: 4, alignItems: 'flex-start' },
+  tableWrap: {
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 10,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.line,
+  },
+  tableHead: { borderTopWidth: 0, backgroundColor: colors.elevated },
+  tableCell: { paddingVertical: 6, paddingHorizontal: 10 },
 });
