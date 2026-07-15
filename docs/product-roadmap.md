@@ -74,7 +74,8 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.15 | Long-form markdown rendering: glued headings, bold links, tables, ordinals | [#97](https://github.com/kamilkhan52/research-companion/pull/97) [#100](https://github.com/kamilkhan52/research-companion/pull/100) | Complete — Android passed (incl. U.15b table fit/scroll) |
 | U.16 | Screen content behind Android status bar until messages load | [#98](https://github.com/kamilkhan52/research-companion/pull/98) | Complete — Android passed |
 | U.17 | Publication year surfaced in UI + agent context | [#99](https://github.com/kamilkhan52/research-companion/pull/99) | Complete — Android passed |
-| U.18 | Retrieval records paper identity; year backfill for existing entries | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete |
+| U.18 | Retrieval records paper identity; year backfill for existing entries | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete — real-vault backfill run (22/23 dated; `park` needs a manual pin) |
+| U.19 | Map membership updates live at read time + incremental-rebuild wording | [#102](https://github.com/kamilkhan52/research-companion/pull/102) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
