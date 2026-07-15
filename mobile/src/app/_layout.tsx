@@ -21,7 +21,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
@@ -77,7 +77,9 @@ export default function RootLayout() {
     // the modern Gesture API (GestureDetector) safely — needed by the reference-graph's
     // pan/zoom canvas. Pure JS: react-native-gesture-handler is already linked into the build.
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
+      {/* initialMetrics makes the provider's very first frame (app cold start) carry real
+          insets instead of zeros — the same class of flash U.16 fixed per-screen. */}
+      <SafeAreaProvider initialMetrics={initialWindowMetrics}>
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <ProjectProvider>
