@@ -278,6 +278,16 @@ def mark_committed(slug: str) -> None:
     # proposed drafts) stop being switchable, so no path — including continue_discussion —
     # can resurrect an already-committed proposal and offer Approve twice.
     clear_branches(slug)
+    # And the proposal record itself carries a durable committed boundary: a LATER fork can
+    # legally archive a tail containing this record (continue_discussion + retry), and its
+    # restore must never re-derive notes_drafted from a proposal that already reached git.
+    records = read_records(slug)
+    for rec in reversed(records):
+        if rec.get("role") == "assistant" and rec.get("proposed_commit"):
+            if not rec.get("proposal_committed"):
+                rec["proposal_committed"] = True
+                _rewrite(slug, records)
+            break
     set_state(slug, COMMITTED)
 
 
@@ -413,12 +423,18 @@ def switch_branch(slug: str, n: int, branch: int) -> bool:
     _write_branches(slug, data)
     restored = entry["tails"][target]
     _rewrite(slug, head + restored)
-    last_assistant = next((r for r in reversed(restored) if r.get("role") == "assistant"), None)
-    if last_assistant and last_assistant.get("proposed_commit"):
-        set_state(slug, NOTES_DRAFTED)
-    else:
-        set_state(slug, IN_DISCUSSION)
+    set_state(slug, _restored_tail_state(restored))
     return True
+
+
+def _restored_tail_state(restored: list[dict]) -> str:
+    """State for a just-restored tail: a live (uncommitted) proposal restores the draft
+    workflow; a proposal already stamped `proposal_committed` must NOT re-offer Approve."""
+    last_assistant = next((r for r in reversed(restored) if r.get("role") == "assistant"), None)
+    if (last_assistant and last_assistant.get("proposed_commit")
+            and not last_assistant.get("proposal_committed")):
+        return NOTES_DRAFTED
+    return IN_DISCUSSION
 
 
 def rollback_empty_fork(slug: str, *, min_age_s: float = 0.0) -> None:
@@ -467,11 +483,7 @@ def rollback_empty_fork(slug: str, *, min_age_s: float = 0.0) -> None:
         data[str(n)] = entry
     _write_branches(slug, data)
     _rewrite(slug, records + restored)
-    last_assistant = next((r for r in reversed(restored) if r.get("role") == "assistant"), None)
-    if last_assistant and last_assistant.get("proposed_commit"):
-        set_state(slug, NOTES_DRAFTED)
-    else:
-        set_state(slug, IN_DISCUSSION)
+    set_state(slug, _restored_tail_state(restored))
 
 
 def branch_map(slug: str) -> dict[int, dict]:

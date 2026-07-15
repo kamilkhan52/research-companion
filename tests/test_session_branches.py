@@ -151,3 +151,28 @@ def test_read_path_rollback_respects_the_grace_window(temp_project):
     sessions._write_branches(slug, data)
     sessions.rollback_empty_fork(slug, min_age_s=30.0)
     assert sessions.transcript(slug)[-1]["canonical"] == "answer one (v1)"
+
+
+def test_committed_proposal_never_reoffers_approve_after_fork_and_switch(temp_project):
+    """Round-8 review path: approve, continue the discussion, retry a later turn, switch back
+    to the branch holding the committed proposal — its restore must NOT be notes_drafted."""
+    slug = _seed()
+    sessions.record_user(slug, "finish", kind="finish")
+    _assistant(slug, "the draft", proposed=True)
+    sessions.mark_committed(slug)
+    sessions.continue_discussion(slug)
+
+    sessions.record_user(slug, "one more question", kind="reply")
+    _assistant(slug, "further answer")
+    sessions.fork_before_assistant(slug, 2)   # retry the post-commit answer
+    _assistant(slug, "further answer v2")
+
+    assert sessions.switch_branch(slug, 2, 1) is True
+    # The committed proposal sits in the restored conversation, but the boundary holds.
+    assert sessions.get_state(slug) == sessions.IN_DISCUSSION
+
+    # Even forking at the proposal itself and coming back cannot resurrect Approve.
+    sessions.fork_before_assistant(slug, 1)
+    _assistant(slug, "replacement draft attempt")
+    assert sessions.switch_branch(slug, 1, 1) is True
+    assert sessions.get_state(slug) == sessions.IN_DISCUSSION
