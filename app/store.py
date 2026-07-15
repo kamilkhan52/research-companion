@@ -457,7 +457,7 @@ def _set_abstract_locked(slug: str, abstract: str) -> bool:
     return True
 
 
-def _arxiv_base_id(arxiv_id: str) -> str:
+def arxiv_base_id(arxiv_id: str) -> str:
     """The id without a version suffix — `2211.10438v3` and `2211.10438` are the same paper."""
     return re.sub(r"v\d+$", "", (arxiv_id or "").strip(), flags=re.I)
 
@@ -499,7 +499,7 @@ def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None =
             effective_id = new_id
             changed = True
         elif (authoritative and new_id and effective_id
-              and _arxiv_base_id(new_id) != _arxiv_base_id(effective_id)):
+              and arxiv_base_id(new_id) != arxiv_base_id(effective_id)):
             # Correcting a wrong identity: replace the old comment in place.
             for i, line in enumerate(block):
                 if _ARXIV_COMMENT_RE.search(line):
@@ -542,6 +542,10 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
     # the reading-list entry never had — record it there too, so the entry gains its year and
     # every id-keyed feature (backfill, graph matching) sees it. Never overwrites a pinned id.
+    # Invariant-4 note: this edits reading-list.md uncommitted, exactly like add_entry — and
+    # the same id is already in this corpus file's header, which the next approved commit
+    # sweeps regardless; the entry comment mirrors recorded fact, it adds no new agent
+    # authorship to the record.
     if meta.get("arxiv_id"):
         annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
     return p
@@ -616,17 +620,17 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
 
 def set_status_read(slug: str) -> bool:
     """Flip the entry's italic status marker to *read* in reading-list.md."""
-    entries = _parse_entries()
-    target = next((e for e in entries if e["slug"] == slug), None)
-    if not target:
-        return False
-    rl = _reading_list()
-    lines = rl.read_text(encoding="utf-8").splitlines()
-    i = target["line_index"]
-    lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
-    atomic_write_text(rl, "\n".join(lines) + "\n")
-    _parse_cache.pop(str(rl), None)   # status changed — drop the stale parse
-    return True
+    with _RL_LOCK:
+        target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+        if not target:
+            return False
+        rl = _reading_list()
+        lines = rl.read_text(encoding="utf-8").splitlines()
+        i = target["line_index"]
+        lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
+        atomic_write_text(rl, "\n".join(lines) + "\n")
+        _parse_cache.pop(str(rl), None)   # status changed — drop the stale parse
+        return True
 
 
 # ---- adding a paper (e.g. from a reference-graph recommendation) ----

@@ -313,8 +313,10 @@ def start_paper(req: StartReq):
     store.write_full_text(req.slug, paper.title, res["full_text"], {
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
     })
-    # An explicitly supplied id corrects any machine-resolved one on the entry.
-    if req.arxiv_id and res.get("arxiv_id"):
+    # An explicitly supplied id corrects any machine-resolved one on the entry — but only
+    # when the result IS that id (a failed explicit download falls back to title search).
+    if (req.arxiv_id and res.get("arxiv_id")
+            and store.arxiv_base_id(res["arxiv_id"]) == store.arxiv_base_id(req.arxiv_id)):
         store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
     cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # reuse the just-downloaded PDF
     return {"ok": True, "retrieved": True}
@@ -379,8 +381,12 @@ async def start_paper_stream(req: StartReq):
         if res:
             store.write_full_text(req.slug, paper.title, res["full_text"], {
                 "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source")})
-            # An explicitly supplied id corrects any machine-resolved one on the entry.
-            if req.arxiv_id and res.get("arxiv_id"):
+            # An explicitly supplied id corrects any machine-resolved one on the entry — but
+            # only when the result IS that id (a failed explicit download falls back to
+            # title search).
+            if (req.arxiv_id and res.get("arxiv_id")
+                    and store.arxiv_base_id(res["arxiv_id"])
+                    == store.arxiv_base_id(req.arxiv_id)):
                 store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
             # Render the cover from the just-downloaded PDF, off the event loop (CPU-bound).
             await asyncio.to_thread(cover_jobs.render_from_pdf, req.slug, res.get("pdf_bytes"))
