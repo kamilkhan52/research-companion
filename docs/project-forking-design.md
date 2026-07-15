@@ -46,7 +46,11 @@ One flow, three phases — only the first is synchronous:
 
 Phases 2–3 are `notes_jobs`-shaped background jobs (invariant 1) with the active-project
 contextvar bound to their respective projects (invariant 2) — they are independent, can run
-in parallel, and either can be skipped or re-run.
+in parallel, and either can be skipped or re-run. Each job captures a **base revision** (a
+hash of the project's `working-notes.md` at job start) that rides on the proposal; approval
+rejects with a conflict when the live file no longer matches, so a whole-document rewrite
+can never silently overwrite notes committed while it was running or awaiting review — the
+same optimistic-concurrency shape as U.14's `proposal_revision` for chat proposals.
 
 ## UI (mobile first)
 
