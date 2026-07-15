@@ -16,7 +16,7 @@ import {
   View,
   type ViewProps,
 } from 'react-native';
-import { SafeAreaView, type Edge } from 'react-native-safe-area-context';
+import { useSafeAreaInsets, type Edge } from 'react-native-safe-area-context';
 
 import { impactTap } from '@/lib/haptics';
 import { colors, fonts, radius, space } from '@/theme/tokens';
@@ -128,11 +128,19 @@ export function Screen({
   edges?: Edge[];
   style?: ViewProps['style'];
 }) {
-  return (
-    <SafeAreaView style={[styles.screen, style]} edges={edges}>
-      {children}
-    </SafeAreaView>
-  );
+  // Inset padding comes from the hook, NOT the library's native SafeAreaView: on Android that
+  // view can attach with zero insets inside a freshly pushed react-native-screens screen and
+  // only corrects itself on a later layout pass — on the discussion screen the title sat
+  // behind the status bar until the loaded messages forced a relayout (U.16). The provider
+  // already knows the insets, so the hook lays out the first frame correctly.
+  const insets = useSafeAreaInsets();
+  const pad = {
+    paddingTop: edges.includes('top') ? insets.top : 0,
+    paddingBottom: edges.includes('bottom') ? insets.bottom : 0,
+    paddingLeft: edges.includes('left') ? insets.left : 0,
+    paddingRight: edges.includes('right') ? insets.right : 0,
+  };
+  return <View style={[styles.screen, pad, style]}>{children}</View>;
 }
 
 export function Card({ style, children, ...rest }: ViewProps) {
