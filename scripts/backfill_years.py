@@ -6,11 +6,14 @@ An entry's year comes from its `<!-- year: NNNN -->` comment or its `<!-- arxiv 
 title search at retrieval time and recorded only in the corpus header — have neither. This
 script fills the gap **offline** (no network) from data the project already holds:
 
-  1. The corpus meta header's `- arxiv_id:` (recorded at retrieval): pinned back onto the
-     entry as `<!-- arxiv -->`, which dates it for free.
+  1. The corpus meta header's `- arxiv_id:` (recorded at retrieval) — VALIDATED against the
+     live arXiv title first (>= 0.95 similarity, the backfill_abstracts bar), because legacy
+     headers may hold an id accepted at retrieve()'s weak 0.62 floor and don't retain the
+     score. A validated id is pinned back as `<!-- arxiv -->`, which dates the entry for
+     free. This is the script's one networked step (paced ~3s/lookup).
   2. The graph cache's bibliography references that match the paper (other papers cite it
      with a year, e.g. "Attention Is All You Need, 2017"): the majority year is recorded as
-     `<!-- year -->`.
+     `<!-- year -->`. Fully offline.
 
 Anything still undated is listed — those are papers never retrieved and never graphed; pin a
 `<!-- year: NNNN -->` (or an arXiv id) by hand, or run scripts/backfill_abstracts.py first
@@ -32,10 +35,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from collections import Counter
+from difflib import SequenceMatcher
 
-from app import config, graph_store, projects, store  # noqa: E402
+from app import config, graph_store, projects, retriever, store  # noqa: E402
 from app.graph import match_project_paper  # noqa: E402
 from app.models import Paper  # noqa: E402
+
+TITLE_ACCEPT = 0.95
+
+
+def _validated_corpus_id(p: Paper) -> str | None:
+    """The corpus header's arXiv id, but only when the live arXiv title near-identically
+    matches the entry title. Legacy headers may record a weak (0.62-floor) title-search
+    match without its score — a wrong id must not be promoted to the entry."""
+    aid = store.corpus_arxiv_id_for(p.slug)
+    if not aid:
+        return None
+    try:
+        meta = retriever.fetch_arxiv_metadata(aid)
+    except retriever.RetrievalError:
+        return None
+    if not meta:
+        return None
+    score = SequenceMatcher(None, meta["title"].lower(), p.title.lower()).ratio()
+    return aid if score >= TITLE_ACCEPT else None
 
 
 def _reference_year(paper: Paper) -> int | None:
@@ -62,10 +85,10 @@ def backfill(pid: str, dry_run: bool) -> tuple[int, list[str]]:
 
     dated, stuck = 0, []
     for p in todo:
-        corpus_id = store.corpus_arxiv_id_for(p.slug)
-        year = store.year_from_arxiv_id(corpus_id)
+        corpus_id = _validated_corpus_id(p)
+        year = store.year_from_arxiv_id(corpus_id or "")
         if year:
-            how = f"corpus arxiv id {corpus_id} → {year}"
+            how = f"corpus arxiv id {corpus_id} (title-validated) → {year}"
             if not dry_run:
                 store.annotate_entry(p.slug, arxiv_id=corpus_id)
         else:
