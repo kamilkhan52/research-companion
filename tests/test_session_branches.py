@@ -93,3 +93,36 @@ def test_edit_and_restart_clear_stale_bookkeeping(temp_project):
     sessions.fork_before_assistant(slug, 0)
     sessions.start_session(slug, "Paper P")
     assert sessions.branch_map(slug) == {}
+
+
+def test_rollback_empty_fork_restores_the_branch_it_left(temp_project):
+    slug = _seed()
+    sessions.fork_before_assistant(slug, 0)
+    # Generation failed: nothing was recorded on the fresh tail.
+    sessions.rollback_empty_fork(slug)
+    t = sessions.transcript(slug)
+    assert t[-1]["canonical"] == "answer one (v1)"
+    # A single remaining branch is not a fork — the selector state dissolves.
+    assert sessions.branch_map(slug) == {}
+
+
+def test_rollback_after_a_real_sibling_keeps_the_fork(temp_project):
+    slug = _seed()
+    sessions.fork_before_assistant(slug, 0)
+    _assistant(slug, "v2")
+    sessions.fork_before_assistant(slug, 0)   # second retry...
+    sessions.rollback_empty_fork(slug)        # ...fails empty
+    t = sessions.transcript(slug)
+    assert t[-1]["canonical"] == "v2"          # restored to the branch the fork left
+    assert t[-1]["branch_count"] == 2          # v1 and v2 both still selectable
+    assert sessions.switch_branch(slug, 0, 1) is True
+    assert sessions.transcript(slug)[-1]["canonical"] == "answer one (v1)"
+
+
+def test_rollback_is_a_noop_when_the_new_branch_has_content(temp_project):
+    slug = _seed()
+    sessions.fork_before_assistant(slug, 0)
+    _assistant(slug, "v2")
+    sessions.rollback_empty_fork(slug)
+    assert sessions.transcript(slug)[-1]["canonical"] == "v2"
+    assert sessions.branch_map(slug)[0]["count"] == 2

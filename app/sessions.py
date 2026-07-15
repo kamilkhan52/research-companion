@@ -368,8 +368,10 @@ def fork_before_assistant(slug: str, n: int) -> None:
     live_tail = records[pos:]
     if 0 <= entry["active"] < len(entry["tails"]):
         entry["tails"][entry["active"]] = live_tail   # sync the branch we are leaving
+        entry["last_active"] = entry["active"]
     else:
         entry["tails"].append(live_tail)              # first fork: archive the original
+        entry["last_active"] = len(entry["tails"]) - 1
     entry["tails"].append([])                          # slot for the upcoming generation
     entry["active"] = len(entry["tails"]) - 1
     data[key] = entry
@@ -408,6 +410,45 @@ def switch_branch(slug: str, n: int, branch: int) -> bool:
     else:
         set_state(slug, IN_DISCUSSION)
     return True
+
+
+def rollback_empty_fork(slug: str) -> None:
+    """Failed/stopped-empty retry recovery: a fork whose active tail never received an
+    assistant turn would strand the conversation at the user message with NO selector to
+    escape (the selector renders on assistant turns). Restore the branch the fork left,
+    dropping the empty slot; with one branch left the fork point dissolves entirely."""
+    data = _read_branches(slug)
+    if not data:
+        return
+    n = max(int(k) for k in data)
+    entry = data[str(n)]
+    records = read_records(slug)
+    if _assistant_pos(records, n) is not None:
+        return  # the live branch has content; nothing to roll back
+    tails = entry.get("tails") or []
+    active = entry.get("active", -1)
+    if 0 <= active < len(tails) and not tails[active]:
+        tails.pop(active)
+    if not tails:
+        del data[str(n)]
+        _write_branches(slug, data)
+        return
+    restore = entry.get("last_active", 0)
+    restore = min(max(restore, 0), len(tails) - 1)
+    restored = tails[restore]
+    if len(tails) == 1:
+        del data[str(n)]              # a single branch is not a fork
+    else:
+        entry["tails"] = tails
+        entry["active"] = restore
+        data[str(n)] = entry
+    _write_branches(slug, data)
+    _rewrite(slug, records + restored)
+    last_assistant = next((r for r in reversed(restored) if r.get("role") == "assistant"), None)
+    if last_assistant and last_assistant.get("proposed_commit"):
+        set_state(slug, NOTES_DRAFTED)
+    else:
+        set_state(slug, IN_DISCUSSION)
 
 
 def branch_map(slug: str) -> dict[int, dict]:

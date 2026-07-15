@@ -589,6 +589,18 @@ function ModePickerSheet({
 
 // ---------- the thread (library chat + lifecycle toolbar) ----------
 
+/** Audio identity for an assistant turn: branch-qualified (U.14) so branch A's loaded
+ *  narration is never treated as branch B's — same turn position, different response. The
+ *  unforked shape stays identical to messageAudioId so existing recovery ids keep matching. */
+function branchAudioId(
+  pid: string,
+  slug: string,
+  entry: Extract<TranscriptEntry, { role: 'assistant' }>,
+): string {
+  const base = messageAudioId(pid, slug, entry.assistant_index);
+  return entry.branch_active ? `${base}#b${entry.branch_active}` : base;
+}
+
 function DiscussionThread({
   pid,
   slug,
@@ -671,8 +683,18 @@ function DiscussionThread({
   // client-side while the cached transcript still carries the exact entry that was forked
   // away; once the refetched transcript differs at that index (new response, or nothing after
   // a failure), hiding stops by itself. No timers, no cleanup races.
-  const [retryHide, setRetryHide] = useState<{ index: number; canonical: string } | null>(null);
+  const [retryHide, setRetryHide] = useState<{
+    index: number;
+    canonical: string;
+    branchActive: number | null;
+  } | null>(null);
   useEffect(() => setRetryHide(null), [slug]);
+  // A retry that never reached the server (offline, 409) leaves the cached transcript
+  // untouched — the content key below would hide the tail forever. The stream error is the
+  // settle signal for that case.
+  useEffect(() => {
+    if (stream.error) setRetryHide(null);
+  }, [stream.error]);
   const queryClient = useQueryClient();
   const [switchingBranch, setSwitchingBranch] = useState(false);
   const handleSwitchBranch = useCallback(async (assistantIndex: number, branch: number) => {
@@ -693,7 +715,13 @@ function DiscussionThread({
     const entry = transcript.find(
       (e) => e.role === 'assistant' && e.assistant_index === retryHide.index,
     );
-    return entry && entry.role === 'assistant' && entry.canonical === retryHide.canonical
+    // Hide only while the cached entry is EXACTLY the one forked away — same text AND same
+    // branch ordinal. A regeneration that returns identical text still bumps branch_active,
+    // so hiding always clears on the post-generation refetch.
+    return entry &&
+      entry.role === 'assistant' &&
+      entry.canonical === retryHide.canonical &&
+      (entry.branch_active ?? null) === retryHide.branchActive
       ? retryHide.index
       : null;
   }, [retryHide, transcript]);
@@ -797,7 +825,11 @@ function DiscussionThread({
       (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
     );
     if (old && old.role === 'assistant') {
-      setRetryHide({ index: assistantIndex, canonical: old.canonical });
+      setRetryHide({
+        index: assistantIndex,
+        canonical: old.canonical,
+        branchActive: old.branch_active ?? null,
+      });
     }
     void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -877,7 +909,7 @@ function DiscussionThread({
       });
     }
     if (entry.role === 'assistant') {
-      const audioId = messageAudioId(pid, slug, entry.assistant_index);
+      const audioId = branchAudioId(pid, slug, entry);
       options.push({
         key: 'listen',
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
@@ -921,7 +953,7 @@ function DiscussionThread({
       return (
         <AssistantBody
           entry={msg.entry}
-          audioId={messageAudioId(pid, slug, msg.entry.assistant_index)}
+          audioId={branchAudioId(pid, slug, msg.entry)}
           title={title}
           favorites={favorites}
           onRetry={handleRetry}

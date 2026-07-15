@@ -29,7 +29,7 @@ from .. import (
     store,
 )
 from ..agent import AgentError
-from ..models import REVIEW_SLUG, REVIEW_TITLE
+from ..models import COMMITTED, REVIEW_SLUG, REVIEW_TITLE
 from ..retriever import RetrievalError
 from . import make_project_router
 
@@ -555,6 +555,11 @@ def branch_switch(req: BranchSwitchReq):
     LLM); the client refreshes from the returned transcript/state. Refused while a turn is
     generating — the in-flight job appends to whichever tail is live."""
     _require_session(req.slug)
+    if sessions.get_state(req.slug) == COMMITTED:
+        # Switching would rewrite the transcript under a committed record, and restoring an
+        # older proposed-draft branch would re-offer Approve for notes already in git.
+        raise HTTPException(status_code=409,
+                            detail="Notes are committed — continue the discussion first.")
     if chat_jobs.active_for(req.slug):
         raise HTTPException(status_code=409, detail="Wait for the current response to finish.")
     if not sessions.switch_branch(req.slug, req.assistant_index, req.branch):
