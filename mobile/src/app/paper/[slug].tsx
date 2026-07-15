@@ -1662,7 +1662,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.elevated,
     borderWidth: 1,
     borderColor: colors.line2,
-    borderRadius: radius.pill,
+    // FIXED radius = half the single-line height: the resting state still reads as a pill,
+    // but a grown multiline input keeps the same 23px corners instead of pill-rounding to
+    // half its new height — which curved into the text area and visually clipped lines
+    // (device-pass finding, U.13).
+    borderRadius: 23,
     paddingHorizontal: space.lg,
     paddingVertical: 12,
   },
