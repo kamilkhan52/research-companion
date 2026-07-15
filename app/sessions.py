@@ -323,7 +323,10 @@ def truncate_before_assistant(slug: str, n: int) -> None:
 # survive (documented limitation of the flat baseline; a full conversation tree is v2).
 
 def _branches_file(slug: str):
-    return _sessions_dir() / f"{slug}.branches.json"
+    # Under .state/ (gitignored), NOT the sessions dir: transcripts are part of the committed
+    # record, but sibling branches are switchable working state — committer.commit()'s
+    # `git add -A` must never immortalize unchosen tails (or their stale drafts) in git.
+    return config.state_dir() / "branches" / f"{slug}.branches.json"
 
 
 def _read_branches(slug: str) -> dict:
@@ -341,6 +344,7 @@ def _write_branches(slug: str, data: dict) -> None:
     if not data:
         p.unlink(missing_ok=True)
         return
+    p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(p, json.dumps(data, ensure_ascii=False))
 
 
