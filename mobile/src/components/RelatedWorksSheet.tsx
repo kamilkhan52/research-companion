@@ -89,6 +89,7 @@ function RelatedCard({
       await addPaper.mutateAsync({
         title: work.title,
         arxivId: work.arxiv_id ?? undefined,
+        year: work.year ?? undefined,
       });
       setAdded(true);
     } catch {

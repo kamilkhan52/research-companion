@@ -70,6 +70,7 @@ function SheetContent({
       await addPaper.mutateAsync({
         title: node.title,
         arxivId: node.arxiv_id ?? undefined,
+        year: node.year ?? undefined,
       });
       setAdded(true);
     } catch {

@@ -187,8 +187,9 @@ export function startDiscovery(pid: string, goals: string) {
   return apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
 }
 
-export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string) {
-  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined });
+export function addPaper(pid: string, title: string, arxivId?: string, abstract?: string, year?: number | null) {
+  // year dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
+  return apiPost(`${P(pid)}/papers`, { title, arxiv_id: arxivId || undefined, abstract: abstract || undefined, year: year ?? undefined });
 }
 
 export function removePaper(pid: string, slug: string) {

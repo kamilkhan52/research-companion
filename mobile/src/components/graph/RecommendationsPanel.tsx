@@ -100,6 +100,7 @@ function RecommendationCard({
       await addPaper.mutateAsync({
         title: rec.title,
         arxivId: rec.arxiv_id ?? undefined,
+        year: rec.year ?? undefined,
       });
       setAdded(true);
     } catch {

@@ -377,7 +377,7 @@ function RecommendationsPanel({ recs, pid }: { recs: GraphRecommendation[]; pid:
   const { refetch } = useLibrary();
   async function add(rec: GraphRecommendation) {
     if (!pid) return;
-    try { await addPaper(pid, rec.title, rec.arxiv_id || undefined); setAdded((previous) => new Set(previous).add(rec.id)); refetch(); }
+    try { await addPaper(pid, rec.title, rec.arxiv_id || undefined, undefined, rec.year ?? undefined); setAdded((previous) => new Set(previous).add(rec.id)); refetch(); }
     catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
   }
   return (
