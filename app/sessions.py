@@ -150,6 +150,7 @@ def start_session(slug: str, title: str, kind: str = "paper", opening: str | Non
     # fresh transcript for a fresh session start
     if _jsonl(slug).exists():
         _jsonl(slug).unlink()
+    clear_branches(slug)
 
 
 def get_kind(slug: str) -> str:
@@ -221,6 +222,7 @@ def build_history(slug: str) -> list[dict]:
 def transcript(slug: str) -> list[dict]:
     """UI-facing transcript (excludes the regenerated opening message)."""
     out = []
+    branches = branch_map(slug)
     assistant_index = -1
     for rec in read_records(slug):
         if rec["role"] == "user":
@@ -228,9 +230,12 @@ def transcript(slug: str) -> list[dict]:
                 out.append({"role": "user", "text": rec["text"]})
         else:
             assistant_index += 1
+            fork = branches.get(assistant_index)
             out.append({
                 "role": "assistant",
                 "assistant_index": assistant_index,
+                "branch_count": fork["count"] if fork else None,
+                "branch_active": fork["active"] if fork else None,
                 "canonical": rec.get("canonical", ""),
                 "narration": rec.get("narration", ""),
                 "state_signal": rec.get("state_signal", ""),
@@ -277,21 +282,142 @@ def _rewrite(slug: str, records: list[dict]) -> None:
     atomic_write_text(_jsonl(slug), body)
 
 
-def truncate_before_assistant(slug: str, n: int) -> None:
-    """Drop the n-th assistant turn (0-based) and everything after it, so it can be
-    regenerated from the preceding user message. Resets state to in_discussion."""
-    records = read_records(slug)
-    count, pos = -1, None
+def _assistant_pos(records: list[dict], n: int) -> int | None:
+    """Index into `records` of the n-th (0-based) assistant turn, or None."""
+    count = -1
     for i, r in enumerate(records):
         if r["role"] == "assistant":
             count += 1
             if count == n:
-                pos = i
-                break
+                return i
+    return None
+
+
+def truncate_before_assistant(slug: str, n: int) -> None:
+    """Drop the n-th assistant turn (0-based) and everything after it, so it can be
+    regenerated from the preceding user message. Resets state to in_discussion."""
+    records = read_records(slug)
+    pos = _assistant_pos(records, n)
     if pos is None:
         return
     _rewrite(slug, records[:pos])
     set_state(slug, IN_DISCUSSION)
+
+
+# ---- response branches (U.14: retry forks the conversation) ----------------------------------
+#
+# A retry at assistant turn n no longer discards the old response: the LIVE transcript tail
+# (from turn n through the end — later turns belong to that branch of the conversation) is
+# archived in <slug>.branches.json, and generation proceeds on a fresh tail. Switching branches
+# swaps the live tail with a stored one. The live JSONL stays the single source of truth for
+# the ACTIVE branch (generation and later replies append to it normally); the stored copy of
+# the active tail is only synchronized at fork/switch time.
+#
+# Baseline tree semantics: branch bookkeeping is kept per fork point, keyed by assistant index.
+# Forking or switching at turn n invalidates bookkeeping for deeper fork points (> n) — their
+# records ride along inside whichever tail they belong to, but their selector state does not
+# survive (documented limitation of the flat baseline; a full conversation tree is v2).
+
+def _branches_file(slug: str):
+    return _sessions_dir() / f"{slug}.branches.json"
+
+
+def _read_branches(slug: str) -> dict:
+    p = _branches_file(slug)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_branches(slug: str, data: dict) -> None:
+    p = _branches_file(slug)
+    if not data:
+        p.unlink(missing_ok=True)
+        return
+    atomic_write_text(p, json.dumps(data, ensure_ascii=False))
+
+
+def _prune_branches(slug: str, *, keep_below: int) -> None:
+    """Drop branch bookkeeping for fork points at or beyond `keep_below` (used when the turns
+    they annotate were rewritten away: edits, reopen, deeper forks)."""
+    data = _read_branches(slug)
+    kept = {k: v for k, v in data.items() if int(k) < keep_below}
+    if kept != data:
+        _write_branches(slug, kept)
+
+
+def clear_branches(slug: str) -> None:
+    _branches_file(slug).unlink(missing_ok=True)
+
+
+def fork_before_assistant(slug: str, n: int) -> None:
+    """Archive the live tail from the n-th assistant turn as a branch and truncate the live
+    transcript, so a sibling response can be generated from the same user message. The NEW
+    branch becomes active; the sibling generated next appends to the live transcript as usual.
+    Resets state to in_discussion."""
+    records = read_records(slug)
+    pos = _assistant_pos(records, n)
+    if pos is None:
+        return
+    data = _read_branches(slug)
+    key = str(n)
+    entry = data.get(key) or {"tails": [], "active": -1}
+    live_tail = records[pos:]
+    if 0 <= entry["active"] < len(entry["tails"]):
+        entry["tails"][entry["active"]] = live_tail   # sync the branch we are leaving
+    else:
+        entry["tails"].append(live_tail)              # first fork: archive the original
+    entry["tails"].append([])                          # slot for the upcoming generation
+    entry["active"] = len(entry["tails"]) - 1
+    data[key] = entry
+    # Deeper fork points annotated turns that now live inside an archived tail.
+    data = {k: v for k, v in data.items() if int(k) <= n}
+    _write_branches(slug, data)
+    _rewrite(slug, records[:pos])
+    set_state(slug, IN_DISCUSSION)
+
+
+def switch_branch(slug: str, n: int, branch: int) -> bool:
+    """Make 1-based `branch` the live conversation at fork point n: the current live tail is
+    stored back into its slot, the chosen tail becomes the transcript's tail. Returns False
+    for an unknown fork point / branch ordinal. State follows the restored tail (a proposed
+    draft restores notes_drafted)."""
+    data = _read_branches(slug)
+    entry = data.get(str(n))
+    if not entry or not 1 <= branch <= len(entry["tails"]):
+        return False
+    target = branch - 1
+    records = read_records(slug)
+    pos = _assistant_pos(records, n)
+    head = records if pos is None else records[:pos]
+    live_tail = [] if pos is None else records[pos:]
+    if 0 <= entry["active"] < len(entry["tails"]):
+        entry["tails"][entry["active"]] = live_tail
+    entry["active"] = target
+    data[str(n)] = entry
+    data = {k: v for k, v in data.items() if int(k) <= n}
+    _write_branches(slug, data)
+    restored = entry["tails"][target]
+    _rewrite(slug, head + restored)
+    last_assistant = next((r for r in reversed(restored) if r.get("role") == "assistant"), None)
+    if last_assistant and last_assistant.get("proposed_commit"):
+        set_state(slug, NOTES_DRAFTED)
+    else:
+        set_state(slug, IN_DISCUSSION)
+    return True
+
+
+def branch_map(slug: str) -> dict[int, dict]:
+    """fork point (assistant index) -> {"count": total branches, "active": 1-based live}."""
+    out: dict[int, dict] = {}
+    for key, entry in _read_branches(slug).items():
+        tails = entry.get("tails") or []
+        if len(tails) >= 2:
+            out[int(key)] = {"count": len(tails), "active": int(entry.get("active", 0)) + 1}
+    return out
 
 
 def edit_reply(slug: str, reply_index: int, new_text: str) -> bool:
@@ -311,7 +437,10 @@ def edit_reply(slug: str, reply_index: int, new_text: str) -> bool:
     if pos is None:
         return False
     records[pos]["text"] = new_text
-    _rewrite(slug, records[: pos + 1])  # keep the edited reply, drop everything after it
+    kept = records[: pos + 1]
+    _rewrite(slug, kept)  # keep the edited reply, drop everything after it
+    # Fork bookkeeping for assistant turns that no longer exist is meaningless now.
+    _prune_branches(slug, keep_below=sum(r["role"] == "assistant" for r in kept))
     set_state(slug, IN_DISCUSSION)
     return True
 
@@ -335,6 +464,7 @@ def reopen_discussion(slug: str) -> None:
     ):
         records.pop()
     _rewrite(slug, records)
+    _prune_branches(slug, keep_below=sum(r["role"] == "assistant" for r in records))
     set_state(slug, IN_DISCUSSION)
 
 

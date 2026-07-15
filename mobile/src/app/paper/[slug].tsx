@@ -666,13 +666,45 @@ function DiscussionThread({
     }
   }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
 
+  // U.14: the moment a retry starts, the reader must see the conversation reset to the last
+  // user message — not the old response lingering until the refetch. The old tail is hidden
+  // client-side while the cached transcript still carries the exact entry that was forked
+  // away; once the refetched transcript differs at that index (new response, or nothing after
+  // a failure), hiding stops by itself. No timers, no cleanup races.
+  const [retryHide, setRetryHide] = useState<{ index: number; canonical: string } | null>(null);
+  useEffect(() => setRetryHide(null), [slug]);
+  const queryClient = useQueryClient();
+  const [switchingBranch, setSwitchingBranch] = useState(false);
+  const handleSwitchBranch = useCallback(async (assistantIndex: number, branch: number) => {
+    if (switchingBranch || stream.streaming) return;
+    setSwitchingBranch(true);
+    try {
+      await api.switchBranch(pid, slug, assistantIndex, branch);
+      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
+    } catch (e) {
+      Alert.alert('Could not switch branch', (e as Error).message ?? 'Request failed.');
+    } finally {
+      setSwitchingBranch(false);
+    }
+  }, [pid, queryClient, slug, stream.streaming, switchingBranch]);
+
+  const hideFromIndex = useMemo(() => {
+    if (!retryHide) return null;
+    const entry = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === retryHide.index,
+    );
+    return entry && entry.role === 'assistant' && entry.canonical === retryHide.canonical
+      ? retryHide.index
+      : null;
+  }, [retryHide, transcript]);
   const messages = useMemo(
     () => toDiscussionMessages(
       transcript,
       stream.pendingUser,
       stream.streaming ? stream.items : null,
+      hideFromIndex,
     ),
-    [transcript, stream.pendingUser, stream.streaming, stream.items],
+    [transcript, stream.pendingUser, stream.streaming, stream.items, hideFromIndex],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -761,8 +793,15 @@ function DiscussionThread({
   // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
   // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
   const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+    const old = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
+    );
+    if (old && old.role === 'assistant') {
+      setRetryHide({ index: assistantIndex, canonical: old.canonical });
+    }
     void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
-  }, [paths.retry, slug, stream.run]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paths.retry, slug, stream.run, transcript]);
 
   async function approve() {
     setBusy(true);
@@ -886,6 +925,8 @@ function DiscussionThread({
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
+          onSwitchBranch={handleSwitchBranch}
+          switchDisabled={switchingBranch || stream.streaming}
         />
       );
     }
@@ -899,7 +940,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry]);
+  }, [pid, slug, title, favorites, handleRetry, handleSwitchBranch, switchingBranch, stream.streaming]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1379,12 +1420,16 @@ function AssistantBody({
   title,
   favorites,
   onRetry,
+  onSwitchBranch,
+  switchDisabled,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
   title: string;
   favorites: FavoriteModel[];
   onRetry: (assistantIndex: number, model?: string) => void;
+  onSwitchBranch: (assistantIndex: number, branch: number) => void;
+  switchDisabled: boolean;
 }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
@@ -1435,6 +1480,35 @@ function AssistantBody({
         <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
           Audio failed: {audioError}
         </Text>
+      ) : null}
+      {/* U.14 branch selector: minimal ⟨ 2/3 ⟩, only at a fork point. Switching swaps the
+          whole conversation tail server-side; disabled while a turn is generating. */}
+      {entry.branch_count && entry.branch_count > 1 && entry.branch_active ? (
+        <View style={styles.branchRow}>
+          <Pressable
+            onPress={() => onSwitchBranch(entry.assistant_index, entry.branch_active! - 1)}
+            disabled={switchDisabled || entry.branch_active <= 1}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Previous response branch"
+            style={{ opacity: switchDisabled || entry.branch_active <= 1 ? 0.3 : 1 }}
+          >
+            <Icon name="chevron-left" size={16} color={colors.muted} />
+          </Pressable>
+          <Text variant="caption" color={colors.muted} accessibilityLabel={`Response branch ${entry.branch_active} of ${entry.branch_count}`}>
+            {entry.branch_active}/{entry.branch_count}
+          </Text>
+          <Pressable
+            onPress={() => onSwitchBranch(entry.assistant_index, entry.branch_active! + 1)}
+            disabled={switchDisabled || entry.branch_active >= entry.branch_count}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Next response branch"
+            style={{ opacity: switchDisabled || entry.branch_active >= entry.branch_count ? 0.3 : 1 }}
+          >
+            <Icon name="chevron-right" size={16} color={colors.muted} />
+          </Pressable>
+        </View>
       ) : null}
       <View style={styles.msgActions}>
         <MsgAction
@@ -1612,6 +1686,13 @@ const styles = StyleSheet.create({
   // ---- thread ----
   messagesContainer: { backgroundColor: colors.bg },
   assistantCard: { backgroundColor: colors.surface },
+  branchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    alignSelf: 'flex-start',
+    marginTop: space.sm,
+  },
   assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
   // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
   // those read as "floating chat bubble" cues that don't make sense once the tinted card

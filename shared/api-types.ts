@@ -804,6 +804,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/branch_switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Branch Switch
+         * @description Make another retry branch the live conversation at a fork point. Quick action (no
+         *     LLM); the client refreshes from the returned transcript/state. Refused while a turn is
+         *     generating — the in-flight job appends to whichever tail is live.
+         */
+        post: operations["branch_switch_api_projects__pid__branch_switch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/retry_job": {
         parameters: {
             query?: never;
@@ -1429,6 +1451,15 @@ export interface components {
             slug: string;
             /** File */
             file: string;
+        };
+        /** BranchSwitchReq */
+        BranchSwitchReq: {
+            /** Slug */
+            slug: string;
+            /** Assistant Index */
+            assistant_index: number;
+            /** Branch */
+            branch: number;
         };
         /** ChatStartReq */
         ChatStartReq: {
@@ -3013,6 +3044,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["FinishReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    branch_switch_api_projects__pid__branch_switch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BranchSwitchReq"];
             };
         };
         responses: {

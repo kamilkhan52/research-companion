@@ -83,6 +83,12 @@ class RetryReq(DeliveryReq):
     assistant_index: int
 
 
+class BranchSwitchReq(BaseModel):
+    slug: str
+    assistant_index: int
+    branch: int  # 1-based ordinal shown in the selector ("2/3" -> branch=2)
+
+
 class EditReq(DeliveryReq):
     slug: str
     reply_index: int
@@ -414,7 +420,9 @@ def _prep_continue(req: FinishReq) -> None:
 
 def _prep_retry(req: RetryReq) -> None:
     _require_session(req.slug)
-    sessions.truncate_before_assistant(req.slug, req.assistant_index)
+    # U.14: a retry forks the conversation instead of discarding the old response — the
+    # previous tail is archived as a branch, switchable via /branch_switch.
+    sessions.fork_before_assistant(req.slug, req.assistant_index)
 
 
 def _prep_edit(req: EditReq) -> None:
@@ -539,6 +547,22 @@ def continue_job(req: FinishReq):
     _no_turn_in_flight(req.slug)
     _prep_continue(req)
     return _started_job(req.slug, req.delivery_mode, model=req.model)
+
+
+@project_router.post("/branch_switch")
+def branch_switch(req: BranchSwitchReq):
+    """Make another retry branch the live conversation at a fork point. Quick action (no
+    LLM); the client refreshes from the returned transcript/state. Refused while a turn is
+    generating — the in-flight job appends to whichever tail is live."""
+    _require_session(req.slug)
+    if chat_jobs.active_for(req.slug):
+        raise HTTPException(status_code=409, detail="Wait for the current response to finish.")
+    if not sessions.switch_branch(req.slug, req.assistant_index, req.branch):
+        raise HTTPException(status_code=404, detail="No such branch at this turn.")
+    return {
+        "state": sessions.get_state(req.slug),
+        "transcript": sessions.transcript(req.slug),
+    }
 
 
 @project_router.post("/retry_job")
