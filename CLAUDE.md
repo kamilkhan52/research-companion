@@ -74,7 +74,12 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
-- `sessions.py` — per-paper session state + transcript JSONL + narration cache.
+- `sessions.py` — per-paper session state + transcript JSONL + narration cache + retry
+  branches (U.14): a retry archives the live tail under `.state/branches/` (working state,
+  never committed — the transcript itself IS committed) and `/branch_switch` swaps tails;
+  commits finalize the chosen branch (`proposal_committed` stamp inside the approved
+  commit). Transcript-rewriting routes hold `sessions.mutation_lock(slug)` across their
+  check-then-mutate sequence; keep new ones doing the same.
 - `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
 - `agent.py` — analysis turn (single-shot + streaming) and stage-2 narration; the marker parser.
 - `agent_harness.py` — agentic tool-loop turn via Pydantic AI (behind `RC_AGENTIC`).

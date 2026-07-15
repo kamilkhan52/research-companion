@@ -76,8 +76,21 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 
 The **U.x rows** are the 2026-07-14 UX polish sweep from Kamil's on-device notes: one focused
 PR per row off `main`, mobile-first (web only when the fix is shared or trivially portable),
-reviewed per the standing review workflow before merge; U.9 is design-only (Figma proposal, no
-implementation until sign-off). Kamil runs a single device pass once the sweep lands.
+reviewed per the standing review workflow (codex gpt-5.6-sol) before merge; U.9 is design-only
+(Figma proposal, no implementation until sign-off — three open questions in
+`docs/author-affiliation-view-proposal.md`).
+
+Round 1 (U.1–U.9, PRs #81–#89) passed its Android device check except: U.4 (audio cancel)
+still unverified, U.6 superseded by the U.11 rework, U.7 hardened by U.7b. Round 2 — Kamil's
+device-pass feedback — landed as U.7b + U.10–U.14 (PRs #90–#95) and awaits its own device
+pass. U.14 (retry forks + branch selector) is the deep one: retries archive the old tail as a
+switchable branch (`.state/branches/`, never in the git record); commits finalize the chosen
+branch and stamp a durable `proposal_committed` boundary; per-slug mutation locks + a
+proposal-revision token serialize branch switches against turn starts and approvals. Its
+Figma component is `Branch selector (U.14)` on chat frame 08a.
+
+The dev loop for device passes: backend runs `RC_RELOAD=1 ./run.sh` on the Mac mini (tailnet
+`100.83.161.127`), so `git pull` deploys backend changes; Metro Fast Refresh delivers JS.
 
 The previously active work is complete on `main`: Map pinch-release stability
 ([#70](https://github.com/kamilkhan52/research-companion/pull/70)), playback restoration
