@@ -5,6 +5,7 @@ import { apiDelete, apiGet, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AudioJob,
   AuthConfig,
+  AuthorBoardResponse,
   ChatJob,
   DiscoveryJob,
   DiscoveryResponse,
@@ -210,6 +211,8 @@ export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)
 // ---------- reference graph ----------
 
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
+export const getGraphAuthors = (pid: string) =>
+  apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`);
 export const getRelated = (pid: string, slug: string) =>
   apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 /** Start (or join) a server-side background build. Returns immediately with the job snapshot;

@@ -44,6 +44,7 @@ export const getActiveNotesJob = unexpected('getActiveNotesJob');
 export const startDiscovery = unexpected('startDiscovery');
 export const getDiscovery = unexpected('getDiscovery');
 export const getGraph = unexpected('getGraph');
+export const getGraphAuthors = unexpected('getGraphAuthors');
 export const getRelated = unexpected('getRelated');
 export const startGraphBuild = unexpected('startGraphBuild');
 export const getGraphBuildStatus = unexpected('getGraphBuildStatus');

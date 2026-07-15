@@ -242,6 +242,7 @@ export default function GraphScreen() {
               ? 'Refresh graph (build action available)'
               : 'Refresh graph',
           },
+          { name: 'users', onPress: () => router.push('/authors'), accessibilityLabel: 'Authors & labs' },
           { name: 'zap', onPress: () => setShowRecs(true), accessibilityLabel: 'Recommendations' },
         ]}
       />

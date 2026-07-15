@@ -22,6 +22,7 @@ export const keys = {
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
+  graphAuthors: (pid: string) => ['project', pid, 'graphAuthors'] as const,
   related: (pid: string, slug: string) => ['project', pid, 'related', slug] as const,
   discovery: (pid: string) => ['project', pid, 'discovery'] as const,
   notes: (pid: string, target: string) => ['project', pid, 'notes', target] as const,
@@ -147,6 +148,17 @@ export function useGraph(pid: string | null) {
   return useQuery({
     queryKey: pid ? keys.graph(pid) : ['project', 'none', 'graph'],
     queryFn: () => api.getGraph(pid as string),
+    enabled: !!pid && hasUrl,
+  });
+}
+
+/** The ranked in-project author board (U.9). Membership is overlaid server-side so a paper
+ *  added since the last build already counts; author/affiliation coverage grows per build. */
+export function useGraphAuthors(pid: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid ? keys.graphAuthors(pid) : ['project', 'none', 'graphAuthors'],
+    queryFn: () => api.getGraphAuthors(pid as string),
     enabled: !!pid && hasUrl,
   });
 }
