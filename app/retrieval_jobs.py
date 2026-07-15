@@ -79,7 +79,14 @@ def start_retrieval(
 
         if result:
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
-                     result.get("source"))
+                     result.get("source"), match_score=result.get("score"))
+            # An id the user explicitly supplied corrects any machine-resolved one on the
+            # entry (a wrong title-search match must not outlive the correction). Only when
+            # the result IS that id: a failed explicit download falls back to title search,
+            # whose machine-selected id must not masquerade as the user's.
+            if (arxiv_id and result.get("arxiv_id")
+                    and store.arxiv_base_id(result["arxiv_id"]) == store.arxiv_base_id(arxiv_id)):
+                store.annotate_entry(slug, arxiv_id=result["arxiv_id"], authoritative=True)
             # Reuse the PDF retrieval just downloaded to render the cover — no second download.
             cover_jobs.render_from_pdf(slug, result.get("pdf_bytes"))
             with _registry.lock:
@@ -127,9 +134,10 @@ async def _consume_hunt(
 
 
 def _persist(slug: str, title: str, full_text: str, arxiv_id: str | None,
-             source: str | None) -> None:
+             source: str | None, match_score: float | None = None) -> None:
     store.write_full_text(slug, title, full_text, {
         "slug": slug,
         "arxiv_id": arxiv_id,
         "source": source,
+        "match_score": match_score,
     })

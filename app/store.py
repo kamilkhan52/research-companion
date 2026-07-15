@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import textwrap
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -39,6 +40,14 @@ class _FileKey(NamedTuple):
 
 _parse_cache: dict[str, tuple[_FileKey, list[dict]]] = {}
 _notes_cache: dict[str, tuple[_FileKey, bool]] = {}
+
+# Serializes every reading-list.md read-modify-write (add_entry, set_abstract, annotate_entry).
+# Background retrieval jobs for different papers finish concurrently and annotate their
+# entries; without the lock the last writer's whole-file atomic replace silently discards the
+# other's insertion. One process (CLAUDE.md invariant 6), so a plain module lock suffices; the
+# reading-list path is per-project via the active-project contextvar, and a single lock across
+# projects only costs needless-but-harmless serialization.
+_RL_LOCK = threading.RLock()
 
 
 def _file_key(p: Path) -> _FileKey | None:
@@ -349,6 +358,18 @@ def year_for(slug: str) -> int | None:
 
 
 _SOURCE_META_RE = re.compile(r"^- source:\s*(?P<url>\S+)", re.M)
+_CORPUS_ARXIV_RE = re.compile(r"^- arxiv_id:\s*(?P<aid>\S+)", re.M)
+
+
+def corpus_arxiv_id_for(slug: str) -> str:
+    """The arXiv id recorded in the corpus meta header at retrieval time ("" if none / not
+    retrieved). Papers retrieved before annotate_entry existed carry their resolved id only
+    here — the year backfill reads it back onto the entry."""
+    p = corpus_path(slug)
+    if not p.exists():
+        return ""
+    m = _CORPUS_ARXIV_RE.search(p.read_text(encoding="utf-8", errors="ignore")[:2000])
+    return m.group("aid").strip() if m else ""
 
 
 def source_url_for(slug: str) -> str:
@@ -401,6 +422,11 @@ def set_abstract(slug: str, abstract: str) -> bool:
     abstract = re.sub(r"\s+", " ", abstract or "").strip()
     if not abstract:
         raise ValueError("Abstract is empty.")
+    with _RL_LOCK:
+        return _set_abstract_locked(slug, abstract)
+
+
+def _set_abstract_locked(slug: str, abstract: str) -> bool:
     target = next((e for e in _parse_entries() if e["slug"] == slug), None)
     if not target:
         return False
@@ -431,6 +457,73 @@ def set_abstract(slug: str, abstract: str) -> bool:
     return True
 
 
+def arxiv_base_id(arxiv_id: str) -> str:
+    """The id without a version suffix — `2211.10438v3` and `2211.10438` are the same paper."""
+    return re.sub(r"v\d+$", "", (arxiv_id or "").strip(), flags=re.I)
+
+
+def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None = None,
+                   authoritative: bool = False) -> bool:
+    """Record identity metadata (`<!-- arxiv -->` / `<!-- year -->` comments) on an entry.
+
+    Default mode inserts only what's MISSING — existing values may be human-pinned and are
+    never touched, and a year comment is skipped when the entry's effective arXiv id already
+    dates the paper. `authoritative=True` (an id the user explicitly supplied to a retrieval)
+    additionally REPLACES a conflicting arxiv comment — the machine-resolved id it corrects
+    must not outlive the correction. An existing year comment survives either mode.
+    Returns True if the file changed. Metadata-only edit like add_entry/set_abstract:
+    uncommitted, deterministic, offline. Serialized by _RL_LOCK: concurrent retrieval jobs
+    finish independently and must not lose each other's read-modify-write."""
+    with _RL_LOCK:
+        target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+        if not target:
+            return False
+
+        rl = _reading_list()
+        lines = rl.read_text(encoding="utf-8").splitlines()
+        start, end = target["line_index"], target["end_index"]
+        block = lines[start:end]
+        changed = False
+
+        def insert_comment(comment: str) -> None:
+            # After the title line and any comments already pinned beneath it (add_entry's spot).
+            pos = 1
+            while pos < len(block) and _COMMENT_LINE_RE.match(block[pos]):
+                pos += 1
+            block.insert(pos, comment)
+
+        effective_id = target["arxiv_id"]
+        new_id = (arxiv_id or "").strip()
+        if new_id and not effective_id:
+            insert_comment(f"<!-- arxiv: {new_id} -->")
+            effective_id = new_id
+            changed = True
+        elif (authoritative and new_id and effective_id
+              and arxiv_base_id(new_id) != arxiv_base_id(effective_id)):
+            # Correcting a wrong identity: replace the old comment in place.
+            for i, line in enumerate(block):
+                if _ARXIV_COMMENT_RE.search(line):
+                    block[i] = _ARXIV_COMMENT_RE.sub(f"<!-- arxiv: {new_id} -->", line)
+                    break
+            effective_id = new_id
+            changed = True
+
+        # An existing year comment always survives, even an authoritative id correction: the
+        # comment is the parser's top precedence by contract (it may deliberately record the
+        # venue's publication year where the arXiv id encodes submission year).
+        derived = year_from_arxiv_id(effective_id)
+        has_year_comment = any(_YEAR_COMMENT_RE.search(line) for line in block)
+        if year and 1900 <= year <= 2100 and not derived and not has_year_comment:
+            insert_comment(f"<!-- year: {year} -->")
+            changed = True
+
+        if not changed:
+            return False
+        atomic_write_text(rl, "\n".join(lines[:start] + block + lines[end:]).rstrip() + "\n")
+        _parse_cache.pop(str(rl), None)
+        return True
+
+
 # ---- corpus full-text ----
 
 def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
@@ -444,6 +537,17 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     p = corpus_path(slug)
     atomic_write_text(p, "\n".join(lines))
     _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
+    # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
+    # the reading-list entry never had — record it there too, so the entry gains its year and
+    # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
+    # an explicit/pdf retrieval (score 1.0) or a near-identical title match — retrieve()'s
+    # own 0.62 auto-accept floor is fine for fetching text but too weak to stamp identity
+    # (the same 0.95 bar backfill_abstracts uses, for the same near-miss reason). Never
+    # overwrites a pinned id. Invariant-4 note: this edits reading-list.md uncommitted,
+    # exactly like add_entry — and the same id is already in this corpus file's header, which
+    # the next approved commit sweeps regardless; the entry comment mirrors recorded fact.
+    if meta.get("arxiv_id") and float(meta.get("match_score") or 0) >= 0.95:
+        annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
     return p
 
 
@@ -516,17 +620,17 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
 
 def set_status_read(slug: str) -> bool:
     """Flip the entry's italic status marker to *read* in reading-list.md."""
-    entries = _parse_entries()
-    target = next((e for e in entries if e["slug"] == slug), None)
-    if not target:
-        return False
-    rl = _reading_list()
-    lines = rl.read_text(encoding="utf-8").splitlines()
-    i = target["line_index"]
-    lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
-    atomic_write_text(rl, "\n".join(lines) + "\n")
-    _parse_cache.pop(str(rl), None)   # status changed — drop the stale parse
-    return True
+    with _RL_LOCK:
+        target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+        if not target:
+            return False
+        rl = _reading_list()
+        lines = rl.read_text(encoding="utf-8").splitlines()
+        i = target["line_index"]
+        lines[i] = re.sub(r"\*unread\*", "*read*", lines[i])
+        atomic_write_text(rl, "\n".join(lines) + "\n")
+        _parse_cache.pop(str(rl), None)   # status changed — drop the stale parse
+        return True
 
 
 # ---- adding a paper (e.g. from a reference-graph recommendation) ----
@@ -550,6 +654,12 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
     title = (title or "").strip()
     if not title:
         raise ValueError("Title is required.")
+    with _RL_LOCK:
+        return _add_entry_locked(title, group, arxiv_id, abstract, year)
+
+
+def _add_entry_locked(title: str, group: str, arxiv_id: str | None,
+                      abstract: str | None, year: int | None) -> str:
     slug = derive_slug(title)
     if any(p.slug == slug for p in list_papers()):
         raise DuplicatePaperError(f"A paper with slug '{slug}' already exists in this project.")
@@ -596,6 +706,11 @@ def remove_entry(slug: str) -> bool:
     Notes block, session transcript — deliberately stays: it is cheap, keeps the notes'
     history intact, and makes re-adding the paper later a warm start. Like add_entry, this
     does NOT git-commit; the removal endpoint commits the human-confirmed change."""
+    with _RL_LOCK:
+        return _remove_entry_locked(slug)
+
+
+def _remove_entry_locked(slug: str) -> bool:
     target = next((e for e in _parse_entries() if e["slug"] == slug), None)
     if not target:
         return False

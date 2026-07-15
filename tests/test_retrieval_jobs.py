@@ -148,3 +148,39 @@ def test_latest_result_prefers_an_immediate_retry_in_the_same_second(temp_projec
     _settled(second.id)
 
     assert retrieval_jobs.latest_for("p1").id == second.id
+
+
+def test_explicit_id_retrieval_corrects_a_machine_resolved_entry_id(temp_project):
+    """U.18 — the user re-retrieves with the RIGHT id after a wrong title-search match; the
+    entry's machine-recorded id must follow the correction."""
+    add_paper(temp_project, "p2", "Paper Two")
+    store.annotate_entry("p2", arxiv_id="2401.99999")  # machine-resolved, wrong
+    store.corpus_path("p2").unlink()
+
+    job = retrieval_jobs.start_retrieval(
+        "p2", arxiv_id="1706.03762",
+        retrieve_fn=lambda title, aid, url: {
+            "full_text": "the right paper", "arxiv_id": "1706.03762",
+            "source": "https://arxiv.org/abs/1706.03762",
+        },
+    )
+    _settled(job.id)
+    assert store.arxiv_id_for("p2") == "1706.03762"
+
+
+def test_title_search_fallback_never_masquerades_as_the_explicit_id(temp_project):
+    """A failed explicit download falls back to title search; its machine-selected id must
+    not authoritatively replace the entry's pinned id."""
+    add_paper(temp_project, "p3", "Paper Three")
+    store.annotate_entry("p3", arxiv_id="1706.03762")  # pinned, correct
+    store.corpus_path("p3").unlink()
+
+    job = retrieval_jobs.start_retrieval(
+        "p3", arxiv_id="2401.55555",  # explicit id whose download "failed"
+        retrieve_fn=lambda title, aid, url: {
+            "full_text": "a plausible near-miss", "arxiv_id": "2402.11111",
+            "source": "https://arxiv.org/abs/2402.11111",
+        },
+    )
+    _settled(job.id)
+    assert store.arxiv_id_for("p3") == "1706.03762"

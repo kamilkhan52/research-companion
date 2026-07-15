@@ -68,3 +68,125 @@ def test_assembler_omits_year_line_when_unknown(temp_project):
     slug = store.add_entry("Undated Paper")
     ctx = assembler.build_context(slug)
     assert "Published:" not in ctx
+
+
+# ---- U.18: annotate_entry + retrieval write-through ----
+
+def test_annotate_entry_inserts_missing_arxiv_id_and_dates_the_entry(temp_project):
+    slug = store.add_entry("Resolved By Title Search")
+    assert store.annotate_entry(slug, arxiv_id="2201.11705") is True
+    assert store.arxiv_id_for(slug) == "2201.11705"
+    assert store.year_for(slug) == 2022
+    # The id already dates it — no redundant year comment.
+    assert "<!-- year:" not in store._reading_list().read_text(encoding="utf-8")
+
+
+def test_annotate_entry_never_overwrites_a_pinned_id(temp_project):
+    slug = store.add_entry("Pinned", arxiv_id="1706.03762")
+    assert store.annotate_entry(slug, arxiv_id="9999.99999") is False
+    assert store.arxiv_id_for(slug) == "1706.03762"
+
+
+def test_annotate_entry_year_for_non_arxiv_paper(temp_project):
+    slug = store.add_entry("Non Arxiv Work")
+    assert store.annotate_entry(slug, year=2019) is True
+    assert store.year_for(slug) == 2019
+    # Idempotent: a second call has nothing to add.
+    assert store.annotate_entry(slug, year=2020) is False
+    assert store.year_for(slug) == 2019
+
+
+def test_annotate_entry_unknown_slug_is_a_noop(temp_project):
+    assert store.annotate_entry("no-such-paper", arxiv_id="2201.11705") is False
+
+
+def test_write_full_text_records_resolved_arxiv_id_on_the_entry(temp_project):
+    slug = store.add_entry("Found On Arxiv By Title")
+    store.write_full_text(slug, "Found On Arxiv By Title", "body", {
+        "slug": slug, "arxiv_id": "2201.11705", "source": "https://arxiv.org/abs/2201.11705",
+        "match_score": 0.97,
+    })
+    assert store.arxiv_id_for(slug) == "2201.11705"
+    assert store.year_for(slug) == 2022
+    assert store.corpus_arxiv_id_for(slug) == "2201.11705"
+
+
+def test_write_full_text_weak_title_match_stays_off_the_entry(temp_project):
+    """retrieve()'s 0.62 auto-accept floor is fine for fetching text but too weak to stamp
+    identity on the entry — the corpus header records it, the reading list does not."""
+    slug = store.add_entry("Ambiguously Titled Paper")
+    store.write_full_text(slug, "Ambiguously Titled Paper", "body", {
+        "slug": slug, "arxiv_id": "2401.12345", "source": "https://arxiv.org/abs/2401.12345",
+        "match_score": 0.7,
+    })
+    assert store.arxiv_id_for(slug) == ""
+    assert store.corpus_arxiv_id_for(slug) == "2401.12345"
+
+
+def test_write_full_text_without_id_leaves_the_entry_alone(temp_project):
+    slug = store.add_entry("Uploaded Pdf")
+    store.write_full_text(slug, "Uploaded Pdf", "body", {"slug": slug, "source": "upload:x.pdf"})
+    assert store.arxiv_id_for(slug) == ""
+    assert store.corpus_arxiv_id_for(slug) == ""
+
+
+def test_authoritative_annotate_replaces_a_machine_resolved_id(temp_project):
+    """A wrong title-search match recorded on the entry must not outlive the user's
+    corrected retrieval with an explicit id."""
+    slug = store.add_entry("Mismatched Paper")
+    store.annotate_entry(slug, arxiv_id="2401.00001")           # machine-resolved, wrong
+    assert store.annotate_entry(slug, arxiv_id="1706.03762", authoritative=True) is True
+    assert store.arxiv_id_for(slug) == "1706.03762"
+    assert store.year_for(slug) == 2017
+
+
+def test_authoritative_annotate_ignores_version_suffix_differences(temp_project):
+    slug = store.add_entry("Versioned", arxiv_id="2211.10438")
+    assert store.annotate_entry(slug, arxiv_id="2211.10438v3", authoritative=True) is False
+    assert store.arxiv_id_for(slug) == "2211.10438"
+
+
+def test_explicit_year_comment_survives_an_authoritative_id_correction(temp_project):
+    """The year comment is the parser's top precedence by contract — it may deliberately
+    record the venue's publication year where the arXiv id encodes submission year."""
+    slug = store.add_entry("Deliberately Dated", year=2018)
+    store.annotate_entry(slug, arxiv_id="1706.03762", authoritative=True)
+    assert store.arxiv_id_for(slug) == "1706.03762"
+    assert store.year_for(slug) == 2018
+
+
+def test_concurrent_annotations_do_not_lose_each_other(temp_project):
+    """Two retrieval jobs finishing at once each annotate their own entry; the whole-file
+    atomic replace must be serialized so the last writer doesn't discard the other's edit."""
+    import threading
+
+    from app import config
+
+    pid = config.active_project_id()
+    slugs = [store.add_entry(f"Concurrent Paper {i}") for i in range(6)]
+    ids = [f"220{i}.1000{i}" for i in range(6)]
+
+    def annotate(slug: str, aid: str) -> None:
+        # Threads don't inherit the active-project contextvar (invariant 2) — rebind like
+        # JobRegistry does for real retrieval workers.
+        config.set_active_project(pid)
+        store.annotate_entry(slug, arxiv_id=aid)
+
+    threads = [
+        threading.Thread(target=annotate, args=(slug, aid))
+        for slug, aid in zip(slugs, ids, strict=True)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for slug, aid in zip(slugs, ids, strict=True):
+        assert store.arxiv_id_for(slug) == aid
+
+
+def test_annotate_entry_keeps_abstract_and_block_shape(temp_project):
+    slug = store.add_entry("Shaped Entry", abstract="A tidy abstract about things.")
+    store.annotate_entry(slug, arxiv_id="2201.11705")
+    assert store.abstract_for(slug) == "A tidy abstract about things."
+    # Re-parse still finds exactly one entry with the same slug.
+    assert [p.slug for p in store.list_papers()].count(slug) == 1
