@@ -79,6 +79,26 @@ describe('pipe tables', () => {
     expect(onLinkPress).toHaveBeenCalledWith('https://arxiv.org/abs/2211.10438', 'SmoothQuant');
   });
 
+  // U.15b (device) — a 2-column table could not be panned inside the inverted chat list;
+  // narrow tables now fit the screen outright, and only wide ones scroll.
+  test('a narrow table fits the screen instead of scrolling', async () => {
+    await renderAsync(<Markdown text={table} />);
+    expect(screen.getByTestId('md-table').props.horizontal).toBeUndefined();
+  });
+
+  test('a wide table pans horizontally, with nested scrolling enabled for Android', async () => {
+    const wide = [
+      '| A | B | C | D | E |',
+      '|---|---|---|---|---|',
+      '| one | two | three | four | five |',
+    ].join('\n');
+    await renderAsync(<Markdown text={wide} />);
+    const scroller = screen.getByTestId('md-table');
+    expect(scroller.props.horizontal).toBe(true);
+    expect(scroller.props.nestedScrollEnabled).toBe(true);
+    expect(screen.getByText('five')).toBeTruthy();
+  });
+
   test('a prose line with a stray pipe is not a table', async () => {
     await renderAsync(<Markdown text={'either A | B works.\n\nNext paragraph.'} />);
     expect(screen.queryByTestId('md-table')).toBeNull();
