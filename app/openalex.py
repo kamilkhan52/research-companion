@@ -39,13 +39,14 @@ def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | Non
     """[{name, affiliation}] for one arXiv work, or None when the lookup fails/misses.
     `affiliation` is the first institution's display name ("" when OpenAlex has none —
     patchy coverage is expected and the UI omits unknowns rather than showing 'Unknown')."""
-    # OpenAlex keys arXiv works by the canonical VERSIONLESS id; a `2401.12345v3` (a suffix
-    # this repo deliberately preserves elsewhere) would miss and, since misses aren't cached,
-    # retry forever.
+    # OpenAlex's single-work endpoint does NOT accept an `arxiv:` key (it 404s) — but arXiv
+    # mints a DOI `10.48550/arXiv.<id>` for every paper, and the DOI lookup works. Use the
+    # canonical VERSIONLESS id (a `v3` suffix this repo preserves elsewhere would miss, and
+    # since misses aren't cached it would retry forever).
     base_id = store.arxiv_base_id(arxiv_id)
     if not base_id:
         return None
-    r = client.get(f"{BASE}/works/arxiv:{base_id}",
+    r = client.get(f"{BASE}/works/doi:10.48550/arXiv.{base_id}",
                    params={"select": "authorships"}, headers=_headers())
     if r.status_code != 200:
         return None

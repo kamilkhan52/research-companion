@@ -2,6 +2,7 @@
 client), and never a build dependency."""
 from __future__ import annotations
 
+import httpx
 from app import openalex
 
 
@@ -39,7 +40,7 @@ AWQ_SHIPS = [
 
 
 def test_work_authorships_parses_names_and_first_institution():
-    client = FakeClient({"arxiv:2306.00978": _work(AWQ_SHIPS)})
+    client = FakeClient({"10.48550/arXiv.2306.00978": _work(AWQ_SHIPS)})
     ships = openalex.work_authorships("2306.00978", client=client)
     assert ships == [{"name": "Ji Lin", "affiliation": "MIT"},
                      {"name": "Song Han", "affiliation": ""}]
@@ -59,7 +60,7 @@ def test_annotate_fills_authors_and_caches():
     nodes = [_project_node("awq", "2306.00978"),
              {"id": "ext:x", "kind": "external", "arxiv_id": "1706.03762", "authors": []}]
     cache: dict = {}
-    client = FakeClient({"arxiv:2306.00978": _work(AWQ_SHIPS)})
+    client = FakeClient({"10.48550/arXiv.2306.00978": _work(AWQ_SHIPS)})
     openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None)
     assert nodes[0]["authors"] == ["Ji Lin", "Song Han"]
     assert nodes[1]["authors"] == []          # external nodes are not fetched
@@ -107,7 +108,7 @@ def test_a_corrected_arxiv_id_invalidates_the_cached_authorships():
     nodes = [_project_node("fixed", "1706.03762")]
     cache = {"fixed": {"status": "done", "arxiv_id": "2401.99999",
                        "authorships": [{"name": "Wrong Person", "affiliation": ""}]}}
-    client = FakeClient({"arxiv:1706.03762": _work([
+    client = FakeClient({"10.48550/arXiv.1706.03762": _work([
         {"author": {"display_name": "Ashish Vaswani"}, "institutions": []},
     ])})
     openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None)
@@ -125,7 +126,7 @@ def test_contact_header_is_configuration_not_hardcoded(monkeypatch):
 def test_versioned_arxiv_id_is_normalized_for_lookup_and_cache():
     nodes = [_project_node("awq", "2306.00978v3")]
     cache: dict = {}
-    client = FakeClient({"arxiv:2306.00978": _work(AWQ_SHIPS)})
+    client = FakeClient({"10.48550/arXiv.2306.00978": _work(AWQ_SHIPS)})
     openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None)
     assert nodes[0]["authors"] == ["Ji Lin", "Song Han"]
     # Keyed by the versionless id, so a later plain-id node is a cache hit (no refetch).
