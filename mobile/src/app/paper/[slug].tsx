@@ -694,11 +694,26 @@ function DiscussionThread({
   useEffect(() => {
     if (stream.error) setRetryHide(null);
   }, [stream.error]);
+  // One-shot latch: the first refetch that no longer matches the forked-away entry clears the
+  // marker for good — otherwise switching BACK to that branch later would re-match it and
+  // hide a perfectly valid tail with no retry running.
+  useEffect(() => {
+    if (!retryHide) return;
+    const entry = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === retryHide.index,
+    );
+    const stillForkedAway = entry &&
+      entry.role === 'assistant' &&
+      entry.canonical === retryHide.canonical &&
+      (entry.branch_active ?? null) === retryHide.branchActive;
+    if (!stillForkedAway) setRetryHide(null);
+  }, [retryHide, transcript]);
   const queryClient = useQueryClient();
   const [switchingBranch, setSwitchingBranch] = useState(false);
   const handleSwitchBranch = useCallback(async (assistantIndex: number, branch: number) => {
     if (switchingBranch || stream.streaming) return;
     setSwitchingBranch(true);
+    setRetryHide(null);  // switching is explicit navigation; never hide what it restores
     try {
       await api.switchBranch(pid, slug, assistantIndex, branch);
       await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });

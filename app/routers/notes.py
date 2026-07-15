@@ -107,14 +107,17 @@ def get_review(slug: str):
 
 @project_router.post("/approve")
 def approve(req: ApproveReq):
-    proposed = sessions.latest_proposed_commit(req.slug) or {}
-    notes = req.notes_block if req.notes_block is not None else proposed.get("notes_block", "")
-    synth = req.synthesis if req.synthesis is not None else proposed.get("synthesis", "")
-    summary = req.summary or proposed.get("summary", "")
-    try:
-        result = committer.commit(req.slug, notes, synth, summary)
-    except CommitError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    # Proposal read + commit are one atomic unit under the session's mutation lock: a branch
+    # switch between them could commit branch A's notes over branch B's transcript.
+    with sessions.mutation_lock(req.slug):
+        proposed = sessions.latest_proposed_commit(req.slug) or {}
+        notes = req.notes_block if req.notes_block is not None else proposed.get("notes_block", "")
+        synth = req.synthesis if req.synthesis is not None else proposed.get("synthesis", "")
+        summary = req.summary or proposed.get("summary", "")
+        try:
+            result = committer.commit(req.slug, notes, synth, summary)
+        except CommitError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
     return {"result": result, "paper": _paper_dict(req.slug)}
 
 

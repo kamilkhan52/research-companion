@@ -339,6 +339,23 @@ def truncate_before_assistant(slug: str, n: int) -> None:
 # records ride along inside whichever tail they belong to, but their selector state does not
 # survive (documented limitation of the flat baseline; a full conversation tree is v2).
 
+# Per-(project, slug) mutation locks: transcript-rewriting actions (turn preps, branch
+# switches, approvals) hold this across their check-then-mutate sequence so snapshot guards
+# can't interleave (e.g. a switch between a reply's record_user and its job registration).
+# In-process is sufficient: single worker (CLAUDE.md invariant 6).
+_mutation_locks: dict[tuple[str | None, str], threading.Lock] = {}
+_mutation_locks_guard = threading.Lock()
+
+
+def mutation_lock(slug: str) -> threading.Lock:
+    key = (config.active_project_id(), slug)
+    with _mutation_locks_guard:
+        lock = _mutation_locks.get(key)
+        if lock is None:
+            lock = _mutation_locks[key] = threading.Lock()
+        return lock
+
+
 def _branches_file(slug: str):
     # Under .state/ (gitignored), NOT the sessions dir: transcripts are part of the committed
     # record, but sibling branches are switchable working state — committer.commit()'s
