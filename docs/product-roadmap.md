@@ -71,9 +71,10 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.12 | Long-press assistant response opens the actions menu | [#94](https://github.com/kamilkhan52/research-companion/pull/94) | Complete — Android passed |
 | U.13 | Composer input growth keeps rounded corners bounded | [#93](https://github.com/kamilkhan52/research-companion/pull/93) | Complete — Android passed |
 | U.14 | Retry forks the conversation + minimal branch selector | [#95](https://github.com/kamilkhan52/research-companion/pull/95) | Complete — Android passed |
-| U.15 | Long-form markdown rendering: glued headings, bold links, tables, ordinals | [#97](https://github.com/kamilkhan52/research-companion/pull/97) | Complete |
-| U.16 | Screen content behind Android status bar until messages load | [#98](https://github.com/kamilkhan52/research-companion/pull/98) | Complete |
-| U.17 | Publication year surfaced in UI + agent context | [#99](https://github.com/kamilkhan52/research-companion/pull/99) | Complete |
+| U.15 | Long-form markdown rendering: glued headings, bold links, tables, ordinals | [#97](https://github.com/kamilkhan52/research-companion/pull/97) [#100](https://github.com/kamilkhan52/research-companion/pull/100) | Complete — Android passed (incl. U.15b table fit/scroll) |
+| U.16 | Screen content behind Android status bar until messages load | [#98](https://github.com/kamilkhan52/research-companion/pull/98) | Complete — Android passed |
+| U.17 | Publication year surfaced in UI + agent context | [#99](https://github.com/kamilkhan52/research-companion/pull/99) | Complete — Android passed |
+| U.18 | Retrieval records paper identity; year backfill for existing entries | [#101](https://github.com/kamilkhan52/research-companion/pull/101) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
@@ -84,7 +85,7 @@ reviewed per the standing review workflow (codex gpt-5.6-sol) before merge; U.9 
 `docs/author-affiliation-view-proposal.md`).
 
 Round 1 (U.1–U.9, PRs #81–#89) passed its Android device check except: U.4 (audio cancel)
-UI confirmed visible on device, full flow assumed OK; U.6 superseded by the U.11 rework; U.7
+confirmed working on device (2026-07-15); U.6 superseded by the U.11 rework; U.7
 hardened by U.7b. Round 2 (U.7b + U.10–U.14, PRs #90–#95) passed its 2026-07-15 device check;
 the residual U.7b link inconsistencies turned out to be mobile renderer bugs, fixed as U.15.
 Round 3 (from the same device pass) is U.15 (markdown rendering), U.16 (status-bar overlap
