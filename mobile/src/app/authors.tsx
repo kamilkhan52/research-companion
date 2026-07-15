@@ -157,7 +157,13 @@ function AuthorSheet({
   const projectPapers = author.papers.filter((p) => p.kind === 'project');
   const externalPapers = author.papers.filter((p) => p.kind === 'external');
   return (
-    <ScrollView contentContainerStyle={{ padding: space.lg, gap: space.sm }}>
+    // flexGrow:0 / flexShrink:1 / minHeight:0 bound this ScrollView against the sheet's
+    // height cap (RN's default flexShrink is 0), so a prolific author's papers scroll inside
+    // the sheet instead of overflowing — same pattern as the other BottomSheet consumers.
+    <ScrollView
+      showsVerticalScrollIndicator={false}
+      style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}
+      contentContainerStyle={{ padding: space.lg, gap: space.sm }}>
       <Text variant="title">{author.name}</Text>
       {author.affiliation ? (
         <Text variant="caption" color={colors.muted}>{author.affiliation}</Text>
