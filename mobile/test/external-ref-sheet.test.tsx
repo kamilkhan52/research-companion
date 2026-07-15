@@ -54,7 +54,7 @@ test('a web-found paper can be added straight from the sheet', async () => {
 
   await fireEventAsync.press(screen.getByText('Add to reading list'));
   await waitFor(() =>
-    expect(api.addPaper).toHaveBeenCalledWith('proj', 'A New Related Work', undefined, '2401.12345', undefined),
+    expect(api.addPaper).toHaveBeenCalledWith('proj', 'A New Related Work', undefined, '2401.12345', undefined, undefined),
   );
   expect(screen.getByText('Added to reading list')).toBeTruthy();
 });
@@ -86,6 +86,6 @@ test('a URL-shaped label is not treated as a title; add uses the arXiv placehold
   );
   await fireEventAsync.press(screen.getByText('Add to reading list'));
   await waitFor(() =>
-    expect(api.addPaper).toHaveBeenCalledWith('proj', 'arXiv 2211.10438', undefined, '2211.10438', undefined),
+    expect(api.addPaper).toHaveBeenCalledWith('proj', 'arXiv 2211.10438', undefined, '2211.10438', undefined, undefined),
   );
 });
