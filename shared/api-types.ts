@@ -1359,6 +1359,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/graph/authors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Graph Authors
+         * @description The ranked in-project author board (U.9 v1), aggregated from the stored graph at read
+         *     time. Membership is overlaid first so a paper added since the last build counts as
+         *     in-project here too. Author/affiliation coverage grows with graph builds (OpenAlex cache);
+         *     an empty board with a built graph means the next rebuild will populate authors.
+         */
+        get: operations["get_graph_authors_api_projects__pid__graph_authors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/graph/build/status": {
         parameters: {
             query?: never;
@@ -4048,6 +4071,37 @@ export interface operations {
         };
     };
     get_graph_recommendations_api_projects__pid__graph_recommendations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_graph_authors_api_projects__pid__graph_authors_get: {
         parameters: {
             query?: never;
             header?: never;

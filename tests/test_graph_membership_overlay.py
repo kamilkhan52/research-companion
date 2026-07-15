@@ -82,3 +82,25 @@ def test_counts_layout_and_stored_snapshot_are_untouched():
 def test_empty_or_missing_graph_passes_through():
     assert overlay_membership(None, []) is None
     assert overlay_membership({"nodes": []}, []) == {"nodes": []}
+
+
+def test_a_corrected_arxiv_id_drops_stale_authors_from_the_snapshot():
+    """U.9 — the entry's arXiv id was corrected after the build; the snapshot's authors
+    belong to the old identity and must not survive until a rebuild refetches them."""
+    node = project_node("fixed", "A Corrected Paper")
+    node["arxiv_id"] = "2401.99999"       # what the build recorded (wrong)
+    node["authors"] = ["Wrong Person"]
+    graph = {"nodes": [node], "edges": []}
+    papers = [paper("fixed", "A Corrected Paper", arxiv_id="1706.03762")]  # corrected id
+    out = overlay_membership(graph, papers)
+    assert out["nodes"][0]["arxiv_id"] == "1706.03762"
+    assert out["nodes"][0]["authors"] == []
+
+
+def test_matching_id_keeps_authors():
+    node = project_node("kept", "A Paper")
+    node["arxiv_id"] = "1706.03762v2"     # version suffix is not a mismatch
+    node["authors"] = ["Real Author"]
+    out = overlay_membership({"nodes": [node], "edges": []},
+                             [paper("kept", "A Paper", arxiv_id="1706.03762")])
+    assert out["nodes"][0]["authors"] == ["Real Author"]
