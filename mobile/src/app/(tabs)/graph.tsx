@@ -225,7 +225,9 @@ export default function GraphScreen() {
                 ].filter(Boolean).join(' ');
                 Alert.alert(
                   needsEnrichment ? 'Finish graph enrichment?' : 'Rebuild reference graph?',
-                  `${reasons} ${needsEnrichment ? 'Continue' : 'Rebuild'} to process the affected papers.`,
+                  // "Rebuild" sounds expensive but is incremental: unchanged papers stay
+                  // cached; only new, changed, or failed ones are re-processed (U.19).
+                  `${reasons} ${needsEnrichment ? 'Continue' : 'Rebuild'} to process the affected papers — unchanged ones stay cached, so this only costs what changed.`,
                   [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
