@@ -64,7 +64,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.6 | Map build status UI: staged progress + marquee for long titles | [#86](https://github.com/kamilkhan52/research-companion/pull/86) | Complete — device changes requested (→ U.11) |
 | U.7 | Agent-cited external papers tappable/addable from discussion | [#87](https://github.com/kamilkhan52/research-companion/pull/87) | Complete — partial on device; consistency → U.7b |
 | U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete — Android passed |
-| U.9 | Author/affiliation map view — design proposal (Figma) | [#89](https://github.com/kamilkhan52/research-companion/pull/89) | Proposal ready — awaiting sign-off |
+| U.9 | Author/affiliation view — v1 (OpenAlex authorships + ranked board) | [#107](https://github.com/kamilkhan52/research-companion/pull/107) [#108](https://github.com/kamilkhan52/research-companion/pull/108) | Complete — signed off (in-project authors, 3/2/1, factor explainer); awaits device pass |
 | U.7b | Web-paper link consistency: prompt example + client repair | [#90](https://github.com/kamilkhan52/research-companion/pull/90) | Complete — improved on device; residual issues were renderer bugs (→ U.15) |
 | U.10 | Map retrieval-errors: small dismissible indicator + details sheet | [#91](https://github.com/kamilkhan52/research-companion/pull/91) | Complete — Android passed |
 | U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | [#92](https://github.com/kamilkhan52/research-companion/pull/92) | Complete — Android passed |
