@@ -21,8 +21,19 @@ export function stripPseudoToolTags(text: string): string {
 
 function escapeRegExp(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// Models glue heading hashes to the title often enough ("###AWQ: Adoption…", plausibly bleed
+// from the ###MARKER### output protocol) that CommonMark's required space is inserted here.
+// Two or more hashes only — a single glued hash stays prose (#hashtag, #include) — and fenced
+// code blocks are passed through untouched.
+const GLUED_HEADING = /^(#{2,6})(?=[^#\s])/gm;
+
+export function repairGluedHeadings(text: string): string {
+  if (!text.includes('#')) return text;
+  return text.split(/(```[\s\S]*?```)/).map((part, index) => index % 2 ? part : part.replace(GLUED_HEADING, '$1 ')).join('');
+}
+
 function renderMarkdown(text: string, papers: { title: string; slug: string }[]): string {
-  const raw = marked.parse(stripPseudoToolTags(text)) as string;
+  const raw = marked.parse(repairGluedHeadings(stripPseudoToolTags(text))) as string;
   const safe = DOMPurify.sanitize(raw, {
     ADD_ATTR: ['target'],
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|rc-paper):)/i,

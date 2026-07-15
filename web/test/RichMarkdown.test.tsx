@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { RichMarkdown, stripPseudoToolTags } from '@/components/RichMarkdown';
+import { repairGluedHeadings, RichMarkdown, stripPseudoToolTags } from '@/components/RichMarkdown';
 
 const index = vi.hoisted(() => ({ papers: [] as { title: string; slug: string }[] }));
 vi.mock('@/hooks/useLibrary', () => ({ usePaperIndex: () => index.papers }));
@@ -32,6 +32,17 @@ describe('RichMarkdown', () => {
     const { container } = render(<RichMarkdown text={'Inline $x^2$ and [unsafe](javascript:alert(1)).'} />);
     expect(container.querySelector('.katex')).not.toBeNull();
     expect(screen.getByText('unsafe').closest('a')).not.toHaveAttribute('href');
+  });
+
+  it('renders a heading whose hashes are glued to the title (U.15)', () => {
+    const { container } = render(<RichMarkdown text={'###AWQ: Adoption and Follow-ups\n\nBody.'} />);
+    expect(container.querySelector('h3')?.textContent).toBe('AWQ: Adoption and Follow-ups');
+  });
+
+  it('leaves single glued hashes and fenced code alone', () => {
+    expect(repairGluedHeadings('#include <stdio.h>')).toBe('#include <stdio.h>');
+    expect(repairGluedHeadings('```\n##define X\n```')).toBe('```\n##define X\n```');
+    expect(repairGluedHeadings('##Follow-ups')).toBe('## Follow-ups');
   });
 
   it('turns pseudo tool markup into readable activity text outside code fences', () => {
