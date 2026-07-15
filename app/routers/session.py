@@ -605,7 +605,7 @@ def branch_switch(req: BranchSwitchReq):
         # older proposed-draft branch would re-offer Approve for notes already in git.
         raise HTTPException(status_code=409,
                             detail="Notes are committed — continue the discussion first.")
-    if chat_jobs.active_for(req.slug):
+    if chat_jobs.active_for(req.slug) or _sse_turn_active(req.slug):
         raise HTTPException(status_code=409, detail="Wait for the current response to finish.")
     if not sessions.switch_branch(req.slug, req.assistant_index, req.branch):
         raise HTTPException(status_code=404, detail="No such branch at this turn.")
