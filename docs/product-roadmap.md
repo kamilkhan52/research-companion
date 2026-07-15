@@ -72,6 +72,7 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.13 | Composer input growth keeps rounded corners bounded | [#93](https://github.com/kamilkhan52/research-companion/pull/93) | Complete — Android passed |
 | U.14 | Retry forks the conversation + minimal branch selector | [#95](https://github.com/kamilkhan52/research-companion/pull/95) | Complete — Android passed |
 | U.15 | Long-form markdown rendering: glued headings, bold links, tables, ordinals | [#97](https://github.com/kamilkhan52/research-companion/pull/97) | Complete |
+| U.16 | Screen content behind Android status bar until messages load | [#98](https://github.com/kamilkhan52/research-companion/pull/98) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
