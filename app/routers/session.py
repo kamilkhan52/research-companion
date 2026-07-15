@@ -188,6 +188,12 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 @project_router.get("/session/{slug}")
 def get_session(slug: str):
+    # Durable empty-fork recovery: a crash/restart between a retry's fork and its response
+    # loses the worker's own rollback. If no turn is generating and an aged fork's active
+    # tail is still empty, restore the branch it left (no-op otherwise; the grace window
+    # keeps this from racing a retry that was just prepped).
+    if not chat_jobs.active_for(slug):
+        sessions.rollback_empty_fork(slug, min_age_s=30.0)
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
                  "list_status": "n/a", "session_state": sessions.get_state(REVIEW_SLUG)}

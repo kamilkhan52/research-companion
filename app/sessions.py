@@ -274,6 +274,10 @@ def latest_proposed_commit(slug: str) -> dict | None:
 
 
 def mark_committed(slug: str) -> None:
+    # Committing FINALIZES the chosen branch: sibling responses (which can contain stale
+    # proposed drafts) stop being switchable, so no path — including continue_discussion —
+    # can resurrect an already-committed proposal and offer Approve twice.
+    clear_branches(slug)
     set_state(slug, COMMITTED)
 
 
@@ -374,6 +378,7 @@ def fork_before_assistant(slug: str, n: int) -> None:
         entry["last_active"] = len(entry["tails"]) - 1
     entry["tails"].append([])                          # slot for the upcoming generation
     entry["active"] = len(entry["tails"]) - 1
+    entry["forked_at"] = _now()
     data[key] = entry
     # Deeper fork points annotated turns that now live inside an archived tail.
     data = {k: v for k, v in data.items() if int(k) <= n}
@@ -412,16 +417,30 @@ def switch_branch(slug: str, n: int, branch: int) -> bool:
     return True
 
 
-def rollback_empty_fork(slug: str) -> None:
+def rollback_empty_fork(slug: str, *, min_age_s: float = 0.0) -> None:
     """Failed/stopped-empty retry recovery: a fork whose active tail never received an
     assistant turn would strand the conversation at the user message with NO selector to
     escape (the selector renders on assistant turns). Restore the branch the fork left,
-    dropping the empty slot; with one branch left the fork point dissolves entirely."""
+    dropping the empty slot; with one branch left the fork point dissolves entirely.
+
+    `min_age_s` guards the READ-path caller (session load recovers forks orphaned by a crash
+    or restart — the worker's own rollback is lost with the process): a fork younger than the
+    grace window is almost certainly the retry that was just prepped and whose job is about
+    to register, not an orphan."""
     data = _read_branches(slug)
     if not data:
         return
     n = max(int(k) for k in data)
     entry = data[str(n)]
+    if min_age_s > 0:
+        forked_at = entry.get("forked_at")
+        if forked_at:
+            try:
+                age = (datetime.now(UTC) - datetime.fromisoformat(forked_at)).total_seconds()
+            except ValueError:
+                age = min_age_s
+            if age < min_age_s:
+                return
     records = read_records(slug)
     if _assistant_pos(records, n) is not None:
         return  # the live branch has content; nothing to roll back

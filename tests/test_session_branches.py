@@ -126,3 +126,28 @@ def test_rollback_is_a_noop_when_the_new_branch_has_content(temp_project):
     sessions.rollback_empty_fork(slug)
     assert sessions.transcript(slug)[-1]["canonical"] == "v2"
     assert sessions.branch_map(slug)[0]["count"] == 2
+
+
+def test_commit_finalizes_the_chosen_branch(temp_project):
+    slug = _seed()
+    sessions.fork_before_assistant(slug, 0)
+    _assistant(slug, "v2", proposed=True)
+    assert sessions.branch_map(slug)
+    sessions.mark_committed(slug)
+    # No selector survives a commit — siblings (which may hold stale drafts) are gone.
+    assert sessions.branch_map(slug) == {}
+    assert sessions.switch_branch(slug, 0, 1) is False
+
+
+def test_read_path_rollback_respects_the_grace_window(temp_project):
+    slug = _seed()
+    sessions.fork_before_assistant(slug, 0)
+    # Fresh fork (job about to register): the aged read-path rollback must NOT touch it.
+    sessions.rollback_empty_fork(slug, min_age_s=30.0)
+    assert [r["role"] for r in sessions.read_records(slug)] == ["user"]
+    # An aged orphan (simulated by backdating) IS recovered.
+    data = sessions._read_branches(slug)
+    data["0"]["forked_at"] = "2020-01-01T00:00:00+00:00"
+    sessions._write_branches(slug, data)
+    sessions.rollback_empty_fork(slug, min_age_s=30.0)
+    assert sessions.transcript(slug)[-1]["canonical"] == "answer one (v1)"
