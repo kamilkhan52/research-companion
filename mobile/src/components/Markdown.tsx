@@ -5,7 +5,11 @@
 // fast and the bundle lean.
 
 import { createContext, Fragment, useContext, useMemo } from 'react';
-import { Linking, Platform, ScrollView, StyleSheet, Text as RNText, View } from 'react-native';
+import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-native';
+// RNGH's ScrollView, not core RN's: the discussion renders messages inside gifted-chat's
+// inverted list under a gesture-handler hierarchy, where a core horizontal ScrollView loses
+// the Android gesture negotiation and simply doesn't pan.
+import { ScrollView } from 'react-native-gesture-handler';
 
 import { InlineMath, MathBlock } from '@/components/MathView';
 import { stripPseudoToolTags } from '@/lib/toolTags';
@@ -361,9 +365,11 @@ function listOrdinal(block: { ordered: boolean; items: ListItem[] }, idx: number
   return `${num}.`;
 }
 
-/** GFM pipe table inside its own horizontal viewport, so a wide table scrolls instead of
- * crushing every column to unreadable slivers. Column widths come from a character-count
- * heuristic (RN has no auto table layout); long cells wrap within their column. */
+/** GFM pipe table. Up to three columns it FITS the screen — proportional flex columns, cells
+ * wrap — because on a phone a fully visible table beats a pannable one. Wider tables get
+ * fixed column widths (character-count heuristic; RN has no auto table layout) inside a
+ * horizontal viewport with nestedScrollEnabled, so the pan works inside the inverted
+ * message list on Android. */
 function MdTable({
   block,
   onLinkPress,
@@ -372,18 +378,27 @@ function MdTable({
   onLinkPress: LinkHandler;
 }) {
   const nCols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
-  const widths: number[] = [];
+  const chars: number[] = [];
   for (let c = 0; c < nCols; c++) {
-    const chars = Math.max(
+    chars.push(Math.max(
       plainLength(block.header[c] ?? ''),
       ...block.rows.map((row) => plainLength(row[c] ?? '')),
-    );
-    widths.push(Math.min(280, Math.max(72, 20 + chars * 6.4)));
+    ));
   }
+  const fits = nCols <= 3;
+  // Flex weights are clamped so one verbose column can't crush a terse one to a sliver.
+  const weights = chars.map((n) => Math.min(60, Math.max(12, n)));
   const renderRow = (cells: string[], key: number | string, head = false) => (
     <View key={key} style={[styles.tableRow, head && styles.tableHead]}>
       {Array.from({ length: nCols }, (_, c) => (
-        <View key={c} style={[styles.tableCell, { width: widths[c] }]}>
+        <View
+          key={c}
+          style={[
+            styles.tableCell,
+            fits
+              ? { flex: weights[c], minWidth: 0 }
+              : { width: Math.min(280, Math.max(72, 20 + chars[c] * 6.4)) },
+          ]}>
           <Text
             variant="serifBody"
             style={head ? { fontFamily: fonts.serifSemiBold } : undefined}>
@@ -393,16 +408,28 @@ function MdTable({
       ))}
     </View>
   );
+  const body = (
+    <View>
+      {renderRow(block.header, 'head', true)}
+      {block.rows.map((row, r) => renderRow(row, r))}
+    </View>
+  );
+  if (fits) {
+    return (
+      <View testID="md-table" style={styles.tableWrap}>
+        {body}
+      </View>
+    );
+  }
   return (
     <ScrollView
       testID="md-table"
+      accessibilityLabel="Scrollable table"
       horizontal
+      nestedScrollEnabled
       showsHorizontalScrollIndicator={false}
       style={styles.tableWrap}>
-      <View>
-        {renderRow(block.header, 'head', true)}
-        {block.rows.map((row, r) => renderRow(row, r))}
-      </View>
+      {body}
     </ScrollView>
   );
 }
