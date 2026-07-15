@@ -13,6 +13,7 @@ best-effort throughout — enrichment must never fail a build. Tests inject a fa
 (suite stays network-free)."""
 from __future__ import annotations
 
+import os
 import time
 
 import httpx
@@ -23,9 +24,15 @@ log = logging_config.get("openalex")
 
 BASE = "https://api.openalex.org"
 TIMEOUT_S = 30.0
-# OpenAlex asks polite-pool users to identify themselves; a UA with a contact is enough.
-_HEADERS = {"User-Agent": "research-companion (mailto:kaamilkhaan52@gmail.com)"}
 _PACE_S = 0.15
+
+
+def _headers() -> dict:
+    """OpenAlex asks polite-pool users to identify themselves. The contact is deployment
+    configuration (RC_CONTACT_EMAIL), never a hardcoded personal address in the repo."""
+    contact = os.environ.get("RC_CONTACT_EMAIL", "").strip()
+    ua = f"research-companion (mailto:{contact})" if contact else "research-companion"
+    return {"User-Agent": ua}
 
 
 def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | None:
@@ -36,7 +43,7 @@ def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | Non
     if not base_id:
         return None
     r = client.get(f"{BASE}/works/arxiv:{base_id}",
-                   params={"select": "authorships"}, headers=_HEADERS)
+                   params={"select": "authorships"}, headers=_headers())
     if r.status_code != 200:
         return None
     out = []
@@ -64,7 +71,11 @@ def annotate_project_authors(nodes: list[dict], cache: dict, *,
             for node in nodes:
                 if node.get("kind") != "project" or not node.get("arxiv_id"):
                     continue
-                if node["id"] in cache:
+                hit = cache.get(node["id"])
+                # A hit only counts when it was fetched for the SAME arXiv id: retrieval can
+                # correct a misidentified entry's id (annotate_entry authoritative) while the
+                # slug/node id stays put — the old paper's authors must not survive that.
+                if hit and hit.get("arxiv_id") == node["arxiv_id"]:
                     continue
                 try:
                     ships = work_authorships(node["arxiv_id"], client=client)
@@ -75,7 +86,8 @@ def annotate_project_authors(nodes: list[dict], cache: dict, *,
                     # nothing is written so the retry is automatic.
                     log.debug("openalex miss for %s", node["id"])
                 else:
-                    cache[node["id"]] = {"status": "done", "authorships": ships}
+                    cache[node["id"]] = {"status": "done", "arxiv_id": node["arxiv_id"],
+                                         "authorships": ships}
                 sleep(_PACE_S)
         except Exception:
             pass  # enrichment only — never fail the build

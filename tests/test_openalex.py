@@ -64,6 +64,7 @@ def test_annotate_fills_authors_and_caches():
     assert nodes[0]["authors"] == ["Ji Lin", "Song Han"]
     assert nodes[1]["authors"] == []          # external nodes are not fetched
     assert cache["awq"]["authorships"][0]["affiliation"] == "MIT"
+    assert cache["awq"]["arxiv_id"] == "2306.00978"
     # Second pass: cache hit, no new network calls.
     client2 = FakeClient({})
     openalex.annotate_project_authors(nodes, cache, client=client2, sleep=lambda *_: None)
@@ -98,3 +99,24 @@ def test_annotation_failures_never_raise():
     openalex.annotate_project_authors(nodes, {}, client=ExplodingClient(),
                                       sleep=lambda *_: None)
     assert nodes[0]["authors"] == []
+
+
+def test_a_corrected_arxiv_id_invalidates_the_cached_authorships():
+    """Retrieval can correct a misidentified entry's id while the node id stays put; the
+    wrong paper's authors must not survive the correction."""
+    nodes = [_project_node("fixed", "1706.03762")]
+    cache = {"fixed": {"status": "done", "arxiv_id": "2401.99999",
+                       "authorships": [{"name": "Wrong Person", "affiliation": ""}]}}
+    client = FakeClient({"arxiv:1706.03762": _work([
+        {"author": {"display_name": "Ashish Vaswani"}, "institutions": []},
+    ])})
+    openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None)
+    assert nodes[0]["authors"] == ["Ashish Vaswani"]
+    assert cache["fixed"]["arxiv_id"] == "1706.03762"
+
+
+def test_contact_header_is_configuration_not_hardcoded(monkeypatch):
+    monkeypatch.delenv("RC_CONTACT_EMAIL", raising=False)
+    assert "mailto" not in openalex._headers()["User-Agent"]
+    monkeypatch.setenv("RC_CONTACT_EMAIL", "ops@example.com")
+    assert openalex._headers()["User-Agent"] == "research-companion (mailto:ops@example.com)"
