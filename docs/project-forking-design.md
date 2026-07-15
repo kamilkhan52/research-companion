@@ -21,7 +21,10 @@ One flow, three phases — only the first is synchronous:
      heading, so identity/metadata survive exactly. `<!-- cites -->` references to papers
      that did NOT move are dropped from the copy (they'd dangle).
    - Corpus files for the selected slugs are copied; with `migrate_notes=false` the
-     `## Notes` block is stripped from the copy (full text is cache, notes are the record).
+     `## Notes` block is stripped from the copy (full text is cache, notes are the record)
+     **and the copied entry's status resets to `*unread*`** — `read` is coupled to committed
+     notes throughout the app (committer writes both; mobile buckets `read` as committed),
+     so a note-less `read` copy would masquerade as a completed reading.
    - The new project gets one initial git commit ("Forked N papers from <source>") — the
      same class of app-made commit as project scaffolding itself.
    - Session transcripts, audio caches, and graph caches do **not** move: transcripts stay
@@ -33,10 +36,13 @@ One flow, three phases — only the first is synchronous:
    to gather these). It lands as a **proposed** synthesis the user reviews and approves in
    the new project — the normal `committer.py` path; nothing reaches the record unapproved
    (invariant 4).
-3. **Source project's working notes (background job + approval).** A second LLM pass
-   proposes a rewrite of the source's working notes with the migrated papers' contributions
-   removed (prompt lists the departed titles; the model must not invent content, only
-   remove/reflow). Also a proposal → review → approve, in the source project.
+3. **Source project's working notes (background job + approval) — only with
+   `remove_from_source=true`.** A second LLM pass proposes a rewrite of the source's working
+   notes with the migrated papers' contributions removed (prompt lists the departed titles;
+   the model must not invent content, only remove/reflow). Also a proposal → review →
+   approve, in the source project. With the copy default the papers still live in the
+   source, so there is nothing to clean up — offering the pass anyway would desynchronize
+   the working notes from a reading list that still contains those papers.
 
 Phases 2–3 are `notes_jobs`-shaped background jobs (invariant 1) with the active-project
 contextvar bound to their respective projects (invariant 2) — they are independent, can run
