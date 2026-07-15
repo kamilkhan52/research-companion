@@ -7,7 +7,7 @@ import { setBaseUrl } from '@/api/config';
 import type { AudioJob, TranscriptEntry } from '@/api/types';
 import { AudioProvider, useAudio } from '@/audio/AudioProvider';
 import { isHandoffEligible, registerEligibleHandoff } from '@/audio/handoffState';
-import { useListeningHandoffRecovery } from '@/audio/identity';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { ProjectProvider } from '@/store/project';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -599,7 +599,7 @@ test('polling failure retains eligibility and recovers automatically after provi
     </ProjectProvider>,
   );
   await waitFor(
-    () => expect(audio.errorById['project-a:paper-a:0']).toBe('Temporarily offline'),
+    () => expect(audio.errorById[messageAudioId('project-a', 'paper-a', 0, 'Canonical response.')]).toBe('Temporarily offline'),
     { timeout: 2500 },
   );
   expect(await isHandoffEligible('chat-job-1')).toBe(true);
