@@ -252,6 +252,7 @@ export function useAddPaper(pid: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
+      qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
     },
   });
 }
@@ -264,6 +265,7 @@ export function useRemovePaper(pid: string | null) {
       if (!pid) return;
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
+      qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       qc.invalidateQueries({ queryKey: keys.projects });
       qc.invalidateQueries({ queryKey: keys.recentSessions });
     },
