@@ -65,12 +65,13 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.7 | Agent-cited external papers tappable/addable from discussion | [#87](https://github.com/kamilkhan52/research-companion/pull/87) | Complete — partial on device; consistency → U.7b |
 | U.8 | Graph layout rules rework (litmaps-informed) | [#88](https://github.com/kamilkhan52/research-companion/pull/88) | Complete — Android passed |
 | U.9 | Author/affiliation map view — design proposal (Figma) | [#89](https://github.com/kamilkhan52/research-companion/pull/89) | Proposal ready — awaiting sign-off |
-| U.7b | Web-paper link consistency: prompt example + client repair | [#90](https://github.com/kamilkhan52/research-companion/pull/90) | Complete |
-| U.10 | Map retrieval-errors: small dismissible indicator + details sheet | [#91](https://github.com/kamilkhan52/research-companion/pull/91) | Complete |
-| U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | [#92](https://github.com/kamilkhan52/research-companion/pull/92) | Complete |
-| U.12 | Long-press assistant response opens the actions menu | [#94](https://github.com/kamilkhan52/research-companion/pull/94) | Complete |
-| U.13 | Composer input growth keeps rounded corners bounded | [#93](https://github.com/kamilkhan52/research-companion/pull/93) | Complete |
-| U.14 | Retry forks the conversation + minimal branch selector | [#95](https://github.com/kamilkhan52/research-companion/pull/95) | Complete |
+| U.7b | Web-paper link consistency: prompt example + client repair | [#90](https://github.com/kamilkhan52/research-companion/pull/90) | Complete — improved on device; residual issues were renderer bugs (→ U.15) |
+| U.10 | Map retrieval-errors: small dismissible indicator + details sheet | [#91](https://github.com/kamilkhan52/research-companion/pull/91) | Complete — Android passed |
+| U.11 | Fast-map-ready de-emphasis + tappable build-stage explainers | [#92](https://github.com/kamilkhan52/research-companion/pull/92) | Complete — Android passed |
+| U.12 | Long-press assistant response opens the actions menu | [#94](https://github.com/kamilkhan52/research-companion/pull/94) | Complete — Android passed |
+| U.13 | Composer input growth keeps rounded corners bounded | [#93](https://github.com/kamilkhan52/research-companion/pull/93) | Complete — Android passed |
+| U.14 | Retry forks the conversation + minimal branch selector | [#95](https://github.com/kamilkhan52/research-companion/pull/95) | Complete — Android passed |
+| U.15 | Long-form markdown rendering: glued headings, bold links, tables, ordinals | [#97](https://github.com/kamilkhan52/research-companion/pull/97) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
@@ -81,9 +82,12 @@ reviewed per the standing review workflow (codex gpt-5.6-sol) before merge; U.9 
 `docs/author-affiliation-view-proposal.md`).
 
 Round 1 (U.1–U.9, PRs #81–#89) passed its Android device check except: U.4 (audio cancel)
-still unverified, U.6 superseded by the U.11 rework, U.7 hardened by U.7b. Round 2 — Kamil's
-device-pass feedback — landed as U.7b + U.10–U.14 (PRs #90–#95) and awaits its own device
-pass. U.14 (retry forks + branch selector) is the deep one: retries archive the old tail as a
+UI confirmed visible on device, full flow assumed OK; U.6 superseded by the U.11 rework; U.7
+hardened by U.7b. Round 2 (U.7b + U.10–U.14, PRs #90–#95) passed its 2026-07-15 device check;
+the residual U.7b link inconsistencies turned out to be mobile renderer bugs, fixed as U.15.
+Round 3 (from the same device pass) is U.15 (markdown rendering), U.16 (status-bar overlap
+while a discussion loads), U.17 (surface paper year in UI + agent context).
+U.14 (retry forks + branch selector) is the deep one: retries archive the old tail as a
 switchable branch (`.state/branches/`, never in the git record); commits finalize the chosen
 branch and stamp a durable `proposal_committed` boundary; per-slug mutation locks + a
 proposal-revision token serialize branch switches against turn starts and approvals. Its
