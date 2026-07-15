@@ -133,6 +133,7 @@ def test_commit_finalizes_the_chosen_branch(temp_project):
     sessions.fork_before_assistant(slug, 0)
     _assistant(slug, "v2", proposed=True)
     assert sessions.branch_map(slug)
+    sessions.finalize_proposal_for_commit(slug)
     sessions.mark_committed(slug)
     # No selector survives a commit — siblings (which may hold stale drafts) are gone.
     assert sessions.branch_map(slug) == {}
@@ -159,6 +160,7 @@ def test_committed_proposal_never_reoffers_approve_after_fork_and_switch(temp_pr
     slug = _seed()
     sessions.record_user(slug, "finish", kind="finish")
     _assistant(slug, "the draft", proposed=True)
+    sessions.finalize_proposal_for_commit(slug)
     sessions.mark_committed(slug)
     sessions.continue_discussion(slug)
 

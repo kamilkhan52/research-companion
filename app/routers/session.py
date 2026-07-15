@@ -18,6 +18,7 @@ from .. import (
     agent,
     agent_harness,
     chat_jobs,
+    committer,
     config,
     cover_jobs,
     graph,
@@ -460,6 +461,8 @@ def _prep_continue(req: FinishReq) -> None:
 
 def _prep_retry(req: RetryReq) -> None:
     _require_session(req.slug)
+    if committer.approval_in_flight(req.slug):
+        raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
     # Committed is a resting point: forking would archive the committed proposal and a later
     # switch-back would re-offer Approve for notes already in git (duplicate commit).
     if sessions.get_state(req.slug) == COMMITTED:
@@ -607,6 +610,8 @@ def branch_switch(req: BranchSwitchReq):
                             detail="Notes are committed — continue the discussion first.")
     if chat_jobs.active_for(req.slug) or _sse_turn_active(req.slug):
         raise HTTPException(status_code=409, detail="Wait for the current response to finish.")
+    if committer.approval_in_flight(req.slug):
+        raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
     if not sessions.switch_branch(req.slug, req.assistant_index, req.branch):
         raise HTTPException(status_code=404, detail="No such branch at this turn.")
     return {

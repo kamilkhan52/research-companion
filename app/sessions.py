@@ -273,14 +273,18 @@ def latest_proposed_commit(slug: str) -> dict | None:
     return None
 
 
-def mark_committed(slug: str) -> None:
-    # Committing FINALIZES the chosen branch: sibling responses (which can contain stale
-    # proposed drafts) stop being switchable, so no path — including continue_discussion —
-    # can resurrect an already-committed proposal and offer Approve twice.
+def finalize_proposal_for_commit(slug: str) -> None:
+    """Called by committer.commit BEFORE `git add -A`, so both effects land INSIDE the
+    approved commit (stamping afterwards left the repo dirty and swept the change into the
+    next unrelated commit):
+    - clear branch bookkeeping — committing finalizes the chosen branch, so no path
+      (including continue_discussion) can resurrect a sibling's stale draft;
+    - stamp the proposal record with a durable committed boundary — a LATER fork can legally
+      archive a tail containing this record, and its restore must never re-derive
+      notes_drafted from a proposal that already reached git.
+    Safe if the git commit subsequently fails: the state stays notes_drafted, Approve remains
+    available, and re-approving re-runs this idempotently."""
     clear_branches(slug)
-    # And the proposal record itself carries a durable committed boundary: a LATER fork can
-    # legally archive a tail containing this record (continue_discussion + retry), and its
-    # restore must never re-derive notes_drafted from a proposal that already reached git.
     records = read_records(slug)
     for rec in reversed(records):
         if rec.get("role") == "assistant" and rec.get("proposed_commit"):
@@ -288,6 +292,9 @@ def mark_committed(slug: str) -> None:
                 rec["proposal_committed"] = True
                 _rewrite(slug, records)
             break
+
+
+def mark_committed(slug: str) -> None:
     set_state(slug, COMMITTED)
 
 

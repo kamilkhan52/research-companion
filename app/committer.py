@@ -6,6 +6,7 @@ record without the human's approval (the 'agent proposes, human commits' princip
 from __future__ import annotations
 
 import subprocess
+import threading
 
 from . import config, logging_config, sessions, store
 
@@ -42,9 +43,33 @@ def review(slug: str) -> dict:
     }
 
 
+# Approvals in flight, keyed by (project, slug). Branch switching/forking must not rewrite
+# the transcript while the previously read proposal is being staged and committed — that could
+# commit branch A's notes over branch B's transcript. In-process is sufficient: single worker
+# (CLAUDE.md invariant 6).
+_approving: set[tuple[str | None, str]] = set()
+_approving_lock = threading.Lock()
+
+
+def approval_in_flight(slug: str) -> bool:
+    with _approving_lock:
+        return (config.active_project_id(), slug) in _approving
+
+
 def commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> dict:
     """Apply and version the approved change set. notes_block / synthesis may be the agent's
     proposal or the human's edited version."""
+    key = (config.active_project_id(), slug)
+    with _approving_lock:
+        _approving.add(key)
+    try:
+        return _commit(slug, notes_block, synthesis, summary)
+    finally:
+        with _approving_lock:
+            _approving.discard(key)
+
+
+def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> dict:
     title = store.title_for(slug)
     notes_block, synthesis = (notes_block or ""), (synthesis or "")
     if not notes_block.strip() and not synthesis.strip():
@@ -58,6 +83,7 @@ def commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> di
     if synthesis.strip():
         store.write_synthesis(synthesis)
 
+    sessions.finalize_proposal_for_commit(slug)
     _git("add", "-A")
     if summary.strip():
         msg = summary.strip()
