@@ -73,7 +73,7 @@ def test_annotate_fills_authors_and_caches():
 
 def test_annotate_fetch_false_applies_cache_without_network():
     nodes = [_project_node("awq", "2306.00978")]
-    cache = {"awq": {"status": "done", "authorships": AWQ_SHIPS_PARSED}}
+    cache = {"awq": {"status": "done", "arxiv_id": "2306.00978", "authorships": AWQ_SHIPS_PARSED}}
     openalex.annotate_project_authors(nodes, cache, fetch=False)
     assert nodes[0]["authors"] == ["Ji Lin", "Song Han"]
 
@@ -120,3 +120,34 @@ def test_contact_header_is_configuration_not_hardcoded(monkeypatch):
     assert "mailto" not in openalex._headers()["User-Agent"]
     monkeypatch.setenv("RC_CONTACT_EMAIL", "ops@example.com")
     assert openalex._headers()["User-Agent"] == "research-companion (mailto:ops@example.com)"
+
+
+def test_versioned_arxiv_id_is_normalized_for_lookup_and_cache():
+    nodes = [_project_node("awq", "2306.00978v3")]
+    cache: dict = {}
+    client = FakeClient({"arxiv:2306.00978": _work(AWQ_SHIPS)})
+    openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None)
+    assert nodes[0]["authors"] == ["Ji Lin", "Song Han"]
+    # Keyed by the versionless id, so a later plain-id node is a cache hit (no refetch).
+    assert cache["awq"]["arxiv_id"] == "2306.00978"
+    assert all("2306.00978v3" not in c for c in client.calls)
+
+
+def test_corrected_id_with_a_missing_refetch_drops_stale_authors():
+    """Identity corrected but the replacement lookup misses/outages: the old paper'"'"'s authors
+    must NOT be published — the stale record is dropped."""
+    nodes = [_project_node("fixed", "1706.03762")]
+    cache = {"fixed": {"status": "done", "arxiv_id": "2401.99999",
+                       "authorships": [{"name": "Wrong Person", "affiliation": ""}]}}
+    openalex.annotate_project_authors(nodes, cache, client=FakeClient({}),
+                                      sleep=lambda *_: None)
+    assert nodes[0]["authors"] == []
+    assert "fixed" not in cache
+
+
+def test_fetch_false_ignores_a_record_for_a_different_id():
+    nodes = [_project_node("fixed", "1706.03762")]
+    cache = {"fixed": {"status": "done", "arxiv_id": "2401.99999",
+                       "authorships": [{"name": "Wrong Person", "affiliation": ""}]}}
+    openalex.annotate_project_authors(nodes, cache, fetch=False)
+    assert nodes[0]["authors"] == []
