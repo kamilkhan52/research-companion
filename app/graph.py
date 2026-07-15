@@ -668,6 +668,41 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
     return list(nodes.values()), edges
 
 
+def overlay_membership(graph: dict | None, papers: list[Paper]) -> dict | None:
+    """Re-derive node membership from the CURRENT reading list on a stored graph snapshot.
+
+    Membership (project vs external) is baked into the graph JSON at build time, but papers
+    are added and removed between builds constantly — a recommendation accepted from this
+    very map should color as in-project immediately, not after the next rebuild (U.19).
+    Re-tags kind/slug/group/list_status on copies at read time; citation counts, edges, and
+    layout genuinely require a rebuild and are left untouched. Pure function, no I/O — the
+    stored snapshot is never mutated or persisted with the overlay applied.
+    """
+    if not graph or not graph.get("nodes"):
+        return graph
+    by_slug = {p.slug: p for p in papers}
+    nodes = []
+    for stored in graph["nodes"]:
+        node = dict(stored)
+        if node.get("kind") == "project":
+            p = by_slug.get(node.get("slug") or "")
+            if p:
+                node["group"], node["list_status"] = p.group, p.list_status
+            else:
+                # Removed from the reading list since the build. The id (its old slug) stays,
+                # so edges keep resolving; only the membership styling flips.
+                node["kind"], node["slug"] = "external", None
+                node["group"], node["list_status"] = None, None
+        else:
+            slug = match_project_paper(node, papers)
+            if slug:
+                p = by_slug[slug]
+                node.update({"kind": "project", "slug": slug,
+                             "group": p.group, "list_status": p.list_status})
+        nodes.append(node)
+    return {**graph, "nodes": nodes}
+
+
 def betweenness_centrality(node_ids: list[str], edges: list[tuple[str, str]]) -> dict[str, float]:
     """Brandes' algorithm (2001) for betweenness centrality: for every node, how often it lies
     on the shortest path between two OTHER nodes, summed over all pairs. Treats the citation

@@ -27,7 +27,9 @@ def get_graph(pid: str):
     data = graph_store.load()
     job = graph_jobs.get_job(pid)
     return {
-        "graph": data.get("graph"),
+        # Membership is re-derived from the live reading list on every read, so papers
+        # added/removed since the last build color correctly without a rebuild (U.19).
+        "graph": graph.overlay_membership(data.get("graph"), papers),
         "recommendations": data.get("recommendations") or [],
         "status": graph.status(papers),
         "build": job.to_dict() if job else None,
