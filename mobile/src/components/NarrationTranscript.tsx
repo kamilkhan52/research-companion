@@ -13,8 +13,8 @@ import TrackPlayer, { useActiveTrack } from 'react-native-track-player';
 import { sentenceSeekPosition, splitSentences, type SentenceBoundary } from '../../sentence-seek';
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
-import { Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { Icon, Text } from '@/ui';
+import { colors, fonts, space } from '@/theme/tokens';
 
 
 /** How long a manual scroll suspends auto-follow, so the roll never fights the user's thumb. */
@@ -191,14 +191,62 @@ export function RollingTranscript({ narration }: { narration: string }) {
 export function prepLabel(stage: 'starting' | 'narrating' | 'synthesizing', done: number, total: number): string {
   if (stage === 'narrating') return 'Adapting for listening…';
   if (stage === 'synthesizing') {
-    return total > 1 ? `Synthesizing audio — part ${Math.min(done + 1, total)} of ${total}…` : 'Synthesizing audio…';
+    return total > 1 ? `Weaving the audio — ${Math.min(done + 1, total)} of ${total}` : 'Weaving the audio…';
   }
-  return 'Preparing…';
+  return 'Warming up…';
 }
 
-/** Progress bar shown while audio is being generated. The narrating stage is an opaque LLM
- *  call (indeterminate sweep, honestly labeled); synthesis reports real per-segment progress
- *  from the server job, so the bar actually fills. */
+/** The "sound coming to life" equalizer motif from the U.23 Figma spec (node 64:157): five
+ *  mint bars. Indeterminate stages pulse with a staggered scaleY loop; determinate synthesis
+ *  lights bars left-to-right with segment progress instead of pulsing. */
+const EQ_HEIGHTS = [8, 14, 20, 12, 17];
+
+function EqBars({ determinate, fraction }: { determinate: boolean; fraction: number }) {
+  const pulses = useRef(EQ_HEIGHTS.map(() => new Animated.Value(0.45))).current;
+  useEffect(() => {
+    if (determinate) {
+      pulses.forEach((p) => p.setValue(1));
+      return;
+    }
+    // Initial delay OUTSIDE the loop: an in-loop delay makes each bar's period differ, so
+    // the phase offsets would drift apart instead of holding the wave shape.
+    const anims = pulses.map((p, i) =>
+      Animated.sequence([
+        Animated.delay(i * 80),
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(p, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+            Animated.timing(p, { toValue: 0.45, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          ]),
+        ),
+      ]),
+    );
+    anims.forEach((a) => a.start());
+    return () => anims.forEach((a) => a.stop());
+  }, [determinate, pulses]);
+  const lit = Math.max(1, Math.ceil(fraction * EQ_HEIGHTS.length));
+  return (
+    <View style={styles.eqRow} accessibilityElementsHidden>
+      {EQ_HEIGHTS.map((h, i) => (
+        <Animated.View
+          key={i}
+          style={[
+            styles.eqBar,
+            {
+              height: h,
+              transform: [{ scaleY: pulses[i] }],
+              opacity: determinate ? (i < lit ? 1 : 0.2) : 1,
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
+
+/** Audio-preparation card (U.23, Figma `Audio loading`): equalizer motif + warm stage copy +
+ *  percent counter once synthesis reports real per-segment progress. The narrating stage is
+ *  an opaque LLM call, honestly indeterminate (pulsing bars, no counter). */
 export function GeneratingBar({
   stage,
   done = 0,
@@ -208,51 +256,30 @@ export function GeneratingBar({
   stage: 'starting' | 'narrating' | 'synthesizing';
   done?: number;
   total?: number;
-  /** Renders a small ✕ next to the progress label that cancels the preparation (U.4). */
+  /** Renders the cancel well on the right that stops the preparation (U.4). */
   onCancel?: () => void;
 }) {
-  const x = useRef(new Animated.Value(0)).current;
   const determinate = stage === 'synthesizing' && total > 0;
-  useEffect(() => {
-    if (determinate) return;
-    const loop = Animated.loop(
-      Animated.timing(x, {
-        toValue: 1,
-        duration: 1100,
-        easing: Easing.inOut(Easing.ease),
-        useNativeDriver: true,
-      }),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [x, determinate]);
-
-  const translateX = x.interpolate({ inputRange: [0, 1], outputRange: ['-40%', '260%'] });
-
+  const fraction = determinate ? done / total : 0;
   return (
-    <View style={styles.genWrap}>
-      <View style={styles.genLabelRow}>
-        <Text variant="caption" color={colors.mint} style={{ flex: 1 }} numberOfLines={1}>
-          {prepLabel(stage, done, total)}
-        </Text>
-        {onCancel ? (
-          <Pressable
-            onPress={onCancel}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel audio preparation"
-            style={styles.genCancel}>
-            <Text variant="caption" color={colors.muted}>✕</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <View style={styles.track}>
-        {determinate ? (
-          <View style={[styles.fill, { width: `${Math.round((done / total) * 100)}%` }]} />
-        ) : (
-          <Animated.View style={[styles.sweep, { transform: [{ translateX }] }]} />
-        )}
-      </View>
+    <View style={styles.genCard}>
+      <EqBars determinate={determinate} fraction={fraction} />
+      <Text style={styles.genCopy} numberOfLines={1}>
+        {prepLabel(stage, done, total)}
+      </Text>
+      {determinate ? (
+        <Text style={styles.genCounter}>{Math.round(fraction * 100)}%</Text>
+      ) : null}
+      {onCancel ? (
+        <Pressable
+          onPress={onCancel}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel audio preparation"
+          style={styles.genCancel}>
+          <Icon name="x" size={14} color={colors.muted} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -266,33 +293,30 @@ const styles = StyleSheet.create({
     color: colors.text, // dimming is the animated opacity, so inactive lines still read muted
     paddingVertical: space.sm,
   },
-  genWrap: {
+  // U.23 audio-loading card, per the Figma spec (node 64:157).
+  genCard: {
     marginTop: space.md,
-    gap: space.sm,
-  },
-  genLabelRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  genCancel: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingLeft: 16,
+    paddingRight: 8,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: 'rgba(153, 163, 183, 0.28)',
+    backgroundColor: colors.surface,
   },
-  track: {
-    height: 3,
-    borderRadius: radius.pill,
-    backgroundColor: colors.line,
-    overflow: 'hidden',
-  },
-  sweep: {
-    width: '40%',
-    height: '100%',
-    borderRadius: radius.pill,
-    backgroundColor: colors.mint,
-  },
-  fill: {
-    height: '100%',
-    borderRadius: radius.pill,
-    backgroundColor: colors.mint,
+  eqRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: 28, height: 24, justifyContent: 'center' },
+  eqBar: { width: 4, borderRadius: 2, backgroundColor: colors.mint },
+  genCopy: { flex: 1, fontFamily: fonts.bodyMedium, fontSize: 12, lineHeight: 15, color: colors.text },
+  genCounter: { fontFamily: fonts.bodySemiBold, fontSize: 11, lineHeight: 14, color: colors.muted },
+  genCancel: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(27, 32, 43, 0.72)',
   },
 });
