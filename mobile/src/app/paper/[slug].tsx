@@ -702,6 +702,9 @@ function DiscussionThread({
     try {
       await api.switchBranch(pid, slug, assistantIndex, branch);
       await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      // A switch can flip session_state (in_discussion <-> notes_drafted); library rows and
+      // paper actions read it from project state.
+      await queryClient.invalidateQueries({ queryKey: keys.projectState(pid) });
     } catch (e) {
       Alert.alert('Could not switch branch', (e as Error).message ?? 'Request failed.');
     } finally {

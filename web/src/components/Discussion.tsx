@@ -486,7 +486,7 @@ export function Discussion({ slug, onNavigate }: Props) {
       <div className="chat-scroll" ref={chatRef}>
         {turns.length === 0 && !working
           ? <div className="lc-empty"><p className="muted">No turns yet.</p></div>
-          : turns.map((turn, index) => <TurnBubble key={index} turn={turn} index={index} turns={turns} onRetry={(assistantIndex, retryModel) => {
+          : turns.map((turn, index) => <TurnBubble key={index} turn={turn} index={index} turns={turns} canRetry={sessionState !== 'committed'} onRetry={(assistantIndex, retryModel) => {
               chatWatch.clear();
               void submitJob(() => retryJob(activePid!, { slug, assistant_index: assistantIndex, ...delivery, model: retryModel ?? delivery.model }));
             }} currentModel={model} onListen={(assistantIndex, text) => void playText({ id: `${slug}:${assistantIndex}`, title: paperTitle || slug, text })} onNavigate={onNavigate} />)}
@@ -543,7 +543,7 @@ function RelatedPanel({ related, onNavigate, onClose }: { related: RelatedWork[]
     </article>)}</aside>;
 }
 
-function TurnBubble({ turn, index, turns, onRetry, onListen, onNavigate, currentModel }: { turn: SessionTurn; index: number; turns: SessionTurn[]; onRetry: (idx: number, model?: string) => void; onListen: (idx: number, text: string) => void; onNavigate: (hash: string) => void; currentModel: string }) {
+function TurnBubble({ turn, index, turns, canRetry = true, onRetry, onListen, onNavigate, currentModel }: { turn: SessionTurn; index: number; turns: SessionTurn[]; canRetry?: boolean; onRetry: (idx: number, model?: string) => void; onListen: (idx: number, text: string) => void; onNavigate: (hash: string) => void; currentModel: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   if (turn.role === 'user') return <div className="turn"><div className="turn-who">You</div><div className="bubble user"><div className="turn-text">{turn.text}</div></div></div>;
   const assistantIndex = turns.slice(0, index + 1).filter((entry) => entry.role === 'assistant').length - 1;
@@ -551,7 +551,7 @@ function TurnBubble({ turn, index, turns, onRetry, onListen, onNavigate, current
   return <div className="turn"><div className="turn-who"><span>Companion{signal}</span></div>
     <div className="bubble assistant"><RichMarkdown className="turn-text" text={turn.canonical || ''} onNavigate={onNavigate} /></div>
     <div className="turn-actions"><button className="btn ghost" onClick={() => onListen(assistantIndex, turn.canonical || '')}>Listen</button><button className="menu-btn" onClick={() => setMenuOpen(!menuOpen)} aria-label="More">⋯</button>
-      {menuOpen && <div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(assistantIndex); setMenuOpen(false); }}>Retry</div>
+      {menuOpen && canRetry && <div className="turn-menu"><div className="turn-menu-item" onClick={() => { onRetry(assistantIndex); setMenuOpen(false); }}>Retry</div>
         <div className="turn-menu-item" onClick={() => { onRetry(assistantIndex, currentModel || undefined); setMenuOpen(false); }}>Retry with {currentModel || 'default model'}</div></div>}</div>
   </div>;
 }
