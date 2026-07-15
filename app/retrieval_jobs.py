@@ -79,7 +79,7 @@ def start_retrieval(
 
         if result:
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
-                     result.get("source"))
+                     result.get("source"), match_score=result.get("score"))
             # An id the user explicitly supplied corrects any machine-resolved one on the
             # entry (a wrong title-search match must not outlive the correction). Only when
             # the result IS that id: a failed explicit download falls back to title search,
@@ -134,9 +134,10 @@ async def _consume_hunt(
 
 
 def _persist(slug: str, title: str, full_text: str, arxiv_id: str | None,
-             source: str | None) -> None:
+             source: str | None, match_score: float | None = None) -> None:
     store.write_full_text(slug, title, full_text, {
         "slug": slug,
         "arxiv_id": arxiv_id,
         "source": source,
+        "match_score": match_score,
     })

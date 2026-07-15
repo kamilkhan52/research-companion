@@ -470,7 +470,7 @@ def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None =
     never touched, and a year comment is skipped when the entry's effective arXiv id already
     dates the paper. `authoritative=True` (an id the user explicitly supplied to a retrieval)
     additionally REPLACES a conflicting arxiv comment — the machine-resolved id it corrects
-    must not outlive the correction — and drops a year comment the new id contradicts.
+    must not outlive the correction. An existing year comment survives either mode.
     Returns True if the file changed. Metadata-only edit like add_entry/set_abstract:
     uncommitted, deterministic, offline. Serialized by _RL_LOCK: concurrent retrieval jobs
     finish independently and must not lose each other's read-modify-write."""
@@ -508,13 +508,11 @@ def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None =
             effective_id = new_id
             changed = True
 
+        # An existing year comment always survives, even an authoritative id correction: the
+        # comment is the parser's top precedence by contract (it may deliberately record the
+        # venue's publication year where the arXiv id encodes submission year).
         derived = year_from_arxiv_id(effective_id)
         has_year_comment = any(_YEAR_COMMENT_RE.search(line) for line in block)
-        if authoritative and derived and has_year_comment and target["year"] != derived:
-            # The year comment described the (corrected-away) wrong identity.
-            block = [line for line in block if not _YEAR_COMMENT_RE.search(line)]
-            has_year_comment = False
-            changed = True
         if year and 1900 <= year <= 2100 and not derived and not has_year_comment:
             insert_comment(f"<!-- year: {year} -->")
             changed = True
@@ -541,12 +539,14 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
     _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
     # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
     # the reading-list entry never had — record it there too, so the entry gains its year and
-    # every id-keyed feature (backfill, graph matching) sees it. Never overwrites a pinned id.
-    # Invariant-4 note: this edits reading-list.md uncommitted, exactly like add_entry — and
-    # the same id is already in this corpus file's header, which the next approved commit
-    # sweeps regardless; the entry comment mirrors recorded fact, it adds no new agent
-    # authorship to the record.
-    if meta.get("arxiv_id"):
+    # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
+    # an explicit/pdf retrieval (score 1.0) or a near-identical title match — retrieve()'s
+    # own 0.62 auto-accept floor is fine for fetching text but too weak to stamp identity
+    # (the same 0.95 bar backfill_abstracts uses, for the same near-miss reason). Never
+    # overwrites a pinned id. Invariant-4 note: this edits reading-list.md uncommitted,
+    # exactly like add_entry — and the same id is already in this corpus file's header, which
+    # the next approved commit sweeps regardless; the entry comment mirrors recorded fact.
+    if meta.get("arxiv_id") and float(meta.get("match_score") or 0) >= 0.95:
         annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
     return p
 

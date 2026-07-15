@@ -104,10 +104,23 @@ def test_write_full_text_records_resolved_arxiv_id_on_the_entry(temp_project):
     slug = store.add_entry("Found On Arxiv By Title")
     store.write_full_text(slug, "Found On Arxiv By Title", "body", {
         "slug": slug, "arxiv_id": "2201.11705", "source": "https://arxiv.org/abs/2201.11705",
+        "match_score": 0.97,
     })
     assert store.arxiv_id_for(slug) == "2201.11705"
     assert store.year_for(slug) == 2022
     assert store.corpus_arxiv_id_for(slug) == "2201.11705"
+
+
+def test_write_full_text_weak_title_match_stays_off_the_entry(temp_project):
+    """retrieve()'s 0.62 auto-accept floor is fine for fetching text but too weak to stamp
+    identity on the entry — the corpus header records it, the reading list does not."""
+    slug = store.add_entry("Ambiguously Titled Paper")
+    store.write_full_text(slug, "Ambiguously Titled Paper", "body", {
+        "slug": slug, "arxiv_id": "2401.12345", "source": "https://arxiv.org/abs/2401.12345",
+        "match_score": 0.7,
+    })
+    assert store.arxiv_id_for(slug) == ""
+    assert store.corpus_arxiv_id_for(slug) == "2401.12345"
 
 
 def test_write_full_text_without_id_leaves_the_entry_alone(temp_project):
@@ -133,12 +146,13 @@ def test_authoritative_annotate_ignores_version_suffix_differences(temp_project)
     assert store.arxiv_id_for(slug) == "2211.10438"
 
 
-def test_authoritative_annotate_drops_a_contradicted_year_comment(temp_project):
-    slug = store.add_entry("Wrongly Dated", year=2024)
-    assert store.year_for(slug) == 2024
+def test_explicit_year_comment_survives_an_authoritative_id_correction(temp_project):
+    """The year comment is the parser's top precedence by contract — it may deliberately
+    record the venue's publication year where the arXiv id encodes submission year."""
+    slug = store.add_entry("Deliberately Dated", year=2018)
     store.annotate_entry(slug, arxiv_id="1706.03762", authoritative=True)
-    assert store.year_for(slug) == 2017
-    assert "<!-- year:" not in store._reading_list().read_text(encoding="utf-8")
+    assert store.arxiv_id_for(slug) == "1706.03762"
+    assert store.year_for(slug) == 2018
 
 
 def test_concurrent_annotations_do_not_lose_each_other(temp_project):

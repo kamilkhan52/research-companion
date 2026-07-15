@@ -312,6 +312,7 @@ def start_paper(req: StartReq):
         return {"needs_confirmation": True, "candidates": res["candidates"], "slug": req.slug}
     store.write_full_text(req.slug, paper.title, res["full_text"], {
         "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
+        "match_score": res.get("score"),
     })
     # An explicitly supplied id corrects any machine-resolved one on the entry — but only
     # when the result IS that id (a failed explicit download falls back to title search).
@@ -380,7 +381,8 @@ async def start_paper_stream(req: StartReq):
             return
         if res:
             store.write_full_text(req.slug, paper.title, res["full_text"], {
-                "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source")})
+                "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
+                "match_score": res.get("score")})
             # An explicitly supplied id corrects any machine-resolved one on the entry — but
             # only when the result IS that id (a failed explicit download falls back to
             # title search).
