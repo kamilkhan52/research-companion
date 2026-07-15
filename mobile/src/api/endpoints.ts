@@ -112,7 +112,16 @@ export const addPaper = (
   group?: string,
   arxiv_id?: string,
   abstract?: string,
-) => apiPost<{ paper: Paper }>(`${P(pid)}/papers`, { title, group, arxiv_id, abstract });
+  year?: number | null,
+) =>
+  apiPost<{ paper: Paper }>(`${P(pid)}/papers`, {
+    title,
+    group,
+    arxiv_id,
+    abstract,
+    // Dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
+    year: year ?? undefined,
+  });
 /** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
  *  the backend git-commits this change — the caller must have shown a confirm first. */
 export const removePaper = (pid: string, slug: string) =>

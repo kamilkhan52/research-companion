@@ -194,7 +194,7 @@ export function Library({ onNavigate }: Props) {
       ) : visiblePapers.length === 0 ? <p className="lc-empty muted">No papers match this filter.</p> : <div className="paper-list">
         {visiblePapers.map((paper) => <article key={paper.slug} className="paper-card">
           <button className="paper-open" onClick={() => onNavigate(`paper/${encodeURIComponent(paper.slug)}`)}>
-            <div className="paper-card-body"><StatusBadge paper={paper} /><div className="paper-card-title">{paper.title}</div></div>
+            <div className="paper-card-body"><div className="paper-card-meta"><StatusBadge paper={paper} />{paper.year ? <span className="muted paper-year">{paper.year}</span> : null}</div><div className="paper-card-title">{paper.title}</div></div>
             <span className="paper-action">{bucket(paper) === 'done' ? 'Open' : bucket(paper) === 'toread' ? 'Read' : 'Resume'} ›</span>
           </button>
           <button className="paper-remove" aria-label={`Remove ${paper.title}`} disabled={removing === paper.slug} onClick={() => void confirmRemove(paper)}>Remove</button>

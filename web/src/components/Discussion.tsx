@@ -111,6 +111,7 @@ export function Discussion({ slug, onNavigate }: Props) {
   const [view, setView] = useState<View>('compose');
   const [turns, setTurns] = useState<SessionTurn[]>([]);
   const [paperTitle, setPaperTitle] = useState('');
+  const [paperYear, setPaperYear] = useState<number | null>(null);
   const [sessionState, setSessionState] = useState<SessionState>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,6 +178,7 @@ export function Discussion({ slug, onNavigate }: Props) {
 
   const applySession = useCallback((session: Session) => {
     setPaperTitle(session.paper.title);
+    setPaperYear(session.paper.year ?? null);
     setTurns((session.transcript || []).map((turn) => ({ ...turn, narration: '' })));
     setSessionState(session.state as SessionState);
     setReadingMode(session.reading_mode || 'balanced');
@@ -480,7 +482,7 @@ export function Discussion({ slug, onNavigate }: Props) {
   return (
     <div className="discussion">
       <header className="discussion-toolbar">
-        <div><span className="muted">{sessionState === 'committed' ? 'Read' : 'Discussion'}</span><h2>{paperTitle}</h2></div>
+        <div><span className="muted">{[sessionState === 'committed' ? 'Read' : 'Discussion', paperYear].filter(Boolean).join(' · ')}</span><h2>{paperTitle}</h2></div>
         <SessionControls readingMode={readingMode} onReadingMode={changeReadingMode} deliveryMode={deliveryMode}
           onDeliveryMode={setDeliveryMode} model={model} onModel={setModel} favorites={favorites} compact />
         <button className="btn ghost" onClick={() => void showRelated()}>Related works</button>

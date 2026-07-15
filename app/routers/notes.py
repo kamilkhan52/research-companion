@@ -31,6 +31,8 @@ class AddPaperReq(BaseModel):
     group: str | None = None
     arxiv_id: str | None = None   # recorded as a comment; the paper is not auto-retrieved
     abstract: str | None = None   # pass it when the caller has one (Discover does)
+    year: int | None = None       # pass it when the caller has one (graph nodes do); only
+                                  # recorded for papers whose arXiv id can't date them
 
 
 class NotesSaveReq(BaseModel):
@@ -138,7 +140,7 @@ def add_paper(pid: str, req: AddPaperReq):
     the record, that stays an explicit human action via /approve)."""
     try:
         slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
-                               abstract=req.abstract)
+                               abstract=req.abstract, year=req.year)
     except store.DuplicatePaperError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:

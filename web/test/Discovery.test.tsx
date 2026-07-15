@@ -33,7 +33,7 @@ describe('Discovery', () => {
     await screen.findByText('Paper One');
     await user.click(screen.getByRole('button', { name: '+ Add' }));
     await waitFor(() => expect(api.addPaper).toHaveBeenCalledWith(
-      'project-1', 'Paper One', '2501.00001', 'A useful paper.',
+      'project-1', 'Paper One', '2501.00001', 'A useful paper.', 2025,
     ));
   });
 

@@ -28,6 +28,7 @@ class Paper:
     session_state: str | None = None  # transient working state if a session exists
     arxiv_id: str = ""                # the entry's <!-- arxiv: ... --> id, when it has one
     source_url: str = ""              # original PDF/source URL recorded in the corpus header
+    year: int | None = None           # publication year (explicit <!-- year --> or arXiv id)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -229,12 +229,14 @@ export function useAddPaper(pid: string) {
       group,
       arxivId,
       abstract,
+      year,
     }: {
       title: string;
       group?: string;
       arxivId?: string;
       abstract?: string;
-    }) => api.addPaper(pid, title, group, arxivId, abstract),
+      year?: number | null;
+    }) => api.addPaper(pid, title, group, arxivId, abstract, year),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });

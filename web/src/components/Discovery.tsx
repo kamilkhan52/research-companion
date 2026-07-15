@@ -94,13 +94,13 @@ export function Discovery({ onNavigate }: Props) {
     }
   }
 
-  async function add(title: string, arxivId?: string, abstract?: string) {
+  async function add(title: string, arxivId?: string, abstract?: string, year?: number | null) {
     if (!activePid) return;
     const id = arxivId || title;
     setAddingId(id);
     setError(null);
     try {
-      await addPaper(activePid, title, arxivId, abstract);
+      await addPaper(activePid, title, arxivId, abstract, year);
       setAdded((previous) => new Set(previous).add(id));
       refetch();  // membership everywhere else updates immediately
     } catch (caught) {
@@ -148,7 +148,7 @@ export function Discovery({ onNavigate }: Props) {
                   </div>
                   <p className="suggestion-abstract muted">{suggestion.abstract?.slice(0, 200)}{(suggestion.abstract?.length ?? 0) > 200 ? '…' : ''}</p>
                 </div>
-                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract)} disabled={inLibrary || addingId === id}>
+                <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract, suggestion.year)} disabled={inLibrary || addingId === id}>
                   {added.has(id) ? 'Added ✓' : inLibrary ? 'In library' : addingId === id ? 'Adding…' : '+ Add'}
                 </button>
               </div>;

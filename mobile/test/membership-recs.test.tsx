@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
@@ -79,6 +79,31 @@ test('a recommendation already in the reading list shows In project, not + Add',
   expect(screen.getByLabelText('GPT-4 Technical Report is in this project')).toBeTruthy();
   // The paper NOT in the project keeps its Add affordance.
   expect(screen.getByLabelText('Add Some Other Work to project')).toBeTruthy();
+});
+
+// U.17 — surfaces that know a paper's year must forward it, so a non-arXiv addition
+// still lands dated in the reading list.
+test('adding a recommendation forwards its year', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: inProjectPaper } as never);
+  await renderAsync(
+    wrap(
+      <RecommendationsPanel
+        pid="proj"
+        visible
+        recommendations={[{ ...baseRec, id: 'ext:other', title: 'Some Other Work', arxiv_id: '2401.00001' }]}
+        onClose={() => {}}
+        onSelect={() => {}}
+      />,
+    ),
+  );
+  // The Add press handler stops propagation (the row underneath opens the node); supply the
+  // event object the real Pressable would.
+  await fireEventAsync.press(await screen.findByLabelText('Add Some Other Work to project'), {
+    stopPropagation: () => {},
+  });
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith('proj', 'Some Other Work', undefined, '2401.00001', undefined, 2023),
+  );
 });
 
 test('an external graph node already in the project (matched by title) cannot be re-added', async () => {

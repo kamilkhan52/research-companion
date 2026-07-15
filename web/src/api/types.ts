@@ -25,6 +25,8 @@ export interface Paper {
   session_state: SessionState;
   kind?: string;
   arxiv_id?: string;
+  /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
+  year?: number | null;
 }
 
 export type ReadingMode = 'balanced' | 'background' | 'technical' | 'detailed';

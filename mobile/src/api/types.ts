@@ -48,6 +48,8 @@ export interface Paper {
   arxiv_id: string;
   /** Original PDF/source URL recorded when the paper was retrieved ("" otherwise). */
   source_url?: string;
+  /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
+  year?: number | null;
   // The review pseudo-paper carries an extra kind field.
   kind?: string;
 }
