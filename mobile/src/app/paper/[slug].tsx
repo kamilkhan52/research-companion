@@ -801,9 +801,12 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
 
-  // Long-press a message for its actions (copy everywhere; edit on user replies). Rendered
-  // through the app's own OptionsSheet — the native action sheet ignores the design language
-  // (polish plan F.5: OptionsSheet is the only menu idiom anywhere in the app).
+  // Long-press a message for its actions (copy everywhere; edit on user replies; the full
+  // under-response row — Listen, Retry, Retry-with-model — on assistant responses, U.12: the
+  // menu is a shortcut to the same actions, not a different set). Rendered through the app's
+  // own OptionsSheet — the native action sheet ignores the design language (polish plan F.5:
+  // OptionsSheet is the only menu idiom anywhere in the app).
+  const audio = useAudio();
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
   const onLongPressMessage = useCallback((_context: unknown, message: DiscussionMessage) => {
     const entry = message.entry;
@@ -834,9 +837,36 @@ function DiscussionThread({
         onPress: () => startEdit(message.replyIndex!, entry.text, message.transcriptIndex!),
       });
     }
+    if (entry.role === 'assistant') {
+      const audioId = messageAudioId(pid, slug, entry.assistant_index);
+      options.push({
+        key: 'listen',
+        title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
+        icon: 'headphones',
+        onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
+      });
+      if (!stream.streaming) {
+        options.push({
+          key: 'retry',
+          title: 'Retry',
+          subtitle: 'Regenerate with the current model',
+          icon: 'rotate-ccw',
+          section: true,
+          onPress: () => handleRetry(entry.assistant_index),
+        });
+        for (const m of favorites) {
+          options.push({
+            key: `retry-${m.id}`,
+            title: `Retry with ${m.label}`,
+            icon: 'zap',
+            onPress: () => handleRetry(entry.assistant_index, m.id),
+          });
+        }
+      }
+    }
     setMsgMenu(options);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, stream.streaming, transcript]);
+  }, [editing, state, stream.streaming, transcript, audio.currentId, audio.playText, favorites, handleRetry, pid, slug, title]);
 
   // A persisted edit can outlive its window (e.g. the notes were committed from another
   // device while an edit draft sat here). Committed state has no composer to show or cancel
