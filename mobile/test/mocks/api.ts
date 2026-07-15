@@ -30,6 +30,7 @@ export const startPaper = unexpected('startPaper');
 export const reopen = unexpected('reopen');
 export const approve = unexpected('approve');
 export const addPaper = unexpected('addPaper');
+export const switchBranch = unexpected('switchBranch');
 export const streamPaths = jest.fn(() => ({}));
 export const turnJobPaths = jest.fn(() => ({}));
 export const getChatJob = unexpected('getChatJob');

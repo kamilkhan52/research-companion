@@ -7,7 +7,7 @@ import {
   isHandoffEligible,
   registerEligibleHandoff,
 } from '@/audio/handoffState';
-import { useListeningHandoffRecovery } from '@/audio/identity';
+import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 
 const completed: TranscriptEntry = {
   role: 'assistant',
@@ -47,7 +47,7 @@ test('re-entry recovers a handoff that completed after the original watcher unmo
 
   await waitFor(() => expect(enqueueJob).toHaveBeenCalledWith(
     {
-      id: 'project-a:paper-a:2',
+      id: messageAudioId('project-a', 'paper-a', 2, 'Recovered answer.'),
       title: 'Paper A',
       text: 'Recovered answer.',
     },

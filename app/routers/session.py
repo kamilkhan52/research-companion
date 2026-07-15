@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
@@ -17,6 +19,7 @@ from .. import (
     agent,
     agent_harness,
     chat_jobs,
+    committer,
     config,
     cover_jobs,
     graph,
@@ -29,7 +32,7 @@ from .. import (
     store,
 )
 from ..agent import AgentError
-from ..models import REVIEW_SLUG, REVIEW_TITLE
+from ..models import COMMITTED, REVIEW_SLUG, REVIEW_TITLE
 from ..retriever import RetrievalError
 from . import make_project_router
 
@@ -83,6 +86,12 @@ class RetryReq(DeliveryReq):
     assistant_index: int
 
 
+class BranchSwitchReq(BaseModel):
+    slug: str
+    assistant_index: int
+    branch: int  # 1-based ordinal shown in the selector ("2/3" -> branch=2)
+
+
 class EditReq(DeliveryReq):
     slug: str
     reply_index: int
@@ -105,30 +114,62 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+# SSE turns are connection-tied and invisible to the chat JobRegistry, so the empty-fork
+# recovery in get_session and the branch-mutation guards must consult this in-process marker
+# too. Registered EAGERLY by the route (a generator body doesn't run until its first pull, so
+# lazy registration left a guard window) and refreshed/discarded by the generator itself.
+# Entries carry a timestamp: if a response object is never consumed, its finally never runs,
+# so stale entries expire instead of wedging the session's guards forever. Single-worker
+# process (CLAUDE.md invariant 6).
+_active_sse_turns: dict[tuple[str | None, str], float] = {}
+_active_sse_lock = threading.Lock()
+_SSE_TURN_TTL_S = 2 * 60 * 60.0
+
+
+def _register_sse_turn(slug: str) -> None:
+    with _active_sse_lock:
+        _active_sse_turns[(config.active_project_id(), slug)] = time.monotonic()
+
+
+def _discard_sse_turn(slug: str) -> None:
+    with _active_sse_lock:
+        _active_sse_turns.pop((config.active_project_id(), slug), None)
+
+
+def _sse_turn_active(slug: str) -> bool:
+    with _active_sse_lock:
+        started = _active_sse_turns.get((config.active_project_id(), slug))
+        return started is not None and time.monotonic() - started < _SSE_TURN_TTL_S
+
+
 def _turn_stream(slug: str, model: str | None = None):
     """Stream the analysis turn as SSE: incremental CANONICAL text, then a final 'done'
     event carrying the parsed+recorded turn. The user message must already be recorded."""
-    history = sessions.build_history(slug)
-    pieces: list[str] = []
-    sent = 0
+    _register_sse_turn(slug)
     try:
-        for piece in agent.stream_tokens(slug, history, model=model):
-            pieces.append(piece)
-            canon = agent.canonical_prefix("".join(pieces))
-            if len(canon) > sent:
-                yield _sse({"type": "delta", "text": canon[sent:]})
-                sent = len(canon)
-    except AgentError as e:
-        yield _sse({"type": "error", "detail": str(e)})
-        return
-    turn = agent.parse("".join(pieces))
-    if not turn.canonical.strip():
-        yield _sse({"type": "error", "detail":
-                    "The model returned an empty response. Try again, or switch the analysis "
-                    "model in Settings."})
-        return
-    sessions.record_assistant(slug, turn)
-    yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+        history = sessions.build_history(slug)
+        pieces: list[str] = []
+        sent = 0
+        try:
+            for piece in agent.stream_tokens(slug, history, model=model):
+                pieces.append(piece)
+                canon = agent.canonical_prefix("".join(pieces))
+                if len(canon) > sent:
+                    yield _sse({"type": "delta", "text": canon[sent:]})
+                    sent = len(canon)
+        except AgentError as e:
+            yield _sse({"type": "error", "detail": str(e)})
+            return
+        turn = agent.parse("".join(pieces))
+        if not turn.canonical.strip():
+            yield _sse({"type": "error", "detail":
+                        "The model returned an empty response. Try again, or switch the analysis "
+                        "model in Settings."})
+            return
+        sessions.record_assistant(slug, turn)
+        yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
+    finally:
+        _discard_sse_turn(slug)
 
 
 async def _agentic_turn_stream(slug: str, model: str | None = None):
@@ -136,6 +177,15 @@ async def _agentic_turn_stream(slug: str, model: str | None = None):
     contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
     'tool' events announcing each research tool the model calls. The final answer is parsed from
     the agent's authoritative output."""
+    _register_sse_turn(slug)
+    try:
+        async for chunk in _agentic_turn_events(slug, model):
+            yield chunk
+    finally:
+        _discard_sse_turn(slug)
+
+
+async def _agentic_turn_events(slug: str, model: str | None = None):
     history = sessions.build_history(slug)
     pieces: list[str] = []
     sent = 0
@@ -182,6 +232,12 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 @project_router.get("/session/{slug}")
 def get_session(slug: str):
+    # Durable empty-fork recovery: a crash/restart between a retry's fork and its response
+    # loses the worker's own rollback. If no turn is generating and an aged fork's active
+    # tail is still empty, restore the branch it left (no-op otherwise; the grace window
+    # keeps this from racing a retry that was just prepped).
+    if not chat_jobs.active_for(slug) and not _sse_turn_active(slug):
+        sessions.rollback_empty_fork(slug, min_age_s=30.0)
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
                  "list_status": "n/a", "session_state": sessions.get_state(REVIEW_SLUG)}
@@ -414,7 +470,16 @@ def _prep_continue(req: FinishReq) -> None:
 
 def _prep_retry(req: RetryReq) -> None:
     _require_session(req.slug)
-    sessions.truncate_before_assistant(req.slug, req.assistant_index)
+    if committer.approval_in_flight(req.slug):
+        raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
+    # Committed is a resting point: forking would archive the committed proposal and a later
+    # switch-back would re-offer Approve for notes already in git (duplicate commit).
+    if sessions.get_state(req.slug) == COMMITTED:
+        raise HTTPException(status_code=409,
+                            detail="Notes are committed — continue the discussion first.")
+    # U.14: a retry forks the conversation instead of discarding the old response — the
+    # previous tail is archived as a branch, switchable via /branch_switch.
+    sessions.fork_before_assistant(req.slug, req.assistant_index)
 
 
 def _prep_edit(req: EditReq) -> None:
@@ -442,7 +507,9 @@ def _prep_request_changes(req: RequestChangesReq) -> None:
 def chat_start_stream(req: ChatStartReq):
     """Fire the first response for any chat (paper or review) with the edited opening prompt
     and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
-    _prep_chat_start(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_chat_start(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -458,14 +525,18 @@ def reply(req: ReplyReq):
 
 @project_router.post("/reply_stream")
 def reply_stream(req: ReplyReq):
-    _prep_reply(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_reply(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/continue_stream")
 def continue_stream(req: FinishReq):
-    _prep_continue(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_continue(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -474,7 +545,9 @@ def continue_stream(req: FinishReq):
 def retry_stream(req: RetryReq):
     """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
     response to the preceding user message."""
-    _prep_retry(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_retry(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -483,21 +556,27 @@ def retry_stream(req: RetryReq):
 def edit_stream(req: EditReq):
     """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
     old response and everything after it, then stream a fresh answer to the edited message."""
-    _prep_edit(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_edit(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
-    _prep_finish(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_finish(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/request_changes_stream")
 def request_changes_stream(req: RequestChangesReq):
-    _prep_request_changes(req)
+    with sessions.mutation_lock(req.slug):
+        _prep_request_changes(req)
+        _register_sse_turn(req.slug)
     return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -522,51 +601,85 @@ def _started_job(slug: str, delivery_mode: str, model: str | None = None) -> dic
 
 @project_router.post("/chat/start_job")
 def chat_start_job(req: ChatStartReq):
-    _no_turn_in_flight(req.slug)
-    _prep_chat_start(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_chat_start(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/reply_job")
 def reply_job(req: ReplyReq):
-    _no_turn_in_flight(req.slug)
-    _prep_reply(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_reply(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/continue_job")
 def continue_job(req: FinishReq):
-    _no_turn_in_flight(req.slug)
-    _prep_continue(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_continue(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
+
+
+@project_router.post("/branch_switch")
+def branch_switch(req: BranchSwitchReq):
+    """Make another retry branch the live conversation at a fork point. Quick action (no
+    LLM); the client refreshes from the returned transcript/state. Refused while a turn is
+    generating — the in-flight job appends to whichever tail is live."""
+    _require_session(req.slug)
+    # Checks and mutation share the per-slug lock: a snapshot guard alone could interleave
+    # with a turn prep (between record_user and job registration) or an approval.
+    with sessions.mutation_lock(req.slug):
+        if sessions.get_state(req.slug) == COMMITTED:
+            # Switching would rewrite the transcript under a committed record, and restoring
+            # an older proposed-draft branch would re-offer Approve for notes already in git.
+            raise HTTPException(status_code=409,
+                                detail="Notes are committed — continue the discussion first.")
+        if chat_jobs.active_for(req.slug) or _sse_turn_active(req.slug):
+            raise HTTPException(status_code=409,
+                                detail="Wait for the current response to finish.")
+        if committer.approval_in_flight(req.slug):
+            raise HTTPException(status_code=409, detail="Wait for the approval to finish.")
+        if not sessions.switch_branch(req.slug, req.assistant_index, req.branch):
+            raise HTTPException(status_code=404, detail="No such branch at this turn.")
+        return {
+            "state": sessions.get_state(req.slug),
+            "transcript": sessions.transcript(req.slug),
+        }
 
 
 @project_router.post("/retry_job")
 def retry_job(req: RetryReq):
-    _no_turn_in_flight(req.slug)
-    _prep_retry(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_retry(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/edit_job")
 def edit_job(req: EditReq):
-    _no_turn_in_flight(req.slug)
-    _prep_edit(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_edit(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/finish_job")
 def finish_job(req: FinishReq):
-    _no_turn_in_flight(req.slug)
-    _prep_finish(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_finish(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.post("/request_changes_job")
 def request_changes_job(req: RequestChangesReq):
-    _no_turn_in_flight(req.slug)
-    _prep_request_changes(req)
-    return _started_job(req.slug, req.delivery_mode, model=req.model)
+    with sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_request_changes(req)
+        return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.get("/chat/jobs/active/{slug}")

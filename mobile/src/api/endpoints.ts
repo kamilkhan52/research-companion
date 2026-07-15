@@ -25,7 +25,9 @@ import type {
   RecentSession,
   PreviewJob,
   Session,
+  SessionState,
   Settings,
+  TranscriptEntry,
   UsageSummary,
 } from './types';
 
@@ -132,6 +134,15 @@ export const streamPaths = (pid: string) => ({
 // Job-based turn endpoints (used with useStreamingTurn). The POST starts (or joins) a
 // server-side background job that records the turn even if this client disappears; progress
 // arrives via cheap polls instead of one long-lived connection the tunnel can kill.
+/** Switch the live conversation to another retry branch at a fork point (quick action, no
+ *  LLM). Returns the refreshed state + transcript. 409 while a turn is generating. */
+export const switchBranch = (pid: string, slug: string, assistantIndex: number, branch: number) =>
+  apiPost<{ state: SessionState; transcript: TranscriptEntry[] }>(`${P(pid)}/branch_switch`, {
+    slug,
+    assistant_index: assistantIndex,
+    branch,
+  });
+
 export const turnJobPaths = (pid: string) => ({
   chatStart: `${P(pid)}/chat/start_job`,
   reply: `${P(pid)}/reply_job`,

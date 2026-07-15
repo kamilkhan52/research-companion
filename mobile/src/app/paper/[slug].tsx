@@ -164,7 +164,7 @@ export default function DiscussionScreen() {
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
     audio.enqueueJob(
       {
-        id: messageAudioId(pid, slug, job.assistant_index),
+        id: messageAudioId(pid, slug, job.assistant_index, canonical),
         title: session.data?.paper.title ?? 'Narration',
         text: canonical,
       },
@@ -589,6 +589,17 @@ function ModePickerSheet({
 
 // ---------- the thread (library chat + lifecycle toolbar) ----------
 
+/** Audio identity for an assistant turn — content-qualified via messageAudioId so EVERY
+ *  turn on every branch (not just the fork point) is distinct when its text differs (U.14
+ *  review: downstream replies inside a branch share indexes with the sibling branch too). */
+function branchAudioId(
+  pid: string,
+  slug: string,
+  entry: Extract<TranscriptEntry, { role: 'assistant' }>,
+): string {
+  return messageAudioId(pid, slug, entry.assistant_index, entry.canonical);
+}
+
 function DiscussionThread({
   pid,
   slug,
@@ -666,13 +677,79 @@ function DiscussionThread({
     }
   }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
 
+  // U.14: the moment a retry starts, the reader must see the conversation reset to the last
+  // user message — not the old response lingering until the refetch. The old tail is hidden
+  // client-side while the cached transcript still carries the exact entry that was forked
+  // away; once the refetched transcript differs at that index (new response, or nothing after
+  // a failure), hiding stops by itself. No timers, no cleanup races.
+  const [retryHide, setRetryHide] = useState<{
+    index: number;
+    canonical: string;
+    branchActive: number | null;
+  } | null>(null);
+  useEffect(() => setRetryHide(null), [slug]);
+  // A retry that never reached the server (offline, 409) leaves the cached transcript
+  // untouched — the content key below would hide the tail forever. The stream error is the
+  // settle signal for that case.
+  useEffect(() => {
+    if (stream.error) setRetryHide(null);
+  }, [stream.error]);
+  // One-shot latch: the first refetch that no longer matches the forked-away entry clears the
+  // marker for good — otherwise switching BACK to that branch later would re-match it and
+  // hide a perfectly valid tail with no retry running.
+  useEffect(() => {
+    if (!retryHide) return;
+    const entry = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === retryHide.index,
+    );
+    const stillForkedAway = entry &&
+      entry.role === 'assistant' &&
+      entry.canonical === retryHide.canonical &&
+      (entry.branch_active ?? null) === retryHide.branchActive;
+    if (!stillForkedAway) setRetryHide(null);
+  }, [retryHide, transcript]);
+  const queryClient = useQueryClient();
+  const [switchingBranch, setSwitchingBranch] = useState(false);
+  const handleSwitchBranch = useCallback(async (assistantIndex: number, branch: number) => {
+    if (switchingBranch || stream.streaming) return;
+    setSwitchingBranch(true);
+    setRetryHide(null);  // switching is explicit navigation; never hide what it restores
+    try {
+      await api.switchBranch(pid, slug, assistantIndex, branch);
+      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      // A switch can flip session_state (in_discussion <-> notes_drafted); library rows and
+      // paper actions read it from project state.
+      await queryClient.invalidateQueries({ queryKey: keys.projectState(pid) });
+    } catch (e) {
+      Alert.alert('Could not switch branch', (e as Error).message ?? 'Request failed.');
+    } finally {
+      setSwitchingBranch(false);
+    }
+  }, [pid, queryClient, slug, stream.streaming, switchingBranch]);
+
+  const hideFromIndex = useMemo(() => {
+    if (!retryHide) return null;
+    const entry = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === retryHide.index,
+    );
+    // Hide only while the cached entry is EXACTLY the one forked away — same text AND same
+    // branch ordinal. A regeneration that returns identical text still bumps branch_active,
+    // so hiding always clears on the post-generation refetch.
+    return entry &&
+      entry.role === 'assistant' &&
+      entry.canonical === retryHide.canonical &&
+      (entry.branch_active ?? null) === retryHide.branchActive
+      ? retryHide.index
+      : null;
+  }, [retryHide, transcript]);
   const messages = useMemo(
     () => toDiscussionMessages(
       transcript,
       stream.pendingUser,
       stream.streaming ? stream.items : null,
+      hideFromIndex,
     ),
-    [transcript, stream.pendingUser, stream.streaming, stream.items],
+    [transcript, stream.pendingUser, stream.streaming, stream.items, hideFromIndex],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -760,9 +837,22 @@ function DiscussionThread({
   // Regenerate an assistant turn (optionally with a different model), from its per-message
   // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
   // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
+  const canRetry = state !== 'committed';
   const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+    if (state === 'committed') return;
+    const old = transcript.find(
+      (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
+    );
+    if (old && old.role === 'assistant') {
+      setRetryHide({
+        index: assistantIndex,
+        canonical: old.canonical,
+        branchActive: old.branch_active ?? null,
+      });
+    }
     void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
-  }, [paths.retry, slug, stream.run]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paths.retry, slug, state, stream.run, transcript]);
 
   async function approve() {
     setBusy(true);
@@ -838,14 +928,14 @@ function DiscussionThread({
       });
     }
     if (entry.role === 'assistant') {
-      const audioId = messageAudioId(pid, slug, entry.assistant_index);
+      const audioId = branchAudioId(pid, slug, entry);
       options.push({
         key: 'listen',
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
         icon: 'headphones',
         onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
       });
-      if (!stream.streaming) {
+      if (!stream.streaming && canRetry) {
         options.push({
           key: 'retry',
           title: 'Retry',
@@ -882,10 +972,13 @@ function DiscussionThread({
       return (
         <AssistantBody
           entry={msg.entry}
-          audioId={messageAudioId(pid, slug, msg.entry.assistant_index)}
+          audioId={branchAudioId(pid, slug, msg.entry)}
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
+          canRetry={canRetry}
+          onSwitchBranch={handleSwitchBranch}
+          switchDisabled={switchingBranch || stream.streaming}
         />
       );
     }
@@ -899,7 +992,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry]);
+  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1379,12 +1472,18 @@ function AssistantBody({
   title,
   favorites,
   onRetry,
+  canRetry,
+  onSwitchBranch,
+  switchDisabled,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
   title: string;
   favorites: FavoriteModel[];
   onRetry: (assistantIndex: number, model?: string) => void;
+  canRetry: boolean;
+  onSwitchBranch: (assistantIndex: number, branch: number) => void;
+  switchDisabled: boolean;
 }) {
   const audio = useAudio();
   const { playing } = useIsPlaying();
@@ -1436,6 +1535,35 @@ function AssistantBody({
           Audio failed: {audioError}
         </Text>
       ) : null}
+      {/* U.14 branch selector: minimal ⟨ 2/3 ⟩, only at a fork point. Switching swaps the
+          whole conversation tail server-side; disabled while a turn is generating. */}
+      {entry.branch_count && entry.branch_count > 1 && entry.branch_active ? (
+        <View style={styles.branchRow}>
+          <Pressable
+            onPress={() => onSwitchBranch(entry.assistant_index, entry.branch_active! - 1)}
+            disabled={switchDisabled || entry.branch_active <= 1}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Previous response branch"
+            style={{ opacity: switchDisabled || entry.branch_active <= 1 ? 0.3 : 1 }}
+          >
+            <Icon name="chevron-left" size={16} color={colors.muted} />
+          </Pressable>
+          <Text variant="caption" color={colors.muted} accessibilityLabel={`Response branch ${entry.branch_active} of ${entry.branch_count}`}>
+            {entry.branch_active}/{entry.branch_count}
+          </Text>
+          <Pressable
+            onPress={() => onSwitchBranch(entry.assistant_index, entry.branch_active! + 1)}
+            disabled={switchDisabled || entry.branch_active >= entry.branch_count}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Next response branch"
+            style={{ opacity: switchDisabled || entry.branch_active >= entry.branch_count ? 0.3 : 1 }}
+          >
+            <Icon name="chevron-right" size={16} color={colors.muted} />
+          </Pressable>
+        </View>
+      ) : null}
       <View style={styles.msgActions}>
         <MsgAction
           icon={listenIcon}
@@ -1452,12 +1580,14 @@ function AssistantBody({
           onPress={() => void copy()}
           accessibilityLabel="Copy this response"
         />
-        <MsgAction
-          icon="rotate-ccw"
-          label="Retry"
-          onPress={() => setRetryMenu(true)}
-          accessibilityLabel="Retry this response, optionally with a different model"
-        />
+        {canRetry ? (
+          <MsgAction
+            icon="rotate-ccw"
+            label="Retry"
+            onPress={() => setRetryMenu(true)}
+            accessibilityLabel="Retry this response, optionally with a different model"
+          />
+        ) : null}
       </View>
       <OptionsSheet
         visible={retryMenu}
@@ -1612,6 +1742,13 @@ const styles = StyleSheet.create({
   // ---- thread ----
   messagesContainer: { backgroundColor: colors.bg },
   assistantCard: { backgroundColor: colors.surface },
+  branchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    alignSelf: 'flex-start',
+    marginTop: space.sm,
+  },
   assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
   // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
   // those read as "floating chat bubble" cues that don't make sense once the tinted card

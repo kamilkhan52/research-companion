@@ -80,3 +80,43 @@ describe('toDiscussionMessages', () => {
     expect(out.every((m) => m.entry !== undefined)).toBe(true);
   });
 });
+
+// ---- U.14: while a retry is generating, the forked-away tail is hidden ----
+
+const assistantEntry = (assistant_index: number, canonical: string) => ({
+  role: 'assistant' as const,
+  canonical,
+  narration: '',
+  state_signal: '',
+  proposed_commit: null,
+  assistant_index,
+  delivery_mode: 'reading' as const,
+  chat_job_id: null,
+  audio_job_id: null,
+  audio_error: null,
+});
+
+test('hideFromAssistantIndex cuts the transcript at the forked turn', () => {
+  const transcript = [
+    { role: 'user' as const, text: 'q1' },
+    assistantEntry(0, 'a1'),
+    { role: 'user' as const, text: 'q2' },
+    assistantEntry(1, 'a2'),
+  ];
+  const msgs = toDiscussionMessages(transcript, null, [{ kind: 'text', text: '…' }] as never, 1);
+  const texts = msgs.map((m) => m.text);
+  // Newest-first (inverted list): streaming row, then q2's answer gone — a2 and beyond hidden.
+  expect(texts).toContain('q1');
+  expect(texts).toContain('a1');
+  expect(texts).toContain('q2');
+  expect(texts).not.toContain('a2');
+});
+
+test('hiding stops when the hidden turn is absent (default null passes through)', () => {
+  const transcript = [
+    { role: 'user' as const, text: 'q1' },
+    assistantEntry(0, 'a1'),
+  ];
+  expect(toDiscussionMessages(transcript, null, null).map((m) => m.text)).toContain('a1');
+  expect(toDiscussionMessages(transcript, null, null, 5).map((m) => m.text)).toContain('a1');
+});

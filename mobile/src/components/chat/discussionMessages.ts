@@ -30,10 +30,22 @@ export function toDiscussionMessages(
   transcript: TranscriptEntry[],
   pendingUser: string | null,
   streamItems: StreamItem[] | null,
+  /** While a retry is generating, hide the transcript from this assistant turn onward — the
+   *  server already forked the tail away, but the cached transcript still carries it until
+   *  the post-generation refetch. The reader must see the conversation reset immediately
+   *  (U.14), not the response being replaced. */
+  hideFromAssistantIndex: number | null = null,
 ): DiscussionMessage[] {
+  let visible = transcript;
+  if (hideFromAssistantIndex != null) {
+    const cut = transcript.findIndex(
+      (e) => e.role === 'assistant' && e.assistant_index === hideFromAssistantIndex,
+    );
+    if (cut >= 0) visible = transcript.slice(0, cut);
+  }
   const out: DiscussionMessage[] = [];
   let replyIndex = -1;
-  transcript.forEach((entry, i) => {
+  visible.forEach((entry, i) => {
     if (entry.role === 'user') {
       replyIndex += 1;
       out.push({
@@ -60,7 +72,7 @@ export function toDiscussionMessages(
     out.push({
       _id: PENDING_MESSAGE_ID,
       text: pendingUser,
-      createdAt: transcript.length,
+      createdAt: visible.length,
       user: DISCUSSION_USER,
       pending: true,
     });
@@ -71,7 +83,7 @@ export function toDiscussionMessages(
       // Non-empty on purpose: the library's Bubble only calls renderMessageText when
       // `currentMessage.text` is truthy, and this row renders entirely through it.
       text: ' ',
-      createdAt: transcript.length + 1,
+      createdAt: visible.length + 1,
       user: ANALYST_USER,
       streaming: true,
       streamItems,

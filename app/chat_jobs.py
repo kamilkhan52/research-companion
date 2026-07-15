@@ -237,6 +237,12 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             # publish the terminal parent error.
             if not succeeded:
                 _suppress_previews(job)
+                # A failed turn that was a retry left an empty fork slot with no selector to
+                # escape it; restore the branch the fork left (no-op otherwise).
+                try:
+                    sessions.rollback_empty_fork(job.slug)
+                except Exception:
+                    log.warning("empty-fork rollback failed for %s", job.slug)
 
     return _registry.start_or_join(
         slug,
@@ -384,6 +390,10 @@ def _record_cancelled(job: ChatJob, partial_text: str) -> None:
     with _registry.lock:
         job.timings["analysis_complete"] = now_iso()
     shown = agent.canonical_prefix(partial_text)
+    if not shown:
+        # Nothing recorded: if this turn was a retry, the fork's empty slot must not strand
+        # the conversation without a selector — restore the branch it left.
+        sessions.rollback_empty_fork(job.slug)
     if shown:
         turn = Turn(role="assistant", canonical=f"{shown}\n\n{STOP_MARKER}",
                     state_signal="in_discussion")

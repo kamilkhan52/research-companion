@@ -73,6 +73,10 @@ export type TranscriptEntry =
       chat_job_id: string | null;
       audio_job_id: string | null;
       audio_error: string | null;
+      /** Retry-fork selector state (U.14): total branches / 1-based live branch at this fork
+       *  point; null when the turn was never retried. */
+      branch_count?: number | null;
+      branch_active?: number | null;
     };
 
 /** GET /api/projects/{pid}/state */
