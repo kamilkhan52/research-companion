@@ -54,4 +54,6 @@ export interface ReviewResponse {
   notes_block?: string;
   synthesis_proposed: string;
   synthesis_current: string;
+  /** Echo back on approve with an explicit payload (optimistic concurrency). */
+  proposal_revision?: string | null;
 }

@@ -40,6 +40,9 @@ def review(slug: str) -> dict:
         "notes_block": proposed.get("notes_block", ""),
         "synthesis_current": store.read_synthesis(),
         "synthesis_proposed": proposed.get("synthesis", ""),
+        # Echo back with an explicit-payload approval; a branch switch or regeneration in the
+        # meantime changes it and the stale approval is refused.
+        "proposal_revision": sessions.proposal_revision(slug),
     }
 
 

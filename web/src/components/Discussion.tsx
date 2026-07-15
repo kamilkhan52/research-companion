@@ -365,7 +365,11 @@ export function Discussion({ slug, onNavigate }: Props) {
   async function handleApprove() {
     if (!activePid) return;
     try {
-      await approve(activePid, slug, { notes_block: notesBlock, synthesis });
+      await approve(activePid, slug, {
+        notes_block: notesBlock,
+        synthesis,
+        proposal_revision: review?.proposal_revision ?? null,
+      });
       onNavigate('library');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));

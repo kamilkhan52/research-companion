@@ -21,6 +21,9 @@ class ApproveReq(BaseModel):
     notes_block: str | None = None
     synthesis: str | None = None
     summary: str | None = None
+    # Required whenever notes_block/synthesis are sent explicitly (a review screen's edited
+    # payload): proves the payload was reviewed against the proposal that is still live.
+    proposal_revision: str | None = None
 
 
 class AddPaperReq(BaseModel):
@@ -110,6 +113,12 @@ def approve(req: ApproveReq):
     # Proposal read + commit are one atomic unit under the session's mutation lock: a branch
     # switch between them could commit branch A's notes over branch B's transcript.
     with sessions.mutation_lock(req.slug):
+        if req.notes_block is not None or req.synthesis is not None:
+            live = sessions.proposal_revision(req.slug)
+            if req.proposal_revision != live:
+                raise HTTPException(status_code=409, detail=(
+                    "The proposal changed since this review was loaded (a branch switch or "
+                    "regeneration) — reload the review before approving."))
         proposed = sessions.latest_proposed_commit(req.slug) or {}
         notes = req.notes_block if req.notes_block is not None else proposed.get("notes_block", "")
         synth = req.synthesis if req.synthesis is not None else proposed.get("synthesis", "")

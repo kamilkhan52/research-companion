@@ -178,3 +178,34 @@ def test_committed_proposal_never_reoffers_approve_after_fork_and_switch(temp_pr
     _assistant(slug, "replacement draft attempt")
     assert sessions.switch_branch(slug, 1, 1) is True
     assert sessions.get_state(slug) == sessions.IN_DISCUSSION
+
+
+def test_stale_review_payload_is_refused(temp_project):
+    """Round-12 review path: a review screen loads the proposal, a branch switch replaces it,
+    the stale explicit payload must be refused; the fresh revision is accepted."""
+    import pytest as _pytest
+    from app.routers import notes as notes_routes
+    from fastapi import HTTPException
+
+    slug = _seed()
+    sessions.record_user(slug, "finish", kind="finish")
+    _assistant(slug, "draft v1", proposed=True)
+    stale_revision = sessions.proposal_revision(slug)
+    assert stale_revision
+
+    # The proposal is regenerated (fork + new draft) while the review screen sits open.
+    sessions.fork_before_assistant(slug, 1)
+    _assistant(slug, "draft v2", proposed=True)
+    assert sessions.proposal_revision(slug) != stale_revision
+
+    with _pytest.raises(HTTPException) as err:
+        notes_routes.approve(notes_routes.ApproveReq(
+            slug=slug, notes_block="stale notes", synthesis="stale synthesis",
+            proposal_revision=stale_revision))
+    assert err.value.status_code == 409
+
+    # A payload reviewed against the LIVE proposal goes through to the committer.
+    result = notes_routes.approve(notes_routes.ApproveReq(
+        slug=slug, notes_block="fresh notes", synthesis="fresh synthesis",
+        proposal_revision=sessions.proposal_revision(slug)))
+    assert result["result"]["committed"] is True

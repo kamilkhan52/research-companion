@@ -273,6 +273,23 @@ def latest_proposed_commit(slug: str) -> dict | None:
     return None
 
 
+def proposal_revision(slug: str) -> str | None:
+    """Optimistic-concurrency token for the ACTIVE proposal: a review screen holds its loaded
+    payload for minutes, and a branch switch (or regeneration) can replace the proposal
+    underneath it — an approval carrying an explicit payload must prove it reviewed the
+    proposal that is still live. Hash of the proposal content + its record timestamp."""
+    for rec in reversed(read_records(slug)):
+        if rec["role"] == "assistant" and rec.get("proposed_commit"):
+            # The branch map is part of the basis: a fork/switch always changes it, so a
+            # regenerated proposal that happens to carry identical content within the same
+            # timestamp second still yields a fresh revision.
+            basis = (json.dumps(rec["proposed_commit"], sort_keys=True)
+                     + str(rec.get("ts", ""))
+                     + json.dumps(branch_map(slug), sort_keys=True))
+            return hashlib.sha1(basis.encode()).hexdigest()[:16]
+    return None
+
+
 def finalize_proposal_for_commit(slug: str) -> None:
     """Called by committer.commit BEFORE `git add -A`, so both effects land INSIDE the
     approved commit (stamping afterwards left the repo dirty and swept the change into the
