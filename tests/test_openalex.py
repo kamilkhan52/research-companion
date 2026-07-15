@@ -151,3 +151,19 @@ def test_fetch_false_ignores_a_record_for_a_different_id():
                        "authorships": [{"name": "Wrong Person", "affiliation": ""}]}}
     openalex.annotate_project_authors(nodes, cache, fetch=False)
     assert nodes[0]["authors"] == []
+
+
+def test_transport_failure_aborts_the_pass_instead_of_timing_out_each_paper():
+    """An outage must not cost a full timeout per paper; the whole enrichment pass aborts
+    after the first transport error."""
+    calls = {"n": 0}
+
+    class OutageClient:
+        def get(self, *_a, **_k):
+            calls["n"] += 1
+            raise httpx.ConnectError("unreachable")
+
+    nodes = [_project_node(f"p{i}", f"240{i}.0000{i}") for i in range(5)]
+    openalex.annotate_project_authors(nodes, {}, client=OutageClient(), sleep=lambda *_: None)
+    assert calls["n"] == 1  # broke out after the first failure, did not hit all five
+    assert all(n["authors"] == [] for n in nodes)

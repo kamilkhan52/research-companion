@@ -770,6 +770,13 @@ def overlay_membership(graph: dict | None, papers: list[Paper]) -> dict | None:
             p = by_slug.get(node.get("slug") or "")
             if p:
                 node["group"], node["list_status"] = p.group, p.list_status
+                # An entry's arXiv id can be CORRECTED after a build (retrieval resolving a
+                # misidentified paper). The snapshot's authors/year belong to the old
+                # identity, so drop them until a rebuild refetches — a stale author board is
+                # worse than an empty one. Membership styling is unaffected.
+                if p.arxiv_id and store.arxiv_base_id(p.arxiv_id) != store.arxiv_base_id(node.get("arxiv_id") or ""):
+                    node["arxiv_id"] = p.arxiv_id
+                    node["authors"] = []
             else:
                 # Removed from the reading list since the build. The id (its old slug) stays,
                 # so edges keep resolving; only the membership styling flips.

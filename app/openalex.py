@@ -87,10 +87,15 @@ def annotate_project_authors(nodes: list[dict], cache: dict, *,
                 try:
                     ships = work_authorships(node["arxiv_id"], client=client)
                 except httpx.HTTPError:
-                    ships = None
+                    # Transport-level failure = OpenAlex is unreachable/slow. Abort the whole
+                    # pass rather than eating a full timeout on every remaining paper (a
+                    # 20-paper project would otherwise add ~10 min to a build during an
+                    # outage). A stale-id record stays until a live pass can replace it.
+                    log.info("openalex unreachable — skipping author enrichment this build")
+                    break
                 if ships is None:
-                    # A miss is retried next build (papers do land on OpenAlex late);
-                    # nothing new is written so the retry is automatic.
+                    # A miss (paper not on OpenAlex yet) is retried next build; nothing new
+                    # is written so the retry is automatic.
                     log.debug("openalex miss for %s", node["id"])
                     if hit and hit.get("arxiv_id") != base:
                         cache.pop(node["id"], None)  # never keep another paper's authors
