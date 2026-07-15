@@ -40,6 +40,7 @@ from . import (
     graph_layout,
     graph_store,
     llm,
+    openalex,
     prompts,
     retriever,
     semantic_scholar,
@@ -668,6 +669,87 @@ def build_nodes_and_edges(papers: list[Paper], extractions: dict[str, dict]) -> 
     return list(nodes.values()), edges
 
 
+# The U.9 sign-off (2026-07-15): in-project authors only in v1; activity weighting 3/2/1;
+# a small hidden-by-default explainer states the FACTORS, not the formula's internals.
+AUTHOR_EXPLAINERS = {
+    "activity": ("Activity blends three signals: papers in this project (weight 3), "
+                 "significant citations of those papers by other project papers (weight 2), "
+                 "and appearances in the reference lists this project has read (weight 1)."),
+    "significant": ("A citation is marked significant when the citing paper engages with the "
+                    "work substantively — building on it or comparing against it — rather "
+                    "than citing it in passing."),
+}
+
+
+def _author_key(name: str) -> str:
+    """Dedup key for an author name across sources: casefolded, initials/periods and extra
+    whitespace collapsed. Deliberately conservative — 'J. Smith' vs 'John Smith' stay
+    separate people; merging them safely needs provider author ids (a v2 concern)."""
+    return re.sub(r"\s+", " ", name.replace(".", " ").strip()).casefold()
+
+
+def author_board(graph: dict | None, openalex_cache: dict | None) -> list[dict]:
+    """The ranked in-project author board (U.9 v1), computed from a stored graph snapshot at
+    read time — pure, no network, no LLM.
+
+    Only authors with >= 1 project paper appear (the sign-off's call: this view ranks *this
+    project's* people, not the field's). activity = 3·in-project papers + 2·significant
+    citations of those papers + 1·external reference-list appearances. Affiliation comes from
+    the OpenAlex authorship cache when known; absent otherwise (never 'Unknown')."""
+    if not graph or not graph.get("nodes"):
+        return []
+    nodes = graph["nodes"]
+    affiliation_by_key: dict[str, str] = {}
+    for record in (openalex_cache or {}).values():
+        for ship in (record.get("authorships") or []) if isinstance(record, dict) else []:
+            if ship.get("name") and ship.get("affiliation"):
+                affiliation_by_key.setdefault(_author_key(ship["name"]), ship["affiliation"])
+
+    board: dict[str, dict] = {}
+    for node in nodes:
+        if node.get("kind") != "project":
+            continue
+        for name in node.get("authors") or []:
+            key = _author_key(name)
+            entry = board.setdefault(key, {
+                "name": name, "affiliation": affiliation_by_key.get(key, ""),
+                "in_project_count": 0, "significant_count": 0, "external_count": 0,
+                "years": [], "papers": [],
+            })
+            entry["in_project_count"] += 1
+            entry["significant_count"] += node.get("significant_cited_by_count") or 0
+            if isinstance(node.get("year"), int):
+                entry["years"].append(node["year"])
+            entry["papers"].append({
+                "id": node["id"], "slug": node.get("slug"), "title": node.get("title"),
+                "kind": "project", "year": node.get("year"),
+            })
+
+    for node in nodes:
+        if node.get("kind") == "project":
+            continue
+        for name in node.get("authors") or []:
+            entry = board.get(_author_key(name))
+            if entry is None:
+                continue  # external-only authors are out of scope in v1
+            entry["external_count"] += 1
+            entry["papers"].append({
+                "id": node["id"], "slug": None, "title": node.get("title"),
+                "kind": "external", "year": node.get("year"),
+            })
+
+    out = []
+    for entry in board.values():
+        years = entry.pop("years")
+        entry["active_years"] = [min(years), max(years)] if years else None
+        entry["activity"] = (3 * entry["in_project_count"]
+                             + 2 * entry["significant_count"]
+                             + entry["external_count"])
+        out.append(entry)
+    out.sort(key=lambda e: (-e["activity"], e["name"].casefold()))
+    return out
+
+
 def overlay_membership(graph: dict | None, papers: list[Paper]) -> dict | None:
     """Re-derive node membership from the CURRENT reading list on a stored graph snapshot.
 
@@ -1032,6 +1114,9 @@ def _persist_graph_snapshot(
     nodes, edges = build_nodes_and_edges(papers, combined)
     if annotate_citations:
         citations.annotate_nodes(nodes, data["citations"])  # best-effort, cached
+        # Project-node authors + affiliations (U.9), same enrichment contract: cached,
+        # best-effort, network only on this full path.
+        openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}))
     else:
         # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
         # needs citation counts — apply whatever the cache already knows for free. Without
@@ -1040,6 +1125,8 @@ def _persist_graph_snapshot(
         cache = data.get("citations") or {}
         for node in nodes:
             node["citation_count"] = cache.get(node["id"])
+        # Same free-from-cache treatment for authors: no network on skeleton publishes.
+        openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), fetch=False)
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)
     metadata_papers = sum(

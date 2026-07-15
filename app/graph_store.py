@@ -38,6 +38,7 @@ def _empty() -> dict:
         "graph": None,       # last computed {built_at, model, nodes, edges}
         "recommendations": None,
         "citations": {},     # node id -> global citation count (Semantic Scholar cache)
+        "openalex": {},      # node id -> {status, authorships} (author/affiliation cache, U.9)
         # Provider metadata is cached independently from LLM/full-text extraction so a
         # provider refresh never invalidates or re-spends the scholarly analysis cache.
         "providers": {"semantic_scholar": {"papers": {}}},
@@ -59,6 +60,7 @@ def load() -> dict:
     data.setdefault("graph", None)
     data.setdefault("recommendations", None)
     data.setdefault("citations", {})  # node id -> global citation count (Semantic Scholar cache)
+    data.setdefault("openalex", {})   # node id -> {status, authorships} (U.9)
     providers = data.setdefault("providers", {})
     providers.setdefault("semantic_scholar", {}).setdefault("papers", {})
     data.setdefault("retrievals", {})

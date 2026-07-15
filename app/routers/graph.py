@@ -42,6 +42,22 @@ def get_graph_recommendations(pid: str):
     return {"recommendations": data.get("recommendations") or []}
 
 
+@project_router.get("/graph/authors")
+def get_graph_authors(pid: str):
+    """The ranked in-project author board (U.9 v1), aggregated from the stored graph at read
+    time. Membership is overlaid first so a paper added since the last build counts as
+    in-project here too. Author/affiliation coverage grows with graph builds (OpenAlex cache);
+    an empty board with a built graph means the next rebuild will populate authors."""
+    papers = store.list_papers(sessions.session_states())
+    data = graph_store.load()
+    overlaid = graph.overlay_membership(data.get("graph"), papers)
+    return {
+        "authors": graph.author_board(overlaid, data.get("openalex")),
+        "explainers": graph.AUTHOR_EXPLAINERS,
+        "built_at": (overlaid or {}).get("built_at"),
+    }
+
+
 @project_router.get("/graph/build/status")
 def get_graph_build_status(pid: str):
     """Lightweight, cheap-to-poll endpoint for live build progress — the client polls this
