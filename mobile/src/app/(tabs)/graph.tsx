@@ -14,6 +14,7 @@ import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
+import { pageSignificant, significantNodes } from '@/graph/filter';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -123,7 +124,7 @@ export default function GraphScreen() {
     let ns = graph.nodes;
     if (filter === 'project') ns = ns.filter((n) => n.kind === 'project');
     else if (filter === 'external') ns = ns.filter((n) => n.kind === 'external');
-    else if (filter === 'significant') ns = ns.filter((n) => n.significant_cited_by_count > 0);
+    else if (filter === 'significant') ns = significantNodes(ns, graph.edges);
     const q = query.trim().toLowerCase();
     if (q) {
       ns = ns.filter(
@@ -141,7 +142,12 @@ export default function GraphScreen() {
   // What actually gets rendered: the current filter/search's matches, paginated (not "render all
   // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
   // tabs). Edges are kept only between visible nodes.
-  const pagedNodes = useMemo(() => filteredNodes.slice(0, visibleLimit), [filteredNodes, visibleLimit]);
+  const pagedNodes = useMemo(
+    () => (filter === 'significant'
+      ? pageSignificant(filteredNodes, graph?.edges ?? [], visibleLimit)
+      : filteredNodes.slice(0, visibleLimit)),
+    [filteredNodes, filter, graph, visibleLimit],
+  );
 
   const visibleGraph = useMemo(() => {
     // A node explicitly opened (via "Show in Map" or a Recommendations pick) must actually
