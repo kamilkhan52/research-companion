@@ -14,7 +14,7 @@ import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
-import { significantNodes } from '@/graph/filter';
+import { pageSignificant, significantNodes } from '@/graph/filter';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -142,7 +142,12 @@ export default function GraphScreen() {
   // What actually gets rendered: the current filter/search's matches, paginated (not "render all
   // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
   // tabs). Edges are kept only between visible nodes.
-  const pagedNodes = useMemo(() => filteredNodes.slice(0, visibleLimit), [filteredNodes, visibleLimit]);
+  const pagedNodes = useMemo(
+    () => (filter === 'significant'
+      ? pageSignificant(filteredNodes, graph?.edges ?? [], visibleLimit)
+      : filteredNodes.slice(0, visibleLimit)),
+    [filteredNodes, filter, graph, visibleLimit],
+  );
 
   const visibleGraph = useMemo(() => {
     // A node explicitly opened (via "Show in Map" or a Recommendations pick) must actually

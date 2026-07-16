@@ -5,7 +5,7 @@
 // nodes with zero edges.
 
 import type { GraphEdge, GraphNode } from '@/api/types';
-import { significantNodes } from '@/graph/filter';
+import { pageSignificant, significantNodes } from '@/graph/filter';
 
 function node(id: string, kind: 'project' | 'external', significantCitedBy = 0): GraphNode {
   return {
@@ -55,4 +55,41 @@ test('still keeps significantly-cited nodes with no surviving edge record', () =
   const kept = significantNodes(nodes, []).map((n) => n.id);
 
   expect(kept).toEqual(['ext:orphan']);
+});
+
+test('pagination pulls each source\'s significant partners onto the same page', () => {
+  // More sources than one page: project-first ranking would fill the whole page with sources
+  // and strand every external target off it — zero renderable edges again.
+  const ranked: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < 25; i++) ranked.push(node(`paper-${i}`, 'project'));
+  for (let i = 0; i < 25; i++) {
+    ranked.push(node(`ext:ref-${i}`, 'external', 1));
+    edges.push(edge(`paper-${i}`, `ext:ref-${i}`, true));
+  }
+
+  const page = pageSignificant(ranked, edges, 20);
+  const onPage = new Set(page.map((n) => n.id));
+
+  const renderable = edges.filter((e) => onPage.has(e.source) && onPage.has(e.target));
+  expect(renderable.length).toBeGreaterThan(0);
+  // Every project source that made the page has its target with it.
+  for (const n of page) {
+    if (n.kind === 'project') expect(onPage.has(`ext:ref-${n.id.slice('paper-'.length)}`)).toBe(true);
+  }
+});
+
+test('growing the page limit extends the previous page (stable prefix)', () => {
+  const ranked: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < 10; i++) {
+    ranked.push(node(`paper-${i}`, 'project'));
+    ranked.push(node(`ext:ref-${i}`, 'external', 1));
+    edges.push(edge(`paper-${i}`, `ext:ref-${i}`, true));
+  }
+
+  const small = pageSignificant(ranked, edges, 6).map((n) => n.id);
+  const large = pageSignificant(ranked, edges, 12).map((n) => n.id);
+
+  expect(large.slice(0, small.length)).toEqual(small);
 });
