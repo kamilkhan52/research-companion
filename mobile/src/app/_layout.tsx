@@ -31,6 +31,7 @@ import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
+import { ToastProvider } from '@/ui/Toast';
 import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -80,6 +81,9 @@ export default function RootLayout() {
       {/* initialMetrics makes the provider's very first frame (app cold start) carry real
           insets instead of zeros — the same class of flash U.16 fixed per-screen. */}
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+        {/* ToastProvider sits just inside the SafeAreaProvider so its overlay reads real insets
+            and floats above every screen (R.8). */}
+        <ToastProvider>
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <ProjectProvider>
@@ -113,6 +117,7 @@ export default function RootLayout() {
             </ProjectProvider>
           </QueryClientProvider>
         </KeyboardProvider>
+        </ToastProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

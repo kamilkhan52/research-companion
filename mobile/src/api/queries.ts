@@ -6,6 +6,7 @@ import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
+import { showToast } from '@/ui/Toast';
 
 /** Reactive base URL — re-renders consumers when it changes (e.g. saved in Settings). */
 export function useBaseUrl(): string {
@@ -139,7 +140,10 @@ export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) => api.saveSettings(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.settings }),
+    onSuccess: () => {
+      showToast('Settings saved');
+      qc.invalidateQueries({ queryKey: keys.settings });
+    },
   });
 }
 
@@ -250,6 +254,7 @@ export function useAddPaper(pid: string) {
       year?: number | null;
     }) => api.addPaper(pid, title, group, arxivId, abstract, year),
     onSuccess: () => {
+      showToast('Added to library');
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
