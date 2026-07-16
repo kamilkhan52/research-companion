@@ -170,9 +170,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // stitched track (duration visible, lock/background-proof, whole-response rewind);
   // 'progressive' plays segments as they land (starts sooner). Captured per preparation
   // via this ref so flipping the setting mid-prep can't mix the two paths.
-  const { playbackMode } = useListeningMode();
+  const { playbackMode, playbackRate } = useListeningMode();
   const playbackModeRef = useRef(playbackMode);
   playbackModeRef.current = playbackMode;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+
+  // R6.6 — apply the persisted speed live when the user changes it; harmless no-op when the
+  // player isn't set up yet (the track-change hook below covers every track load, including
+  // the cold-start restore, since platform players can reset rate with a new queue).
+  useEffect(() => {
+    void TrackPlayer.setRate(playbackRate).catch(() => {});
+  }, [playbackRate]);
 
   useEffect(() => {
     let active = true;
@@ -224,6 +233,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useTrackPlayerEvents([Event.PlaybackActiveTrackChanged], (event) => {
+    if (playbackRateRef.current !== 1) {
+      void TrackPlayer.setRate(playbackRateRef.current).catch(() => {});
+    }
     const track = event.track;
     const slotId = track?.slotId ?? track?.id;
     setCurrentId(slotId != null ? String(slotId) : null);
