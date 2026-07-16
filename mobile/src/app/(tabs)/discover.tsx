@@ -1,6 +1,7 @@
-// Discover — bootstrap a project's reading list from the researcher's goals. A clean text
-// field ("what do you want to understand, learn, or explore?") starts a server-side discovery
-// job (app/discovery.py): LLM-planned broad+narrow arXiv searches, citation counts, and a
+// Discover — scan arXiv for papers relevant to what you want to explore, at any point in a
+// project (not just when starting one). A clean text field ("what would you like to explore?")
+// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv
+// searches, citation counts, and a
 // relevance ranking. The screen polls the job for live phase progress (job survives
 // backgrounding — see useDiscoveryRun), then shows the top suggestions with the rest behind
 // "show more". A "specific paper" box covers the other entry path: paste a title or an
@@ -93,10 +94,10 @@ export default function DiscoverScreen() {
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {showEditor ? (
             <Card style={{ gap: space.sm }}>
-              <Text variant="overline">Project goals</Text>
+              <Text variant="overline">Explore</Text>
               <Text variant="caption">
-                Describe what you want to understand, learn, or explore. We’ll search arXiv and
-                suggest the most fundamental papers to start from.
+                What would you like to explore? Describe a topic, question, or method — we’ll
+                scan arXiv for relevant papers.
               </Text>
               <TextInput
                 value={goals}
@@ -108,7 +109,7 @@ export default function DiscoverScreen() {
                 editable={!runState.running}
               />
               <Button
-                title={runState.running ? 'Searching…' : result ? 'Search again' : 'Find readings'}
+                title={runState.running ? 'Searching…' : result ? 'Search again' : 'Search'}
                 onPress={runDiscovery}
                 loading={runState.running}
                 disabled={!goals.trim()}
@@ -123,10 +124,10 @@ export default function DiscoverScreen() {
             <Pressable
               onPress={() => !runState.running && setEditingGoals(true)}
               disabled={runState.running}
-              accessibilityLabel="Edit project goals">
+              accessibilityLabel="Edit your search">
               <Card style={styles.goalsSummary}>
                 <View style={styles.goalsHead}>
-                  <Text variant="overline">Project goals</Text>
+                  <Text variant="overline">Exploring</Text>
                   {!runState.running ? (
                     <Text variant="label" color={colors.mint}>
                       Edit
@@ -157,13 +158,10 @@ export default function DiscoverScreen() {
 
           {result && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
-              <Text variant="editorial">Recommended foundations</Text>
-              <Text variant="body" color={colors.muted} style={{ marginTop: 2 }}>
-                Why these papers fit your project
-              </Text>
+              <Text variant="editorial">Results</Text>
               <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
-                {result.focus ? `${result.focus} · ` : ''}Ranked {result.candidate_count} arXiv
-                papers by relevance to your goals and citations.
+                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} arXiv papers,
+                ranked by relevance.
               </Text>
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
@@ -235,7 +233,7 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
         : 'Searching arXiv…',
     },
     { key: 'citations', label: 'Checked', detail: `Citations for ${job.found} papers` },
-    { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance to your goals' },
+    { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance' },
   ];
   const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
   const done = job.phase === 'done' || job.status === 'done';
