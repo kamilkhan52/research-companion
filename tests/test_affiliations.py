@@ -213,3 +213,25 @@ def test_graph_only_paper_reextracts_when_its_stored_text_changes(temp_project):
     fresh = node("ghost", "ghost", arxiv_id=None)
     affiliations.apply_cached([fresh], stale)
     assert fresh["authors"] == []
+
+
+def test_arxiv_paper_reextracts_when_its_corpus_text_changes(temp_project):
+    """An arXiv-keyed record is bound to the text it was read from: a placeholder corpus
+    ("full text not cached") must not pin a bogus result past the real PDF's arrival."""
+    from app import store
+    add_paper(temp_project, "deepstack", "DeepStack", full_text="(full text not cached)")
+    complete = fake_complete("")  # the placeholder yields nothing — cached as empty
+    cache = {}
+    n = node("deepstack", "deepstack")
+
+    real_extract_missing([n], {}, cache, complete=complete)
+    assert cache["deepstack"]["authorships"] == []
+    assert len(complete.calls) == 1
+
+    store.write_full_text("deepstack", "DeepStack", HEADER, {"slug": "deepstack"})
+    complete2 = fake_complete("Zhiwen Mo | Imperial College London")
+    real_extract_missing([n], {}, cache, complete=complete2)
+
+    assert len(complete2.calls) == 1  # real text → key changed → re-extracted
+    assert cache["deepstack"]["authorships"] == [
+        {"name": "Zhiwen Mo", "affiliation": "Imperial College London"}]

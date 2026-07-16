@@ -75,18 +75,18 @@ def _first_page(slug: str) -> str:
 
 
 def _cache_key(node: dict) -> str | None:
-    """A record is only valid for the paper it was read from: key by the versionless arXiv
-    id, else by the first-page text's own identity — a graph-only slug can have its stored
-    text replaced by a different confirmed paper (retrieval_sources) without any id or force
-    changing, and a slug-only key would then republish the old paper's people. None = no
-    identity at all (nothing to extract from either)."""
-    base = store.arxiv_base_id(node.get("arxiv_id") or "")
-    if base:
-        return base
+    """A record is only valid for the exact text it was read from: key by the versionless
+    arXiv id (when known) PLUS the first-page text's hash. The text part matters in both
+    directions — a graph-only slug can have its stored text replaced by a different confirmed
+    paper (retrieval_sources) without any id changing, and an arXiv paper's corpus can hold a
+    placeholder ("(full text not cached)") when the pass runs, whose bogus result must not
+    outlive the real PDF's arrival. None = no text at all (nothing to extract from)."""
     text = _first_page(node["slug"])
     if not text:
         return None
-    return "text:" + hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:16]
+    base = store.arxiv_base_id(node.get("arxiv_id") or "")
+    digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:16]
+    return f"{base or 'text'}:{digest}"
 
 
 def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] | None:
@@ -188,9 +188,11 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
         if any(s.get("affiliation") for s in provider_ships):
             continue  # provider-first: OpenAlex has institution data for this paper
         key = _cache_key(node)
-        if key is None:
-            continue  # no identity and no text — nothing to extract from
         hit = cache.get(node["id"])
+        if key is None:
+            if hit is not None:
+                cache.pop(node["id"], None)  # no text = no identity — never keep a record
+            continue
         if not force and hit and hit.get("key") == key:
             continue
         timed_out, ships = _extract_with_deadline(node["slug"], complete)
