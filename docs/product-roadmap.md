@@ -101,6 +101,7 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | R.4 | Settings reorg (Connection→Models→Audio→Map→Agent→Usage→Developer); prompt content viewing + dev-gated (`RC_DEV`) in-app editing | [#116](https://github.com/kamilkhan52/research-companion/pull/116) | Complete — awaits device pass; web prompt-editing surface is a small follow-up (web currently reads only) |
 | R.11 | End-of-chat notes review: full-screen view + inline edit of the proposed notes & synthesis before commit (guarded by `proposal_revision`) | [#117](https://github.com/kamilkhan52/research-companion/pull/117) | Complete — awaits device pass |
 | R.10 | Paper figures in chat — v1 design (`docs/chat-figures-design.md`); figures-first (arXiv HTML), SVG deferred | [#118](https://github.com/kamilkhan52/research-companion/pull/118) | Design ready — phased implementation after sign-off |
+| R.2 | Light/Dark/Dim theming — engineering design (`docs/theming-design.md`): token contract + ThemeProvider/useTheme + migration plan; palette hex via codex→Figma | [#119](https://github.com/kamilkhan52/research-companion/pull/119) | Design ready — Figma palettes + infra/migration PRs after sign-off |
 
 ## Current execution decisions (2026-07-14)
 
