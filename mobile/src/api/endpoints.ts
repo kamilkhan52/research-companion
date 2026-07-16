@@ -45,6 +45,12 @@ export const getPrompts = (project?: string | null) =>
   apiGet<{ prompts: PromptStatus[] }>(
     project ? `/api/prompts?project=${encodeURIComponent(project)}` : '/api/prompts',
   );
+/** Override a workflow prompt (global superuser surface; the mobile UI gates this to RC_DEV). */
+export const savePrompt = (key: string, value: string) =>
+  apiPost<{ key: string; value: string; is_overridden: boolean }>('/api/prompts', { key, value });
+/** Drop a prompt's override, reverting to the bundled/file default. */
+export const resetPrompt = (key: string) =>
+  apiPost<{ key: string; value: string; is_overridden: boolean }>('/api/prompts/reset', { key });
 
 /** Synthesize a passage to mp3; returns a relative URL under /api/audio. */
 export const speak = (text: string) => apiPost<{ url: string }>('/api/speak', { text });

@@ -17,7 +17,16 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
-import { useFavoriteModels, usePrompts, useSaveSettings, useSettings, useUsage } from '@/api/queries';
+import {
+  useDevMode,
+  useFavoriteModels,
+  usePrompts,
+  useResetPrompt,
+  useSavePrompt,
+  useSaveSettings,
+  useSettings,
+  useUsage,
+} from '@/api/queries';
 import type { UsageSummary } from '@/api/types';
 import { TopBar } from '@/components/TopBar';
 import { PromptStatusPanel } from '@/components/PromptStatusPanel';
@@ -39,6 +48,9 @@ export default function SettingsScreen() {
   const favorites = useFavoriteModels();
   const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
+  const devMode = useDevMode();
+  const savePrompt = useSavePrompt(activePid);
+  const resetPrompt = useResetPrompt(activePid);
 
   // Local editable copies of server-side settings.
   const [apiKey, setApiKey] = useState('');
@@ -117,7 +129,7 @@ export default function SettingsScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           {/* Server connection */}
-          <Section title="Server">
+          <Section title="Connection">
             <Text variant="body" color={colors.muted} style={{ marginBottom: space.md }}>
               Connect your backend to sync projects, papers, audio, and notes — the Cloudflare
               tunnel link (e.g. https://name.trycloudflare.com).
@@ -155,11 +167,8 @@ export default function SettingsScreen() {
             </Text>
           ) : (
             <>
-              {/* Usage / cost for the active project */}
-              <UsageSection />
-
-              {/* Analysis */}
-              <Section title="Analysis">
+              {/* Models & analysis */}
+              <Section title="Models & analysis">
                 <Label text="OpenRouter API key" hint={settings.data?.has_key ? `set (${settings.data.key_hint})` : 'not set'} />
                 <Field
                   value={apiKey}
@@ -313,13 +322,19 @@ export default function SettingsScreen() {
                 </Text>
               </Section>
 
-              <Section title="Developer · Prompt files">
+              {/* Usage / cost for the active project — near the end, below configuration. */}
+              <UsageSection />
+
+              <Section title="Developer · Prompts">
                 <PromptStatusPanel
                   prompts={prompts.data}
                   loading={prompts.isLoading}
                   error={prompts.isError}
                   refreshing={prompts.isFetching}
                   onRefresh={() => { void prompts.refetch(); }}
+                  editable={devMode}
+                  onSave={(key, value) => savePrompt.mutateAsync({ key, value })}
+                  onReset={(key) => resetPrompt.mutateAsync({ key })}
                 />
               </Section>
 
