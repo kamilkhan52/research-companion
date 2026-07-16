@@ -119,6 +119,7 @@ narrated audio exactly (R6.8).
 | R6.3 | Significant view keeps both endpoints of significant edges (the citing project papers have cited-by 0, so the old node-only filter dropped every edge source — the "nodes but no edges" map; live 3D DRAM data goes 0 → 18 visible edges on page 1) | [#124](https://github.com/kamilkhan52/research-companion/pull/124) | Complete — awaits device pass |
 | R6.6 | Playback speed: 1×/1.25×/1.5×/1.75×/2× pill in the player header, persisted on device, applied live and re-applied per track | [#125](https://github.com/kamilkhan52/research-companion/pull/125) | Complete — awaits device pass |
 | R6.8 | Agentic chat fidelity: segment boundaries separate pre-tool commentary from the answer (bubble = recorded canonical = narration); commentary + tool calls persist as a collapsed, expandable trail on the finished message; empty final output falls back to the last segment's text | [#126](https://github.com/kamilkhan52/research-companion/pull/126) | Complete — awaits device pass |
+| R6.4 | Labs affiliations, provider-first then LLM: papers OpenAlex leaves without institution data get affiliations read off their own first page by the analysis model (`app/affiliations.py`, cached per node in the graph store, force-aware); board merges both caches with provider precedence | [#127](https://github.com/kamilkhan52/research-companion/pull/127) | Complete — awaits device pass (rebuild the map to populate) |
 
 ## Current execution decisions (2026-07-14)
 

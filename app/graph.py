@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 
 from . import (
+    affiliations,
     citations,
     config,
     graph_layout,
@@ -706,22 +707,26 @@ def _is_real_author(name: str) -> bool:
     return cleaned.casefold() not in _NON_AUTHOR_KEYS and any(c.isalpha() for c in cleaned)
 
 
-def author_board(graph: dict | None, openalex_cache: dict | None) -> list[dict]:
+def author_board(graph: dict | None, openalex_cache: dict | None,
+                 llm_affiliations: dict | None = None) -> list[dict]:
     """The ranked in-project author board (U.9 v1), computed from a stored graph snapshot at
     read time — pure, no network, no LLM.
 
     Only authors with >= 1 project paper appear (the sign-off's call: this view ranks *this
     project's* people, not the field's). activity = 3·in-project papers + 2·significant
     citations of those papers + 1·external reference-list appearances. Affiliation comes from
-    the OpenAlex authorship cache when known; absent otherwise (never 'Unknown')."""
+    the OpenAlex authorship cache when known, then from the LLM first-page extraction cache
+    (R6.4 — provider record wins on conflict); absent otherwise (never 'Unknown')."""
     if not graph or not graph.get("nodes"):
         return []
     nodes = graph["nodes"]
     affiliation_by_key: dict[str, str] = {}
-    for record in (openalex_cache or {}).values():
-        for ship in (record.get("authorships") or []) if isinstance(record, dict) else []:
-            if ship.get("name") and ship.get("affiliation"):
-                affiliation_by_key.setdefault(_author_key(ship["name"]), ship["affiliation"])
+    # setdefault ordering = precedence: provider (OpenAlex) first, LLM extraction second.
+    for cache in (openalex_cache, llm_affiliations):
+        for record in (cache or {}).values():
+            for ship in (record.get("authorships") or []) if isinstance(record, dict) else []:
+                if ship.get("name") and ship.get("affiliation"):
+                    affiliation_by_key.setdefault(_author_key(ship["name"]), ship["affiliation"])
 
     board: dict[str, dict] = {}
     for node in nodes:
@@ -1146,6 +1151,13 @@ def _persist_graph_snapshot(
         # best-effort, network only on this full path. A force rebuild re-fetches every node
         # so affiliations OpenAlex has since gained get picked up.
         openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), force=force)
+        # Provider-first then LLM (R6.4): papers OpenAlex left without any institution get
+        # their affiliations read off their own first page. Cached the same way; skipped
+        # entirely for provider-covered papers. Each paid extraction is persisted as it
+        # lands, so a mid-pass restart never re-bills completed papers.
+        affiliations.annotate_project_affiliations(
+            nodes, data.get("openalex", {}), data.setdefault("llm_affiliations", {}),
+            force=force, persist=lambda: graph_store.save(data))
     else:
         # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
         # needs citation counts — apply whatever the cache already knows for free. Without
@@ -1156,6 +1168,9 @@ def _persist_graph_snapshot(
             node["citation_count"] = cache.get(node["id"])
         # Same free-from-cache treatment for authors: no network on skeleton publishes.
         openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), fetch=False)
+        # And for LLM-extracted authors (R6.4) — a paper whose names came only from the
+        # first-page pass must not vanish from /graph/authors for the whole build.
+        affiliations.apply_cached(nodes, data.get("llm_affiliations") or {})
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)
     metadata_papers = sum(

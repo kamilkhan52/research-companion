@@ -52,7 +52,8 @@ def get_graph_authors(pid: str):
     data = graph_store.load()
     overlaid = graph.overlay_membership(data.get("graph"), papers)
     return {
-        "authors": graph.author_board(overlaid, data.get("openalex")),
+        "authors": graph.author_board(overlaid, data.get("openalex"),
+                                      data.get("llm_affiliations")),
         "explainers": graph.AUTHOR_EXPLAINERS,
         "built_at": (overlaid or {}).get("built_at"),
     }
