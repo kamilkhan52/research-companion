@@ -1,14 +1,15 @@
-// A single-line text strip that slowly auto-scrolls when (and only when) its content is wider
-// than its container, so long titles are readable instead of truncated (U.6). Static text
-// stays static — no motion for content that fits. The scroll is a gentle linear glide to the
-// end, a pause, then a quick return; native-driver transforms only.
+// A single-line text strip that scrolls ONCE when (and only when) its content is wider than
+// its container, so long titles are readable instead of truncated (U.6/U.21). Static text
+// stays static — no motion for content that fits. Overflowing text glides gently to its end
+// and rests there (tail visible), rather than looping, so the reader's focus returns to the
+// content below (R.3). Native-driver transforms only.
 
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, View, type StyleProp, type TextStyle } from 'react-native';
 
 /** Pixels per second of glide — slow enough to read along. */
 const DEFAULT_SPEED = 24;
-/** Hold before the glide starts / after it ends, so the head and tail are both readable. */
+/** Hold before the single glide starts, so the head is readable first. */
 const HOLD_MS = 1400;
 
 export function Marquee({
@@ -38,28 +39,18 @@ export function Marquee({
   const overflows = containerWidth > 0 && distance > 1;
 
   useEffect(() => {
-    if (!overflows) {
-      offset.setValue(0);
-      return;
-    }
-    const glide = Animated.loop(
-      Animated.sequence([
-        Animated.delay(HOLD_MS),
-        Animated.timing(offset, {
-          toValue: -distance,
-          duration: (distance / speed) * 1000,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        }),
-        Animated.delay(HOLD_MS),
-        Animated.timing(offset, {
-          toValue: 0,
-          duration: 350,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
+    offset.setValue(0);
+    if (!overflows) return;
+    // Scroll once and rest at the tail — no loop, no return-to-start leg (R.3).
+    const glide = Animated.sequence([
+      Animated.delay(HOLD_MS),
+      Animated.timing(offset, {
+        toValue: -distance,
+        duration: (distance / speed) * 1000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    ]);
     glide.start();
     return () => glide.stop();
   }, [overflows, distance, speed, offset, text]);
@@ -71,13 +62,14 @@ export function Marquee({
       accessible
       accessibilityLabel={accessibilityLabel ?? text}
     >
-      {/* Absolute + left-anchored so the text measures at its intrinsic width (Yoga sizes an
-          absolutely positioned child to its content), letting onLayout report the true width
-          even when it exceeds the clipped container. Static centered text keeps the same
-          anchor and just offsets by the slack, so no re-layout jump when overflow flips. */}
+      {/* Absolute + left-anchored with NO numberOfLines so the text measures at its intrinsic
+          single-line width (Yoga sizes an absolutely positioned, width-unconstrained child to
+          its content; the container's overflow:'hidden' does the visual clipping). A
+          numberOfLines={1} here would make Android report the CLIPPED width, so overflow would
+          never be detected and the title would sit frozen — the R.3 bug. Static centered text
+          keeps the same anchor and just offsets by the slack, so no re-layout jump when
+          overflow flips. */}
       <Animated.Text
-        numberOfLines={1}
-        ellipsizeMode="clip"
         style={[
           textStyle,
           {

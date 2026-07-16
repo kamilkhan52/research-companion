@@ -123,5 +123,5 @@ const styles = StyleSheet.create({
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, minWidth: 0, alignItems: 'center' },
-  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 18, lineHeight: 24, color: colors.mint },
+  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 21, color: colors.mint },
 });
