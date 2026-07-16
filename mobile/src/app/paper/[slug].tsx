@@ -1122,7 +1122,7 @@ function DiscussionThread({
     ? 'Edit your message…'
     : state === 'notes_drafted'
       ? 'Request changes to the draft…'
-      : 'Ask about this paper…';
+      : 'Reply';
 
   return (
     <>
