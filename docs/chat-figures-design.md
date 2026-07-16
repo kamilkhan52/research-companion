@@ -51,6 +51,18 @@ figure = { id, number, label, caption, src (original URL), asset (cached filenam
   per-paper count (e.g. 20); skip SVG/data-URI edge cases in v1 or store as-is if small.
 - Keep it tolerant: a figure with no resolvable image is dropped, not fatal.
 
+**Treat paper HTML as untrusted — SSRF guard.** A paper's HTML can carry an absolute
+`<img src>` (or a redirect) pointing at `localhost`, a link-local/private address, or an
+arbitrary host. Because the backend fetches these bytes and then re-serves them through the
+project route, image fetching must be locked down:
+- **Scheme + host allowlist**: `https:` only, host in `{arxiv.org, *.arxiv.org, ar5iv.org,
+  *.ar5iv.org, arxiv-export…}` (the expected figure origins). Anything else is dropped.
+- **Revalidate every redirect** against the same allowlist (don't follow blindly), and reject
+  responses that resolve to private/link-local/loopback IPs.
+- Enforce the size cap during download (stream + abort past the limit), and only accept
+  `image/*` content types. This is the same "network only in background enrichment, never
+  trust external input" posture the rest of the pipeline takes.
+
 ### 3. Asset cache + serving (mirror the paper-cover pattern)
 Figures are binary assets that must survive restarts and be fetched by the client on demand —
 exactly the shape the **paper cover** feature already solved:
@@ -78,15 +90,22 @@ The manifest is a pure cache: absent ⇒ no cards, present ⇒ cards. Never a tu
 
 ## Wiring figures into a turn
 
-The analysis turn already emits section markers (`###CANONICAL###` etc.). Figures are attached
-to a transcript entry as **optional metadata**, not new prose:
-- `app/sessions.py`: assistant transcript entries gain an optional `figures: [figId, …]` list
-  (the figures this turn references, resolved against the paper's manifest). Absent on entries
-  that reference none, and on PDF-only papers — fully backward compatible.
-- Resolution is deterministic: scan the canonical text for "Figure N" / "Fig. N" references and
-  map to the manifest's numbers. No LLM; a reference with no matching manifest figure is just
-  not carded.
-- The transcript JSONL stays append-only; figure ids are small and reference the cache.
+The analysis turn already emits section markers (`###CANONICAL###` etc.). The **canonical text
+itself** is the durable record of which figures a turn references — it literally says
+"Figure 3 shows…". So figure carding is resolved at **render time**, not baked into the
+transcript:
+- **Render-time resolution (source of truth).** When the discussion renders an assistant entry,
+  scan its canonical text for "Figure N" / "Fig. N" mentions and look each up in the paper's
+  **current** manifest. This is deterministic, no LLM, and — crucially — a manifest that
+  becomes ready *after* a turn was written still cards that older turn on the next render. It
+  also sidesteps the append-only-transcript trap: a turn that finished before enrichment
+  completed (or that triggered the lazy job) would otherwise have recorded no figure ids and
+  could never gain cards.
+- **Optional cached hint (optimization only).** `app/sessions.py` *may* stamp an assistant
+  entry with the figure numbers it mentioned (`figures: [3, 5]`) as a convenience, but the
+  renderer never depends on it — it always re-resolves against the live manifest. Absent on
+  PDF-only papers and fully backward compatible.
+- A "Figure N" reference with no matching manifest figure is simply not carded (the text stays).
 
 ## Rendering (mobile)
 
@@ -96,7 +115,8 @@ to a transcript entry as **optional metadata**, not new prose:
    variants), and a subtle "from arXiv HTML" source line. Theme-aware (lands after R.2 theming
    or is written theme-aware from the start).
 2. The discussion renderer places a `FigureCard` **after the first paragraph that references
-   its figure** (using the entry's `figures` metadata + the paragraph's "Figure N" mention).
+   its figure**, resolving the paragraph's "Figure N" mention against the paper's current
+   manifest (render-time resolution, above — so late-arriving manifests card older turns too).
    Basic inline `![alt](url)` image support in `Markdown.tsx` is a smaller, separate capability
    we may add too, but the **card** (caption + source + number) is the primary surface.
 
