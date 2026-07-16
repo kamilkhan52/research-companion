@@ -115,6 +115,7 @@ narrated audio exactly (R6.8).
 | R6.2 | Build-stepper connector segments render in one layer behind the step dots (was painting over completed checkmarks on Android) | [#120](https://github.com/kamilkhan52/research-companion/pull/120) | Complete — awaits device pass |
 | R6.1 | Marquee measures intrinsic text width inside an explicit wide strip (Yoga at-most constraint made absolute text wrap at container width, so overflow was never detected and titles sat frozen) | [#121](https://github.com/kamilkhan52/research-companion/pull/121) | Complete — awaits device pass |
 | R6.7 | Cross-model retries record the generating model on the turn (`record_assistant(model=…)`, only when it differs from the settings default) and the bubble shows a subtle model badge | [#122](https://github.com/kamilkhan52/research-companion/pull/122) | Complete — awaits device pass |
+| R6.5 | Quiet job-done toasts: "Reference map ready" when a graph build settles; "Audio ready" when a manual audio prep that took >5s starts playing (listening mode stays silent — it auto-plays) | [#123](https://github.com/kamilkhan52/research-companion/pull/123) | Complete — awaits device pass |
 
 ## Current execution decisions (2026-07-14)
 

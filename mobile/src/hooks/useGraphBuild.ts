@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getGraph, getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
 import { keys } from '@/api/queries';
+import { showToast } from '@/ui/Toast';
 import type {
   GraphBuildJob,
   GraphResponse,
@@ -162,6 +163,11 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       // done | error
       setBuilding(false);
       if (job.status === 'error') setError(job.error ?? 'Graph build failed.');
+      // R6.5 — a build takes minutes and finishes while the user is usually elsewhere in the
+      // app (tab screens stay mounted, so this poll loop keeps running); a quiet toast is the
+      // only completion signal off the Map tab. applyJob only ever sees a settled job once
+      // (polling stops right here), so this can't double-fire.
+      if (job.status === 'done') showToast('Reference map ready');
       if (pid) {
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
         // A completed build refreshes authors/affiliations too (U.9) — an open Authors
