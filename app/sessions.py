@@ -172,10 +172,14 @@ def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
                      chat_job_id: str | None = None,
                      audio_job_id: str | None = None,
                      audio_error: str | None = None,
-                     model: str | None = None) -> tuple[str, int]:
+                     model: str | None = None,
+                     agent_trail: list[dict] | None = None) -> tuple[str, int]:
     """`model` is recorded only when the turn ran on a non-default model (a one-shot override
     that differs from the settings default at generation time) — callers pass
-    chat_jobs.override_label(...), so a default-model turn stays unlabeled in the UI."""
+    chat_jobs.override_label(...), so a default-model turn stays unlabeled in the UI.
+    `agent_trail` is what the agent did before answering (tool calls + intermediate
+    commentary, [{kind: 'tool'|'thought', ...}]) so the UI can attach a collapsed activity
+    trail to the finished message (R6.8)."""
     assistant_index = sum(r.get("role") == "assistant" for r in read_records(slug))
     record = _append_record(slug, {
         "role": "assistant",
@@ -185,6 +189,7 @@ def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
         "audio_job_id": audio_job_id,
         "audio_error": audio_error,
         **({"model": model} if model else {}),
+        **({"agent_trail": agent_trail} if agent_trail else {}),
     })
     if turn.proposed_commit:
         set_state(slug, NOTES_DRAFTED)
@@ -250,6 +255,7 @@ def transcript(slug: str) -> list[dict]:
                 "audio_job_id": rec.get("audio_job_id"),
                 "audio_error": rec.get("audio_error"),
                 "model": rec.get("model"),
+                "agent_trail": rec.get("agent_trail"),
             })
     return out
 

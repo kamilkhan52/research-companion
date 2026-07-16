@@ -528,3 +528,83 @@ def test_override_label_compares_against_settings_default(monkeypatch):
     assert chat_jobs.override_label(None) is None
     assert chat_jobs.override_label("vendor/default") is None
     assert chat_jobs.override_label("vendor/other") == "vendor/other"
+
+
+# ---- R6.8: segment boundaries — pre-tool commentary never contaminates the answer ----
+
+PREAMBLE = "Let me search for recent work on this."
+R68_FULL = "### CANONICAL ###\nThe grounded answer.\n### STATE ###\nin_discussion\n### END ###"
+
+
+def _r68_events():
+    """A realistic agentic run: commentary text, a tool call, a segment boundary (the final
+    model request), then the protocol answer."""
+    return [
+        {"type": "text", "text": PREAMBLE},
+        {"type": "tool", "name": "web_search", "detail": "recent related work"},
+        {"type": "segment"},
+        {"type": "text", "text": R68_FULL},
+        {"type": "final", "text": R68_FULL},
+    ]
+
+
+def test_segment_boundary_demotes_commentary_and_keeps_answer_clean(temp_project):
+    slug = _session_with_reply()
+
+    job = chat_jobs.start_turn(slug, runner=_async_runner(_r68_events()))
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    # The recorded answer is ONLY the final request's canonical — same text narration uses.
+    assert finished.turn["canonical"] == "The grounded answer."
+    assert PREAMBLE not in finished.turn["canonical"]
+    # The commentary survives as a 'thought' trail item, in order, before the tool call.
+    kinds = [it["kind"] for it in finished.items]
+    assert kinds == ["thought", "tool", "text"]
+    assert finished.items[0]["text"] == PREAMBLE
+    joined_text = "".join(it["text"] for it in finished.items if it["kind"] == "text")
+    assert joined_text.strip() == "The grounded answer."
+
+
+def test_agent_trail_is_persisted_on_the_recorded_turn(temp_project):
+    slug = _session_with_reply()
+
+    job = chat_jobs.start_turn(slug, runner=_async_runner(_r68_events()))
+    _wait_until_settled(job.id)
+
+    record = sessions.read_records(slug)[-1]
+    assert record["agent_trail"] == [
+        {"kind": "thought", "text": PREAMBLE},
+        {"kind": "tool", "name": "web_search", "detail": "recent related work"},
+    ]
+    assert sessions.transcript(slug)[-1]["agent_trail"] == record["agent_trail"]
+
+
+def test_turn_without_activity_records_no_trail(temp_project):
+    slug = _session_with_reply()
+    events = [{"type": "text", "text": PROTO}, {"type": "final", "text": PROTO}]
+
+    job = chat_jobs.start_turn(slug, runner=_sync_runner(events))
+    _wait_until_settled(job.id)
+
+    assert "agent_trail" not in sessions.read_records(slug)[-1]
+    assert sessions.transcript(slug)[-1]["agent_trail"] is None
+
+
+def test_empty_final_falls_back_to_last_segment_text_only(temp_project):
+    """A provider whose run.result.output comes back empty must fall back to the LAST
+    segment's streamed text — never to earlier commentary."""
+    slug = _session_with_reply()
+    events = [
+        {"type": "text", "text": PREAMBLE},
+        {"type": "tool", "name": "web_search", "detail": "x"},
+        {"type": "segment"},
+        {"type": "text", "text": R68_FULL},
+        {"type": "final", "text": ""},
+    ]
+
+    job = chat_jobs.start_turn(slug, runner=_async_runner(events))
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.turn["canonical"] == "The grounded answer."

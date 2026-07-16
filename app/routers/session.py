@@ -190,6 +190,7 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
     pieces: list[str] = []
     sent = 0
     final_text = ""
+    trail: list[dict] = []  # demoted commentary + tool calls, persisted with the turn (R6.8)
     try:
         async for ev in agent_harness.stream_agentic_events(
             slug, history, model=agent_harness.model_override(model)
@@ -200,7 +201,21 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
                 if len(canon) > sent:
                     yield _sse({"type": "delta", "text": canon[sent:]})
                     sent = len(canon)
+            elif ev["type"] == "segment":
+                # A new model request begins: what streamed so far was pre-tool commentary,
+                # not the answer. Demote it to the trail, restart accumulation, and tell the
+                # client to reset its bubble (the recorded answer comes only from the final
+                # request — R6.8).
+                if pieces:
+                    thought = agent.canonical_prefix("".join(pieces)).strip()
+                    if thought:
+                        trail.append({"kind": "thought", "text": thought})
+                    pieces.clear()
+                    sent = 0
+                    yield _sse({"type": "segment"})
             elif ev["type"] == "tool":
+                trail.append({"kind": "tool", "name": ev["name"],
+                              "detail": ev.get("detail", "")})
                 yield _sse({"type": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
             elif ev["type"] == "final":
                 final_text = ev["text"]
@@ -213,7 +228,8 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
                     "The model returned an empty response. Try again, or switch the analysis "
                     "model in Settings."})
         return
-    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
+    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model),
+                              agent_trail=trail or None)
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
 
 

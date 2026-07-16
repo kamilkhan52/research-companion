@@ -59,6 +59,7 @@ import {
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
+import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
@@ -1540,6 +1541,9 @@ function AssistantBody({
 
   return (
     <View style={styles.assistantBody}>
+      {entry.agent_trail && entry.agent_trail.length > 0 ? (
+        <AgentTrail trail={entry.agent_trail} />
+      ) : null}
       <Markdown text={canonical} />
       {modelLabel ? (
         <Text
@@ -1658,33 +1662,6 @@ function MsgAction({
   );
 }
 
-// Friendly label + icon for each research tool the agent can call (agentic path).
-const TOOL_META: Record<string, { icon: IconName; label: string }> = {
-  web_search: { icon: 'search', label: 'Searching the web' },
-  web_fetch: { icon: 'globe', label: 'Reading a page' },
-  read_paper_text: { icon: 'file-text', label: 'Reading a paper' },
-  related_papers: { icon: 'share-2', label: 'Finding related papers' },
-  list_project_papers: { icon: 'book-open', label: 'Scanning the project' },
-  // retrieval (/start_stream) steps
-  arxiv: { icon: 'book-open', label: 'Resolving on arXiv' },
-  fetch_pdf: { icon: 'download', label: 'Trying a PDF' },
-};
-
-function ToolLine({ name, detail }: { name: string; detail: string }) {
-  const meta = TOOL_META[name] ?? { icon: 'tool' as IconName, label: name };
-  return (
-    <View style={styles.toolRow}>
-      <Icon name={meta.icon} size={13} color={colors.mint} />
-      <Text variant="caption" color={colors.mint}>{meta.label}</Text>
-      {detail ? (
-        <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
-          {detail}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
 // A streamed text run revealed through the smoothing buffer (useSmoothText): the job poller
 // delivers ~900ms snapshots, and this types them out continuously instead of in lumps.
 function SmoothMarkdown({ text }: { text: string }) {
@@ -1706,6 +1683,12 @@ function StreamingTurnBody({ items }: { items: StreamItem[] }) {
       {visibleItems.map((it, i) =>
         it.kind === 'text' ? (
           <SmoothMarkdown key={i} text={it.text} />
+        ) : it.kind === 'thought' ? (
+          // Pre-tool commentary, demoted server-side at the segment boundary: keep it visible
+          // while the agent works, styled as activity — it is not part of the answer.
+          <Text key={i} variant="caption" color={colors.muted} style={styles.thoughtLine}>
+            {it.text}
+          </Text>
         ) : (
           <View key={i} style={styles.toolTrail}>
             <ToolLine name={it.name} detail={it.detail} />
@@ -1819,8 +1802,7 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.elevated,
   },
-  toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  toolDetail: { flex: 1 },
+  thoughtLine: { fontStyle: 'italic', paddingLeft: space.sm },
   errorCard: { borderColor: colors.danger, margin: space.md },
   // Overrides the library's white default circle (its content is our Icon; see
   // scrollToBottomComponent) into the app's circular icon-button idiom.

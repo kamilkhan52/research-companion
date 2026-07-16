@@ -174,6 +174,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             audio_job_id=audio_job_id,
             audio_error=audio_error,
             model=model_label,
+            agent_trail=_trail(job),
         )
         if audio_job_id:
             try:
@@ -305,10 +306,40 @@ def _consume_sync(job: ChatJob, events: Iterable[dict]) -> str:
     return final_text or "".join(pieces)
 
 
+def _trail(job: ChatJob) -> list[dict]:
+    """The finished turn's activity trail: everything the agent did before the answer (tool
+    calls + demoted pre-tool commentary), in arrival order. Persisted on the assistant record
+    so the collapsed trail survives refetch/restart."""
+    with _registry.lock:
+        return [dict(it) for it in job.items if it.get("kind") in ("tool", "thought")]
+
+
 def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     """Fold one runner event into the job's items. Text deltas surface only their CANONICAL
     prefix (same incremental extraction the SSE path used), merged into the trailing text item;
-    tool calls append a tool item. Returns the updated canonical-chars-shown count."""
+    tool calls append a tool item; a 'segment' boundary demotes the text streamed so far to a
+    'thought' trail item and restarts answer accumulation (the text of every request but the
+    run's last is pre-tool commentary, not the answer — R6.8). Returns the updated
+    canonical-chars-shown count."""
+    if ev["type"] == "segment":
+        if not pieces:
+            return sent
+        pieces.clear()
+        with _registry.lock:
+            # At most one live text item exists (each boundary demotes the previous one); it
+            # sits before any tool items from the same segment, so demote it in place.
+            for i in range(len(job.items) - 1, -1, -1):
+                if job.items[i]["kind"] == "text":
+                    thought = job.items[i]["text"].strip()
+                    if thought:
+                        job.items[i] = {"kind": "thought", "text": thought}
+                    else:
+                        del job.items[i]
+                    break
+        # Let the real answer's opening sentences feed listening cues too (commentary
+        # sentences already cued are fine — cues exist to fill exactly this wait).
+        job._preview_next_sentence = 0
+        return 0
     if ev["type"] == "text":
         pieces.append(ev["text"])
         canon = agent.canonical_prefix("".join(pieces))
@@ -410,7 +441,7 @@ def _record_cancelled(job: ChatJob, partial_text: str, model_label: str | None =
                     state_signal="in_discussion")
         _, assistant_index = sessions.record_assistant(
             job.slug, turn, delivery_mode=job.delivery_mode, chat_job_id=job.id,
-            model=model_label)
+            model=model_label, agent_trail=_trail(job))
         with _registry.lock:
             job.turn = turn.to_dict()
             job.assistant_index = assistant_index
