@@ -688,6 +688,14 @@ def _author_key(name: str) -> str:
     return re.sub(r"\s+", " ", name.replace(".", " ").strip()).casefold()
 
 
+def _display_name(raw: str) -> str:
+    """Tidy a name for display: collapse whitespace runs and drop the space that bibliography
+    extraction leaks in front of an initial's period ('Quoc V . Le' → 'Quoc V. Le'). The dedup
+    key (_author_key) already ignores this, so ranking is unaffected."""
+    cleaned = re.sub(r"\s+", " ", (raw or "").strip())
+    return re.sub(r"\s+([.,])", r"\1", cleaned)
+
+
 # Bibliography extraction sometimes emits the trailing "et al." (and kin) of an author list as
 # if it were a person; without this it ranks as an author on the board.
 _NON_AUTHOR_KEYS = {"et al", "et al.", "et. al", "and others", "others", ""}
@@ -724,7 +732,7 @@ def author_board(graph: dict | None, openalex_cache: dict | None) -> list[dict]:
                 continue
             key = _author_key(name)
             entry = board.setdefault(key, {
-                "name": name, "affiliation": affiliation_by_key.get(key, ""),
+                "name": _display_name(name), "affiliation": affiliation_by_key.get(key, ""),
                 "in_project_count": 0, "significant_count": 0, "external_count": 0,
                 "years": [], "papers": [],
             })
