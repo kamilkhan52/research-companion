@@ -100,9 +100,11 @@ export function useOpeningDraft(pid: string | null, slug: string | null) {
     queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
     queryFn: () => api.getOpeningDraft(pid as string, slug as string),
     enabled: !!pid && !!slug && hasUrl,
-    // The opening draft is effectively immutable once generated; keep it fresh long enough
-    // that a prefetched resume never re-blocks on it (R.7).
-    staleTime: 60_000,
+    // No staleTime here on purpose: the prefetch (index.tsx) already gives the no-spinner
+    // resume — cached data renders while a background refetch runs silently. A staleTime would
+    // instead pin the draft (and the model it carries as an explicit first-turn override), so a
+    // model change in Settings to recover from a quota/provider failure wouldn't reach a paper
+    // reopened moments later. useSaveSettings also invalidates this query for the mounted case.
   });
 }
 
@@ -150,6 +152,11 @@ export function useSaveSettings() {
     onSuccess: () => {
       showToast('Settings saved');
       qc.invalidateQueries({ queryKey: keys.settings });
+      // The opening draft bakes in the default model (submitted as an explicit first-turn
+      // override); a model change here must reach any cached draft, so invalidate them all —
+      // otherwise a paper reopened right after a quota-recovery model switch would run the old
+      // model. Keyed ['project', pid, 'opening', slug].
+      qc.invalidateQueries({ predicate: (q) => q.queryKey[2] === 'opening' });
     },
   });
 }

@@ -96,7 +96,7 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | R.3 | Marquee scrolls once then rests at the tail (was frozen); smaller TopBar title | [#111](https://github.com/kamilkhan52/research-companion/pull/111) | Complete — awaits device pass |
 | R.8 | Reusable ephemeral toast (`Added to library`, `Settings saved`); imperative bridge | [#112](https://github.com/kamilkhan52/research-companion/pull/112) | Complete — awaits device pass |
 | R.1 | Discover reframe: neutral copy (Explore/Results) + prompt reframe (drops new-project/foundational bias) | [#113](https://github.com/kamilkhan52/research-companion/pull/113) | Complete — awaits device pass |
-| R.7 | Continue-reading prefetch also warms the opening draft; staleTime on session/opening so resume renders from cache | [#114](https://github.com/kamilkhan52/research-companion/pull/114) | Complete — awaits device pass |
+| R.7 | Continue-reading prefetch also warms the opening draft (no-spinner resume); session staleTime; settings-save invalidates cached opening drafts | [#114](https://github.com/kamilkhan52/research-companion/pull/114) | Complete — awaits device pass |
 
 ## Current execution decisions (2026-07-14)
 
