@@ -152,6 +152,34 @@ export function usePrompts(pid: string | null) {
   });
 }
 
+/** Save a prompt override (dev-only surface). Refreshes the prompt listing on success so the
+ *  panel reflects the new active source/hash, and any cached opening drafts (which bake in
+ *  prompt text) so a reopened paper picks up the edit. */
+export function useSavePrompt(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) => api.savePrompt(key, value),
+    onSuccess: () => {
+      showToast('Prompt saved');
+      qc.invalidateQueries({ queryKey: keys.prompts(pid) });
+      qc.invalidateQueries({ predicate: (q) => q.queryKey[2] === 'opening' });
+    },
+  });
+}
+
+/** Reset a prompt to its bundled/file default (dev-only surface). */
+export function useResetPrompt(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key }: { key: string }) => api.resetPrompt(key),
+    onSuccess: () => {
+      showToast('Prompt reset to default');
+      qc.invalidateQueries({ queryKey: keys.prompts(pid) });
+      qc.invalidateQueries({ predicate: (q) => q.queryKey[2] === 'opening' });
+    },
+  });
+}
+
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
