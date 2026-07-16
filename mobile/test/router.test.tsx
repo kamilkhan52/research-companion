@@ -90,6 +90,12 @@ test('continues the latest unfinished session across projects', async () => {
     accepted_drafts: [],
   };
   jest.mocked(api.getSession).mockResolvedValueOnce(prefetchedSession);
+  const prefetchedOpening = {
+    prompt: 'Opening prompt',
+    model: null,
+    title: 'Memory Paper',
+  };
+  jest.mocked(api.getOpeningDraft).mockResolvedValueOnce(prefetchedOpening);
 
   function PaperRoute() {
     const { project } = useLocalSearchParams<{ project?: string }>();
@@ -106,11 +112,18 @@ test('continues the latest unfinished session across projects', async () => {
   );
 
   await waitFor(() => expect(screen.getByText('Memory Paper')).toBeTruthy());
-  // Prefetch starts from the visible hero, before the user taps it.
+  // Prefetch starts from the visible hero, before the user taps it — both the transcript and
+  // the opening draft, the two things a resume blocks on (R.7).
   await waitFor(() => expect(api.getSession).toHaveBeenCalledWith('three-d-dram', 'memory-paper'));
+  await waitFor(() =>
+    expect(api.getOpeningDraft).toHaveBeenCalledWith('three-d-dram', 'memory-paper'));
   await waitFor(() => {
     expect(client.getQueryData(keys.session('three-d-dram', 'memory-paper')))
       .toEqual(prefetchedSession);
+  });
+  await waitFor(() => {
+    expect(client.getQueryData(keys.opening('three-d-dram', 'memory-paper')))
+      .toEqual(prefetchedOpening);
   });
   await fireEventAsync.press(screen.getByText('Memory Paper'));
 

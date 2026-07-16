@@ -87,6 +87,10 @@ export function useSession(pid: string | null, slug: string | null) {
     queryKey: pid && slug ? keys.session(pid, slug) : ['project', 'none', 'session'],
     queryFn: () => api.getSession(pid as string, slug as string),
     enabled: !!pid && !!slug && hasUrl,
+    // A short freshness window so a resume that was prefetched from the Library (index.tsx)
+    // renders straight from cache without an immediate refetch flash (R.7). Mutations still
+    // invalidate this key explicitly, so committed turns refresh regardless.
+    staleTime: 15_000,
   });
 }
 
@@ -96,6 +100,12 @@ export function useOpeningDraft(pid: string | null, slug: string | null) {
     queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
     queryFn: () => api.getOpeningDraft(pid as string, slug as string),
     enabled: !!pid && !!slug && hasUrl,
+    // staleTime 0 (the shared client defaults to 30s) so a prefetched draft still
+    // background-refetches on mount and its displayed prompt stays current. The prefetch
+    // (index.tsx) still gives the no-spinner resume: cached data renders while that refetch
+    // runs silently. The first turn no longer submits opening.data.model as an override (see
+    // ComposeFirst.start), so a cached draft can never pin a superseded model.
+    staleTime: 0,
   });
 }
 

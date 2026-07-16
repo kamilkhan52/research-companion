@@ -1288,7 +1288,12 @@ function ComposeFirst({
         {
           slug,
           prompt,
-          model: selectedModel ?? opening.data?.model ?? undefined,
+          // Match every other turn (reply/finish/retry): send the user's explicit pick, else
+          // undefined so the backend applies its CURRENT default. Deliberately NOT
+          // opening.data.model — that echoes the default at draft-generation time, so a model
+          // change in Settings (e.g. recovering from a quota error) wouldn't take effect on a
+          // reopened paper whose draft is still cached.
+          model: selectedModel ?? undefined,
           mode: template === 'custom' || template === 'balanced' ? undefined : template,
         },
         undefined,
