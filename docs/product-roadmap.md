@@ -83,6 +83,17 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 | U.24 | Project forking — v1 design (`docs/project-forking-design.md`) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Design ready — 3 open questions for Kamil; implementation after sign-off |
 | U.25 | Marketplace/sharing vision recorded (design doc §Later; not scheduled) | [#105](https://github.com/kamilkhan52/research-companion/pull/105) | Recorded |
 
+## Round-5 UX sweep (2026-07-15 device pass)
+
+Kamil's round-5 on-device feedback: eleven items plus one approved micro-fix, same delivery
+rules (one focused PR per item off `main`, codex review, gated merge, `git pull` deploy). Plan
+context in `~/.claude/plans/parallel-discovering-raven.md`.
+
+| Item | Change | PR | Status |
+|------|--------|----|--------|
+| R.0 | Tidy leaked author-name spacing on the board (`Quoc V . Le` → `Quoc V. Le`) | [#109](https://github.com/kamilkhan52/research-companion/pull/109) | Complete — deployed |
+| R.9 | Composer placeholder `Ask about this paper…` → `Reply` | [#110](https://github.com/kamilkhan52/research-companion/pull/110) | Complete — awaits device pass |
+
 ## Current execution decisions (2026-07-14)
 
 The **U.x rows** are the 2026-07-14 UX polish sweep from Kamil's on-device notes: one focused
