@@ -14,6 +14,7 @@ import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
+import { significantNodes } from '@/graph/filter';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -123,7 +124,7 @@ export default function GraphScreen() {
     let ns = graph.nodes;
     if (filter === 'project') ns = ns.filter((n) => n.kind === 'project');
     else if (filter === 'external') ns = ns.filter((n) => n.kind === 'external');
-    else if (filter === 'significant') ns = ns.filter((n) => n.significant_cited_by_count > 0);
+    else if (filter === 'significant') ns = significantNodes(ns, graph.edges);
     const q = query.trim().toLowerCase();
     if (q) {
       ns = ns.filter(
