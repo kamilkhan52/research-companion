@@ -17,11 +17,17 @@ export function significantNodes(nodes: GraphNode[], edges: GraphEdge[]): GraphN
   return nodes.filter((n) => n.significant_cited_by_count > 0 || inSignificantEdge.has(n.id));
 }
 
+/** How far partner-pulling may push a page past `limit`. A hard cap (not unbounded): one
+ *  high-degree paper could otherwise drag hundreds of partners in and re-create the canvas
+ *  freeze pagination exists to prevent. */
+const PARTNER_SLACK = 20;
+
 /** Page the ranked Significant view without stranding edges: whenever a ranked node is taken,
- *  its significant-edge partners come along immediately (soft page limit — partners may push a
- *  page slightly past `limit` so the last-taken node is never left edge-less). A plain
- *  `slice(0, limit)` re-created the empty-edge map whenever one rank tier (e.g. all project
- *  sources, ranked first) filled the page and every counterpart fell off it. */
+ *  its significant-edge partners come along immediately (bounded by PARTNER_SLACK past
+ *  `limit`; a node whose first partner can't fit isn't taken at all, so every taken source
+ *  keeps at least one renderable edge). A plain `slice(0, limit)` re-created the empty-edge
+ *  map whenever one rank tier (e.g. all project sources, ranked first) filled the page and
+ *  every counterpart fell off it. */
 export function pageSignificant(ranked: GraphNode[], edges: GraphEdge[], limit: number): GraphNode[] {
   const inView = new Set(ranked.map((n) => n.id));
   const partners = new Map<string, string[]>();
@@ -36,6 +42,7 @@ export function pageSignificant(ranked: GraphNode[], edges: GraphEdge[], limit: 
     link(e.target, e.source);
   }
   const byId = new Map(ranked.map((n) => [n.id, n]));
+  const hardCap = limit + PARTNER_SLACK;
   const kept = new Set<string>();
   const out: GraphNode[] = [];
   const take = (id: string) => {
@@ -47,8 +54,15 @@ export function pageSignificant(ranked: GraphNode[], edges: GraphEdge[], limit: 
   for (const n of ranked) {
     if (out.length >= limit) break;
     if (kept.has(n.id)) continue;
+    const missing = (partners.get(n.id) ?? []).filter((p) => !kept.has(p));
+    // Taking this node must leave room for at least one partner, or its edges couldn't
+    // render — end the page here instead of stranding it.
+    if (missing.length > 0 && out.length + 2 > hardCap) break;
     take(n.id);
-    for (const partner of partners.get(n.id) ?? []) take(partner);
+    for (const partner of missing) {
+      if (out.length >= hardCap) break;
+      take(partner);
+    }
   }
   return out;
 }

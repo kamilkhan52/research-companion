@@ -79,6 +79,22 @@ test('pagination pulls each source\'s significant partners onto the same page', 
   }
 });
 
+test('a high-degree node cannot blow past the page cap', () => {
+  // One paper significantly citing 300 refs must not drag them all onto the page.
+  const ranked: GraphNode[] = [node('paper-hub', 'project')];
+  const edges: GraphEdge[] = [];
+  for (let i = 0; i < 300; i++) {
+    ranked.push(node(`ext:ref-${i}`, 'external', 1));
+    edges.push(edge('paper-hub', `ext:ref-${i}`, true));
+  }
+
+  const page = pageSignificant(ranked, edges, 20);
+
+  expect(page.length).toBeLessThanOrEqual(40); // limit + bounded slack
+  const onPage = new Set(page.map((n) => n.id));
+  expect(edges.some((e) => onPage.has(e.source) && onPage.has(e.target))).toBe(true);
+});
+
 test('growing the page limit extends the previous page (stable prefix)', () => {
   const ranked: GraphNode[] = [];
   const edges: GraphEdge[] = [];
