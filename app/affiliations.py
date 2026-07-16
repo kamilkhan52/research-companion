@@ -184,11 +184,16 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
     for node in nodes:
         if node.get("kind") != "project" or not node.get("slug"):
             continue
+        hit = cache.get(node["id"])
         provider_ships = (openalex_cache.get(node["id"]) or {}).get("authorships") or []
         if any(s.get("affiliation") for s in provider_ships):
-            continue  # provider-first: OpenAlex has institution data for this paper
+            # Provider-first: OpenAlex has institution data for this paper — but never leave
+            # behind a record the current identity can't verify, because author_board still
+            # merges LLM records for the authors the provider lacks.
+            if hit is not None and hit.get("key") != _cache_key(node):
+                cache.pop(node["id"], None)
+            continue
         key = _cache_key(node)
-        hit = cache.get(node["id"])
         if key is None:
             if hit is not None:
                 cache.pop(node["id"], None)  # no text = no identity — never keep a record

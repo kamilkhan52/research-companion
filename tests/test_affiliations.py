@@ -235,3 +235,27 @@ def test_arxiv_paper_reextracts_when_its_corpus_text_changes(temp_project):
     assert len(complete2.calls) == 1  # real text → key changed → re-extracted
     assert cache["deepstack"]["authorships"] == [
         {"name": "Zhiwen Mo", "affiliation": "Imperial College London"}]
+
+
+def test_provider_coverage_still_drops_a_stale_llm_record(temp_project):
+    """A paper that becomes provider-covered must not smuggle its OLD LLM record past key
+    validation — the board merges LLM records for authors the provider lacks."""
+    add_paper(temp_project, "deepstack", "DeepStack", full_text=HEADER)
+    complete = fake_complete("never called")
+    openalex_cache = {"deepstack": {"authorships": [{"name": "A", "affiliation": "MIT"}]}}
+    cache = {"deepstack": {"status": "done", "key": "stale:old", "authorships": [
+        {"name": "Old Author", "affiliation": "Old Lab"}]}}
+
+    real_extract_missing([node("deepstack", "deepstack")], openalex_cache, cache,
+                         complete=complete)
+
+    assert complete.calls == []          # provider-first still spends nothing
+    assert "deepstack" not in cache      # stale record gone
+
+    # A record whose key DOES match the current identity survives the skip.
+    n = node("deepstack", "deepstack")
+    valid_key = affiliations._cache_key(n)
+    cache = {"deepstack": {"status": "done", "key": valid_key, "authorships": [
+        {"name": "B", "affiliation": "Tile-AI"}]}}
+    real_extract_missing([n], openalex_cache, cache, complete=complete)
+    assert cache["deepstack"]["authorships"] == [{"name": "B", "affiliation": "Tile-AI"}]
