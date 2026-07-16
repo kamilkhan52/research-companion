@@ -78,6 +78,9 @@ export type TranscriptEntry =
       /** The model that generated this turn, set only when it differed from the settings
        *  default at generation time (e.g. a cross-model retry) — render a subtle badge. */
       model?: string | null;
+      /** What the agent did before answering (tool calls + intermediate commentary) — the
+       *  collapsed, expandable trail on a finished agentic message (R6.8). */
+      agent_trail?: AgentTrailItem[] | null;
       /** Retry-fork selector state (U.14): total branches / 1-based live branch at this fork
        *  point; null when the turn was never retried. */
       branch_count?: number | null;
@@ -229,7 +232,14 @@ export interface ToolActivity {
  *  …answer") the way agent UIs conventionally do. */
 export type StreamItem =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; name: string; detail: string };
+  | { kind: 'tool'; name: string; detail: string }
+  /** Pre-tool commentary the model streamed before calling a tool ("Let me search…") —
+   *  demoted server-side at each segment boundary; part of the activity trail, never the
+   *  answer (R6.8). */
+  | { kind: 'thought'; text: string };
+
+/** A finished turn's persisted activity trail (tool calls + thoughts, no answer text). */
+export type AgentTrailItem = Exclude<StreamItem, { kind: 'text' }>;
 
 /** Snapshot of a server-side chat turn job (app/chat_jobs.py). The turn runs in a backend
  *  thread and is recorded to the session the moment it completes, regardless of what any

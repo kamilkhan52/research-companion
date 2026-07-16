@@ -89,3 +89,38 @@ def test_streaming_emits_tool_then_text_then_final(temp_project):
     # The SSE layer extracts the canonical prefix from accumulated text deltas.
     text = "".join(e["text"] for e in events if e["type"] == "text")
     assert agent.canonical_prefix(text) == "The alpha method wins."
+
+
+def test_streaming_marks_segment_boundaries_between_model_requests(temp_project):
+    """R6.8 — a 'segment' event separates each model request: text before the boundary is
+    pre-tool commentary (activity trail), text after it is the answer."""
+    add_paper(temp_project, "a", "Paper A", full_text="The alpha method improves throughput.")
+    state = {"n": 0}
+
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            yield "Let me read the paper first."
+            yield {0: DeltaToolCall(name="read_paper_text", json_args='{"slug": "a"}', tool_call_id="1")}
+        else:
+            yield "### CANONICAL ###\nThe answer.\n### STATE ###\nin_discussion\n### END ###"
+
+    fm = FunctionModel(function=lambda m, i: None, stream_function=stream_fn)
+
+    async def _collect():
+        out = []
+        async for ev in agent_harness.stream_agentic_events(
+            "a", [{"role": "user", "content": "tell me about a"}], model=fm):
+            out.append(ev)
+        return out
+
+    events = asyncio.run(_collect())
+    kinds = [e["type"] for e in events]
+
+    assert kinds.count("segment") == 1
+    boundary = kinds.index("segment")
+    assert boundary > kinds.index("text")  # commentary streamed before the boundary
+    pre = "".join(e["text"] for e in events[:boundary] if e["type"] == "text")
+    post = "".join(e["text"] for e in events[boundary:] if e["type"] == "text")
+    assert pre == "Let me read the paper first."
+    assert agent.canonical_prefix(post) == "The answer."

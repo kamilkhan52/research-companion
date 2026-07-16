@@ -165,11 +165,19 @@ async def stream_agentic_events(slug: str, history: list[dict],
 async def stream_agent_events(ag: Agent, prompt: str,
                               prior: list[dict] | None = None) -> AsyncIterator[dict]:
     """Generic event stream for ANY of this module's agents (analyst turn, notes editor):
-    the same {'text'|'tool'|'final'} events, decoupled from session history assembly."""
+    the same {'text'|'tool'|'final'} events, decoupled from session history assembly, plus a
+    {'type': 'segment'} boundary at the start of each model request after the first. Text
+    before a boundary is the model's pre-tool commentary ("Let me search for…"), NOT the
+    answer — consumers demote it to the activity trail and restart answer accumulation, so the
+    displayed/recorded answer comes only from the run's final request (R6.8)."""
+    first_request = True
     try:
         async with ag.iter(prompt, message_history=_to_message_history(prior or [])) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
+                    if not first_request:
+                        yield {"type": "segment"}
+                    first_request = False
                     async with node.stream(run.ctx) as request_stream:
                         async for event in request_stream:
                             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):

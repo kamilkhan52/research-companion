@@ -118,6 +118,7 @@ narrated audio exactly (R6.8).
 | R6.5 | Quiet job-done toasts: "Reference map ready" when a graph build settles; "Audio ready" when a manual audio prep that took >5s starts playing (listening mode stays silent — it auto-plays) | [#123](https://github.com/kamilkhan52/research-companion/pull/123) | Complete — awaits device pass |
 | R6.3 | Significant view keeps both endpoints of significant edges (the citing project papers have cited-by 0, so the old node-only filter dropped every edge source — the "nodes but no edges" map; live 3D DRAM data goes 0 → 18 visible edges on page 1) | [#124](https://github.com/kamilkhan52/research-companion/pull/124) | Complete — awaits device pass |
 | R6.6 | Playback speed: 1×/1.25×/1.5×/1.75×/2× pill in the player header, persisted on device, applied live and re-applied per track | [#125](https://github.com/kamilkhan52/research-companion/pull/125) | Complete — awaits device pass |
+| R6.8 | Agentic chat fidelity: segment boundaries separate pre-tool commentary from the answer (bubble = recorded canonical = narration); commentary + tool calls persist as a collapsed, expandable trail on the finished message; empty final output falls back to the last segment's text | [#126](https://github.com/kamilkhan52/research-companion/pull/126) | Complete — awaits device pass |
 
 ## Current execution decisions (2026-07-14)
 

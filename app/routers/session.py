@@ -200,6 +200,14 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
                 if len(canon) > sent:
                     yield _sse({"type": "delta", "text": canon[sent:]})
                     sent = len(canon)
+            elif ev["type"] == "segment":
+                # A new model request begins: what streamed so far was pre-tool commentary,
+                # not the answer. Restart accumulation and tell the client to reset its
+                # bubble (the recorded answer comes only from the final request — R6.8).
+                if pieces:
+                    pieces.clear()
+                    sent = 0
+                    yield _sse({"type": "segment"})
             elif ev["type"] == "tool":
                 yield _sse({"type": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
             elif ev["type"] == "final":
