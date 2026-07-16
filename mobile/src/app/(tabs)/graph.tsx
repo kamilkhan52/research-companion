@@ -615,6 +615,19 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
       {progress ? (
         <>
           <View style={styles.buildStepsRow}>
+            {/* Connector segments live in one layer rendered BEFORE the step cells: a per-step
+                line reaching into the neighbour cell paints over that cell's dot on Android
+                (sibling order wins; zIndex can't reorder across parents). */}
+            <View style={styles.buildStepLineLayer} pointerEvents="none">
+              <View style={styles.buildStepLineGutter} />
+              {BUILD_STEPS.slice(1).map((step, i) => (
+                <View
+                  key={step.key}
+                  style={[styles.buildStepLine, i + 1 <= phaseIndex && styles.buildStepLineDone]}
+                />
+              ))}
+              <View style={styles.buildStepLineGutter} />
+            </View>
             {BUILD_STEPS.map((step, i) => {
               const state = i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending';
               return (
@@ -625,9 +638,6 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
                   accessibilityRole="button"
                   accessibilityLabel={`What does ${step.label} mean?`}
                 >
-                  {i > 0 ? (
-                    <View style={[styles.buildStepLine, state !== 'pending' && styles.buildStepLineDone]} />
-                  ) : null}
                   <View style={[styles.buildStepDot, state === 'done' && styles.buildStepDotDone]}>
                     {state === 'done' ? (
                       <Icon name="check" size={11} color={colors.mintInk} />
@@ -782,14 +792,20 @@ const styles = StyleSheet.create({
     marginTop: space.md,
   },
   buildStep: { alignItems: 'center', gap: 4, flex: 1 },
-  buildStepLine: {
+  // Half-cell gutters + flex:1 segments make each segment span dot-center to dot-center.
+  buildStepLineLayer: {
     position: 'absolute',
+    left: 0,
+    right: 0,
     top: 11,
-    right: '50%',
-    left: '-50%',
+    flexDirection: 'row',
+    height: 2,
+  },
+  buildStepLineGutter: { flex: 0.5 },
+  buildStepLine: {
+    flex: 1,
     height: 2,
     backgroundColor: colors.line,
-    zIndex: -1,
   },
   buildStepLineDone: { backgroundColor: colors.mint },
   buildStepDot: {
