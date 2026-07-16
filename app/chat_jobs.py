@@ -94,6 +94,15 @@ def request_cancel(job_id: str) -> dict | None:
     return snapshot(job_id)
 
 
+def override_label(model: str | None) -> str | None:
+    """The model name to record on a turn: the one-shot override when it differs from the
+    settings default at generation time, else None (a default-model turn stays unlabeled —
+    the UI only badges responses produced by a *different* model, e.g. a cross-model retry)."""
+    if not model:
+        return None
+    return model if model != config.load_settings().get("model") else None
+
+
 def start_turn(slug: str, runner: RunnerFn | None = None,
                delivery_mode: str = "reading", model: str | None = None) -> ChatJob:
     """Start generating the assistant turn for `slug` in a background thread, or join the job
@@ -108,6 +117,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     runner = runner or (lambda s, h: _default_events(s, h, model=model))
 
     def generate(job: ChatJob) -> None:
+        model_label = override_label(model)
         job._preview_enabled = (job.delivery_mode == "listening"
                                 and config.load_settings().get("speech_provider") == "openai")
         job._preview_last_started = time.monotonic()
@@ -134,7 +144,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         else:
             final_text = _consume_sync(job, events)
         if job.cancelled:
-            _record_cancelled(job, final_text)
+            _record_cancelled(job, final_text, model_label=model_label)
             return
         turn = agent.parse(final_text)
         with _registry.lock:
@@ -163,6 +173,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             chat_job_id=job.id,
             audio_job_id=audio_job_id,
             audio_error=audio_error,
+            model=model_label,
         )
         if audio_job_id:
             try:
@@ -380,7 +391,7 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
 STOP_MARKER = "> Stopped by you — the response above is partial."
 
 
-def _record_cancelled(job: ChatJob, partial_text: str) -> None:
+def _record_cancelled(job: ChatJob, partial_text: str, model_label: str | None = None) -> None:
     """Settle a stopped turn: record EXACTLY the canonical text the user watched stream
     (agent.canonical_prefix — the same extraction that fed job.items, so protocol scaffolding
     like a bare '### CANONICAL ###' never lands in the transcript), marked as stopped, and
@@ -398,7 +409,8 @@ def _record_cancelled(job: ChatJob, partial_text: str) -> None:
         turn = Turn(role="assistant", canonical=f"{shown}\n\n{STOP_MARKER}",
                     state_signal="in_discussion")
         _, assistant_index = sessions.record_assistant(
-            job.slug, turn, delivery_mode=job.delivery_mode, chat_job_id=job.id)
+            job.slug, turn, delivery_mode=job.delivery_mode, chat_job_id=job.id,
+            model=model_label)
         with _registry.lock:
             job.turn = turn.to_dict()
             job.assistant_index = assistant_index
