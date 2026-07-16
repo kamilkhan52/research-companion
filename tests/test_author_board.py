@@ -90,6 +90,27 @@ def test_empty_graph_and_explainers():
     assert "significant" in AUTHOR_EXPLAINERS["significant"].casefold()
 
 
+def test_display_name_tidies_leaked_initial_spacing():
+    # Bibliography extraction leaks a space before the initial's period ("Quoc V . Le").
+    graph = {"nodes": [
+        project_node("seq2seq", ["Quoc V . Le"]),
+        project_node("adam", ["Diederik P .  Kingma"]),  # extra whitespace too
+    ]}
+    names = {e["name"] for e in author_board(graph, {})}
+    assert names == {"Quoc V. Le", "Diederik P. Kingma"}
+
+
+def test_display_name_does_not_split_dedup():
+    # The tidy is display-only: sloppy and clean spellings still merge into one entry.
+    graph = {"nodes": [
+        project_node("a", ["Quoc V . Le"]),
+        project_node("b", ["Quoc V. Le"]),
+    ]}
+    [entry] = author_board(graph, {})
+    assert entry["name"] == "Quoc V. Le"
+    assert entry["in_project_count"] == 2
+
+
 def test_et_al_and_junk_tokens_are_not_authors():
     graph = {"nodes": [
         project_node("awq", ["Song Han", "et al."]),
