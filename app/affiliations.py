@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import concurrent.futures
 
-from . import config, llm, logging_config, store
+from . import config, graph_store, llm, logging_config, store
 
 log = logging_config.get("affiliations")
 
@@ -69,55 +69,74 @@ def extract(slug: str, *, complete=None) -> list[dict] | None:
     cached text / the model call fails (both retried on the next build). An empty list means
     the pass RAN and found nothing — that IS cached, so a paper with a truly bare header
     isn't re-billed every build."""
-    text = store.read_full_text(slug)[:FIRST_PAGE_CHARS].strip()
+    # Graph-only papers (no git-backed corpus file) keep their retrieved text in the graph
+    # store — they're exactly the ones OpenAlex can't cover (often no reading-list arXiv id),
+    # so this fallback matters most for them.
+    text = (store.read_full_text(slug)
+            or graph_store.read_retrieved_text(slug))[:FIRST_PAGE_CHARS].strip()
     if not text:
         return None
     complete = complete or llm.complete
-    # The call runs in a worker thread so the deadline is wall-clock; threads don't inherit
-    # contextvars, so rebind the project (invariant 2) or usage lands on the wrong ledger.
-    pid = config.active_project_id()
-
-    def _do():
-        token = config.set_active_project(pid)
-        try:
-            return complete([{"role": "user", "content": _PROMPT.format(text=text)}],
-                            temperature=0, max_tokens=800, timeout=60,
-                            operation="affiliations")
-        finally:
-            config.reset_active_project(token)
-
     try:
-        raw = _EXECUTOR.submit(_do).result(timeout=HARD_DEADLINE_S)
-    except concurrent.futures.TimeoutError:
-        log.info("affiliation extraction timed out for %s", slug)
-        return None
+        raw = complete([{"role": "user", "content": _PROMPT.format(text=text)}],
+                       temperature=0, max_tokens=800, timeout=60,
+                       operation="affiliations")
     except llm.LLMError as e:
         log.info("affiliation extraction failed for %s: %s", slug, str(e)[:120])
         return None
     return _parse(raw)
 
 
+def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None]:
+    """Run one extraction under the wall-clock deadline: (timed_out, ships). The worker
+    thread doesn't inherit contextvars, so the project is rebound (invariant 2) or usage
+    lands on the wrong ledger. On timeout the future is cancelled — a still-queued call must
+    never run later and bill work whose result nothing caches."""
+    pid = config.active_project_id()
+
+    def _do():
+        token = config.set_active_project(pid)
+        try:
+            return extract(slug, complete=complete)
+        finally:
+            config.reset_active_project(token)
+
+    future = _EXECUTOR.submit(_do)
+    try:
+        return False, future.result(timeout=HARD_DEADLINE_S)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        log.info("affiliation extraction timed out for %s", slug)
+        return True, None
+
+
 def annotate_project_affiliations(nodes: list[dict], openalex_cache: dict, cache: dict, *,
-                                  complete=None, force: bool = False) -> None:
+                                  complete=None, force: bool = False,
+                                  persist=None) -> None:
     """Fill the affiliation gaps OpenAlex left, one LLM pass per uncovered project paper,
     then apply the cache to nodes. Never raises — enrichment must never fail a build.
     (Tests stub _extract_missing, mirroring citations._fetch_missing, so builds stay
     LLM-free; the apply step still runs for real.)"""
     try:
-        _extract_missing(nodes, openalex_cache, cache, complete=complete, force=force)
+        _extract_missing(nodes, openalex_cache, cache, complete=complete, force=force,
+                         persist=persist)
     except Exception:  # enrichment only — never fail the build
         pass
     apply_cached(nodes, cache)
 
 
 def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
-                     complete=None, force: bool = False) -> None:
+                     complete=None, force: bool = False, persist=None) -> None:
     """Run the LLM pass for project papers the provider left without any institution.
 
     Provider-first: a node whose OpenAlex authorships carry ANY affiliation is skipped — the
     provider record wins and no tokens are spent. Cache entries are keyed to the node's
     versionless arXiv id (falling back to the slug) so an identity correction invalidates
-    them, mirroring openalex.annotate_project_authors. `force=True` re-extracts everything."""
+    them, mirroring openalex.annotate_project_authors. `force=True` re-extracts everything.
+    `persist` (when given) is called after each successful cache write, so a paid extraction
+    survives a mid-pass restart instead of being billed again next build. The first timeout
+    aborts the pass — a stalled provider must not cost the deadline once per paper, nor
+    saturate the pool with calls whose results nothing would cache."""
     for node in nodes:
         if node.get("kind") != "project" or not node.get("slug"):
             continue
@@ -128,12 +147,20 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
         hit = cache.get(node["id"])
         if not force and hit and hit.get("key") == key:
             continue
-        ships = extract(node["slug"], complete=complete)
+        timed_out, ships = _extract_with_deadline(node["slug"], complete)
+        if timed_out:
+            log.info("provider stalled — skipping affiliation enrichment this build")
+            break
         if ships is None:
             if hit and hit.get("key") != key:
                 cache.pop(node["id"], None)  # never keep another paper's affiliations
             continue
         cache[node["id"]] = {"status": "done", "key": key, "authorships": ships}
+        if persist is not None:
+            try:
+                persist()
+            except Exception:
+                log.warning("could not persist affiliation cache for %s", node["id"])
 
 
 def apply_cached(nodes: list[dict], cache: dict) -> None:

@@ -1153,10 +1153,11 @@ def _persist_graph_snapshot(
         openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), force=force)
         # Provider-first then LLM (R6.4): papers OpenAlex left without any institution get
         # their affiliations read off their own first page. Cached the same way; skipped
-        # entirely for provider-covered papers.
+        # entirely for provider-covered papers. Each paid extraction is persisted as it
+        # lands, so a mid-pass restart never re-bills completed papers.
         affiliations.annotate_project_affiliations(
             nodes, data.get("openalex", {}), data.setdefault("llm_affiliations", {}),
-            force=force)
+            force=force, persist=lambda: graph_store.save(data))
     else:
         # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
         # needs citation counts — apply whatever the cache already knows for free. Without

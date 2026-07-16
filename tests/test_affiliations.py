@@ -130,14 +130,49 @@ def test_annotate_wrapper_never_raises_even_on_unexpected_errors(temp_project, m
     affiliations.annotate_project_affiliations([node("p", "p")], {}, {})  # must not raise
 
 
-def test_stalled_llm_call_hits_the_hard_deadline(temp_project, monkeypatch):
+def test_stalled_llm_call_hits_the_hard_deadline_and_aborts_the_pass(temp_project, monkeypatch):
     """A provider that accepts the request but never returns must not wedge the build's
-    enrichment phase — the wall-clock deadline turns it into a retryable miss."""
-    add_paper(temp_project, "deepstack", "DeepStack", full_text=HEADER)
+    enrichment phase — the wall-clock deadline turns it into a retryable miss, and the FIRST
+    stall aborts the pass so a dead provider costs one deadline per build, not one per paper."""
+    add_paper(temp_project, "a", "Paper A", full_text=HEADER)
+    add_paper(temp_project, "b", "Paper B", full_text=HEADER)
     monkeypatch.setattr(affiliations, "HARD_DEADLINE_S", 0.05)
+    calls = []
 
     def stalled(messages, **kwargs):
-        time.sleep(0.5)
+        calls.append(1)
+        time.sleep(0.4)
         return "Too | Late"
 
-    assert affiliations.extract("deepstack", complete=stalled) is None
+    cache = {}
+    real_extract_missing([node("a", "a"), node("b", "b")], {}, cache, complete=stalled)
+
+    assert cache == {}          # nothing cached → retried next build
+    assert len(calls) == 1      # aborted after the first stall
+
+
+def test_each_paid_extraction_is_persisted_as_it_lands(temp_project):
+    """A restart mid-pass must not re-bill papers whose extraction already completed."""
+    add_paper(temp_project, "a", "Paper A", full_text=HEADER)
+    add_paper(temp_project, "b", "Paper B", full_text=HEADER)
+    cache = {}
+    persists = []
+
+    real_extract_missing(
+        [node("a", "a"), node("b", "b")], {}, cache,
+        complete=fake_complete("Zhiwen Mo | Imperial College London"),
+        persist=lambda: persists.append(len(cache)))
+
+    assert persists == [1, 2]  # saved after EACH paper, not once at the end
+
+
+def test_extract_falls_back_to_graph_retrieved_text(temp_project):
+    """Graph-only papers (no corpus file) keep their text in the graph store — exactly the
+    papers OpenAlex can't cover, so the fallback must reach them too."""
+    from app import graph_store
+    graph_store.write_retrieved_text("ghost", HEADER)
+
+    ships = affiliations.extract(
+        "ghost", complete=fake_complete("Zhiwen Mo | Imperial College London"))
+
+    assert ships == [{"name": "Zhiwen Mo", "affiliation": "Imperial College London"}]
