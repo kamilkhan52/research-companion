@@ -87,6 +87,10 @@ export function useSession(pid: string | null, slug: string | null) {
     queryKey: pid && slug ? keys.session(pid, slug) : ['project', 'none', 'session'],
     queryFn: () => api.getSession(pid as string, slug as string),
     enabled: !!pid && !!slug && hasUrl,
+    // A short freshness window so a resume that was prefetched from the Library (index.tsx)
+    // renders straight from cache without an immediate refetch flash (R.7). Mutations still
+    // invalidate this key explicitly, so committed turns refresh regardless.
+    staleTime: 15_000,
   });
 }
 
@@ -96,6 +100,9 @@ export function useOpeningDraft(pid: string | null, slug: string | null) {
     queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
     queryFn: () => api.getOpeningDraft(pid as string, slug as string),
     enabled: !!pid && !!slug && hasUrl,
+    // The opening draft is effectively immutable once generated; keep it fresh long enough
+    // that a prefetched resume never re-blocks on it (R.7).
+    staleTime: 60_000,
   });
 }
 

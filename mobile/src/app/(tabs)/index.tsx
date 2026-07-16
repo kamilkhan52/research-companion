@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
-import { backfillCovers, getSession } from '@/api/endpoints';
+import { backfillCovers, getOpeningDraft, getSession } from '@/api/endpoints';
 import {
   keys,
   useBaseUrl,
@@ -134,16 +134,22 @@ export default function LibraryScreen() {
     (session) => session.kind === 'paper' && session.state !== 'committed',
   );
 
-  // The hero identifies exactly one likely next destination. Warm its transcript while the
-  // reader is still looking at the Library so opening it can render from TanStack Query's
-  // cache immediately; the normal session query will still refresh stale data in the
-  // background. This intentionally prefetches only the single hero, not every paper row.
+  // The hero identifies exactly one likely next destination. Warm what the paper screen blocks
+  // on — the transcript AND the opening draft — while the reader is still looking at the
+  // Library, so resuming renders from TanStack Query's cache immediately instead of spinning on
+  // two round-trips; the normal queries still refresh stale data in the background. (The hero's
+  // cover is already warmed by the visible ContinueCard's PaperCover.) This intentionally
+  // prefetches only the single hero, not every paper row.
   useEffect(() => {
     if (!continueSession) return;
     const { project_id: projectId, slug } = continueSession;
     void queryClient.prefetchQuery({
       queryKey: keys.session(projectId, slug),
       queryFn: () => getSession(projectId, slug),
+    });
+    void queryClient.prefetchQuery({
+      queryKey: keys.opening(projectId, slug),
+      queryFn: () => getOpeningDraft(projectId, slug),
     });
   }, [continueSession?.project_id, continueSession?.slug, queryClient]);
 
