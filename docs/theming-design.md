@@ -21,14 +21,24 @@ the Figma deliverable. This doc pins the *structure* those values must fill.
 
 ## Current state (what makes this non-trivial)
 
-- One **flat `colors` const** in `mobile/src/theme/tokens.ts`, imported directly by **~32
-  files**, including **27 module-level `StyleSheet.create({...})`** blocks. A module-level
-  StyleSheet snapshots `colors.*` **once at import** — it cannot react to a theme change.
-- `mobile/app.json` hardcodes `"userInterfaceStyle": "dark"`; the discussion `<Chat>` passes
-  `colorScheme="dark"`. No `ThemeProvider`, no `useColorScheme()` usage anywhere.
+- One **flat `colors` const** in `mobile/src/theme/tokens.ts`, imported directly by **32
+  files** (as of 2026-07-16), including **28 module-level `StyleSheet.create({...})`** blocks.
+  A module-level StyleSheet snapshots `colors.*` **once at import** — it cannot react to a
+  theme change.
+- **14 files additionally inline `rgba(...)`/hex literals derived from the palette** (e.g. the
+  graph screen's `rgba(228, 184, 92, 0.08)` amber wash, gradient stops in `PaperCover`,
+  overlay tints in `BottomSheet`/`NowPlaying`). These never read `colors.*` at all, so a
+  guard that only checks token imports would pass while they stay dark-baked. They must be
+  inventoried and either promoted to semantic tokens (e.g. `amberWash`, `overlay`) or derived
+  from tokens at the use site.
+- `mobile/app.json` hardcodes `"userInterfaceStyle": "dark"`; the discussion composer passes
+  `colorScheme="dark"` (`mobile/src/app/paper/[slug].tsx`); the root layout hardcodes
+  `<StatusBar style="light" />` (`mobile/src/app/_layout.tsx`). No `ThemeProvider`, no
+  `useColorScheme()` usage anywhere.
 
 So the work is two things: a **theme runtime**, and a **mechanical migration** of every
-`colors.*` consumer to read the *active* theme. This will be **2+ PRs**.
+`colors.*` consumer *and palette-derived literal* to read the *active* theme. This will be
+**2+ PRs**.
 
 ## Token contract (what every palette must define)
 
@@ -48,8 +58,16 @@ mint, mintInk, violet, amber, danger, scrim
 - Figma delivers the hex for all three; the key list above is the frozen interface. If a new
   semantic token is needed (e.g. an `overlay` distinct from `scrim`), add it to **all three**
   palettes in the same change.
+- **Expect the inline-literal inventory (above) to grow this list.** The washes/tints that
+  today live as `rgba(...)` literals (amber wash, sheet overlay, gradient stops) need named
+  homes — the Figma pass should deliver them as tokens too, not leave them for the migration
+  to improvise per theme.
 
 `fonts`, `radius`, `space` are **not** themed — they stay the single shared constants.
+
+The token contract is also the shape the **web SPA** will eventually consume (as CSS
+variables) — Figma should treat it as the app-wide palette source, not a mobile-only artifact.
+Web work itself stays out of scope here.
 
 ## Theme runtime (infra PR)
 
@@ -59,10 +77,19 @@ mint, mintInk, violet, amber, danger, scrim
 2. A **`ThemeProvider`** (like the existing `GraphSettingsProvider`) holding the resolved theme
    + the persisted mode, and a **`useTheme()`** hook returning the active token map. Persist the
    mode with the same store idiom as `graphSettings` (AsyncStorage). `system` resolves via RN
-   `useColorScheme()` (OS dark→dim, OS light→light) and re-resolves reactively.
+   `useColorScheme()` (OS dark→dim, OS light→light) and re-resolves reactively. The hook must
+   return the **same object identity per mode** (the static palette map, never rebuilt per
+   render) — every `useMemo(() => makeStyles(t), [t])` in the migration depends on that for
+   its caching.
 3. Relax `app.json` `userInterfaceStyle` → `"automatic"`; drop the composer's hardcoded
    `colorScheme="dark"` (derive from the active theme instead).
-4. Add the **Settings override** (Appearance section: System / Dim / Black / Light) — fires the
+4. **System chrome follows the theme**: replace the hardcoded `<StatusBar style="light" />` in
+   `_layout.tsx` with a theme-derived style; set the navigator's screen/transition background
+   from the active theme (the default dark `contentStyle` otherwise flashes during pushes on
+   Light); set the Android navigation-bar color to match. Known v1 caveat: the **splash/boot
+   background** is build-time config (`app.json`), so a Light-mode user still boots through a
+   dark splash — acceptable, note it in Settings copy if it looks jarring.
+5. Add the **Settings override** (Appearance section: System / Dim / Black / Light) — fires the
    R.8 toast on change; the control itself must be theme-aware from the start.
 
 Because module-level StyleSheets can't react, the migration (below) is what actually makes
@@ -87,16 +114,24 @@ Sequence to bound risk and review size:
 3. **Paper/discussion** + sheets (composer, options sheets, `NotesReviewSheet`, authors board).
 4. **Settings / player / remaining** — sweep for stragglers.
 
-Guardrail: after migration, a lint/grep check that **no runtime file imports the flat `colors`
-directly** (only `themes`/`useTheme`), so a hardcoded-dark leak can't silently return. Anything
-new written before migration (e.g. the R.8 Toast, R.10 FigureCard, R.11 NotesReviewSheet)
-currently reads `colors` from tokens and must be migrated in its group.
+Guardrails: after migration, a lint/grep check that **no runtime file imports the flat `colors`
+directly** (only `themes`/`useTheme`) — **plus** a literal check that no `rgba(`/hex color
+literal appears outside the theme files (with a small explicit allowlist for true one-offs,
+e.g. `#000`-shadow), since the 14 inline-literal files never touch `colors.*` and would pass
+the import check while staying dark-baked. Components written between this doc and the
+migration (the R.8 Toast, R.11 NotesReviewSheet, R6.8 AgentTrail, the R6.6 rate pill — the
+list will keep growing) all read `colors` from tokens today and get migrated with their
+group; the guards, not this list, are the enforcement.
+
+Out of scope for v1: **server-rendered paper covers** bake their own palette into the image
+(`app/cover_jobs`); they are content, not chrome, and stay as-is on all three themes.
 
 ## Verification
 
 - Toggle each mode (System / Dim / Black / Light) on device; flip OS light/dark with mode
-  `system` and confirm Dim↔Light swap. No hardcoded-dark leaks (the grep guard), no unreadable
-  `mintInk`/accent-on-surface contrast, status bar style follows the theme.
+  `system` and confirm Dim↔Light swap. No hardcoded-dark leaks (both guards: token import +
+  color literal), no unreadable `mintInk`/accent-on-surface contrast, status bar + Android
+  nav bar follow the theme, and screen pushes on Light show no dark transition flash.
 - Mobile `tsc` + Jest per PR; a small unit test that `useTheme()` returns the light map under
   mode `light` and follows `useColorScheme()` under `system`.
 - Because the infra PR keeps `dim` identical to today, the default experience is unchanged until
@@ -104,8 +139,10 @@ currently reads `colors` from tokens and must be migrated in its group.
 
 ## Phasing summary
 
-1. **Design (codex→Figma)**: the Dim/Black/Light hex for the token contract above.
+1. **Design (codex→Figma)**: the Dim/Black/Light hex for the token contract above, including
+   named tokens for today's inline washes/tints.
 2. **Infra PR**: `themes` map + `ThemeProvider`/`useTheme` + persisted mode + `app.json`
-   automatic + Settings Appearance control + one reference-migrated screen.
+   automatic + system chrome (status bar / nav background / Android nav bar) + Settings
+   Appearance control + one reference-migrated screen.
 3. **Migration PRs**: primitives/chrome → tab screens → paper/sheets → settings/player, each
-   with the grep guard.
+   converting its group's inline color literals too, finishing with both guards enabled.

@@ -55,20 +55,28 @@ figure = { id, number, label, caption, src (original URL), asset (cached filenam
 `<img src>` (or a redirect) pointing at `localhost`, a link-local/private address, or an
 arbitrary host. Because the backend fetches these bytes and then re-serves them through the
 project route, image fetching must be locked down:
-- **Scheme + host allowlist**: `https:` only, host in `{arxiv.org, *.arxiv.org, ar5iv.org,
-  *.ar5iv.org, arxiv-export…}` (the expected figure origins). Anything else is dropped.
+- **Scheme + host allowlist**: `https:` only, host in `{arxiv.org, *.arxiv.org (incl.
+  ar5iv.labs.arxiv.org, export.arxiv.org), ar5iv.org}` — the expected figure origins (note
+  ar5iv.org itself redirects into `*.arxiv.org`). Anything else is dropped.
 - **Revalidate every redirect** against the same allowlist (don't follow blindly), and reject
   responses that resolve to private/link-local/loopback IPs.
 - Enforce the size cap during download (stream + abort past the limit), and only accept
-  `image/*` content types. This is the same "network only in background enrichment, never
-  trust external input" posture the rest of the pipeline takes.
+  `image/*` content types. Fetches carry **no cookies or app credentials**. This is the same
+  "network only in background enrichment, never trust external input" posture the rest of
+  the pipeline takes.
 
 ### 3. Asset cache + serving (mirror the paper-cover pattern)
 Figures are binary assets that must survive restarts and be fetched by the client on demand —
 exactly the shape the **paper cover** feature already solved:
 - Store under the project `.state` (e.g. `.state/figures/<slug>/<figId>.<ext>`) plus the JSON
-  manifest (`.state/figures/<slug>.json`). Node-id/slug-keyed, accumulates across builds, same
-  contract as `citations`/`openalex` caches.
+  manifest (`.state/figures/<slug>.json`). Accumulates across builds, same contract as the
+  `citations`/`openalex`/`affiliations` caches.
+- **Key the manifest to the paper's identity, not just its slug** — the R6.4 affiliation
+  cache re-learned this the hard way. The manifest records the **versionless arXiv id + the
+  exact source URL** it was derived from; a retrieval identity correction (same slug,
+  different confirmed paper) or a changed source invalidates it rather than serving the old
+  paper's figures. `force` (rebuild-from-scratch) re-fetches HTML and re-derives, like every
+  other enrichment cache.
 - Serve via a new project-scoped route mirroring the cover route
   (`GET /api/projects/{pid}/figures/{slug}/{figId}.<ext>` → bytes; a manifest endpoint
   `GET …/figures/{slug}` → JSON). The mobile client builds the image URL the same way
@@ -78,13 +86,18 @@ exactly the shape the **paper cover** feature already solved:
 ### 4. When figures are derived (background, invariant 1)
 Deriving a manifest = an HTTP fetch + parse + N image downloads: seconds, occasionally longer.
 Two options, to decide at implementation:
-- **(preferred) Fold into an existing background job.** Piggyback on the graph build or the
-  cover/preview coordinator: when a paper is (re)processed, derive its figure manifest in the
-  same background pass that already rebinds the active-project contextvar (invariant 2). Nothing
-  in the request path blocks on it.
+- **(preferred) Fold into the graph build's enrichment step.** There is now a concrete
+  precedent to copy: the R6.4 affiliation pass (`affiliations.annotate_project_affiliations`,
+  called from `graph._persist_graph_snapshot` on the full path only). Same contract applies
+  wholesale: per-paper **persist as each manifest lands** (a mid-build restart never redoes
+  completed papers), a **hard wall-clock deadline per paper** with abort-on-stall (a dead
+  host must not cost the deadline once per paper), best-effort throughout (never fails a
+  build), skipped on skeleton publishes (no network), contextvar already bound by the job
+  (invariant 2).
 - **On first reference, lazily.** When an assistant turn cites a figure and no manifest exists,
   enqueue a small `figures_jobs` background job (its own `jobs.Job` + `work()`), poll a cheap
-  snapshot. Same pattern as `preview_jobs`.
+  snapshot. Same pattern as `preview_jobs` — but it re-solves the deadline/stall/persist
+  problems the enrichment step already solved, which is why it's the fallback, not the pick.
 
 The manifest is a pure cache: absent ⇒ no cards, present ⇒ cards. Never a turn dependency.
 
@@ -95,12 +108,17 @@ itself** is the durable record of which figures a turn references — it literal
 "Figure 3 shows…". So figure carding is resolved at **render time**, not baked into the
 transcript:
 - **Render-time resolution (source of truth).** When the discussion renders an assistant entry,
-  scan its canonical text for "Figure N" / "Fig. N" mentions and look each up in the paper's
-  **current** manifest. This is deterministic, no LLM, and — crucially — a manifest that
-  becomes ready *after* a turn was written still cards that older turn on the next render. It
-  also sidesteps the append-only-transcript trap: a turn that finished before enrichment
-  completed (or that triggered the lazy job) would otherwise have recorded no figure ids and
-  could never gain cards.
+  scan its canonical text for figure mentions and look each up in the paper's **current**
+  manifest. This is deterministic, no LLM, and — crucially — a manifest that becomes ready
+  *after* a turn was written still cards that older turn on the next render. It also
+  sidesteps the append-only-transcript trap: a turn that finished before enrichment completed
+  (or that triggered the lazy job) would otherwise have recorded no figure ids and could
+  never gain cards.
+- **Matching spec** (one tolerant regex, shared by the renderer and the optional hint):
+  `Fig(?:ure)?s?\.?\s*(\d+)([a-z])?` — covers "Figure 3", "Fig. 3", "Fig 3a"; a subfigure
+  letter resolves to its parent figure; a plural mention ("Figures 2 and 3") cards each
+  number found in the clause. **At most one card per figure per assistant message** — the
+  first mention wins, later mentions in the same message stay plain text.
 - **Optional cached hint (optimization only).** `app/sessions.py` *may* stamp an assistant
   entry with the figure numbers it mentioned (`figures: [3, 5]`) as a convenience, but the
   renderer never depends on it — it always re-resolves against the live manifest. Absent on
@@ -135,10 +153,13 @@ fails to load ⇒ the card degrades to caption + source link (no broken-image bo
 
 ## Phasing (each its own PR after this doc)
 
-1. **Backend fetch + manifest + cache** (`retriever.py` HTML fetch, `figures.py` parser, `.state`
-   cache) — network-free tests with injected HTML fixtures (like the citations/extraction fakes).
+1. **Backend fetch + manifest + cache** (`retriever.py` HTML fetch, `figures.py` parser, the
+   identity-keyed `.state` cache, the enrichment-step wiring with per-paper persist +
+   deadline) — network-free tests with injected HTML fixtures (like the citations/extraction
+   fakes).
 2. **Serving routes** (manifest + asset bytes) + `shared/api-types.ts` regen + mobile endpoints.
-3. **Transcript figure metadata** (`sessions.py`) + deterministic reference resolution.
+3. **Shared reference resolution** (the matching spec above, as a pure helper with tests);
+   optionally the `sessions.py` cached hint — the renderer must work without it.
 4. **`FigureCard` + renderer placement** (mobile) + Jest fixtures for referenced/missing figures.
 5. (Deferred) assistant-authored SVG via a new marker + `SvgXml`.
 
