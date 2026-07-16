@@ -17,9 +17,13 @@ def _offline_citations(monkeypatch):
     touch the network. Stub only the fetch step — annotate_nodes still runs for real, applying
     whatever counts a test seeded into the cache. Tests of the fetch itself call _fetch_missing
     directly with a fake client (bypassing this stub)."""
-    from app import citations, graph, semantic_scholar
+    from app import affiliations, citations, graph, semantic_scholar
     monkeypatch.setattr(citations, "_fetch_missing", lambda nodes, cache, client, sleep: None)
     monkeypatch.setattr(semantic_scholar, "api_key", lambda: "")
+    # Same treatment for the LLM affiliation fallback (R6.4): builds never call an LLM in
+    # tests. Tests of the extraction itself call _extract_missing directly with a fake
+    # completion function (bypassing this stub); _apply_cached still runs for real.
+    monkeypatch.setattr(affiliations, "_extract_missing", lambda *a, **k: None)
     monkeypatch.setattr(
         graph,
         "retrieve_missing_graph_paper",

@@ -118,3 +118,23 @@ def test_et_al_and_junk_tokens_are_not_authors():
     ]}
     names = {e["name"] for e in author_board(graph, {})}
     assert names == {"Song Han", "Ji Lin"}
+
+
+def test_llm_affiliations_fill_gaps_but_provider_wins(temp_project=None):
+    """R6.4 — the LLM first-page cache fills affiliations OpenAlex lacks; where both know an
+    author, the provider record wins."""
+    graph = {"nodes": [project_node("deepstack", ["Zhiwen Mo", "Hongxiang Fan"])]}
+    openalex_cache = {"deepstack": {"status": "done", "authorships": [
+        {"name": "Zhiwen Mo", "affiliation": "OpenAlex Institute"},
+        {"name": "Hongxiang Fan", "affiliation": ""},
+    ]}}
+    llm_cache = {"deepstack": {"status": "done", "key": "2401.1", "authorships": [
+        {"name": "Zhiwen Mo", "affiliation": "LLM Institute"},
+        {"name": "Hongxiang Fan", "affiliation": "Imperial College London"},
+    ]}}
+
+    board = author_board(graph, openalex_cache, llm_cache)
+    by_name = {e["name"]: e for e in board}
+
+    assert by_name["Zhiwen Mo"]["affiliation"] == "OpenAlex Institute"  # provider first
+    assert by_name["Hongxiang Fan"]["affiliation"] == "Imperial College London"  # LLM fills
