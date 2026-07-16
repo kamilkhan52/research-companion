@@ -114,6 +114,19 @@ export interface Session {
   accepted_drafts: { kind: 'reply' | 'revision'; text: string }[];
 }
 
+/** GET /api/projects/{pid}/review/{slug} — the proposed commit for the notes-drafted review. */
+export interface Review {
+  slug: string;
+  title: string;
+  summary: string;
+  notes_block: string;
+  synthesis_current: string;
+  synthesis_proposed: string;
+  /** Echoed back with an explicit-payload approve; a branch switch/regeneration changes it and
+   *  the stale approval is refused (409). */
+  proposal_revision: string | null;
+}
+
 /** GET /api/projects/{pid}/opening_draft/{slug} */
 export interface OpeningDraft {
   prompt: string;

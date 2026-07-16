@@ -99,6 +99,7 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | R.7 | Continue-reading prefetch also warms the opening draft (no-spinner resume); session staleTime; settings-save invalidates cached opening drafts | [#114](https://github.com/kamilkhan52/research-companion/pull/114) | Complete — awaits device pass |
 | R.5 + R.6 | Force rebuild-from-scratch (dev-gated `RC_DEV`) threads `force` into OpenAlex enrichment so affiliations refresh; Labs empty-state copy | [#115](https://github.com/kamilkhan52/research-companion/pull/115) | Complete — awaits device pass (set `RC_DEV=1` on the backend to see the option) |
 | R.4 | Settings reorg (Connection→Models→Audio→Map→Agent→Usage→Developer); prompt content viewing + dev-gated (`RC_DEV`) in-app editing | [#116](https://github.com/kamilkhan52/research-companion/pull/116) | Complete — awaits device pass; web prompt-editing surface is a small follow-up (web currently reads only) |
+| R.11 | End-of-chat notes review: full-screen view + inline edit of the proposed notes & synthesis before commit (guarded by `proposal_revision`) | [#117](https://github.com/kamilkhan52/research-companion/pull/117) | Complete — awaits device pass |
 
 ## Current execution decisions (2026-07-14)
 
