@@ -327,11 +327,11 @@ _REVIEW_FINISH = (
     "###NAME### marker lines for the sections — not markdown headings."
 )
 
-_DISCOVER_QUERIES = """You design arXiv search queries for a researcher starting a new \
-reading project. You are given the researcher's description of what they want to understand, \
-learn, or explore. Produce 4-6 arXiv API queries that together cover the topic BROADLY (the \
-general area, so foundational and survey papers surface) and NARROWLY (the specific \
-sub-topics, techniques, and system names the goals imply).
+_DISCOVER_QUERIES = """You design arXiv search queries for a researcher exploring a topic. \
+You are given the researcher's description of what they want to understand, learn, or \
+explore. Produce 4-6 arXiv API queries that together cover the topic BROADLY (the general \
+area) and NARROWLY (the specific sub-topics, techniques, and system names the description \
+implies).
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
@@ -351,9 +351,10 @@ Keep each query simple — one or two concepts, not long keyword chains (over-sp
 return nothing). Results are relevance-ranked by arXiv, so do not add words like "survey" \
 unless the goals ask for surveys specifically."""
 
-_DISCOVER_SCORING = """You rank candidate papers for a researcher starting a new reading \
-project. You are given the researcher's goals and a numbered list of candidate papers (title \
-and abstract, found on arXiv). Score EVERY candidate for how much it matters to these goals.
+_DISCOVER_SCORING = """You rank candidate papers for a researcher exploring a topic. You are \
+given the researcher's description of what they want to explore and a numbered list of \
+candidate papers (title and abstract, found on arXiv). Score EVERY candidate for how much it \
+matters to that description.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
@@ -364,11 +365,11 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary):
   ]
 }
 
-relevance: 10 = foundational or central reading for these goals; 7-9 = strongly relevant; \
-4-6 = partially relevant or narrower than the goals; 0-3 = tangential or off-topic. Judge \
-only from the goals, titles, and abstracts. When the goals describe learning or exploring an \
-area, favor foundational works, influential systems, and surveys the researcher should read \
-first over incremental follow-ups."""
+relevance: 10 = central reading for what they want to explore; 7-9 = strongly relevant; \
+4-6 = partially relevant or narrower than the description; 0-3 = tangential or off-topic. \
+Judge only from the description, titles, and abstracts, purely on relevance — a paper is not \
+more relevant merely for being older or foundational; recent work central to the topic ranks \
+just as high."""
 
 _NOTES_EDITOR = """You edit the user's research notes on request. You receive the current \
 markdown of one notes document — either a single paper's Notes block or the project's \

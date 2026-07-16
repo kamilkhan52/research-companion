@@ -95,6 +95,7 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | R.9 | Composer placeholder `Ask about this paper…` → `Reply` | [#110](https://github.com/kamilkhan52/research-companion/pull/110) | Complete — awaits device pass |
 | R.3 | Marquee scrolls once then rests at the tail (was frozen); smaller TopBar title | [#111](https://github.com/kamilkhan52/research-companion/pull/111) | Complete — awaits device pass |
 | R.8 | Reusable ephemeral toast (`Added to library`, `Settings saved`); imperative bridge | [#112](https://github.com/kamilkhan52/research-companion/pull/112) | Complete — awaits device pass |
+| R.1 | Discover reframe: neutral copy (Explore/Results) + prompt reframe (drops new-project/foundational bias) | [#113](https://github.com/kamilkhan52/research-companion/pull/113) | Complete — awaits device pass |
 
 ## Current execution decisions (2026-07-14)
 
