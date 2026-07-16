@@ -14,7 +14,7 @@ this must never fail a build. Output is line-based ("Name | Institution"), not J
 tolerantly. Tests inject a fake completion function (suite stays network-free)."""
 from __future__ import annotations
 
-import concurrent.futures
+import threading
 
 from . import config, graph_store, llm, logging_config, store
 
@@ -29,10 +29,11 @@ FIRST_PAGE_CHARS = 3000
 # extraction's hard deadline): a provider that accepts the request but stalls while sending
 # keep-alives can reset the HTTP read timeout forever, and this call runs synchronously in
 # the build's final enrichment phase — without this, the graph job never settles and rebuilds
-# only join the stuck job. The stalled thread can't be killed, but nothing waits on it.
+# only join the stuck job. Each call gets its own DAEMON thread (not a bounded pool): a
+# stalled thread can't be killed, so pooled workers would be consumed permanently and
+# ThreadPoolExecutor's interpreter-exit join would hang server shutdown on them; a daemon
+# thread just dies with the process and nothing ever waits on it.
 HARD_DEADLINE_S = 120.0
-_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2,
-                                                  thread_name_prefix="affiliations")
 
 _PROMPT = """Below is the opening of a research paper (title, author list with affiliation \
 markers, abstract). Map each listed author to their institutional affiliation as printed.
@@ -90,24 +91,27 @@ def extract(slug: str, *, complete=None) -> list[dict] | None:
 def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None]:
     """Run one extraction under the wall-clock deadline: (timed_out, ships). The worker
     thread doesn't inherit contextvars, so the project is rebound (invariant 2) or usage
-    lands on the wrong ledger. On timeout the future is cancelled — a still-queued call must
-    never run later and bill work whose result nothing caches."""
+    lands on the wrong ledger. In-thread failures land as a retryable miss, never an
+    exception on the build thread."""
     pid = config.active_project_id()
+    result: dict = {}
 
     def _do():
         token = config.set_active_project(pid)
         try:
-            return extract(slug, complete=complete)
+            result["ships"] = extract(slug, complete=complete)
+        except Exception as e:  # noqa: BLE001 — retryable miss, logged, never raised
+            log.info("affiliation extraction errored for %s: %s", slug, str(e)[:120])
         finally:
             config.reset_active_project(token)
 
-    future = _EXECUTOR.submit(_do)
-    try:
-        return False, future.result(timeout=HARD_DEADLINE_S)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
+    worker = threading.Thread(target=_do, daemon=True, name="affiliations")
+    worker.start()
+    worker.join(HARD_DEADLINE_S)
+    if worker.is_alive():
         log.info("affiliation extraction timed out for %s", slug)
         return True, None
+    return False, result.get("ships")
 
 
 def annotate_project_affiliations(nodes: list[dict], openalex_cache: dict, cache: dict, *,
