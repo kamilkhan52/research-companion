@@ -101,6 +101,14 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENAI_BASE = "https://api.openai.com/v1"
 APP_TITLE = os.environ.get("RC_APP_TITLE", "Research Reading Companion")
 
+
+def dev_mode() -> bool:
+    """Whether this instance runs in developer mode (RC_DEV truthy). Gates power-user
+    affordances the client should only expose to the operator — force-rebuild-from-scratch,
+    in-app prompt editing — not production readers. Read live so a restart with the env set
+    flips it without code changes."""
+    return os.environ.get("RC_DEV", "").strip().lower() in {"1", "true", "yes", "on"}
+
 # Author for the commits the app makes into a project's git store (committer.commit,
 # notes_jobs.save, projects.create_project). The store shells out to `git commit`, which needs
 # an author; relying on the host's global git identity means a fresh server/container/CI runner

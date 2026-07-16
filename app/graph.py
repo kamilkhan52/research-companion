@@ -1135,6 +1135,7 @@ def _persist_graph_snapshot(
     stage: str,
     ready: int,
     annotate_citations: bool,
+    force: bool = False,
 ) -> tuple[dict, list[dict]]:
     """Assemble and atomically persist one visible graph lifecycle snapshot."""
     combined = merge_reference_sources(papers, extractions, provider_metadata)
@@ -1142,8 +1143,9 @@ def _persist_graph_snapshot(
     if annotate_citations:
         citations.annotate_nodes(nodes, data["citations"])  # best-effort, cached
         # Project-node authors + affiliations (U.9), same enrichment contract: cached,
-        # best-effort, network only on this full path.
-        openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}))
+        # best-effort, network only on this full path. A force rebuild re-fetches every node
+        # so affiliations OpenAlex has since gained get picked up.
+        openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), force=force)
     else:
         # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
         # needs citation counts — apply whatever the cache already knows for free. Without
@@ -1400,5 +1402,6 @@ def build_graph(papers: list[Paper], force: bool = False,
         stage="enriched",
         ready=ready,
         annotate_citations=True,
+        force=force,
     )
     yield {"type": "done", "graph": graph_payload, "recommendations": recs}

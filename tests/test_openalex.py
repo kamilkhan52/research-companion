@@ -72,6 +72,22 @@ def test_annotate_fills_authors_and_caches():
     assert client2.calls == []
 
 
+def test_force_refetches_even_on_a_cache_hit():
+    """A full rebuild-from-scratch must re-fetch every project node so affiliations OpenAlex
+    has since gained get picked up — the plain cache-hit skip is bypassed under force."""
+    nodes = [_project_node("awq", "2306.00978")]
+    # Cache already holds a hit for the SAME id (no affiliation known last time).
+    cache = {"awq": {"status": "done", "arxiv_id": "2306.00978",
+                     "authorships": [{"name": "Ji Lin", "affiliation": ""},
+                                     {"name": "Song Han", "affiliation": ""}]}}
+    # OpenAlex now returns an affiliation for Ji Lin.
+    client = FakeClient({"10.48550/arXiv.2306.00978": _work(AWQ_SHIPS)})
+    openalex.annotate_project_authors(nodes, cache, client=client, sleep=lambda *_: None,
+                                      force=True)
+    assert client.calls, "force must re-fetch despite the cache hit"
+    assert cache["awq"]["authorships"][0]["affiliation"] == "MIT"
+
+
 def test_annotate_fetch_false_applies_cache_without_network():
     nodes = [_project_node("awq", "2306.00978")]
     cache = {"awq": {"status": "done", "arxiv_id": "2306.00978", "authorships": AWQ_SHIPS_PARSED}}

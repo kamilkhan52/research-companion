@@ -35,6 +35,7 @@ import type {
 // ---------- global ----------
 
 export const getAuthConfig = () => apiGet<AuthConfig>('/api/auth/config');
+export const getHealth = () => apiGet<{ ok: boolean; title: string; dev: boolean }>('/api/health');
 export const getSettings = () => apiGet<Settings>('/api/settings');
 export const saveSettings = (body: Partial<Settings> & Record<string, unknown>) =>
   apiPost<Settings>('/api/settings', body);

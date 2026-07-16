@@ -67,7 +67,17 @@ export default function AuthorsScreen() {
               ))}
             </View>
           ) : (
-            groups.map((g) => (
+            <>
+            {/* Labs coverage is inherently patchy — arXiv metadata carries no affiliation, so
+                it comes from OpenAlex per rebuild. When most authors have none, Labs looks like
+                Authors; say why rather than leave it a mystery (R.6). */}
+            {groups.length === 1 && groups[0].affiliation === UNKNOWN_LABEL ? (
+              <Text variant="caption" color={colors.muted} style={styles.labsNote}>
+                No affiliations yet. They fill in as the map is rebuilt (from the Map screen) —
+                many arXiv papers list none, so coverage stays patchy.
+              </Text>
+            ) : null}
+            {groups.map((g) => (
               <View key={g.affiliation} style={{ marginTop: space.md }}>
                 <Text variant="caption" color={colors.muted} style={styles.groupHeader}>
                   {g.affiliation.toUpperCase()}
@@ -78,7 +88,8 @@ export default function AuthorsScreen() {
                   ))}
                 </View>
               </View>
-            ))
+            ))}
+            </>
           )}
         </ScrollView>
       )}
@@ -261,6 +272,7 @@ const styles = StyleSheet.create({
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   groupHeader: { marginBottom: 6, letterSpacing: 0.5 },
+  labsNote: { lineHeight: 18, marginBottom: space.xs },
   sheetSection: { marginTop: space.sm, letterSpacing: 0.5 },
   paperRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: 6 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl, gap: space.md },

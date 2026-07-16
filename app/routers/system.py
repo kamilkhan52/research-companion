@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.get("/api/health")
 def health():
-    return {"ok": True, "title": config.APP_TITLE}
+    return {"ok": True, "title": config.APP_TITLE, "dev": config.dev_mode()}
 
 
 @router.get("/api/auth/config")

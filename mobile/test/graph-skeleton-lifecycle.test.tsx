@@ -72,6 +72,28 @@ function responseFor(graph: ReferenceGraph, build: GraphBuildJob): GraphResponse
   };
 }
 
+test('run(true) forwards force to startGraphBuild (rebuild from scratch)', async () => {
+  jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
+  jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: runningJob });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useGraphBuild('project-a'),
+    { wrapper: Wrapper },
+  );
+  await act(async () => { await result.current.run(true); });
+
+  expect(api.startGraphBuild).toHaveBeenCalledWith('project-a', true, {});
+
+  await unmountAsync();
+  client.clear();
+});
+
 test('promotes a running skeleton into the graph query cache', async () => {
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: runningJob });

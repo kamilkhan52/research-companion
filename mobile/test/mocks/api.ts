@@ -4,6 +4,7 @@ const unexpected = (name: string) =>
   });
 
 export const getAuthConfig = unexpected('getAuthConfig');
+export const getHealth = jest.fn(async () => ({ ok: true, title: 'Test', dev: false }));
 export const getSettings = unexpected('getSettings');
 export const saveSettings = unexpected('saveSettings');
 export const getModels = unexpected('getModels');
