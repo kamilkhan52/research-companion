@@ -103,6 +103,18 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | R.10 | Paper figures in chat — v1 design (`docs/chat-figures-design.md`); figures-first (arXiv HTML), SVG deferred | [#118](https://github.com/kamilkhan52/research-companion/pull/118) | Design ready — phased implementation after sign-off |
 | R.2 | Light/Dark/Dim theming — engineering design (`docs/theming-design.md`): token contract + ThemeProvider/useTheme + migration plan; palette hex via codex→Figma | [#119](https://github.com/kamilkhan52/research-companion/pull/119) | Design ready — Figma palettes + infra/migration PRs after sign-off |
 
+## Round-6 UX sweep (2026-07-16 device pass)
+
+Kamil's round-6 on-device feedback: eight items, same delivery rules. Decisions: Labs
+affiliations go provider-first then LLM-from-PDF-first-page fallback (R6.4); agentic turns show
+the final answer plus a collapsed, expandable activity trail, with the bubble matching the
+narrated audio exactly (R6.8).
+
+| Item | Change | PR | Status |
+|------|--------|----|--------|
+| R6.2 | Build-stepper connector segments render in one layer behind the step dots (was painting over completed checkmarks on Android) | [#120](https://github.com/kamilkhan52/research-companion/pull/120) | Complete — awaits device pass |
+| R6.1 | Marquee measures intrinsic text width inside an explicit wide strip (Yoga at-most constraint made absolute text wrap at container width, so overflow was never detected and titles sat frozen) | [#121](https://github.com/kamilkhan52/research-companion/pull/121) | Complete — awaits device pass |
+
 ## Current execution decisions (2026-07-14)
 
 The **U.x rows** are the 2026-07-14 UX polish sweep from Kamil's on-device notes: one focused
