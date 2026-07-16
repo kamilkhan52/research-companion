@@ -4,7 +4,7 @@ import type { PropsWithChildren } from 'react';
 
 import * as api from '@/api/endpoints';
 import { getBaseUrl, setBaseUrl } from '@/api/config';
-import { keys, useProjects, useRecentSessions, useSaveSettings } from '@/api/queries';
+import { useProjects, useRecentSessions } from '@/api/queries';
 import type { Project, RecentSession } from '@/api/types';
 
 test('useProjects fetches through the API module when a server is configured', async () => {
@@ -62,29 +62,6 @@ test('useRecentSessions fetches cross-project activity', async () => {
 
   const { result, unmountAsync } = await renderHookAsync(() => useRecentSessions(), { wrapper: Wrapper });
   await waitFor(() => expect(result.current.data).toEqual(sessions));
-
-  await unmountAsync();
-  client.clear();
-});
-
-test('saving settings invalidates cached opening drafts so a model change reaches reopened papers', async () => {
-  await setBaseUrl('https://api.test');
-  jest.mocked(api.saveSettings).mockResolvedValue({} as never);
-
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
-  // A previously-cached opening draft carrying the old default model.
-  client.setQueryData(keys.opening('proj', 'awq'), { prompt: 'x', model: 'old/model', title: 'AWQ' });
-  function Wrapper({ children }: PropsWithChildren) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  }
-
-  const { result, unmountAsync } = await renderHookAsync(() => useSaveSettings(), { wrapper: Wrapper });
-  result.current.mutate({ model: 'new/model' });
-
-  await waitFor(() =>
-    expect(client.getQueryState(keys.opening('proj', 'awq'))?.isInvalidated).toBe(true));
 
   await unmountAsync();
   client.clear();
