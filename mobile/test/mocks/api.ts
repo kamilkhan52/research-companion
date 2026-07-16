@@ -32,6 +32,7 @@ export const getOpeningDraft = unexpected('getOpeningDraft');
 export const startPaper = unexpected('startPaper');
 export const reopen = unexpected('reopen');
 export const approve = unexpected('approve');
+export const getReview = unexpected('getReview');
 export const addPaper = unexpected('addPaper');
 export const switchBranch = unexpected('switchBranch');
 export const streamPaths = jest.fn(() => ({}));

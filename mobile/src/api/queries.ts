@@ -20,6 +20,7 @@ export const keys = {
   projectState: (pid: string) => ['project', pid, 'state'] as const,
   session: (pid: string, slug: string) => ['project', pid, 'session', slug] as const,
   opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
+  review: (pid: string, slug: string) => ['project', pid, 'review', slug] as const,
   settings: ['settings'] as const,
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
@@ -106,6 +107,19 @@ export function useSession(pid: string | null, slug: string | null) {
     // renders straight from cache without an immediate refetch flash (R.7). Mutations still
     // invalidate this key explicitly, so committed turns refresh regardless.
     staleTime: 15_000,
+  });
+}
+
+/** The proposed commit for a notes-drafted paper (notes block + synthesis + revision token).
+ *  `enabled` defers the fetch until the review surface is actually opened. Always refetched
+ *  (staleTime 0) so the revision token guards a stale approve. */
+export function useReview(pid: string | null, slug: string | null, enabled = true) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && slug ? keys.review(pid, slug) : ['project', 'none', 'review'],
+    queryFn: () => api.getReview(pid as string, slug as string),
+    enabled: !!pid && !!slug && hasUrl && enabled,
+    staleTime: 0,
   });
 }
 

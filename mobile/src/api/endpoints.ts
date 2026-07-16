@@ -19,6 +19,7 @@ import type {
   ModelOption,
   OpeningDraft,
   Paper,
+  Review,
   PromptStatus,
   Project,
   ProjectState,
@@ -111,6 +112,9 @@ export const setSessionMode = (pid: string, slug: string, mode: ReadingMode) =>
   apiPost<{ mode: ReadingMode }>(`${P(pid)}/session_mode`, { slug, mode });
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
   apiPost<{ result: unknown; paper: unknown }>(`${P(pid)}/approve`, { slug, ...body });
+/** The proposed commit awaiting review in the notes-drafted state (notes block + synthesis). */
+export const getReview = (pid: string, slug: string) =>
+  apiGet<Review>(`${P(pid)}/review/${encodeURIComponent(slug)}`);
 /** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation.
  *  Pass the abstract when the caller has one: it is what an unread paper contributes to a
  *  discussion's context until someone reads it. */

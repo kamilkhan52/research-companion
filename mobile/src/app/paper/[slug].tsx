@@ -57,6 +57,7 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
@@ -650,6 +651,7 @@ function DiscussionThread({
   const setEditing = editDraft.setValue;
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const disabled = stream.streaming || busy;
   // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
   // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
@@ -859,19 +861,6 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paths.retry, slug, state, stream.run, transcript]);
 
-  async function approve() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.approve(pid, slug);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not commit the notes.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function reopen() {
     setBusy(true);
     setActionError(null);
@@ -1066,8 +1055,8 @@ function DiscussionThread({
               <Button title="Reopen" variant="ghost" onPress={() => void reopen()} loading={busy} disabled={disabled} style={{ flex: 1 }} />
             )}
             <Button
-              title="Approve & commit"
-              onPress={() => void approve()}
+              title="Review & commit"
+              onPress={() => setReviewOpen(true)}
               loading={busy}
               disabled={disabled || !!inputText.trim()}
               style={{ flex: 1 }}
@@ -1175,6 +1164,13 @@ function DiscussionThread({
       visible={!!msgMenu}
       onClose={() => setMsgMenu(null)}
       options={msgMenu ?? []}
+    />
+    <NotesReviewSheet
+      visible={reviewOpen}
+      pid={pid}
+      slug={slug}
+      onClose={() => setReviewOpen(false)}
+      onCommitted={() => { setReviewOpen(false); onMutated(); }}
     />
     </>
   );
