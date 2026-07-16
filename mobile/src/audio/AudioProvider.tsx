@@ -16,6 +16,7 @@ import type { AudioJob } from '@/api/types';
 import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
+import { showToast } from '@/ui/Toast';
 import { useListeningMode } from '@/store/listening';
 import {
   checkpointPlayback,
@@ -73,6 +74,11 @@ interface AudioContextValue {
 }
 
 const POLL_MS = 1000;
+/** R6.5 — a manual (reading-mode) preparation that took longer than this gets an "Audio
+ *  ready" toast when playback starts: the user has usually navigated away by then, and the
+ *  toast explains why sound just started. Instant cache hits stay silent. Listening-mode
+ *  queued audio never toasts — auto-play is its whole contract. */
+const READY_TOAST_MIN_MS = 5000;
 // Polls that may fail in a row (network blips, brief tunnel drops) before we give up.
 const MAX_POLL_FAILURES = 8;
 // Most grounded cues to keep queued behind the currently-playing cue (opportunistic; extra
@@ -293,6 +299,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         return rest;
       });
       setPrep({ id, title, stage: 'starting', done: 0, total: 0 });
+      const prepStartedAt = Date.now();
+      const toastIfWaited = () => {
+        if (Date.now() - prepStartedAt >= READY_TOAST_MIN_MS) showToast('Audio ready');
+      };
 
       const fail = (message: string) => {
         if (!live()) return;
@@ -332,6 +342,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             setCurrentTitle(title);
             setPlaybackStartedAtById((value) => value[id]
               ? value : { ...value, [id]: new Date().toISOString() });
+            toastIfWaited();
             await TrackPlayer.play();
           }
         };
@@ -421,6 +432,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         setPrep(null);
         setPlaybackStartedAtById((value) => value[id]
           ? value : { ...value, [id]: new Date().toISOString() });
+        toastIfWaited();
         await TrackPlayer.play();
       } catch (e) {
         fail((e as Error).message ?? 'Could not prepare audio.');
