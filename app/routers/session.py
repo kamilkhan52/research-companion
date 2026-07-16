@@ -106,7 +106,7 @@ def _run_and_record(slug: str, model: str | None = None) -> dict:
         turn = agent.run_turn(slug, history, model=model)
     except AgentError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    sessions.record_assistant(slug, turn)
+    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
     return turn.to_dict()
 
 
@@ -166,7 +166,7 @@ def _turn_stream(slug: str, model: str | None = None):
                         "The model returned an empty response. Try again, or switch the analysis "
                         "model in Settings."})
             return
-        sessions.record_assistant(slug, turn)
+        sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
         yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
     finally:
         _discard_sse_turn(slug)
@@ -213,7 +213,7 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
                     "The model returned an empty response. Try again, or switch the analysis "
                     "model in Settings."})
         return
-    sessions.record_assistant(slug, turn)
+    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
 
 
