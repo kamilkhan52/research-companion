@@ -14,6 +14,7 @@ export function useBaseUrl(): string {
 }
 
 export const keys = {
+  health: ['health'] as const,
   projects: ['projects'] as const,
   recentSessions: ['recentSessions'] as const,
   projectState: (pid: string) => ['project', pid, 'state'] as const,
@@ -30,6 +31,20 @@ export const keys = {
   usage: (pid: string) => ['project', pid, 'usage'] as const,
   paperCover: (pid: string, slug: string) => ['project', pid, 'cover', slug] as const,
 };
+
+/** Whether the backend runs in developer mode (RC_DEV). Gates operator-only affordances —
+ *  force-rebuild-from-scratch, in-app prompt editing — off the unauthenticated health probe.
+ *  Cached long: it only changes on a server restart. */
+export function useDevMode(): boolean {
+  const hasUrl = !!useBaseUrl();
+  const health = useQuery({
+    queryKey: keys.health,
+    queryFn: api.getHealth,
+    enabled: hasUrl,
+    staleTime: 5 * 60_000,
+  });
+  return health.data?.dev ?? false;
+}
 
 export function useProjects() {
   const hasUrl = !!useBaseUrl();

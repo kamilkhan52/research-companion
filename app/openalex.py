@@ -63,11 +63,13 @@ def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | Non
 
 def annotate_project_authors(nodes: list[dict], cache: dict, *,
                              client: httpx.Client | None = None, sleep=time.sleep,
-                             fetch: bool = True) -> None:
+                             fetch: bool = True, force: bool = False) -> None:
     """Fill `authors` on project nodes from OpenAlex authorships, fetching what the cache
     (node id -> {status, authorships}) doesn't already hold and updating it (persisted by
     the caller via the graph store). `fetch=False` applies the cache only — skeleton
-    snapshots must stay network-free. Never raises."""
+    snapshots must stay network-free. `force=True` (a full rebuild-from-scratch) re-fetches
+    every project node even on a cache hit, so authors/affiliations that OpenAlex has gained
+    since the last build get picked up. Never raises."""
     if fetch:
         own = client is None
         client = client or httpx.Client(timeout=TIMEOUT_S)
@@ -83,7 +85,7 @@ def annotate_project_authors(nodes: list[dict], cache: dict, *,
                 # must not survive that. A stale record whose refetch misses is DROPPED, so
                 # the unconditional apply pass below can't publish the previous paper's
                 # authors on an identity correction.
-                if hit and hit.get("arxiv_id") == base:
+                if not force and hit and hit.get("arxiv_id") == base:
                     continue
                 try:
                     ships = work_authorships(node["arxiv_id"], client=client)

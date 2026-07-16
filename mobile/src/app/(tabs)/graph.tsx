@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
-import { useGraph } from '@/api/queries';
+import { useDevMode, useGraph } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
@@ -57,6 +57,7 @@ export default function GraphScreen() {
   const graphQuery = useGraph(activePid);
   const build = useGraphBuild(activePid);
   const { allowAllFilter } = useGraphSettings();
+  const devMode = useDevMode();
 
   const [query, setQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -211,6 +212,15 @@ export default function GraphScreen() {
             name: 'refresh-cw',
             badge: needsBuildAttention,
             onPress: () => {
+              // Full rebuild-from-scratch re-fetches everything (metadata, extractions, author
+              // affiliations) rather than only what changed. It's an operator power tool, so
+              // dev-only (RC_DEV). Android's AlertDialog caps at 3 buttons, so when dev adds
+              // "From scratch" to the attention dialog we drop the cheap "Just refresh".
+              const scratchBtn = {
+                text: 'From scratch',
+                style: 'destructive' as const,
+                onPress: () => build.run(true),
+              };
               if (needsBuildAttention) {
                 const reasons = [
                   needsEnrichment
@@ -230,8 +240,23 @@ export default function GraphScreen() {
                   `${reasons} ${needsEnrichment ? 'Continue' : 'Rebuild'} to process the affected papers — unchanged ones stay cached, so this only costs what changed.`,
                   [
                     { text: 'Cancel', style: 'cancel' },
-                    { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
+                    ...(devMode
+                      ? []
+                      : [{ text: 'Just refresh', onPress: () => void graphQuery.refetch() }]),
                     { text: needsEnrichment ? 'Continue' : 'Rebuild', onPress: () => build.run(false) },
+                    ...(devMode ? [scratchBtn] : []),
+                  ],
+                );
+              } else if (devMode) {
+                Alert.alert(
+                  'Rebuild reference graph?',
+                  'Everything is up to date. You can force a full rebuild from scratch — it '
+                  + 're-fetches metadata, extractions, and author affiliations (affiliations '
+                  + 'stay patchy; many arXiv papers list none).',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Just refresh', onPress: () => void graphQuery.refetch() },
+                    scratchBtn,
                   ],
                 );
               } else {
