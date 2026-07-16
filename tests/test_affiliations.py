@@ -4,6 +4,8 @@ a build. Extraction tests call _extract_missing directly with a fake completion 
 (bypassing the conftest stub, like citations._fetch_missing); no network, no real LLM."""
 from __future__ import annotations
 
+import time
+
 from app import affiliations, llm
 from app.affiliations import _extract_missing as real_extract_missing
 
@@ -77,7 +79,7 @@ def test_uncovered_paper_is_extracted_cached_and_fills_missing_authors(temp_proj
     n = node("deepstack", "deepstack")
 
     real_extract_missing([n], {}, cache, complete=complete)
-    affiliations._apply_cached([n], cache)
+    affiliations.apply_cached([n], cache)
 
     assert cache["deepstack"]["authorships"] == [
         {"name": "Zhiwen Mo", "affiliation": "Imperial College London"}]
@@ -100,7 +102,7 @@ def test_identity_correction_drops_the_stale_record(temp_project):
     n = node("p", "p-slug", arxiv_id="2502.99999")
 
     real_extract_missing([n], {}, cache, complete=complete)
-    affiliations._apply_cached([n], cache)
+    affiliations.apply_cached([n], cache)
 
     assert "p" not in cache  # never keep another paper's affiliations
     assert n["authors"] == []
@@ -126,3 +128,16 @@ def test_annotate_wrapper_never_raises_even_on_unexpected_errors(temp_project, m
     monkeypatch.setattr(affiliations, "_extract_missing", exploding)
 
     affiliations.annotate_project_affiliations([node("p", "p")], {}, {})  # must not raise
+
+
+def test_stalled_llm_call_hits_the_hard_deadline(temp_project, monkeypatch):
+    """A provider that accepts the request but never returns must not wedge the build's
+    enrichment phase — the wall-clock deadline turns it into a retryable miss."""
+    add_paper(temp_project, "deepstack", "DeepStack", full_text=HEADER)
+    monkeypatch.setattr(affiliations, "HARD_DEADLINE_S", 0.05)
+
+    def stalled(messages, **kwargs):
+        time.sleep(0.5)
+        return "Too | Late"
+
+    assert affiliations.extract("deepstack", complete=stalled) is None

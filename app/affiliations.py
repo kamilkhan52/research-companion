@@ -14,7 +14,9 @@ this must never fail a build. Output is line-based ("Name | Institution"), not J
 tolerantly. Tests inject a fake completion function (suite stays network-free)."""
 from __future__ import annotations
 
-from . import llm, logging_config, store
+import concurrent.futures
+
+from . import config, llm, logging_config, store
 
 log = logging_config.get("affiliations")
 
@@ -22,6 +24,15 @@ log = logging_config.get("affiliations")
 # institutions, abstract). This is plenty to cover multi-institution author lists while
 # keeping the call cheap.
 FIRST_PAGE_CHARS = 3000
+
+# Wall-clock deadline per extraction, enforced from the caller (same reasoning as graph
+# extraction's hard deadline): a provider that accepts the request but stalls while sending
+# keep-alives can reset the HTTP read timeout forever, and this call runs synchronously in
+# the build's final enrichment phase — without this, the graph job never settles and rebuilds
+# only join the stuck job. The stalled thread can't be killed, but nothing waits on it.
+HARD_DEADLINE_S = 120.0
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2,
+                                                  thread_name_prefix="affiliations")
 
 _PROMPT = """Below is the opening of a research paper (title, author list with affiliation \
 markers, abstract). Map each listed author to their institutional affiliation as printed.
@@ -62,9 +73,24 @@ def extract(slug: str, *, complete=None) -> list[dict] | None:
     if not text:
         return None
     complete = complete or llm.complete
+    # The call runs in a worker thread so the deadline is wall-clock; threads don't inherit
+    # contextvars, so rebind the project (invariant 2) or usage lands on the wrong ledger.
+    pid = config.active_project_id()
+
+    def _do():
+        token = config.set_active_project(pid)
+        try:
+            return complete([{"role": "user", "content": _PROMPT.format(text=text)}],
+                            temperature=0, max_tokens=800, timeout=60,
+                            operation="affiliations")
+        finally:
+            config.reset_active_project(token)
+
     try:
-        raw = complete([{"role": "user", "content": _PROMPT.format(text=text)}],
-                       temperature=0, max_tokens=800, operation="affiliations")
+        raw = _EXECUTOR.submit(_do).result(timeout=HARD_DEADLINE_S)
+    except concurrent.futures.TimeoutError:
+        log.info("affiliation extraction timed out for %s", slug)
+        return None
     except llm.LLMError as e:
         log.info("affiliation extraction failed for %s: %s", slug, str(e)[:120])
         return None
@@ -81,7 +107,7 @@ def annotate_project_affiliations(nodes: list[dict], openalex_cache: dict, cache
         _extract_missing(nodes, openalex_cache, cache, complete=complete, force=force)
     except Exception:  # enrichment only — never fail the build
         pass
-    _apply_cached(nodes, cache)
+    apply_cached(nodes, cache)
 
 
 def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
@@ -110,7 +136,7 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
         cache[node["id"]] = {"status": "done", "key": key, "authorships": ships}
 
 
-def _apply_cached(nodes: list[dict], cache: dict) -> None:
+def apply_cached(nodes: list[dict], cache: dict) -> None:
     """Fill `authors` on project nodes the provider missed entirely, from records keyed to
     the node's current identity — so those papers' people reach the board at all."""
     for node in nodes:

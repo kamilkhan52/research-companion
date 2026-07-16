@@ -1167,6 +1167,9 @@ def _persist_graph_snapshot(
             node["citation_count"] = cache.get(node["id"])
         # Same free-from-cache treatment for authors: no network on skeleton publishes.
         openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), fetch=False)
+        # And for LLM-extracted authors (R6.4) — a paper whose names came only from the
+        # first-page pass must not vanish from /graph/authors for the whole build.
+        affiliations.apply_cached(nodes, data.get("llm_affiliations") or {})
     recs = score_recommendations(nodes, edges, len(papers))
     layout = graph_layout.compute_layout(nodes, edges)
     metadata_papers = sum(
