@@ -17,6 +17,7 @@ import TrackPlayer, {
 
 import { useAudio } from '@/audio/AudioProvider';
 import { SKIP_SECONDS } from '@/audio/setup';
+import { PLAYBACK_RATES, useListeningMode } from '@/store/listening';
 import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
@@ -43,6 +44,13 @@ export default function PlayerScreen() {
   const buffering = state === State.Buffering || state === State.Loading;
   const value = scrubbing ?? position;
 
+  // R6.6 — tap to cycle narration speed; persisted and applied by AudioProvider.
+  const { playbackRate, setPlaybackRate } = useListeningMode();
+  const cycleRate = () => {
+    const i = PLAYBACK_RATES.indexOf(playbackRate);
+    setPlaybackRate(PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length]);
+  };
+
   async function togglePlay() {
     if (playing) {
       await TrackPlayer.pause();
@@ -64,7 +72,16 @@ export default function PlayerScreen() {
             {track?.title ?? audio.prep?.title ?? 'Narration'}
           </Text>
         </View>
-        <View style={{ width: 42 }} />
+        <Pressable
+          onPress={cycleRate}
+          hitSlop={8}
+          style={styles.rateBtn}
+          accessibilityRole="button"
+          accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change.`}>
+          <Text style={[styles.rateLabel, playbackRate !== 1 && { color: colors.mint }]}>
+            {playbackRate}×
+          </Text>
+        </Pressable>
       </View>
 
       {track ? (
@@ -265,6 +282,14 @@ const styles = StyleSheet.create({
   sentenceGlyph: { gap: 2, alignItems: 'flex-start' },
   sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: colors.mint },
   skipGlyph: { color: colors.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
+  rateBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rateLabel: { color: colors.muted, fontSize: 13, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
