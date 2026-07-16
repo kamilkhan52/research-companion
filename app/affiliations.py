@@ -14,6 +14,7 @@ this must never fail a build. Output is line-based ("Name | Institution"), not J
 tolerantly. Tests inject a fake completion function (suite stays network-free)."""
 from __future__ import annotations
 
+import hashlib
 import threading
 
 from . import config, graph_store, llm, logging_config, store
@@ -65,16 +66,35 @@ def _parse(raw: str) -> list[dict]:
     return out
 
 
-def extract(slug: str, *, complete=None) -> list[dict] | None:
+def _first_page(slug: str) -> str:
+    """The paper's opening block. Graph-only papers (no git-backed corpus file) keep their
+    retrieved text in the graph store — they're exactly the ones OpenAlex can't cover (often
+    no reading-list arXiv id), so that fallback matters most for them."""
+    return (store.read_full_text(slug)
+            or graph_store.read_retrieved_text(slug))[:FIRST_PAGE_CHARS].strip()
+
+
+def _cache_key(node: dict) -> str | None:
+    """A record is only valid for the paper it was read from: key by the versionless arXiv
+    id, else by the first-page text's own identity — a graph-only slug can have its stored
+    text replaced by a different confirmed paper (retrieval_sources) without any id or force
+    changing, and a slug-only key would then republish the old paper's people. None = no
+    identity at all (nothing to extract from either)."""
+    base = store.arxiv_base_id(node.get("arxiv_id") or "")
+    if base:
+        return base
+    text = _first_page(node["slug"])
+    if not text:
+        return None
+    return "text:" + hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] | None:
     """[{name, affiliation}] read off the paper's own first page, or None when there is no
     cached text / the model call fails (both retried on the next build). An empty list means
     the pass RAN and found nothing — that IS cached, so a paper with a truly bare header
     isn't re-billed every build."""
-    # Graph-only papers (no git-backed corpus file) keep their retrieved text in the graph
-    # store — they're exactly the ones OpenAlex can't cover (often no reading-list arXiv id),
-    # so this fallback matters most for them.
-    text = (store.read_full_text(slug)
-            or graph_store.read_retrieved_text(slug))[:FIRST_PAGE_CHARS].strip()
+    text = _first_page(slug) if text is None else text
     if not text:
         return None
     complete = complete or llm.complete
@@ -88,11 +108,25 @@ def extract(slug: str, *, complete=None) -> list[dict] | None:
     return _parse(raw)
 
 
+# Stalled workers can't be killed; they're daemons so they die with the process, but a
+# provider that stalls forever must not accumulate one live thread per rebuild either — the
+# guard below skips the pass while any previous orphan is still alive.
+_orphans: list[threading.Thread] = []
+_orphans_lock = threading.Lock()
+
+
+def _orphan_alive() -> bool:
+    with _orphans_lock:
+        _orphans[:] = [t for t in _orphans if t.is_alive()]
+        return bool(_orphans)
+
+
 def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None]:
     """Run one extraction under the wall-clock deadline: (timed_out, ships). The worker
     thread doesn't inherit contextvars, so the project is rebound (invariant 2) or usage
     lands on the wrong ledger. In-thread failures land as a retryable miss, never an
-    exception on the build thread."""
+    exception on the build thread. A timed-out worker is remembered so later passes don't
+    stack new threads on top of a provider that never returns."""
     pid = config.active_project_id()
     result: dict = {}
 
@@ -109,6 +143,8 @@ def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None
     worker.start()
     worker.join(HARD_DEADLINE_S)
     if worker.is_alive():
+        with _orphans_lock:
+            _orphans.append(worker)
         log.info("affiliation extraction timed out for %s", slug)
         return True, None
     return False, result.get("ships")
@@ -139,15 +175,21 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
     them, mirroring openalex.annotate_project_authors. `force=True` re-extracts everything.
     `persist` (when given) is called after each successful cache write, so a paid extraction
     survives a mid-pass restart instead of being billed again next build. The first timeout
-    aborts the pass — a stalled provider must not cost the deadline once per paper, nor
-    saturate the pool with calls whose results nothing would cache."""
+    aborts the pass — a stalled provider must not cost the deadline once per paper — and a
+    still-alive orphan from a previous pass skips this one entirely."""
+    if _orphan_alive():
+        log.info("a previous affiliation call is still stalled — skipping enrichment "
+                 "this build")
+        return
     for node in nodes:
         if node.get("kind") != "project" or not node.get("slug"):
             continue
         provider_ships = (openalex_cache.get(node["id"]) or {}).get("authorships") or []
         if any(s.get("affiliation") for s in provider_ships):
             continue  # provider-first: OpenAlex has institution data for this paper
-        key = store.arxiv_base_id(node.get("arxiv_id") or "") or node["slug"]
+        key = _cache_key(node)
+        if key is None:
+            continue  # no identity and no text — nothing to extract from
         hit = cache.get(node["id"])
         if not force and hit and hit.get("key") == key:
             continue
@@ -176,7 +218,7 @@ def apply_cached(nodes: list[dict], cache: dict) -> None:
         hit = cache.get(node["id"])
         if not hit:
             continue
-        key = store.arxiv_base_id(node.get("arxiv_id") or "") or node["slug"]
+        key = _cache_key(node)
         if hit.get("key") != key:
             continue
         node["authors"] = [s["name"] for s in hit.get("authorships") or [] if s.get("name")]

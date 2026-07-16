@@ -150,6 +150,16 @@ def test_stalled_llm_call_hits_the_hard_deadline_and_aborts_the_pass(temp_projec
     assert cache == {}          # nothing cached → retried next build
     assert len(calls) == 1      # aborted after the first stall
 
+    # While the orphaned worker is still alive, the next pass must not stack another
+    # thread on the same dead provider — it skips entirely.
+    real_extract_missing([node("b", "b")], {}, cache, complete=stalled)
+    assert len(calls) == 1
+
+    # Cleanup: let the fake stall finish so later tests aren't guarded against.
+    for orphan in list(affiliations._orphans):
+        orphan.join(timeout=2)
+    assert not affiliations._orphan_alive()
+
 
 def test_each_paid_extraction_is_persisted_as_it_lands(temp_project):
     """A restart mid-pass must not re-bill papers whose extraction already completed."""
@@ -176,3 +186,30 @@ def test_extract_falls_back_to_graph_retrieved_text(temp_project):
         "ghost", complete=fake_complete("Zhiwen Mo | Imperial College London"))
 
     assert ships == [{"name": "Zhiwen Mo", "affiliation": "Imperial College London"}]
+
+
+def test_graph_only_paper_reextracts_when_its_stored_text_changes(temp_project):
+    """A graph-only slug (no arXiv id) can have its stored text replaced by a DIFFERENT
+    confirmed paper without force — the cache key follows the text identity, so the old
+    paper's people are never republished for the new one."""
+    from app import graph_store
+    graph_store.write_retrieved_text("ghost", HEADER)
+    complete = fake_complete("Zhiwen Mo | Imperial College London")
+    cache = {}
+    n = node("ghost", "ghost", arxiv_id=None)
+
+    real_extract_missing([n], {}, cache, complete=complete)
+    assert len(complete.calls) == 1
+    real_extract_missing([n], {}, cache, complete=complete)
+    assert len(complete.calls) == 1  # same text → cache hit
+
+    graph_store.write_retrieved_text("ghost", "A Different Paper Someone Else | Elsewhere U")
+    real_extract_missing([n], {}, cache, complete=complete)
+    assert len(complete.calls) == 2  # replaced text → re-extracted
+
+    # And the apply step refuses a record whose key doesn't match the current text.
+    stale = {"ghost": {"status": "done", "key": "text:0000000000000000",
+                       "authorships": [{"name": "Old Author", "affiliation": "Old Lab"}]}}
+    fresh = node("ghost", "ghost", arxiv_id=None)
+    affiliations.apply_cached([fresh], stale)
+    assert fresh["authors"] == []
