@@ -13,8 +13,9 @@ the Figma deliverable. This doc pins the *structure* those values must fill.
 
 ## Decision recap
 
-- **Three palettes**: **Dim** (today's "Scholar dark", the default), **Black** (super-dark,
-  near-#000 surfaces for OLED), **Light**.
+- **Three palettes**: **Dim** (today's "Scholar dark", the default), **Black** (super-dark
+  surfaces for OLED — the base `bg` should be **true `#000`**, not a near-black like
+  `#0a0a0a`, which reads grey on OLED panels and forfeits the battery win), **Light**.
 - **Mode**: `system | dim | black | light`. `system` maps **OS dark → Dim**, **OS light →
   Light** (Black is opt-in only; following-system never picks it). Manual override wins.
 - Design via the codex→Figma path (`docs/figma-workflow.md`).
@@ -76,19 +77,30 @@ Web work itself stays out of scope here.
    pure no-op visually.
 2. A **`ThemeProvider`** (like the existing `GraphSettingsProvider`) holding the resolved theme
    + the persisted mode, and a **`useTheme()`** hook returning the active token map. Persist the
-   mode with the same store idiom as `graphSettings` (AsyncStorage). `system` resolves via RN
-   `useColorScheme()` (OS dark→dim, OS light→light) and re-resolves reactively. The hook must
-   return the **same object identity per mode** (the static palette map, never rebuilt per
-   render) — every `useMemo(() => makeStyles(t), [t])` in the migration depends on that for
-   its caching.
+   mode with the same store idiom as `graphSettings` (AsyncStorage), **read before first
+   paint** — the `ListeningProvider` `ready`-gate idiom (render nothing until the stored mode
+   loads, the splash covers it) so boot never flashes the wrong theme. (If that gate ever
+   visibly delays boot, a synchronous store like MMKV is the standard upgrade path; not
+   needed to start.) `system` resolves via RN `useColorScheme()` (OS dark→dim, OS
+   light→light) and re-resolves reactively. The hook must return the **same object identity
+   per mode** (the static palette map, never rebuilt per render) — every
+   `useMemo(() => makeStyles(t), [t])` in the migration depends on that for its caching.
 3. Relax `app.json` `userInterfaceStyle` → `"automatic"`; drop the composer's hardcoded
-   `colorScheme="dark"` (derive from the active theme instead).
+   `colorScheme="dark"` (derive from the active theme instead). **Add `expo-system-ui`** —
+   on Android it is required for runtime `userInterfaceStyle` switching to work at all in
+   dev/EAS builds (per Expo's color-themes guide), and its
+   `SystemUI.setBackgroundColorAsync(bg)` (called on provider mount and on every theme
+   change) paints the **root native view**, killing the last flash surface behind modals,
+   keyboard dismissals, and over-scroll.
 4. **System chrome follows the theme**: replace the hardcoded `<StatusBar style="light" />` in
-   `_layout.tsx` with a theme-derived style; set the navigator's screen/transition background
-   from the active theme (the default dark `contentStyle` otherwise flashes during pushes on
-   Light); set the Android navigation-bar color to match. Known v1 caveat: the **splash/boot
-   background** is build-time config (`app.json`), so a Light-mode user still boots through a
-   dark splash — acceptable, note it in Settings copy if it looks jarring.
+   `_layout.tsx` with a theme-derived style (explicit `'light'`/`'dark'`, not `auto`); wrap
+   the navigator in React Navigation's `ThemeProvider` with a theme object built from the
+   active tokens so screen/transition backgrounds match (the default dark `contentStyle`
+   otherwise flashes during pushes on Light); set the Android navigation-bar color
+   (`expo-navigation-bar`) in the same effect as the root-view background. **Splash**: add
+   the `splash.dark` variant in `app.json` so system-followers boot through a matching
+   splash for free; the residual caveat is only a *manual* override that disagrees with the
+   OS scheme (e.g. Light user on an OS-dark phone) — acceptable v1.
 5. Add the **Settings override** (Appearance section: System / Dim / Black / Light) — fires the
    R.8 toast on change; the control itself must be theme-aware from the start.
 
@@ -129,9 +141,15 @@ Out of scope for v1: **server-rendered paper covers** bake their own palette int
 ## Verification
 
 - Toggle each mode (System / Dim / Black / Light) on device; flip OS light/dark with mode
-  `system` and confirm Dim↔Light swap. No hardcoded-dark leaks (both guards: token import +
-  color literal), no unreadable `mintInk`/accent-on-surface contrast, status bar + Android
-  nav bar follow the theme, and screen pushes on Light show no dark transition flash.
+  `system` and confirm Dim↔Light swap **live** (no restart — this is what `expo-system-ui`
+  gates on Android). No hardcoded-dark leaks (both guards: token import + color literal), no
+  unreadable `mintInk`/accent-on-surface contrast, status bar + Android nav bar follow the
+  theme, cold boot shows no wrong-theme flash, and screen pushes on Light show no dark
+  transition flash. Android 13+ note: per-app appearance can differ from the global OS
+  setting — verify `system` follows what *this app* is told.
+- References: Expo's color-themes guide (config + `expo-system-ui` requirement) and current
+  community practice (three-layer mode/system/effective split, pre-paint persistence read,
+  root-view painting, true-black OLED) — audited 2026-07-16.
 - Mobile `tsc` + Jest per PR; a small unit test that `useTheme()` returns the light map under
   mode `light` and follows `useColorScheme()` under `system`.
 - Because the infra PR keeps `dim` identical to today, the default experience is unchanged until
