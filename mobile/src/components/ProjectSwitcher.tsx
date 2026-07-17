@@ -13,6 +13,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import {
   useCreateProject,
@@ -71,6 +72,9 @@ export function ProjectSwitcher({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
       <Pressable style={styles.backdrop} onPress={handleClose}>
+        {/* Lifts the sheet above the keyboard for the create/rename inputs (see
+           SplitProjectSheet for the pattern rationale). */}
+        <KeyboardAvoidingView behavior="padding" style={styles.avoider}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
 
@@ -162,6 +166,7 @@ export function ProjectSwitcher({
             </>
           )}
         </Pressable>
+        </KeyboardAvoidingView>
       </Pressable>
     </Modal>
   );
@@ -349,8 +354,11 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line,
     padding: space.lg,
     paddingBottom: space.xxl,
-    maxHeight: '85%',
   },
+  // The height cap lives on the KeyboardAvoidingView, not the sheet: a percentage maxHeight
+  // resolves against the parent's height, and the KAV (auto-height) has none — against the
+  // flex:1 backdrop it caps reliably, keyboard padding included.
+  avoider: { maxHeight: '85%' },
   handle: {
     width: 40,
     height: 4,

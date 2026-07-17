@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { useSplitProject } from '@/api/queries';
 import { Button, Card, Text } from '@/ui';
@@ -65,6 +66,11 @@ export function SplitProjectSheet({
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
+        {/* behavior="padding" pads this wrapper by the keyboard height, lifting the
+           bottom-anchored sheet (and its inputs) above the keyboard. Proven inside a Modal by
+           NotesReviewSheet — RN Modals portal to their own window, but keyboard-controller's
+           events are window-global. */}
+        <KeyboardAvoidingView behavior="padding">
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <View style={styles.handle} />
           <Text variant="title">Split to a new project</Text>
@@ -125,6 +131,7 @@ export function SplitProjectSheet({
             />
           </View>
         </Pressable>
+        </KeyboardAvoidingView>
       </Pressable>
     </Modal>
   );
