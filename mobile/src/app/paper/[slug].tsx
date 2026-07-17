@@ -1163,6 +1163,11 @@ function DiscussionThread({
         // Matches the library's own scrollToBottomOffset default (200) so the two thresholds
         // agree: the scroll-to-bottom button and "still following" flip at the same point.
         maintainVisibleContentPosition: { minIndexForVisible: 0, autoscrollToTopThreshold: 200 },
+        // The inverted list paints a second, motionless scrollbar thumb pinned at the top
+        // (the RN "stuck scroll indicator" ghost, drawn alongside the real moving one —
+        // R7.3). A non-zero indicator inset forces the native side to lay the indicator out
+        // fresh, which suppresses the ghost; 1px is visually indistinguishable from 0.
+        scrollIndicatorInsets: { right: 1 },
       }}
       {...ROW_STYLES_PROP}
     />
