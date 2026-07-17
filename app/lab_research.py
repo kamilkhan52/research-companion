@@ -108,11 +108,18 @@ def parse_result(output: str) -> dict:
     }
 
 
+# Hard cap on model requests per author run: the prompt budgets 3 searches + 3 fetches, but
+# a prompt is not an enforcement mechanism — a model that ignores it (or follows instructions
+# embedded in fetched pages) must hit a wall, not spend unboundedly.
+MAX_AGENT_REQUESTS = 10
+
+
 def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict:
     # Imported lazily: pydantic_ai is heavyweight and tests inject research_fn instead.
     from pydantic_ai import Agent
+    from pydantic_ai.usage import UsageLimits
 
-    from . import agent_harness, research_tools
+    from . import agent_harness, research_tools, usage
 
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search the web. objective = what you're establishing; search_queries = 1-3 short
@@ -124,8 +131,9 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
         return research_tools.web_fetch(urls[:3], objective)
 
     paper_lines = "\n".join(f"- {t}" for t in titles[:8])
+    model = graph.resolve_model()
     ag = Agent(
-        agent_harness._openrouter_model(graph.resolve_model()),
+        agent_harness._openrouter_model(model),
         system_prompt=prompts.get("lab_research"),
         tools=[web_search, web_fetch],
         output_type=str,
@@ -133,8 +141,24 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     )
     user = (f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
             f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}")
-    result = asyncio.run(ag.run(user))
-    return parse_result(result.output or "")
+    try:
+        result = asyncio.run(
+            ag.run(user, usage_limits=UsageLimits(request_limit=MAX_AGENT_REQUESTS)),
+        )
+        run_usage = result.usage()
+        output = result.output or ""
+    except Exception as exc:
+        # A blown request budget (or any run crash) is an honest not-found for THIS run,
+        # cached without a fingerprint upstream so the author retries next pass.
+        raise RuntimeError(f"lab research run failed: {str(exc)[:200]}") from exc
+    # This is a paid multi-request run outside app.llm, so record its tokens against the
+    # active project explicitly (cost stays 0 — OpenRouter's exact usage.cost isn't exposed
+    # through the Pydantic AI path; tokens keep the spend visible in /usage).
+    usage.record("lab_research", model, {
+        "prompt_tokens": getattr(run_usage, "input_tokens", 0) or 0,
+        "completion_tokens": getattr(run_usage, "output_tokens", 0) or 0,
+    })
+    return parse_result(output)
 
 
 def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
