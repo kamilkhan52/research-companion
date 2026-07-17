@@ -12,10 +12,10 @@
 // Black/Light hex here are PROVISIONAL engineering derivations — the codex→Figma palette
 // pass may retune them; this file is the only place they live.
 //
-// Migrated components read the ACTIVE palette via useTheme()/useThemedStyles()
-// (theme/ThemeProvider.tsx). The flat `colors` export below stays as the Dim alias so
-// not-yet-migrated modules keep compiling and rendering exactly as before; the migration's
-// guard removes it at the end.
+// Components read the ACTIVE palette via useTheme()/useThemedStyles()
+// (theme/ThemeProvider.tsx). The migration is complete: there is no flat `colors` export any
+// more, and test/theme-guards.test.ts enforces both that and the no-inline-color-literals
+// rule so a dark-baked leak can't silently return.
 
 export interface ThemePalette {
   bg: string;
@@ -34,6 +34,15 @@ export interface ThemePalette {
   amber: string;
   danger: string;
   scrim: string;
+  // Washes/tints that used to live as inline rgba literals (T.5 promotion — the literal
+  // guard keeps them here). Wash = a soft fill behind selected/accented content.
+  mintWash: string;
+  mintWashStrong: string;
+  amberWash: string;
+  amberLine: string;
+  dangerWash: string;
+  /** Translucent elevated surface (e.g. a floating control over content). */
+  elevatedGlass: string;
 }
 
 const dim: ThemePalette = {
@@ -53,6 +62,12 @@ const dim: ThemePalette = {
   amber: '#E4B85C',
   danger: '#E5738C',
   scrim: 'rgba(0,0,0,0.55)',
+  mintWash: 'rgba(101, 214, 180, 0.10)',
+  mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  amberWash: 'rgba(228, 184, 92, 0.08)',
+  amberLine: 'rgba(228, 184, 92, 0.4)',
+  dangerWash: 'rgba(229, 115, 140, 0.12)',
+  elevatedGlass: 'rgba(27, 32, 43, 0.72)',
 };
 
 const black: ThemePalette = {
@@ -72,6 +87,12 @@ const black: ThemePalette = {
   amber: '#E4B85C',
   danger: '#E5738C',
   scrim: 'rgba(0,0,0,0.65)',
+  mintWash: 'rgba(101, 214, 180, 0.10)',
+  mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  amberWash: 'rgba(228, 184, 92, 0.08)',
+  amberLine: 'rgba(228, 184, 92, 0.4)',
+  dangerWash: 'rgba(229, 115, 140, 0.12)',
+  elevatedGlass: 'rgba(21, 25, 35, 0.72)',
 };
 
 const light: ThemePalette = {
@@ -91,6 +112,12 @@ const light: ThemePalette = {
   amber: '#A87A17',
   danger: '#C2385A',
   scrim: 'rgba(20, 24, 32, 0.45)',
+  mintWash: 'rgba(23, 126, 99, 0.10)',
+  mintWashStrong: 'rgba(23, 126, 99, 0.16)',
+  amberWash: 'rgba(168, 122, 23, 0.10)',
+  amberLine: 'rgba(168, 122, 23, 0.45)',
+  dangerWash: 'rgba(194, 56, 90, 0.10)',
+  elevatedGlass: 'rgba(255, 255, 255, 0.80)',
 };
 
 export const themes = { dim, black, light } as const;
@@ -99,9 +126,6 @@ export type ThemeName = keyof typeof themes;
  *  opt-in only, per the design decision). */
 export type ThemeMode = 'system' | ThemeName;
 
-/** Dim alias for not-yet-migrated modules (see header note). Do not use in new code —
- *  read useTheme() instead. */
-export const colors = dim;
 
 export const fonts = {
   // Manrope — UI, controls, dense card text.
@@ -146,5 +170,3 @@ export function stateMetaFor(t: ThemePalette): Record<string, { label: string; c
   };
 }
 
-/** Dim alias for not-yet-migrated modules — same caveat as `colors`. */
-export const stateMeta = stateMetaFor(dim);

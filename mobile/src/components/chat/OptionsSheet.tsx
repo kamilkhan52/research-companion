@@ -148,5 +148,5 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeSelected: { backgroundColor: 'rgba(101, 214, 180, 0.14)' },
+  badgeSelected: { backgroundColor: t.mintWashStrong },
 });

@@ -165,7 +165,7 @@ function ProjectRow({
 }
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: t.scrim, justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: t.surface,
     borderTopLeftRadius: radius.xl,

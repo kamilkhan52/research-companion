@@ -34,14 +34,16 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useGraphSettings } from '@/store/graphSettings';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
-import { THEME_MODES, useThemeMode } from '@/theme/ThemeProvider';
+import { THEME_MODES, useTheme, useThemedStyles, useThemeMode } from '@/theme/ThemeProvider';
 import { Button, Card, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useToast } from '@/ui/Toast';
 import type { ThemeMode } from '@/theme/tokens';
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const qc = useQueryClient();
   const { activePid } = useActiveProject();
   const [url, setUrl] = useState(getBaseUrl());
@@ -140,7 +142,7 @@ export default function SettingsScreen() {
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           {/* Server connection */}
           <Section title="Connection">
-            <Text variant="body" color={colors.muted} style={{ marginBottom: space.md }}>
+            <Text variant="body" color={t.muted} style={{ marginBottom: space.md }}>
               Connect your backend to sync projects, papers, audio, and notes — the Cloudflare
               tunnel link (e.g. https://name.trycloudflare.com).
             </Text>
@@ -170,9 +172,9 @@ export default function SettingsScreen() {
               </Text>
             </>
           ) : settings.isLoading ? (
-            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+            <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
           ) : settings.isError ? (
-            <Text variant="caption" color={colors.danger} style={{ textAlign: 'center', marginTop: space.lg }}>
+            <Text variant="caption" color={t.danger} style={{ textAlign: 'center', marginTop: space.lg }}>
               Couldn't reach the server. Check the URL and that the backend is running.
             </Text>
           ) : (
@@ -217,7 +219,7 @@ export default function SettingsScreen() {
                   <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => setPriorScope('related')} />
                   <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => setPriorScope('all')} />
                 </View>
-                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Which per-paper Notes the analyst sees during a discussion. "All read papers"
                   gives the fullest cross-paper grounding for a single project; "Related" keeps
                   the context smaller by including only citation-related papers.
@@ -310,7 +312,7 @@ export default function SettingsScreen() {
                   secureTextEntry
                   autoCapitalize="none"
                 />
-                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
                   Enables fast paper identity, reference, citation-context, and influence
                   metadata. Requests are cached and paced below the account's one-per-second
                   cumulative limit. Graph results using this data will attribute Semantic Scholar.
@@ -320,7 +322,7 @@ export default function SettingsScreen() {
                   <Toggle label="Hidden" active={!allowAllFilter} onPress={() => setAllowAllFilter(false)} />
                   <Toggle label="Shown" active={allowAllFilter} onPress={() => setAllowAllFilter(true)} />
                 </View>
-                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   The reference graph defaults to a "Significant" filter, paginated 20 papers at a
                   time. A project's full graph can run into the hundreds of external references —
                   turn this on to also offer an "All" filter chip there.
@@ -351,7 +353,7 @@ export default function SettingsScreen() {
                   secureTextEntry
                   autoCapitalize="none"
                 />
-                <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+                <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Lets the analyst search the web and read outside papers mid-discussion (author
                   info, adoption, follow-up work). It tries Firecrawl, then Parallel, then a
                   keyless fallback — so search works even with no key, and upgrades when a key
@@ -382,7 +384,7 @@ export default function SettingsScreen() {
                 style={{ marginTop: space.sm }}
               />
               {saveSettings.isError ? (
-                <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+                <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
                   {(saveSettings.error as Error).message}
                 </Text>
               ) : null}
@@ -404,22 +406,23 @@ const fmtNum = (n: number) => n.toLocaleString();
 
 /** The active project's accumulated LLM spend (GET /api/projects/{pid}/usage). Read-only. */
 function UsageSection() {
+  const t = useTheme();
   const { activePid } = useActiveProject();
   const usage = useUsage(activePid);
 
   if (!activePid) {
     return (
       <Section title="Usage">
-        <Text variant="caption" color={colors.muted}>Open a project to see its LLM usage.</Text>
+        <Text variant="caption" color={t.muted}>Open a project to see its LLM usage.</Text>
       </Section>
     );
   }
   return (
     <Section title="Usage (this project)">
       {usage.isLoading ? (
-        <ActivityIndicator color={colors.mint} />
+        <ActivityIndicator color={t.mint} />
       ) : usage.isError || !usage.data ? (
-        <Text variant="caption" color={colors.muted}>Usage unavailable.</Text>
+        <Text variant="caption" color={t.muted}>Usage unavailable.</Text>
       ) : (
         <UsageBody data={usage.data} />
       )}
@@ -428,6 +431,8 @@ function UsageSection() {
 }
 
 function UsageBody({ data }: { data: UsageSummary }) {
+  // `t` is the usage total here (pre-existing binding), so the palette is read as `theme`.
+  const theme = useTheme();
   const t = data.total;
   const ops = Object.entries(data.by_operation).sort(
     (a, b) => b[1].cost_nanousd - a[1].cost_nanousd,
@@ -439,12 +444,12 @@ function UsageBody({ data }: { data: UsageSummary }) {
           {fmtUsd(t.cost_usd)}
         </Text>
         {data.estimated ? (
-          <Text variant="caption" color={colors.muted}>
+          <Text variant="caption" color={theme.muted}>
             estimated{data.pending_count ? ` · ${data.pending_count} pending` : ''}
           </Text>
         ) : null}
       </View>
-      <Text variant="caption" color={colors.muted} style={{ marginTop: 2 }}>
+      <Text variant="caption" color={theme.muted} style={{ marginTop: 2 }}>
         {fmtNum(t.total_tokens)} tokens · {fmtNum(t.calls)} calls
       </Text>
 
@@ -453,7 +458,7 @@ function UsageBody({ data }: { data: UsageSummary }) {
           {ops.map(([op, b]) => (
             <View key={op} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
               <Text variant="caption">{op.replace(/_/g, ' ')}</Text>
-              <Text variant="caption" color={colors.muted}>
+              <Text variant="caption" color={theme.muted}>
                 {fmtNum(b.total_tokens)} tok · {fmtUsd(b.cost_usd)}
               </Text>
             </View>
@@ -462,7 +467,7 @@ function UsageBody({ data }: { data: UsageSummary }) {
       ) : null}
 
       {data.estimated ? (
-        <Text variant="caption" color={colors.muted} style={{ marginTop: space.sm }}>
+        <Text variant="caption" color={theme.muted} style={{ marginTop: space.sm }}>
           Some billed streams ended before reporting cost, so the total is a lower bound.
         </Text>
       ) : null}
@@ -472,6 +477,7 @@ function UsageBody({ data }: { data: UsageSummary }) {
 
 /** Disconnected placeholder row (Figma `08 · Settings / Connect`). */
 function LockedRow({ label }: { label: string }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <Card style={styles.lockedRow}>
       <Text variant="heading">{label}</Text>
@@ -501,23 +507,27 @@ function Label({ text, hint }: { text: string; hint?: string }) {
 }
 
 function Field(props: React.ComponentProps<typeof TextInput>) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <TextInput
       {...props}
-      placeholderTextColor={colors.muted}
+      placeholderTextColor={t.muted}
       style={[styles.input, props.style]}
     />
   );
 }
 
 function Toggle({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="radio"
       accessibilityState={{ checked: active }}
       style={[styles.toggle, active && styles.toggleActive]}>
-      <Text variant="heading" color={active ? colors.mintInk : colors.text}>
+      <Text variant="heading" color={active ? t.mintInk : t.text}>
         {label}
       </Text>
     </Pressable>
@@ -533,6 +543,8 @@ function ModelChips({
   selected: string;
   onPick: (id: string) => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   if (models.length === 0) return null;
   return (
     <View style={styles.chips}>
@@ -546,7 +558,7 @@ function ModelChips({
             accessibilityRole="radio"
             accessibilityState={{ checked: active }}
             style={[styles.modelChip, active && styles.modelChipActive]}>
-            <Text variant="caption" color={active ? colors.mint : colors.muted}>
+            <Text variant="caption" color={active ? t.mint : t.muted}>
               {m.label}
             </Text>
           </Pressable>
@@ -556,7 +568,7 @@ function ModelChips({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   content: { padding: space.md, paddingBottom: space.xxl * 2 },
   lockedRow: {
     flexDirection: 'row',
@@ -566,13 +578,13 @@ const styles = StyleSheet.create({
     paddingVertical: space.lg,
   },
   input: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 12,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
   },
@@ -580,21 +592,21 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 44,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toggleActive: { backgroundColor: colors.mint, borderColor: colors.mint },
+  toggleActive: { backgroundColor: t.mint, borderColor: t.mint },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm },
   modelChip: {
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
   },
-  modelChipActive: { borderColor: colors.mint, backgroundColor: 'rgba(101, 214, 180, 0.10)' },
+  modelChipActive: { borderColor: t.mint, backgroundColor: t.mintWash },
 });

@@ -20,7 +20,8 @@ import { LinkHandlerContext, PaperIndexContext, type LinkHandler } from '@/compo
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl } from '@/lib/paperLinks';
-import { colors, stateMeta } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
+import { stateMetaFor } from '@/theme/tokens';
 
 const PaperActionsContext = createContext<((slug: string) => void) | null>(null);
 
@@ -31,6 +32,7 @@ export function usePaperActions(): (slug: string) => void {
 
 export function PaperEntityProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const t = useTheme();
   const { activePid } = useActiveProject();
   const stateQuery = useProjectState(activePid);
   const papers = stateQuery.data?.papers;
@@ -68,7 +70,7 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
         key: 'discussion',
         title: 'Open discussion',
         icon: 'message-circle',
-        accent: colors.mint,
+        accent: t.mint,
         onPress: () => {
           close();
           router.push(`/paper/${encodeURIComponent(slug)}`);
@@ -80,7 +82,7 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
         key: 'notes',
         title: 'View notes',
         icon: 'file-text',
-        accent: colors.mint,
+        accent: t.mint,
         onPress: () => {
           close();
           router.push(`/notes/${encodeURIComponent(slug)}`);
@@ -121,8 +123,9 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
       });
     }
     return opts;
-  }, [slug, paper?.has_notes, paperUrl, router]);
+  }, [slug, paper?.has_notes, paperUrl, router, t]);
 
+  const stateMeta = stateMetaFor(t);
   const stateKey = paper ? (paper.session_state ?? (paper.list_status === 'read' ? 'committed' : 'unread')) : null;
   const stateLabel = paper ? (stateMeta[stateKey ?? 'unread'] ?? stateMeta.unread).label : undefined;
 

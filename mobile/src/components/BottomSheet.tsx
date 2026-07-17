@@ -104,7 +104,7 @@ export function BottomSheet({
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: t.scrim,
     justifyContent: 'flex-end',
   },
   // GestureHandlerRootView is only well-tested as a full-screen flex:1 wrapper (every RNGH

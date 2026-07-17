@@ -15,13 +15,16 @@ import { BottomSheet } from '@/components/BottomSheet';
 import { TopBar } from '@/components/TopBar';
 import { useActiveProject } from '@/store/project';
 import { Chip, Icon, Screen, Text } from '@/ui';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 type Mode = 'authors' | 'labs';
 const UNKNOWN_LABEL = 'Independent / unknown';
 
 export default function AuthorsScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
   const board = useGraphAuthors(pid);
   const [mode, setMode] = useState<Mode>('authors');
@@ -51,11 +54,11 @@ export default function AuthorsScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.scroll}>
           <Pressable onPress={() => setShowExplainer((v) => !v)} style={styles.explainerToggle}>
-            <Icon name="info" size={13} color={colors.muted} />
-            <Text variant="caption" color={colors.muted}>How is this ranked?</Text>
+            <Icon name="info" size={13} color={t.muted} />
+            <Text variant="caption" color={t.muted}>How is this ranked?</Text>
           </Pressable>
           {showExplainer ? (
-            <Text variant="caption" color={colors.muted} style={styles.explainerBody}>
+            <Text variant="caption" color={t.muted} style={styles.explainerBody}>
               {board.data?.explainers.activity}
             </Text>
           ) : null}
@@ -72,14 +75,14 @@ export default function AuthorsScreen() {
                 it comes from OpenAlex per rebuild. When most authors have none, Labs looks like
                 Authors; say why rather than leave it a mystery (R.6). */}
             {groups.length === 1 && groups[0].affiliation === UNKNOWN_LABEL ? (
-              <Text variant="caption" color={colors.muted} style={styles.labsNote}>
+              <Text variant="caption" color={t.muted} style={styles.labsNote}>
                 No affiliations yet. They fill in as the map is rebuilt (from the Map screen) —
                 many arXiv papers list none, so coverage stays patchy.
               </Text>
             ) : null}
             {groups.map((g) => (
               <View key={g.affiliation} style={{ marginTop: space.md }}>
-                <Text variant="caption" color={colors.muted} style={styles.groupHeader}>
+                <Text variant="caption" color={t.muted} style={styles.groupHeader}>
                   {g.affiliation.toUpperCase()}
                 </Text>
                 <View style={styles.cardGrid}>
@@ -111,6 +114,8 @@ export default function AuthorsScreen() {
 }
 
 function Segment({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -119,7 +124,7 @@ function Segment({ label, active, onPress }: { label: string; active: boolean; o
       style={[styles.segment, active && styles.segmentActive]}>
       <Text
         variant="label"
-        color={active ? colors.mint : colors.muted}
+        color={active ? t.mint : t.muted}
         style={{ fontFamily: active ? fonts.bodySemiBold : fonts.bodyMedium }}>
         {label}
       </Text>
@@ -128,6 +133,8 @@ function Segment({ label, active, onPress }: { label: string; active: boolean; o
 }
 
 function AuthorCard({ author, onPress }: { author: BoardAuthor; onPress: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const years = author.active_years;
   return (
     <Pressable
@@ -136,19 +143,19 @@ function AuthorCard({ author, onPress }: { author: BoardAuthor; onPress: () => v
       accessibilityLabel={`${author.name}, ${author.in_project_count} papers in project`}>
       <Text variant="heading" numberOfLines={2}>{author.name}</Text>
       {author.affiliation ? (
-        <Text variant="caption" color={colors.muted} numberOfLines={1}>{author.affiliation}</Text>
+        <Text variant="caption" color={t.muted} numberOfLines={1}>{author.affiliation}</Text>
       ) : null}
       <View style={styles.chipRow}>
-        <Chip label={`${author.in_project_count} in project`} color={colors.mint} dot={false} />
+        <Chip label={`${author.in_project_count} in project`} color={t.mint} dot={false} />
         {author.significant_count > 0 ? (
-          <Chip label={`${author.significant_count} significant`} color={colors.amber} dot={false} />
+          <Chip label={`${author.significant_count} significant`} color={t.amber} dot={false} />
         ) : null}
         {author.external_count > 0 ? (
-          <Chip label={`${author.external_count} referenced`} color={colors.muted} dot={false} />
+          <Chip label={`${author.external_count} referenced`} color={t.muted} dot={false} />
         ) : null}
       </View>
       {years ? (
-        <Text variant="caption" color={colors.muted}>
+        <Text variant="caption" color={t.muted}>
           {years[0] === years[1] ? `${years[0]}` : `${years[0]}–${years[1]}`}
         </Text>
       ) : null}
@@ -165,6 +172,8 @@ function AuthorSheet({
   significantExplainer: string;
   onOpenPaper: (slug: string) => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const projectPapers = author.papers.filter((p) => p.kind === 'project');
   const externalPapers = author.papers.filter((p) => p.kind === 'external');
   return (
@@ -177,22 +186,22 @@ function AuthorSheet({
       contentContainerStyle={{ padding: space.lg, gap: space.sm }}>
       <Text variant="title">{author.name}</Text>
       {author.affiliation ? (
-        <Text variant="caption" color={colors.muted}>{author.affiliation}</Text>
+        <Text variant="caption" color={t.muted}>{author.affiliation}</Text>
       ) : null}
 
       {projectPapers.length ? (
         <>
-          <Text variant="caption" color={colors.mint} style={styles.sheetSection}>IN THIS PROJECT</Text>
+          <Text variant="caption" color={t.mint} style={styles.sheetSection}>IN THIS PROJECT</Text>
           {projectPapers.map((p) => (
             <Pressable
               key={p.id}
               onPress={() => p.slug && onOpenPaper(p.slug)}
               style={({ pressed }) => [styles.paperRow, pressed && { opacity: 0.7 }]}>
-              <Icon name="book-open" size={14} color={colors.violet} />
+              <Icon name="book-open" size={14} color={t.violet} />
               <Text variant="body" style={{ flex: 1 }} numberOfLines={2}>
                 {p.title}{p.year ? ` · ${p.year}` : ''}
               </Text>
-              <Icon name="chevron-right" size={16} color={colors.muted} />
+              <Icon name="chevron-right" size={16} color={t.muted} />
             </Pressable>
           ))}
         </>
@@ -200,13 +209,13 @@ function AuthorSheet({
 
       {externalPapers.length ? (
         <>
-          <Text variant="caption" color={colors.muted} style={styles.sheetSection}>
+          <Text variant="caption" color={t.muted} style={styles.sheetSection}>
             REFERENCED IN THIS PROJECT
           </Text>
           {externalPapers.map((p) => (
             <View key={p.id} style={styles.paperRow}>
-              <Icon name="file-text" size={14} color={colors.muted} />
-              <Text variant="body" color={colors.muted} style={{ flex: 1 }} numberOfLines={2}>
+              <Icon name="file-text" size={14} color={t.muted} />
+              <Text variant="body" color={t.muted} style={{ flex: 1 }} numberOfLines={2}>
                 {p.title}{p.year ? ` · ${p.year}` : ''}
               </Text>
             </View>
@@ -215,7 +224,7 @@ function AuthorSheet({
       ) : null}
 
       {author.significant_count > 0 ? (
-        <Text variant="caption" color={colors.muted} style={{ marginTop: space.sm }}>
+        <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
           {significantExplainer}
         </Text>
       ) : null}
@@ -224,11 +233,13 @@ function AuthorSheet({
 }
 
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
-      {loading ? <ActivityIndicator color={colors.mint} /> : null}
+      {loading ? <ActivityIndicator color={t.mint} /> : null}
       {text ? (
-        <Text variant="caption" color={colors.muted} style={{ textAlign: 'center' }}>{text}</Text>
+        <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>{text}</Text>
       ) : null}
     </View>
   );
@@ -251,10 +262,10 @@ function groupByAffiliation(authors: BoardAuthor[]): { affiliation: string; auth
     });
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   segmentRow: { flexDirection: 'row', gap: space.sm, paddingHorizontal: space.lg, paddingBottom: space.sm },
-  segment: { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 999, borderWidth: 1, borderColor: colors.line },
-  segmentActive: { borderColor: 'rgba(101, 214, 180, 0.4)', backgroundColor: 'rgba(101, 214, 180, 0.1)' },
+  segment: { paddingVertical: 6, paddingHorizontal: 16, borderRadius: 999, borderWidth: 1, borderColor: t.line },
+  segmentActive: { borderColor: t.mint, backgroundColor: t.mintWash },
   scroll: { padding: space.lg, paddingTop: space.sm, gap: space.sm },
   explainerToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
   explainerBody: { lineHeight: 18 },
@@ -267,8 +278,8 @@ const styles = StyleSheet.create({
     padding: space.md,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.surface,
+    borderColor: t.line,
+    backgroundColor: t.surface,
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   groupHeader: { marginBottom: 6, letterSpacing: 0.5 },
