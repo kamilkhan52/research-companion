@@ -108,10 +108,12 @@ def parse_result(output: str) -> dict:
     }
 
 
-# Hard cap on model requests per author run: the prompt budgets 3 searches + 3 fetches, but
-# a prompt is not an enforcement mechanism — a model that ignores it (or follows instructions
-# embedded in fetched pages) must hit a wall, not spend unboundedly.
+# Hard caps per author run: the prompt budgets 3 searches + 3 fetches, but a prompt is not an
+# enforcement mechanism — a model that ignores it (or follows instructions embedded in
+# fetched pages) must hit a wall, not spend unboundedly. request_limit bounds model requests;
+# tool_calls_limit bounds tool executions even when one response batches many calls.
 MAX_AGENT_REQUESTS = 10
+MAX_AGENT_TOOL_CALLS = 8
 
 
 def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict:
@@ -124,7 +126,7 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search the web. objective = what you're establishing; search_queries = 1-3 short
         keyword queries. Returns results with URLs."""
-        return research_tools.web_search(objective, search_queries)
+        return research_tools.web_search(objective, search_queries[:3])
 
     def web_fetch(urls: list[str], objective: str) -> str:
         """Fetch up to 3 pages (author homepage, group/people pages) and return their text."""
@@ -143,7 +145,9 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
             f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}")
     try:
         result = asyncio.run(
-            ag.run(user, usage_limits=UsageLimits(request_limit=MAX_AGENT_REQUESTS)),
+            ag.run(user, usage_limits=UsageLimits(
+                request_limit=MAX_AGENT_REQUESTS, tool_calls_limit=MAX_AGENT_TOOL_CALLS,
+            )),
         )
         run_usage = result.usage()
         output = result.output or ""
@@ -173,6 +177,9 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
         cache = load_cache()
         with _registry.lock:
             job.total = len(top)
+        attempted = 0
+        failed = 0
+        last_error = ""
         for entry in top:
             if _registry.is_cancelled(job):
                 return
@@ -191,13 +198,16 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 job.current = name
             titles = [p.get("title") or "" for p in entry.get("papers") or []
                       if p.get("kind") == "project"]
+            attempted += 1
             try:
                 finding = research_fn(name, entry.get("affiliation") or "", titles)
             except Exception as exc:  # noqa: BLE001 — one author's failure must not kill
                 # the pass; an error is cached as not-found WITHOUT a fingerprint, so the
                 # next run retries this author.
-                finding = {"found": False, "error": str(exc)[:200]}
-                cache[key] = {**finding, "name": name, "researched_at": now_iso()}
+                failed += 1
+                last_error = str(exc)[:200]
+                cache[key] = {"found": False, "error": last_error, "name": name,
+                              "researched_at": now_iso()}
                 _save_cache(cache)
                 with _registry.lock:
                     job.done += 1
@@ -212,6 +222,13 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 job.current = ""
                 if finding.get("found"):
                     job.found += 1
+        # Per-author isolation is for PARTIAL failure. When every attempted author failed
+        # (missing API key, provider down), the pass accomplished nothing — surface that as a
+        # job error instead of letting the client read "researched, no labs found".
+        if attempted and failed == attempted:
+            with _registry.lock:
+                job.status = "error"
+                job.error = f"Lab research failed for every author — {last_error}"
 
     return _registry.start_or_join("labs", lambda: LabsJob(id=new_id()), work)
 
@@ -248,7 +265,11 @@ def labs_board(board: list[dict]) -> dict:
     return {
         "labs": ranked,
         "covered_authors": sorted(covered),
-        "researched": bool(cache),
+        # Only fingerprinted records count as research — error entries (no fingerprint) must
+        # not make the client claim "researched, nothing found".
+        "researched": any(
+            isinstance(rec, dict) and rec.get("fingerprint") for rec in cache.values()
+        ),
         "researched_at": researched_at,
     }
 

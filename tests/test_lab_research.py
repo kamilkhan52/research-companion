@@ -96,3 +96,16 @@ def test_one_authors_failure_is_isolated_and_retried_next_run(temp_project):
 def test_no_board_raises(temp_project):
     with pytest.raises(ValueError):
         lab_research.start_research(research_fn=lambda *a: {"found": False})
+
+
+def test_total_failure_errors_the_job_and_does_not_claim_researched(temp_project):
+    """When every attempted author fails (no API key, provider down), the pass must surface
+    as a job error — not settle 'done' and let the client read 'researched, no labs'."""
+    _seed(temp_project)
+
+    def broken(name, affiliation, titles):
+        raise RuntimeError("no API key")
+
+    snap = _settled(lab_research.start_research(research_fn=broken).id)
+    assert snap["status"] == "error" and "every author" in snap["error"]
+    assert lab_research.labs_board(lab_research._board())["researched"] is False
