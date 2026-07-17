@@ -172,6 +172,29 @@ def project_is_deleting(pid: str) -> bool:
         return pid in _deleting_projects
 
 
+# Projects mid-mutation by a synchronous request that relocates/deletes their files (a split's
+# source side). Same job-admission-gate purpose as the deletion tombstone, but reads stay
+# allowed (the operation is quick and doesn't invalidate a read) — only new background jobs
+# are refused, so a worker can't write into files being moved out.
+_busy_projects: set[str] = set()
+_busy_lock = threading.Lock()
+
+
+def mark_project_busy(pid: str) -> None:
+    with _busy_lock:
+        _busy_projects.add(pid)
+
+
+def unmark_project_busy(pid: str) -> None:
+    with _busy_lock:
+        _busy_projects.discard(pid)
+
+
+def project_is_busy(pid: str) -> bool:
+    with _busy_lock:
+        return pid in _busy_projects
+
+
 def set_active_project(project_id: str | None) -> contextvars.Token:
     return _active_project.set(project_id)
 

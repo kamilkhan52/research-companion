@@ -131,15 +131,18 @@ def split_project(pid: str, req: SplitReq):
     the removal endpoint above. The optional AI working-notes passes are separate jobs.
 
     Refused (409) while any background job is running for the source project: a chat turn or
-    graph build mid-move would write into files being relocated (`jobs.any_running_for_project`,
-    the same sweep project deletion uses)."""
-    busy = jobs.any_running_for_project(pid)
-    if busy:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A background job ({busy}) is running for this project — wait, then split.",
-        )
+    graph build mid-move would write into files being relocated. Mark the source busy FIRST,
+    then sweep — so a job admitted after the sweep is refused by the busy gate
+    (`jobs.start_or_join`), closing the window between the check and the move (the same
+    atomic tombstone-then-sweep shape project deletion uses)."""
+    config.mark_project_busy(pid)
     try:
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A background job ({busy}) is running for this project — wait, then split.",
+            )
         result = project_split.split_project(
             pid, req.name, req.slugs,
             remove_from_source=req.remove_from_source, goals=req.goals,
@@ -148,6 +151,8 @@ def split_project(pid: str, req: SplitReq):
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        config.unmark_project_busy(pid)
     # departed_notes is server-side context for the (future) source-cleanup pass; not returned.
     return {k: v for k, v in result.items() if k != "departed_notes"}
 

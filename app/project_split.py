@@ -76,15 +76,18 @@ def _cover_path(slug: str):
     return cover_jobs.cover_path(slug)
 
 
-def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
-    """Materialize the bundle into the NEW project (contextvar already bound to it)."""
+def _write_new_project(new_pid: str, bundle: dict, keep: set[str], move: bool) -> None:
+    """Materialize the bundle into the NEW project (contextvar already bound to it). Session
+    state (transcript + branches + index entry) travels ONLY on a move — a discussion is a
+    conversation in one project's context, so a copy leaves it in the source (copying it would
+    make the paper falsely resumable and fork the history)."""
     data = graph_store.load()
     for slug, b in bundle.items():
         block = _rewrite_block_cites(b["entry"]["block"], keep)
         store.append_entry_block(b["entry"]["group"], block)
         if b["corpus_bytes"] is not None:
             store.corpus_path(slug).write_bytes(b["corpus_bytes"])
-        if b["jsonl_bytes"] is not None or b["session_meta"] is not None:
+        if move and (b["jsonl_bytes"] is not None or b["session_meta"] is not None):
             jsonl, branches = sessions.transcript_paths(slug)
             jsonl.parent.mkdir(parents=True, exist_ok=True)
             if b["jsonl_bytes"] is not None:
@@ -111,14 +114,27 @@ def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
     graph_store.save(data)
 
 
-def _remove_from_source(slugs: list[str]) -> None:
+def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
     """Delete the moved papers from the SOURCE project (contextvar bound to source): reading
-    list entries, on-disk files, graph records, and any now-dangling cites in what remains."""
+    list entries, on-disk files, graph records, and any now-dangling cites in what remains.
+    Returns the GIT-TRACKED paths this changed (relative to the project root) so the caller
+    commits exactly those — `.state/` caches are gitignored and excluded, and unrelated dirty
+    files (e.g. an unapproved transcript for an unselected paper) are never swept in."""
     data = graph_store.load()
     gone = set(slugs)
+    root = config.project_dir()
+    # Snapshot git-tracked paths up front: after deletion a `git add -- <path>` for a
+    # never-committed (untracked) corpus file errors with "pathspec did not match", so only
+    # paths git already knows about may go into the commit's pathspec.
+    tracked = set(projects._git(source_pid, "ls-files").splitlines())
+    committed_paths = ["reading-list.md"]  # always tracked and modified
     for slug in slugs:
+        corpus = store.corpus_path(slug)
+        rel = str(corpus.relative_to(root))
+        if rel in tracked:
+            committed_paths.append(rel)
         store.remove_entry(slug)
-        for p in (store.corpus_path(slug), *sessions.transcript_paths(slug),
+        for p in (corpus, *sessions.transcript_paths(slug),
                   _cover_path(slug), graph_store._retrieved_text_file(slug)):
             p.unlink(missing_ok=True)
         sessions.drop_session(slug)
@@ -127,6 +143,7 @@ def _remove_from_source(slugs: list[str]) -> None:
         data.get("retrievals", {}).pop(slug, None)
     graph_store.save(data)
     store.drop_dangling_cites(gone)
+    return committed_paths
 
 
 def split_project(
@@ -166,24 +183,27 @@ def split_project(
         projects.update_meta(new_pid, goals=goals.strip())
     token = config.set_active_project(new_pid)
     try:
-        _write_new_project(new_pid, bundle, keep)
+        _write_new_project(new_pid, bundle, keep, move=remove_from_source)
     finally:
         config.reset_active_project(token)
+    # The new project is a fresh scaffold — everything in it is split-owned, so `add -A` is
+    # safe here (unlike the source commit below).
     projects._git(new_pid, "add", "-A")
     projects._git(new_pid, "commit", "-q", "-m",
                   f"Split {len(slugs)} paper(s) from {source_pid}")
 
-    # 3. Remove from source, if asked — one batched, committed change.
+    # 3. Remove from source, if asked — one committed change, scoped to the split's own paths
+    #    (pathspec, like the removal endpoint) so an unrelated dirty file isn't swept in.
     removed = False
     if remove_from_source:
         token = config.set_active_project(source_pid)
         try:
-            _remove_from_source(slugs)
+            changed = _remove_from_source(source_pid, slugs)
         finally:
             config.reset_active_project(token)
-        projects._git(source_pid, "add", "-A")
+        projects._git(source_pid, "add", "--", *changed)
         projects._git(source_pid, "commit", "-q", "-m",
-                      f"Split {len(slugs)} paper(s) to {name}")
+                      f"Split {len(slugs)} paper(s) to {name}", "--", *changed)
         removed = True
 
     return {

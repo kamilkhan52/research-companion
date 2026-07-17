@@ -72,15 +72,21 @@ def test_move_carries_work_and_removes_from_source(temp_project):
     assert "awq" not in src_data.get("papers", {})
 
 
-def test_copy_leaves_source_intact(temp_project):
+def test_copy_leaves_source_intact_and_does_not_migrate_sessions(temp_project):
     _seed_source(temp_project)
-    res = project_split.split_project(temp_project, "Reading B", ["smooth"],
+    # give the copied paper a session so we can prove it does NOT travel on copy
+    sessions.set_state("smooth", "in_discussion")
+    res = project_split.split_project(temp_project, "Reading B", ["smooth", "awq"],
                                       remove_from_source=False)
     assert res["removed"] is False
     assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}  # source whole
+    assert sessions.get_state("awq") == "in_discussion"  # source session untouched
     tok = _bind(res["new_pid"])
     try:
-        assert {p.slug for p in store.list_papers()} == {"smooth"}
+        assert {p.slug for p in store.list_papers()} == {"smooth", "awq"}
+        # Copy semantics: the discussion stays in the source, so the copy has no session.
+        assert sessions.get_state("awq") is None
+        assert sessions.transcript_paths("awq")[0].exists() is False
     finally:
         config.reset_active_project(tok)
 
@@ -111,4 +117,20 @@ def test_split_route_refuses_while_a_job_runs(temp_project):
         reg.jobs["j1"] = job
         assert jobs.any_running_for_project(temp_project) == "splitkind"
     finally:
+        jobs._ALL_REGISTRIES.remove(reg)
+
+
+def test_busy_source_admits_no_new_jobs(temp_project):
+    """The split marks the source busy across its sweep+migration; a job that tries to start
+    meanwhile is refused, closing the check-then-move race."""
+    _seed_source(temp_project)
+    reg = jobs.JobRegistry("splitkind2")
+    try:
+        config.mark_project_busy(temp_project)
+        with pytest.raises(RuntimeError, match="being modified"):
+            reg.start_or_join("k", lambda: jobs.Job(id="jx"), lambda j: None,
+                              project_id=temp_project)
+        assert reg.jobs == {}
+    finally:
+        config.unmark_project_busy(temp_project)
         jobs._ALL_REGISTRIES.remove(reg)
