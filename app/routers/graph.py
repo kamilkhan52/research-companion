@@ -54,7 +54,8 @@ def get_graph_authors(pid: str):
     overlaid = graph.overlay_membership(data.get("graph"), papers)
     board = graph.author_board(overlaid, data.get("openalex"), data.get("llm_affiliations"))
     # Merge cached LLM profiles (R7.6) at read time — generation stays a background job.
-    profiles = author_profiles.profiles_by_key()
+    # Fingerprint-checked: a profile whose inputs changed is withheld, not shown stale.
+    profiles = author_profiles.profiles_for_board(board)
     for entry in board:
         entry["profile"] = profiles.get(graph._author_key(entry["name"])) or None
     return {

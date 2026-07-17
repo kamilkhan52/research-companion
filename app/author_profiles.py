@@ -57,13 +57,21 @@ def _save_cache(cache: dict) -> None:
     atomic_write_text(_cache_path(), json.dumps(cache, indent=2))
 
 
-def profiles_by_key() -> dict[str, str]:
-    """Cached profile text per author key — merged into the board response at read time."""
-    return {
-        key: rec["profile"]
-        for key, rec in load_cache().items()
-        if isinstance(rec, dict) and rec.get("profile")
-    }
+def profiles_for_board(board: list[dict]) -> dict[str, str]:
+    """CURRENT cached profile text per author key, for the board's read-time merge. A record
+    whose fingerprint no longer matches the entry's inputs (papers/affiliation/goals changed)
+    is withheld — the client then shows Generate again instead of a stale paragraph, and
+    start_profile regenerates on the same mismatch."""
+    cache = load_cache()
+    _pname, goals = _project_brief()
+    out: dict[str, str] = {}
+    for entry in board:
+        key = graph._author_key(entry["name"])
+        rec = cache.get(key)
+        if (isinstance(rec, dict) and rec.get("profile")
+                and rec.get("fingerprint") == _fingerprint(entry, goals)):
+            out[key] = rec["profile"]
+    return out
 
 
 def _board_entry(name: str) -> dict | None:

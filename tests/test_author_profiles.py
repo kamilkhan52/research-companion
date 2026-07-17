@@ -59,7 +59,8 @@ def test_profile_job_generates_caches_and_merges(temp_project, monkeypatch):
     snap2 = _settled(author_profiles.start_profile("Song Han").id)
     assert snap2["cached"] is True and len(calls) == 1
 
-    assert author_profiles.profiles_by_key() == {
+    entry = author_profiles._board_entry("Song Han")
+    assert author_profiles.profiles_for_board([entry]) == {
         "song han": "Song Han leads efficient-ML research central to this project."
     }
 
@@ -86,3 +87,21 @@ def test_unknown_author_raises(temp_project):
     _seed_graph(temp_project)
     with pytest.raises(ValueError):
         author_profiles.start_profile("Nobody Here")
+
+
+def test_stale_profile_is_withheld_from_the_board_merge(temp_project, monkeypatch):
+    """A cached paragraph whose inputs changed must NOT reach the board — the client then
+    shows Generate again instead of stale project-specific claims."""
+    _seed_graph(temp_project)
+    monkeypatch.setattr(author_profiles.llm, "complete", lambda m, **k: "old take")
+    _settled(author_profiles.start_profile("Song Han").id)
+
+    data = graph_store.load()
+    data["graph"]["nodes"].append(
+        {"id": "sq", "kind": "project", "slug": "sq", "title": "SmoothQuant",
+         "authors": ["Song Han"], "significant_cited_by_count": 0, "year": 2022})
+    graph_store.save(data)
+    add_paper(temp_project, "sq", "SmoothQuant")
+
+    entry = author_profiles._board_entry("Song Han")
+    assert author_profiles.profiles_for_board([entry]) == {}
