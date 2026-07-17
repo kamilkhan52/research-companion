@@ -71,7 +71,7 @@ def test_tombstoned_project_admits_no_new_jobs(root):
     reg = jobs.JobRegistry("testkind2")
     try:
         config.mark_project_deleting(pid)
-        with pytest.raises(RuntimeError, match="being deleted"):
+        with pytest.raises(RuntimeError, match="being modified"):
             reg.start_or_join(
                 "k", lambda: jobs.Job(id="j2"), lambda job: None, project_id=pid
             )

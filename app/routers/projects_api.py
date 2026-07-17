@@ -9,8 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import committer, config, projects, sessions, store
+from .. import committer, config, jobs, project_split, projects, sessions, store
 from ..committer import CommitError
+from ..project_split import SplitError
 from ..projects import ProjectError
 from . import make_project_router
 
@@ -114,6 +115,55 @@ def remove_paper(pid: str, slug: str):
         if "nothing to commit" not in str(e):
             raise HTTPException(status_code=500, detail=str(e)) from e
     return {"removed": slug, "notes_kept": notes_kept}
+
+
+class SplitReq(BaseModel):
+    name: str                       # the new project's name
+    slugs: list[str]                # papers to split out (must be current source entries)
+    remove_from_source: bool = True  # move (default) vs. copy
+    goals: str | None = None        # optional theme for the new project (seeds discovery etc.)
+
+
+@project_router.post("/split")
+def split_project(pid: str, req: SplitReq):
+    """Split selected papers (and the work done on them) into a new project. Deterministic
+    phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
+    the removal endpoint above. The optional AI working-notes passes are separate jobs.
+
+    Refused (409) while any background job is running for the source project: a chat turn or
+    graph build mid-move would write into files being relocated. Mark the source busy FIRST,
+    then sweep — so a job admitted after the sweep is refused by the busy gate
+    (`jobs.start_or_join`), closing the window between the check and the move (the same
+    atomic tombstone-then-sweep shape project deletion uses)."""
+    # Exclusive reservation: a second concurrent split of the same project is rejected rather
+    # than interleaving two mutations of one reading list / git index (and the first's
+    # unmark would otherwise re-admit jobs while the second still runs).
+    if not config.mark_project_busy(pid):
+        raise HTTPException(status_code=409, detail="This project is already being split.")
+    try:
+        # Mutual exclusion with deletion: delete marks the pid deleting THEN checks busy, so
+        # checking deleting here (after we reserved busy) means the two can't both proceed —
+        # whichever set its flag first wins and the other is refused.
+        if config.project_is_deleting(pid):
+            raise HTTPException(status_code=409, detail="This project is being deleted.")
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A background job ({busy}) is running for this project — wait, then split.",
+            )
+        result = project_split.split_project(
+            pid, req.name, req.slugs,
+            remove_from_source=req.remove_from_source, goals=req.goals,
+        )
+    except SplitError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        config.unmark_project_busy(pid)
+    # departed_notes is server-side context for the (future) source-cleanup pass; not returned.
+    return {k: v for k, v in result.items() if k != "departed_notes"}
 
 
 @project_router.get("/state")

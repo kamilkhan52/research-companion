@@ -230,12 +230,16 @@ class JobRegistry(Generic[J]):
         # start/join lines run on the caller thread (which may have a different project bound, or
         # none for an app-global job), while done/error run on the worker thread.
         tag = _log_tag(pid)
-        # Admission gate for project deletion: once delete_project tombstones the pid, no new
-        # worker may register (its writes would recreate the moved directory). Raised, not
-        # swallowed — the initiating request deserves the error.
-        if pid is not None and config.project_is_deleting(pid):
-            raise RuntimeError(f"Project {pid} is being deleted; not accepting new jobs.")
         with self._lock:
+            # Admission gate for project deletion / an in-progress split of the source: once
+            # the pid is tombstoned (delete) or marked busy (split), no new worker may register
+            # — its writes would recreate a moved directory or land in files being relocated.
+            # Checked INSIDE the registry lock (not before it): the mutating side marks the pid
+            # busy BEFORE sweeping the registries, so with the check under the same lock the
+            # sweep serializes against registration — either the sweep sees this job, or this
+            # job sees the busy flag. Raised, not swallowed — the caller deserves the error.
+            if pid is not None and (config.project_is_deleting(pid) or config.project_is_busy(pid)):
+                raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
             existing = self._running_for(key, pid)
             if existing:
                 log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag)

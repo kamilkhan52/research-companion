@@ -67,6 +67,38 @@ def get_state(slug: str) -> str | None:
     return _load_index().get(slug, {}).get("state")
 
 
+def index_entry(slug: str) -> dict | None:
+    """The raw session-index metadata for one slug in the active project (None if none). For
+    project splitting, which relocates a paper's session wholesale."""
+    entry = _load_index().get(slug)
+    return dict(entry) if entry else None
+
+
+def transcript_paths(slug: str) -> tuple:
+    """(transcript jsonl, branches file) paths for a slug in the active project — the on-disk
+    session state a split moves. Either may not exist."""
+    return _jsonl(slug), _branches_file(slug)
+
+
+def import_session(slug: str, meta: dict) -> None:
+    """Register a session-index entry copied from another project (project splitting). The
+    caller has already placed the transcript/branches files; this records the metadata so the
+    paper resumes in its new project. Overwrites any existing entry for the slug."""
+    with _index_lock:
+        idx = _load_index_unlocked()
+        idx[slug] = dict(meta)
+        _save_index_unlocked(idx)
+
+
+def drop_session(slug: str) -> None:
+    """Remove a slug's session-index entry (project splitting, source side after a move). The
+    transcript/branches files are deleted by the caller."""
+    with _index_lock:
+        idx = _load_index_unlocked()
+        if idx.pop(slug, None) is not None:
+            _save_index_unlocked(idx)
+
+
 def set_state(slug: str, state: str) -> None:
     with _index_lock:
         idx = _load_index_unlocked()

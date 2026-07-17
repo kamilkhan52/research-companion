@@ -274,6 +274,11 @@ def delete_project(pid: str) -> None:
     # (the tombstone refuses it) — no window where a fresh worker can slip past the move.
     config.mark_project_deleting(pid)
     try:
+        # A split of this project is a synchronous mutation (not a job) that relocates its
+        # files; deleting the dir under it would strand the split mid-copy. It reserves the
+        # pid via config.mark_project_busy, so refuse while that reservation is held.
+        if config.project_is_busy(pid):
+            raise ProjectError("This project is being split — wait for it to finish, then delete.")
         busy = jobs.any_running_for_project(pid)
         if busy:
             raise ProjectError(

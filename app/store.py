@@ -726,6 +726,65 @@ def _remove_entry_locked(slug: str) -> bool:
     return True
 
 
+def entry_details(slug: str) -> dict | None:
+    """The parsed reading-list entry for one slug (slug, title, group, status, cites, raw
+    block), or None. The raw `block` is what project splitting copies verbatim so identity
+    and metadata comments survive exactly."""
+    for e in _parse_entries():
+        if e["slug"] == slug:
+            return {"slug": e["slug"], "title": e["title"], "group": e["group"],
+                    "status": e["status"], "cites": list(e["cites"]), "block": e["block"]}
+    return None
+
+
+def append_entry_block(group: str, block: str) -> None:
+    """Insert a pre-formatted reading-list `block` verbatim under `group` (heading created if
+    absent). For project splitting: the block is another project's entry copied whole, so its
+    slug/arxiv/year/abstract markers are preserved. Deterministic, no commit — like add_entry."""
+    group = (group or "Unsorted").strip() or "Unsorted"
+    heading = f"## {group}"
+    with _RL_LOCK:
+        rl = _reading_list()
+        text = rl.read_text(encoding="utf-8") if rl.exists() else "# Reading list\n\n"
+        lines = text.splitlines()
+        new_block = [*block.splitlines(), ""]
+        heading_idx = next((i for i, line in enumerate(lines) if line.strip() == heading), None)
+        if heading_idx is not None:
+            end = len(lines)
+            for j in range(heading_idx + 1, len(lines)):
+                if _H2_RE.match(lines[j]):
+                    end = j
+                    break
+            new_lines = lines[:end] + new_block + lines[end:]
+        else:
+            new_lines = lines + ["", heading, ""] + new_block
+        atomic_write_text(rl, "\n".join(new_lines).rstrip() + "\n")
+        _parse_cache.pop(str(rl), None)
+
+
+def drop_dangling_cites(gone: set[str]) -> None:
+    """Remove any slugs in `gone` from every entry's `<!-- cites: ... -->` comment in the
+    active project's reading list (dropping the whole comment when it empties). Used after a
+    split so remaining entries don't cite departed papers. Deterministic, no commit."""
+    if not gone:
+        return
+    with _RL_LOCK:
+        rl = _reading_list()
+        if not rl.exists():
+            return
+        text = rl.read_text(encoding="utf-8")
+
+        def _rewrite(m: re.Match) -> str:
+            kept = [c.strip() for c in m.group("cites").split(",")
+                    if c.strip() and c.strip() not in gone]
+            return f"<!-- cites: {', '.join(kept)} -->" if kept else ""
+
+        new_text = _CITES_COMMENT_RE.sub(_rewrite, text)
+        if new_text != text:
+            atomic_write_text(rl, new_text)
+            _parse_cache.pop(str(rl), None)
+
+
 def append_removed_marker(slug: str) -> None:
     """Record inside the paper's retained Notes block that the paper left the reading list
     (the product decision is keep-notes-on-removal; the marker keeps the retained notes

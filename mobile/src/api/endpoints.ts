@@ -88,6 +88,13 @@ export const updateProjectMeta = (pid: string, patch: { name?: string; favorite?
 /** Soft delete — the server moves the project into a recoverable .trash dir. */
 export const deleteProject = (pid: string) =>
   apiDelete<{ ok: boolean }>(`/api/projects/${encodeURIComponent(pid)}`);
+/** Split selected papers (and the work done on them) into a new project (R8.1). Deterministic
+ *  server-side move/copy — a plain confirmed POST, not a job. */
+export const splitProject = (
+  pid: string,
+  body: { name: string; slugs: string[]; remove_from_source: boolean; goals?: string },
+) => apiPost<{ new_pid: string; name: string; moved: number; removed: boolean }>(
+  `/api/projects/${encodeURIComponent(pid)}/split`, body);
 
 // ---------- background retrieval + auto-analysis (R7.8) ----------
 
