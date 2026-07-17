@@ -1404,6 +1404,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/graph/authors/profile/job": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Author Profile
+         * @description Start (or join) the one-paragraph profile generation for a board author (LLM ⇒
+         *     background job + polling, invariant 1). Served straight from the cache when inputs
+         *     haven't changed.
+         */
+        post: operations["start_author_profile_api_projects__pid__graph_authors_profile_job_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/graph/authors/profile/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Author Profile Status */
+        get: operations["author_profile_status_api_projects__pid__graph_authors_profile_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/graph/build/status": {
         parameters: {
             query?: never;
@@ -1493,6 +1532,11 @@ export interface components {
             summary?: string | null;
             /** Proposal Revision */
             proposal_revision?: string | null;
+        };
+        /** AuthorProfileReq */
+        AuthorProfileReq: {
+            /** Name */
+            name: string;
         };
         /** Body_upload_paper_api_projects__pid__upload_paper_post */
         Body_upload_paper_api_projects__pid__upload_paper_post: {
@@ -4189,6 +4233,73 @@ export interface operations {
             header?: never;
             path: {
                 pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_author_profile_api_projects__pid__graph_authors_profile_job_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthorProfileReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    author_profile_status_api_projects__pid__graph_authors_profile_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                job_id: string;
             };
             cookie?: never;
         };

@@ -5,9 +5,10 @@ isn't waiting on the request (an earlier SSE-stream-IS-the-build design didn't s
 those). See CLAUDE.md invariant 1 and the docstrings in graph_jobs.py."""
 from __future__ import annotations
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from .. import graph, graph_jobs, graph_store, sessions, store
+from .. import author_profiles, graph, graph_jobs, graph_store, sessions, store
 from . import make_project_router
 
 project_router = make_project_router()
@@ -51,12 +52,40 @@ def get_graph_authors(pid: str):
     papers = store.list_papers(sessions.session_states())
     data = graph_store.load()
     overlaid = graph.overlay_membership(data.get("graph"), papers)
+    board = graph.author_board(overlaid, data.get("openalex"), data.get("llm_affiliations"))
+    # Merge cached LLM profiles (R7.6) at read time — generation stays a background job.
+    profiles = author_profiles.profiles_by_key()
+    for entry in board:
+        entry["profile"] = profiles.get(graph._author_key(entry["name"])) or None
     return {
-        "authors": graph.author_board(overlaid, data.get("openalex"),
-                                      data.get("llm_affiliations")),
+        "authors": board,
         "explainers": graph.AUTHOR_EXPLAINERS,
         "built_at": (overlaid or {}).get("built_at"),
     }
+
+
+class AuthorProfileReq(BaseModel):
+    name: str
+
+
+@project_router.post("/graph/authors/profile/job")
+def start_author_profile(pid: str, req: AuthorProfileReq):
+    """Start (or join) the one-paragraph profile generation for a board author (LLM ⇒
+    background job + polling, invariant 1). Served straight from the cache when inputs
+    haven't changed."""
+    try:
+        job = author_profiles.start_profile(req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"job": author_profiles.snapshot(job.id)}
+
+
+@project_router.get("/graph/authors/profile/jobs/{job_id}")
+def author_profile_status(pid: str, job_id: str):
+    snap = author_profiles.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown profile job")
+    return {"job": snap}
 
 
 @project_router.get("/graph/build/status")

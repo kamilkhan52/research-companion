@@ -520,6 +520,11 @@ export interface AuthorPaper {
   title: string | null;
   kind: 'project' | 'external';
   year: number | null;
+  /** External papers carry identifiers so they open the same menu as chat references
+   *  (R7.6). Absent on project papers. */
+  arxiv_id?: string | null;
+  doi?: string | null;
+  url?: string | null;
 }
 
 /** One author on the ranked board (GET …/graph/authors). Affiliation is "" when unknown
@@ -533,6 +538,18 @@ export interface BoardAuthor {
   active_years: [number, number] | null;
   activity: number;
   papers: AuthorPaper[];
+  /** Cached one-paragraph LLM profile, merged at read time; null until generated (R7.6). */
+  profile?: string | null;
+}
+
+/** Snapshot of POST/GET /graph/authors/profile/job(s) — one-paragraph profile generation. */
+export interface AuthorProfileJob {
+  id: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error: string | null;
+  author: string;
+  profile: string;
+  cached: boolean;
 }
 
 /** GET /api/projects/{pid}/graph/authors */
