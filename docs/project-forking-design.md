@@ -54,10 +54,14 @@ Phase 1 is synchronous and deterministic; 2 and 3 are independent LLM background
 1. **Split (plain POST — fast, no LLM, no network).**
    `POST /api/projects/{pid}/split` with
    `{name, goals?, slugs: [...], remove_from_source: bool, draft_new_notes: bool, cleanup_source_notes: bool}`:
-   - **Guard:** refuse (409) while any background job is running for the source project
-     (`jobs.any_running_for_project`, the R7.5 sweep) — a chat turn or graph build mid-move
-     would write into files being relocated. The new project's pid is admission-checked the
-     moment it exists, like any project.
+   - **Guards:** every requested slug must resolve to a parsed entry of the source's
+     current reading list before anything is touched — slugs are caller-supplied and the
+     path helpers (`corpus_path`, session/cover paths) compose paths without validating, so
+     the reading list is the trust boundary (400 on any unknown slug; the same posture as
+     `projects._safe_pid` for pids). And refuse (409) while any background job is running
+     for the source project (`jobs.any_running_for_project`, the R7.5 sweep) — a chat turn
+     or graph build mid-move would write into files being relocated. The new project's pid
+     is admission-checked the moment it exists, like any project.
    - `projects.create_project(name)` scaffolds the new repo (existing path, pinned git
      identity); `goals` lands in its `project.json` so discovery, author profiles, and lab
      research inherit the new theme immediately.
@@ -79,8 +83,12 @@ Phase 1 is synchronous and deterministic; 2 and 3 are independent LLM background
    `committer.py`; nothing reaches the record unapproved (invariant 4).
 3. **Source cleanup (background job + approval)** — when `cleanup_source_notes` (implies
    remove-on): an LLM pass proposes the source's working notes with the departed papers'
-   contributions removed. The prompt lists the departed titles and forbids inventing
-   content — remove and reflow only.
+   contributions removed. Working-notes content is synthesized without per-paper
+   attribution, so titles alone can't identify what to remove — phase 1 therefore
+   **snapshots the departed papers' Notes blocks before migration** and stages that
+   snapshot for this job (`.state/`, working data, never committed). The prompt gets the
+   departed titles AND their notes as the reference for what to excise, and forbids
+   inventing content — remove and reflow only.
 
 Phases 2–3 are `notes_jobs`-shaped (invariant 1), rebind their project's contextvar
 (invariant 2), can run in parallel, and can each be skipped or re-run. Each captures a
