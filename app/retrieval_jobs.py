@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import config, cover_jobs, retrieval_agent, retriever, store
+from . import config, cover_jobs, figures, retrieval_agent, retriever, store
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -207,3 +207,7 @@ def _persist(slug: str, title: str, full_text: str, arxiv_id: str | None,
         "source": source,
         "match_score": match_score,
     })
+    # Warm the paper's figure manifest (R.10) the moment its text lands — fire-and-forget on
+    # a daemon thread, so it never delays the job's `done` or the chained auto-analysis.
+    # Best-effort: the graph build's enrichment pass backfills anything this misses.
+    figures.warm_async(slug)

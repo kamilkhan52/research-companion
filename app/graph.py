@@ -38,6 +38,7 @@ from . import (
     affiliations,
     citations,
     config,
+    figures,
     graph_layout,
     graph_store,
     llm,
@@ -1172,6 +1173,11 @@ def _persist_graph_snapshot(
         affiliations.annotate_project_affiliations(
             nodes, data.get("openalex", {}), data.setdefault("llm_affiliations", {}),
             force=force, persist=lambda: graph_store.save(data))
+        # Paper-figure manifests (R.10): derive/refresh each paper's arXiv-HTML figure cache
+        # in the same enrichment phase. Best-effort, deterministic (no LLM), per-paper
+        # persist (manifest+assets are their own files under .state/figures/), first stall
+        # aborts the pass. Retrieval already warms new papers; this backfills the corpus.
+        figures.derive_project_figures(papers, force=force)
     else:
         # Skeleton snapshots must stay fast (no network), but the semantic layout's Y axis
         # needs citation counts — apply whatever the cache already knows for free. Without
