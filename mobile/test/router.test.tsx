@@ -46,8 +46,8 @@ test('continues the latest unfinished session across projects', async () => {
   await setBaseUrl('api.test');
   jest.mocked(api.listProjects).mockResolvedValueOnce({
     projects: [
-      { id: 'current', name: 'Current', created_at: null, paper_count: 0, read_count: 0 },
-      { id: 'three-d-dram', name: '3D DRAM', created_at: null, paper_count: 1, read_count: 0 },
+      { id: 'current', name: 'Current', created_at: null, favorite: false, paper_count: 0, read_count: 0 },
+      { id: 'three-d-dram', name: '3D DRAM', created_at: null, favorite: false, paper_count: 1, read_count: 0 },
     ],
   });
   jest.mocked(api.getProjectState).mockResolvedValueOnce({

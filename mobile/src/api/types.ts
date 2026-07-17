@@ -16,6 +16,7 @@ export interface Project {
   id: string;
   name: string;
   created_at: string | null;
+  favorite: boolean;
   paper_count: number;
   read_count: number;
 }

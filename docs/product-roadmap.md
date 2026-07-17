@@ -133,6 +133,7 @@ Labs, chat navigation, "Paradigm" icon) are queued as the next planned round.
 | R7.2 | Skeleton-stage filter correction fires only on the stage transition, so tapping Significant while the full build runs sticks (was re-asserted every render, snapping back to All); an empty Significant view on a skeleton explains it's waiting on enrichment | [#137](https://github.com/kamilkhan52/research-companion/pull/137) | Complete |
 | R7.3 | Chat's second, motionless scrollbar thumb (the RN inverted-list "stuck indicator" ghost) suppressed via a 1px `scrollIndicatorInsets` on the messages list; the real moving indicator is untouched | [#138](https://github.com/kamilkhan52/research-companion/pull/138) | Complete — confirm the ghost is gone on device |
 | R7.4 | Completed-vs-ongoing color rule: "Discussing" state chips go amber (ongoing) while "Read" stays mint (done), and the row's "Resume" action + chevron follow amber; applies across all three palettes via `stateMetaFor` | [#139](https://github.com/kamilkhan52/research-companion/pull/139) | Complete |
+| R7.5 | Project settings: per-project panel in the switcher (rename, favorite, delete); favorites sort first with a star; delete is a server-side soft delete into a recoverable `.trash` dir (never rm -rf), confirmed on-device, and hands the active selection to the next project | [#140](https://github.com/kamilkhan52/research-companion/pull/140) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 

@@ -243,6 +243,11 @@ def _backfill_work(job: BackfillJob) -> None:
         return
     for proj in projs:
         pid = proj["id"]
+        # The list was captured up front; a project deleted mid-backfill must be skipped, or
+        # this app-global worker (invisible to the per-project running-job sweep) would
+        # recreate its directory with cover writes.
+        if config.project_is_deleting(pid) or not projects.exists(pid):
+            continue
         token = config.set_active_project(pid)
         try:
             _backfill_project(job, pid)

@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import config, prompts, store
+from . import config, jobs, prompts, store
 from .fileio import atomic_write_text
 
 META = "project.json"
@@ -132,7 +133,9 @@ def list_projects() -> list[dict]:
     config.PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
     out = []
     for d in sorted(config.PROJECTS_ROOT.iterdir()):
-        if not d.is_dir():
+        # Dot-dirs are never projects — `.trash` in particular holds soft-deleted projects
+        # (see delete_project) whose ids must not resurface in the registry.
+        if not d.is_dir() or d.name.startswith("."):
             continue
         pid = d.name
         meta = _read_meta(pid)
@@ -146,10 +149,11 @@ def list_projects() -> list[dict]:
             "id": pid,
             "name": meta.get("name", pid),
             "created_at": meta.get("created_at"),
+            "favorite": bool(meta.get("favorite")),
             "paper_count": len(papers),
             "read_count": sum(1 for p in papers if p.list_status == "read"),
         })
-    out.sort(key=lambda p: (p.get("created_at") or "", p["name"]))
+    out.sort(key=lambda p: (not p["favorite"], p.get("created_at") or "", p["name"]))
     return out
 
 
@@ -245,6 +249,45 @@ def rename_project(pid: str, name: str) -> dict:
     return meta
 
 
+def set_favorite(pid: str, favorite: bool) -> dict:
+    if not exists(pid):
+        raise ProjectError(f"Unknown project: {pid}")
+    meta = _read_meta(pid)
+    meta.update({"id": pid, "favorite": bool(favorite)})
+    _write_meta(pid, meta)
+    return meta
+
+
+def delete_project(pid: str) -> None:
+    """Soft-delete: move the whole project dir (its git history included) into
+    PROJECTS_ROOT/.trash/<pid>-<timestamp>. Deliberately not an rm -rf — a project is a
+    human's reading record, so deletion stays reversible by moving the dir back. list_projects
+    skips dot-dirs, and `.trash` can never be addressed as a pid (_PID_RE forbids a leading
+    dot), so trashed copies are invisible to every API path."""
+    if not exists(pid):
+        raise ProjectError(f"Unknown project: {pid}")
+    # A running worker resolves paths from this pid; moving the dir under it would make the
+    # worker's next write recreate projects/<pid> as a partial store, split from the trashed
+    # copy. So: tombstone first (jobs.start_or_join/put and use_project refuse tombstoned
+    # pids), THEN sweep for jobs admitted before the tombstone, then move. Any job either
+    # registered before the tombstone (the sweep sees it and refuses) or was admitted after
+    # (the tombstone refuses it) — no window where a fresh worker can slip past the move.
+    config.mark_project_deleting(pid)
+    try:
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise ProjectError(
+                f"A background job ({busy}) is still running for this project — "
+                "wait for it to finish, then delete."
+            )
+        trash = config.PROJECTS_ROOT / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+    finally:
+        config.unmark_project_deleting(pid)
+
+
 def adopt_existing(src: Path, name: str, move: bool = True) -> str:
     """Bring a pre-existing store dir (the legacy ./project) under PROJECTS_ROOT as a project,
     preserving its git history. Adds project.json + .gitignore(.state/) and commits them.
@@ -277,6 +320,8 @@ async def use_project(pid: str):
     dependency this runs in the request task, so the value is captured into the context copied
     for the endpoint and for StreamingResponse iteration. The finally (reset) runs after the
     response is fully sent, keeping the project bound throughout streaming."""
+    if config.project_is_deleting(pid):
+        raise HTTPException(status_code=409, detail=f"Project is being deleted: {pid}")
     if not exists(pid):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     token = config.set_active_project(pid)

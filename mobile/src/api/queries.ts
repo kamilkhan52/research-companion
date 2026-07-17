@@ -6,6 +6,7 @@ import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
+import type { Project } from './types';
 import { showToast } from '@/ui/Toast';
 
 /** Reactive base URL — re-renders consumers when it changes (e.g. saved in Settings). */
@@ -200,6 +201,34 @@ export function useCreateProject() {
     mutationFn: ({ name, method }: { name: string; method?: string }) =>
       api.createProject(name, method),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
+export function useUpdateProjectMeta() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pid, patch }: { pid: string; patch: { name?: string; favorite?: boolean } }) =>
+      api.updateProjectMeta(pid, patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.projects });
+      // Project names ride along on cross-project surfaces (Continue card).
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pid }: { pid: string }) => api.deleteProject(pid),
+    onSuccess: (_res, { pid }) => {
+      // Drop the row from the cache synchronously BEFORE invalidating: the switcher decides
+      // the replacement selection from this cache, and the Library auto-select effect must
+      // never see (and re-persist) the deleted pid while the refetch is in flight.
+      qc.setQueryData<Project[]>(keys.projects, (old) => old?.filter((p) => p.id !== pid));
+      qc.invalidateQueries({ queryKey: keys.projects });
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+    },
   });
 }
 
