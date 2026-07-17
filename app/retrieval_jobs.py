@@ -128,31 +128,28 @@ def start_retrieval(
         work(job)
         _run_analysis_hook(job)
 
+    created = False
+
     def make_job() -> RetrievalJob:
+        nonlocal created
+        created = True
         job = RetrievalJob(id=new_id(), slug=slug)
         if after_retrieved is not None:
             job._after_retrieved = after_retrieved  # read back under the registry lock
         return job
 
     job = _registry.start_or_join(slug, make_job, work_then_analyze)
-    if after_retrieved is not None:
-        # Joined an existing job (ours would already carry the hook): attach the continuation
-        # so the running worker picks it up at completion. If that worker already finished,
-        # claim and run the hook here instead — this also covers the already-retrieved
-        # short-circuit below, whose terminal job never runs a worker.
-        run_here = False
+    if after_retrieved is not None and not created:
+        # Joined a retrieval another request started (possibly without a hook): attach the
+        # continuation and register a settle callback — the registry reads callbacks in the
+        # same critical section that flips the status, so either the callback fires on the
+        # worker thread or add returns False and the settled job is handled inline here.
+        # The claim flag dedupes against the worker's own end-of-work check.
         with _registry.lock:
             if getattr(job, "_after_retrieved", None) is None:
                 job._after_retrieved = after_retrieved
-            run_here = (
-                job.status != "running"
-                and job.retrieved
-                and not getattr(job, "_analysis_claimed", False)
-            )
-            if run_here:
-                job._analysis_claimed = True
-        if run_here:
-            _call_analysis_hook(job, after_retrieved)
+        if not _registry.add_settle_callback(job, _run_analysis_hook):
+            _run_analysis_hook(job)
     return job
 
 

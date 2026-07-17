@@ -180,3 +180,31 @@ def test_explicit_project_id_overrides_ambient_for_the_worker(monkeypatch):
         assert seen["pid"] == "proj-b"
     finally:
         config.reset_active_project(token)
+
+
+def test_settle_callback_fires_after_terminal_status():
+    """add_settle_callback: registered on a running job -> fires on the worker thread after
+    the status flip; on a settled job -> returns False so the caller handles it inline."""
+    from app import jobs
+
+    reg = jobs.JobRegistry("settle-test")
+    try:
+        release = threading.Event()
+        seen: list[str] = []
+
+        def work(job):
+            release.wait(timeout=5)
+
+        job = reg.start_or_join("k", lambda: jobs.Job(id="s1"), work, project_id="p")
+        assert reg.add_settle_callback(job, lambda j: seen.append(j.status)) is True
+        release.set()
+        deadline = time.time() + 5
+        while time.time() < deadline and not seen:
+            time.sleep(0.01)
+        assert seen == ["done"]  # ran after the flip, with the terminal status visible
+
+        # Already settled: registration refuses, so the caller can't lose the callback.
+        assert reg.add_settle_callback(job, lambda j: seen.append("late")) is False
+        assert seen == ["done"]
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)

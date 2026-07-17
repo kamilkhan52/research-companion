@@ -63,6 +63,16 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
     mode,
     delivery_mode: (listening ? 'listening' : 'reading') as 'listening' | 'reading',
   };
+  // The start POST is the durable hand-off — only confirm once it actually succeeded. A
+  // failure here means NO server-side job exists, which must not read like a polling hiccup.
+  let startedJob: RetrievalJob;
+  try {
+    startedJob = (await api.startRetrievalJob(offer.pid, offer.slug, startOpts)).job;
+  } catch (e) {
+    showToast(`Couldn't start the analysis for “${name}” — ${(e as Error).message ?? 'server unreachable'}`);
+    return;
+  }
+  showToast('Analysis started — you can keep browsing');
   try {
     const deadline = Date.now() + WATCH_LIMIT_MS;
     const settle = async (start: RetrievalJob): Promise<RetrievalJob> => {
@@ -73,7 +83,7 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
       }
       return job;
     };
-    let job = await settle((await api.startRetrievalJob(offer.pid, offer.slug, startOpts)).job);
+    let job = await settle(startedJob);
     if (
       job.status === 'done' && job.retrieved && !job.analysis_job_id && !job.analysis_error
     ) {
@@ -129,10 +139,7 @@ export function InitialAnalysisOfferHost() {
     title: READING_MODE_LABELS[mode],
     icon: 'book-open' as const,
     onPress: () => {
-      if (offer) {
-        void runChain(offer, mode, listeningMode);
-        showToast('Analysis started — you can keep browsing');
-      }
+      if (offer) void runChain(offer, mode, listeningMode);
       setOffer(null);
     },
   }));

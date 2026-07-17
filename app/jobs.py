@@ -62,6 +62,7 @@ J = TypeVar("J", bound=Job)
 _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
 _CANCELLED_ATTR = "_rc_cancelled"
+_ON_SETTLE_ATTR = "_rc_on_settle"
 
 # Sentinel default for the project_id argument: "capture the ambient active project at call
 # time". Distinct from an explicit None (which means the app-global scope, e.g. audio).
@@ -250,6 +251,30 @@ class JobRegistry(Generic[J]):
         thread.start()
         return job
 
+    def add_settle_callback(self, job: J, cb: Callable[[J], None]) -> bool:
+        """Register cb(job) to run on the worker thread immediately after the job settles
+        (status flipped, project still bound). Returns False if the job has ALREADY settled —
+        the callbacks are read in the same critical section that flips the status, so a False
+        return is the caller's cue to handle the settled job inline; there is no window where
+        an attachment can be lost."""
+        with self._lock:
+            if job.status != "running":
+                return False
+            cbs = getattr(job, _ON_SETTLE_ATTR, None)
+            if cbs is None:
+                cbs = []
+                setattr(job, _ON_SETTLE_ATTR, cbs)
+            cbs.append(cb)
+            return True
+
+    def _fire_settle(self, job: J, cbs: list, tag: dict) -> None:
+        for cb in cbs:
+            try:
+                cb(job)
+            except Exception as e:  # noqa: BLE001 — a settle callback must not kill the thread
+                log.warning("settle callback failed %s job=%s: %s", self.name, job.id[:8],
+                            str(e)[:200], extra=tag)
+
     def _run(self, job: J, work: Callable[[J], None], pid: str | None) -> None:
         token = config.set_active_project(pid)
         tag = _log_tag(pid)
@@ -261,6 +286,7 @@ class JobRegistry(Generic[J]):
                     job.status = "done"
                     job.finished_at = now_iso()
                 final = job.status
+                settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
             dur = time.monotonic() - t0
             if final == "error":  # the worker recorded its own error (e.g. graph per-paper)
                 log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8], dur,
@@ -268,6 +294,7 @@ class JobRegistry(Generic[J]):
             else:
                 # final == "cancelled" means the worker wound down after a cancel() request.
                 log.info("%s %s job=%s in %.1fs", final, self.name, job.id[:8], dur, extra=tag)
+            self._fire_settle(job, settle_cbs, tag)
         except Exception as e:
             with self._lock:
                 # A cancelled job stays cancelled: the worker unwinding (often *because* it was
@@ -276,8 +303,10 @@ class JobRegistry(Generic[J]):
                     job.status = "error"
                     job.error = str(e)[:400]
                     job.finished_at = now_iso()
+                settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
             log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
                         time.monotonic() - t0, str(e)[:200], extra=tag)
+            self._fire_settle(job, settle_cbs, tag)
         finally:
             config.reset_active_project(token)
 
