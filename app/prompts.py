@@ -114,6 +114,13 @@ add the paper to the project, so a related-works briefing must link every recomm
 its first mention. Never fabricate a URL; if you have no URL for a work, name it unlinked \
 (plain text — never wrap a name in bare square brackets).
 
+The paper's own bracketed reference numbers — "[11]", "[3, 7]", "[2]-[5]" — are meaningless \
+to the reader: the app never renders the paper's reference list, so a bare numeric citation \
+dangles. NEVER emit them in your response, not even inside quotations — when a quoted passage \
+carries such markers, silently drop them, or, where the referenced work matters to the point, \
+substitute the work's name (linked per the rules above). Referenced works are always cited by \
+name, never by number.
+
 Return your response using THIS EXACT format and nothing else:
 
 ###CANONICAL###
