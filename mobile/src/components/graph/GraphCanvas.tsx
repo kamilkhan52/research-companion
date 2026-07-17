@@ -19,7 +19,8 @@ import Animated, {
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
 import { Icon, Text } from '@/ui';
-import { colors, radius as radiusTokens, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { radius as radiusTokens, space, type ThemePalette } from '@/theme/tokens';
 
 // Low enough that "fit the whole graph" (computeFitScale below) is reachable by pinch too —
 // the visible node set's own bounding box is often wider/taller than 0.3x would show.
@@ -60,6 +61,8 @@ export function GraphCanvas({
   /** graph.layout.algo from the server — axis legends render only for 'semantic-v2'. */
   layoutAlgo?: string | null;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { positions, width, height, semantic } = useGraphLayout(nodes, edges);
   const showAxes = !!semantic && layoutAlgo === 'semantic-v2';
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
@@ -297,8 +300,8 @@ export function GraphCanvas({
         style={styles.resetBtn}
         accessibilityLabel="Reset graph view"
         hitSlop={8}>
-        <Icon name="rotate-ccw" size={13} color={colors.text} />
-        <Text variant="caption" color={colors.text}>Reset view</Text>
+        <Icon name="rotate-ccw" size={13} color={t.text} />
+        <Text variant="caption" color={t.text}>Reset view</Text>
       </Pressable>
 
       {/* Axis legend — the layout's semantics (graph_layout.py rules: X = publication time,
@@ -307,10 +310,10 @@ export function GraphCanvas({
       {showAxes ? (
         <>
           <View pointerEvents="none" style={styles.axisX}>
-            <Text variant="caption" color={colors.muted}>older → newer</Text>
+            <Text variant="caption" color={t.muted}>older → newer</Text>
           </View>
           <View pointerEvents="none" style={styles.axisY}>
-            <Text variant="caption" color={colors.muted}>↑ more cited</Text>
+            <Text variant="caption" color={t.muted}>↑ more cited</Text>
           </View>
         </>
       ) : null}
@@ -336,6 +339,7 @@ const EdgeLine = memo(function EdgeLine({
   showArrow: boolean;
   dimmed: boolean;
 }) {
+  const t = useTheme();
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const length = Math.sqrt(dx * dx + dy * dy);
@@ -343,7 +347,7 @@ const EdgeLine = memo(function EdgeLine({
   const midX = (a.x + b.x) / 2;
   const midY = (a.y + b.y) / 2;
   const thickness = significant ? 2.6 : 1.4;
-  const color = significant ? colors.violet : colors.line2;
+  const color = significant ? t.violet : t.line2;
   // Direction: source CITES target. An arrowhead ~78% of the way toward the target (short of
   // its circle) points at the cited paper, so citation direction is legible. A triangle View
   // (0-size box with colored bottom border) points "up" by default (−Y = angle −π/2), so we
@@ -408,11 +412,12 @@ const NodeCircle = memo(function NodeCircle({
   labelsVisible: boolean;
   onSelectNode: (node: GraphNode) => void;
 }) {
+  const t = useTheme();
   const r = nodeRadius(node);
   const isProject = node.kind === 'project';
   const isSignificant = node.significant_cited_by_count > 0;
   // Mint = in project, violet = external (DS node palette); read/unread no longer split hues.
-  const accent = isProject ? colors.mint : colors.violet;
+  const accent = isProject ? t.mint : t.violet;
   const labelWidth = Math.max(r * 3.6, 74);
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text
@@ -430,9 +435,9 @@ const NodeCircle = memo(function NodeCircle({
           width: r * 2,
           height: r * 2,
           borderRadius: r,
-          backgroundColor: isProject ? colors.elevated : colors.surface,
+          backgroundColor: isProject ? t.elevated : t.surface,
           borderWidth: selected ? 3 : isSignificant ? 2 : 1.3,
-          borderColor: selected ? colors.amber : isSignificant ? accent : colors.line2,
+          borderColor: selected ? t.amber : isSignificant ? accent : t.line2,
           alignItems: 'center',
           justifyContent: 'center',
         }}>
@@ -466,7 +471,7 @@ const NodeCircle = memo(function NodeCircle({
   );
 });
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   viewport: { flex: 1, overflow: 'hidden' },
   axisX: {
     position: 'absolute',
@@ -484,9 +489,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: space.md,
     bottom: space.md,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radiusTokens.pill,
     paddingHorizontal: space.lg,
     paddingVertical: 10,

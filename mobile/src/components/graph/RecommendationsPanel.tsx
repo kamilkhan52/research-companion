@@ -12,7 +12,8 @@ import type { GraphRecommendation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Icon, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 // Shown a page at a time rather than the full ranked list at once — a project can accumulate
 // well over a hundred candidate recommendations, most of which are low-signal tail entries.
@@ -32,6 +33,7 @@ export function RecommendationsPanel({
   onClose: () => void;
   onSelect: (rec: GraphRecommendation) => void;
 }) {
+  const t = useTheme();
   const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
   // Fresh page each time the sheet is (re)opened, not wherever browsing left off last time —
@@ -54,7 +56,7 @@ export function RecommendationsPanel({
       </Text>
 
       {recommendations.length === 0 ? (
-        <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+        <Text variant="body" color={t.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
           No strong recommendations yet — build (or rebuild) the graph once more papers have been read.
         </Text>
       ) : (
@@ -86,6 +88,8 @@ function RecommendationCard({
   rec: GraphRecommendation;
   onSelect: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
   // Recommendations come from the last graph build; membership must track the LIVE reading
@@ -129,7 +133,7 @@ function RecommendationCard({
             ) : null}
           </View>
           <View style={styles.scoreBadge}>
-            <Text variant="heading" color={colors.amber}>
+            <Text variant="heading" color={t.amber}>
               {rec.recommend_score.toFixed(1)}
             </Text>
           </View>
@@ -137,7 +141,7 @@ function RecommendationCard({
 
         <View style={{ marginTop: space.sm, gap: 3 }}>
           {rec.recommend_reasons.map((reason, i) => (
-            <Text key={i} variant="caption" color={colors.text} style={{ opacity: 0.85 }}>
+            <Text key={i} variant="caption" color={t.text} style={{ opacity: 0.85 }}>
               • {reason}
             </Text>
           ))}
@@ -153,7 +157,7 @@ function RecommendationCard({
               style={styles.paperBtn}
               accessibilityLabel={`Open full paper for ${rec.title}`}
             >
-              <Icon name="external-link" size={13} color={colors.muted} />
+              <Icon name="external-link" size={13} color={t.muted} />
               <Text variant="caption">Full paper</Text>
             </Pressable>
           ) : null}
@@ -168,11 +172,11 @@ function RecommendationCard({
             accessibilityLabel={inProject ? `${rec.title} is in this project` : `Add ${rec.title} to project`}
           >
             {addPaper.isPending ? (
-              <ActivityIndicator size="small" color={colors.mintInk} />
+              <ActivityIndicator size="small" color={t.mintInk} />
             ) : (
               <Text
                 variant="caption"
-                color={inProject ? colors.mint : colors.mintInk}
+                color={inProject ? t.mint : t.mintInk}
                 style={inProject ? null : { fontFamily: fonts.bodySemiBold }}
               >
                 {added ? 'Added to reading list' : inProject ? 'In project' : '+ Add'}
@@ -181,7 +185,7 @@ function RecommendationCard({
           </Pressable>
         </View>
         {addPaper.isError ? (
-          <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
+          <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
             {(addPaper.error as Error).message}
           </Text>
         ) : null}
@@ -190,11 +194,11 @@ function RecommendationCard({
   );
 }
 
-const styles = StyleSheet.create({
-  card: { borderColor: colors.line2 },
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
+  card: { borderColor: t.line2 },
   scoreBadge: {
     borderWidth: 1,
-    borderColor: colors.amber,
+    borderColor: t.amber,
     borderRadius: radius.pill,
     paddingHorizontal: 10,
     paddingVertical: 4,
@@ -206,7 +210,7 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     paddingHorizontal: space.lg,
     flexDirection: 'row',
     gap: 6,
@@ -216,14 +220,14 @@ const styles = StyleSheet.create({
   addBtn: {
     height: 40,
     borderRadius: radius.pill,
-    backgroundColor: colors.mint,
+    backgroundColor: t.mint,
     paddingHorizontal: space.lg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   addBtnDone: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.mint,
+    borderColor: t.mint,
   },
 });

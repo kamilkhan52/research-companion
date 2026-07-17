@@ -33,7 +33,8 @@ import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space, stateMeta } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
 
 type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
 
@@ -62,6 +63,8 @@ function filterBucket(p: Paper): Exclude<StatusFilter, 'all'> {
 
 export default function LibraryScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const queryClient = useQueryClient();
   const { activePid, setActivePid, ready } = useActiveProject();
   const baseUrl = useBaseUrl();
@@ -206,7 +209,7 @@ export default function LibraryScreen() {
             onRefresh={() => {
               void Promise.all([stateQuery.refetch(), recentQuery.refetch()]);
             }}
-            tintColor={colors.mint}
+            tintColor={t.mint}
           />
         }>
         {continueSession ? (
@@ -255,7 +258,7 @@ export default function LibraryScreen() {
             action={<Button title="Retry" onPress={() => projectsQuery.refetch()} />}
           />
         ) : !activePid && projectsQuery.isLoading ? (
-          <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xxl }} />
+          <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
         ) : !activePid ? (
           <Empty
             heading="No project selected"
@@ -263,7 +266,7 @@ export default function LibraryScreen() {
             action={<Button title="Choose project" onPress={() => setSwitcherOpen(true)} />}
           />
         ) : stateQuery.isLoading ? (
-          <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xxl }} />
+          <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
         ) : stateQuery.isError ? (
           <Empty
             heading="Couldn't load papers"
@@ -313,12 +316,14 @@ function ProjectPill({
   subtitle?: string;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
       accessibilityLabel="Switch project"
       style={({ pressed }) => [styles.projectPill, pressed && { opacity: 0.85 }]}>
-      <Icon name="folder" size={18} color={colors.muted} />
+      <Icon name="folder" size={18} color={t.muted} />
       <View style={{ flex: 1, minWidth: 0, alignItems: 'center' }}>
         <Text variant="heading" numberOfLines={1}>
           {name}
@@ -329,18 +334,21 @@ function ProjectPill({
           </Text>
         ) : null}
       </View>
-      <Icon name="chevron-down" size={18} color={colors.muted} />
+      <Icon name="chevron-down" size={18} color={t.muted} />
     </Pressable>
   );
 }
 
 function ContinueCard({ session, onPress }: { session: RecentSession; onPress: () => void }) {
-  const meta = stateMeta[session.state ?? 'unread'] ?? stateMeta.unread;
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const sm = stateMetaFor(t);
+  const meta = sm[session.state ?? 'unread'] ?? sm.unread;
   const paperUrl = fullPaperUrl(session);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.continueWrap, pressed && { opacity: 0.85 }]}>
       <Card style={styles.continueCard}>
-        <Text variant="title" color={colors.mint}>
+        <Text variant="title" color={t.mint}>
           Continue reading
         </Text>
         <View style={styles.continueBody}>
@@ -387,8 +395,11 @@ function PaperRow({
   onPress: () => void;
   onRemove: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const stateKey = paperStateKey(paper);
-  const meta = stateMeta[stateKey] ?? stateMeta.unread;
+  const sm = stateMetaFor(t);
+  const meta = sm[stateKey] ?? sm.unread;
   const action =
     stateKey === 'committed' || stateKey === 'read'
       ? 'Open'
@@ -409,7 +420,7 @@ function PaperRow({
           style={styles.removeAction}
           accessibilityLabel={`Remove ${paper.title}`}>
           <View style={styles.removeActionInner}>
-            <Icon name="trash-2" size={19} color={colors.danger} />
+            <Icon name="trash-2" size={19} color={t.danger} />
           </View>
         </Pressable>
       )}>
@@ -423,7 +434,7 @@ function PaperRow({
             </Text>
             {paper.year ? (
               // The year anchors the paper on the corpus timeline at a glance (U.17).
-              <Text variant="caption" color={colors.muted}>
+              <Text variant="caption" color={t.muted}>
                 {'· '}{paper.year}
               </Text>
             ) : null}
@@ -444,10 +455,10 @@ function PaperRow({
               }}
             />
           ) : null}
-          <Text variant="label" color={colors.mint} style={{ fontFamily: fonts.bodySemiBold }}>
+          <Text variant="label" color={t.mint} style={{ fontFamily: fonts.bodySemiBold }}>
             {action}
           </Text>
-          <Icon name="chevron-right" size={16} color={colors.mint} />
+          <Icon name="chevron-right" size={16} color={t.mint} />
         </View>
       </Card>
     </Pressable>
@@ -456,12 +467,14 @@ function PaperRow({
 }
 
 function Empty({ heading, body, action }: { heading: string; body: string; action?: React.ReactNode }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.empty}>
       <Text variant="title" style={{ textAlign: 'center', marginBottom: space.sm }}>
         {heading}
       </Text>
-      <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
+      <Text variant="body" color={t.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
         {body}
       </Text>
       {action}
@@ -469,7 +482,7 @@ function Empty({ heading, body, action }: { heading: string; body: string; actio
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -478,14 +491,14 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
     paddingHorizontal: space.lg,
     paddingVertical: space.md,
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
   },
   list: { padding: space.lg, paddingTop: space.sm, paddingBottom: space.xxl },
   continueWrap: { marginBottom: space.md },
-  continueCard: { gap: space.md, borderColor: colors.line2 },
+  continueCard: { gap: space.md, borderColor: t.line2 },
   continueBody: { flexDirection: 'row', gap: space.lg },
   continueActions: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: space.sm, marginTop: space.xs },
   resumeBtn: { height: 42, paddingHorizontal: space.lg },
@@ -502,7 +515,7 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.danger,
+    borderColor: t.danger,
     backgroundColor: 'rgba(229, 115, 140, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
