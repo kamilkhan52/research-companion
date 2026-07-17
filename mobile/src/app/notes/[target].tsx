@@ -33,13 +33,16 @@ import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Icon, IconButton, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type Mode = 'view' | 'edit';
 
 export default function NotesScreen() {
   const router = useRouter();
   const qc = useQueryClient();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   // Also mounted as the Notes tab (no route param), which shows the project-level synthesis.
   const { target: targetParam } = useLocalSearchParams<{ target?: string }>();
   const target = targetParam ?? 'working';
@@ -166,7 +169,7 @@ export default function NotesScreen() {
       title: 'Open full paper',
       subtitle: paperUrl.includes('arxiv.org/pdf/') ? 'PDF' : 'Source page',
       icon: 'external-link',
-      accent: colors.mint,
+      accent: t.mint,
       onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
     });
   }
@@ -228,7 +231,7 @@ export default function NotesScreen() {
             autoFocus
             textAlignVertical="top"
             style={styles.editor}
-            selectionColor={colors.mint}
+            selectionColor={t.mint}
           />
           {saveError ? <ErrorCard text={saveError} onDismiss={() => setSaveError(null)} /> : null}
           <View style={styles.footerRow}>
@@ -248,15 +251,15 @@ export default function NotesScreen() {
             {showProposal ? (
               <Card style={styles.proposalCard}>
                 <View style={styles.proposalHead}>
-                  <Icon name="zap" size={14} color={colors.mint} />
-                  <Text variant="label" color={colors.mint}>
+                  <Icon name="zap" size={14} color={t.mint} />
+                  <Text variant="label" color={t.mint}>
                     AI revision
                   </Text>
                 </View>
                 <Text variant="serifItalic" style={{ marginTop: space.xs }}>
                   “{agent.job?.instruction}”
                 </Text>
-                <Text variant="caption" color={colors.violet} style={{ marginTop: space.xs }}>
+                <Text variant="caption" color={t.violet} style={{ marginTop: space.xs }}>
                   Review below — nothing is committed until you apply.
                 </Text>
               </Card>
@@ -268,7 +271,7 @@ export default function NotesScreen() {
               <Markdown text={markdown} />
             ) : (
               <View style={styles.empty}>
-                <Text variant="body" color={colors.muted} style={{ textAlign: 'center' }}>
+                <Text variant="body" color={t.muted} style={{ textAlign: 'center' }}>
                   No notes yet{target === 'working' ? ' — the working notes grow as you read.' : ' for this paper.'}
                 </Text>
               </View>
@@ -303,11 +306,11 @@ export default function NotesScreen() {
                 value={instruction}
                 onChangeText={setInstruction}
                 placeholder="Tell the analyst what to change…"
-                placeholderTextColor={colors.muted}
+                placeholderTextColor={t.muted}
                 multiline
                 autoFocus
                 style={styles.askInput}
-                selectionColor={colors.mint}
+                selectionColor={t.mint}
               />
               <View style={styles.footerRow}>
                 <Button
@@ -337,6 +340,9 @@ export default function NotesScreen() {
 /** Live progress of the server-side edit: tool calls as a compact trail, plus a character
  *  count of the revision streamed so far (the text itself is reviewed at the end). */
 function AgentProgress({ items }: { items: StreamItem[] }) {
+  // Palette named `theme` here: the tool-trail map callback below already uses `t`.
+  const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const tools = items.filter((it) => it.kind === 'tool') as Extract<StreamItem, { kind: 'tool' }>[];
   const chars = useMemo(
     () => items.reduce((n, it) => (it.kind === 'text' ? n + it.text.length : n), 0),
@@ -351,8 +357,8 @@ function AgentProgress({ items }: { items: StreamItem[] }) {
       />
       {tools.slice(-3).map((t, i) => (
         <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
-          <Icon name="tool" size={12} color={colors.mint} />
-          <Text variant="caption" color={colors.mint} numberOfLines={1} style={{ flex: 1 }}>
+          <Icon name="tool" size={12} color={theme.mint} />
+          <Text variant="caption" color={theme.mint} numberOfLines={1} style={{ flex: 1 }}>
             {t.name}
             {t.detail ? ` — ${t.detail}` : ''}
           </Text>
@@ -363,9 +369,11 @@ function AgentProgress({ items }: { items: StreamItem[] }) {
 }
 
 function ErrorCard({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Card style={styles.errorCard}>
-      <Text variant="body" color={colors.danger}>
+      <Text variant="body" color={t.danger}>
         {text}
       </Text>
       <Button title="Dismiss" variant="ghost" onPress={onDismiss} style={{ marginTop: space.sm }} />
@@ -374,12 +382,14 @@ function ErrorCard({ text, onDismiss }: { text: string; onDismiss: () => void })
 }
 
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
       {loading ? (
-        <ActivityIndicator color={colors.mint} />
+        <ActivityIndicator color={t.mint} />
       ) : (
-        <Text variant="body" color={colors.muted} style={{ textAlign: 'center' }}>
+        <Text variant="body" color={t.muted} style={{ textAlign: 'center' }}>
           {text}
         </Text>
       )}
@@ -387,7 +397,7 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   body: { padding: space.md, paddingBottom: space.xl, gap: space.md },
   empty: { paddingVertical: space.xxl, paddingHorizontal: space.lg },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.lg },
@@ -395,11 +405,11 @@ const styles = StyleSheet.create({
     flex: 1,
     margin: space.md,
     padding: space.md,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line2,
-    color: colors.text,
+    borderColor: t.line2,
+    color: t.text,
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
     fontSize: 13,
     lineHeight: 19,
@@ -418,17 +428,17 @@ const styles = StyleSheet.create({
     padding: space.md,
     minHeight: 64,
     maxHeight: 140,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line2,
-    color: colors.text,
+    borderColor: t.line2,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 14,
   },
-  proposalCard: { borderColor: colors.violet, borderWidth: 1 },
+  proposalCard: { borderColor: t.violet, borderWidth: 1 },
   proposalHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   progressCard: { marginTop: space.sm },
-  errorCard: { borderColor: colors.danger, borderWidth: 1, marginTop: space.sm },
+  errorCard: { borderColor: t.danger, borderWidth: 1, marginTop: space.sm },
   centeredText: { textAlign: 'center' },
 });

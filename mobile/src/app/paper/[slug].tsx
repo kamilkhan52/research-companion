@@ -74,7 +74,8 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles, useThemeMode } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 // The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
 // row of `flexDirection: 'row'`, so a plain width override on the child bubble can't stretch
@@ -412,6 +413,7 @@ function OverflowMenu({
   readingModeLabel: string;
   onPickReadingMode: () => void;
 }) {
+  const t = useTheme();
   const [open, setOpen] = useState(false);
 
   const options: SheetOption[] = [
@@ -419,14 +421,14 @@ function OverflowMenu({
       key: 'related',
       title: 'Related works',
       icon: 'layers',
-      accent: colors.mint,
+      accent: t.mint,
       onPress: onRelatedWorks,
     },
     {
       key: 'graph',
       title: 'Reference graph',
       icon: 'share-2',
-      accent: colors.mint,
+      accent: t.mint,
       onPress: onGraph,
     },
   ];
@@ -436,7 +438,7 @@ function OverflowMenu({
       title: 'Open full paper',
       subtitle: paperUrl.includes('arxiv.org/pdf/') ? 'PDF' : 'Source page',
       icon: 'external-link',
-      accent: colors.mint,
+      accent: t.mint,
       onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
     });
   }
@@ -446,7 +448,7 @@ function OverflowMenu({
       title: 'Finish reading',
       subtitle: 'Draft notes to commit for this paper',
       icon: 'check-square',
-      accent: colors.mint,
+      accent: t.mint,
       disabled: finishReadingDisabled,
       onPress: onFinishReading,
     });
@@ -457,12 +459,12 @@ function OverflowMenu({
       title: 'Continue discussion',
       subtitle: 'Reopen the composer — committed notes stay',
       icon: 'message-circle',
-      accent: colors.mint,
+      accent: t.mint,
       onPress: onContinue,
     });
   }
   if (hasNotes) {
-    options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: colors.mint, onPress: onViewNotes });
+    options.push({ key: 'notes', title: 'View notes', icon: 'file-text', accent: t.mint, onPress: onViewNotes });
   }
   // Session configuration (polish plan H.1: model + mode live here, not in the header).
   options.push({
@@ -636,6 +638,9 @@ function DiscussionThread({
   headerHeight: number;
   onMutated: () => void;
 }) {
+  const theme = useTheme();
+  const { themeName } = useThemeMode();
+  const styles = useThemedStyles(makeStyles);
   // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
   // being authored elsewhere, that reply stays recoverable when the discussion is reopened
   // instead of being relabeled as request-changes feedback.
@@ -1007,7 +1012,7 @@ function DiscussionThread({
           onPress={() => void stream.stop()}
           style={styles.sendBtn}
           accessibilityLabel="Stop generating">
-          <Icon name="square" size={15} color={colors.mintInk} />
+          <Icon name="square" size={15} color={theme.mintInk} />
         </Pressable>
       );
     }
@@ -1022,7 +1027,7 @@ function DiscussionThread({
         <Icon
           name={editing ? 'rotate-cw' : 'arrow-up'}
           size={18}
-          color={canSend ? colors.mintInk : colors.muted}
+          color={canSend ? theme.mintInk : theme.muted}
         />
       </Pressable>
     );
@@ -1047,7 +1052,7 @@ function DiscussionThread({
       return (
         <View style={styles.accessoryCol}>
           {actionError ? (
-            <Text variant="caption" color={colors.danger}>{actionError}</Text>
+            <Text variant="caption" color={theme.danger}>{actionError}</Text>
           ) : null}
           <View style={styles.accessoryRow}>
             {inputText.trim() ? (
@@ -1102,7 +1107,7 @@ function DiscussionThread({
     if (!stream.error) return null;
     return (
       <Card style={styles.errorCard}>
-        <Text variant="body" color={colors.danger}>{stream.error}</Text>
+        <Text variant="body" color={theme.danger}>{stream.error}</Text>
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
@@ -1125,16 +1130,16 @@ function DiscussionThread({
         onChangeText,
         editable: !disabled,
         placeholder,
-        placeholderTextColor: colors.muted,
+        placeholderTextColor: theme.muted,
         style: styles.composerInput,
       }}
-      colorScheme="dark"
+      colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
       keyboardAvoidingViewProps={{ keyboardVerticalOffset }}
       isScrollToBottomEnabled
       // The library's default is a bare "V" text glyph on a white circle — restyle it into
       // the app's circular icon-button idiom.
-      scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={colors.mint} />}
+      scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={theme.mint} />}
       scrollToBottomContentStyle={styles.scrollToBottomBtn}
       isDayAnimationEnabled={false}
       renderDay={() => null}
@@ -1207,6 +1212,8 @@ function ComposeFirst({
   sessionState: string | null;
   selectedModel: string | null;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const opening = useOpeningDraft(pid, slug);
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
@@ -1345,7 +1352,7 @@ function ComposeFirst({
         <Card style={styles.heroCard}>
           <Chip label="Unread paper" dot={false} />
           <Text variant="editorial">{title}</Text>
-          <Text variant="body" color={colors.muted}>
+          <Text variant="body" color={t.muted}>
             The analyst will fetch the paper and open with a comprehensive first read.
           </Text>
         </Card>
@@ -1370,7 +1377,7 @@ function ComposeFirst({
           </View>
         </View>
         {retrieveError ? (
-          <Text variant="body" color={colors.danger} style={{ marginTop: space.md }}>
+          <Text variant="body" color={t.danger} style={{ marginTop: space.md }}>
             {retrieveError}
           </Text>
         ) : null}
@@ -1394,7 +1401,7 @@ function ComposeFirst({
               multiline
               style={styles.promptInput}
               placeholder="Opening prompt…"
-              placeholderTextColor={colors.muted}
+              placeholderTextColor={t.muted}
             />
             {opening.data?.model ? (
               <Text variant="caption" style={{ marginTop: space.sm }}>
@@ -1414,7 +1421,7 @@ function ComposeFirst({
                 disabled={starting}
                 style={({ pressed }) => [styles.candidate, pressed && { opacity: 0.8 }]}>
                 <Text variant="body" numberOfLines={2}>{c.title}</Text>
-                <Text variant="caption" color={colors.muted}>arXiv:{c.arxiv_id}</Text>
+                <Text variant="caption" color={t.muted}>arXiv:{c.arxiv_id}</Text>
               </Pressable>
             ))}
           </Card>
@@ -1425,7 +1432,7 @@ function ComposeFirst({
         {retrieveError || candidates?.length || template === 'custom' ? (
         <View style={{ marginTop: space.lg }}>
           <Text variant="overline">Provide a source</Text>
-          <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
+          <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
             Paste a PDF link or an arXiv id if the paper can’t be found automatically.
           </Text>
           <TextInput
@@ -1433,7 +1440,7 @@ function ComposeFirst({
             onChangeText={setManualSource}
             style={styles.searchInput}
             placeholder="https://…/paper.pdf  or  2501.01005"
-            placeholderTextColor={colors.muted}
+            placeholderTextColor={t.muted}
             autoCapitalize="none"
             autoCorrect={false}
           />
@@ -1492,6 +1499,8 @@ function AssistantBody({
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const audio = useAudio();
   const { playing } = useIsPlaying();
 
@@ -1548,7 +1557,7 @@ function AssistantBody({
       {modelLabel ? (
         <Text
           variant="caption"
-          color={colors.muted}
+          color={t.muted}
           style={{ marginTop: space.xs }}
           accessibilityLabel={`Response generated by ${modelLabel}`}
         >
@@ -1557,7 +1566,7 @@ function AssistantBody({
       ) : null}
       {prep ? <GeneratingBar stage={prep.stage} done={prep.done} total={prep.total} onCancel={audio.cancelPrep} /> : null}
       {audioError ? (
-        <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+        <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
           Audio failed: {audioError}
         </Text>
       ) : null}
@@ -1573,9 +1582,9 @@ function AssistantBody({
             accessibilityLabel="Previous response branch"
             style={{ opacity: switchDisabled || entry.branch_active <= 1 ? 0.3 : 1 }}
           >
-            <Icon name="chevron-left" size={16} color={colors.muted} />
+            <Icon name="chevron-left" size={16} color={t.muted} />
           </Pressable>
-          <Text variant="caption" color={colors.muted} accessibilityLabel={`Response branch ${entry.branch_active} of ${entry.branch_count}`}>
+          <Text variant="caption" color={t.muted} accessibilityLabel={`Response branch ${entry.branch_active} of ${entry.branch_count}`}>
             {entry.branch_active}/{entry.branch_count}
           </Text>
           <Pressable
@@ -1586,7 +1595,7 @@ function AssistantBody({
             accessibilityLabel="Next response branch"
             style={{ opacity: switchDisabled || entry.branch_active >= entry.branch_count ? 0.3 : 1 }}
           >
-            <Icon name="chevron-right" size={16} color={colors.muted} />
+            <Icon name="chevron-right" size={16} color={t.muted} />
           </Pressable>
         </View>
       ) : null}
@@ -1642,7 +1651,9 @@ function MsgAction({
   busy?: boolean;
   accessibilityLabel: string;
 }) {
-  const tint = active ? colors.mint : colors.muted;
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const tint = active ? t.mint : t.muted;
   return (
     <Pressable
       onPress={onPress}
@@ -1651,7 +1662,7 @@ function MsgAction({
       style={({ pressed }) => [styles.msgAction, pressed && { opacity: 0.7 }]}
       accessibilityLabel={accessibilityLabel}>
       {busy ? (
-        <ActivityIndicator color={colors.mint} size="small" />
+        <ActivityIndicator color={t.mint} size="small" />
       ) : (
         <Icon name={icon} size={15} color={tint} />
       )}
@@ -1674,6 +1685,8 @@ function SmoothMarkdown({ text }: { text: string }) {
 // Before text or a tool arrives, the shared activity component makes the pending response
 // explicit without exposing internal model-state language.
 function StreamingTurnBody({ items }: { items: StreamItem[] }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const visibleItems = items.filter((item) => item.kind === 'tool' || item.text.trim().length > 0);
   if (visibleItems.length === 0) {
     return <AgentActivity status="Preparing a response…" testID="assistant-activity" />;
@@ -1686,7 +1699,7 @@ function StreamingTurnBody({ items }: { items: StreamItem[] }) {
         ) : it.kind === 'thought' ? (
           // Pre-tool commentary, demoted server-side at the segment boundary: keep it visible
           // while the agent works, styled as activity — it is not part of the answer.
-          <Text key={i} variant="caption" color={colors.muted} style={styles.thoughtLine}>
+          <Text key={i} variant="caption" color={t.muted} style={styles.thoughtLine}>
             {it.text}
           </Text>
         ) : (
@@ -1700,44 +1713,46 @@ function StreamingTurnBody({ items }: { items: StreamItem[] }) {
 }
 
 function Centered({ text, loading }: { text?: string; loading?: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
-      {loading ? <ActivityIndicator color={colors.mint} /> : <Text variant="body" color={colors.muted}>{text}</Text>}
+      {loading ? <ActivityIndicator color={t.mint} /> : <Text variant="body" color={t.muted}>{text}</Text>}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   composeFirst: { padding: space.md },
   promptTemplates: { gap: space.sm, marginTop: space.md },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     padding: space.md,
     gap: 2,
   },
   searchInput: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
   },
   promptInput: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     padding: space.md,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
     minHeight: 160,
@@ -1745,8 +1760,8 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   // ---- thread ----
-  messagesContainer: { backgroundColor: colors.bg },
-  assistantCard: { backgroundColor: colors.surface },
+  messagesContainer: { backgroundColor: t.bg },
+  assistantCard: { backgroundColor: t.surface },
   branchRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1759,23 +1774,23 @@ const styles = StyleSheet.create({
   // those read as "floating chat bubble" cues that don't make sense once the tinted card
   // reaches both screen edges. A top/bottom border is enough to separate turns.
   analystBubble: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
     // full-width band shows rounded notches against both screen edges.
     borderRadius: 0,
   },
   userBubble: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.lg,
     borderBottomRightRadius: 6,
   },
   userText: {
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15.5,
     lineHeight: 24,
@@ -1799,29 +1814,29 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.elevated,
+    borderColor: t.line,
+    backgroundColor: t.elevated,
   },
   thoughtLine: { fontStyle: 'italic', paddingLeft: space.sm },
-  errorCard: { borderColor: colors.danger, margin: space.md },
+  errorCard: { borderColor: t.danger, margin: space.md },
   // Overrides the library's white default circle (its content is our Icon; see
   // scrollToBottomComponent) into the app's circular icon-button idiom.
   scrollToBottomBtn: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     elevation: 0,
     shadowOpacity: 0,
   },
   // ---- toolbar ----
   toolbar: {
     borderTopWidth: 0,
-    backgroundColor: colors.bg,
+    backgroundColor: t.bg,
     paddingHorizontal: space.sm,
     paddingVertical: space.sm,
   },
   composerInput: {
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
     // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
@@ -1830,9 +1845,9 @@ const styles = StyleSheet.create({
     maxHeight: 120,
     // The pill composer from Figma 08a: the input itself carries the rounded elevated
     // surface, since the library's composer container isn't styleable from here.
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     // FIXED radius = half the single-line height: the resting state still reads as a pill,
     // but a grown multiline input keeps the same 23px corners instead of pill-rounding to
     // half its new height — which curved into the text area and visually clipped lines
@@ -1843,10 +1858,10 @@ const styles = StyleSheet.create({
   },
   committedBar: {
     borderTopWidth: 1,
-    borderTopColor: colors.line,
+    borderTopColor: t.line,
     padding: space.md,
     paddingBottom: space.lg,
-    backgroundColor: colors.bg,
+    backgroundColor: t.bg,
   },
   accessoryRow: {
     flexDirection: 'row',
@@ -1857,7 +1872,7 @@ const styles = StyleSheet.create({
   },
   accessoryCol: { gap: space.sm, paddingHorizontal: space.sm, paddingBottom: space.sm },
   sendBtn: {
-    backgroundColor: colors.mint,
+    backgroundColor: t.mint,
     borderRadius: radius.pill,
     width: 42,
     height: 42,
@@ -1866,7 +1881,7 @@ const styles = StyleSheet.create({
     marginHorizontal: space.sm,
     marginBottom: 4,
   },
-  sendBtnDisabled: { backgroundColor: colors.elevated },
+  sendBtnDisabled: { backgroundColor: t.elevated },
   // ---- compose-first (Start Reading) ----
   heroCard: { gap: space.md, alignItems: 'flex-start' },
   startFooter: {
@@ -1875,7 +1890,7 @@ const styles = StyleSheet.create({
     padding: space.lg,
     paddingTop: space.md,
     borderTopWidth: 1,
-    borderTopColor: colors.line,
-    backgroundColor: colors.bg,
+    borderTopColor: t.line,
+    backgroundColor: t.bg,
   },
 });

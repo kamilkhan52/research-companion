@@ -12,7 +12,8 @@ import { useAddPaper, useRelatedWorks } from '@/api/queries';
 import type { RelatedWork } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Card, Icon, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { fullPaperUrl } from '@/lib/paperLinks';
 
 export function RelatedWorksSheet({
@@ -28,6 +29,7 @@ export function RelatedWorksSheet({
   onClose: () => void;
   onOpenPaper: (slug: string) => void;
 }) {
+  const t = useTheme();
   const related = useRelatedWorks(pid, slug, visible); // fetch only once the menu opens
 
   return (
@@ -40,9 +42,9 @@ export function RelatedWorksSheet({
       </Text>
 
       {related.isLoading ? (
-        <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+        <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
       ) : !related.data?.length ? (
-        <Text variant="body" color={colors.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
+        <Text variant="body" color={t.muted} style={{ paddingVertical: space.xl, textAlign: 'center' }}>
           Nothing yet — build the reference graph to populate this menu.
         </Text>
       ) : (
@@ -70,6 +72,8 @@ function RelatedCard({
   work: RelatedWork;
   onOpenPaper: (slug: string) => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
   const inProject = work.kind === 'project' && !!work.slug;
@@ -107,7 +111,7 @@ function RelatedCard({
       </Text>
       {work.reason ? (
         <View style={{ marginTop: space.sm }}>
-          <Text variant="label" color={colors.violet}>
+          <Text variant="label" color={t.violet}>
             Why it matters here
           </Text>
           <Text variant="body" style={{ marginTop: 2, fontSize: 14.5, lineHeight: 21 }}>
@@ -123,7 +127,7 @@ function RelatedCard({
             style={[styles.actionBtn, styles.actionBtnPrimary]}
             accessibilityLabel={`Open ${work.title}`}
           >
-            <Text variant="caption" color={colors.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>
+            <Text variant="caption" color={t.mintInk} style={{ fontFamily: fonts.bodySemiBold }}>
               Open discussion
             </Text>
           </Pressable>
@@ -131,15 +135,15 @@ function RelatedCard({
           <Pressable
             onPress={handleAdd}
             disabled={added || addPaper.isPending}
-            style={[styles.actionBtn, added ? { borderColor: colors.mint } : styles.actionBtnPrimary]}
+            style={[styles.actionBtn, added ? { borderColor: t.mint } : styles.actionBtnPrimary]}
             accessibilityLabel={`Add ${work.title} to project`}
           >
             {addPaper.isPending ? (
-              <ActivityIndicator size="small" color={colors.mintInk} />
+              <ActivityIndicator size="small" color={t.mintInk} />
             ) : (
               <Text
                 variant="caption"
-                color={added ? colors.mint : colors.mintInk}
+                color={added ? t.mint : t.mintInk}
                 style={added ? null : { fontFamily: fonts.bodySemiBold }}
               >
                 {added ? 'Added' : 'Add to project'}
@@ -153,15 +157,15 @@ function RelatedCard({
             style={styles.actionBtn}
             accessibilityLabel={`Open full paper for ${work.title}`}
           >
-            <Icon name="external-link" size={12} color={colors.muted} />
-            <Text variant="caption" color={colors.muted}>
+            <Icon name="external-link" size={12} color={t.muted} />
+            <Text variant="caption" color={t.muted}>
               Open full paper
             </Text>
           </Pressable>
         ) : null}
       </View>
       {addPaper.isError ? (
-        <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
+        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
           {(addPaper.error as Error).message}
         </Text>
       ) : null}
@@ -169,8 +173,8 @@ function RelatedCard({
   );
 }
 
-const styles = StyleSheet.create({
-  card: { borderColor: colors.line2 },
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
+  card: { borderColor: t.line2 },
   actions: {
     flexDirection: 'row',
     gap: space.sm,
@@ -182,12 +186,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 6,
   },
   // Mint fill for the card's main CTA (frame 06); mintInk text is only legible on this fill.
-  actionBtnPrimary: { backgroundColor: colors.mint, borderColor: colors.mint },
+  actionBtnPrimary: { backgroundColor: t.mint, borderColor: t.mint },
 });

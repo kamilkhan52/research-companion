@@ -15,7 +15,8 @@ import { ApiError } from '@/api/client';
 import { useReview } from '@/api/queries';
 import { Markdown } from '@/components/Markdown';
 import { Button, Card, IconButton, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function NotesReviewSheet({
   visible,
@@ -30,6 +31,8 @@ export function NotesReviewSheet({
   onClose: () => void;
   onCommitted: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const review = useReview(pid, slug, visible);
   const data = review.data;
 
@@ -83,17 +86,17 @@ export function NotesReviewSheet({
           <IconButton
             name={editing ? 'check' : 'edit-2'}
             accessibilityLabel={editing ? 'Done editing' : 'Edit'}
-            color={colors.mint}
+            color={t.mint}
             onPress={() => setEditing((v) => !v)}
             disabled={!data}
           />
         </View>
 
         {review.isLoading ? (
-          <View style={styles.centered}><ActivityIndicator color={colors.mint} /></View>
+          <View style={styles.centered}><ActivityIndicator color={t.mint} /></View>
         ) : review.isError || !data ? (
           <View style={styles.centered}>
-            <Text variant="caption" color={colors.muted} style={{ textAlign: 'center' }}>
+            <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>
               Could not load the proposed notes.
             </Text>
             <Button title="Retry" variant="ghost" onPress={() => void review.refetch()} />
@@ -134,7 +137,7 @@ export function NotesReviewSheet({
               )}
 
               {error ? (
-                <Text variant="caption" color={colors.danger} style={{ marginTop: space.md }}>{error}</Text>
+                <Text variant="caption" color={t.danger} style={{ marginTop: space.md }}>{error}</Text>
               ) : null}
 
               <Button
@@ -154,7 +157,7 @@ export function NotesReviewSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -162,7 +165,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingBottom: space.sm,
     borderBottomWidth: 1,
-    borderBottomColor: colors.line,
+    borderBottomColor: t.line,
   },
   body: { padding: space.lg, gap: space.sm, paddingBottom: space.xxl },
   sectionLabel: { marginTop: space.md },
@@ -172,9 +175,9 @@ const styles = StyleSheet.create({
     padding: space.md,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.surface,
-    color: colors.text,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 14,
     lineHeight: 21,

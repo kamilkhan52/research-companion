@@ -3,7 +3,8 @@ import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react
 
 import type { PromptStatus } from '@/api/types';
 import { Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function PromptStatusPanel({
   prompts,
@@ -25,9 +26,11 @@ export function PromptStatusPanel({
   onSave?: (key: string, value: string) => Promise<unknown> | void;
   onReset?: (key: string) => Promise<unknown> | void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View>
-      <Text variant="caption" color={colors.muted}>
+      <Text variant="caption" color={t.muted}>
         {editable
           ? 'Tap a prompt to view its active text; edit it inline and Save to override, or Reset '
             + 'to the default. Managed prompts stay file-only. The Markdown files remain '
@@ -40,19 +43,19 @@ export function PromptStatusPanel({
         disabled={refreshing}
         onPress={onRefresh}
         style={({ pressed }) => [styles.refresh, pressed && styles.pressed]}>
-        <Text variant="heading" color={colors.mint}>
+        <Text variant="heading" color={t.mint}>
           {refreshing ? 'Refreshing…' : 'Refresh prompt status'}
         </Text>
       </Pressable>
 
-      {loading ? <ActivityIndicator testID="prompt-status-loading" color={colors.mint} /> : null}
+      {loading ? <ActivityIndicator testID="prompt-status-loading" color={t.mint} /> : null}
       {error ? (
-        <Text variant="caption" color={colors.danger}>
+        <Text variant="caption" color={t.danger}>
           Prompt status unavailable. Check the server connection and try again.
         </Text>
       ) : null}
       {!loading && !error && prompts?.length === 0 ? (
-        <Text variant="caption" color={colors.muted}>No prompts reported by the server.</Text>
+        <Text variant="caption" color={t.muted}>No prompts reported by the server.</Text>
       ) : null}
 
       {prompts?.map((prompt) => (
@@ -83,6 +86,8 @@ function PromptRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(prompt.value);
   const [busy, setBusy] = useState(false);
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   // The server can edit a prompt only when it isn't managed (managed ones are file-only).
   const canEdit = editable && !prompt.managed && !!onSave;
 
@@ -106,12 +111,12 @@ function PromptRow({
         <Text variant="heading" style={styles.label}>{prompt.label}</Text>
         <Text
           variant="caption"
-          color={prompt.valid ? colors.mint : colors.danger}
+          color={prompt.valid ? t.mint : t.danger}
           accessibilityLabel={`${prompt.label}: ${prompt.valid ? 'valid' : 'invalid'}`}>
           {prompt.valid ? 'VALID' : 'INVALID'}
         </Text>
       </Pressable>
-      <Text variant="caption" color={colors.muted}>
+      <Text variant="caption" color={t.muted}>
         Active source: {prompt.source.replace(/_/g, ' ')}
         {prompt.is_overridden ? ' · overridden' : ''}
       </Text>
@@ -119,11 +124,11 @@ function PromptRow({
         {prompt.path ?? `Bundled in server · ${prompt.relative_path}`}
       </Text>
       {prompt.error ? (
-        <Text variant="caption" color={colors.danger} style={styles.error}>
+        <Text variant="caption" color={t.danger} style={styles.error}>
           {prompt.error}
         </Text>
       ) : null}
-      <Text variant="caption" color={colors.muted} style={styles.hash}>
+      <Text variant="caption" color={t.muted} style={styles.hash}>
         SHA-256 {prompt.effective_hash.slice(0, 12)}
         {prompt.modified_at ? ` · modified ${prompt.modified_at}` : ''}
       </Text>
@@ -170,7 +175,7 @@ function PromptRow({
                 ) : null}
               </View>
             ) : editable && prompt.managed ? (
-              <Text variant="caption" color={colors.muted} style={styles.managedNote}>
+              <Text variant="caption" color={t.muted} style={styles.managedNote}>
                 Managed prompt — edit its Markdown file directly.
               </Text>
             ) : null}
@@ -192,6 +197,8 @@ function PanelButton({
   variant?: 'solid' | 'ghost';
   disabled?: boolean;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       accessibilityRole="button"
@@ -202,14 +209,14 @@ function PanelButton({
         variant === 'ghost' ? styles.btnGhost : styles.btnSolid,
         (pressed || disabled) && { opacity: 0.6 },
       ]}>
-      <Text variant="label" color={variant === 'ghost' ? colors.muted : colors.mintInk}>
+      <Text variant="label" color={variant === 'ghost' ? t.muted : t.mintInk}>
         {label}
       </Text>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   refresh: {
     minHeight: 44,
     alignItems: 'center',
@@ -217,13 +224,13 @@ const styles = StyleSheet.create({
     marginVertical: space.md,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.elevated,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
   },
   pressed: { opacity: 0.82 },
   row: {
     borderTopWidth: 1,
-    borderTopColor: colors.line,
+    borderTopColor: t.line,
     paddingTop: space.md,
     marginTop: space.md,
   },
@@ -237,7 +244,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 12.5,
     lineHeight: 18,
-    color: colors.text,
+    color: t.text,
   },
   editor: {
     marginTop: space.md,
@@ -245,9 +252,9 @@ const styles = StyleSheet.create({
     padding: space.sm,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.surface,
-    color: colors.text,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 12.5,
   },
@@ -259,7 +266,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: radius.sm,
   },
-  btnSolid: { backgroundColor: colors.mint },
-  btnGhost: { borderWidth: 1, borderColor: colors.line2 },
+  btnSolid: { backgroundColor: t.mint },
+  btnGhost: { borderWidth: 1, borderColor: t.line2 },
   managedNote: { marginTop: space.md },
 });
