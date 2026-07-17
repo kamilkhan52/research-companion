@@ -3,8 +3,8 @@ import { fireEvent, renderAsync, screen } from '@testing-library/react-native';
 
 import { Marquee } from '@/ui/Marquee';
 
-// R.3 — an overflowing title glides ONCE and rests at its tail (no looping); a fitting title
-// never animates.
+// R.3/R7.1 — an overflowing title glides ONCE (then resets to its head — no looping); a
+// fitting title never animates.
 
 const LONG = 'AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration';
 

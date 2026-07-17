@@ -92,14 +92,14 @@ context in `~/.claude/plans/parallel-discovering-raven.md`.
 | Item | Change | PR | Status |
 |------|--------|----|--------|
 | R.0 | Tidy leaked author-name spacing on the board (`Quoc V . Le` → `Quoc V. Le`) | [#109](https://github.com/kamilkhan52/research-companion/pull/109) | Complete — deployed |
-| R.9 | Composer placeholder `Ask about this paper…` → `Reply` | [#110](https://github.com/kamilkhan52/research-companion/pull/110) | Complete — awaits device pass |
-| R.3 | Marquee scrolls once then rests at the tail (was frozen); smaller TopBar title | [#111](https://github.com/kamilkhan52/research-companion/pull/111) | Complete — awaits device pass |
-| R.8 | Reusable ephemeral toast (`Added to library`, `Settings saved`); imperative bridge | [#112](https://github.com/kamilkhan52/research-companion/pull/112) | Complete — awaits device pass |
-| R.1 | Discover reframe: neutral copy (Explore/Results) + prompt reframe (drops new-project/foundational bias) | [#113](https://github.com/kamilkhan52/research-companion/pull/113) | Complete — awaits device pass |
-| R.7 | Continue-reading prefetch also warms the opening draft (no-spinner resume); session staleTime; settings-save invalidates cached opening drafts | [#114](https://github.com/kamilkhan52/research-companion/pull/114) | Complete — awaits device pass |
+| R.9 | Composer placeholder `Ask about this paper…` → `Reply` | [#110](https://github.com/kamilkhan52/research-companion/pull/110) | Device-verified 2026-07-17 |
+| R.3 | Marquee scrolls once then rests at the tail (was frozen); smaller TopBar title | [#111](https://github.com/kamilkhan52/research-companion/pull/111) | Device-verified 2026-07-17 |
+| R.8 | Reusable ephemeral toast (`Added to library`, `Settings saved`); imperative bridge | [#112](https://github.com/kamilkhan52/research-companion/pull/112) | Device-verified 2026-07-17 |
+| R.1 | Discover reframe: neutral copy (Explore/Results) + prompt reframe (drops new-project/foundational bias) | [#113](https://github.com/kamilkhan52/research-companion/pull/113) | Device-verified 2026-07-17 |
+| R.7 | Continue-reading prefetch also warms the opening draft (no-spinner resume); session staleTime; settings-save invalidates cached opening drafts | [#114](https://github.com/kamilkhan52/research-companion/pull/114) | Device-verified 2026-07-17 |
 | R.5 + R.6 | Force rebuild-from-scratch (dev-gated `RC_DEV`) threads `force` into OpenAlex enrichment so affiliations refresh; Labs empty-state copy | [#115](https://github.com/kamilkhan52/research-companion/pull/115) | Complete — awaits device pass (set `RC_DEV=1` on the backend to see the option) |
 | R.4 | Settings reorg (Connection→Models→Audio→Map→Agent→Usage→Developer); prompt content viewing + dev-gated (`RC_DEV`) in-app editing | [#116](https://github.com/kamilkhan52/research-companion/pull/116) | Complete — awaits device pass; web prompt-editing surface is a small follow-up (web currently reads only) |
-| R.11 | End-of-chat notes review: full-screen view + inline edit of the proposed notes & synthesis before commit (guarded by `proposal_revision`) | [#117](https://github.com/kamilkhan52/research-companion/pull/117) | Complete — awaits device pass |
+| R.11 | End-of-chat notes review: full-screen view + inline edit of the proposed notes & synthesis before commit (guarded by `proposal_revision`) | [#117](https://github.com/kamilkhan52/research-companion/pull/117) | Device-verified 2026-07-17 |
 | R.10 | Paper figures in chat — v1 design (`docs/chat-figures-design.md`); figures-first (arXiv HTML), SVG deferred | [#118](https://github.com/kamilkhan52/research-companion/pull/118) | Design ready — phased implementation after sign-off |
 | R.2 | Light/Dark/Dim theming — engineering design (`docs/theming-design.md`): token contract + ThemeProvider/useTheme + migration plan; palette hex via codex→Figma | [#119](https://github.com/kamilkhan52/research-companion/pull/119) | Design ready — Figma palettes + infra/migration PRs after sign-off |
 
@@ -112,14 +112,24 @@ narrated audio exactly (R6.8).
 
 | Item | Change | PR | Status |
 |------|--------|----|--------|
-| R6.2 | Build-stepper connector segments render in one layer behind the step dots (was painting over completed checkmarks on Android) | [#120](https://github.com/kamilkhan52/research-companion/pull/120) | Complete — awaits device pass |
-| R6.1 | Marquee measures intrinsic text width inside an explicit wide strip (Yoga at-most constraint made absolute text wrap at container width, so overflow was never detected and titles sat frozen) | [#121](https://github.com/kamilkhan52/research-companion/pull/121) | Complete — awaits device pass |
-| R6.7 | Cross-model retries record the generating model on the turn (`record_assistant(model=…)`, only when it differs from the settings default) and the bubble shows a subtle model badge | [#122](https://github.com/kamilkhan52/research-companion/pull/122) | Complete — awaits device pass |
-| R6.5 | Quiet job-done toasts: "Reference map ready" when a graph build settles; "Audio ready" when a manual audio prep that took >5s starts playing (listening mode stays silent — it auto-plays) | [#123](https://github.com/kamilkhan52/research-companion/pull/123) | Complete — awaits device pass |
-| R6.3 | Significant view keeps both endpoints of significant edges (the citing project papers have cited-by 0, so the old node-only filter dropped every edge source — the "nodes but no edges" map; live 3D DRAM data goes 0 → 18 visible edges on page 1) | [#124](https://github.com/kamilkhan52/research-companion/pull/124) | Complete — awaits device pass |
-| R6.6 | Playback speed: 1×/1.25×/1.5×/1.75×/2× pill in the player header, persisted on device, applied live and re-applied per track | [#125](https://github.com/kamilkhan52/research-companion/pull/125) | Complete — awaits device pass |
-| R6.8 | Agentic chat fidelity: segment boundaries separate pre-tool commentary from the answer (bubble = recorded canonical = narration); commentary + tool calls persist as a collapsed, expandable trail on the finished message; empty final output falls back to the last segment's text | [#126](https://github.com/kamilkhan52/research-companion/pull/126) | Complete — awaits device pass |
-| R6.4 | Labs affiliations, provider-first then LLM: papers OpenAlex leaves without institution data get affiliations read off their own first page by the analysis model (`app/affiliations.py`, cached per node in the graph store, force-aware); board merges both caches with provider precedence | [#127](https://github.com/kamilkhan52/research-companion/pull/127) | Complete — awaits device pass (rebuild the map to populate) |
+| R6.2 | Build-stepper connector segments render in one layer behind the step dots (was painting over completed checkmarks on Android) | [#120](https://github.com/kamilkhan52/research-companion/pull/120) | Device-verified 2026-07-17 |
+| R6.1 | Marquee measures intrinsic text width inside an explicit wide strip (Yoga at-most constraint made absolute text wrap at container width, so overflow was never detected and titles sat frozen) | [#121](https://github.com/kamilkhan52/research-companion/pull/121) | Device-verified 2026-07-17 — behavior tuned further in R7.1 |
+| R6.7 | Cross-model retries record the generating model on the turn (`record_assistant(model=…)`, only when it differs from the settings default) and the bubble shows a subtle model badge | [#122](https://github.com/kamilkhan52/research-companion/pull/122) | Device-verified 2026-07-17 |
+| R6.5 | Quiet job-done toasts: "Reference map ready" when a graph build settles; "Audio ready" when a manual audio prep that took >5s starts playing (listening mode stays silent — it auto-plays) | [#123](https://github.com/kamilkhan52/research-companion/pull/123) | Device-verified 2026-07-17 |
+| R6.3 | Significant view keeps both endpoints of significant edges (the citing project papers have cited-by 0, so the old node-only filter dropped every edge source — the "nodes but no edges" map; live 3D DRAM data goes 0 → 18 visible edges on page 1) | [#124](https://github.com/kamilkhan52/research-companion/pull/124) | Device-verified 2026-07-17 — skeleton-stage follow-up in R7.2 |
+| R6.6 | Playback speed: 1×/1.25×/1.5×/1.75×/2× pill in the player header, persisted on device, applied live and re-applied per track | [#125](https://github.com/kamilkhan52/research-companion/pull/125) | Device-verified 2026-07-17 |
+| R6.8 | Agentic chat fidelity: segment boundaries separate pre-tool commentary from the answer (bubble = recorded canonical = narration); commentary + tool calls persist as a collapsed, expandable trail on the finished message; empty final output falls back to the last segment's text | [#126](https://github.com/kamilkhan52/research-companion/pull/126) | Device-verified 2026-07-17 |
+| R6.4 | Labs affiliations, provider-first then LLM: papers OpenAlex leaves without institution data get affiliations read off their own first page by the analysis model (`app/affiliations.py`, cached per node in the graph store, force-aware); board merges both caches with provider precedence | [#127](https://github.com/kamilkhan52/research-companion/pull/127) | Device-verified 2026-07-17 — lab-centric rethink queued (R7 next round) |
+
+## Round-7 fixes (2026-07-17 device pass on the themed build)
+
+Kamil's follow-up comments after verifying Round-6 + theming. Fix batch first (rows below);
+the larger asks (project settings, add-paper initial analysis, author profiles, lab-centric
+Labs, chat navigation, "Paradigm" icon) are queued as the next planned round.
+
+| Item | Change | PR | Status |
+|------|--------|----|--------|
+| R7.1 | Marquee glide 1.5× faster (24→36 px/s); after the single pass it holds at the tail, then resets to the start and stays — no loop | [#136](https://github.com/kamilkhan52/research-companion/pull/136) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 

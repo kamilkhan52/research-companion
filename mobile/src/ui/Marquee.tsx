@@ -1,16 +1,18 @@
 // A single-line text strip that scrolls ONCE when (and only when) its content is wider than
 // its container, so long titles are readable instead of truncated (U.6/U.21). Static text
-// stays static — no motion for content that fits. Overflowing text glides gently to its end
-// and rests there (tail visible), rather than looping, so the reader's focus returns to the
-// content below (R.3). Native-driver transforms only.
+// stays static — no motion for content that fits. Overflowing text glides to its end, holds
+// so the tail is readable, then resets to the start and stays — one pass, no loop (R.3/R7.1:
+// the head is the line's identity, so that's where it should rest). Native-driver transforms.
 
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 
-/** Pixels per second of glide — slow enough to read along. */
-const DEFAULT_SPEED = 24;
+/** Pixels per second of glide — brisk but still readable along the way. */
+const DEFAULT_SPEED = 36;
 /** Hold before the single glide starts, so the head is readable first. */
 const HOLD_MS = 1400;
+/** Hold at the tail before resetting, so the end of the line can actually be read. */
+const TAIL_HOLD_MS = 1200;
 /** Width of the measuring strip the text lays out inside. Yoga measures absolutely-positioned
  *  children with the PARENT's width as an at-most constraint, so text placed directly in the
  *  clipping container wraps (or clips) at the container width and reports that width — never
@@ -48,7 +50,7 @@ export function Marquee({
   useEffect(() => {
     offset.setValue(0);
     if (!overflows) return;
-    // Scroll once and rest at the tail — no loop, no return-to-start leg (R.3).
+    // Scroll once, hold at the tail, then snap back to the start and stay — no loop (R7.1).
     const glide = Animated.sequence([
       Animated.delay(HOLD_MS),
       Animated.timing(offset, {
@@ -57,8 +59,11 @@ export function Marquee({
         easing: Easing.linear,
         useNativeDriver: true,
       }),
+      Animated.delay(TAIL_HOLD_MS),
     ]);
-    glide.start();
+    glide.start(({ finished }) => {
+      if (finished) offset.setValue(0);
+    });
     return () => glide.stop();
   }, [overflows, distance, speed, offset, text]);
 
