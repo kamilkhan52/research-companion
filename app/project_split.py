@@ -20,6 +20,7 @@ human-confirmed action, so its two git commits are the same invariant-4 posture 
 """
 from __future__ import annotations
 
+import contextlib
 import re
 
 from . import config, graph_store, projects, sessions, store
@@ -173,50 +174,51 @@ def split_project(
         raise SplitError("Select at least one paper to split out.")
     keep = set(slugs)
 
-    # 1. Read everything with the source bound.
+    # Hold each selected paper's transcript mutation lock across BOTH the snapshot and the
+    # source removal, so a concurrent /approve or /branch_switch (synchronous routes the busy
+    # marker doesn't gate — only jobs go through start_or_join) can't commit newer state into
+    # a paper we then delete, which would strand that state and leave the copy stale. Sorted +
+    # ExitStack so ordering is deterministic (no lock-cycle deadlock).
     token = config.set_active_project(source_pid)
     try:
-        bundle = _gather_source(slugs)
-        departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+        with contextlib.ExitStack() as locks:
+            for slug in sorted(slugs):
+                locks.enter_context(sessions.mutation_lock(slug))
+            bundle = _gather_source(slugs)
+            departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+
+            # Scaffold the new project (takes a pid, not the contextvar) and populate it —
+            # inside the locks so the moved snapshot can't drift before the source removal.
+            meta = projects.create_project(name)
+            new_pid = meta["id"]
+            if goals:
+                projects.update_meta(new_pid, goals=goals.strip())
+            new_token = config.set_active_project(new_pid)
+            try:
+                _write_new_project(new_pid, bundle, keep, move=remove_from_source)
+            finally:
+                config.reset_active_project(new_token)
+            # Fresh scaffold — everything in it is split-owned, so `add -A` is safe here.
+            projects._git(new_pid, "add", "-A")
+            projects._git(new_pid, "commit", "-q", "-m",
+                          f"Split {len(slugs)} paper(s) from {source_pid}")
+
+            removed = False
+            if remove_from_source:
+                changed = _remove_from_source(source_pid, slugs)
+                projects._git(source_pid, "add", "--", *changed)
+                # A paper that existed only as an uncommitted reading-list add restores the
+                # file to HEAD when removed → nothing staged. Detect that from the staged diff
+                # (reliable) rather than parsing git's "nothing to commit" text, and skip the
+                # empty commit so a completed move still reports success.
+                staged = projects._git(source_pid, "diff", "--cached", "--name-only",
+                                       "--", *changed)
+                if staged.strip():
+                    projects._git(source_pid, "commit", "-q", "-m",
+                                  f"Split {len(slugs)} paper(s) to {name}", "--", *changed)
+                removed = True
     finally:
         config.reset_active_project(token)
-
-    # 2. Scaffold the new project (takes a pid, not the contextvar) and populate it.
-    meta = projects.create_project(name)
-    new_pid = meta["id"]
-    if goals:
-        projects.update_meta(new_pid, goals=goals.strip())
-    token = config.set_active_project(new_pid)
-    try:
-        _write_new_project(new_pid, bundle, keep, move=remove_from_source)
-    finally:
-        config.reset_active_project(token)
-    # The new project is a fresh scaffold — everything in it is split-owned, so `add -A` is
-    # safe here (unlike the source commit below).
-    projects._git(new_pid, "add", "-A")
-    projects._git(new_pid, "commit", "-q", "-m",
-                  f"Split {len(slugs)} paper(s) from {source_pid}")
-
-    # 3. Remove from source, if asked — one committed change, scoped to the split's own paths
-    #    (pathspec, like the removal endpoint) so an unrelated dirty file isn't swept in.
-    removed = False
-    if remove_from_source:
-        token = config.set_active_project(source_pid)
-        try:
-            changed = _remove_from_source(source_pid, slugs)
-        finally:
-            config.reset_active_project(token)
-        projects._git(source_pid, "add", "--", *changed)
-        try:
-            projects._git(source_pid, "commit", "-q", "-m",
-                          f"Split {len(slugs)} paper(s) to {name}", "--", *changed)
-        except projects.ProjectError as exc:
-            # A paper that existed only as an uncommitted reading-list add leaves nothing to
-            # commit once removed. The destructive move already succeeded, so treat the empty
-            # commit as done rather than failing a completed split.
-            if "nothing to commit" not in str(exc):
-                raise
-        removed = True
 
     return {
         "new_pid": new_pid,
