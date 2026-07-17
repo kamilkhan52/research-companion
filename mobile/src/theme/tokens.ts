@@ -158,12 +158,14 @@ export const space = {
 } as const;
 
 /** Map a paper/session state to an accent color + short label for chips.
- * Mint = active/approved progress, violet = synthesis, amber = in-flight retrieval. */
+ * The holistic rule (R7.4): mint = completed, amber = ongoing/in-flight, violet = the
+ * distinct notes-drafted stage, muted = not started — so a reading list separates finished
+ * from in-progress papers at a glance instead of showing one mint wash. */
 export function stateMetaFor(t: ThemePalette): Record<string, { label: string; color: string }> {
   return {
     unread: { label: 'Unread', color: t.muted },
     retrieving: { label: 'Retrieving', color: t.amber },
-    in_discussion: { label: 'Discussing', color: t.mint },
+    in_discussion: { label: 'Discussing', color: t.amber },
     notes_drafted: { label: 'Notes drafted', color: t.violet },
     committed: { label: 'Read', color: t.mint },
     read: { label: 'Read', color: t.mint },

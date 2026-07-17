@@ -406,6 +406,9 @@ function PaperRow({
       : stateKey === 'unread' || stateKey === 'retrieving'
         ? 'Read'
         : 'Resume';
+  // Completed/fresh rows keep the mint action; an in-progress "Resume" is amber, matching
+  // the state-chip rule (R7.4): green = done, yellow = ongoing.
+  const actionColor = action === 'Resume' ? t.amber : t.mint;
   const paperUrl = fullPaperUrl(paper);
   return (
     <ReanimatedSwipeable
@@ -455,10 +458,10 @@ function PaperRow({
               }}
             />
           ) : null}
-          <Text variant="label" color={t.mint} style={{ fontFamily: fonts.bodySemiBold }}>
+          <Text variant="label" color={actionColor} style={{ fontFamily: fonts.bodySemiBold }}>
             {action}
           </Text>
-          <Icon name="chevron-right" size={16} color={t.mint} />
+          <Icon name="chevron-right" size={16} color={actionColor} />
         </View>
       </Card>
     </Pressable>
