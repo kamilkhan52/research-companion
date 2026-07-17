@@ -28,10 +28,12 @@ HTML = """<html><body>
 </body></html>"""
 
 
-def fake_html(html=HTML, final=FINAL_URL):
+def fake_html(html=HTML, final=FINAL_URL, status=None):
     def fetch(base_id):
         fetch.calls.append(base_id)
-        return None if html is None else (final, html)
+        if status is not None:
+            return status, None, None
+        return ("none", None, None) if html is None else ("ok", final, html)
     fetch.calls = []
     return fetch
 
@@ -110,6 +112,15 @@ def test_failed_html_fetch_caches_none_with_cooldown(temp_project, monkeypatch):
     assert len(html.calls) == 1
     # After the cool-down it retries (papers can gain an HTML rendering later).
     monkeypatch.setattr(figures, "NONE_RETRY_S", 0.0)
+    figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
+    assert len(html.calls) == 2
+
+
+def test_transport_error_caches_nothing(temp_project):
+    slug = paper()
+    html = fake_html(status="error")
+    assert figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image()) is None
+    assert figures.read_manifest(slug) is None  # NOT a 7-day miss — retried next warm/build
     figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
     assert len(html.calls) == 2
 
@@ -199,3 +210,44 @@ def test_enrichment_pass_derives_each_identified_paper(temp_project):
 
     figures.derive_project_figures(store.list_papers(), force=True, derive=derive)
     assert seen == [("a", True), ("b", True)]
+
+
+def test_a_stalled_host_aborts_the_rest_of_the_pass(temp_project):
+    paper("a", title="Paper A", arxiv_id="2401.00001")
+    paper("b", title="Paper B", arxiv_id="2401.00002")
+    seen = []
+
+    def derive(slug, *, force=False):
+        seen.append(slug)
+        raise figures.StallError("read timeout")
+
+    figures.derive_project_figures(store.list_papers(), derive=derive)
+    assert seen == ["a"]  # the stall on the first paper is not repaid on the second
+
+
+def test_writes_refuse_a_deleting_project(temp_project):
+    """A worker that outlives its job (orphaned deadline worker, settling warm) must never
+    write into — and thereby recreate — a project being deleted."""
+    from app import config
+    slug = paper()
+    config.mark_project_deleting(temp_project)
+    try:
+        result = figures.derive_for_slug(slug, fetch_html=fake_html(),
+                                         fetch_image=fake_image())
+        assert result is None
+        assert figures.read_manifest(slug) is None
+    finally:
+        config.unmark_project_deleting(temp_project)
+
+
+def test_stalled_fetch_does_not_cache_a_miss(temp_project):
+    slug = paper()
+
+    def stalling(base_id):
+        raise figures.StallError("read timeout")
+
+    try:
+        figures.derive_for_slug(slug, fetch_html=stalling, fetch_image=fake_image())
+    except figures.StallError:
+        pass
+    assert figures.read_manifest(slug) is None

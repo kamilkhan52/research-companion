@@ -24,7 +24,7 @@ def _offline_citations(monkeypatch):
     # the pipeline runs for real; figure tests inject fetch fakes via derive_for_slug's
     # kwargs. warm_async is a fire-and-forget thread retrieval spawns — off entirely so no
     # write races a test's teardown.
-    monkeypatch.setattr(figures, "_fetch_html", lambda base_id: None)
+    monkeypatch.setattr(figures, "_fetch_html", lambda base_id: ("error", None, None))
     monkeypatch.setattr(figures, "_fetch_image", lambda url: None)
     monkeypatch.setattr(figures, "warm_async", lambda slug: None)
     # Same treatment for the LLM affiliation fallback (R6.4): builds never call an LLM in

@@ -29,6 +29,7 @@ import shutil
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -38,8 +39,16 @@ import httpx
 
 from . import config, logging_config, store
 from .fileio import atomic_write_bytes, atomic_write_text
+from .jobs import Job, JobRegistry, new_id
 
 log = logging_config.get("figures")
+
+
+class StallError(Exception):
+    """A host accepted the connection but timed out mid-fetch. Distinguished from a
+    definitive miss (404: cached with a cool-down) and from a fast transport error (nothing
+    cached): a stall must ABORT the enrichment pass — an unavailable host would otherwise
+    cost its timeout once per paper — and must never be cached as \"no HTML\"."""
 
 MAX_FIGURES = 20
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
@@ -99,9 +108,30 @@ def read_manifest(slug: str) -> dict | None:
         return None
 
 
-def _write_manifest(slug: str, manifest: dict) -> None:
+def _project_alive() -> bool:
+    """False once the active project is being deleted or its directory is gone. Workers here
+    can outlive their job (the warm job settles, a deadline worker is orphaned), and a write
+    after `delete_project`'s rename would RECREATE `projects/<pid>` as a partial store —
+    so every write site checks this, and _write_manifest re-checks after writing (a race
+    that slips past the first check is taken back out)."""
+    pid = config.active_project_id()
+    if pid and config.project_is_deleting(pid):
+        return False
+    try:
+        return config.project_dir().exists()
+    except Exception:  # noqa: BLE001 — no active project / resolution failure: don't write
+        return False
+
+
+def _write_manifest(slug: str, manifest: dict) -> bool:
+    if not _project_alive():
+        return False
     figures_dir().mkdir(parents=True, exist_ok=True)
     atomic_write_text(manifest_path(slug), json.dumps(manifest, indent=1))
+    if not _project_alive():
+        _drop(slug)
+        return False
+    return True
 
 
 def _drop(slug: str) -> None:
@@ -171,13 +201,16 @@ def _open_client() -> httpx.Client:
                         headers={"User-Agent": "research-companion-figures/1.0"})
 
 
-def _fetch_html(base_id: str) -> tuple[str, str] | None:
-    """(final_url, html_text) for the paper's HTML rendering, or None. Tries arXiv's native
-    HTML first (newer papers), then ar5iv (older corpus)."""
+def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
+    """("ok", final_url, html_text) for the paper's HTML rendering; ("none", None, None)
+    when the hosts definitively have none (cacheable miss); ("error", None, None) on fast
+    transport errors (nothing cached — retried next build). Raises StallError on a timeout.
+    Tries arXiv's native HTML first (newer papers), then ar5iv (older corpus)."""
     candidates = (
         f"https://arxiv.org/html/{base_id}",
         f"https://ar5iv.labs.arxiv.org/html/{base_id}",
     )
+    transport_error = False
     with _open_client() as client:
         for url in candidates:
             try:
@@ -196,14 +229,19 @@ def _fetch_html(base_id: str) -> tuple[str, str] | None:
                     ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
                     if ctype != "text/html":
                         break
-                    return url, resp.text
+                    return "ok", url, resp.text
+            except httpx.TimeoutException as e:
+                raise StallError(str(e)[:120]) from e
             except httpx.HTTPError as e:
+                transport_error = True
                 log.info("figure HTML fetch failed for %s: %s", base_id, str(e)[:120])
-    return None
+    return ("error" if transport_error else "none"), None, None
 
 
 def _fetch_image(url: str) -> tuple[bytes, str] | None:
-    """(bytes, extension) for one figure image, streamed under the size cap, or None."""
+    """(bytes, extension) for one figure image, streamed under the size cap. None drops just
+    that figure; a timeout raises StallError (abort the paper — a dead host must not cost
+    its timeout once per figure, and a partial figure set must not be cached as done)."""
     with _open_client() as client:
         try:
             for _ in range(MAX_REDIRECTS):
@@ -228,6 +266,8 @@ def _fetch_image(url: str) -> tuple[bytes, str] | None:
                         if len(buf) > MAX_IMAGE_BYTES:
                             return None
                     return bytes(buf), ext
+        except httpx.TimeoutException as e:
+            raise StallError(str(e)[:120]) from e
         except httpx.HTTPError as e:
             log.info("figure image fetch failed: %s", str(e)[:120])
     return None
@@ -348,14 +388,15 @@ def derive_for_slug(slug: str, *, force: bool = False,
     fetch_html = fetch_html or _fetch_html
     fetch_image = fetch_image or _fetch_image
 
-    fetched = fetch_html(base)
-    if fetched is None:
+    status, final_url, html_text = fetch_html(base)
+    if status == "error":
+        # Fast transport failure — nothing cached, retried on the next warm/build.
+        return existing
+    if status != "ok":
         manifest = {"version": 1, "arxiv_id": base, "source": None, "status": "none",
                     "fetched_at": _now_iso(), "fetched_ts": time.time(), "figures": []}
-        _write_manifest(slug, manifest)
-        return manifest
+        return manifest if _write_manifest(slug, manifest) else existing
 
-    final_url, html_text = fetched
     parsed = parse_figures(html_text)
     # Rebuild the asset dir from scratch so a re-derivation never leaves stale images behind.
     shutil.rmtree(asset_dir(slug), ignore_errors=True)
@@ -367,12 +408,14 @@ def derive_for_slug(slug: str, *, force: bool = False,
             continue
         if urlparse(src).path.lower().endswith(".svg"):
             continue
-        image = fetch_image(src)
+        image = fetch_image(src)  # StallError propagates: no partial manifest is cached
         if image is None:
             continue
         payload, ext = image
         stem = _SAFE_ASSET_CHARS.sub("-", fig["id"]) or "fig"
         asset = f"{index + 1:02d}-{stem}{ext}"
+        if not _project_alive():
+            return existing  # racing a deletion — stop, write nothing more
         target = asset_dir(slug) / asset
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(target, payload)
@@ -388,29 +431,41 @@ def derive_for_slug(slug: str, *, force: bool = False,
         })
     manifest = {"version": 1, "arxiv_id": base, "source": final_url, "status": "done",
                 "fetched_at": _now_iso(), "fetched_ts": time.time(), "figures": entries}
-    _write_manifest(slug, manifest)
+    if not _write_manifest(slug, manifest):
+        return existing
     log.info("figure manifest for %s: %d figures from %s", slug, len(entries), final_url)
     return manifest
 
 
+@dataclass
+class WarmJob(Job):
+    slug: str = ""
+
+
+# A real registry (not a bare thread) so the warm participates in project lifecycle
+# accounting: jobs.any_running_for_project sees it (delete_project refuses while it runs),
+# and start_or_join's admission check refuses to start one for a deleting/splitting project.
+_warm_registry: JobRegistry[WarmJob] = JobRegistry("figure-warm", max_finished=5)
+
+
 def warm_async(slug: str) -> None:
-    """Fire-and-forget cache warm, called on the retrieval job thread right after the paper's
+    """Background cache warm, called on the retrieval job thread right after the paper's
     text persists — so figures are usually ready before the first turn ever mentions one.
-    Runs on its own daemon thread so it never delays the retrieval job's `done` (or the
-    chained auto-analysis); the graph build's enrichment pass backfills anything this misses.
-    The thread rebinds the project contextvar (invariant 2)."""
-    pid = config.active_project_id()
-
-    def _do() -> None:
-        token = config.set_active_project(pid)
+    Runs as its own registered job so it never delays the retrieval job's `done` (or the
+    chained auto-analysis) while staying visible to deletion accounting. Best-effort: any
+    failure is captured on the (unpolled) job; the graph build's enrichment backfills."""
+    def work(job: WarmJob) -> None:
         try:
-            derive_for_slug(slug)
-        except Exception as e:  # noqa: BLE001 — cache warm only, never surfaces
-            log.info("figure warm failed for %s: %s", slug, str(e)[:120])
-        finally:
-            config.reset_active_project(token)
+            derive_for_slug(job.slug)
+        except StallError as e:
+            log.info("figure warm stalled for %s: %s", job.slug, str(e)[:120])
 
-    threading.Thread(target=_do, daemon=True, name="figures-warm").start()
+    try:
+        _warm_registry.start_or_join(
+            f"warm:{slug}", lambda: WarmJob(id=new_id(), slug=slug), work)
+    except RuntimeError as e:
+        # Project is being deleted/split — no warm for it.
+        log.info("figure warm skipped for %s: %s", slug, str(e)[:120])
 
 
 # --- graph-build enrichment pass -------------------------------------------------------------
@@ -428,14 +483,19 @@ def _orphan_alive() -> bool:
 
 
 def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
-    """True when the worker timed out (caller aborts the pass). In-thread failures are a
-    retryable miss, never an exception on the build thread."""
+    """True when the worker timed out OR the host stalled mid-fetch (caller aborts the
+    pass either way — an unavailable host must not cost its timeout once per paper).
+    Other in-thread failures are a retryable miss, never an exception on the build thread."""
     pid = config.active_project_id()
+    result: dict = {}
 
     def _do() -> None:
         token = config.set_active_project(pid)
         try:
             derive(slug, force=force)
+        except StallError as e:
+            result["stalled"] = True
+            log.info("figure fetch stalled for %s: %s", slug, str(e)[:120])
         except Exception as e:  # noqa: BLE001
             log.info("figure derivation errored for %s: %s", slug, str(e)[:120])
         finally:
@@ -449,7 +509,7 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
             _orphans.append(worker)
         log.info("figure derivation timed out for %s", slug)
         return True
-    return False
+    return bool(result.get("stalled"))
 
 
 def derive_project_figures(papers, *, force: bool = False, derive=None) -> None:
