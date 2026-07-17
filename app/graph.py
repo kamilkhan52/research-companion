@@ -82,6 +82,16 @@ REASONING_EFFORT = "low"
 # block the pipeline. max_workers > 1 so one stuck paper's orphaned thread doesn't also block
 # submitting the NEXT paper's request while it's still occupying a worker slot.
 EXTRACTION_HARD_DEADLINE = 480  # seconds; generous — real successful calls have taken minutes
+
+
+def extraction_concurrency() -> int:
+    """How many papers extract at once during a build (R7.11). Bounded 1–8; the deadline
+    executor above has 8 workers, so at 8 every fan worker can still get a deadline slot."""
+    try:
+        n = int(os.environ.get("RC_GRAPH_EXTRACT_CONCURRENCY", "4"))
+    except ValueError:
+        n = 4
+    return max(1, min(8, n))
 _EXTRACT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=8, thread_name_prefix="graph-extract")
 
@@ -1383,29 +1393,90 @@ def build_graph(papers: list[Paper], force: bool = False,
         if text:
             retrievable.append((paper, text))
 
+    # Split cached from to-run, then fan the LLM extractions out over a small worker pool
+    # (R7.11) — extraction dominates a fresh build's wall clock, each call is an independent
+    # network-bound request, and the provider handles a few concurrent requests fine. The
+    # concurrency discipline: workers run ONLY extract_fn (with the project contextvar
+    # explicitly rebound — pool threads don't inherit it, invariant 2); every store mutation,
+    # incremental save, and progress yield stays here on the generator thread, so graph_store
+    # needs no locking and the persist-per-paper resumability contract is unchanged.
     done = 0
+    to_run: list[tuple[Paper, str]] = []
     for p, full_text in retrievable:
         chash = graph_store.content_hash(full_text)
         cached = graph_store.get_paper_extraction(data, p.slug)
         needs_run = (force or not cached or cached.get("content_hash") != chash
                      or cached.get("status") == "error")
         if needs_run:
-            yield {"type": "extracting", "slug": p.slug, "title": p.title}
-            extraction = extract_fn(p.slug, p.title, full_text, model)
-            graph_store.set_paper_extraction(data, p.slug, extraction)
-            # Persist after EACH paper, not just once at the end: a project can have dozens
-            # of papers and each extraction is a real (paid) network call taking tens of
-            # seconds, so this is a genuinely long-running operation. Saving incrementally
-            # means an interrupted build (client disconnect, server restart, a killed
-            # request) keeps every paper completed so far — the next build only re-spends
-            # tokens on whatever's left, which is the whole point of "resumable".
-            graph_store.save(data)
-        else:
-            extraction = cached
+            to_run.append((p, full_text))
+            continue
         done += 1
         yield {"type": "progress", "done": done, "total": total, "ready": ready, "slug": p.slug,
-               "status": extraction.get("status"), "cached": not needs_run,
-               "error": extraction.get("error") or None}
+               "status": cached.get("status"), "cached": True,
+               "error": cached.get("error") or None}
+
+    if to_run:
+        pid = config.active_project_id()
+
+        def run_one(paper: Paper, text: str) -> dict:
+            token = config.set_active_project(pid)
+            try:
+                return extract_fn(paper.slug, paper.title, text, model)
+            finally:
+                config.reset_active_project(token)
+
+        workers = extraction_concurrency()
+        pending = list(to_run)
+        # No `with pool:` — its __exit__ is shutdown(wait=True), which on an interrupted
+        # build would block the generator's close() until every orphaned LLM call finished.
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="graph-extract-fan",
+        )
+        abandoned = False
+        in_flight: dict[concurrent.futures.Future, Paper] = {}
+        try:
+            while pending or in_flight:
+                # Sliding window: top the pool up, announcing each submission so the
+                # progress UI still names papers as they enter extraction.
+                while pending and len(in_flight) < workers:
+                    paper, text = pending.pop(0)
+                    yield {"type": "extracting", "slug": paper.slug, "title": paper.title}
+                    in_flight[pool.submit(run_one, paper, text)] = paper
+                ready_set, _ = concurrent.futures.wait(
+                    in_flight, return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in ready_set:
+                    paper = in_flight.pop(future)
+                    extraction = future.result()  # an extract_fn crash fails the build,
+                    # exactly as the serial loop did
+                    graph_store.set_paper_extraction(data, paper.slug, extraction)
+                    # Persist after EACH paper, not just once at the end: each extraction
+                    # is a real (paid) call taking tens of seconds, so an interrupted
+                    # build keeps every paper completed so far and the next build only
+                    # re-spends tokens on whatever's left ("resumable").
+                    graph_store.save(data)
+                    done += 1
+                    yield {"type": "progress", "done": done, "total": total,
+                           "ready": ready, "slug": paper.slug,
+                           "status": extraction.get("status"), "cached": False,
+                           "error": extraction.get("error") or None}
+        except BaseException:
+            # GeneratorExit (consumer stopped the build) or a crashed extraction. Completed-
+            # but-unconsumed futures are real paid results — persist them before abandoning;
+            # still-running calls are orphaned exactly like the serial loop's single
+            # in-flight call was (nothing waits on them).
+            abandoned = True
+            finished = [
+                (p, f.result()) for f, p in in_flight.items()
+                if f.done() and not f.cancelled() and f.exception() is None
+            ]
+            for paper, extraction in finished:
+                graph_store.set_paper_extraction(data, paper.slug, extraction)
+            if finished:
+                graph_store.save(data)
+            raise
+        finally:
+            pool.shutdown(wait=not abandoned, cancel_futures=abandoned)
 
     retrievable_slugs = {paper.slug for paper, _text in retrievable}
     extractions = {
