@@ -150,7 +150,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | Item | Change | Type | Status |
 |------|--------|------|--------|
 | R9.14 | Split/rename sheets avoid the keyboard (inputs hidden underneath) | bug | [#151](https://github.com/kamilkhan52/research-companion/pull/151) — keyboard-controller KAV in Split + Projects sheets |
-| R9.7 | Play button glyph centering | bug | Queued |
+| R9.7 | Play button glyph centering | bug | [#153](https://github.com/kamilkhan52/research-companion/pull/153) — optical nudge on the play triangle (both players) |
 | R9.6 | Cue playback: stop repeating "synthesizing", report only on progress, keep/allow background playback | bug/UX | Queued |
 | R9.9 | Strip bracketed numeric refs `[11]` from responses; always use our own paper linking | prompt | [#150](https://github.com/kamilkhan52/research-companion/pull/150) — merged; prompt-only ban (no parser strip) |
 | R9.5 | Preview cues: prior cues into context + verify the cue model sees the real generated response | audio | Queued |
