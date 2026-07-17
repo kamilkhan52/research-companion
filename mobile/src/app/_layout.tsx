@@ -12,14 +12,17 @@ import {
   Newsreader_600SemiBold,
 } from '@expo-google-fonts/newsreader';
 import { Feather } from '@expo/vector-icons';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { useFonts } from 'expo-font';
+// Theme APIs come from expo-router itself: as of SDK 56 the bundler rejects any direct
+// `@react-navigation/*` import in application code (expo-router vendors react-navigation).
 import {
   DarkTheme,
   DefaultTheme,
+  Stack,
   ThemeProvider as NavThemeProvider,
-} from '@react-navigation/native';
-import { QueryClientProvider } from '@tanstack/react-query';
-import { useFonts } from 'expo-font';
-import { Stack, usePathname } from 'expo-router';
+  usePathname,
+} from 'expo-router';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
