@@ -380,20 +380,13 @@ def start_retrieval_job(req: RetrievalJobReq):
     spawned chat job's id lands on the retrieval snapshot (`analysis_job_id`)."""
     hook = _first_analysis_hook(req) if req.auto_analyze else None
     try:
+        # start_retrieval owns the whole chain: worker-side on a fresh job, attach-on-join for
+        # a retrieval already running, and inline for the already-retrieved short-circuit.
         job = retrieval_jobs.start_retrieval(
             req.slug, req.arxiv_id, req.pdf_url, after_retrieved=hook,
         )
     except RetrievalError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    # Already-retrieved short-circuit: start_retrieval returns a terminal job without running
-    # its worker, so the chain must be kicked here (same thread, project already bound).
-    if hook and job.status == "done" and job.retrieved and not job.analysis_job_id:
-        try:
-            hook(job)
-        except HTTPException as e:
-            retrieval_jobs.set_analysis_error(job, str(e.detail))
-        except Exception as e:  # noqa: BLE001 — best-effort, like the worker-side chain
-            retrieval_jobs.set_analysis_error(job, str(e))
     return {"job": retrieval_jobs.snapshot(job.id)}
 
 

@@ -237,3 +237,17 @@ def test_after_retrieved_hook_skipped_on_confirmation(temp_project):
     )
     snap = _settled(job.id)
     assert snap["phase"] == "confirmation" and kicked == []
+
+
+def test_hook_runs_inline_for_an_already_retrieved_paper(temp_project):
+    """The already-retrieved short-circuit returns a terminal job with no worker; the chain
+    must still kick, on the caller's thread."""
+    add_paper(temp_project, "p1", "Paper One")  # corpus present -> retrieved
+    kicked: list[str] = []
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        after_retrieved=lambda j: kicked.append(j.slug),
+    )
+    assert job.status == "done" and job.retrieved is True
+    assert kicked == ["p1"]

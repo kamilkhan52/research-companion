@@ -69,13 +69,20 @@ def start_retrieval(
         raise RetrievalError("Unknown paper")
 
     if paper.retrieved and not arxiv_id and not pdf_url:
-        return _registry.put(
+        job = _registry.put(
             slug,
             RetrievalJob(
                 id=new_id(), slug=slug, status="done", phase="done", retrieved=True,
                 finished_at=now_iso(),
             ),
         )
+        # Terminal short-circuit never runs a worker, so the analysis chain (if requested)
+        # kicks here on the caller's thread — the project is already bound to it.
+        if after_retrieved is not None:
+            with _registry.lock:
+                job._analysis_claimed = True
+            _call_analysis_hook(job, after_retrieved)
+        return job
 
     def work(job: RetrievalJob) -> None:
         first_error: str | None = None
@@ -119,20 +126,55 @@ def start_retrieval(
 
     def work_then_analyze(job: RetrievalJob) -> None:
         work(job)
-        if after_retrieved is None or not job.retrieved:
-            return
-        try:
-            after_retrieved(job)
-        except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort;
-            # a failure here must never turn a successful retrieval into an error.
-            with _registry.lock:
-                job.analysis_error = str(exc)[:400]
+        _run_analysis_hook(job)
 
-    return _registry.start_or_join(
-        slug,
-        lambda: RetrievalJob(id=new_id(), slug=slug),
-        work_then_analyze if after_retrieved else work,
-    )
+    def make_job() -> RetrievalJob:
+        job = RetrievalJob(id=new_id(), slug=slug)
+        if after_retrieved is not None:
+            job._after_retrieved = after_retrieved  # read back under the registry lock
+        return job
+
+    job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    if after_retrieved is not None:
+        # Joined an existing job (ours would already carry the hook): attach the continuation
+        # so the running worker picks it up at completion. If that worker already finished,
+        # claim and run the hook here instead — this also covers the already-retrieved
+        # short-circuit below, whose terminal job never runs a worker.
+        run_here = False
+        with _registry.lock:
+            if getattr(job, "_after_retrieved", None) is None:
+                job._after_retrieved = after_retrieved
+            run_here = (
+                job.status != "running"
+                and job.retrieved
+                and not getattr(job, "_analysis_claimed", False)
+            )
+            if run_here:
+                job._analysis_claimed = True
+        if run_here:
+            _call_analysis_hook(job, after_retrieved)
+    return job
+
+
+def _run_analysis_hook(job: RetrievalJob) -> None:
+    """Worker-side end of the chain: claim and run the attached hook exactly once. The claim
+    flag (mutated only under the registry lock) keeps a caller that attached a hook to a
+    just-finished job from double-running it."""
+    with _registry.lock:
+        hook = getattr(job, "_after_retrieved", None)
+        eligible = hook is not None and job.retrieved and not getattr(job, "_analysis_claimed", False)
+        if eligible:
+            job._analysis_claimed = True
+    if eligible:
+        _call_analysis_hook(job, hook)
+
+
+def _call_analysis_hook(job: RetrievalJob, hook: Callable[[RetrievalJob], None]) -> None:
+    try:
+        hook(job)
+    except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
+        # here must never turn a successful retrieval into an error.
+        set_analysis_error(job, str(exc))
 
 
 async def _consume_hunt(

@@ -96,6 +96,7 @@ export const startRetrievalJob = (
   slug: string,
   opts: {
     arxiv_id?: string;
+    pdf_url?: string;
     auto_analyze?: boolean;
     mode?: ReadingMode;
     delivery_mode?: 'reading' | 'listening';
