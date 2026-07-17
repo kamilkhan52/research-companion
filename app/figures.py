@@ -143,13 +143,22 @@ def _drop(slug: str) -> None:
         pass
 
 
+def _current_id(slug: str) -> str:
+    """The paper's arXiv id, CORPUS-first: the corpus meta records the exact (versioned) id
+    retrieval fetched — the text the discussion actually reads — while the reading-list
+    entry deliberately never updates on a same-paper version advance. Falls back to the
+    entry id for papers whose corpus predates id stamping."""
+    return store.corpus_arxiv_id_for(slug) or store.arxiv_id_for(slug)
+
+
 def manifest_for(slug: str) -> dict | None:
     """The slug's manifest, but only when it matches the paper's CURRENT identity — a
-    just-corrected retrieval must never serve the previous paper's figures."""
+    just-corrected retrieval must never serve the previous paper's figures. (A version
+    advance keeps the same base: the old figures serve until the rebuild lands.)"""
     manifest = read_manifest(slug)
     if not manifest:
         return None
-    base = store.arxiv_base_id(store.arxiv_id_for(slug) or store.corpus_arxiv_id_for(slug))
+    base = store.arxiv_base_id(_current_id(slug))
     if not base or manifest.get("arxiv_id") != base:
         return None
     return manifest
@@ -210,7 +219,7 @@ def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
         f"https://arxiv.org/html/{base_id}",
         f"https://ar5iv.labs.arxiv.org/html/{base_id}",
     )
-    transport_error = False
+    transient = False
     with _open_client() as client:
         for url in candidates:
             try:
@@ -225,6 +234,11 @@ def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
                         url = urljoin(url, location)
                         continue
                     if resp.status_code != 200:
+                        # Only definitive absence (404/410) may become a cached miss —
+                        # a 429/5xx is an outage/rate limit that must not suppress
+                        # figures for the whole cool-down.
+                        if resp.status_code not in (404, 410):
+                            transient = True
                         break
                     ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
                     if ctype != "text/html":
@@ -233,9 +247,9 @@ def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
             except httpx.TimeoutException as e:
                 raise StallError(str(e)[:120]) from e
             except httpx.HTTPError as e:
-                transport_error = True
+                transient = True
                 log.info("figure HTML fetch failed for %s: %s", base_id, str(e)[:120])
-    return ("error" if transport_error else "none"), None, None
+    return ("error" if transient else "none"), None, None
 
 
 def _fetch_image(url: str) -> tuple[bytes, str] | None:
@@ -365,12 +379,29 @@ def _page_base(url: str) -> str:
     return url if last.endswith((".html", ".htm")) else url + "/"
 
 
+# One derivation per slug at a time: the retrieval warm and a graph build's enrichment can
+# overlap for the same paper, and interleaved asset rebuilds would corrupt each other.
+_slug_locks: dict[str, threading.Lock] = {}
+_slug_locks_guard = threading.Lock()
+
+
+def _slug_lock(slug: str) -> threading.Lock:
+    with _slug_locks_guard:
+        return _slug_locks.setdefault(slug, threading.Lock())
+
+
 def derive_for_slug(slug: str, *, force: bool = False,
                     fetch_html=None, fetch_image=None) -> dict | None:
     """Derive (or return the cached) figure manifest for one paper. Never raises past its own
     boundary in the job-facing wrappers below; callers on job threads may call it directly
-    and handle/ignore errors. Returns None when the paper has no arXiv identity."""
-    aid = store.arxiv_id_for(slug) or store.corpus_arxiv_id_for(slug)
+    and handle/ignore StallError. Returns None when the paper has no arXiv identity."""
+    with _slug_lock(slug):
+        return _derive_locked(slug, force=force, fetch_html=fetch_html,
+                              fetch_image=fetch_image)
+
+
+def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict | None:
+    aid = _current_id(slug)
     base = store.arxiv_base_id(aid)
     existing = read_manifest(slug)
     if not base:
@@ -380,7 +411,10 @@ def derive_for_slug(slug: str, *, force: bool = False,
     if existing is not None and existing.get("arxiv_id") != base:
         _drop(slug)  # identity correction: the old paper's figures must not survive
         existing = None
-    if existing is not None and not force:
+    # `requested_id` records the exact id (version included) the manifest was derived for.
+    # A version advance (v1 → v2: revised figures) is a cache miss — but NOT a _drop: the
+    # old assets stay live until the replacement lands atomically below.
+    if existing is not None and not force and existing.get("requested_id") == aid:
         if existing.get("status") == "done":
             return existing
         if time.time() - float(existing.get("fetched_ts") or 0) < NONE_RETRY_S:
@@ -390,51 +424,63 @@ def derive_for_slug(slug: str, *, force: bool = False,
 
     status, final_url, html_text = fetch_html(base)
     if status == "error":
-        # Fast transport failure — nothing cached, retried on the next warm/build.
+        # Transient failure (transport error, 429/5xx) — nothing cached, retried later.
         return existing
     if status != "ok":
-        manifest = {"version": 1, "arxiv_id": base, "source": None, "status": "none",
-                    "fetched_at": _now_iso(), "fetched_ts": time.time(), "figures": []}
+        manifest = {"version": 1, "arxiv_id": base, "requested_id": aid, "source": None,
+                    "status": "none", "fetched_at": _now_iso(), "fetched_ts": time.time(),
+                    "figures": []}
         return manifest if _write_manifest(slug, manifest) else existing
 
     parsed = parse_figures(html_text)
-    # Rebuild the asset dir from scratch so a re-derivation never leaves stale images behind.
-    shutil.rmtree(asset_dir(slug), ignore_errors=True)
+    # Build into a staging dir and swap only on success: a stall mid-download must leave
+    # the previous assets (and the manifest pointing at them) fully intact.
+    staging = figures_dir() / f".{slug}.staging"
+    shutil.rmtree(staging, ignore_errors=True)
     entries: list[dict] = []
     base_url = _page_base(final_url)
-    for index, fig in enumerate(parsed[:MAX_FIGURES]):
-        src = urljoin(base_url, fig["src"])
-        if not _host_allowed(src):  # data: URIs and off-allowlist hosts drop here
-            continue
-        if urlparse(src).path.lower().endswith(".svg"):
-            continue
-        image = fetch_image(src)  # StallError propagates: no partial manifest is cached
-        if image is None:
-            continue
-        payload, ext = image
-        stem = _SAFE_ASSET_CHARS.sub("-", fig["id"]) or "fig"
-        asset = f"{index + 1:02d}-{stem}{ext}"
+    try:
+        for index, fig in enumerate(parsed[:MAX_FIGURES]):
+            src = urljoin(base_url, fig["src"])
+            if not _host_allowed(src):  # data: URIs and off-allowlist hosts drop here
+                continue
+            if urlparse(src).path.lower().endswith(".svg"):
+                continue
+            image = fetch_image(src)  # StallError propagates → staging discarded
+            if image is None:
+                continue
+            payload, ext = image
+            stem = _SAFE_ASSET_CHARS.sub("-", fig["id"]) or "fig"
+            asset = f"{index + 1:02d}-{stem}{ext}"
+            if not _project_alive():
+                return existing  # racing a deletion — stop, write nothing more
+            staging.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(staging / asset, payload)
+            entries.append({
+                "id": fig["id"] or f"fig-{index + 1}",
+                "number": _figure_number(fig),
+                "caption": fig["caption"],
+                "alt": fig["alt"],
+                "src": src,
+                "asset": asset,
+                "width": fig.get("width"),
+                "height": fig.get("height"),
+            })
         if not _project_alive():
-            return existing  # racing a deletion — stop, write nothing more
-        target = asset_dir(slug) / asset
-        target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_bytes(target, payload)
-        entries.append({
-            "id": fig["id"] or f"fig-{index + 1}",
-            "number": _figure_number(fig),
-            "caption": fig["caption"],
-            "alt": fig["alt"],
-            "src": src,
-            "asset": asset,
-            "width": fig.get("width"),
-            "height": fig.get("height"),
-        })
-    manifest = {"version": 1, "arxiv_id": base, "source": final_url, "status": "done",
-                "fetched_at": _now_iso(), "fetched_ts": time.time(), "figures": entries}
-    if not _write_manifest(slug, manifest):
-        return existing
-    log.info("figure manifest for %s: %d figures from %s", slug, len(entries), final_url)
-    return manifest
+            return existing
+        shutil.rmtree(asset_dir(slug), ignore_errors=True)
+        if entries:
+            staging.rename(asset_dir(slug))
+        manifest = {"version": 1, "arxiv_id": base, "requested_id": aid,
+                    "source": final_url, "status": "done", "fetched_at": _now_iso(),
+                    "fetched_ts": time.time(), "figures": entries}
+        if not _write_manifest(slug, manifest):
+            shutil.rmtree(asset_dir(slug), ignore_errors=True)
+            return existing
+        log.info("figure manifest for %s: %d figures from %s", slug, len(entries), final_url)
+        return manifest
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 @dataclass

@@ -50,6 +50,9 @@ def paper(slug="deepstack", title="DeepStack", arxiv_id="2401.00001v2"):
     add_paper("test-project", slug, title)
     if arxiv_id:
         store.annotate_entry(slug, arxiv_id=arxiv_id, authoritative=True)
+        # Retrieval also stamps the corpus meta with the exact id it fetched — the
+        # version-bearing identity figures key on (corpus-first).
+        store.write_full_text(slug, title, "full text", {"slug": slug, "arxiv_id": arxiv_id})
     return slug
 
 
@@ -130,12 +133,47 @@ def test_identity_correction_drops_the_old_papers_figures(temp_project):
     figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
     old_assets = list(figures.asset_dir(slug).iterdir())
     assert old_assets
-    # Retrieval later confirms a DIFFERENT paper under the same slug.
+    # Retrieval later confirms a DIFFERENT paper under the same slug (a correction always
+    # re-persists the corpus, whose meta carries the corrected id).
     store.annotate_entry(slug, arxiv_id="2502.99999", authoritative=True)
+    store.write_full_text(slug, "DeepStack", "the other paper's text",
+                          {"slug": slug, "arxiv_id": "2502.99999"})
     assert figures.manifest_for(slug) is None  # stale manifest is withheld immediately
     manifest = figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
     assert manifest["arxiv_id"] == "2502.99999"
     assert figures.manifest_for(slug)["arxiv_id"] == "2502.99999"
+
+
+def test_version_advance_rebuilds_the_manifest(temp_project):
+    slug = paper(arxiv_id="2401.00001v1")
+    html = fake_html()
+    figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
+    # A re-retrieval fetches the revised v2 (same versionless base, new figures) — the
+    # corpus meta carries the new version even though the entry id never changes.
+    store.write_full_text(slug, "DeepStack", "revised text",
+                          {"slug": slug, "arxiv_id": "2401.00001v2"})
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
+    assert len(html.calls) == 2
+    assert manifest["requested_id"] == "2401.00001v2"
+    assert figures.manifest_for(slug) is not None  # same base — still serves
+
+
+def test_stall_mid_download_preserves_the_previous_assets(temp_project):
+    slug = paper()
+    figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
+    before = sorted(p.name for p in figures.asset_dir(slug).iterdir())
+
+    def stalling(url):
+        raise figures.StallError("read timeout")
+
+    try:
+        figures.derive_for_slug(slug, force=True, fetch_html=fake_html(),
+                                fetch_image=stalling)
+    except figures.StallError:
+        pass
+    # The old assets and the done manifest that points at them are fully intact.
+    assert sorted(p.name for p in figures.asset_dir(slug).iterdir()) == before
+    assert figures.manifest_for(slug)["status"] == "done"
 
 
 def test_unsafe_image_urls_are_dropped(temp_project):
