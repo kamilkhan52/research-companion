@@ -34,8 +34,11 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useGraphSettings } from '@/store/graphSettings';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
+import { THEME_MODES, useThemeMode } from '@/theme/ThemeProvider';
 import { Button, Card, Screen, Text } from '@/ui';
 import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useToast } from '@/ui/Toast';
+import type { ThemeMode } from '@/theme/tokens';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -67,6 +70,13 @@ export default function SettingsScreen() {
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
+  const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
+  const { toast } = useToast();
+  function handleThemeMode(mode: ThemeMode) {
+    if (mode === themeMode) return;
+    setThemeMode(mode);
+    toast(`Theme: ${THEME_MODES.find((m) => m.mode === mode)?.label ?? mode}`);
+  }
 
   // Sync local fields from the server exactly once, on first successful load — NOT on every
   // settings.data change. A background refetch (e.g. right after saveSettings invalidates the
@@ -254,6 +264,33 @@ export default function SettingsScreen() {
                     />
                   </>
                 ) : null}
+              </Section>
+
+              {/* Appearance (R.2) */}
+              <Section title="Appearance">
+                <Label
+                  text="Theme"
+                  hint="stored on this device"
+                />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                  {THEME_MODES.map(({ mode, label }) => (
+                    <Toggle
+                      key={mode}
+                      label={label}
+                      active={themeMode === mode}
+                      onPress={() => handleThemeMode(mode)}
+                    />
+                  ))}
+                </View>
+                <Text variant="caption" style={{ marginTop: space.xs }}>
+                  {themeMode === 'system'
+                    ? 'Follows your phone: dark uses Dim, light uses Light. Black stays opt-in.'
+                    : themeMode === 'black'
+                      ? 'True-black surfaces for OLED displays.'
+                      : themeMode === 'light'
+                        ? 'Warm paper for bright surroundings.'
+                        : 'The original Scholar dark.'}
+                </Text>
               </Section>
 
               {/* Map */}

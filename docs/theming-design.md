@@ -96,11 +96,13 @@ Web work itself stays out of scope here.
    `_layout.tsx` with a theme-derived style (explicit `'light'`/`'dark'`, not `auto`); wrap
    the navigator in React Navigation's `ThemeProvider` with a theme object built from the
    active tokens so screen/transition backgrounds match (the default dark `contentStyle`
-   otherwise flashes during pushes on Light); set the Android navigation-bar color
-   (`expo-navigation-bar`) in the same effect as the root-view background. **Splash**: add
-   the `splash.dark` variant in `app.json` so system-followers boot through a matching
-   splash for free; the residual caveat is only a *manual* override that disagrees with the
-   OS scheme (e.g. Light user on an OS-dark phone) — acceptable v1.
+   otherwise flashes during pushes on Light). Android navigation bar: on SDK 54's
+   edge-to-edge the bar is transparent and rides the root-view background painted by
+   `expo-system-ui` — the old `expo-navigation-bar` color APIs no longer exist, so no
+   separate call is needed. **Splash**: add the `splash.dark` variant in `app.json` so
+   system-followers boot through a matching splash for free; the residual caveat is only a
+   *manual* override that disagrees with the OS scheme (e.g. Light user on an OS-dark
+   phone) — acceptable v1.
 5. Add the **Settings override** (Appearance section: System / Dim / Black / Light) — fires the
    R.8 toast on change; the control itself must be theme-aware from the start.
 
