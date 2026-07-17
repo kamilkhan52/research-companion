@@ -128,11 +128,16 @@ def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
     # paths git already knows about may go into the commit's pathspec.
     tracked = set(projects._git(source_pid, "ls-files").splitlines())
     committed_paths = ["reading-list.md"]  # always tracked and modified
+    jsonl_by_slug = {s: sessions.transcript_paths(s)[0] for s in slugs}
     for slug in slugs:
         corpus = store.corpus_path(slug)
-        rel = str(corpus.relative_to(root))
-        if rel in tracked:
-            committed_paths.append(rel)
+        # Both the corpus file and an approved transcript (sessions/<slug>.jsonl) are
+        # git-tracked; a committed one's DELETION must ride in this commit's pathspec, or the
+        # source is left dirty and a later approval commits the deletion by accident.
+        for tracked_file in (corpus, jsonl_by_slug[slug]):
+            rel = str(tracked_file.relative_to(root))
+            if rel in tracked:
+                committed_paths.append(rel)
         store.remove_entry(slug)
         for p in (corpus, *sessions.transcript_paths(slug),
                   _cover_path(slug), graph_store._retrieved_text_file(slug)):

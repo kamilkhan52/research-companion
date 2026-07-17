@@ -72,6 +72,30 @@ def test_move_carries_work_and_removes_from_source(temp_project):
     assert "awq" not in src_data.get("papers", {})
 
 
+def test_move_leaves_source_repo_clean(temp_project):
+    """A committed corpus/transcript that the split deletes must be staged+committed, or the
+    source repo is left dirty and a later approval commits the deletion by accident."""
+    import subprocess
+
+    from app import projects
+
+    _seed_source(temp_project)
+    # Commit awq's corpus + transcript so their deletion is a tracked change.
+    projects._git(temp_project, "add", "-A")
+    projects._git(temp_project, "commit", "-q", "-m", "seed committed work")
+
+    project_split.split_project(temp_project, "Q", ["awq"], remove_from_source=True)
+
+    status = subprocess.run(["git", "status", "--porcelain"],
+                            cwd=str(projects.project_path(temp_project)),
+                            capture_output=True, text=True).stdout.splitlines()
+    # `.state/` is gitignored in real projects (create_project writes .gitignore); the bare
+    # test fixture has no gitignore, so filter those out — the point is that no COMMITTED
+    # record file (reading list, corpus, transcript) is left uncommitted.
+    dirty = [ln for ln in status if ".state/" not in ln]
+    assert dirty == [], f"source repo dirty after split: {dirty!r}"
+
+
 def test_copy_leaves_source_intact_and_does_not_migrate_sessions(temp_project):
     _seed_source(temp_project)
     # give the copied paper a session so we can prove it does NOT travel on copy
