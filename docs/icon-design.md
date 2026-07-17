@@ -1,72 +1,90 @@
-# Paradigm — app icon design (R7.10)
+# Paradigm — app icon design (R7.10, redo brief)
 
-The app is called **Paradigm**, after the concept Thomas Kuhn defined in *The Structure of
-Scientific Revolutions*: normal science proceeds inside a shared frame; anomalies accumulate;
-and then the frame itself shifts — the same facts reorganize into a new structure. That is
-the app's philosophy of reading: you work through a corpus *with* an interlocutor until your
-map of the field reorganizes. The inspiration stays implicit — the icon should carry the
-*feeling* of a frame-shift (structure, reorganization, the same elements seen anew), never a
-literal Kuhn reference, portrait, or book.
+The first pass (6 codex generations → a Fable×codex top-three → Figma vector comps on page
+"03 · App Icon — Paradigm") was useful groundwork but is being **redone** with Kamil in the
+generation loop and a firmer foundation: agreed app-icon best practices, and a sharper reading
+of the Paradigm philosophy, *before* we prompt codex. This document is that foundation.
 
-## Constraints
+## What "Paradigm" means (and how it should feel, not read)
 
-- Must read at launcher sizes (48–192 px), as an Android adaptive icon (safe center ~66%)
-  and an iOS rounded square. One strong silhouette; no fine text; no thin hairlines.
-- Palette family: the app's own — deep ink navy (#0B0D12 family) ground with mint (#34D399
-  family) as the living accent; violet/amber as possible secondary sparks. Must sit well on
-  both dark and light launchers.
-- Scholarly but modern: the app pairs serif reading text with a clean dark UI. The icon
-  should feel like an instrument, not a toy.
+The app is **Paradigm**, after Kuhn's *The Structure of Scientific Revolutions*: normal
+science proceeds inside a shared frame; anomalies accumulate; the frame itself then
+reorganizes — the same facts snap into a new structure. That is the app's theory of *reading*:
+you work through a corpus with an interlocutor until your map of a field reorganizes.
 
-## Concepts (for image generation)
+Design implications, in order of importance:
 
-1. **Gestalt mark** — one abstract shape deliberately readable two ways (the duck–rabbit's
-   spirit, abstracted): e.g. a bold negative-space form that reads as an open book from one
-   glance and a rising graph/lens from another. The double-reading IS the paradigm shift.
-2. **Prism** — a clean geometric prism: a single line of light enters, a fanned spectrum
-   leaves. One input, new structure; understanding as refraction. Strong, minimal, iconic.
-3. **Re-formed constellation** — a small constellation of nodes where two edge-sets overlap:
-   the same points connected two different ways (old frame in muted ink, new frame in mint).
-   Speaks directly to the app's reference graph.
-4. **Page-turn phase shift** — a page caught mid-turn forming two planes: the near plane in
-   ink, the turning plane catching mint light — reading as the mechanism of the shift.
-5. **Anomaly grid** — an ordered field of dots with ONE displaced dot in mint, the grid's
-   lines subtly warping toward it: the anomaly that reorganizes the field around itself.
-6. **Stepped ring (revolution)** — a nearly-complete circle that, at one point, steps
-   outward onto a larger radius — the cycle of normal science broken by a discontinuous
-   jump. Reads as both an orbit and a spiral staircase of frames.
+1. **Express the shift, not the book.** The icon should carry the *feeling* of a frame-shift —
+   structure, reorganization, "the same elements seen anew" — never a literal book, portrait,
+   telescope, or Kuhn reference. A generic "reading/library" icon would actively mislead.
+2. **One idea, cleanly.** A paradigm is a single organizing frame; the mark should be one
+   confident gesture, not a scene. This aligns with the #1 best practice below (single focal
+   point), so philosophy and craft point the same way.
+3. **Quietly intellectual, not sci-fi.** The app pairs serif reading text with a calm dark UI.
+   The icon is an instrument, not a toy or a neon gadget.
 
-## Process
+The honest tension to resolve in generation: the most *conceptually precise* marks (an anomaly
+reorganizing a field; a discontinuous jump) risk being illegible at 48px, while the most
+*legible* marks (a bold single glyph) risk being generic. The winning direction has to be both
+— a bold, simple silhouette that still earns its meaning.
 
-Per Kamil (2026-07-17): codex generates candidate images for these ideas → Fable + codex
-jointly pick the top three across all generations → the three are rebuilt as clean vector
-comps in Figma → Kamil picks the final. Generated drafts live outside the repo
-(`.app-state`/scratch); only the chosen vector direction lands in `mobile/` assets.
+## App-icon best practices we will hold codex to (2025/2026)
 
-## Selection (2026-07-17)
+Synthesized from current iOS/Android guidance (sources below):
 
-Codex (gpt-5.6) generated one image per concept. Concept 1's generation failed to produce a
-usable mark (vetoed by codex); concept 3 read as a generic network-app icon (dropped by
-Fable). Rankings — Fable: 2, 5, 6 · codex: 6, 2, 4. Joint top three (2 and 6 unanimous;
-5 chosen over 4 for the third seat because 4's weakness — "reads as a generic
-document/bookmark icon" — was codex's own criticism, while 5 is the most Kuhn-specific mark
-and its small-size risk is fixable in vector):
+- **Single focal point; ~0.5s to read.** One dominant element, no scene. It must be
+  recognizable at 60×60 and in a home-screen grid, not just at 1024².
+- **2–3 colors max.** Our palette: deep ink ground (#0B0D12 family) + mint (#34D399) as the
+  living accent; at most one secondary spark (violet #6A55E0 or amber). No busy gradients.
+- **Bold shapes, generous negative space.** Thin hairlines and fine detail vanish at small
+  sizes and get crushed by the platforms' 2025 effects (see next point).
+- **Design for the platform's own treatment — don't pre-bake it.** iOS applies its rounded
+  mask (and iOS 26 "Liquid Glass" depth/reflection) automatically — supply a **1024² square,
+  no transparency, no self-added corners/shadows/gloss**; if shapes aren't bold and clear the
+  glass effect flattens them. Android **adaptive icons** are two layers: an **opaque
+  background** (108dp) + a **foreground** (108dp) whose meaning must sit inside the **72dp
+  safe zone** (the system masks to circle/squircle/rounded-square and can crop the outer
+  ~33%). Also plan a **monochrome layer** — Android now tints icons from the wallpaper, and
+  without one the icon reads as dated.
+- **No text.** The wordmark is not the icon.
+- **Distinct in context.** It has to stand out on a crowded launcher next to other dark,
+  mint-ish, minimal icons — distinctiveness is a real constraint, not just taste.
 
-1. **Prism** (concept 2) — one input beam, refracted rays; mint + violet.
-2. **Anomaly grid** (concept 5) — muted 4×4 dot field, one displaced mint dot pulling its
-   neighbors; the anomaly reorganizing the field.
-3. **Stepped ring** (concept 6) — an orbit that steps outward onto a larger radius; the
-   revolution as a discontinuity.
+These become the non-negotiable clauses in every codex generation prompt (square 1024,
+opaque, single bold silhouette, ≤3 colors, meaning inside the center ~66%, no text).
 
-Vector comps of all three (512px + 64px launcher previews, ink #0B0D12 ground, mint #34D399)
-are built in Figma: **"Research Companion — UI Redesign Proposal" → page "03 · App Icon —
-Paradigm"**. Raw generations live in the session scratchpad (not committed).
+## The collaborative generation plan (Kamil in the loop)
+
+Kamil wants to be involved at the generation step — that is the real point of selection.
+
+1. **Align on 3–4 concept directions together** (from the philosophy above) before generating —
+   not 6 scattershot ideas. Likely starting candidates to react to: *stepped ring /
+   discontinuous orbit*, *refraction/prism*, *re-formed constellation (same nodes, new edges)*,
+   *figure-ground flip (one shape, two readings)*. Kamil edits this set.
+2. **Co-write the codex image prompts** for the agreed directions — each carrying the
+   best-practices clauses above verbatim, plus the specific concept and palette. Kamil reviews
+   the prompts before they run.
+3. **Generate** (codex → OpenAI Images), review together, iterate prompts as needed.
+4. **Select** the direction(s) worth vectorizing; rebuild as clean vector comps in Figma at
+   512² **and** 64px, on both a dark and a light launcher mock, with the Android safe-zone and
+   a monochrome variant checked.
+5. **Kamil picks the final**; then vector polish + asset integration (`mobile/assets/`,
+   adaptive `icon`/`foregroundImage`/`backgroundColor` + `monochromeImage` in `app.json`,
+   splash), shipped as its own PR (needs a dev build — native asset change).
 
 ## Status
 
-- [x] Concept reasoning (this doc)
-- [x] Codex image generations per concept (6, one failed)
-- [x] Top-three selection (Fable + codex)
-- [x] Figma comps of the three
-- [ ] Kamil's pick + final vector polish + asset integration (`mobile/assets/`, adaptive
-      icon, splash)
+- [x] First-pass concepts + generations + comps (superseded; kept on the Figma page for
+      reference)
+- [x] Best-practices research + philosophy brief (this doc)
+- [ ] **Align concept directions with Kamil** ← next, collaborative
+- [ ] Co-write + run codex generation prompts
+- [ ] Vector comps (dark+light, 512+64px, safe zone, monochrome)
+- [ ] Kamil's final pick → polish + `app.json`/asset integration (new dev build)
+
+## Sources
+
+- [App Icon Design Guide (SVG Genie)](https://www.svggenie.com/blog/app-icon-design-guide)
+- [iOS vs Android Icon Guidelines 2025 (IconDino)](https://appiconcreator.com/blog/ios-vs-android-icon-guide)
+- [App Icon Trends & Best Practices 2025 (ASOMobile)](https://asomobile.net/en/blog/app-icon-trends-and-best-practices-2025/)
+- [App Icon Guide 2026 (MobileAction)](https://www.mobileaction.co/guide/app-icon-guide/)
