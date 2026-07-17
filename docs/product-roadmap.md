@@ -142,6 +142,28 @@ Labs, chat navigation, "Paradigm" icon) are queued as the next planned round.
 | R8.1 | Project splitting design revised (U.24 → "Split"): move papers + work done (corpus/notes, transcripts, per-paper graph caches) to a new project; remove-from-source and source-notes wipe are user choices; jobs-sweep guard, batched commits, notes passes as proposals | [#146](https://github.com/kamilkhan52/research-companion/pull/146) | Doc revised — awaiting sign-off, then implementation |
 | R8.2 | Project split — phase 1 (deterministic): `POST /api/projects/{pid}/split` moves/copies selected papers + their work (reading-list block w/ dangling cites dropped, corpus+Notes, transcripts+branches, per-paper graph caches) into a new project; jobs-sweep guard + slug validation + batched commits both sides; Library long-press multi-select → Split sheet (name, goals, move/copy) | [#147](https://github.com/kamilkhan52/research-companion/pull/147) | Complete — AI working-notes passes (phases 2–3) follow |
 
+## Round-9 device-pass queue (2026-07-17) — see docs/round9-device-pass-queue.md
+
+Kamil's notes from using the shipped Round-7 + split build. Full detail in
+`docs/round9-device-pass-queue.md`; summary rows below (IDs R9.1–R9.15).
+
+| Item | Change | Type | Status |
+|------|--------|------|--------|
+| R9.14 | Split/rename sheets avoid the keyboard (inputs hidden underneath) | bug | Queued |
+| R9.7 | Play button glyph centering | bug | Queued |
+| R9.6 | Cue playback: stop repeating "synthesizing", report only on progress, keep/allow background playback | bug/UX | Queued |
+| R9.9 | Strip bracketed numeric refs `[11]` from responses; always use our own paper linking | prompt | Queued |
+| R9.5 | Preview cues: prior cues into context + verify the cue model sees the real generated response | audio | Queued |
+| R9.3 | Reply/composer redesign: button inside, full-width, remove stray separator line (Gemini ref) | Figma | Queued — needs Kamil's screenshots |
+| R9.8 | `+15/-15` skip buttons restyle to match the sentence control | Figma | Queued |
+| R9.10 | Playback speed control larger/more prominent | polish | Queued |
+| R9.11 | Continue Reading: drop paper status, show project name | polish | Queued |
+| R9.1 | Proper draggable bottom sheets (drag-to-resize/snap points) as standard | feature | Queued |
+| R9.12 | Paper sort options (name/pub date/date added/status), distinct from filters | feature | Queued |
+| R9.13 | Generalize Split → "Move" (new OR existing project) + Delete in multi-select menu | feature | Queued — extends R8.2 |
+| R9.2 | Select text → comment on spans → queue comments → attach quotes+comments to next response | feature | Queued — design doc first |
+| R9.4 | Default theme = System | confirmed | Already the default; no-op |
+
 ## Theming implementation (R.2, per docs/theming-design.md)
 
 | Item | Change | PR | Status |
