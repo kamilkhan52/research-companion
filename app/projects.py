@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from . import config, prompts, store
+from . import config, jobs, prompts, store
 from .fileio import atomic_write_text
 
 META = "project.json"
@@ -266,6 +266,15 @@ def delete_project(pid: str) -> None:
     dot), so trashed copies are invisible to every API path."""
     if not exists(pid):
         raise ProjectError(f"Unknown project: {pid}")
+    # A running worker resolves paths from this pid; moving the dir under it would make the
+    # worker's next write recreate projects/<pid> as a partial store, split from the trashed
+    # copy. Refuse instead — deletion is a rare, human-paced action.
+    busy = jobs.any_running_for_project(pid)
+    if busy:
+        raise ProjectError(
+            f"A background job ({busy}) is still running for this project — "
+            "wait for it to finish, then delete."
+        )
     trash = config.PROJECTS_ROOT / ".trash"
     trash.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")

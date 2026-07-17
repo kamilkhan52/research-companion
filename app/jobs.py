@@ -78,6 +78,25 @@ def _log_tag(pid: str | None) -> dict:
     return {"project": pid or "-"}
 
 
+# Every registry the process has created, so cross-cutting checks (project deletion refusing
+# to pull a directory out from under a running worker) can sweep all job kinds at once.
+_ALL_REGISTRIES: list[JobRegistry] = []
+
+
+def any_running_for_project(pid: str) -> str | None:
+    """The name of the first registry holding a RUNNING job for `pid`, else None.
+
+    Used by projects.delete_project: a live worker resolves paths from the project id, so
+    moving the directory mid-job would make the worker's next write silently recreate
+    `projects/<pid>` and split its output from the trashed copy."""
+    for reg in _ALL_REGISTRIES:
+        with reg.lock:
+            for job in reg.jobs.values():
+                if job.status == "running" and getattr(job, _PID_ATTR, None) == pid:
+                    return reg.name
+    return None
+
+
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
@@ -86,6 +105,7 @@ class JobRegistry(Generic[J]):
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
+        _ALL_REGISTRIES.append(self)
 
     @property
     def jobs(self) -> dict[str, J]:

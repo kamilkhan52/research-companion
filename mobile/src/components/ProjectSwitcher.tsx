@@ -34,7 +34,8 @@ export function ProjectSwitcher({
 }: {
   visible: boolean;
   activePid: string | null;
-  onSelect: (pid: string) => void;
+  /** null clears the selection (deleting the last project must not leave a dead pid live). */
+  onSelect: (pid: string | null) => void;
   onClose: () => void;
 }) {
   const t = useTheme();
@@ -219,7 +220,7 @@ function ProjectSettingsPanel({
   project: Project;
   projects: Project[];
   activePid: string | null;
-  onSelect: (pid: string) => void;
+  onSelect: (pid: string | null) => void;
   onBack: () => void;
   onDone: () => void;
 }) {
@@ -281,7 +282,7 @@ function ProjectSettingsPanel({
       showToast('Project deleted');
       if (project.id === activePid) {
         const next = projects.find((p) => p.id !== project.id);
-        if (next) onSelect(next.id);
+        onSelect(next?.id ?? null);
       }
       onDone();
     } catch (e) {
