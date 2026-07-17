@@ -9,7 +9,8 @@ import { StyleSheet, View } from 'react-native';
 
 import { IconButton as UIIconButton, Text, type IconName } from '@/ui';
 import { Marquee } from '@/ui/Marquee';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 export function TabHeader({
   title,
@@ -22,6 +23,8 @@ export function TabHeader({
    * `badge` overlays a small amber dot (e.g. "the graph is stale") on the icon. */
   actions?: { name: IconName; onPress: () => void; accessibilityLabel: string; badge?: boolean }[];
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.tabHeader}>
       <View style={{ flex: 1, minWidth: 0 }}>
@@ -41,7 +44,7 @@ export function TabHeader({
               <UIIconButton
                 name={a.name}
                 size={21}
-                color={colors.muted}
+                color={t.muted}
                 filled={false}
                 onPress={a.onPress}
                 accessibilityLabel={a.accessibilityLabel}
@@ -66,6 +69,7 @@ export function TopBar({
   right?: ReactNode;
   subtitle?: string;
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.bar}>
       <View style={styles.side}>
@@ -91,7 +95,7 @@ export function TopBar({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   tabHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -108,7 +112,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.amber,
+    backgroundColor: t.amber,
   },
   bar: {
     flexDirection: 'row',
@@ -117,11 +121,11 @@ const styles = StyleSheet.create({
     paddingBottom: space.md,
     paddingTop: space.xs,
     borderBottomWidth: 1,
-    borderBottomColor: colors.line,
+    borderBottomColor: t.line,
     gap: space.sm,
   },
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, minWidth: 0, alignItems: 'center' },
-  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 21, color: colors.mint },
+  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 21, color: t.mint },
 });

@@ -14,7 +14,8 @@ import { ScrollView } from 'react-native-gesture-handler';
 import { InlineMath, MathBlock } from '@/components/MathView';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, Text } from '@/ui';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
 // monospace member, so code falls back to the platform's own mono face.
@@ -289,13 +290,15 @@ const HEADING_STYLES: Record<number, object> = {
 };
 
 function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   switch (block.kind) {
     case 'heading':
       return (
         <Text
           style={[
             HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
-            { color: colors.text, marginTop: space.xs },
+            { color: t.text, marginTop: space.xs },
           ]}>
           <Inline text={block.text} onLinkPress={onLinkPress} serif={block.level < 4} />
         </Text>
@@ -323,7 +326,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
     case 'code':
       return (
         <View style={styles.code}>
-          <Text style={{ fontFamily: MONO, fontSize: 13, color: colors.text }}>{block.text}</Text>
+          <Text style={{ fontFamily: MONO, fontSize: 13, color: t.text }}>{block.text}</Text>
         </View>
       );
     case 'math':
@@ -339,7 +342,7 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
         <View style={{ gap: 4 }}>
           {block.items.map((item, idx) => (
             <View key={idx} style={styles.listItem}>
-              <Text variant="serifBody" color={colors.mint} style={{ width: markerWidth }}>
+              <Text variant="serifBody" color={t.mint} style={{ width: markerWidth }}>
                 {ordinals[idx]}
               </Text>
               <Text variant="serifBody" style={{ flex: 1 }}>
@@ -377,6 +380,7 @@ function MdTable({
   block: { header: string[]; rows: string[][] };
   onLinkPress: LinkHandler;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const nCols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
   const chars: number[] = [];
   for (let c = 0; c < nCols; c++) {
@@ -456,6 +460,8 @@ function Inline({
   onLinkPress: LinkHandler;
   serif?: boolean;
 }) {
+  // `theme`, not `t`: renderToken's token param below is named `t`, which would shadow it.
+  const theme = useTheme();
   const matcher = useContext(TitleMatcherContext);
   let tokens = tokenizeInline(text);
   if (matcher) tokens = linkifyTitles(tokens, matcher);
@@ -464,7 +470,7 @@ function Inline({
           {t.type === 'math' ? (
             <InlineMath tex={t.text} />
           ) : t.type === 'code' ? (
-            <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: colors.mint }}>{t.text}</RNText>
+            <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: theme.mint }}>{t.text}</RNText>
           ) : t.type === 'link' ? (
             t.href?.startsWith('rc-paper:') ? (
               // A project paper — a *relationship* (design system: violet), rendered as a
@@ -473,10 +479,10 @@ function Inline({
               <RNText
                 onPress={() => onLinkPress(t.href ?? '', t.text)}
                 style={{
-                  color: colors.violet,
+                  color: theme.violet,
                   fontFamily: serif ? fonts.serifSemiBold : fonts.bodySemiBold,
                 }}>
-                <Icon name="book-open" size={serif ? 13 : 12} color={colors.violet} />
+                <Icon name="book-open" size={serif ? 13 : 12} color={theme.violet} />
                 {/* U+202F narrow no-break space: the previous U+2009 thin space is a
                     legal break point (UAX #14), so long lines wrapped BETWEEN the glyph
                     and the title, stranding the icon at the end of the prior line. */}
@@ -485,7 +491,7 @@ function Inline({
               </RNText>
             ) : (
               <RNText
-                style={{ color: colors.mint, textDecorationLine: 'underline' }}
+                style={{ color: theme.mint, textDecorationLine: 'underline' }}
                 onPress={() => onLinkPress(t.href ?? '', t.text)}>
                 {t.text}
               </RNText>
@@ -588,37 +594,37 @@ function tokenizeInline(rawInput: string): InlineToken[] {
   return tokens.length ? tokens : [{ type: 'text', text: input }];
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   rule: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.line,
+    backgroundColor: t.line,
     marginVertical: space.xs,
   },
   quote: {
     borderLeftWidth: 3,
-    borderLeftColor: colors.violet,
+    borderLeftColor: t.violet,
     paddingLeft: space.md,
     paddingVertical: 2,
     gap: space.sm,
   },
   code: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     borderRadius: 10,
     padding: space.md,
   },
   listItem: { flexDirection: 'row', gap: 4, alignItems: 'flex-start' },
   tableWrap: {
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     borderRadius: 10,
   },
   tableRow: {
     flexDirection: 'row',
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.line,
+    borderTopColor: t.line,
   },
-  tableHead: { borderTopWidth: 0, backgroundColor: colors.elevated },
+  tableHead: { borderTopWidth: 0, backgroundColor: t.elevated },
   tableCell: { paddingVertical: 6, paddingHorizontal: 10 },
 });

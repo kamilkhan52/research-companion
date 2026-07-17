@@ -19,7 +19,8 @@ import {
 import { useSafeAreaInsets, type Edge } from 'react-native-safe-area-context';
 
 import { impactTap } from '@/lib/haptics';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type TextVariant =
   | 'display'
@@ -34,32 +35,32 @@ type TextVariant =
   | 'serifBody'
   | 'serifItalic';
 
-const TEXT_STYLES: Record<TextVariant, object> = {
+const makeTextStyles = (t: ThemePalette) => StyleSheet.create({
   // Manrope — UI scale (DS: Display/32, Section heading/22, body, METADATA·13/MEDIUM)
-  display: { fontFamily: fonts.bodySemiBold, fontSize: 30, lineHeight: 38, color: colors.text },
-  title: { fontFamily: fonts.bodySemiBold, fontSize: 21, lineHeight: 28, color: colors.text },
-  heading: { fontFamily: fonts.bodySemiBold, fontSize: 16, lineHeight: 22, color: colors.text },
-  body: { fontFamily: fonts.body, fontSize: 15.5, lineHeight: 24, color: colors.text },
-  label: { fontFamily: fonts.bodyMedium, fontSize: 13, color: colors.muted, letterSpacing: 0.2 },
+  display: { fontFamily: fonts.bodySemiBold, fontSize: 30, lineHeight: 38, color: t.text },
+  title: { fontFamily: fonts.bodySemiBold, fontSize: 21, lineHeight: 28, color: t.text },
+  heading: { fontFamily: fonts.bodySemiBold, fontSize: 16, lineHeight: 22, color: t.text },
+  body: { fontFamily: fonts.body, fontSize: 15.5, lineHeight: 24, color: t.text },
+  label: { fontFamily: fonts.bodyMedium, fontSize: 13, color: t.muted, letterSpacing: 0.2 },
   overline: {
     fontFamily: fonts.bodyMedium,
     fontSize: 12.5,
-    color: colors.muted,
+    color: t.muted,
     letterSpacing: 1.1,
     textTransform: 'uppercase' as const,
   },
-  caption: { fontFamily: fonts.body, fontSize: 12.5, lineHeight: 17, color: colors.muted },
+  caption: { fontFamily: fonts.body, fontSize: 12.5, lineHeight: 17, color: t.muted },
   // Newsreader — editorial scale
-  editorial: { fontFamily: fonts.serifMedium, fontSize: 26, lineHeight: 32, color: colors.text },
-  serifTitle: { fontFamily: fonts.serifMedium, fontSize: 20, lineHeight: 26, color: colors.text },
-  serifBody: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26, color: colors.text },
+  editorial: { fontFamily: fonts.serifMedium, fontSize: 26, lineHeight: 32, color: t.text },
+  serifTitle: { fontFamily: fonts.serifMedium, fontSize: 20, lineHeight: 26, color: t.text },
+  serifBody: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26, color: t.text },
   serifItalic: {
     fontFamily: fonts.serifItalic,
     fontSize: 17,
     lineHeight: 26,
-    color: colors.text,
+    color: t.text,
   },
-};
+});
 
 export function Text({
   variant = 'body',
@@ -67,7 +68,8 @@ export function Text({
   style,
   ...rest
 }: TextProps & { variant?: TextVariant; color?: string }) {
-  return <RNText style={[TEXT_STYLES[variant], color ? { color } : null, style]} {...rest} />;
+  const textStyles = useThemedStyles(makeTextStyles);
+  return <RNText style={[textStyles[variant], color ? { color } : null, style]} {...rest} />;
 }
 
 export type IconName = ComponentProps<typeof Feather>['name'];
@@ -75,13 +77,14 @@ export type IconName = ComponentProps<typeof Feather>['name'];
 export function Icon({
   name,
   size = 18,
-  color = colors.muted,
+  color,
 }: {
   name: IconName;
   size?: number;
   color?: string;
 }) {
-  return <Feather name={name} size={size} color={color} />;
+  const t = useTheme();
+  return <Feather name={name} size={size} color={color ?? t.muted} />;
 }
 
 /** Circular tap target (back chevrons, kebab menus, header actions). */
@@ -89,7 +92,7 @@ export function IconButton({
   name,
   onPress,
   size = 18,
-  color = colors.text,
+  color,
   filled = true,
   disabled,
   style,
@@ -101,6 +104,8 @@ export function IconButton({
   /** false renders the bare icon without the elevated circle. */
   filled?: boolean;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -114,7 +119,7 @@ export function IconButton({
         style as object,
       ]}
       {...rest}>
-      <Feather name={name} size={size} color={color} />
+      <Feather name={name} size={size} color={color ?? t.text} />
     </Pressable>
   );
 }
@@ -134,6 +139,7 @@ export function Screen({
   // behind the status bar until the loaded messages forced a relayout (U.16). The provider
   // already knows the insets, so the hook lays out the first frame correctly.
   const insets = useSafeAreaInsets();
+  const styles = useThemedStyles(makeStyles);
   const pad = {
     paddingTop: edges.includes('top') ? insets.top : 0,
     paddingBottom: edges.includes('bottom') ? insets.bottom : 0,
@@ -144,6 +150,7 @@ export function Screen({
 }
 
 export function Card({ style, children, ...rest }: ViewProps) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={[styles.card, style]} {...rest}>
       {children}
@@ -152,6 +159,7 @@ export function Card({ style, children, ...rest }: ViewProps) {
 }
 
 export function Divider() {
+  const styles = useThemedStyles(makeStyles);
   return <View style={styles.divider} />;
 }
 
@@ -169,8 +177,10 @@ export function Chip({
   dot?: boolean;
   onPress?: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const showDot = dot ?? color != null;
-  const accent = selected ? colors.mint : (color ?? colors.muted);
+  const accent = selected ? t.mint : (color ?? t.muted);
   const inner = (
     <>
       {showDot ? <View style={[styles.chipDot, { backgroundColor: accent }]} /> : null}
@@ -182,8 +192,8 @@ export function Chip({
   const chipStyle = [
     styles.chip,
     selected
-      ? { borderColor: colors.mint, backgroundColor: 'rgba(101, 214, 180, 0.10)' }
-      : { borderColor: color ?? colors.line2, backgroundColor: colors.surface },
+      ? { borderColor: t.mint, backgroundColor: 'rgba(101, 214, 180, 0.10)' }
+      : { borderColor: color ?? t.line2, backgroundColor: t.surface },
   ];
   if (onPress) {
     return (
@@ -197,7 +207,7 @@ export function Chip({
 
 export function ProgressBar({
   value,
-  color = colors.mint,
+  color,
   height = 6,
 }: {
   /** 0..1 */
@@ -205,6 +215,8 @@ export function ProgressBar({
   color?: string;
   height?: number;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const pct = Math.max(0, Math.min(1, value));
   return (
     <View style={[styles.progressTrack, { height, borderRadius: height / 2 }]}>
@@ -213,7 +225,7 @@ export function ProgressBar({
           width: `${pct * 100}%`,
           height,
           borderRadius: height / 2,
-          backgroundColor: color,
+          backgroundColor: color ?? t.mint,
         }}
       />
     </View>
@@ -237,9 +249,11 @@ export function Button({
   loading?: boolean;
   icon?: IconName;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const isDisabled = disabled || loading;
   const fg =
-    variant === 'primary' ? colors.mintInk : variant === 'danger' ? colors.danger : colors.text;
+    variant === 'primary' ? t.mintInk : variant === 'danger' ? t.danger : t.text;
   return (
     <Pressable
       onPress={(e) => {
@@ -258,7 +272,7 @@ export function Button({
       ]}
       {...rest}>
       {loading ? (
-        <ActivityIndicator color={variant === 'primary' ? colors.mintInk : colors.mint} />
+        <ActivityIndicator color={variant === 'primary' ? t.mintInk : t.mint} />
       ) : (
         <>
           {icon ? <Feather name={icon} size={17} color={fg} /> : null}
@@ -273,16 +287,16 @@ export function Button({
 
 export { ScrollView };
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: t.bg },
   card: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     padding: space.lg,
   },
-  divider: { height: 1, backgroundColor: colors.line, marginVertical: space.md },
+  divider: { height: 1, backgroundColor: t.line, marginVertical: space.md },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -302,12 +316,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconBtnFilled: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
   },
   progressTrack: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     overflow: 'hidden',
     flexGrow: 1,
   },
@@ -320,9 +334,9 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: space.xl,
   },
-  btnPrimary: { backgroundColor: colors.mint },
-  btnGhost: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.line2 },
-  btnDanger: { backgroundColor: colors.elevated, borderWidth: 1, borderColor: colors.danger },
+  btnPrimary: { backgroundColor: t.mint },
+  btnGhost: { backgroundColor: t.elevated, borderWidth: 1, borderColor: t.line2 },
+  btnDanger: { backgroundColor: t.elevated, borderWidth: 1, borderColor: t.danger },
   pressed: { opacity: 0.82 },
   disabled: { opacity: 0.45 },
 });

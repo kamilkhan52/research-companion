@@ -126,6 +126,7 @@ narrated audio exactly (R6.8).
 | Item | Change | PR | Status |
 |------|--------|----|--------|
 | T.1 | Theme runtime: `themes={dim,black,light}` (dim byte-identical default; provisional Black/Light hex pending Figma), ThemeProvider/useTheme/useThemedStyles, pre-paint mode restore, expo-system-ui root view, nav theme + themed StatusBar, `splash.dark`, `userInterfaceStyle: automatic`, Settings Appearance control, Toast as reference migration | [#130](https://github.com/kamilkhan52/research-companion/pull/130) | Complete — full chrome effect needs the next dev build (new native module) |
+| T.2 | Migrate UI primitives (`ui/index.tsx`: themed text scale, Icon/Button/Card/Chip…) + shared chrome (TopBar, BottomSheet, Markdown, MathView, AgentActivity/Trail, NarrationTranscript, PromptTemplateOption, ProjectSwitcher, NowPlaying) to `useTheme`/`useThemedStyles`; 8 palette-derived inline literals inventoried for token promotion in T.5 | [#131](https://github.com/kamilkhan52/research-companion/pull/131) | Complete |
 
 ## Current execution decisions (2026-07-14)
 
