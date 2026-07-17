@@ -184,3 +184,56 @@ def test_title_search_fallback_never_masquerades_as_the_explicit_id(temp_project
     )
     _settled(job.id)
     assert store.arxiv_id_for("p3") == "1706.03762"
+
+
+def test_after_retrieved_hook_runs_on_success_and_records_analysis_job(temp_project):
+    """R7.8: the auto-analysis continuation fires exactly on the success path and its chat-job
+    id lands on the snapshot; a hook failure degrades to analysis_error, never a job error."""
+    _unretrieved_paper(temp_project)
+    kicked: list[str] = []
+
+    def hook(job):
+        kicked.append(job.slug)
+        retrieval_jobs.set_analysis_job(job, "chat-123")
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {"full_text": "text", "arxiv_id": None,
+                                             "source": "s"},
+        after_retrieved=hook,
+    )
+    snap = _settled(job.id)
+    assert kicked == ["p1"]
+    assert snap["status"] == "done" and snap["analysis_job_id"] == "chat-123"
+    assert snap["analysis_error"] is None
+
+
+def test_after_retrieved_hook_failure_is_best_effort(temp_project):
+    _unretrieved_paper(temp_project)
+
+    def hook(job):
+        raise RuntimeError("no API key")
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {"full_text": "text", "arxiv_id": None,
+                                             "source": "s"},
+        after_retrieved=hook,
+    )
+    snap = _settled(job.id)
+    assert snap["status"] == "done" and snap["retrieved"] is True  # retrieval still succeeded
+    assert "no API key" in snap["analysis_error"]
+
+
+def test_after_retrieved_hook_skipped_on_confirmation(temp_project):
+    _unretrieved_paper(temp_project)
+    kicked: list[str] = []
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {"needs_confirmation": True,
+                                             "candidates": [{"id": "x"}]},
+        after_retrieved=lambda job: kicked.append(job.slug),
+    )
+    snap = _settled(job.id)
+    assert snap["phase"] == "confirmation" and kicked == []

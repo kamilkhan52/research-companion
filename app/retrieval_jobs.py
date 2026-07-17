@@ -26,6 +26,11 @@ class RetrievalJob(Job):
     items: list = field(default_factory=list)
     candidates: list = field(default_factory=list)
     retrieved: bool = False
+    # Auto-analysis chain (R7.8): when the caller asked for a first analysis, the chat job it
+    # spawned after successful retrieval — pollers follow this id to know when the opening
+    # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
+    analysis_job_id: str | None = None
+    analysis_error: str | None = None
 
 
 _registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
@@ -40,6 +45,16 @@ def latest_for(slug: str) -> RetrievalJob | None:
     return _registry.latest_for(slug)
 
 
+def set_analysis_job(job: RetrievalJob, chat_job_id: str) -> None:
+    with _registry.lock:
+        job.analysis_job_id = chat_job_id
+
+
+def set_analysis_error(job: RetrievalJob, message: str) -> None:
+    with _registry.lock:
+        job.analysis_error = message[:400]
+
+
 def start_retrieval(
     slug: str,
     arxiv_id: str | None = None,
@@ -47,6 +62,7 @@ def start_retrieval(
     *,
     retrieve_fn: RetrieveFn = retriever.retrieve,
     hunt_fn: HuntFn = retrieval_agent.stream_hunt,
+    after_retrieved: Callable[[RetrievalJob], None] | None = None,
 ) -> RetrievalJob:
     paper = store.get_paper(slug)
     if not paper:
@@ -101,10 +117,21 @@ def start_retrieval(
             job.phase = "hunting"
         asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
 
+    def work_then_analyze(job: RetrievalJob) -> None:
+        work(job)
+        if after_retrieved is None or not job.retrieved:
+            return
+        try:
+            after_retrieved(job)
+        except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort;
+            # a failure here must never turn a successful retrieval into an error.
+            with _registry.lock:
+                job.analysis_error = str(exc)[:400]
+
     return _registry.start_or_join(
         slug,
         lambda: RetrievalJob(id=new_id(), slug=slug),
-        work,
+        work_then_analyze if after_retrieved else work,
     )
 
 

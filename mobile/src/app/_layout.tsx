@@ -35,6 +35,7 @@ import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-c
 import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
+import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { ProjectProvider } from '@/store/project';
@@ -111,6 +112,8 @@ function ThemedShell() {
           </Stack>
         </View>
         <StackNowPlaying />
+        {/* Global "start the first analysis?" offer, raised by useAddPaper from any add site. */}
+        <InitialAnalysisOfferHost />
       </View>
     </NavThemeProvider>
   );

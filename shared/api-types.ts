@@ -514,7 +514,9 @@ export interface paths {
         put?: never;
         /**
          * Start Retrieval Job
-         * @description Start or join connection-independent paper retrieval and return immediately.
+         * @description Start or join connection-independent paper retrieval and return immediately. With
+         *     auto_analyze, a successful retrieval flows straight into the first analysis turn; the
+         *     spawned chat job's id lands on the retrieval snapshot (`analysis_job_id`).
          */
         post: operations["start_retrieval_job_api_projects__pid__retrieval_jobs_post"];
         delete?: never;
@@ -1657,6 +1659,28 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** RetrievalJobReq */
+        RetrievalJobReq: {
+            /** Slug */
+            slug: string;
+            /** Arxiv Id */
+            arxiv_id?: string | null;
+            /** Pdf Url */
+            pdf_url?: string | null;
+            /**
+             * Auto Analyze
+             * @default false
+             */
+            auto_analyze: boolean;
+            /** Mode */
+            mode?: ("balanced" | "background" | "technical" | "detailed") | null;
+            /**
+             * Delivery Mode
+             * @default reading
+             * @enum {string}
+             */
+            delivery_mode: "reading" | "listening";
+        };
         /** RetryReq */
         RetryReq: {
             /**
@@ -2577,7 +2601,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["StartReq"];
+                "application/json": components["schemas"]["RetrievalJobReq"];
             };
         };
         responses: {

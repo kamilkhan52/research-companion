@@ -8,6 +8,11 @@ import { setBaseUrl } from '@/api/config';
 import { useAddPaper } from '@/api/queries';
 import { ToastProvider, useToast } from '@/ui/Toast';
 
+const mockOffer = jest.fn();
+jest.mock('@/components/InitialAnalysisOffer', () => ({
+  offerInitialAnalysis: (offer: unknown) => mockOffer(offer),
+}));
+
 function Fire({ message }: { message: string }) {
   const { toast } = useToast();
   return (
@@ -38,9 +43,11 @@ function AddButton() {
   );
 }
 
-test('adding a paper fires the "Added to library" toast', async () => {
+test('adding a paper raises the initial-analysis offer (R7.8)', async () => {
   await setBaseUrl('https://api.test');
-  jest.mocked(api.addPaper).mockResolvedValue({} as never);
+  jest
+    .mocked(api.addPaper)
+    .mockResolvedValue({ paper: { slug: 'awq', title: 'AWQ', arxiv_id: '2306.00978' } } as never);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   function Wrapper({ children }: PropsWithChildren) {
     return (
@@ -52,7 +59,11 @@ test('adding a paper fires the "Added to library" toast', async () => {
 
   const { unmountAsync } = await renderAsync(<AddButton />, { wrapper: Wrapper });
   await fireEventAsync.press(screen.getByText('add'));
-  await waitFor(() => expect(screen.getByText('Added to library')).toBeTruthy());
-  await unmountAsync(); // clears the pending auto-dismiss timer
+  await waitFor(() =>
+    expect(mockOffer).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 'proj', slug: 'awq', title: 'AWQ', arxivId: '2306.00978' }),
+    ),
+  );
+  await unmountAsync();
   client.clear();
 });
