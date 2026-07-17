@@ -20,7 +20,8 @@ import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
-import { colors, radius, space } from '@/theme/tokens';
+import { useThemedStyles } from '@/theme/ThemeProvider';
+import { radius, space, type ThemePalette } from '@/theme/tokens';
 
 const DISMISS_DISTANCE = 120; // px dragged down before a release counts as "dismiss"
 const DISMISS_VELOCITY = 800; // px/s downward fling that dismisses regardless of distance
@@ -40,6 +41,7 @@ export function BottomSheet({
   style?: object;
   children: React.ReactNode;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const translateY = useSharedValue(0);
 
   // The component stays mounted across opens (only the Modal's `visible` toggles), so a prior
@@ -99,7 +101,7 @@ export function BottomSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -111,11 +113,11 @@ const styles = StyleSheet.create({
   // the sheet itself, matching what `backdrop` did for it directly before this wrapper existed.
   gestureRoot: { flex: 1, justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     padding: space.lg,
   },
   // Bigger tap/drag target than the visible pill, pulled up via negative margin so it doesn't
@@ -130,6 +132,6 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: colors.line2,
+    backgroundColor: t.line2,
   },
 });

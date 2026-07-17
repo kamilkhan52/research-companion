@@ -15,7 +15,8 @@ import {
 import { useCreateProject, useProjects } from '@/api/queries';
 import { Button, Card, Icon, Text } from '@/ui';
 import type { Project } from '@/api/types';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function ProjectSwitcher({
   visible,
@@ -28,6 +29,8 @@ export function ProjectSwitcher({
   onSelect: (pid: string) => void;
   onClose: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const projectsQuery = useProjects();
   const { data: projects, isLoading } = projectsQuery;
   const createProject = useCreateProject();
@@ -59,10 +62,10 @@ export function ProjectSwitcher({
           </Text>
 
           {isLoading ? (
-            <ActivityIndicator color={colors.mint} style={{ paddingVertical: space.xl }} />
+            <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
           ) : projectsQuery.isError ? (
             <View style={{ paddingVertical: space.md, gap: space.sm }}>
-              <Text variant="body" color={colors.muted}>
+              <Text variant="body" color={t.muted}>
                 Couldn't reach the server — check the connection or the server URL in
                 Settings.
               </Text>
@@ -96,7 +99,7 @@ export function ProjectSwitcher({
                   value={name}
                   onChangeText={setName}
                   placeholder="Project name"
-                  placeholderTextColor={colors.muted}
+                  placeholderTextColor={t.muted}
                   style={styles.input}
                   autoFocus
                   returnKeyType="done"
@@ -122,7 +125,7 @@ export function ProjectSwitcher({
               <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
             )}
             {createError ? (
-              <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+              <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
                 {createError}
               </Text>
             ) : null}
@@ -142,31 +145,33 @@ function ProjectRow({
   active: boolean;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable onPress={onPress}>
       <Card style={[styles.row, active && styles.rowActive]}>
         <View style={{ flex: 1 }}>
-          <Text variant="heading" color={active ? colors.mint : colors.text}>
+          <Text variant="heading" color={active ? t.mint : t.text}>
             {project.name}
           </Text>
           <Text variant="caption" style={{ marginTop: 2 }}>
             {project.paper_count} paper{project.paper_count === 1 ? '' : 's'} · {project.read_count} read
           </Text>
         </View>
-        {active ? <Icon name="check" size={18} color={colors.mint} /> : null}
+        {active ? <Icon name="check" size={18} color={t.mint} /> : null}
       </Card>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     padding: space.lg,
     paddingBottom: space.xxl,
     maxHeight: '85%',
@@ -175,20 +180,20 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: colors.line2,
+    backgroundColor: t.line2,
     alignSelf: 'center',
     marginBottom: space.md,
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  rowActive: { borderColor: colors.mint },
+  rowActive: { borderColor: t.mint },
   input: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 12,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
   },

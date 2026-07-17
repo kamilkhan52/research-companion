@@ -1,7 +1,8 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Icon, Text, type IconName } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function PromptTemplateOption({
   title,
@@ -16,6 +17,8 @@ export function PromptTemplateOption({
   selected: boolean;
   onPress: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -24,33 +27,33 @@ export function PromptTemplateOption({
       style={({ pressed }) => [styles.root, selected && styles.selected, pressed && { opacity: 0.84 }]}
     >
       <View style={[styles.badge, selected && styles.badgeSelected]}>
-        <Icon name={selected ? 'check' : icon} size={16} color={selected ? colors.mint : colors.muted} />
+        <Icon name={selected ? 'check' : icon} size={16} color={selected ? t.mint : t.muted} />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text variant="heading" color={selected ? colors.mint : colors.text}>{title}</Text>
+        <Text variant="heading" color={selected ? t.mint : t.text}>{title}</Text>
         <Text variant="caption" style={{ marginTop: 2 }}>{description}</Text>
       </View>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   root: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
     padding: space.md,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     borderRadius: radius.md,
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
   },
-  selected: { borderColor: colors.mint, backgroundColor: 'rgba(101, 214, 180, 0.08)' },
+  selected: { borderColor: t.mint, backgroundColor: 'rgba(101, 214, 180, 0.08)' },
   badge: {
     width: 36,
     height: 36,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     alignItems: 'center',
     justifyContent: 'center',
   },

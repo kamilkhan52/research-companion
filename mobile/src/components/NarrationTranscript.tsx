@@ -14,7 +14,8 @@ import { sentenceSeekPosition, splitSentences, type SentenceBoundary } from '../
 import { useSmoothPosition } from '@/audio/useSmoothPosition';
 import { activeSentenceIndex, globalFraction, segmentForChar } from '@/audio/transcriptSync';
 import { Icon, Text } from '@/ui';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 
 /** How long a manual scroll suspends auto-follow, so the roll never fights the user's thumb. */
@@ -39,6 +40,7 @@ const TranscriptLine = memo(function TranscriptLine({
   onPress: (i: number) => void;
   onLayout: (i: number, y: number, h: number) => void;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const glow = useRef(new Animated.Value(active ? 1 : 0)).current;
   useEffect(() => {
     Animated.timing(glow, {
@@ -65,6 +67,7 @@ const TranscriptLine = memo(function TranscriptLine({
 });
 
 export function RollingTranscript({ narration }: { narration: string }) {
+  const styles = useThemedStyles(makeStyles);
   // Smooth, dead-reckoned playback clock (see useSmoothPosition) instead of raw coarse polls.
   const { position, duration } = useSmoothPosition();
   const sentences = useMemo(() => splitSentences(narration), [narration]);
@@ -202,6 +205,7 @@ export function prepLabel(stage: 'starting' | 'narrating' | 'synthesizing', done
 const EQ_HEIGHTS = [8, 14, 20, 12, 17];
 
 function EqBars({ determinate, fraction }: { determinate: boolean; fraction: number }) {
+  const styles = useThemedStyles(makeStyles);
   const pulses = useRef(EQ_HEIGHTS.map(() => new Animated.Value(0.45))).current;
   useEffect(() => {
     if (determinate) {
@@ -259,6 +263,8 @@ export function GeneratingBar({
   /** Renders the cancel well on the right that stops the preparation (U.4). */
   onCancel?: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const determinate = stage === 'synthesizing' && total > 0;
   const fraction = determinate ? done / total : 0;
   return (
@@ -277,20 +283,20 @@ export function GeneratingBar({
           accessibilityRole="button"
           accessibilityLabel="Cancel audio preparation"
           style={styles.genCancel}>
-          <Icon name="x" size={14} color={colors.muted} />
+          <Icon name="x" size={14} color={t.muted} />
         </Pressable>
       ) : null}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   roll: { flex: 1, paddingHorizontal: space.lg },
   line: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 21,
     lineHeight: 32,
-    color: colors.text, // dimming is the animated opacity, so inactive lines still read muted
+    color: t.text, // dimming is the animated opacity, so inactive lines still read muted
     paddingVertical: space.sm,
   },
   // U.23 audio-loading card, per the Figma spec (node 64:157).
@@ -305,12 +311,12 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(153, 163, 183, 0.28)',
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
   },
   eqRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: 28, height: 24, justifyContent: 'center' },
-  eqBar: { width: 4, borderRadius: 2, backgroundColor: colors.mint },
-  genCopy: { flex: 1, fontFamily: fonts.bodyMedium, fontSize: 12, lineHeight: 15, color: colors.text },
-  genCounter: { fontFamily: fonts.bodySemiBold, fontSize: 11, lineHeight: 14, color: colors.muted },
+  eqBar: { width: 4, borderRadius: 2, backgroundColor: t.mint },
+  genCopy: { flex: 1, fontFamily: fonts.bodyMedium, fontSize: 12, lineHeight: 15, color: t.text },
+  genCounter: { fontFamily: fonts.bodySemiBold, fontSize: 11, lineHeight: 14, color: t.muted },
   genCancel: {
     width: 32,
     height: 32,

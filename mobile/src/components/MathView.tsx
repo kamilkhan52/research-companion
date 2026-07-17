@@ -7,13 +7,15 @@ import { useState } from 'react';
 import { LayoutChangeEvent, ScrollView, Text as RNText, useWindowDimensions, View } from 'react-native';
 
 import { fitMathBlock, getSvgXml, texToPlain, texToSvg } from '@/lib/math';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
+import { fonts, space } from '@/theme/tokens';
 
 // MathJax sizes its SVG in ex units of its own font (~0.45em); scale against the enclosing
 // font size so inline math sits naturally in serif body text.
 const EX_TO_PX = 0.45;
 
 export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: number }) {
+  const t = useTheme();
   const SvgXml = getSvgXml() as React.ComponentType<{
     xml: string; width: number; height: number; color?: string;
   }> | null;
@@ -38,7 +40,7 @@ export function InlineMath({ tex, fontSize = 16 }: { tex: string; fontSize?: num
         xml={rendered.svg}
         width={rendered.widthEx * ex}
         height={rendered.heightEx * ex}
-        color={colors.text}
+        color={t.text}
       />
     </View>
   );
@@ -48,6 +50,7 @@ export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: numb
   // These hooks must run even while a streamed TeX span is temporarily incomplete. If they
   // lived after the fallback return, the same component could render plain text on one frame
   // and SVG on the next, changing its hook count and crashing React.
+  const t = useTheme();
   const { width: windowW } = useWindowDimensions();
   const [measuredW, setMeasuredW] = useState(0);
   const onLayout = (e: LayoutChangeEvent) => {
@@ -66,7 +69,7 @@ export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: numb
           fontFamily: fonts.serifItalic,
           fontSize,
           lineHeight: fontSize * 1.5,
-          color: colors.text,
+          color: t.text,
           textAlign: 'center',
           width: '100%',
         }}>
@@ -86,7 +89,7 @@ export function MathBlock({ tex, fontSize = 17 }: { tex: string; fontSize?: numb
   // Pre-layout (measuredW 0) falls back to the window width, so the first frame is bounded too.
   const fallbackW = Math.max(windowW - space.xl * 2, 1);
   const fit = fitMathBlock(naturalW, naturalH, Math.min(measuredW || fallbackW, windowW));
-  const svg = <SvgXml xml={rendered.svg} width={fit.width} height={fit.height} color={colors.text} />;
+  const svg = <SvgXml xml={rendered.svg} width={fit.width} height={fit.height} color={t.text} />;
 
   if (!fit.scroll) {
     return (

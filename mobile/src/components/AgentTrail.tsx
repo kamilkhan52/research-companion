@@ -8,7 +8,8 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { AgentTrailItem } from '@/api/types';
 import { Icon, Text, type IconName } from '@/ui';
-import { colors, space } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
+import { space } from '@/theme/tokens';
 
 // Friendly label + icon for each research tool the agent can call (agentic path).
 export const TOOL_META: Record<string, { icon: IconName; label: string }> = {
@@ -23,13 +24,14 @@ export const TOOL_META: Record<string, { icon: IconName; label: string }> = {
 };
 
 export function ToolLine({ name, detail }: { name: string; detail: string }) {
+  const t = useTheme();
   const meta = TOOL_META[name] ?? { icon: 'tool' as IconName, label: name };
   return (
     <View style={styles.toolRow}>
-      <Icon name={meta.icon} size={13} color={colors.mint} />
-      <Text variant="caption" color={colors.mint}>{meta.label}</Text>
+      <Icon name={meta.icon} size={13} color={t.mint} />
+      <Text variant="caption" color={t.mint}>{meta.label}</Text>
       {detail ? (
-        <Text variant="caption" color={colors.muted} numberOfLines={1} style={styles.toolDetail}>
+        <Text variant="caption" color={t.muted} numberOfLines={1} style={styles.toolDetail}>
           {detail}
         </Text>
       ) : null}
@@ -38,8 +40,9 @@ export function ToolLine({ name, detail }: { name: string; detail: string }) {
 }
 
 export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
+  const t = useTheme();
   const [open, setOpen] = useState(false);
-  const tools = trail.filter((t) => t.kind === 'tool').length;
+  const tools = trail.filter((item) => item.kind === 'tool').length;
   const summary = tools > 0
     ? `Researched with ${tools} tool ${tools === 1 ? 'call' : 'calls'}`
     : 'Agent activity';
@@ -53,8 +56,8 @@ export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
         accessibilityState={{ expanded: open }}
         accessibilityLabel={`${summary}. ${open ? 'Hide' : 'Show'} what the agent did.`}
       >
-        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} color={colors.muted} />
-        <Text variant="caption" color={colors.muted}>
+        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} color={t.muted} />
+        <Text variant="caption" color={t.muted}>
           {summary} · {trail.length} {trail.length === 1 ? 'step' : 'steps'}
         </Text>
       </Pressable>
@@ -63,7 +66,7 @@ export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
             it.kind === 'tool' ? (
               <ToolLine key={i} name={it.name} detail={it.detail} />
             ) : (
-              <Text key={i} variant="caption" color={colors.muted} style={styles.thoughtLine}>
+              <Text key={i} variant="caption" color={t.muted} style={styles.thoughtLine}>
                 {it.text}
               </Text>
             ),

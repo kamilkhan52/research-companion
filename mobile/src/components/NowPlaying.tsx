@@ -23,7 +23,8 @@ import { useAudio } from '@/audio/AudioProvider';
 import { Marquee } from '@/ui/Marquee';
 import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -33,6 +34,8 @@ function fmt(sec: number): string {
 }
 
 export function NowPlaying({ inset = true }: { inset?: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const audio = useAudio();
   const pathname = usePathname();
@@ -59,14 +62,14 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
         <Pressable onPress={openPlayer} style={styles.card} accessibilityLabel="Open player">
           <View style={styles.row}>
             <View style={styles.artBadge}>
-              <Feather name="music" size={16} color={colors.mint} />
+              <Feather name="music" size={16} color={t.mint} />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Marquee
                 text={title}
-                textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: colors.text }}
+                textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: t.text }}
               />
-              <Text variant="caption" color={colors.mint} numberOfLines={1}>
+              <Text variant="caption" color={t.mint} numberOfLines={1}>
                 {prepLabel(stage, done, total)}
               </Text>
             </View>
@@ -75,7 +78,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
               hitSlop={10}
               style={styles.sideBtn}
               accessibilityLabel="Cancel audio preparation">
-              <Feather name="x" size={16} color={colors.muted} />
+              <Feather name="x" size={16} color={t.muted} />
             </Pressable>
           </View>
           <View style={styles.progressStrip}>
@@ -114,26 +117,26 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
             hitSlop={8}
             style={styles.playBtn}
             accessibilityLabel={playing ? 'Pause' : 'Play'}>
-            <Feather name={playing ? 'pause' : 'play'} size={17} color={colors.mintInk} />
+            <Feather name={playing ? 'pause' : 'play'} size={17} color={t.mintInk} />
           </Pressable>
 
           <View style={{ flex: 1, minWidth: 0 }}>
             <Marquee
               text={String(track.title ?? 'Narration')}
-              textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: colors.text }}
+              textStyle={{ fontFamily: fonts.bodySemiBold, fontSize: 15, lineHeight: 21, color: t.text }}
             />
-            <Text variant="caption" color={buffering ? colors.mint : undefined} numberOfLines={1}>
+            <Text variant="caption" color={buffering ? t.mint : undefined} numberOfLines={1}>
               {status}
             </Text>
           </View>
 
-          <Feather name="chevron-up" size={18} color={colors.muted} />
+          <Feather name="chevron-up" size={18} color={t.muted} />
           <Pressable
             onPress={() => void audio.dismiss()}
             hitSlop={10}
             style={styles.sideBtn}
             accessibilityLabel="Close player">
-            <Feather name="x" size={16} color={colors.muted} />
+            <Feather name="x" size={16} color={t.muted} />
           </Pressable>
         </View>
         <View style={styles.progressStrip}>
@@ -149,13 +152,13 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   wrap: { paddingHorizontal: space.md, paddingTop: space.sm },
   card: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     overflow: 'hidden',
   },
   row: {
@@ -177,7 +180,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: radius.pill,
-    backgroundColor: colors.mint,
+    backgroundColor: t.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -189,8 +192,8 @@ const styles = StyleSheet.create({
   },
   progressStrip: {
     height: 3,
-    backgroundColor: colors.line,
+    backgroundColor: t.line,
     overflow: 'hidden',
   },
-  progressFill: { height: '100%', backgroundColor: colors.mint },
+  progressFill: { height: '100%', backgroundColor: t.mint },
 });

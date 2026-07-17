@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { AccessibilityInfo, Animated, StyleSheet, View } from 'react-native';
 
 import { Text } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function AgentActivity({
   status,
@@ -15,6 +16,8 @@ export function AgentActivity({
   emphasis?: 'inline' | 'panel';
   testID?: string;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const dots = useMemo(() => [new Animated.Value(0.35), new Animated.Value(0.35), new Animated.Value(0.35)], []);
   const [reduceMotion, setReduceMotion] = useState(false);
 
@@ -58,14 +61,14 @@ export function AgentActivity({
         ))}
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text variant="label" color={colors.text}>{status}</Text>
+        <Text variant="label" color={t.text}>{status}</Text>
         {detail ? <Text variant="caption" numberOfLines={2}>{detail}</Text> : null}
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   root: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -76,9 +79,9 @@ const styles = StyleSheet.create({
     padding: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.surface,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
   },
   dots: { flexDirection: 'row', alignItems: 'center', gap: 5, width: 35 },
-  dot: { width: 7, height: 7, borderRadius: radius.pill, backgroundColor: colors.mint },
+  dot: { width: 7, height: 7, borderRadius: radius.pill, backgroundColor: t.mint },
 });
