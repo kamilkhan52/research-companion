@@ -131,6 +131,7 @@ Labs, chat navigation, "Paradigm" icon) are queued as the next planned round.
 |------|--------|----|--------|
 | R7.1 | Marquee glide 1.5× faster (24→36 px/s); after the single pass it holds at the tail, then resets to the start and stays — no loop | [#136](https://github.com/kamilkhan52/research-companion/pull/136) | Complete |
 | R7.2 | Skeleton-stage filter correction fires only on the stage transition, so tapping Significant while the full build runs sticks (was re-asserted every render, snapping back to All); an empty Significant view on a skeleton explains it's waiting on enrichment | [#137](https://github.com/kamilkhan52/research-companion/pull/137) | Complete |
+| R7.3 | Chat's second, motionless scrollbar thumb (the RN inverted-list "stuck indicator" ghost) suppressed via a 1px `scrollIndicatorInsets` on the messages list; the real moving indicator is untouched | [#138](https://github.com/kamilkhan52/research-companion/pull/138) | Complete — confirm the ghost is gone on device |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
