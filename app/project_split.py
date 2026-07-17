@@ -191,17 +191,25 @@ def split_project(
             # inside the locks so the moved snapshot can't drift before the source removal.
             meta = projects.create_project(name)
             new_pid = meta["id"]
-            if goals:
-                projects.update_meta(new_pid, goals=goals.strip())
-            new_token = config.set_active_project(new_pid)
+            # The new pid is visible in the registry the moment create_project returns, so
+            # mark it busy while we populate it: a client that refreshes projects and starts a
+            # graph/retrieval job on it mid-population would read a half-written reading list
+            # and race graph_store.load/save. Cleared once its commit lands.
+            config.mark_project_busy(new_pid)
             try:
-                _write_new_project(new_pid, bundle, keep, move=remove_from_source)
+                if goals:
+                    projects.update_meta(new_pid, goals=goals.strip())
+                new_token = config.set_active_project(new_pid)
+                try:
+                    _write_new_project(new_pid, bundle, keep, move=remove_from_source)
+                finally:
+                    config.reset_active_project(new_token)
+                # Fresh scaffold — everything in it is split-owned, so `add -A` is safe here.
+                projects._git(new_pid, "add", "-A")
+                projects._git(new_pid, "commit", "-q", "-m",
+                              f"Split {len(slugs)} paper(s) from {source_pid}")
             finally:
-                config.reset_active_project(new_token)
-            # Fresh scaffold — everything in it is split-owned, so `add -A` is safe here.
-            projects._git(new_pid, "add", "-A")
-            projects._git(new_pid, "commit", "-q", "-m",
-                          f"Split {len(slugs)} paper(s) from {source_pid}")
+                config.unmark_project_busy(new_pid)
 
             removed = False
             if remove_from_source:
