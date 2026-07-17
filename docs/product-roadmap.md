@@ -121,6 +121,12 @@ narrated audio exactly (R6.8).
 | R6.8 | Agentic chat fidelity: segment boundaries separate pre-tool commentary from the answer (bubble = recorded canonical = narration); commentary + tool calls persist as a collapsed, expandable trail on the finished message; empty final output falls back to the last segment's text | [#126](https://github.com/kamilkhan52/research-companion/pull/126) | Complete — awaits device pass |
 | R6.4 | Labs affiliations, provider-first then LLM: papers OpenAlex leaves without institution data get affiliations read off their own first page by the analysis model (`app/affiliations.py`, cached per node in the graph store, force-aware); board merges both caches with provider precedence | [#127](https://github.com/kamilkhan52/research-companion/pull/127) | Complete — awaits device pass (rebuild the map to populate) |
 
+## Theming implementation (R.2, per docs/theming-design.md)
+
+| Item | Change | PR | Status |
+|------|--------|----|--------|
+| T.1 | Theme runtime: `themes={dim,black,light}` (dim byte-identical default; provisional Black/Light hex pending Figma), ThemeProvider/useTheme/useThemedStyles, pre-paint mode restore, expo-system-ui root view, nav theme + themed StatusBar, `splash.dark`, `userInterfaceStyle: automatic`, Settings Appearance control, Toast as reference migration | [#130](https://github.com/kamilkhan52/research-companion/pull/130) | Complete — full chrome effect needs the next dev build (new native module) |
+
 ## Current execution decisions (2026-07-14)
 
 The **U.x rows** are the 2026-07-14 UX polish sweep from Kamil's on-device notes: one focused

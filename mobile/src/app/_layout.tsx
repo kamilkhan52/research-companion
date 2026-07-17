@@ -12,13 +12,19 @@ import {
   Newsreader_600SemiBold,
 } from '@expo-google-fonts/newsreader';
 import { Feather } from '@expo/vector-icons';
+import {
+  DarkTheme,
+  DefaultTheme,
+  ThemeProvider as NavThemeProvider,
+} from '@react-navigation/native';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 import { Stack, usePathname } from 'expo-router';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import * as SystemUI from 'expo-system-ui';
+import { useEffect, useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
@@ -31,8 +37,8 @@ import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
+import { ThemeProvider, useThemeMode } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
-import { colors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -44,6 +50,67 @@ function StackNowPlaying() {
   const pathname = usePathname();
   if (TAB_PATHS.has(pathname)) return null;
   return <NowPlaying />;
+}
+
+// Everything below the ThemeProvider that must repaint with the active palette: status bar
+// icons, the navigator's own theme (screen/transition backgrounds — the default dark
+// contentStyle otherwise flashes during pushes on Light), the root native view
+// (expo-system-ui — the flash surface behind modals/over-scroll), and the Android
+// navigation bar.
+function ThemedShell() {
+  const { theme, themeName } = useThemeMode();
+  const isLight = themeName === 'light';
+
+  useEffect(() => {
+    // Paints the root native view — the flash surface behind modals, keyboard dismissal and
+    // over-scroll. On edge-to-edge Android (SDK 54) the transparent navigation bar rides
+    // this same background, so no separate nav-bar color is needed. try/catch on top of
+    // .catch: on a dev build predating this native module the CALL itself throws
+    // synchronously — the JS must keep working over Metro until the next build bakes it in.
+    try {
+      SystemUI.setBackgroundColorAsync(theme.bg).catch(() => {});
+    } catch { /* native module absent in older dev builds */ }
+  }, [theme]);
+
+  const navTheme = useMemo(() => {
+    const base = isLight ? DefaultTheme : DarkTheme;
+    return {
+      ...base,
+      colors: {
+        ...base.colors,
+        primary: theme.mint,
+        background: theme.bg,
+        card: theme.surface,
+        text: theme.text,
+        border: theme.line2,
+        notification: theme.danger,
+      },
+    };
+  }, [theme, isLight]);
+
+  return (
+    <NavThemeProvider value={navTheme}>
+      <StatusBar style={isLight ? 'dark' : 'light'} />
+      <View style={{ flex: 1, backgroundColor: theme.bg }}>
+        <View style={{ flex: 1 }}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: theme.bg },
+              animation: 'slide_from_right',
+            }}>
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+            <Stack.Screen
+              name="player"
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+          </Stack>
+        </View>
+        <StackNowPlaying />
+      </View>
+    </NavThemeProvider>
+  );
 }
 
 export default function RootLayout() {
@@ -81,6 +148,9 @@ export default function RootLayout() {
       {/* initialMetrics makes the provider's very first frame (app cold start) carry real
           insets instead of zeros — the same class of flash U.16 fixed per-screen. */}
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+        {/* ThemeProvider gates on the persisted mode (read before first paint, under the
+            splash) so everything below — including the Toast overlay — renders themed. */}
+        <ThemeProvider>
         {/* ToastProvider sits just inside the SafeAreaProvider so its overlay reads real insets
             and floats above every screen (R.8). */}
         <ToastProvider>
@@ -91,25 +161,7 @@ export default function RootLayout() {
                 <GraphSettingsProvider>
                 <AudioProvider>
                 <PaperEntityProvider>
-                <StatusBar style="light" />
-                <View style={{ flex: 1, backgroundColor: colors.bg }}>
-                  <View style={{ flex: 1 }}>
-                    <Stack
-                      screenOptions={{
-                        headerShown: false,
-                        contentStyle: { backgroundColor: colors.bg },
-                        animation: 'slide_from_right',
-                      }}>
-                      <Stack.Screen name="(tabs)" />
-                      <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
-                      <Stack.Screen
-                        name="player"
-                        options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-                      />
-                    </Stack>
-                  </View>
-                  <StackNowPlaying />
-                </View>
+                <ThemedShell />
                 </PaperEntityProvider>
                 </AudioProvider>
                 </GraphSettingsProvider>
@@ -118,6 +170,7 @@ export default function RootLayout() {
           </QueryClientProvider>
         </KeyboardProvider>
         </ToastProvider>
+        </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

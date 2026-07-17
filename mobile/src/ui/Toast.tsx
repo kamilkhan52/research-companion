@@ -22,7 +22,8 @@ import {
 import { Animated, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 /** How long the message holds at full opacity before it fades out. */
 const HOLD_MS = 2200;
@@ -48,6 +49,7 @@ export function useToast(): { toast: ToastFn } {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
+  const styles = useThemedStyles(makeStyles);
   const anim = useRef(new Animated.Value(0)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -113,7 +115,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
+// Reference implementation of the R.2 migration shape: a module-level themed factory read
+// through useThemedStyles (one StyleSheet per palette, ever), replacing the module-level
+// StyleSheet.create that snapshotted `colors` at import.
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   wrap: {
     position: 'absolute',
     left: 0,
@@ -127,14 +132,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingVertical: space.sm + 2,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
   },
   label: {
     fontFamily: fonts.bodyMedium,
     fontSize: 13.5,
-    color: colors.text,
+    color: t.text,
     letterSpacing: 0.2,
   },
 });
