@@ -992,14 +992,14 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming]);
+  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
       {...props}
       wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
     />
-  ), []);
+  ), [styles]);
 
   const renderSend = useCallback(() => {
     // While a response is generating, the send slot becomes Stop (polish plan F.1): the
@@ -1031,7 +1031,7 @@ function DiscussionThread({
         />
       </Pressable>
     );
-  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop]);
+  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop, styles, theme]);
 
   const renderAccessory = useCallback(() => {
     if (editing) {
@@ -1073,7 +1073,7 @@ function DiscussionThread({
     }
     // "Finish reading" lives in the kebab menu only (polish plan H.1) — no composer chip.
     return null;
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state]);
+  }, [actionError, busy, disabled, editing, handleSend, inputText, state, styles, theme, editDraft.clear, reopen]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
@@ -1101,7 +1101,7 @@ function DiscussionThread({
         renderAccessory={renderAccessory}
       />
     );
-  }, [onContinue, renderAccessory, renderSend, state]);
+  }, [onContinue, renderAccessory, renderSend, state, styles]);
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
@@ -1111,7 +1111,7 @@ function DiscussionThread({
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
-  }, [stream.clearError, stream.error]);
+  }, [stream.clearError, stream.error, styles, theme]);
 
   const placeholder = editing
     ? 'Edit your message…'
