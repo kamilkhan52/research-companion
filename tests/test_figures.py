@@ -153,7 +153,8 @@ def test_version_advance_rebuilds_the_manifest(temp_project):
     store.write_full_text(slug, "DeepStack", "revised text",
                           {"slug": slug, "arxiv_id": "2401.00001v2"})
     manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
-    assert len(html.calls) == 2
+    # The HTML request carries the version, so the rendering matches the corpus text.
+    assert html.calls == ["2401.00001v1", "2401.00001v2"]
     assert manifest["requested_id"] == "2401.00001v2"
     assert figures.manifest_for(slug) is not None  # same base — still serves
 

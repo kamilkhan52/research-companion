@@ -175,17 +175,19 @@ def _host_allowed(url: str) -> bool:
                for suffix in _ALLOWED_HOST_SUFFIXES)
 
 
-def _resolves_public(url: str) -> bool:
-    """Reject a host that resolves to any private/loopback/link-local address (defense against
-    DNS games behind an allowed-looking name)."""
+def _resolves_public(url: str) -> bool | None:
+    """True when the host resolves only to public addresses; False on private/loopback/
+    link-local results (rejected for good — defense against DNS games behind an
+    allowed-looking name); None when resolution itself failed (a TRANSIENT condition:
+    callers must not cache a miss over a DNS blip)."""
     host = urlparse(url).hostname or ""
     try:
         infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
     except OSError:
-        return False
+        return None
     addresses = [info[4][0] for info in infos]
     if not addresses:
-        return False
+        return None
     for raw in addresses:
         try:
             ip = ipaddress.ip_address(raw)
@@ -197,10 +199,6 @@ def _resolves_public(url: str) -> bool:
     return True
 
 
-def _url_ok(url: str) -> bool:
-    return _host_allowed(url) and _resolves_public(url)
-
-
 # --- fetchers (the only network in this module) ----------------------------------------------
 
 def _open_client() -> httpx.Client:
@@ -210,21 +208,29 @@ def _open_client() -> httpx.Client:
                         headers={"User-Agent": "research-companion-figures/1.0"})
 
 
-def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
+def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
     """("ok", final_url, html_text) for the paper's HTML rendering; ("none", None, None)
     when the hosts definitively have none (cacheable miss); ("error", None, None) on fast
     transport errors (nothing cached — retried next build). Raises StallError on a timeout.
-    Tries arXiv's native HTML first (newer papers), then ar5iv (older corpus)."""
+    Tries arXiv's native HTML first (newer papers), then ar5iv (older corpus). The id is
+    passed VERSION-BEARING when known: the versionless URL serves the latest revision,
+    whose figures could disagree with the (pinned-version) corpus text being discussed."""
     candidates = (
-        f"https://arxiv.org/html/{base_id}",
-        f"https://ar5iv.labs.arxiv.org/html/{base_id}",
+        f"https://arxiv.org/html/{requested_id}",
+        f"https://ar5iv.labs.arxiv.org/html/{requested_id}",
     )
     transient = False
     with _open_client() as client:
         for url in candidates:
             try:
                 for _ in range(MAX_REDIRECTS):
-                    if not _url_ok(url):
+                    if not _host_allowed(url):
+                        break
+                    public = _resolves_public(url)
+                    if public is None:
+                        transient = True  # DNS blip — never cache a miss over it
+                        break
+                    if not public:
                         break
                     resp = client.get(url)
                     if resp.status_code in _REDIRECT_CODES:
@@ -248,7 +254,7 @@ def _fetch_html(base_id: str) -> tuple[str, str | None, str | None]:
                 raise StallError(str(e)[:120]) from e
             except httpx.HTTPError as e:
                 transient = True
-                log.info("figure HTML fetch failed for %s: %s", base_id, str(e)[:120])
+                log.info("figure HTML fetch failed for %s: %s", requested_id, str(e)[:120])
     return ("error" if transient else "none"), None, None
 
 
@@ -259,7 +265,14 @@ def _fetch_image(url: str) -> tuple[bytes, str] | None:
     with _open_client() as client:
         try:
             for _ in range(MAX_REDIRECTS):
-                if not _url_ok(url):
+                if not _host_allowed(url):
+                    return None
+                public = _resolves_public(url)
+                if public is None:
+                    # DNS blip mid-paper: abort like a stall so a partial figure set is
+                    # not cached as done.
+                    raise StallError("dns resolution failed")
+                if not public:
                     return None
                 with client.stream("GET", url) as resp:
                     if resp.status_code in _REDIRECT_CODES:
@@ -422,7 +435,7 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
     fetch_html = fetch_html or _fetch_html
     fetch_image = fetch_image or _fetch_image
 
-    status, final_url, html_text = fetch_html(base)
+    status, final_url, html_text = fetch_html(aid or base)
     if status == "error":
         # Transient failure (transport error, 429/5xx) — nothing cached, retried later.
         return existing
