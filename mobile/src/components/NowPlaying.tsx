@@ -117,7 +117,14 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
             hitSlop={8}
             style={styles.playBtn}
             accessibilityLabel={playing ? 'Pause' : 'Play'}>
-            <Feather name={playing ? 'pause' : 'play'} size={17} color={t.mintInk} />
+            {/* Optical centering: the play triangle's mass sits left of center (see
+               player.tsx), so nudge it right; pause is symmetric. */}
+            <Feather
+              name={playing ? 'pause' : 'play'}
+              size={17}
+              color={t.mintInk}
+              style={playing ? undefined : { marginLeft: 2 }}
+            />
           </Pressable>
 
           <View style={{ flex: 1, minWidth: 0 }}>

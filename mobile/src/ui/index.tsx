@@ -78,13 +78,15 @@ export function Icon({
   name,
   size = 18,
   color,
+  style,
 }: {
   name: IconName;
   size?: number;
   color?: string;
+  style?: ComponentProps<typeof Feather>['style'];
 }) {
   const t = useTheme();
-  return <Feather name={name} size={size} color={color ?? t.muted} />;
+  return <Feather name={name} size={size} color={color ?? t.muted} style={style} />;
 }
 
 /** Circular tap target (back chevrons, kebab menus, header actions). */

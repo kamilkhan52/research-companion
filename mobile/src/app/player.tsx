@@ -150,7 +150,15 @@ export default function PlayerScreen() {
                 {buffering ? (
                   <ActivityIndicator color={t.mintInk} />
                 ) : (
-                  <Icon name={playing ? 'pause' : 'play'} size={26} color={t.mintInk} />
+                  // The play triangle's visual mass sits left of its bounding-box center
+                  // (Feather draws it flush-left in the viewBox), so it needs a small
+                  // rightward nudge to LOOK centered in the circle; pause is symmetric.
+                  <Icon
+                    name={playing ? 'pause' : 'play'}
+                    size={26}
+                    color={t.mintInk}
+                    style={playing ? undefined : { marginLeft: 3 }}
+                  />
                 )}
               </Pressable>
               <Pressable
