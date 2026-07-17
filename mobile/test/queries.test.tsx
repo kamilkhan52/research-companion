@@ -13,6 +13,7 @@ test('useProjects fetches through the API module when a server is configured', a
       id: 'three-d-dram',
       name: '3D DRAM',
       created_at: '2026-07-05T00:00:00Z',
+      favorite: false,
       paper_count: 4,
       read_count: 1,
     },

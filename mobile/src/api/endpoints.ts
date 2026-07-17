@@ -1,7 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { apiDelete, apiGet, apiPost, authHeaders, apiUrl } from './client';
+import { apiDelete, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AudioJob,
   AuthConfig,
@@ -79,6 +79,12 @@ export const getRecentSessions = (limit = 20) =>
   apiGet<{ sessions: RecentSession[] }>(`/api/recent-sessions?limit=${limit}`);
 export const createProject = (name: string, method?: string) =>
   apiPost<{ project: Project }>('/api/projects', { name, method });
+export const updateProjectMeta = (pid: string, patch: { name?: string; favorite?: boolean }) =>
+  apiPatch<{ project: { id: string; name: string; favorite?: boolean } }>(
+    `/api/projects/${encodeURIComponent(pid)}/meta`, patch);
+/** Soft delete — the server moves the project into a recoverable .trash dir. */
+export const deleteProject = (pid: string) =>
+  apiDelete<{ ok: boolean }>(`/api/projects/${encodeURIComponent(pid)}`);
 
 // ---------- per-project ----------
 

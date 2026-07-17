@@ -209,8 +209,28 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Rename Project */
-        patch: operations["rename_project_api_projects__pid__meta_patch"];
+        /**
+         * Update Project Meta
+         * @description Rename and/or (un)favorite. Fields are independent so the client can PATCH just one.
+         */
+        patch: operations["update_project_meta_api_projects__pid__meta_patch"];
+        trace?: never;
+    };
+    "/api/projects/{pid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Project */
+        delete: operations["delete_project_api_projects__pid__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/usage/unattributed": {
@@ -1557,6 +1577,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** MetaPatchReq */
+        MetaPatchReq: {
+            /** Name */
+            name?: string | null;
+            /** Favorite */
+            favorite?: boolean | null;
+        };
         /** ModeReq */
         ModeReq: {
             /** Slug */
@@ -2068,7 +2095,7 @@ export interface operations {
             };
         };
     };
-    rename_project_api_projects__pid__meta_patch: {
+    update_project_meta_api_projects__pid__meta_patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -2079,9 +2106,40 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectReq"];
+                "application/json": components["schemas"]["MetaPatchReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_project_api_projects__pid__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

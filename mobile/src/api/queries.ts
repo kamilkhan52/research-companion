@@ -203,6 +203,30 @@ export function useCreateProject() {
   });
 }
 
+export function useUpdateProjectMeta() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pid, patch }: { pid: string; patch: { name?: string; favorite?: boolean } }) =>
+      api.updateProjectMeta(pid, patch),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.projects });
+      // Project names ride along on cross-project surfaces (Continue card).
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pid }: { pid: string }) => api.deleteProject(pid),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.projects });
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+    },
+  });
+}
+
 export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({

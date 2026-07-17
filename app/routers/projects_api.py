@@ -23,6 +23,11 @@ class ProjectReq(BaseModel):
     method: str | None = None   # optional starting reading-method; defaults to the template
 
 
+class MetaPatchReq(BaseModel):
+    name: str | None = None
+    favorite: bool | None = None
+
+
 @router.get("/api/projects")
 def list_projects():
     return {"projects": projects.list_projects()}
@@ -50,12 +55,30 @@ def project_meta(pid: str):
 
 
 @router.patch("/api/projects/{pid}/meta")
-def rename_project(pid: str, req: ProjectReq):
+def update_project_meta(pid: str, req: MetaPatchReq):
+    """Rename and/or (un)favorite. Fields are independent so the client can PATCH just one."""
+    if req.name is None and req.favorite is None:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
     try:
-        meta = projects.rename_project(pid, req.name)
+        meta = projects._read_meta(pid) if projects.exists(pid) else None
+        if req.name is not None:
+            meta = projects.rename_project(pid, req.name)
+        if req.favorite is not None:
+            meta = projects.set_favorite(pid, req.favorite)
+        if meta is None:
+            raise ProjectError(f"Unknown project: {pid}")
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"project": meta}
+
+
+@router.delete("/api/projects/{pid}")
+def delete_project(pid: str):
+    try:
+        projects.delete_project(pid)
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
 
 
 @project_router.delete("/papers/{slug}")
