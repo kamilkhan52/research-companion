@@ -8,7 +8,7 @@ import { Alert, Linking } from 'react-native';
 
 import { useAddPaper, useProjectMembership } from '@/api/queries';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
-import { colors } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
 
 export interface ExternalRef {
   href: string;
@@ -30,6 +30,7 @@ export function ExternalRefSheet({
   refItem: ExternalRef | null;
   onClose: () => void;
 }) {
+  const t = useTheme();
   const addPaper = useAddPaper(pid ?? '');
   const { isInProject } = useProjectMembership(pid);
   // Keyed by href so the "Added" state belongs to the link that was added, not whichever
@@ -78,7 +79,7 @@ export function ExternalRefSheet({
           key: 'add',
           title: added ? 'Added to reading list' : 'Already in this project',
           icon: 'check',
-          accent: colors.mint,
+          accent: t.mint,
           disabled: true,
           onPress: () => {},
         }
@@ -87,7 +88,7 @@ export function ExternalRefSheet({
           title: addPaper.isPending ? 'Adding…' : 'Add to reading list',
           subtitle: arxivId ? `arXiv:${arxivId}` : undefined,
           icon: 'plus',
-          accent: colors.mint,
+          accent: t.mint,
           disabled: !pid || addPaper.isPending,
           onPress: () => void handleAdd(),
         },

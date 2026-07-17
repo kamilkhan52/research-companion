@@ -7,7 +7,8 @@
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Icon, Text, type IconName } from '@/ui';
-import { colors, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { radius, space, type ThemePalette } from '@/theme/tokens';
 
 export interface SheetOption {
   key: string;
@@ -37,6 +38,8 @@ export function OptionsSheet({
   subtitle?: string;
   options: SheetOption[];
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
@@ -47,7 +50,7 @@ export function OptionsSheet({
         <View style={styles.card}>
           <ScrollView bounces={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
             {title ? (
-              <Text variant="overline" color={colors.violet} style={styles.title}>
+              <Text variant="overline" color={t.violet} style={styles.title}>
                 {title}
               </Text>
             ) : null}
@@ -72,7 +75,7 @@ export function OptionsSheet({
                   }}
                   style={({ pressed }) => [
                     styles.row,
-                    pressed && { backgroundColor: colors.elevated },
+                    pressed && { backgroundColor: t.elevated },
                     opt.disabled && { opacity: 0.45 },
                   ]}
                 >
@@ -80,11 +83,11 @@ export function OptionsSheet({
                     <Icon
                       name={opt.selected ? 'check' : opt.icon}
                       size={16}
-                      color={opt.selected ? colors.mint : (opt.accent ?? colors.muted)}
+                      color={opt.selected ? t.mint : (opt.accent ?? t.muted)}
                     />
                   </View>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text variant="heading" numberOfLines={1} color={opt.accent ?? colors.text}>
+                    <Text variant="heading" numberOfLines={1} color={opt.accent ?? t.text}>
                       {opt.title}
                     </Text>
                     {opt.subtitle ? (
@@ -103,18 +106,18 @@ export function OptionsSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: colors.scrim,
+    backgroundColor: t.scrim,
     justifyContent: 'center',
     padding: space.xl,
   },
   card: {
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderRadius: radius.xl,
     borderWidth: 1,
-    borderColor: colors.violet,
+    borderColor: t.violet,
     paddingVertical: space.sm,
     maxHeight: '75%',
   },
@@ -126,7 +129,7 @@ const styles = StyleSheet.create({
   subtitle: { paddingHorizontal: space.lg, paddingBottom: space.sm },
   divider: {
     height: 1,
-    backgroundColor: colors.line,
+    backgroundColor: t.line,
     marginVertical: space.sm,
     marginHorizontal: space.lg,
   },
@@ -141,7 +144,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     alignItems: 'center',
     justifyContent: 'center',
   },

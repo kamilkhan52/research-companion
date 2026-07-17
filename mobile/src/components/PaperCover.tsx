@@ -14,7 +14,7 @@ import { ActivityIndicator, StyleSheet, View, type ViewStyle } from 'react-nativ
 
 import { paperCoverImageUrl } from '@/api/endpoints';
 import { usePaperCover } from '@/api/queries';
-import { colors } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
 import { Icon } from '@/ui';
 
 const PAPER = '#F7F5EF'; // warm paper white
@@ -34,6 +34,7 @@ export function PaperCover({
   height: number;
   style?: ViewStyle;
 }) {
+  const t = useTheme();
   const { data: status, isLoading } = usePaperCover(projectId, slug);
 
   // Two treatment scales from the Figma component (Thumb 84×104 / Hero 200×248).
@@ -70,9 +71,9 @@ export function PaperCover({
             accessibilityIgnoresInvertColors
           />
         ) : rendering ? (
-          <ActivityIndicator color={colors.muted} />
+          <ActivityIndicator color={t.muted} />
         ) : (
-          <Icon name="file-text" size={Math.round(Math.min(width, height) * 0.3)} color={colors.bg} />
+          <Icon name="file-text" size={Math.round(Math.min(width, height) * 0.3)} color={t.bg} />
         )}
         <View
           pointerEvents="none"
