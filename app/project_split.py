@@ -207,8 +207,15 @@ def split_project(
         finally:
             config.reset_active_project(token)
         projects._git(source_pid, "add", "--", *changed)
-        projects._git(source_pid, "commit", "-q", "-m",
-                      f"Split {len(slugs)} paper(s) to {name}", "--", *changed)
+        try:
+            projects._git(source_pid, "commit", "-q", "-m",
+                          f"Split {len(slugs)} paper(s) to {name}", "--", *changed)
+        except projects.ProjectError as exc:
+            # A paper that existed only as an uncommitted reading-list add leaves nothing to
+            # commit once removed. The destructive move already succeeded, so treat the empty
+            # commit as done rather than failing a completed split.
+            if "nothing to commit" not in str(exc):
+                raise
         removed = True
 
     return {

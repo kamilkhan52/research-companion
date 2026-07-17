@@ -144,6 +144,16 @@ def test_split_route_refuses_while_a_job_runs(temp_project):
         jobs._ALL_REGISTRIES.remove(reg)
 
 
+def test_split_of_an_uncommitted_only_paper_succeeds(temp_project):
+    """A paper that exists only as an uncommitted reading-list add: removing it restores the
+    file to HEAD, so the source commit is a no-op — the completed move must still succeed."""
+    _seed_source(temp_project)  # awq/smooth/core are uncommitted adds in the bare fixture
+    res = project_split.split_project(temp_project, "Fresh", ["smooth"],
+                                      remove_from_source=True)
+    assert res["removed"] is True and res["new_pid"]
+    assert {p.slug for p in store.list_papers()} == {"awq", "core"}
+
+
 def test_busy_source_admits_no_new_jobs(temp_project):
     """The split marks the source busy across its sweep+migration; a job that tries to start
     meanwhile is refused, closing the check-then-move race."""
