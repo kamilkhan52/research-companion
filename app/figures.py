@@ -39,7 +39,7 @@ import httpx
 
 from . import config, logging_config, store
 from .fileio import atomic_write_bytes, atomic_write_text
-from .jobs import Job, JobRegistry, new_id
+from .jobs import Job, JobRegistry, new_id, now_iso
 
 log = logging_config.get("figures")
 
@@ -528,12 +528,35 @@ def _orphan_alive() -> bool:
         return bool(_orphans)
 
 
+# A timed-out worker outlives its graph job, so it must stay visible to project lifecycle
+# accounting (jobs.any_running_for_project) until its thread actually exits — otherwise a
+# deletion could proceed while the orphan sits between its liveness check and a write, and
+# the write would recreate the deleted project. The orphan is promoted into this registry
+# the moment it times out (while the graph job still blocks deletion), and marks itself
+# done from its own finally. The handoff is racy in both directions, so both sides settle
+# it under the registry lock via the shared cell.
+@dataclass
+class OrphanJob(Job):
+    slug: str = ""
+
+
+_orphan_registry: JobRegistry[OrphanJob] = JobRegistry("figure-orphan", max_finished=5)
+
+
+def _settle_orphan(cell: dict) -> None:  # caller holds _orphan_registry.lock
+    job = cell.get("job")
+    if job is not None and job.status == "running" and cell.get("done"):
+        job.status = "done"
+        job.finished_at = now_iso()
+
+
 def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
     """True when the worker timed out OR the host stalled mid-fetch (caller aborts the
     pass either way — an unavailable host must not cost its timeout once per paper).
     Other in-thread failures are a retryable miss, never an exception on the build thread."""
     pid = config.active_project_id()
     result: dict = {}
+    cell: dict = {}
 
     def _do() -> None:
         token = config.set_active_project(pid)
@@ -546,6 +569,9 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
             log.info("figure derivation errored for %s: %s", slug, str(e)[:120])
         finally:
             config.reset_active_project(token)
+            with _orphan_registry.lock:
+                cell["done"] = True
+                _settle_orphan(cell)
 
     worker = threading.Thread(target=_do, daemon=True, name="figures")
     worker.start()
@@ -553,6 +579,11 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
     if worker.is_alive():
         with _orphans_lock:
             _orphans.append(worker)
+        job = _orphan_registry.put(f"orphan:{slug}", OrphanJob(id=new_id(), slug=slug),
+                                   project_id=pid)
+        with _orphan_registry.lock:
+            cell["job"] = job
+            _settle_orphan(cell)  # worker may have finished during registration
         log.info("figure derivation timed out for %s", slug)
         return True
     return bool(result.get("stalled"))

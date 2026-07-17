@@ -250,6 +250,33 @@ def test_enrichment_pass_derives_each_identified_paper(temp_project):
     assert seen == [("a", True), ("b", True)]
 
 
+def test_timed_out_worker_stays_in_lifecycle_accounting_until_it_exits(temp_project,
+                                                                       monkeypatch):
+    """An orphaned deadline worker must keep blocking project deletion
+    (jobs.any_running_for_project) until its thread actually exits — otherwise a deletion
+    racing the orphan's next write would be silently resurrected."""
+    import threading
+    import time as _time
+
+    from app import jobs
+    monkeypatch.setattr(figures, "HARD_DEADLINE_S", 0.05)
+    release = threading.Event()
+
+    def blocked(slug, *, force=False):
+        release.wait(5)
+
+    try:
+        timed_out = figures._derive_with_deadline("stuck-paper", False, blocked)
+        assert timed_out
+        assert jobs.any_running_for_project(temp_project) == "figure-orphan"
+    finally:
+        release.set()
+    deadline = _time.time() + 5
+    while jobs.any_running_for_project(temp_project) and _time.time() < deadline:
+        _time.sleep(0.01)
+    assert jobs.any_running_for_project(temp_project) is None
+
+
 def test_a_stalled_host_aborts_the_rest_of_the_pass(temp_project):
     paper("a", title="Paper A", arxiv_id="2401.00001")
     paper("b", title="Paper B", arxiv_id="2401.00002")
