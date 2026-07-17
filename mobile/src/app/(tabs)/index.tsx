@@ -404,8 +404,6 @@ function ProjectPill({
 function ContinueCard({ session, onPress }: { session: RecentSession; onPress: () => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const sm = stateMetaFor(t);
-  const meta = sm[session.state ?? 'unread'] ?? sm.unread;
   const paperUrl = fullPaperUrl(session);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.continueWrap, pressed && { opacity: 0.85 }]}>
@@ -419,8 +417,10 @@ function ContinueCard({ session, onPress }: { session: RecentSession; onPress: (
             <Text variant="serifTitle" numberOfLines={3}>
               {session.title}
             </Text>
+            {/* Project name over paper status: the status is almost always "Discussing" here
+               (noise), while the project is what disambiguates a cross-project resume. */}
             <Text variant="caption" numberOfLines={1}>
-              {meta.label} · {session.project_name} · {formatActivityTime(session.updated_at)}
+              {session.project_name} · {formatActivityTime(session.updated_at)}
             </Text>
             <View style={styles.continueActions}>
               <Button title="Resume" icon="play" onPress={onPress} style={styles.resumeBtn} />
