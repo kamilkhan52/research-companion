@@ -180,9 +180,15 @@ _busy_projects: set[str] = set()
 _busy_lock = threading.Lock()
 
 
-def mark_project_busy(pid: str) -> None:
+def mark_project_busy(pid: str) -> bool:
+    """Reserve `pid` for an exclusive synchronous mutation. Returns False if it is ALREADY
+    reserved (a concurrent split of the same project), so the caller can reject rather than
+    interleave two mutations of the same reading list / git index."""
     with _busy_lock:
+        if pid in _busy_projects:
+            return False
         _busy_projects.add(pid)
+        return True
 
 
 def unmark_project_busy(pid: str) -> None:

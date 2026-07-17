@@ -154,6 +154,18 @@ def test_split_of_an_uncommitted_only_paper_succeeds(temp_project):
     assert {p.slug for p in store.list_papers()} == {"awq", "core"}
 
 
+def test_mark_project_busy_is_exclusive(temp_project):
+    """mark_project_busy reserves the pid; a second reservation fails so the route can reject
+    a concurrent split of the same project."""
+    assert config.mark_project_busy(temp_project) is True
+    try:
+        assert config.mark_project_busy(temp_project) is False  # already reserved
+    finally:
+        config.unmark_project_busy(temp_project)
+    assert config.mark_project_busy(temp_project) is True  # reservation freed
+    config.unmark_project_busy(temp_project)
+
+
 def test_busy_source_admits_no_new_jobs(temp_project):
     """The split marks the source busy across its sweep+migration; a job that tries to start
     meanwhile is refused, closing the check-then-move race."""

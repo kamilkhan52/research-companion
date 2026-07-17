@@ -135,7 +135,11 @@ def split_project(pid: str, req: SplitReq):
     then sweep — so a job admitted after the sweep is refused by the busy gate
     (`jobs.start_or_join`), closing the window between the check and the move (the same
     atomic tombstone-then-sweep shape project deletion uses)."""
-    config.mark_project_busy(pid)
+    # Exclusive reservation: a second concurrent split of the same project is rejected rather
+    # than interleaving two mutations of one reading list / git index (and the first's
+    # unmark would otherwise re-admit jobs while the second still runs).
+    if not config.mark_project_busy(pid):
+        raise HTTPException(status_code=409, detail="This project is already being split.")
     try:
         busy = jobs.any_running_for_project(pid)
         if busy:
