@@ -11,6 +11,9 @@ module.exports = {
   testMatch: ['<rootDir>/test/**/*.test.[jt]s?(x)'],
   moduleNameMapper: {
     '^react-native-track-player$': '<rootDir>/test/mocks/trackPlayer.ts',
+    // Official mock: the real module binds native keyboard event emitters at import time,
+    // which throws under Jest once a component imports KeyboardAvoidingView from it.
+    '^react-native-keyboard-controller$': 'react-native-keyboard-controller/jest',
     '^@/(.*)$': '<rootDir>/src/$1',
   },
 };

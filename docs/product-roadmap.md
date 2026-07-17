@@ -149,10 +149,10 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 
 | Item | Change | Type | Status |
 |------|--------|------|--------|
-| R9.14 | Split/rename sheets avoid the keyboard (inputs hidden underneath) | bug | Queued |
+| R9.14 | Split/rename sheets avoid the keyboard (inputs hidden underneath) | bug | [#151](https://github.com/kamilkhan52/research-companion/pull/151) — keyboard-controller KAV in Split + Projects sheets |
 | R9.7 | Play button glyph centering | bug | Queued |
 | R9.6 | Cue playback: stop repeating "synthesizing", report only on progress, keep/allow background playback | bug/UX | Queued |
-| R9.9 | Strip bracketed numeric refs `[11]` from responses; always use our own paper linking | prompt | Queued |
+| R9.9 | Strip bracketed numeric refs `[11]` from responses; always use our own paper linking | prompt | [#150](https://github.com/kamilkhan52/research-companion/pull/150) — merged; prompt-only ban (no parser strip) |
 | R9.5 | Preview cues: prior cues into context + verify the cue model sees the real generated response | audio | Queued |
 | R9.3 | Reply/composer redesign: button inside, full-width, remove stray separator line (Gemini ref) | Figma | Queued — needs Kamil's screenshots |
 | R9.8 | `+15/-15` skip buttons restyle to match the sentence control | Figma | Queued |
