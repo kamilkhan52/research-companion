@@ -25,6 +25,7 @@ import type {
   ProjectState,
   ReadingMode,
   RecentSession,
+  RetrievalJob,
   PreviewJob,
   Session,
   SessionState,
@@ -85,6 +86,24 @@ export const updateProjectMeta = (pid: string, patch: { name?: string; favorite?
 /** Soft delete — the server moves the project into a recoverable .trash dir. */
 export const deleteProject = (pid: string) =>
   apiDelete<{ ok: boolean }>(`/api/projects/${encodeURIComponent(pid)}`);
+
+// ---------- background retrieval + auto-analysis (R7.8) ----------
+
+/** Start (or join) connection-independent retrieval. With auto_analyze the server chains the
+ *  first analysis turn onto a successful fetch — the whole flow survives the app closing. */
+export const startRetrievalJob = (
+  pid: string,
+  slug: string,
+  opts: {
+    arxiv_id?: string;
+    pdf_url?: string;
+    auto_analyze?: boolean;
+    mode?: ReadingMode;
+    delivery_mode?: 'reading' | 'listening';
+  } = {},
+) => apiPost<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs`, { slug, ...opts });
+export const getRetrievalJob = (pid: string, id: string) =>
+  apiGet<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/${encodeURIComponent(id)}`);
 
 // ---------- per-project ----------
 

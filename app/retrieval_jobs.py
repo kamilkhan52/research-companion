@@ -26,6 +26,11 @@ class RetrievalJob(Job):
     items: list = field(default_factory=list)
     candidates: list = field(default_factory=list)
     retrieved: bool = False
+    # Auto-analysis chain (R7.8): when the caller asked for a first analysis, the chat job it
+    # spawned after successful retrieval — pollers follow this id to know when the opening
+    # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
+    analysis_job_id: str | None = None
+    analysis_error: str | None = None
 
 
 _registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
@@ -40,6 +45,16 @@ def latest_for(slug: str) -> RetrievalJob | None:
     return _registry.latest_for(slug)
 
 
+def set_analysis_job(job: RetrievalJob, chat_job_id: str) -> None:
+    with _registry.lock:
+        job.analysis_job_id = chat_job_id
+
+
+def set_analysis_error(job: RetrievalJob, message: str) -> None:
+    with _registry.lock:
+        job.analysis_error = message[:400]
+
+
 def start_retrieval(
     slug: str,
     arxiv_id: str | None = None,
@@ -47,19 +62,27 @@ def start_retrieval(
     *,
     retrieve_fn: RetrieveFn = retriever.retrieve,
     hunt_fn: HuntFn = retrieval_agent.stream_hunt,
+    after_retrieved: Callable[[RetrievalJob], None] | None = None,
 ) -> RetrievalJob:
     paper = store.get_paper(slug)
     if not paper:
         raise RetrievalError("Unknown paper")
 
     if paper.retrieved and not arxiv_id and not pdf_url:
-        return _registry.put(
+        job = _registry.put(
             slug,
             RetrievalJob(
                 id=new_id(), slug=slug, status="done", phase="done", retrieved=True,
                 finished_at=now_iso(),
             ),
         )
+        # Terminal short-circuit never runs a worker, so the analysis chain (if requested)
+        # kicks here on the caller's thread — the project is already bound to it.
+        if after_retrieved is not None:
+            with _registry.lock:
+                job._analysis_claimed = True
+            _call_analysis_hook(job, after_retrieved)
+        return job
 
     def work(job: RetrievalJob) -> None:
         first_error: str | None = None
@@ -101,11 +124,54 @@ def start_retrieval(
             job.phase = "hunting"
         asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
 
-    return _registry.start_or_join(
-        slug,
-        lambda: RetrievalJob(id=new_id(), slug=slug),
-        work,
-    )
+    def work_then_analyze(job: RetrievalJob) -> None:
+        work(job)
+        _run_analysis_hook(job)
+
+    created = False
+
+    def make_job() -> RetrievalJob:
+        nonlocal created
+        created = True
+        job = RetrievalJob(id=new_id(), slug=slug)
+        if after_retrieved is not None:
+            job._after_retrieved = after_retrieved  # read back under the registry lock
+        return job
+
+    job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    if after_retrieved is not None and not created:
+        # Joined a retrieval another request started (possibly without a hook): attach the
+        # continuation and register a settle callback — the registry reads callbacks in the
+        # same critical section that flips the status, so either the callback fires on the
+        # worker thread or add returns False and the settled job is handled inline here.
+        # The claim flag dedupes against the worker's own end-of-work check.
+        with _registry.lock:
+            if getattr(job, "_after_retrieved", None) is None:
+                job._after_retrieved = after_retrieved
+        if not _registry.add_settle_callback(job, _run_analysis_hook):
+            _run_analysis_hook(job)
+    return job
+
+
+def _run_analysis_hook(job: RetrievalJob) -> None:
+    """Worker-side end of the chain: claim and run the attached hook exactly once. The claim
+    flag (mutated only under the registry lock) keeps a caller that attached a hook to a
+    just-finished job from double-running it."""
+    with _registry.lock:
+        hook = getattr(job, "_after_retrieved", None)
+        eligible = hook is not None and job.retrieved and not getattr(job, "_analysis_claimed", False)
+        if eligible:
+            job._analysis_claimed = True
+    if eligible:
+        _call_analysis_hook(job, hook)
+
+
+def _call_analysis_hook(job: RetrievalJob, hook: Callable[[RetrievalJob], None]) -> None:
+    try:
+        hook(job)
+    except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
+        # here must never turn a successful retrieval into an error.
+        set_analysis_error(job, str(exc))
 
 
 async def _consume_hunt(

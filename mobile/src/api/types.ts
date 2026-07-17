@@ -105,6 +105,22 @@ export interface ProjectState {
  *  prompt for every subsequent turn. */
 export type ReadingMode = 'balanced' | 'background' | 'technical' | 'detailed';
 
+/** Snapshot of a background paper-retrieval job (POST/GET /retrieval/jobs). With
+ *  auto_analyze, a successful retrieval chains into the first analysis turn and the spawned
+ *  chat job's id appears as analysis_job_id (R7.8). */
+export interface RetrievalJob {
+  id: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error: string | null;
+  slug: string;
+  phase: 'resolving' | 'hunting' | 'confirmation' | 'done';
+  detail: string;
+  candidates: unknown[];
+  retrieved: boolean;
+  analysis_job_id: string | null;
+  analysis_error: string | null;
+}
+
 export const READING_MODE_LABELS: Record<ReadingMode, string> = {
   balanced: 'Balanced',
   background: 'Background-heavy',

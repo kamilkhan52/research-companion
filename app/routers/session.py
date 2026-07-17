@@ -339,11 +339,52 @@ def start_paper(req: StartReq):
     return {"ok": True, "retrieved": True}
 
 
+class RetrievalJobReq(StartReq):
+    # R7.8: chain the paper's FIRST analysis onto a successful retrieval, so "add paper →
+    # analyzed and narrated" is one durable server-side flow the user can walk away from.
+    auto_analyze: bool = False
+    mode: Literal["balanced", "background", "technical", "detailed"] | None = None
+    delivery_mode: Literal["reading", "listening"] = "reading"
+
+
+def _first_analysis_hook(req: RetrievalJobReq):
+    """The after-retrieval continuation: start the session with the chosen Reading Mode's
+    opening template and spawn the normal chat turn job. Runs inside the retrieval worker
+    (project contextvar rebound by the registry) or, for an already-retrieved paper, on the
+    request thread. Mirrors /chat/start_job exactly — same lock, same prep."""
+    def kick(job) -> None:
+        slug = req.slug
+        with sessions.mutation_lock(slug):
+            if sessions.get_state(slug):
+                return  # an existing discussion must never be clobbered by an auto-start
+            p = store.get_paper(slug)
+            if not p:
+                raise RetrievalError("Unknown paper")
+            base = prompts.get("opening_message").replace("{title}", p.title)
+            prompt = _opening_prompt_templates(base).get(req.mode or "balanced", base)
+            chat_req = ChatStartReq(
+                slug=slug, prompt=prompt,
+                mode=(req.mode if req.mode and req.mode != "balanced" else None),
+                delivery_mode=req.delivery_mode,
+            )
+            _prep_chat_start(chat_req)
+            chat_job = chat_jobs.start_turn(slug, delivery_mode=req.delivery_mode)
+        retrieval_jobs.set_analysis_job(job, chat_job.id)
+    return kick
+
+
 @project_router.post("/retrieval/jobs")
-def start_retrieval_job(req: StartReq):
-    """Start or join connection-independent paper retrieval and return immediately."""
+def start_retrieval_job(req: RetrievalJobReq):
+    """Start or join connection-independent paper retrieval and return immediately. With
+    auto_analyze, a successful retrieval flows straight into the first analysis turn; the
+    spawned chat job's id lands on the retrieval snapshot (`analysis_job_id`)."""
+    hook = _first_analysis_hook(req) if req.auto_analyze else None
     try:
-        job = retrieval_jobs.start_retrieval(req.slug, req.arxiv_id, req.pdf_url)
+        # start_retrieval owns the whole chain: worker-side on a fresh job, attach-on-join for
+        # a retrieval already running, and inline for the already-retrieved short-circuit.
+        job = retrieval_jobs.start_retrieval(
+            req.slug, req.arxiv_id, req.pdf_url, after_retrieved=hook,
+        )
     except RetrievalError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return {"job": retrieval_jobs.snapshot(job.id)}

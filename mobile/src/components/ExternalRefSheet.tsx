@@ -56,6 +56,9 @@ export function ExternalRefSheet({
         // Discover paste flow (retrieval fills in the real title).
         title: title ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
         arxivId: arxivId ?? undefined,
+        // Without an arXiv id the href is the only source we have — carry it so the
+        // analysis offer's retrieval fetches that link instead of title-searching.
+        pdfUrl: arxivId ? undefined : refItem!.href,
       });
       setAddedHref(refItem!.href);
     } catch (e) {

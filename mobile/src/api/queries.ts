@@ -7,6 +7,7 @@ import { useMemo, useSyncExternalStore } from 'react';
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
 import type { Project } from './types';
+import { offerInitialAnalysis } from '@/components/InitialAnalysisOffer';
 import { showToast } from '@/ui/Toast';
 
 /** Reactive base URL — re-renders consumers when it changes (e.g. saved in Settings). */
@@ -348,12 +349,23 @@ export function useAddPaper(pid: string) {
       arxivId?: string;
       abstract?: string;
       year?: number | null;
+      /** Direct PDF link when the caller has one (URL adds) — not sent to the add itself,
+       *  but carried into the initial-analysis offer so retrieval fetches that exact source. */
+      pdfUrl?: string;
     }) => api.addPaper(pid, title, group, arxivId, abstract, year),
-    onSuccess: () => {
-      showToast('Added to library');
+    onSuccess: (res, { arxivId, pdfUrl }) => {
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
+      // Instead of a bare "added" toast, offer to kick the first analysis off in the
+      // background (R7.8). The offer sheet has its own "Not now".
+      offerInitialAnalysis({
+        pid,
+        slug: res.paper.slug,
+        title: res.paper.title,
+        arxivId: arxivId || res.paper.arxiv_id || undefined,
+        pdfUrl,
+      });
     },
   });
 }

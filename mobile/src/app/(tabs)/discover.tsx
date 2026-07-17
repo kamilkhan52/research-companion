@@ -424,7 +424,13 @@ function SpecificPaper({ pid }: { pid: string }) {
       source = s;
     }
     try {
-      const { paper } = await addPaper.mutateAsync({ title, arxivId });
+      const { paper } = await addPaper.mutateAsync({
+        title,
+        arxivId,
+        // A pasted non-arXiv URL is a direct PDF source; the analysis offer must fetch
+        // exactly it, mirroring what ?source= does for the manual Start path below.
+        pdfUrl: !arxivId && source ? source : undefined,
+      });
       await textDraft.clear('');
       router.push(
         `/paper/${encodeURIComponent(paper.slug)}${source ? `?source=${encodeURIComponent(source)}` : ''}`,
