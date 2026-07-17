@@ -6,20 +6,21 @@
 // scored (the factors, not the formula).
 
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 
 import * as api from '@/api/endpoints';
-import type { AuthorPaper, BoardAuthor } from '@/api/types';
+import type { AuthorPaper, BoardAuthor, LabsBoard, LabsResearchJob } from '@/api/types';
 import { keys, useGraphAuthors } from '@/api/queries';
+import { showToast } from '@/ui/Toast';
 import { BottomSheet } from '@/components/BottomSheet';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { TopBar } from '@/components/TopBar';
 import { useActiveProject } from '@/store/project';
 import { Button, Chip, Icon, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, space, type ThemePalette } from '@/theme/tokens';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 /** The same target a chat's external reference would open: arXiv abs page when the id is
  *  known, DOI resolver, the extracted URL, else a Scholar title search. */
@@ -45,7 +46,6 @@ export default function AuthorsScreen() {
   const [extRef, setExtRef] = useState<ExternalRef | null>(null);
 
   const authors = board.data?.authors ?? [];
-  const groups = useMemo(() => groupByAffiliation(authors), [authors]);
 
   return (
     <Screen edges={['top']}>
@@ -83,29 +83,13 @@ export default function AuthorsScreen() {
               ))}
             </View>
           ) : (
-            <>
-            {/* Labs coverage is inherently patchy — arXiv metadata carries no affiliation, so
-                it comes from OpenAlex per rebuild. When most authors have none, Labs looks like
-                Authors; say why rather than leave it a mystery (R.6). */}
-            {groups.length === 1 && groups[0].affiliation === UNKNOWN_LABEL ? (
-              <Text variant="caption" color={t.muted} style={styles.labsNote}>
-                No affiliations yet. They fill in as the map is rebuilt (from the Map screen) —
-                many arXiv papers list none, so coverage stays patchy.
-              </Text>
-            ) : null}
-            {groups.map((g) => (
-              <View key={g.affiliation} style={{ marginTop: space.md }}>
-                <Text variant="caption" color={t.muted} style={styles.groupHeader}>
-                  {g.affiliation.toUpperCase()}
-                </Text>
-                <View style={styles.cardGrid}>
-                  {g.authors.map((a) => (
-                    <AuthorCard key={a.name} author={a} onPress={() => setSelected(a)} />
-                  ))}
-                </View>
-              </View>
-            ))}
-            </>
+            <LabsView
+              pid={pid}
+              authors={authors}
+              labs={board.data?.labs}
+              runningJob={board.data?.labs_job ?? null}
+              onSelectAuthor={setSelected}
+            />
           )}
         </ScrollView>
       )}
@@ -183,6 +167,187 @@ function AuthorCard({ author, onPress }: { author: BoardAuthor; onPress: () => v
         </Text>
       ) : null}
     </Pressable>
+  );
+}
+
+/** Lab-centric Labs mode (R7.7): researched lab cards first — the actual groups behind the
+ *  project's top authors, found by an explicit agentic web pass — then everyone not yet
+ *  mapped, grouped by plain paper-metadata affiliation as before. Concentration of the
+ *  project's papers in a few labs is the signal this view exists for; when the research ran
+ *  and found none, it says so instead of pretending. */
+function LabsView({
+  pid,
+  authors,
+  labs,
+  runningJob,
+  onSelectAuthor,
+}: {
+  pid: string | null;
+  authors: BoardAuthor[];
+  labs: LabsBoard | undefined;
+  runningJob: LabsResearchJob | null;
+  onSelectAuthor: (a: BoardAuthor) => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const qc = useQueryClient();
+  const [job, setJob] = useState<LabsResearchJob | null>(runningJob);
+  const [starting, setStarting] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  // Reattach to a pass already running server-side (the board response carries it).
+  useEffect(() => {
+    if (runningJob && !job) setJob(runningJob);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningJob]);
+
+  // Poll the running pass; findings persist per author server-side, so refresh the board on
+  // settle (and toast) — closing the screen only loses the toast.
+  useEffect(() => {
+    if (!pid || !job || job.status !== 'running') return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const next = (await api.getLabsResearchJob(pid, job.id)).job;
+        if (cancelled || !alive.current) return;
+        setJob(next);
+        if (next.status !== 'running') {
+          qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+          showToast(
+            next.status === 'done'
+              ? `Lab research done — ${next.found} of ${next.total} top authors mapped`
+              : 'Lab research failed — try again',
+          );
+        }
+      } catch {
+        /* transient poll failure; next tick retries */
+      }
+    };
+    const iv = setInterval(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [pid, job, qc]);
+
+  async function startResearch() {
+    if (!pid || starting) return;
+    setStarting(true);
+    try {
+      setJob((await api.startLabsResearch(pid)).job);
+    } catch (e) {
+      showToast((e as Error).message ?? 'Could not start lab research.');
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  const covered = new Set(labs?.covered_authors ?? []);
+  const uncovered = authors.filter((a) => !covered.has(a.name));
+  const groups = groupByAffiliation(uncovered);
+  const researching = job?.status === 'running';
+  const byName = new Map(authors.map((a) => [a.name, a]));
+
+  return (
+    <>
+      {researching ? (
+        <View style={styles.researchRow}>
+          <ActivityIndicator size="small" color={t.mint} />
+          <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+            Researching labs · {job!.done}/{job!.total}
+            {job!.current ? ` · ${job!.current}` : ''}
+          </Text>
+        </View>
+      ) : (
+        <Button
+          title={labs?.researched ? 'Re-run lab research' : 'Research labs (web pass)'}
+          variant="ghost"
+          icon="globe"
+          onPress={() => void startResearch()}
+          loading={starting}
+          disabled={!pid}
+        />
+      )}
+
+      {labs?.researched && labs.labs.length === 0 && !researching ? (
+        <Text variant="caption" color={t.muted} style={styles.labsNote}>
+          No distinct labs surfaced for this project's top authors — not every topic
+          concentrates in labs. Individual affiliations continue below.
+        </Text>
+      ) : null}
+
+      {(labs?.labs ?? []).map((lab) => (
+        <View key={lab.lab_name} style={styles.labCard}>
+          <Text variant="heading">{lab.lab_name}</Text>
+          {lab.institution ? (
+            <Text variant="caption" color={t.muted}>{lab.institution}</Text>
+          ) : null}
+          {lab.focus ? (
+            <Text variant="body" color={t.text} style={{ marginTop: 2 }}>{lab.focus}</Text>
+          ) : null}
+          <View style={styles.chipRow}>
+            <Chip label={`${lab.in_project_count} in project`} color={t.mint} dot={false} />
+            {lab.significant_count > 0 ? (
+              <Chip label={`${lab.significant_count} significant`} color={t.amber} dot={false} />
+            ) : null}
+          </View>
+          <View style={styles.chipRow}>
+            {lab.members.map((name) => {
+              const author = byName.get(name);
+              return (
+                <Pressable
+                  key={name}
+                  onPress={() => author && onSelectAuthor(author)}
+                  style={({ pressed }) => pressed && { opacity: 0.7 }}>
+                  <Chip label={name} color={t.violet} dot={false} />
+                </Pressable>
+              );
+            })}
+          </View>
+          {lab.url ? (
+            <Pressable
+              onPress={() => void Linking.openURL(lab.url).catch(() => undefined)}
+              accessibilityRole="link">
+              <Text variant="caption" color={t.mint}>{lab.url} ↗</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ))}
+
+      {uncovered.length ? (
+        <>
+          {labs?.labs.length ? (
+            <Text variant="caption" color={t.muted} style={[styles.groupHeader, { marginTop: space.lg }]}>
+              NOT YET MAPPED TO A LAB
+            </Text>
+          ) : null}
+          {groups.length === 1 && groups[0].affiliation === UNKNOWN_LABEL && !labs?.researched ? (
+            <Text variant="caption" color={t.muted} style={styles.labsNote}>
+              Affiliations fill in as the map is rebuilt; the web pass above finds the actual
+              groups behind the top authors.
+            </Text>
+          ) : null}
+          {groups.map((g) => (
+            <View key={g.affiliation} style={{ marginTop: space.md }}>
+              <Text variant="caption" color={t.muted} style={styles.groupHeader}>
+                {g.affiliation.toUpperCase()}
+              </Text>
+              <View style={styles.cardGrid}>
+                {g.authors.map((a) => (
+                  <AuthorCard key={a.name} author={a} onPress={() => onSelectAuthor(a)} />
+                ))}
+              </View>
+            </View>
+          ))}
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -384,6 +549,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     backgroundColor: t.surface,
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  researchRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
+  labCard: {
+    backgroundColor: t.surface,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.lg,
+    padding: space.md,
+    gap: 6,
+    marginTop: space.sm,
+  },
   groupHeader: { marginBottom: 6, letterSpacing: 0.5 },
   labsNote: { lineHeight: 18, marginBottom: space.xs },
   sheetSection: { marginTop: space.sm, letterSpacing: 0.5 },

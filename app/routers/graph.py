@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from .. import author_profiles, graph, graph_jobs, graph_store, sessions, store
+from .. import author_profiles, graph, graph_jobs, graph_store, lab_research, sessions, store
 from . import make_project_router
 
 project_router = make_project_router()
@@ -58,10 +58,15 @@ def get_graph_authors(pid: str):
     profiles = author_profiles.profiles_for_board(board)
     for entry in board:
         entry["profile"] = profiles.get(graph._author_key(entry["name"])) or None
+    labs_job = lab_research.active()
     return {
         "authors": board,
         "explainers": graph.AUTHOR_EXPLAINERS,
         "built_at": (overlaid or {}).get("built_at"),
+        # Lab-centric grouping (R7.7): researched lab cards + which authors they cover; the
+        # client keeps the plain affiliation grouping for everyone else.
+        "labs": lab_research.labs_board(board),
+        "labs_job": labs_job.to_dict() if labs_job else None,
     }
 
 
@@ -86,6 +91,25 @@ def author_profile_status(pid: str, job_id: str):
     snap = author_profiles.snapshot(job_id)
     if not snap:
         raise HTTPException(status_code=404, detail="Unknown profile job")
+    return {"job": snap}
+
+
+@project_router.post("/graph/labs/research")
+def start_labs_research(pid: str):
+    """Start (or join) the agentic lab pass over the project's top authors (R7.7). Explicit,
+    user-triggered — each uncached author costs a small web-agent run on the graph model."""
+    try:
+        job = lab_research.start_research()
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return {"job": lab_research.snapshot(job.id)}
+
+
+@project_router.get("/graph/labs/research/jobs/{job_id}")
+def labs_research_status(pid: str, job_id: str):
+    snap = lab_research.snapshot(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown labs research job")
     return {"job": snap}
 
 

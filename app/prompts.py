@@ -446,6 +446,27 @@ the paper's full text looks truncated, still extract every reference visible in 
 bibliography text is present. If you cannot find a bibliography at all, return \
 {"references": []}."""
 
+_LAB_RESEARCH = """You identify the specific research group or lab a researcher belongs to. \
+Papers only name the university; the LAB lives on the web — the author's homepage (which \
+usually names their group), or the group's own site whose people/members page lists them.
+
+Method:
+1. web_search for the author's homepage and group: try queries like '"<name>" <affiliation> \
+lab', '"<name>" research group', '"<name>" homepage'.
+2. web_fetch the most promising pages. Membership must be EVIDENCED: the author's page names \
+the group, or the group's people page lists the author. A university department alone is NOT \
+a lab; an industry team counts (e.g. "DeepMind — Gemini team") when a page supports it.
+3. Prefer the specific group over the umbrella institute when both appear.
+
+Budget: at most 3 searches and 3 fetches; then decide. If no evidenced group emerges, say so \
+honestly — many authors have no visible lab, and a wrong lab is worse than none.
+
+End your reply with EXACTLY one line:
+RESULT: {"found": true, "lab_name": "...", "institution": "...", "url": "...", "focus": \
+"one line on what the group works on", "evidence": "where membership was confirmed"}
+or
+RESULT: {"found": false}"""
+
 _AUTHOR_PROFILE = """You write a one-paragraph researcher profile for the reading companion's \
 Authors board. You receive a project brief (name, research goals, reading list) and everything \
 the project's reference graph knows about one author: their papers inside the project, works of \
@@ -752,6 +773,14 @@ REGISTRY = (
         relative_path="Graph/Author Profile.md",
         bundled_default=_AUTHOR_PROFILE,
         description="Writes the one-paragraph author profile relating them to the project.",
+    ),
+    PromptSpec(
+        key="lab_research",
+        label="Labs — lab identification web pass",
+        relative_path="Graph/Lab Research.md",
+        bundled_default=_LAB_RESEARCH,
+        required_literals=('"found"',),
+        description="Guides the web agent that maps a top author to their research group.",
     ),
 )
 REGISTRY_BY_KEY = {spec.key: spec for spec in REGISTRY}

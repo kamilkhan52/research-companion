@@ -552,6 +552,37 @@ export interface AuthorProfileJob {
   cached: boolean;
 }
 
+/** One researched lab card (R7.7): an evidenced group with its board members. */
+export interface LabCard {
+  lab_name: string;
+  institution: string;
+  url: string;
+  focus: string;
+  members: string[];
+  in_project_count: number;
+  significant_count: number;
+}
+
+/** The lab-centric grouping merged into the authors response (R7.7). */
+export interface LabsBoard {
+  labs: LabCard[];
+  covered_authors: string[];
+  researched: boolean;
+  researched_at: string | null;
+}
+
+/** Snapshot of the agentic lab-research pass over the top authors. */
+export interface LabsResearchJob {
+  id: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
+  error: string | null;
+  total: number;
+  done: number;
+  current: string;
+  found: number;
+  skipped_cached: number;
+}
+
 /** GET /api/projects/{pid}/graph/authors */
 export interface AuthorBoardResponse {
   authors: BoardAuthor[];
@@ -559,6 +590,8 @@ export interface AuthorBoardResponse {
    *  means (factors, not the formula). */
   explainers: { activity: string; significant: string };
   built_at: string | null;
+  labs: LabsBoard;
+  labs_job: LabsResearchJob | null;
 }
 
 /** POST /api/projects/{pid}/graph/build */

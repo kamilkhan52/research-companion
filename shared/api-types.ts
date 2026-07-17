@@ -1443,6 +1443,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/graph/labs/research": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Labs Research
+         * @description Start (or join) the agentic lab pass over the project's top authors (R7.7). Explicit,
+         *     user-triggered — each uncached author costs a small web-agent run on the graph model.
+         */
+        post: operations["start_labs_research_api_projects__pid__graph_labs_research_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/graph/labs/research/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Labs Research Status */
+        get: operations["labs_research_status_api_projects__pid__graph_labs_research_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/graph/build/status": {
         parameters: {
             query?: never;
@@ -4294,6 +4332,69 @@ export interface operations {
         };
     };
     author_profile_status_api_projects__pid__graph_authors_profile_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_labs_research_api_projects__pid__graph_labs_research_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    labs_research_status_api_projects__pid__graph_labs_research_jobs__job_id__get: {
         parameters: {
             query?: never;
             header?: never;
