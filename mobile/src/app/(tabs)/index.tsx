@@ -516,7 +516,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: t.danger,
-    backgroundColor: 'rgba(229, 115, 140, 0.12)',
+    backgroundColor: t.dangerWash,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -310,7 +310,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingRight: 8,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(153, 163, 183, 0.28)',
+    borderColor: t.line2,
     backgroundColor: t.surface,
   },
   eqRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 2, width: 28, height: 24, justifyContent: 'center' },
@@ -323,6 +323,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(27, 32, 43, 0.72)',
+    backgroundColor: t.elevatedGlass,
   },
 });

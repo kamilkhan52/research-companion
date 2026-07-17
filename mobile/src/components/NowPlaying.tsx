@@ -172,7 +172,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: radius.md,
-    backgroundColor: 'rgba(101, 214, 180, 0.12)',
+    backgroundColor: t.mintWashStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -48,7 +48,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: t.surface,
   },
-  selected: { borderColor: t.mint, backgroundColor: 'rgba(101, 214, 180, 0.08)' },
+  selected: { borderColor: t.mint, backgroundColor: t.mintWash },
   badge: {
     width: 36,
     height: 36,
@@ -57,5 +57,5 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeSelected: { backgroundColor: 'rgba(101, 214, 180, 0.14)' },
+  badgeSelected: { backgroundColor: t.mintWashStrong },
 });

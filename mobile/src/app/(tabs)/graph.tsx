@@ -802,8 +802,8 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(228, 184, 92, 0.4)',
-    backgroundColor: 'rgba(228, 184, 92, 0.08)',
+    borderColor: t.amberLine,
+    backgroundColor: t.amberWash,
   },
   retrievalIndicatorGhost: {
     opacity: 0.45,

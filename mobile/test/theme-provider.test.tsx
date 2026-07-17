@@ -12,7 +12,7 @@ import {
   useThemedStyles,
   useThemeMode,
 } from '@/theme/ThemeProvider';
-import { colors, themes, type ThemePalette } from '@/theme/tokens';
+import { themes, type ThemePalette } from '@/theme/tokens';
 
 const makeProbeStyles = (t: ThemePalette) => StyleSheet.create({
   pill: { backgroundColor: t.bg },
@@ -44,8 +44,11 @@ test('system mode maps OS dark to Dim — Black is opt-in only', () => {
   expect(resolveThemeName('light', 'dark')).toBe('light');
 });
 
-test('the Dim palette IS the legacy flat tokens (default is a visual no-op)', () => {
-  expect(themes.dim).toBe(colors);
+test('the Dim palette values are frozen (default stays a visual no-op)', () => {
+  // The legacy flat export is gone (T.5 guard); pin the load-bearing Dim values instead.
+  expect(themes.dim.bg).toBe('#0B0D12');
+  expect(themes.dim.text).toBe('#F3F0E8');
+  expect(themes.dim.mint).toBe('#65D6B4');
 });
 
 test('restores a persisted mode and persists changes', async () => {

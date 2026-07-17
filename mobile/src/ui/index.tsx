@@ -192,7 +192,7 @@ export function Chip({
   const chipStyle = [
     styles.chip,
     selected
-      ? { borderColor: t.mint, backgroundColor: 'rgba(101, 214, 180, 0.10)' }
+      ? { borderColor: t.mint, backgroundColor: t.mintWash }
       : { borderColor: color ?? t.line2, backgroundColor: t.surface },
   ];
   if (onPress) {

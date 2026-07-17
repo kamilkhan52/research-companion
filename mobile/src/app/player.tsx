@@ -22,7 +22,8 @@ import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
 import { Icon, IconButton, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -33,6 +34,8 @@ function fmt(sec: number): string {
 
 export default function PlayerScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const audio = useAudio();
   const track = useActiveTrack();
   const { playing } = useIsPlaying();
@@ -78,7 +81,7 @@ export default function PlayerScreen() {
           style={styles.rateBtn}
           accessibilityRole="button"
           accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change.`}>
-          <Text style={[styles.rateLabel, playbackRate !== 1 && { color: colors.mint }]}>
+          <Text style={[styles.rateLabel, playbackRate !== 1 && { color: t.mint }]}>
             {playbackRate}×
           </Text>
         </Pressable>
@@ -90,7 +93,7 @@ export default function PlayerScreen() {
             <RollingTranscript narration={narration} />
           ) : (
             <View style={styles.centerFill}>
-              <Text variant="body" color={colors.muted}>
+              <Text variant="body" color={t.muted}>
                 No transcript for this narration.
               </Text>
             </View>
@@ -102,9 +105,9 @@ export default function PlayerScreen() {
               minimumValue={0}
               maximumValue={duration || 1}
               value={value}
-              minimumTrackTintColor={colors.mint}
-              maximumTrackTintColor={colors.line2}
-              thumbTintColor={colors.mint}
+              minimumTrackTintColor={t.mint}
+              maximumTrackTintColor={t.line2}
+              thumbTintColor={t.mint}
               onValueChange={(v) => setScrubbing(v)}
               onSlidingComplete={(v) => {
                 TrackPlayer.seekTo(v);
@@ -113,7 +116,7 @@ export default function PlayerScreen() {
             />
             <View style={styles.timesRow}>
               <Text variant="caption">{fmt(value)}</Text>
-              <Text variant="caption" color={buffering ? colors.mint : colors.muted}>
+              <Text variant="caption" color={buffering ? t.mint : t.muted}>
                 {buffering ? 'Buffering…' : playing ? '' : state === State.Ended ? 'Ended' : 'Paused'}
               </Text>
               <Text variant="caption">{duration ? fmt(duration) : '–:––'}</Text>
@@ -129,7 +132,7 @@ export default function PlayerScreen() {
                 hitSlop={8}
                 style={styles.timeBtn}
                 accessibilityLabel={`Back ${SKIP_SECONDS} seconds`}>
-                <Icon name="rotate-ccw" size={14} color={colors.text} />
+                <Icon name="rotate-ccw" size={14} color={t.text} />
                 <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
               </Pressable>
               <Pressable
@@ -137,7 +140,7 @@ export default function PlayerScreen() {
                 hitSlop={8}
                 style={styles.sentenceBtn}
                 accessibilityLabel="Previous sentence">
-                <Icon name="skip-back" size={17} color={colors.mint} />
+                <Icon name="skip-back" size={17} color={t.mint} />
                 <SentenceGlyph />
               </Pressable>
               <Pressable
@@ -145,9 +148,9 @@ export default function PlayerScreen() {
                 style={styles.playBtn}
                 accessibilityLabel={playing ? 'Pause' : 'Play'}>
                 {buffering ? (
-                  <ActivityIndicator color={colors.mintInk} />
+                  <ActivityIndicator color={t.mintInk} />
                 ) : (
-                  <Icon name={playing ? 'pause' : 'play'} size={26} color={colors.mintInk} />
+                  <Icon name={playing ? 'pause' : 'play'} size={26} color={t.mintInk} />
                 )}
               </Pressable>
               <Pressable
@@ -156,7 +159,7 @@ export default function PlayerScreen() {
                 style={styles.sentenceBtn}
                 accessibilityLabel="Next sentence">
                 <SentenceGlyph />
-                <Icon name="skip-forward" size={17} color={colors.mint} />
+                <Icon name="skip-forward" size={17} color={t.mint} />
               </Pressable>
               <Pressable
                 onPress={() => TrackPlayer.seekBy(SKIP_SECONDS)}
@@ -164,7 +167,7 @@ export default function PlayerScreen() {
                 style={styles.timeBtn}
                 accessibilityLabel={`Forward ${SKIP_SECONDS} seconds`}>
                 <Text style={styles.skipGlyph}>{SKIP_SECONDS}</Text>
-                <Icon name="rotate-cw" size={14} color={colors.text} />
+                <Icon name="rotate-cw" size={14} color={t.text} />
               </Pressable>
             </View>
           </View>
@@ -173,8 +176,8 @@ export default function PlayerScreen() {
         // Opened while audio is still being prepared: show the live stage + real progress,
         // and hand over to the transcript/controls the moment the track loads.
         <View style={styles.centerFill}>
-          <ActivityIndicator color={colors.mint} />
-          <Text variant="body" color={colors.mint} style={{ marginTop: space.md }}>
+          <ActivityIndicator color={t.mint} />
+          <Text variant="body" color={t.mint} style={{ marginTop: space.md }}>
             {prepLabel(audio.prep.stage, audio.prep.done, audio.prep.total)}
           </Text>
           {audio.prep.stage === 'synthesizing' && audio.prep.total > 0 ? (
@@ -194,14 +197,14 @@ export default function PlayerScreen() {
             }}
             style={styles.cancelBtn}
             accessibilityLabel="Cancel audio preparation">
-            <Text variant="caption" color={colors.muted}>
+            <Text variant="caption" color={t.muted}>
               Cancel
             </Text>
           </Pressable>
         </View>
       ) : (
         <View style={styles.centerFill}>
-          <Text variant="body" color={colors.muted}>
+          <Text variant="body" color={t.muted}>
             Nothing playing.
           </Text>
         </View>
@@ -213,6 +216,7 @@ export default function PlayerScreen() {
 // Three staggered "text lines" beside the skip glyph — the cue that this jump lands on a
 // sentence of the transcript, not on the clock.
 function SentenceGlyph() {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.sentenceGlyph} accessible={false}>
       <View style={[styles.sentenceGlyphLine, { width: 7 }]} />
@@ -222,7 +226,7 @@ function SentenceGlyph() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -237,7 +241,7 @@ const styles = StyleSheet.create({
     paddingBottom: space.md,
     paddingTop: space.sm,
     borderTopWidth: 1,
-    borderTopColor: colors.line,
+    borderTopColor: t.line,
   },
   slider: { width: '100%', height: 32 },
   timesRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -251,7 +255,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: radius.pill,
-    backgroundColor: colors.mint,
+    backgroundColor: t.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -259,9 +263,9 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -271,17 +275,17 @@ const styles = StyleSheet.create({
     width: 52,
     height: 52,
     borderRadius: radius.pill,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: 'rgba(101, 214, 180, 0.55)',
+    borderColor: t.mint,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 3,
   },
   sentenceGlyph: { gap: 2, alignItems: 'flex-start' },
-  sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: colors.mint },
-  skipGlyph: { color: colors.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
+  sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: t.mint },
+  skipGlyph: { color: t.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
   rateBtn: {
     width: 42,
     height: 42,
@@ -289,22 +293,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rateLabel: { color: colors.muted, fontSize: 13, fontFamily: fonts.bodySemiBold },
+  rateLabel: { color: t.muted, fontSize: 13, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
     borderRadius: radius.pill,
-    backgroundColor: colors.line,
+    backgroundColor: t.line,
     overflow: 'hidden',
     marginTop: space.lg,
   },
-  prepFill: { height: '100%', borderRadius: radius.pill, backgroundColor: colors.mint },
+  prepFill: { height: '100%', borderRadius: radius.pill, backgroundColor: t.mint },
   cancelBtn: {
     marginTop: space.xl,
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
   },
 });
