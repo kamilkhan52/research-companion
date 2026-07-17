@@ -90,9 +90,16 @@ export default function GraphScreen() {
   // A metadata-only skeleton cannot have locally significant edges by design, so show its full
   // map instead of leaving the default Significant filter on an apparently empty canvas. Once
   // enrichment finishes, restore the normal Settings-controlled visibility of the All filter.
+  // Correct only on the stage TRANSITION: re-asserting it every render clobbered an explicit
+  // Significant tap while the full build was still running (R7.2) — a deliberate choice sticks,
+  // and the empty-state hint below explains what Significant is waiting on.
+  const prevStage = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (graph?.stage === 'skeleton' && filter === 'significant') setFilter('all');
-    else if (graph?.stage !== 'skeleton' && filter === 'all' && !allowAllFilter) {
+    const stage = graph?.stage ?? null;
+    if (stage === prevStage.current) return;
+    prevStage.current = stage;
+    if (stage === 'skeleton' && filter === 'significant') setFilter('all');
+    else if (stage !== 'skeleton' && filter === 'all' && !allowAllFilter) {
       setFilter('significant');
     }
   }, [filter, allowAllFilter, graph?.stage]);
@@ -341,14 +348,18 @@ export default function GraphScreen() {
             </Text>
           ) : null}
 
-          <GraphCanvas
-            nodes={visibleGraph.nodes}
-            edges={visibleGraph.edges}
-            selectedId={selectedNode?.id ?? null}
-            highlightIds={null}
-            onSelectNode={setSelectedNode}
-            layoutAlgo={graph?.layout?.algo ?? null}
-          />
+          {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
+            <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />
+          ) : (
+            <GraphCanvas
+              nodes={visibleGraph.nodes}
+              edges={visibleGraph.edges}
+              selectedId={selectedNode?.id ?? null}
+              highlightIds={null}
+              onSelectNode={setSelectedNode}
+              layoutAlgo={graph?.layout?.algo ?? null}
+            />
+          )}
 
           {hasSemanticScholarData ? (
             <Pressable
