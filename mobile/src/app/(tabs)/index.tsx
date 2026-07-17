@@ -30,6 +30,7 @@ import type { Paper, RecentSession } from '@/api/types';
 import { PaperCover } from '@/components/PaperCover';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
+import { SplitProjectSheet } from '@/components/SplitProjectSheet';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
@@ -74,6 +75,31 @@ export default function LibraryScreen() {
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
+  // Multi-select for "Split to new project" (R8.1): entered by long-pressing a paper.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [splitOpen, setSplitOpen] = useState(false);
+
+  function toggleSelected(slug: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      return next;
+    });
+  }
+  function enterSelect(slug: string) {
+    setSelectMode(true);
+    setSelected(new Set([slug]));
+  }
+  function exitSelect() {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+  // Leaving the project or the papers vanishing must not strand select mode.
+  useEffect(() => {
+    exitSelect();
+  }, [activePid]);
 
   // Auto-select the first project if none is active yet.
   useEffect(() => {
@@ -289,7 +315,14 @@ export default function LibraryScreen() {
               <PaperRow
                 key={p.slug}
                 paper={p}
-                onPress={() => router.push(`/paper/${encodeURIComponent(p.slug)}`)}
+                selectMode={selectMode}
+                selected={selected.has(p.slug)}
+                onPress={() =>
+                  selectMode
+                    ? toggleSelected(p.slug)
+                    : router.push(`/paper/${encodeURIComponent(p.slug)}`)
+                }
+                onLongPress={() => !selectMode && enterSelect(p.slug)}
                 onRemove={() => confirmRemove(p)}
               />
             ))}
@@ -297,11 +330,40 @@ export default function LibraryScreen() {
         )}
       </ScrollView>
 
+      {selectMode ? (
+        <View style={styles.selectBar}>
+          <Pressable onPress={exitSelect} hitSlop={8}>
+            <Text variant="label" color={t.muted}>Cancel</Text>
+          </Pressable>
+          <Text variant="caption" color={t.muted}>
+            {selected.size} selected
+          </Text>
+          <Button
+            title="Split to new project"
+            icon="git-branch"
+            onPress={() => setSplitOpen(true)}
+            disabled={selected.size === 0}
+          />
+        </View>
+      ) : null}
+
       <ProjectSwitcher
         visible={switcherOpen}
         activePid={activePid}
         onSelect={setActivePid}
         onClose={() => setSwitcherOpen(false)}
+      />
+
+      <SplitProjectSheet
+        visible={splitOpen}
+        pid={activePid}
+        slugs={[...selected]}
+        onClose={() => setSplitOpen(false)}
+        onDone={(newPid) => {
+          setSplitOpen(false);
+          exitSelect();
+          setActivePid(newPid);
+        }}
       />
     </Screen>
   );
@@ -389,11 +451,17 @@ function formatActivityTime(timestamp: string): string {
 function PaperRow({
   paper,
   onPress,
+  onLongPress,
   onRemove,
+  selectMode,
+  selected,
 }: {
   paper: Paper;
   onPress: () => void;
+  onLongPress: () => void;
   onRemove: () => void;
+  selectMode: boolean;
+  selected: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -410,25 +478,21 @@ function PaperRow({
   // the state-chip rule (R7.4): green = done, yellow = ongoing.
   const actionColor = action === 'Resume' ? t.amber : t.mint;
   const paperUrl = fullPaperUrl(paper);
-  return (
-    <ReanimatedSwipeable
-      overshootRight={false}
-      rightThreshold={40}
-      renderRightActions={(_progress, _translation, methods) => (
-        <Pressable
-          onPress={() => {
-            methods.close();
-            onRemove();
-          }}
-          style={styles.removeAction}
-          accessibilityLabel={`Remove ${paper.title}`}>
-          <View style={styles.removeActionInner}>
-            <Icon name="trash-2" size={19} color={t.danger} />
+
+  const rowBody = (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={280}
+      style={({ pressed }) => pressed && { opacity: 0.8 }}>
+      <Card style={[styles.paperRow, selectMode && selected && styles.paperRowSelected]}>
+        {selectMode ? (
+          <View
+            style={[styles.checkbox, selected && styles.checkboxOn]}
+            accessibilityLabel={selected ? 'Selected' : 'Not selected'}>
+            {selected ? <Icon name="check" size={14} color={t.mintInk} /> : null}
           </View>
-        </Pressable>
-      )}>
-    <Pressable onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.8 }}>
-      <Card style={styles.paperRow}>
+        ) : null}
         <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
           <View style={styles.paperMeta}>
             <View style={[styles.stateDot, { backgroundColor: meta.color }]} />
@@ -447,7 +511,7 @@ function PaperRow({
           </Text>
         </View>
         <View style={styles.rowAction}>
-          {paperUrl ? (
+          {!selectMode && paperUrl ? (
             <IconButton
               name="external-link"
               filled={false}
@@ -458,13 +522,40 @@ function PaperRow({
               }}
             />
           ) : null}
-          <Text variant="label" color={actionColor} style={{ fontFamily: fonts.bodySemiBold }}>
-            {action}
-          </Text>
-          <Icon name="chevron-right" size={16} color={actionColor} />
+          {!selectMode ? (
+            <>
+              <Text variant="label" color={actionColor} style={{ fontFamily: fonts.bodySemiBold }}>
+                {action}
+              </Text>
+              <Icon name="chevron-right" size={16} color={actionColor} />
+            </>
+          ) : null}
         </View>
       </Card>
     </Pressable>
+  );
+
+  // Swipe-to-remove is disabled in select mode — the horizontal gesture belongs to selection
+  // there, and remove is a single-paper action anyway.
+  if (selectMode) return rowBody;
+  return (
+    <ReanimatedSwipeable
+      overshootRight={false}
+      rightThreshold={40}
+      renderRightActions={(_progress, _translation, methods) => (
+        <Pressable
+          onPress={() => {
+            methods.close();
+            onRemove();
+          }}
+          style={styles.removeAction}
+          accessibilityLabel={`Remove ${paper.title}`}>
+          <View style={styles.removeActionInner}>
+            <Icon name="trash-2" size={19} color={t.danger} />
+          </View>
+        </Pressable>
+      )}>
+      {rowBody}
     </ReanimatedSwipeable>
   );
 }
@@ -509,6 +600,17 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   filters: { marginBottom: space.lg, flexGrow: 0 },
   paperRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  paperRowSelected: { borderColor: t.mint },
+  checkbox: {
+    width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: t.line2,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxOn: { backgroundColor: t.mint, borderColor: t.mint },
+  selectBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md,
+    borderTopWidth: 1, borderTopColor: t.line, backgroundColor: t.surface,
+  },
   paperMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },
   rowAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },

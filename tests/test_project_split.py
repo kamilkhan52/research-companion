@@ -1,0 +1,114 @@
+"""R8.1 — project splitting (phase 1, deterministic): the move/copy of papers and their work
+between two projects, slug validation, the running-job guard, and cites hygiene. No LLM, no
+network."""
+from __future__ import annotations
+
+import pytest
+from app import config, graph_store, jobs, project_split, projects, sessions, store
+
+from tests.conftest import add_paper
+
+
+def _bind(pid):
+    return config.set_active_project(pid)
+
+
+def _seed_source(pid):
+    add_paper(pid, "awq", "AWQ", full_text="AWQ text")
+    add_paper(pid, "smooth", "SmoothQuant", full_text="Smooth text")
+    add_paper(pid, "core", "Core Paper", full_text="Core text")
+    # awq cites both a moving (smooth) and a staying (core) paper.
+    rl = store._reading_list()
+    txt = rl.read_text().replace("<!-- slug: awq -->",
+                                 "<!-- slug: awq -->\n<!-- cites: smooth, core -->")
+    rl.write_text(txt)
+    store._parse_cache.clear()
+    # give awq a committed Notes block + a session + graph caches
+    store.append_notes_block("awq", "AWQ", "## Notes\n\nKey result: 4-bit works.")
+    sessions.set_state("awq", "in_discussion")
+    jsonl, _ = sessions.transcript_paths("awq")
+    jsonl.parent.mkdir(parents=True, exist_ok=True)
+    jsonl.write_text('{"role":"user","text":"hi"}\n')
+    data = graph_store.load()
+    graph_store.set_paper_extraction(data, "awq", {"slug": "awq", "status": "done",
+                                                   "references": [], "content_hash": "x"})
+    graph_store.write_retrieved_text("awq", "AWQ retrieved body")
+    graph_store.save(data)
+
+
+def test_move_carries_work_and_removes_from_source(temp_project):
+    _seed_source(temp_project)
+
+    res = project_split.split_project(temp_project, "Quantization", ["awq", "smooth"],
+                                      remove_from_source=True, goals="low-bit inference")
+    new_pid = res["new_pid"]
+    assert res["moved"] == 2 and res["removed"] is True
+    assert "awq" in res["departed_notes"] and "4-bit" in res["departed_notes"]["awq"]
+
+    # New project has the papers, the notes, the transcript, and the graph caches.
+    tok = _bind(new_pid)
+    try:
+        slugs = {p.slug for p in store.list_papers()}
+        assert slugs == {"awq", "smooth"}
+        assert "4-bit works" in store.read_notes("awq")
+        assert sessions.get_state("awq") == "in_discussion"
+        jsonl, _ = sessions.transcript_paths("awq")
+        assert jsonl.exists()
+        data = graph_store.load()
+        assert graph_store.get_paper_extraction(data, "awq")["status"] == "done"
+        assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+        # The cite to the STAYING paper (core) was dropped; the moving one (smooth) kept.
+        awq = store.entry_details("awq")
+        assert awq["cites"] == ["smooth"]
+        assert projects._read_meta(new_pid).get("goals") == "low-bit inference"
+    finally:
+        config.reset_active_project(tok)
+
+    # Source lost the moved papers but kept 'core'; no dangling cite remains.
+    remaining = {p.slug for p in store.list_papers()}
+    assert remaining == {"core"}
+    assert store.corpus_path("awq").exists() is False
+    src_data = graph_store.load()
+    assert "awq" not in src_data.get("papers", {})
+
+
+def test_copy_leaves_source_intact(temp_project):
+    _seed_source(temp_project)
+    res = project_split.split_project(temp_project, "Reading B", ["smooth"],
+                                      remove_from_source=False)
+    assert res["removed"] is False
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}  # source whole
+    tok = _bind(res["new_pid"])
+    try:
+        assert {p.slug for p in store.list_papers()} == {"smooth"}
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_unknown_slug_is_rejected_before_any_write(temp_project):
+    _seed_source(temp_project)
+    before = {p["id"] for p in projects.list_projects()}
+    with pytest.raises(project_split.SplitError):
+        project_split.split_project(temp_project, "Nope", ["awq", "../evil"])
+    # No new project scaffolded (validation happens before create_project).
+    assert {p["id"] for p in projects.list_projects()} == before
+
+
+def test_empty_selection_and_blank_name_rejected(temp_project):
+    _seed_source(temp_project)
+    with pytest.raises(project_split.SplitError):
+        project_split.split_project(temp_project, "X", [])
+    with pytest.raises(project_split.SplitError):
+        project_split.split_project(temp_project, "  ", ["awq"])
+
+
+def test_split_route_refuses_while_a_job_runs(temp_project):
+    _seed_source(temp_project)
+    reg = jobs.JobRegistry("splitkind")
+    try:
+        job = jobs.Job(id="j1")
+        setattr(job, jobs._PID_ATTR, temp_project)
+        reg.jobs["j1"] = job
+        assert jobs.any_running_for_project(temp_project) == "splitkind"
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)

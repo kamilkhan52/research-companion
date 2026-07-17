@@ -405,6 +405,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/split": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Split Project
+         * @description Split selected papers (and the work done on them) into a new project. Deterministic
+         *     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
+         *     the removal endpoint above. The optional AI working-notes passes are separate jobs.
+         *
+         *     Refused (409) while any background job is running for the source project: a chat turn or
+         *     graph build mid-move would write into files being relocated (`jobs.any_running_for_project`,
+         *     the same sweep project deletion uses).
+         */
+        post: operations["split_project_api_projects__pid__split_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/state": {
         parameters: {
             query?: never;
@@ -1805,6 +1831,20 @@ export interface components {
             /** Prior Notes Scope */
             prior_notes_scope?: string | null;
         };
+        /** SplitReq */
+        SplitReq: {
+            /** Name */
+            name: string;
+            /** Slugs */
+            slugs: string[];
+            /**
+             * Remove From Source
+             * @default true
+             */
+            remove_from_source: boolean;
+            /** Goals */
+            goals?: string | null;
+        };
         /** StartReq */
         StartReq: {
             /** Slug */
@@ -2490,6 +2530,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    split_project_api_projects__pid__split_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SplitReq"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

@@ -218,6 +218,24 @@ export function useUpdateProjectMeta() {
   });
 }
 
+export function useSplitProject(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; slugs: string[]; remove_from_source: boolean; goals?: string }) =>
+      api.splitProject(pid as string, body),
+    onSuccess: (_res, { remove_from_source }) => {
+      qc.invalidateQueries({ queryKey: keys.projects });
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+      if (pid && remove_from_source) {
+        // The source lost papers (and possibly graph nodes/authors).
+        qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+        qc.invalidateQueries({ queryKey: keys.graph(pid) });
+        qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+      }
+    },
+  });
+}
+
 export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({

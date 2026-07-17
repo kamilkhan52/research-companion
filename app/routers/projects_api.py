@@ -9,8 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import committer, config, projects, sessions, store
+from .. import committer, config, jobs, project_split, projects, sessions, store
 from ..committer import CommitError
+from ..project_split import SplitError
 from ..projects import ProjectError
 from . import make_project_router
 
@@ -114,6 +115,41 @@ def remove_paper(pid: str, slug: str):
         if "nothing to commit" not in str(e):
             raise HTTPException(status_code=500, detail=str(e)) from e
     return {"removed": slug, "notes_kept": notes_kept}
+
+
+class SplitReq(BaseModel):
+    name: str                       # the new project's name
+    slugs: list[str]                # papers to split out (must be current source entries)
+    remove_from_source: bool = True  # move (default) vs. copy
+    goals: str | None = None        # optional theme for the new project (seeds discovery etc.)
+
+
+@project_router.post("/split")
+def split_project(pid: str, req: SplitReq):
+    """Split selected papers (and the work done on them) into a new project. Deterministic
+    phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
+    the removal endpoint above. The optional AI working-notes passes are separate jobs.
+
+    Refused (409) while any background job is running for the source project: a chat turn or
+    graph build mid-move would write into files being relocated (`jobs.any_running_for_project`,
+    the same sweep project deletion uses)."""
+    busy = jobs.any_running_for_project(pid)
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A background job ({busy}) is running for this project — wait, then split.",
+        )
+    try:
+        result = project_split.split_project(
+            pid, req.name, req.slugs,
+            remove_from_source=req.remove_from_source, goals=req.goals,
+        )
+    except SplitError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # departed_notes is server-side context for the (future) source-cleanup pass; not returned.
+    return {k: v for k, v in result.items() if k != "departed_notes"}
 
 
 @project_router.get("/state")
