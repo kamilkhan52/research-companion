@@ -24,6 +24,7 @@ import type {
   PromptStatus,
   Project,
   ProjectState,
+  LabsResearchJob,
   ReadingMode,
   RecentSession,
   RetrievalJob,
@@ -250,6 +251,11 @@ export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
 export const getGraphAuthors = (pid: string) =>
   apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`);
+/** Start (or join) the agentic lab pass over the project's top authors (R7.7). */
+export const startLabsResearch = (pid: string) =>
+  apiPost<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research`, {});
+export const getLabsResearchJob = (pid: string, id: string) =>
+  apiGet<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research/jobs/${encodeURIComponent(id)}`);
 /** Start (or join) one board author's profile generation (LLM ⇒ background job; cached). */
 export const startAuthorProfile = (pid: string, name: string) =>
   apiPost<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/job`, { name });

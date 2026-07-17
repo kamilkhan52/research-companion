@@ -31,6 +31,8 @@ const board: AuthorBoardResponse = {
     significant: 'A citation is marked significant when the citing paper engages substantively…',
   },
   built_at: '2026-07-15T00:00:00Z',
+  labs: { labs: [], covered_authors: [], researched: false, researched_at: null },
+  labs_job: null,
 };
 
 function wrap(children: React.ReactNode) {
