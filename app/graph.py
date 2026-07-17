@@ -761,6 +761,10 @@ def author_board(graph: dict | None, openalex_cache: dict | None,
             entry["papers"].append({
                 "id": node["id"], "slug": None, "title": node.get("title"),
                 "kind": "external", "year": node.get("year"),
+                # Identifiers so the client can open/add the work like any external
+                # reference in a chat (R7.6).
+                "arxiv_id": node.get("arxiv_id"), "doi": node.get("doi"),
+                "url": node.get("url"),
             })
 
     out = []

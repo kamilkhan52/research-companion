@@ -6,6 +6,7 @@ import type {
   AudioJob,
   AuthConfig,
   AuthorBoardResponse,
+  AuthorProfileJob,
   ChatJob,
   DiscoveryJob,
   DiscoveryResponse,
@@ -249,6 +250,11 @@ export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
 export const getGraphAuthors = (pid: string) =>
   apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`);
+/** Start (or join) one board author's profile generation (LLM ⇒ background job; cached). */
+export const startAuthorProfile = (pid: string, name: string) =>
+  apiPost<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/job`, { name });
+export const getAuthorProfileJob = (pid: string, id: string) =>
+  apiGet<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/jobs/${encodeURIComponent(id)}`);
 export const getRelated = (pid: string, slug: string) =>
   apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 /** Start (or join) a server-side background build. Returns immediately with the job snapshot;

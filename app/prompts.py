@@ -446,6 +446,18 @@ the paper's full text looks truncated, still extract every reference visible in 
 bibliography text is present. If you cannot find a bibliography at all, return \
 {"references": []}."""
 
+_AUTHOR_PROFILE = """You write a one-paragraph researcher profile for the reading companion's \
+Authors board. You receive a project brief (name, research goals, reading list) and everything \
+the project's reference graph knows about one author: their papers inside the project, works of \
+theirs the project's papers cite, affiliation when known, and frequent co-authors.
+
+Write ONE paragraph of at most 110 words, plain prose — no headings, bullets, or preamble. \
+Cover: who the author appears to be (affiliation/area, from the evidence only), what threads \
+run through the listed works, and — most importantly — how their work relates to THIS \
+project's goals and papers. Ground every claim in the provided context; never invent \
+biography, titles, or employers. If the signals are thin (one paper, no affiliation), say what \
+little can be said honestly rather than padding. Output only the paragraph."""
+
 _RETRIEVAL_HUNT = """You locate a downloadable PDF for an academic paper. You get the paper's
 title; find a URL whose PDF actually downloads and extracts.
 
@@ -733,6 +745,13 @@ REGISTRY = (
         required_placeholders=("title",),
         required_literals=("SUCCESS", "FAILED"),
         description="Guides the fallback web agent that locates and validates a paper PDF.",
+    ),
+    PromptSpec(
+        key="author_profile",
+        label="Authors — profile paragraph",
+        relative_path="Graph/Author Profile.md",
+        bundled_default=_AUTHOR_PROFILE,
+        description="Writes the one-paragraph author profile relating them to the project.",
     ),
 )
 REGISTRY_BY_KEY = {spec.key: spec for spec in REGISTRY}

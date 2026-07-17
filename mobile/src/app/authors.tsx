@@ -6,17 +6,29 @@
 // scored (the factors, not the formula).
 
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useQueryClient } from '@tanstack/react-query';
 
-import type { BoardAuthor } from '@/api/types';
-import { useGraphAuthors } from '@/api/queries';
+import * as api from '@/api/endpoints';
+import type { AuthorPaper, BoardAuthor } from '@/api/types';
+import { keys, useGraphAuthors } from '@/api/queries';
 import { BottomSheet } from '@/components/BottomSheet';
+import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { TopBar } from '@/components/TopBar';
 import { useActiveProject } from '@/store/project';
-import { Chip, Icon, Screen, Text } from '@/ui';
+import { Button, Chip, Icon, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
+
+/** The same target a chat's external reference would open: arXiv abs page when the id is
+ *  known, DOI resolver, the extracted URL, else a Scholar title search. */
+function externalHref(p: AuthorPaper): string {
+  if (p.arxiv_id) return `https://arxiv.org/abs/${p.arxiv_id}`;
+  if (p.doi) return `https://doi.org/${p.doi}`;
+  if (p.url) return p.url;
+  return `https://scholar.google.com/scholar?q=${encodeURIComponent(p.title ?? '')}`;
+}
 
 type Mode = 'authors' | 'labs';
 const UNKNOWN_LABEL = 'Independent / unknown';
@@ -30,6 +42,7 @@ export default function AuthorsScreen() {
   const [mode, setMode] = useState<Mode>('authors');
   const [showExplainer, setShowExplainer] = useState(false);
   const [selected, setSelected] = useState<BoardAuthor | null>(null);
+  const [extRef, setExtRef] = useState<ExternalRef | null>(null);
 
   const authors = board.data?.authors ?? [];
   const groups = useMemo(() => groupByAffiliation(authors), [authors]);
@@ -100,15 +113,25 @@ export default function AuthorsScreen() {
       <BottomSheet visible={!!selected} onClose={() => setSelected(null)}>
         {selected ? (
           <AuthorSheet
+            pid={pid}
             author={selected}
             significantExplainer={board.data?.explainers.significant ?? ''}
             onOpenPaper={(slug) => {
               setSelected(null);
               router.push(`/paper/${encodeURIComponent(slug)}`);
             }}
+            onOpenExternal={(paper) => {
+              // Close the author sheet first — two sibling Modals visible at once are
+              // unreliable on Android.
+              setSelected(null);
+              setExtRef({ href: externalHref(paper), label: paper.title ?? undefined });
+            }}
           />
         ) : null}
       </BottomSheet>
+
+      {/* The exact menu external references get in a discussion: open link / add to list. */}
+      <ExternalRefSheet pid={pid} refItem={extRef} onClose={() => setExtRef(null)} />
     </Screen>
   );
 }
@@ -163,14 +186,87 @@ function AuthorCard({ author, onPress }: { author: BoardAuthor; onPress: () => v
   );
 }
 
+/** The one-paragraph LLM profile: shows the cached paragraph when the board carries one,
+ *  else offers to generate it (background job + polling, like every LLM op). */
+function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAuthor }) {
+  const t = useTheme();
+  const qc = useQueryClient();
+  const [profile, setProfile] = useState(author.profile ?? null);
+  const [state, setState] = useState<'idle' | 'running' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  async function generate() {
+    if (!pid || state === 'running') return;
+    setState('running');
+    setError(null);
+    try {
+      let job = (await api.startAuthorProfile(pid, author.name)).job;
+      const deadline = Date.now() + 3 * 60 * 1000;
+      while (job.status === 'running' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        job = (await api.getAuthorProfileJob(pid, job.id)).job;
+      }
+      if (!alive.current) return;
+      if (job.status === 'done' && job.profile) {
+        setProfile(job.profile);
+        setState('idle');
+        // The board merges cached profiles server-side; refetch so reopening the sheet
+        // (and the Labs view) sees it without regenerating.
+        qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+      } else {
+        setState('error');
+        setError(job.error ?? 'Profile generation timed out — try again.');
+      }
+    } catch (e) {
+      if (!alive.current) return;
+      setState('error');
+      setError((e as Error).message ?? 'Could not generate the profile.');
+    }
+  }
+
+  if (profile) {
+    return (
+      <Text variant="body" color={t.text} style={{ marginTop: space.xs }}>
+        {profile}
+      </Text>
+    );
+  }
+  return (
+    <View style={{ marginTop: space.xs, gap: space.xs }}>
+      <Button
+        title={state === 'running' ? 'Writing profile…' : 'Generate profile'}
+        variant="ghost"
+        icon="user"
+        onPress={() => void generate()}
+        loading={state === 'running'}
+        disabled={!pid || state === 'running'}
+      />
+      {error ? (
+        <Text variant="caption" color={t.danger}>{error}</Text>
+      ) : null}
+    </View>
+  );
+}
+
 function AuthorSheet({
+  pid,
   author,
   significantExplainer,
   onOpenPaper,
+  onOpenExternal,
 }: {
+  pid: string | null;
   author: BoardAuthor;
   significantExplainer: string;
   onOpenPaper: (slug: string) => void;
+  onOpenExternal: (paper: AuthorPaper) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -188,6 +284,8 @@ function AuthorSheet({
       {author.affiliation ? (
         <Text variant="caption" color={t.muted}>{author.affiliation}</Text>
       ) : null}
+
+      <AuthorProfile pid={pid} author={author} />
 
       {projectPapers.length ? (
         <>
@@ -213,12 +311,16 @@ function AuthorSheet({
             REFERENCED IN THIS PROJECT
           </Text>
           {externalPapers.map((p) => (
-            <View key={p.id} style={styles.paperRow}>
+            <Pressable
+              key={p.id}
+              onPress={() => onOpenExternal(p)}
+              style={({ pressed }) => [styles.paperRow, pressed && { opacity: 0.7 }]}>
               <Icon name="file-text" size={14} color={t.muted} />
               <Text variant="body" color={t.muted} style={{ flex: 1 }} numberOfLines={2}>
                 {p.title}{p.year ? ` · ${p.year}` : ''}
               </Text>
-            </View>
+              <Icon name="chevron-right" size={16} color={t.muted} />
+            </Pressable>
           ))}
         </>
       ) : null}
