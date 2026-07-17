@@ -116,20 +116,31 @@ def test_interrupted_build_persists_completed_papers(temp_project):
     # can be interrupted (client disconnect, server restart, killed request) partway through.
     # Only consuming part of the generator simulates that -- the "done" event (and its final
     # save) is never reached, so this proves per-paper saves are what persisted, not the
-    # final one.
+    # final one. Since R7.11 extraction fans out over a pool, so 'b'/'c' are deliberately
+    # STALLED (never completing) while 'a' finishes -- close() must persist 'a', orphan the
+    # stalled calls without blocking, and a resume re-spends only 'b' and 'c'.
+    import threading
+
     add_paper(temp_project, "a", "Paper A", full_text="Text A.")
     add_paper(temp_project, "b", "Paper B", full_text="Text B.")
     add_paper(temp_project, "c", "Paper C", full_text="Text C.")
     papers = store.list_papers(sessions.session_states())
 
-    calls: list[str] = []
-    gen = graph.build_graph(papers, extract_fn=fake_extractor(calls))
-    # start, skeleton, extracting(a), progress(a) -> stop after the first paper completes.
-    for _ in range(4):
-        next(gen)
-    gen.close()
+    release = threading.Event()
+    base = fake_extractor(calls := [])
 
-    assert calls == ["a"]
+    def stalling_extract(slug, title, full_text, model):
+        if slug != "a":
+            release.wait(timeout=10)  # orphaned after close(); released below
+        return base(slug, title, full_text, model)
+
+    gen = graph.build_graph(papers, extract_fn=stalling_extract)
+    while next(gen)["type"] != "progress":  # 'a' is the only extraction that can complete
+        pass
+    gen.close()  # must NOT block on the stalled 'b'/'c' workers
+    release.set()
+
+    assert "a" in calls
     reloaded = graph_store.load()
     assert reloaded["papers"]["a"]["status"] == "done"
     assert "b" not in reloaded["papers"]
