@@ -141,6 +141,11 @@ def split_project(pid: str, req: SplitReq):
     if not config.mark_project_busy(pid):
         raise HTTPException(status_code=409, detail="This project is already being split.")
     try:
+        # Mutual exclusion with deletion: delete marks the pid deleting THEN checks busy, so
+        # checking deleting here (after we reserved busy) means the two can't both proceed —
+        # whichever set its flag first wins and the other is refused.
+        if config.project_is_deleting(pid):
+            raise HTTPException(status_code=409, detail="This project is being deleted.")
         busy = jobs.any_running_for_project(pid)
         if busy:
             raise HTTPException(

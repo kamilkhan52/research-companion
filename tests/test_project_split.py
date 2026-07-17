@@ -166,6 +166,19 @@ def test_mark_project_busy_is_exclusive(temp_project):
     config.unmark_project_busy(temp_project)
 
 
+def test_delete_refuses_while_a_split_reserves_the_project(temp_project):
+    """A split reserves the pid via mark_project_busy; deletion must refuse while it's held so
+    the dir isn't moved out from under a split mid-copy."""
+    _seed_source(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(projects.ProjectError, match="being split"):
+            projects.delete_project(temp_project)
+        assert projects.exists(temp_project) is True
+    finally:
+        config.unmark_project_busy(temp_project)
+
+
 def test_busy_source_admits_no_new_jobs(temp_project):
     """The split marks the source busy across its sweep+migration; a job that tries to start
     meanwhile is refused, closing the check-then-move race."""
