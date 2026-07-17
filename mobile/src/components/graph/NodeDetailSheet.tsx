@@ -11,7 +11,8 @@ import { useAddPaper, useProjectMembership } from '@/api/queries';
 import type { GraphEdge, GraphNode } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Chip, Icon, Text } from '@/ui';
-import { colors, radius, space, stateMeta } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
 import { fullPaperUrl } from '@/lib/paperLinks';
 
 export function NodeDetailSheet({
@@ -53,6 +54,9 @@ function SheetContent({
   nodesById: Record<string, GraphNode>;
   onOpenPaper: (slug: string) => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const meta = stateMetaFor(t);
   const addPaper = useAddPaper(pid ?? '');
   const [added, setAdded] = useState(false);
   // The graph snapshot can lag the reading list (e.g. the paper was added from Discover a
@@ -86,12 +90,12 @@ function SheetContent({
       <View style={styles.headerRow}>
         <Chip
           label={node.kind === 'project' ? 'In this project' : 'External reference'}
-          color={node.kind === 'project' ? colors.mint : colors.violet}
+          color={node.kind === 'project' ? t.mint : t.violet}
         />
         {node.kind === 'project' && node.list_status ? (
           <Chip
-            label={stateMeta[node.list_status]?.label ?? node.list_status}
-            color={stateMeta[node.list_status]?.color ?? colors.muted}
+            label={meta[node.list_status]?.label ?? node.list_status}
+            color={meta[node.list_status]?.color ?? t.muted}
           />
         ) : null}
       </View>
@@ -120,13 +124,13 @@ function SheetContent({
           <Stat label="Overall citations" value={node.citation_count.toLocaleString()} />
         ) : null}
       </View>
-      <Text variant="caption" color={colors.muted} style={{ marginTop: space.sm }}>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
         Significant: cited as a baseline, extension, or dependency
       </Text>
 
       {node.kind === 'project' ? (
         <Pressable onPress={() => node.slug && onOpenPaper(node.slug)} style={styles.discussBtn}>
-          <Text variant="heading" color={colors.mintInk}>
+          <Text variant="heading" color={t.mintInk}>
             Open Discussion
           </Text>
         </Pressable>
@@ -138,9 +142,9 @@ function SheetContent({
           accessibilityLabel={inProject ? `${node.title} is in this project` : `Add ${node.title} to project`}
         >
           {addPaper.isPending ? (
-            <ActivityIndicator color={colors.mintInk} />
+            <ActivityIndicator color={t.mintInk} />
           ) : (
-            <Text variant="heading" color={inProject ? colors.mint : colors.mintInk}>
+            <Text variant="heading" color={inProject ? t.mint : t.mintInk}>
               {added ? 'Added to reading list' : inProject ? 'Already in this project' : 'Add to project'}
             </Text>
           )}
@@ -149,12 +153,12 @@ function SheetContent({
 
       {link ? (
         <Pressable onPress={() => Linking.openURL(link)} style={styles.linkBtn}>
-          <Icon name="external-link" size={16} color={colors.text} />
+          <Icon name="external-link" size={16} color={t.text} />
           <Text variant="heading">Open full paper</Text>
         </Pressable>
       ) : null}
       {addPaper.isError ? (
-        <Text variant="caption" color={colors.danger} style={{ marginTop: space.sm }}>
+        <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
           {(addPaper.error as Error).message}
         </Text>
       ) : null}
@@ -197,10 +201,12 @@ function SheetContent({
 // Label sits ABOVE the number: number-first tiles read as one phrase across the row
 // ("10 Significant in" instead of "Significant in: 10") when labels wrap or tiles sit close.
 function Stat({ label, value }: { label: string; value: string }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.stat} accessible accessibilityLabel={`${label}: ${value}`}>
       <Text variant="caption">{label}</Text>
-      <Text variant="title" style={{ fontSize: 24 }} color={colors.violet}>
+      <Text variant="title" style={{ fontSize: 24 }} color={t.violet}>
         {value}
       </Text>
     </View>
@@ -227,6 +233,8 @@ function EdgeRow({
   otherNode: GraphNode | undefined;
   onPress?: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const tappable = !!onPress && otherNode?.kind === 'project';
   return (
     <Pressable
@@ -244,7 +252,7 @@ function EdgeRow({
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={2}>
           {otherNode?.title ?? '(unknown)'}
         </Text>
-        {edge.significant ? <Chip label="Significant" color={colors.amber} /> : null}
+        {edge.significant ? <Chip label="Significant" color={t.amber} /> : null}
       </View>
       {edge.reason ? (
         <Text variant="caption" style={{ marginBottom: edge.contexts.length ? 4 : 0 }}>
@@ -260,7 +268,7 @@ function EdgeRow({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   headerRow: { flexDirection: 'row', gap: space.sm },
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.lg, rowGap: space.md, marginTop: space.lg },
   stat: { alignItems: 'flex-start' },
@@ -269,8 +277,8 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.elevated,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
@@ -280,22 +288,22 @@ const styles = StyleSheet.create({
     marginTop: space.lg,
     height: 48,
     borderRadius: radius.pill,
-    backgroundColor: colors.mint,
+    backgroundColor: t.mint,
     alignItems: 'center',
     justifyContent: 'center',
   },
   discussBtnDone: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.mint,
+    borderColor: t.mint,
   },
   edgeRow: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: colors.line,
+    borderColor: t.line,
     padding: space.md,
   },
-  edgeRowSignificant: { borderColor: colors.amber },
-  context: { color: colors.muted, marginTop: 2, fontSize: 14, lineHeight: 20 },
+  edgeRowSignificant: { borderColor: t.amber },
+  context: { color: t.muted, marginTop: 2, fontSize: 14, lineHeight: 20 },
 });

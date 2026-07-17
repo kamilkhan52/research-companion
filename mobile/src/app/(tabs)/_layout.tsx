@@ -12,7 +12,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NowPlaying } from '@/components/NowPlaying';
 import { selectionTap } from '@/lib/haptics';
 import { Text, type IconName } from '@/ui';
-import { colors, fonts, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 const TAB_META: Record<string, { label: string; icon: IconName }> = {
   index: { label: 'Library', icon: 'book-open' },
@@ -26,6 +27,8 @@ type TabBarProps = Parameters<NonNullable<ComponentProps<typeof Tabs>['tabBar']>
 
 function TabBar({ state, navigation }: TabBarProps) {
   const insets = useSafeAreaInsets();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View>
       <NowPlaying inset={false} />
@@ -34,7 +37,7 @@ function TabBar({ state, navigation }: TabBarProps) {
           const meta = TAB_META[route.name];
           if (!meta) return null;
           const active = state.index === index;
-          const tint = active ? colors.mint : colors.muted;
+          const tint = active ? t.mint : t.muted;
           return (
             <Pressable
               key={route.key}
@@ -69,12 +72,13 @@ function TabBar({ state, navigation }: TabBarProps) {
 }
 
 export default function TabsLayout() {
+  const t = useTheme();
   return (
     <Tabs
       tabBar={(props) => <TabBar {...props} />}
       screenOptions={{
         headerShown: false,
-        sceneStyle: { backgroundColor: colors.bg },
+        sceneStyle: { backgroundColor: t.bg },
       }}>
       <Tabs.Screen name="index" />
       <Tabs.Screen name="discover" />
@@ -84,12 +88,12 @@ export default function TabsLayout() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   bar: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: colors.line,
-    backgroundColor: colors.bg,
+    borderTopColor: t.line,
+    backgroundColor: t.bg,
     paddingTop: space.sm,
   },
   item: {

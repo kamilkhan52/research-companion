@@ -29,10 +29,13 @@ import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Icon, Screen, Text } from '@/ui';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
   const discovery = useDiscovery(pid);
   const runState = useDiscoveryRun(pid);
@@ -105,7 +108,7 @@ export default function DiscoverScreen() {
                 multiline
                 style={styles.goalsInput}
                 placeholder="e.g. I want to understand 3D-integrated DRAM: how vertical stacking changes bandwidth, latency and thermals, and what architectures exist…"
-                placeholderTextColor={colors.muted}
+                placeholderTextColor={t.muted}
                 editable={!runState.running}
               />
               <Button
@@ -129,7 +132,7 @@ export default function DiscoverScreen() {
                 <View style={styles.goalsHead}>
                   <Text variant="overline">Exploring</Text>
                   {!runState.running ? (
-                    <Text variant="label" color={colors.mint}>
+                    <Text variant="label" color={t.mint}>
                       Edit
                     </Text>
                   ) : null}
@@ -149,7 +152,7 @@ export default function DiscoverScreen() {
 
           {runState.error ? (
             <Card style={styles.errorCard}>
-              <Text variant="body" color={colors.danger}>
+              <Text variant="body" color={t.danger}>
                 {runState.error}
               </Text>
               <Button title="Dismiss" variant="ghost" onPress={runState.clearError} style={{ marginTop: space.sm }} />
@@ -159,7 +162,7 @@ export default function DiscoverScreen() {
           {result && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
               <Text variant="editorial">Results</Text>
-              <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
+              <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
                 {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} arXiv papers,
                 ranked by relevance.
               </Text>
@@ -222,6 +225,8 @@ const PHASE_ORDER = ['queries', 'searching', 'citations', 'scoring', 'done'] as 
 // Ranked"), with the live phase's detail line underneath — the polled job data the old
 // vertical panel showed, kept.
 function ProgressPanel({ job }: { job: DiscoveryJob }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const current = PHASE_ORDER.indexOf(job.phase);
   const steps = [
     { key: 'queries', label: 'Planned', detail: job.focus },
@@ -239,7 +244,7 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
   const done = job.phase === 'done' || job.status === 'done';
   return (
     <Card style={styles.progressPanel}>
-      <Text variant="serifTitle" color={colors.mint}>
+      <Text variant="serifTitle" color={t.mint}>
         {done ? 'Search complete' : 'Searching…'}
       </Text>
       <View style={styles.stepsRow}>
@@ -250,12 +255,12 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
               {i > 0 ? <View style={[styles.stepLine, state !== 'pending' && styles.stepLineDone]} /> : null}
               <View style={[styles.stepDot, state === 'done' && styles.stepDotDone]}>
                 {state === 'done' ? (
-                  <Icon name="check" size={13} color={colors.mintInk} />
+                  <Icon name="check" size={13} color={t.mintInk} />
                 ) : state === 'active' ? (
-                  <ActivityIndicator size="small" color={colors.mint} />
+                  <ActivityIndicator size="small" color={t.mint} />
                 ) : null}
               </View>
-              <Text variant="caption" color={state === 'pending' ? colors.muted : colors.text}>
+              <Text variant="caption" color={state === 'pending' ? t.muted : t.text}>
                 {step.label}
               </Text>
             </View>
@@ -284,6 +289,8 @@ function SuggestionCard({
   rank: number;
   onAdded?: () => void;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const addPaper = useAddPaper(pid);
   const [added, setAdded] = useState(false);
   // Live membership: the suggestion list is a snapshot from when discovery ran, so a paper
@@ -332,15 +339,15 @@ function SuggestionCard({
       </View>
       {s.reasons[0] ? (
         <View style={styles.reasonRow}>
-          <Icon name="check" size={14} color={colors.mint} />
-          <Text variant="caption" color={colors.text} style={{ flex: 1, opacity: 0.85 }}>
+          <Icon name="check" size={14} color={t.mint} />
+          <Text variant="caption" color={t.text} style={{ flex: 1, opacity: 0.85 }}>
             {s.reasons[0]}
           </Text>
         </View>
       ) : null}
 
       {showAbstract ? (
-        <Text variant="body" color={colors.muted} style={{ marginTop: space.sm, fontSize: 14, lineHeight: 21 }}>
+        <Text variant="body" color={t.muted} style={{ marginTop: space.sm, fontSize: 14, lineHeight: 21 }}>
           {s.abstract}
         </Text>
       ) : null}
@@ -350,7 +357,7 @@ function SuggestionCard({
           onPress={() => setShowAbstract((v) => !v)}
           style={styles.actionBtn}
           accessibilityLabel={`${showAbstract ? 'Hide' : 'Show'} abstract for ${s.title}`}>
-          <Text variant="caption" color={colors.muted}>
+          <Text variant="caption" color={t.muted}>
             {showAbstract ? 'Hide abstract' : 'Abstract'}
           </Text>
         </Pressable>
@@ -359,8 +366,8 @@ function SuggestionCard({
             onPress={() => Linking.openURL(paperUrl)}
             style={styles.actionBtn}
             accessibilityLabel={`Open full paper for ${s.title}`}>
-            <Icon name="external-link" size={13} color={colors.muted} />
-            <Text variant="caption" color={colors.muted}>Full paper</Text>
+            <Icon name="external-link" size={13} color={t.muted} />
+            <Text variant="caption" color={t.muted}>Full paper</Text>
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }} />
@@ -375,7 +382,7 @@ function SuggestionCard({
         />
       </View>
       {addPaper.isError ? (
-        <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
+        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
           {(addPaper.error as Error).message}
         </Text>
       ) : null}
@@ -387,6 +394,8 @@ function SuggestionCard({
 
 function SpecificPaper({ pid }: { pid: string }) {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const addPaper = useAddPaper(pid);
   const textDraft = usePersistedDraft(draftKey(pid, 'discover', 'specific-paper'), '');
   const text = textDraft.value;
@@ -437,7 +446,7 @@ function SpecificPaper({ pid }: { pid: string }) {
         onChangeText={setText}
         style={styles.specificInput}
         placeholder="Paste arXiv link, DOI, or title"
-        placeholderTextColor={colors.muted}
+        placeholderTextColor={t.muted}
         autoCapitalize="none"
         autoCorrect={false}
         onSubmitEditing={submit}
@@ -450,7 +459,7 @@ function SpecificPaper({ pid }: { pid: string }) {
         disabled={!text.trim()}
       />
       {err ? (
-        <Text variant="caption" color={colors.danger} style={{ marginTop: 4 }}>
+        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
           {err}
         </Text>
       ) : null}
@@ -458,15 +467,15 @@ function SpecificPaper({ pid }: { pid: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   body: { padding: space.md, paddingBottom: space.xxl },
   goalsInput: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     padding: space.md,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
     minHeight: 130,
@@ -474,13 +483,13 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   specificInput: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
   },
@@ -498,45 +507,45 @@ const styles = StyleSheet.create({
     right: '50%',
     left: '-50%',
     height: 2,
-    backgroundColor: colors.line2,
+    backgroundColor: t.line2,
   },
-  stepLineDone: { backgroundColor: colors.mint },
+  stepLineDone: { backgroundColor: t.mint },
   stepDot: {
     width: 28,
     height: 28,
     borderRadius: radius.pill,
     borderWidth: 2,
-    borderColor: colors.line2,
-    backgroundColor: colors.surface,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepDotDone: { backgroundColor: colors.mint, borderColor: colors.mint },
-  goalsSummary: { padding: space.md, borderColor: colors.line2 },
+  stepDotDone: { backgroundColor: t.mint, borderColor: t.mint },
+  goalsSummary: { padding: space.md, borderColor: t.line2 },
   goalsHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rankNum: {
     fontFamily: fonts.bodySemiBold,
     fontSize: 24,
     lineHeight: 30,
-    color: colors.violet,
+    color: t.violet,
   },
   reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: space.sm },
   addBtn: { height: 40, paddingHorizontal: space.lg },
   footer: {
     padding: space.md,
     borderTopWidth: 1,
-    borderTopColor: colors.line,
-    backgroundColor: colors.bg,
+    borderTopColor: t.line,
+    backgroundColor: t.bg,
   },
-  errorCard: { marginTop: space.md, borderColor: colors.danger },
-  suggestionCard: { borderColor: colors.line2 },
+  errorCard: { marginTop: space.md, borderColor: t.danger },
+  suggestionCard: { borderColor: t.line2 },
   actions: { flexDirection: 'row', gap: space.sm, marginTop: space.sm, flexWrap: 'wrap' },
   actionBtn: {
     height: 36,
     paddingHorizontal: space.md,
     borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',

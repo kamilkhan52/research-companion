@@ -20,7 +20,8 @@ import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
 import { Button, Card, Chip, Icon, Screen, Text } from '@/ui';
 import { Marquee } from '@/ui/Marquee';
-import { colors, fonts, radius, space } from '@/theme/tokens';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
 
@@ -51,6 +52,8 @@ function rankNode(a: GraphNode, b: GraphNode): number {
 
 export default function GraphScreen() {
   const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   // `?focus=<slug>` (from the paper action sheet's "Show in Map") selects that node once
   // the graph is available; `t` is a per-tap nonce so re-focusing the same slug re-selects.
   const { focus, t: focusNonce } = useLocalSearchParams<{ focus?: string; t?: string }>();
@@ -317,9 +320,9 @@ export default function GraphScreen() {
                 hitSlop={8}
                 accessibilityLabel="Show fewer papers"
                 style={[styles.pagerBtn, !canDecrease && styles.pagerBtnDisabled]}>
-                <Icon name="minus" size={14} color={canDecrease ? colors.text : colors.muted} />
+                <Icon name="minus" size={14} color={canDecrease ? t.text : t.muted} />
               </Pressable>
-              <Text variant="caption" color={colors.muted} style={{ marginHorizontal: space.sm }}>
+              <Text variant="caption" color={t.muted} style={{ marginHorizontal: space.sm }}>
                 Showing {pagedNodes.length} of {filteredNodes.length}
               </Text>
               <Pressable
@@ -328,12 +331,12 @@ export default function GraphScreen() {
                 hitSlop={8}
                 accessibilityLabel="Show more papers"
                 style={[styles.pagerBtn, !canIncrease && styles.pagerBtnDisabled]}>
-                <Icon name="plus" size={14} color={canIncrease ? colors.text : colors.muted} />
+                <Icon name="plus" size={14} color={canIncrease ? t.text : t.muted} />
               </Pressable>
             </View>
           ) : null}
           {hitCap ? (
-            <Text variant="caption" color={colors.muted} style={{ textAlign: 'center', marginTop: 4 }}>
+            <Text variant="caption" color={t.muted} style={{ textAlign: 'center', marginTop: 4 }}>
               Capped at {MAX_VISIBLE} · narrow the filter or search to see the rest
             </Text>
           ) : null}
@@ -353,7 +356,7 @@ export default function GraphScreen() {
               accessibilityRole="link"
               accessibilityLabel="Open Semantic Scholar"
               style={styles.attribution}>
-              <Text variant="caption" color={colors.muted}>
+              <Text variant="caption" color={t.muted}>
                 Reference metadata provided by Semantic Scholar ↗
               </Text>
             </Pressable>
@@ -384,6 +387,8 @@ export default function GraphScreen() {
 }
 
 function EmptyBuildState({ status, build }: { status: GraphStatus | null; build: GraphBuildState }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   if (build.building) {
     return (
       <View style={styles.emptyWrap}>
@@ -396,7 +401,7 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
       <Text variant="title" style={{ textAlign: 'center', marginBottom: space.sm }}>
         No reference graph yet
       </Text>
-      <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
+      <Text variant="body" color={t.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
         {status
           ? status.semantic_scholar_enabled
             ? `Build a fast reference map for ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'} ` +
@@ -406,7 +411,7 @@ function EmptyBuildState({ status, build }: { status: GraphStatus | null; build:
           : 'Papers are analyzed to find how they cite each other and which outside work they depend on.'}
       </Text>
       {build.error ? (
-        <Text variant="caption" color={colors.danger} style={{ textAlign: 'center', marginBottom: space.md }}>
+        <Text variant="caption" color={t.danger} style={{ textAlign: 'center', marginBottom: space.md }}>
           {build.error}
         </Text>
       ) : null}
@@ -435,12 +440,14 @@ function RetrievalConfirmations({
   candidates: Record<string, GraphRetrievalCandidate[]>;
   build: GraphBuildState;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const entries = Object.entries(candidates).filter(([, options]) => options.length > 0);
   if (!entries.length || build.building) return null;
   return (
     <Card style={styles.confirmationCard}>
       <Text variant="heading">Confirm paper sources</Text>
-      <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
         These matches were not confident enough to download automatically.
       </Text>
       {entries.map(([slug, options]) => (
@@ -460,10 +467,12 @@ function RetrievalConfirmations({
 }
 
 function SkeletonResume({ build }: { build: GraphBuildState }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <Card style={styles.confirmationCard}>
       <Text variant="heading">Fast map ready</Text>
-      <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
         Continue to retrieve missing papers and verify citation evidence from full text.
       </Text>
       <Button
@@ -486,6 +495,8 @@ export function RetrievalErrors({
   errors: Record<string, string>;
   build: GraphBuildState;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const entries = Object.entries(errors);
   const errorsKey = entries.map(([slug]) => slug).sort().join('|');
   const [open, setOpen] = useState(false);
@@ -502,9 +513,9 @@ export function RetrievalErrors({
           accessibilityLabel={`${entries.length} papers could not be retrieved — show details`}
           style={[styles.retrievalIndicator, dismissed && styles.retrievalIndicatorGhost]}
         >
-          <Icon name="alert-circle" size={14} color={colors.amber} />
+          <Icon name="alert-circle" size={14} color={t.amber} />
           {!dismissed ? (
-            <Text variant="caption" color={colors.amber}>
+            <Text variant="caption" color={t.amber}>
               {entries.length} not retrieved
             </Text>
           ) : null}
@@ -512,7 +523,7 @@ export function RetrievalErrors({
       </View>
       <BottomSheet visible={open} onClose={() => setOpen(false)}>
         <Text variant="heading">Papers that could not be retrieved</Text>
-        <Text variant="caption" color={colors.muted} style={{ marginTop: space.xs }}>
+        <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
           The map still works; these papers just have no full text yet.
         </Text>
         {/* Bounded against the sheet's height cap (see RelatedWorksSheet.tsx for the RN
@@ -526,7 +537,7 @@ export function RetrievalErrors({
             {entries.map(([slug, detail]) => (
               <View key={slug}>
                 <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
-                <Text variant="caption" color={colors.muted}>{detail}</Text>
+                <Text variant="caption" color={t.muted}>{detail}</Text>
               </View>
             ))}
           </View>
@@ -586,6 +597,8 @@ const SKELETON_HINT =
 const HINT_MS = 6000;
 
 export function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
   const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
   const skeletonReady = progress?.graphStage === 'skeleton';
@@ -613,7 +626,7 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <ActivityIndicator color={colors.mint} />
+        <ActivityIndicator color={t.mint} />
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
           Building map…
         </Text>
@@ -646,12 +659,12 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
                 >
                   <View style={[styles.buildStepDot, state === 'done' && styles.buildStepDotDone]}>
                     {state === 'done' ? (
-                      <Icon name="check" size={11} color={colors.mintInk} />
+                      <Icon name="check" size={11} color={t.mintInk} />
                     ) : state === 'active' ? (
-                      <ActivityIndicator size="small" color={colors.mint} />
+                      <ActivityIndicator size="small" color={t.mint} />
                     ) : null}
                   </View>
-                  <Text variant="caption" color={state === 'pending' ? colors.muted : colors.text}>
+                  <Text variant="caption" color={state === 'pending' ? t.muted : t.text}>
                     {step.label}
                   </Text>
                 </Pressable>
@@ -660,19 +673,19 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
           </View>
           {hint ? (
             <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
-              <Text variant="caption" color={colors.mint} style={{ marginTop: space.sm }}>
+              <Text variant="caption" color={t.mint} style={{ marginTop: space.sm }}>
                 {hint}
               </Text>
             </Pressable>
           ) : null}
           {progress.currentTitle ? (
             <View style={{ marginTop: space.sm }}>
-              <Text variant="caption" color={colors.muted}>
+              <Text variant="caption" color={t.muted}>
                 {verb}
               </Text>
               <Marquee
                 text={progress.currentTitle}
-                textStyle={{ color: colors.text, fontSize: 14, lineHeight: 20 }}
+                textStyle={{ color: t.text, fontSize: 14, lineHeight: 20 }}
                 accessibilityLabel={`${verb} ${progress.currentTitle}`}
               />
             </View>
@@ -690,9 +703,11 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
 }
 
 function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
-    <Card style={[styles.banner, { borderColor: colors.danger }]}>
-      <Text variant="body" color={colors.danger}>
+    <Card style={[styles.banner, { borderColor: t.danger }]}>
+      <Text variant="body" color={t.danger}>
         {detail}
       </Text>
       <Button title="Dismiss" variant="ghost" onPress={onDismiss} style={{ marginTop: space.sm }} />
@@ -717,6 +732,8 @@ function FilterBar({
   onFilterChange: (f: FilterKind) => void;
   resultCount: number | null;
 }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.filterBar}>
       {showSearch ? (
@@ -724,7 +741,7 @@ function FilterBar({
           value={query}
           onChangeText={onQueryChange}
           placeholder="Search title, author, year…"
-          placeholderTextColor={colors.muted}
+          placeholderTextColor={t.muted}
           style={styles.searchInput}
           autoCapitalize="none"
           returnKeyType="search"
@@ -754,13 +771,15 @@ function FilterBar({
 }
 
 function Centered({ text, loading, action }: { text?: string; loading?: boolean; action?: React.ReactNode }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.centered}>
       {loading ? (
-        <ActivityIndicator color={colors.mint} />
+        <ActivityIndicator color={t.mint} />
       ) : (
         <>
-          <Text variant="body" color={colors.muted} style={{ textAlign: 'center', marginBottom: space.md }}>
+          <Text variant="body" color={t.muted} style={{ textAlign: 'center', marginBottom: space.md }}>
             {text}
           </Text>
           {action}
@@ -770,7 +789,7 @@ function Centered({ text, loading, action }: { text?: string; loading?: boolean;
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (t: ThemePalette) => StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   banner: { margin: space.md, marginBottom: 0 },
@@ -811,28 +830,28 @@ const styles = StyleSheet.create({
   buildStepLine: {
     flex: 1,
     height: 2,
-    backgroundColor: colors.line,
+    backgroundColor: t.line,
   },
-  buildStepLineDone: { backgroundColor: colors.mint },
+  buildStepLineDone: { backgroundColor: t.mint },
   buildStepDot: {
     width: 22,
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: colors.line,
-    backgroundColor: colors.elevated,
+    borderColor: t.line,
+    backgroundColor: t.elevated,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  buildStepDotDone: { backgroundColor: colors.mint, borderColor: colors.mint },
+  buildStepDotDone: { backgroundColor: t.mint, borderColor: t.mint },
   bannerLarge: { width: '100%', margin: 0 },
   progressTrack: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     overflow: 'hidden',
   },
-  progressFill: { height: '100%', backgroundColor: colors.mint, borderRadius: 3 },
+  progressFill: { height: '100%', backgroundColor: t.mint, borderRadius: 3 },
   pager: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -842,8 +861,8 @@ const styles = StyleSheet.create({
     paddingVertical: space.xs,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.line2,
-    backgroundColor: colors.elevated,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
   },
   pagerBtn: {
     width: 28,
@@ -851,20 +870,20 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.surface,
+    backgroundColor: t.surface,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
   },
   pagerBtnDisabled: { opacity: 0.4 },
   filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
   searchInput: {
-    backgroundColor: colors.elevated,
+    backgroundColor: t.elevated,
     borderWidth: 1,
-    borderColor: colors.line2,
+    borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
     paddingVertical: 10,
-    color: colors.text,
+    color: t.text,
     fontFamily: fonts.body,
     fontSize: 14,
   },
