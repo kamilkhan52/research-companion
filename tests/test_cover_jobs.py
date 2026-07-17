@@ -163,6 +163,8 @@ def _backfill_fixtures(tmp_path, monkeypatch, papers, cached):
         (covers / f"{slug}.png").write_bytes(b"cached")
 
     monkeypatch.setattr(cover_jobs.projects, "list_projects", lambda: [{"id": "P"}])
+    # The mid-backfill deletion guard consults the real registry; this fake project has no dir.
+    monkeypatch.setattr(cover_jobs.projects, "exists", lambda pid: True)
     monkeypatch.setattr(cover_jobs.store, "list_papers",
                         lambda: [Paper(slug=s, title=s, group="g", list_status="unread")
                                  for s in papers])
@@ -229,6 +231,7 @@ def test_backfill_isolates_a_failing_project(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cover_jobs.projects, "list_projects",
                         lambda: [{"id": "P1"}, {"id": "P2"}])
+    monkeypatch.setattr(cover_jobs.projects, "exists", lambda pid: True)
     monkeypatch.setattr(cover_jobs.store, "list_papers", list_papers)
     monkeypatch.setattr(cover_jobs.store, "corpus_path", lambda slug: tmp_path / "corpus" / f"{slug}.md")
     monkeypatch.setattr(cover_jobs, "cover_path", lambda slug: covers / f"{slug}.png")

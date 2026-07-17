@@ -62,3 +62,23 @@ def test_delete_refuses_while_a_job_runs(root):
         assert projects.exists(pid) is False
     finally:
         jobs._ALL_REGISTRIES.remove(reg)
+
+
+def test_tombstoned_project_admits_no_new_jobs(root):
+    """The deletion tombstone closes the sweep→move window: a job that tries to register while
+    the pid is marked deleting is refused instead of racing the directory move."""
+    pid = projects.create_project("Going")["id"]
+    reg = jobs.JobRegistry("testkind2")
+    try:
+        config.mark_project_deleting(pid)
+        with pytest.raises(RuntimeError, match="being deleted"):
+            reg.start_or_join(
+                "k", lambda: jobs.Job(id="j2"), lambda job: None, project_id=pid
+            )
+        assert reg.jobs == {}  # nothing registered
+    finally:
+        config.unmark_project_deleting(pid)
+        jobs._ALL_REGISTRIES.remove(reg)
+    # After the tombstone clears (delete failed / finished), admission works again.
+    job = reg.start_or_join("k", lambda: jobs.Job(id="j3"), lambda j: None, project_id=pid)
+    assert job.id == "j3"

@@ -147,6 +147,30 @@ def git_identity_args() -> list[str]:
 _active_project: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_project", default=None)
 
+# Projects mid-deletion. projects.delete_project holds the pid here across its running-job
+# sweep and the directory move; jobs.start_or_join/put and projects.use_project consult it, so
+# no new work is admitted for a project whose directory is about to disappear (a worker
+# admitted mid-move would recreate projects/<pid> as a partial store on its next write). Lives
+# in config because projects.py (writer) and jobs.py (checker) both already import it — no
+# import cycle.
+_deleting_projects: set[str] = set()
+_deleting_lock = threading.Lock()
+
+
+def mark_project_deleting(pid: str) -> None:
+    with _deleting_lock:
+        _deleting_projects.add(pid)
+
+
+def unmark_project_deleting(pid: str) -> None:
+    with _deleting_lock:
+        _deleting_projects.discard(pid)
+
+
+def project_is_deleting(pid: str) -> bool:
+    with _deleting_lock:
+        return pid in _deleting_projects
+
 
 def set_active_project(project_id: str | None) -> contextvars.Token:
     return _active_project.set(project_id)

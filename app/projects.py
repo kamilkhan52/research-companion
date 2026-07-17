@@ -268,17 +268,24 @@ def delete_project(pid: str) -> None:
         raise ProjectError(f"Unknown project: {pid}")
     # A running worker resolves paths from this pid; moving the dir under it would make the
     # worker's next write recreate projects/<pid> as a partial store, split from the trashed
-    # copy. Refuse instead — deletion is a rare, human-paced action.
-    busy = jobs.any_running_for_project(pid)
-    if busy:
-        raise ProjectError(
-            f"A background job ({busy}) is still running for this project — "
-            "wait for it to finish, then delete."
-        )
-    trash = config.PROJECTS_ROOT / ".trash"
-    trash.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+    # copy. So: tombstone first (jobs.start_or_join/put and use_project refuse tombstoned
+    # pids), THEN sweep for jobs admitted before the tombstone, then move. Any job either
+    # registered before the tombstone (the sweep sees it and refuses) or was admitted after
+    # (the tombstone refuses it) — no window where a fresh worker can slip past the move.
+    config.mark_project_deleting(pid)
+    try:
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise ProjectError(
+                f"A background job ({busy}) is still running for this project — "
+                "wait for it to finish, then delete."
+            )
+        trash = config.PROJECTS_ROOT / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+    finally:
+        config.unmark_project_deleting(pid)
 
 
 def adopt_existing(src: Path, name: str, move: bool = True) -> str:
@@ -313,6 +320,8 @@ async def use_project(pid: str):
     dependency this runs in the request task, so the value is captured into the context copied
     for the endpoint and for StreamingResponse iteration. The finally (reset) runs after the
     response is fully sent, keeping the project bound throughout streaming."""
+    if config.project_is_deleting(pid):
+        raise HTTPException(status_code=409, detail=f"Project is being deleted: {pid}")
     if not exists(pid):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     token = config.set_active_project(pid)

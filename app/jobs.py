@@ -229,6 +229,11 @@ class JobRegistry(Generic[J]):
         # start/join lines run on the caller thread (which may have a different project bound, or
         # none for an app-global job), while done/error run on the worker thread.
         tag = _log_tag(pid)
+        # Admission gate for project deletion: once delete_project tombstones the pid, no new
+        # worker may register (its writes would recreate the moved directory). Raised, not
+        # swallowed — the initiating request deserves the error.
+        if pid is not None and config.project_is_deleting(pid):
+            raise RuntimeError(f"Project {pid} is being deleted; not accepting new jobs.")
         with self._lock:
             existing = self._running_for(key, pid)
             if existing:
