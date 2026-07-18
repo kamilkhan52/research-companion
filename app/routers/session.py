@@ -39,6 +39,25 @@ from . import make_project_router
 project_router = make_project_router()
 
 
+class _PaperGoneError(Exception):
+    """A split/move removed the paper while we were retrieving it — its corpus must not be
+    recreated (that would orphan a file with no reading-list entry). See task #75b."""
+
+
+def _guarded_write(slug: str, do_write) -> None:
+    """Run a retrieval's corpus write under the project write guard, re-checking the paper is
+    still in the project first. The (slow) retrieval itself stays OUTSIDE this guard, so a
+    split/move never waits on a network call — only the quick write is serialized, and it can't
+    recreate a paper the relocation just removed. Raises config.ProjectBusyError (project
+    reserved by a relocation) or _PaperGoneError (paper removed mid-retrieve). `do_write` is a
+    zero-arg callback holding the actual store writes (and any cover render, which runs
+    in-thread here). Callers on the event loop invoke this via asyncio.to_thread."""
+    with config.project_write_guard(config.active_project_id()):
+        if store.get_paper(slug) is None:
+            raise _PaperGoneError(slug)
+        do_write()
+
+
 # ---------- request models ----------
 
 class StartReq(BaseModel):
@@ -326,16 +345,29 @@ def start_paper(req: StartReq):
         raise HTTPException(status_code=422, detail=str(e)) from e
     if res.get("needs_confirmation"):
         return {"needs_confirmation": True, "candidates": res["candidates"], "slug": req.slug}
-    store.write_full_text(req.slug, paper.title, res["full_text"], {
-        "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
-        "match_score": res.get("score"),
-    })
-    # An explicitly supplied id corrects any machine-resolved one on the entry — but only
-    # when the result IS that id (a failed explicit download falls back to title search).
-    if (req.arxiv_id and res.get("arxiv_id")
-            and store.arxiv_base_id(res["arxiv_id"]) == store.arxiv_base_id(req.arxiv_id)):
-        store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
-    cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # reuse the just-downloaded PDF
+
+    def _write():
+        store.write_full_text(req.slug, paper.title, res["full_text"], {
+            "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
+            "match_score": res.get("score"),
+        })
+        # An explicitly supplied id corrects any machine-resolved one on the entry — but only
+        # when the result IS that id (a failed explicit download falls back to title search).
+        if (req.arxiv_id and res.get("arxiv_id")
+                and store.arxiv_base_id(res["arxiv_id"]) == store.arxiv_base_id(req.arxiv_id)):
+            store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
+        cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # reuse the just-downloaded PDF
+
+    try:
+        _guarded_write(req.slug, _write)
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then retrieve.") from e
+    except _PaperGoneError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This paper is no longer in the project (it may have just been moved).") from e
     return {"ok": True, "retrieved": True}
 
 
@@ -437,18 +469,30 @@ async def start_paper_stream(req: StartReq):
             yield _sse({"type": "needs_confirmation", "candidates": res["candidates"]})
             return
         if res:
-            store.write_full_text(req.slug, paper.title, res["full_text"], {
-                "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
-                "match_score": res.get("score")})
-            # An explicitly supplied id corrects any machine-resolved one on the entry — but
-            # only when the result IS that id (a failed explicit download falls back to
-            # title search).
-            if (req.arxiv_id and res.get("arxiv_id")
-                    and store.arxiv_base_id(res["arxiv_id"])
-                    == store.arxiv_base_id(req.arxiv_id)):
-                store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
-            # Render the cover from the just-downloaded PDF, off the event loop (CPU-bound).
-            await asyncio.to_thread(cover_jobs.render_from_pdf, req.slug, res.get("pdf_bytes"))
+            def _write_deterministic():
+                store.write_full_text(req.slug, paper.title, res["full_text"], {
+                    "slug": req.slug, "arxiv_id": res.get("arxiv_id"),
+                    "source": res.get("source"), "match_score": res.get("score")})
+                # An explicitly supplied id corrects any machine-resolved one on the entry —
+                # but only when the result IS that id (a failed explicit download falls back to
+                # title search).
+                if (req.arxiv_id and res.get("arxiv_id")
+                        and store.arxiv_base_id(res["arxiv_id"])
+                        == store.arxiv_base_id(req.arxiv_id)):
+                    store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
+                cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # sync, in-thread
+            # Whole write (guard + re-check + cover render) runs in one worker thread, off the
+            # event loop; the guard keeps it from overlapping a split/move (task #75b).
+            try:
+                await asyncio.to_thread(_guarded_write, req.slug, _write_deterministic)
+            except config.ProjectBusyError:
+                yield _sse({"type": "error", "detail":
+                            "This project is being moved or split — retry in a moment."})
+                return
+            except _PaperGoneError:
+                yield _sse({"type": "error", "detail":
+                            "This paper is no longer in the project (it may have been moved)."})
+                return
             yield _sse({"type": "done", "retrieved": True})
             return
         # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
@@ -461,8 +505,19 @@ async def start_paper_stream(req: StartReq):
                     yield _sse({"type": "step", "name": ev["name"], "detail": ev.get("detail", "")})
                 elif ev["type"] == "result":
                     if ev.get("ok"):
-                        store.write_full_text(req.slug, paper.title, ev["full_text"], {
-                            "slug": req.slug, "source": ev.get("source")})
+                        def _write_hunted(ev=ev):
+                            store.write_full_text(req.slug, paper.title, ev["full_text"], {
+                                "slug": req.slug, "source": ev.get("source")})
+                        try:
+                            await asyncio.to_thread(_guarded_write, req.slug, _write_hunted)
+                        except config.ProjectBusyError:
+                            yield _sse({"type": "error", "detail":
+                                        "This project is being moved or split — retry."})
+                            return
+                        except _PaperGoneError:
+                            yield _sse({"type": "error", "detail":
+                                        "This paper is no longer in the project."})
+                            return
                         yield _sse({"type": "done", "retrieved": True})
                     else:
                         yield _sse({"type": "error", "detail":
@@ -492,10 +547,23 @@ async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=str(e)) from e
     if not full_text.strip():
         raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
-    store.write_full_text(slug, paper.title, full_text,
-                          {"slug": slug, "source": f"upload:{file.filename}"})
-    # Reuse the uploaded PDF for the cover, off the event loop (CPU-bound rasterization).
-    await asyncio.to_thread(cover_jobs.render_from_pdf, slug, data)
+
+    def _write():
+        store.write_full_text(slug, paper.title, full_text,
+                              {"slug": slug, "source": f"upload:{file.filename}"})
+        cover_jobs.render_from_pdf(slug, data)  # rasterize the uploaded PDF (sync, in-thread)
+
+    # Guard + re-check + write run in one worker thread, off the event loop (task #75b).
+    try:
+        await asyncio.to_thread(_guarded_write, slug, _write)
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then upload.") from e
+    except _PaperGoneError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This paper is no longer in the project (it may have just been moved).") from e
     return {"ok": True, "retrieved": True}
 
 
