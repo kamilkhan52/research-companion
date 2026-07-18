@@ -206,3 +206,23 @@ def test_remove_batch_rolls_back_on_commit_failure(temp_project, monkeypatch):
     # Nothing removed — the reading list is exactly as before.
     assert {p.slug for p in store.list_papers()} == {"a", "b"}
     assert store._reading_list().read_text() == rl_before
+
+
+def test_remove_batch_refuses_while_a_job_runs(temp_project):
+    """The batch reserves the project like a split — a running background job blocks it, so no
+    job can write into the record mid-batch."""
+    from app import jobs
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    reg = jobs.JobRegistry("batchkind")
+    try:
+        job = jobs.Job(id="j1")
+        setattr(job, jobs._PID_ATTR, temp_project)
+        reg.jobs["j1"] = job
+        with pytest.raises(HTTPException) as exc:
+            remove_papers(temp_project, RemoveBatchReq(slugs=["a"]))
+        assert exc.value.status_code == 409
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)
+    assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed

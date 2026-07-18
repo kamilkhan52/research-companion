@@ -137,24 +137,32 @@ class RemoveBatchReq(BaseModel):
 def remove_papers(pid: str, req: RemoveBatchReq):
     """Remove several papers in ONE atomic git commit (the multi-select Delete, R9.13). A
     client-side loop of single removals could half-apply if the app disconnects partway; this
-    does all of them under one write guard + one commit, so it's all-or-nothing — a fast
+    does all of them under one reservation + one commit, so it's all-or-nothing — a fast
     deterministic op (no LLM/network), so a single request, not a background job. Same
     notes-kept + retained-files posture as the single removal. Unknown slugs are skipped
-    (idempotent), so a retry of a partially-succeeded earlier attempt is safe."""
+    (idempotent), so a retry of a partially-succeeded earlier attempt is safe.
+
+    Reserved like a split (its snapshot→mutate→commit→rollback rewrites the whole reading list
+    on failure, so it must be fully isolated): mark busy FIRST (gating project deletion + new
+    background-job admission), then sweep in-flight jobs, then take the EXCLUSIVE project lock
+    (draining in-flight synchronous writers) — so nothing can add/remove/approve, retrieve, or
+    move the project directory underneath the batch."""
     slugs = list(dict.fromkeys(req.slugs))
     if not slugs:
         raise HTTPException(status_code=400, detail="No papers selected.")
+    if not config.mark_project_busy(pid):
+        raise HTTPException(status_code=409, detail="This project is already being modified.")
     try:
-        # EXCLUSIVE lock, not the shared write guard: the batch's snapshot→mutate→commit→
-        # rollback must be atomic against every OTHER synchronous writer too, or a concurrent
-        # add/remove/approve could land between the snapshot and a rollback and be silently
-        # discarded when we restore. The exclusive side drains in-flight writers and blocks new
-        # ones for the batch's (brief) duration. The busy-check refuses the batch while a
-        # split/move has reserved the project (its exclusive lock would otherwise just make us
-        # wait, then run — but a relocation means the record is being rewritten, so 409).
+        if config.project_is_deleting(pid):
+            raise HTTPException(status_code=409, detail="This project is being deleted.")
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A background job ({busy}) is running for this project — wait, then "
+                       "delete.",
+            )
         with config.project_exclusive(pid):
-            if config.project_is_busy(pid):
-                raise config.ProjectBusyError(pid)
             # Snapshot the touched files BEFORE mutating, so a git failure (index lock,
             # read-only .git) rolls the working tree back to pre-batch — the removals must be
             # all-or-nothing, not applied-but-uncommitted (a retry would then skip them and
@@ -202,11 +210,8 @@ def remove_papers(pid: str, req: RemoveBatchReq):
                     raise
                 raise HTTPException(
                     status_code=500, detail="Could not remove the papers.") from e
-    except config.ProjectBusyError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This project is being moved or split — wait, then remove.",
-        ) from e
+    finally:
+        config.unmark_project_busy(pid)
     return {"removed": removed}
 
 
