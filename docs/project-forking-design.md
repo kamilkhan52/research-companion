@@ -120,6 +120,46 @@ optimistic-concurrency shape as U.14's `proposal_revision`.
 - The old draft's "archive source papers" option (open question #2) is dropped — the
   clarified use case is thematic relocation, not thinning.
 
+## R9.13 — move into an EXISTING project (not just a new one)
+
+The device pass asked for the Library multi-select menu to read as standard actions: a general
+**Move** (to a *new* project — the split — OR an *existing* one) plus **Delete**. The backend
+gains `project_split.move_to_existing` + `POST /api/projects/{pid}/move`, the deterministic
+sibling of the split. It reuses the shared gather/populate/remove helpers; the differences are
+all load-bearing:
+
+- **Destination validation + slug-collision refusal.** The destination must exist and differ
+  from the source. A slug is refused if the destination already has its data — a reading-list
+  entry OR **retained on-disk records** (the removal endpoint keeps a removed paper's corpus/
+  transcript/branches on disk, so a slug absent from the reading list can still own files;
+  writing over them would destroy the destination's history). All-or-nothing.
+- **Slug validation before path-building.** `slugs` is client input, fed into corpus/transcript
+  path helpers by the collision check, so every slug is checked against the source's current
+  entries up front — a non-entry value (including a `../x` traversal) is rejected before any
+  filesystem access.
+- **Cite-keep set** = moved slugs ∪ the destination's existing reading-list slugs, so a moved
+  paper's cite to a paper already in the destination survives as a live edge.
+- **Pathspec commit** (not `add -A`) into the populated destination — it has unrelated files.
+- **Graph staleness (forward).** `graph.status` now flags a project paper with no node in an
+  existing built graph (guarding on graph *existence*, so an empty-node graph still counts):
+  a moved paper carries a fresh copied extraction, so without this it looked up to date yet was
+  silently missing from the destination's Map with no rebuild offered.
+
+**Concurrency (with the task-#75 lock, which this builds on).** The `/move` route reserves BOTH
+projects busy and sweeps jobs on both; `move_to_existing` then takes each project's
+**exclusive write lock** (sorted, so two moves can't deadlock), draining any synchronous writer
+already in flight — the same protection the split gained, now on both sides. All synchronous
+record-writers (add/remove/approve/notes-save/start/start_stream/upload_paper) hold the shared
+side of that lock, so none can start or be mid-commit while a move holds the exclusive side.
+
+**Transactional move (rollback on failure).** A move writes+commits the destination, then
+removes+commits the source across two git repos. On any failure the destination is rolled back
+to its pre-move state — undo its commit (`reset --soft` to the captured HEAD, *not* `--hard`,
+which would discard the destination's own uncommitted work), delete the moved-in files (all new
+there), restore the reading-list bytes + graph caches — so a retry isn't blocked by the
+collision check. A source-removal failure additionally restores the source (its data is safe in
+the destination regardless, since population precedes removal).
+
 ## Later: sharing projects as reading lists (U.25 vision — recorded, not scheduled)
 
 Unchanged from the first draft, and still a reason to build the migration path cleanly: a

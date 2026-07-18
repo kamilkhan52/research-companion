@@ -172,7 +172,7 @@ def test_delete_refuses_while_a_split_reserves_the_project(temp_project):
     _seed_source(temp_project)
     config.mark_project_busy(temp_project)
     try:
-        with pytest.raises(projects.ProjectError, match="being split"):
+        with pytest.raises(projects.ProjectError, match="being moved or split"):
             projects.delete_project(temp_project)
         assert projects.exists(temp_project) is True
     finally:
@@ -263,3 +263,213 @@ def test_split_drains_an_in_flight_writer_before_relocating(temp_project):
     r.join(5)
     s.join(10)
     assert {p.slug for p in store.list_papers()} == {"awq", "core"}
+
+
+# --- R9.13: move into an EXISTING project ----------------------------------------------------
+
+def _make_dest(name="Existing", papers=(("base", "Base Paper"),)):
+    """Create a second, committed project to move papers into."""
+    dpid = projects.create_project(name)["id"]
+    tok = _bind(dpid)
+    try:
+        for slug, title in papers:
+            add_paper(dpid, slug, title, full_text=f"{title} text")
+        projects._git(dpid, "add", "-A")
+        projects._git(dpid, "commit", "-q", "-m", "seed dest")
+    finally:
+        config.reset_active_project(tok)
+    return dpid
+
+
+def test_move_to_existing_appends_and_removes_from_source(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest()
+    res = project_split.move_to_existing(temp_project, dest, ["awq", "smooth"],
+                                         remove_from_source=True)
+    assert res["new_pid"] == dest and res["moved"] == 2 and res["removed"] is True
+    assert "awq" in res["departed_notes"]
+
+    tok = _bind(dest)
+    try:
+        assert {p.slug for p in store.list_papers()} == {"base", "awq", "smooth"}
+        assert "4-bit works" in store.read_notes("awq")
+        assert sessions.get_state("awq") == "in_discussion"
+        assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+    finally:
+        config.reset_active_project(tok)
+    assert {p.slug for p in store.list_papers()} == {"core"}  # source lost the moved papers
+
+
+def test_move_to_existing_keeps_a_cite_to_a_destination_paper(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest(papers=(("core", "Core In Dest"),))  # dest already has 'core'
+    project_split.move_to_existing(temp_project, dest, ["awq", "smooth"],
+                                   remove_from_source=True)
+    tok = _bind(dest)
+    try:
+        # awq's cites to smooth (moved) AND core (already in dest) both survive.
+        assert store.entry_details("awq")["cites"] == ["smooth", "core"]
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_move_to_existing_refuses_a_slug_collision(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest(papers=(("awq", "AWQ already here"),))
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(temp_project, dest, ["awq", "smooth"])
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}  # nothing moved
+
+
+def test_move_to_existing_refuses_retained_on_disk_data(temp_project):
+    """The removal endpoint keeps a paper's corpus/transcript on disk; a move of the same slug
+    into that dest must be refused as a collision, not silently overwrite the retained data."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    tok = _bind(dest)
+    try:
+        store.write_full_text("awq", "Old AWQ", "retained body", {"slug": "awq"})
+        store.append_notes_block("awq", "Old AWQ", "## Notes\n\nDEST's own history.")
+    finally:
+        config.reset_active_project(tok)
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(temp_project, dest, ["awq"])
+    tok = _bind(dest)
+    try:
+        assert "DEST's own history" in store.read_notes("awq")  # untouched
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_move_to_existing_refuses_a_retained_graph_record(temp_project):
+    """A dest that graphed a same-slug metadata-only paper and removed it can retain the slug
+    in reference-graph.json with no files. A move of that slug must be refused, or the fresh
+    caches combine with the old graph node and the Map serves stale edges with no rebuild."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    tok = _bind(dest)
+    try:
+        data = graph_store.load()
+        graph_store.set_paper_extraction(data, "awq", {"slug": "awq", "status": "done",
+                                                       "references": [], "content_hash": "old"})
+        graph_store.save(data)  # graph record for awq, but no corpus/reading-list entry
+        assert store.corpus_path("awq").exists() is False
+    finally:
+        config.reset_active_project(tok)
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(temp_project, dest, ["awq"])
+
+
+def test_move_to_existing_rejects_traversal_and_self(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest()
+    with pytest.raises(project_split.SplitError, match="Not current papers"):
+        project_split.move_to_existing(temp_project, dest, ["awq", "../../etc/passwd"])
+    with pytest.raises(project_split.SplitError, match="different project"):
+        project_split.move_to_existing(temp_project, temp_project, ["awq"])
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+
+
+def test_move_to_existing_leaves_dest_repo_clean(temp_project):
+    import subprocess
+
+    _seed_source(temp_project)
+    dest = _make_dest()
+    project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    status = subprocess.run(["git", "status", "--porcelain"],
+                            cwd=str(projects.project_path(dest)),
+                            capture_output=True, text=True).stdout.splitlines()
+    assert [ln for ln in status if ".state/" not in ln] == []
+
+
+def test_move_rolls_the_destination_back_on_a_failed_commit(temp_project, monkeypatch):
+    """If the destination commit fails partway, the move must restore the dest to its pre-move
+    state (undo commit, remove written files, restore reading list) so a RETRY isn't blocked by
+    the collision check and the dest isn't left half-populated."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    dest_rl_before = (projects.project_path(dest) / "reading-list.md").read_text()
+
+    # Fail the destination commit (the second _git commit call in the move for the dest).
+    real_git = projects._git
+
+    def flaky_git(pid, *args):
+        if pid == dest and args[:1] == ("commit",):
+            raise projects.ProjectError("boom: dest commit failed")
+        return real_git(pid, *args)
+
+    monkeypatch.setattr(projects, "_git", flaky_git)
+    with pytest.raises(Exception):  # noqa: B017 — the injected failure propagates
+        project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    monkeypatch.setattr(projects, "_git", real_git)  # restore ONLY _git (not PROJECTS_ROOT)
+
+    # Destination restored: reading list unchanged, no leftover corpus, retry now succeeds.
+    assert (projects.project_path(dest) / "reading-list.md").read_text() == dest_rl_before
+    tok = _bind(dest)
+    try:
+        assert {p.slug for p in store.list_papers()} == {"base"}
+        assert store.corpus_path("awq").exists() is False
+        # No phantom session left behind: the move imported awq's session index entry, which
+        # the rollback must drop (else a re-add would look resumable with no transcript).
+        assert sessions.get_state("awq") is None
+    finally:
+        config.reset_active_project(tok)
+    # Source untouched (removal never ran), so a retry moves cleanly.
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+    res = project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    assert res["removed"] is True
+
+
+def test_move_rolls_the_source_back_on_a_failed_source_commit(temp_project, monkeypatch):
+    """If the SOURCE commit fails after removal, the source is fully restored from the captured
+    bundle (files, notes, transcript, graph) — no data loss — and the dest is rolled back too."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    real_git = projects._git
+
+    def flaky_git(pid, *args):
+        if pid == temp_project and args[:1] == ("commit",):  # fail the SOURCE commit
+            raise projects.ProjectError("boom: source commit failed")
+        return real_git(pid, *args)
+
+    monkeypatch.setattr(projects, "_git", flaky_git)
+    with pytest.raises(Exception):  # noqa: B017
+        project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    monkeypatch.setattr(projects, "_git", real_git)
+
+    # Source fully restored from the bundle — the moved paper's entry, notes, and graph text
+    # are all back (no data loss), even though the destination copy was rolled back.
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+    assert "4-bit works" in store.read_notes("awq")
+    assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+    tok = _bind(dest)
+    try:
+        assert {p.slug for p in store.list_papers()} == {"base"}  # dest rolled back
+        assert store.corpus_path("awq").exists() is False
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_source_data_survives_even_when_git_cleanup_fails(temp_project, monkeypatch):
+    """The worst case (a read-only source `.git`): every source git WRITE fails, but the data
+    restoration is pure filesystem and runs first, so the moved papers are never lost from
+    both projects."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    real_git = projects._git
+
+    def flaky_git(pid, *args):
+        # Source: reads (rev-parse, ls-files) work; every write-ish git op fails.
+        if pid == temp_project and args[:1] in (("commit",), ("add",), ("reset",)):
+            raise projects.ProjectError("read-only .git")
+        return real_git(pid, *args)
+
+    monkeypatch.setattr(projects, "_git", flaky_git)
+    with pytest.raises(Exception):  # noqa: B017
+        project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    monkeypatch.setattr(projects, "_git", real_git)
+
+    # Despite git failing throughout the source rollback, the paper's DATA is restored on disk.
+    assert store.corpus_path("awq").exists()
+    assert "4-bit works" in store.read_notes("awq")
+    assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
