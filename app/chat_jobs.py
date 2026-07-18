@@ -382,13 +382,20 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
     if now - getattr(job, "_preview_last_started", now) < PREVIEW_CADENCE_SECONDS:
         return
 
-    previous_cue = ""
+    # Don't launch a new cue while the previous one is still generating (avoids stacking).
     if job.preview_job_ids:
-        previous = preview_jobs.get_job(job.preview_job_ids[-1])
-        if previous and previous.status == "running":
+        last = preview_jobs.get_job(job.preview_job_ids[-1])
+        if last and last.status == "running":
             return
-        if previous and previous.status == "done" and previous.cue:
-            previous_cue = previous.cue
+    # Feed ALL already-spoken cues (recent-first-capped) into the next one, not just the last,
+    # so the model can vary its focus across the whole sequence and not repeat itself (R9.5a).
+    # The coordinator does the same once analysis is done; this keeps the analysis-phase cues
+    # consistent with it.
+    spoken = [
+        c.cue for cid in job.preview_job_ids
+        if (c := preview_jobs.get_job(cid)) is not None and c.status == "done" and c.cue
+    ]
+    previous_cue = "\n".join(spoken[-8:])
 
     sentences = (
         [

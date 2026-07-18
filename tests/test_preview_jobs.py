@@ -270,6 +270,55 @@ def test_coordinator_continues_cues_with_audio_progress_until_ready(
     assert publications[-1][3] is True
 
 
+def test_synthesis_cues_only_fire_on_segment_progress(temp_project, monkeypatch):
+    """R9.6: while audio synthesizes, a new cue is worth speaking only when a segment actually
+    lands — otherwise the cue track just loops '…still synthesizing'. Flat progress ⇒ no new
+    cue; an advanced segment count ⇒ exactly one more."""
+    audio = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 1, "segments_total": 4,
+    })()
+    starts = []
+
+    def fake_start(chat_id, ordinal, sources, previous, progress):
+        cue = type("Cue", (), {"id": f"cue-{ordinal}", "status": "done",
+                               "cue": f"spoken {ordinal}"})()
+        starts.append(dict(progress))
+        fake_start.cues[cue.id] = cue
+        return cue
+    fake_start.cues = {}
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
+    monkeypatch.setattr(preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: fake_start.cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.01)
+
+    preview_jobs.start_coordinator(
+        "chat-gate", "audio-gate",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [],
+        lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+
+    # First synthesis cue fires (announces the text is readable); then progress stays flat.
+    deadline = time.time() + 2
+    while not starts and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)  # several poll cycles with segments_done unchanged
+    assert len(starts) == 1, "a flat segment count must not keep re-cueing"
+
+    # A landed segment is real news — exactly one more cue.
+    audio.segments_done = 2
+    deadline = time.time() + 2
+    while len(starts) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)
+    assert len(starts) == 2
+
+    audio.status = "done"
+
+
 @pytest.mark.parametrize(
     ("raw", "message"),
     [
