@@ -44,3 +44,27 @@ test('a local edit made during storage loading is never overwritten by stale dat
   expect(hook.result.current.value).toBe('New local text');
   await hook.unmountAsync();
 });
+
+test('an edit-first notes draft restores its proposal conflict metadata', async () => {
+  const key = draftKey('project-a', 'notes', 'working', 'manual-edit');
+  const value = {
+    markdown: '# Working notes\n\nEdited proposal.',
+    proposal: {
+      baseRevision: 'base-revision',
+      jobId: 'notes-job',
+      summary: 'Integrate moved papers',
+    },
+  };
+  const first = await renderHookAsync(() => usePersistedDraft(key, null as typeof value | null));
+  await waitFor(() => expect(first.result.current.ready).toBe(true));
+  act(() => first.result.current.setValue(value));
+  await act(async () => first.result.current.markSubmitted());
+  await first.unmountAsync();
+
+  const restored = await renderHookAsync(
+    () => usePersistedDraft(key, null as typeof value | null),
+  );
+  await waitFor(() => expect(restored.result.current.ready).toBe(true));
+  expect(restored.result.current.value).toEqual(value);
+  await restored.unmountAsync();
+});

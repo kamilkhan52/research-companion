@@ -342,7 +342,10 @@ export interface NotesJob {
   id: string;
   target: string;
   instruction: string;
-  status: 'running' | 'done' | 'error';
+  kind: 'edit' | 'split_destination' | 'split_source_cleanup';
+  summary: string;
+  base_revision: string;
+  status: 'running' | 'done' | 'error' | 'cancelled';
   items: StreamItem[];
   result: string | null;
   error: string | null;

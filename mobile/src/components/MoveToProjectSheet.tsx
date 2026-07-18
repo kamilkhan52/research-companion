@@ -18,6 +18,7 @@ export function MoveToProjectSheet({
   destPid,
   destName,
   slugs,
+  notesEligible,
   onClose,
   onDone,
 }: {
@@ -26,6 +27,7 @@ export function MoveToProjectSheet({
   destPid: string | null;
   destName: string;
   slugs: string[];
+  notesEligible: boolean;
   onClose: () => void;
   /** Called with the destination's id after a successful move (the caller switches to it). */
   onDone: (destPid: string) => void;
@@ -34,6 +36,8 @@ export function MoveToProjectSheet({
   const styles = useThemedStyles(makeStyles);
   const move = useMoveProject(pid);
   const [remove, setRemove] = useState(true);
+  const [draftNotes, setDraftNotes] = useState(true);
+  const [cleanupSource, setCleanupSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const count = slugs.length;
@@ -42,13 +46,28 @@ export function MoveToProjectSheet({
     if (!pid || !destPid || count === 0 || move.isPending) return;
     setError(null);
     try {
-      const res = await move.mutateAsync({ dest_pid: destPid, slugs, remove_from_source: remove });
-      showToast(
-        remove
+      const res = await move.mutateAsync({
+        dest_pid: destPid,
+        slugs,
+        remove_from_source: remove,
+        draft_destination_notes: notesEligible && draftNotes,
+        cleanup_source_notes: notesEligible && remove && cleanupSource,
+      });
+      const movedMessage = remove
           ? `Moved ${res.moved} paper${res.moved === 1 ? '' : 's'} to “${res.name}”`
-          : `Copied ${res.moved} paper${res.moved === 1 ? '' : 's'} to “${res.name}”`,
+          : `Copied ${res.moved} paper${res.moved === 1 ? '' : 's'} to “${res.name}”`;
+      const notesFailed = res.notes_jobs?.destination_error || res.notes_jobs?.source_cleanup_error;
+      const notesStarted = res.notes_jobs?.destination || res.notes_jobs?.source_cleanup;
+      showToast(
+        notesFailed
+          ? `${movedMessage}. An AI notes proposal could not start.`
+          : notesStarted
+            ? `${movedMessage}. Preparing AI notes proposals.`
+            : movedMessage,
       );
       setRemove(true);
+      setDraftNotes(true);
+      setCleanupSource(false);
       onDone(res.new_pid);
     } catch (e) {
       setError((e as Error).message ?? 'Could not move the papers.');
@@ -82,6 +101,42 @@ export function MoveToProjectSheet({
               thumbColor={t.surface}
             />
           </View>
+
+          {notesEligible ? (
+            <>
+              <View style={styles.toggleRow}>
+                <View style={{ flex: 1, paddingRight: space.md }}>
+                  <Text variant="body">Update destination working notes</Text>
+                  <Text variant="caption" color={t.muted}>
+                    AI proposes integrating the selected papers’ committed Notes.
+                  </Text>
+                </View>
+                <Switch
+                  value={draftNotes}
+                  onValueChange={setDraftNotes}
+                  trackColor={{ true: t.mint, false: t.line2 }}
+                  thumbColor={t.surface}
+                />
+              </View>
+
+              {remove ? (
+                <View style={styles.toggleRow}>
+                  <View style={{ flex: 1, paddingRight: space.md }}>
+                    <Text variant="body">Clean up this project’s working notes</Text>
+                    <Text variant="caption" color={t.muted}>
+                      AI proposes removing contributions tied to the papers leaving.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={cleanupSource}
+                    onValueChange={setCleanupSource}
+                    trackColor={{ true: t.mint, false: t.line2 }}
+                    thumbColor={t.surface}
+                  />
+                </View>
+              ) : null}
+            </>
+          ) : null}
 
           {error ? (
             <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>

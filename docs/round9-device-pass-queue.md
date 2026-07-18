@@ -94,7 +94,7 @@ Grouped by type; rough priority within each group. IDs R9.1–R9.15.
 
 ## Refines an existing queued item
 
-- **R8.3 nuance (from Kamil's move-notes question).** He moved *unread* papers and correctly
+- **R8.3 nuance (from Kamil's move-notes question; implemented in R8.3).** He moved *unread* papers and correctly
   wasn't asked about cleaning the working notes. The source-cleanup pass (R8.3 phase 3) should
   be **offered only when the moved papers actually influenced the working notes** — i.e. read
   papers with committed Notes that were synthesized in — not for unread papers. This applies to

@@ -291,6 +291,9 @@ def delete_project(pid: str) -> None:
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        # A later project with the same name can reuse this pid. Do not let terminal in-memory
+        # results/proposals from the deleted project become visible in that new project.
+        jobs.forget_finished_for_project(pid)
     finally:
         config.unmark_project_deleting(pid)
 

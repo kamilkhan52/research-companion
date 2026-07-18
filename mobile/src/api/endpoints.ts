@@ -89,20 +89,47 @@ export const updateProjectMeta = (pid: string, patch: { name?: string; favorite?
 /** Soft delete — the server moves the project into a recoverable .trash dir. */
 export const deleteProject = (pid: string) =>
   apiDelete<{ ok: boolean }>(`/api/projects/${encodeURIComponent(pid)}`);
+export interface RelocationNotesJobs {
+  destination: NotesJob | null;
+  source_cleanup: NotesJob | null;
+  destination_error: string | null;
+  source_cleanup_error: string | null;
+}
+export interface RelocationResult {
+  new_pid: string;
+  name: string;
+  moved: number;
+  removed: boolean;
+  /** Absent when a newer mobile bundle is temporarily connected to the pre-R8.3 backend. */
+  notes_jobs?: RelocationNotesJobs;
+}
 /** Split selected papers (and the work done on them) into a new project (R8.1). Deterministic
  *  server-side move/copy — a plain confirmed POST, not a job. */
 export const splitProject = (
   pid: string,
-  body: { name: string; slugs: string[]; remove_from_source: boolean; goals?: string },
-) => apiPost<{ new_pid: string; name: string; moved: number; removed: boolean }>(
+  body: {
+    name: string;
+    slugs: string[];
+    remove_from_source: boolean;
+    goals?: string;
+    draft_destination_notes: boolean;
+    cleanup_source_notes: boolean;
+  },
+) => apiPost<RelocationResult>(
   `/api/projects/${encodeURIComponent(pid)}/split`, body);
 
 /** Move (or copy) selected papers into an EXISTING project (R9.13). Same result shape as
  *  splitProject — `new_pid` is the destination, so the caller switches to it the same way. */
 export const moveProject = (
   pid: string,
-  body: { dest_pid: string; slugs: string[]; remove_from_source: boolean },
-) => apiPost<{ new_pid: string; name: string; moved: number; removed: boolean }>(
+  body: {
+    dest_pid: string;
+    slugs: string[];
+    remove_from_source: boolean;
+    draft_destination_notes: boolean;
+    cleanup_source_notes: boolean;
+  },
+) => apiPost<RelocationResult>(
   `/api/projects/${encodeURIComponent(pid)}/move`, body);
 
 // ---------- background retrieval + auto-analysis (R7.8) ----------
@@ -241,10 +268,15 @@ export const getPreviewJob = (pid: string, id: string) =>
 export const getNotes = (pid: string, target: string) =>
   apiGet<NotesDoc>(`${P(pid)}/notes/${encodeURIComponent(target)}`);
 /** Persist a human-approved document (manual edit or applied agent proposal); git-commits. */
-export const saveNotes = (pid: string, target: string, markdown: string, summary?: string) =>
+export const saveNotes = (
+  pid: string,
+  target: string,
+  markdown: string,
+  opts: { summary?: string; base_revision?: string; job_id?: string } = {},
+) =>
   apiPost<{ ok: boolean; rev: string; target: string }>(
     `${P(pid)}/notes/${encodeURIComponent(target)}`,
-    { markdown, summary },
+    { markdown, ...opts },
   );
 /** Start (or join) a background agent revision from a natural-language instruction. The
  *  result is a proposal — preview it, then apply via saveNotes. Poll getNotesJob. */
@@ -257,6 +289,11 @@ export const getNotesJob = (pid: string, id: string) =>
 /** The notes-edit job currently running for a target, if any — for reattaching on entry. */
 export const getActiveNotesJob = (pid: string, target: string) =>
   apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/active/${encodeURIComponent(target)}`);
+/** Latest retained proposal for re-entry, including a job that completed while away. */
+export const getLatestNotesJob = (pid: string, target: string) =>
+  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`);
+export const discardNotesJob = (pid: string, id: string) =>
+  apiPost<{ ok: boolean }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}/discard`, {});
 
 // ---------- discovery (goals -> suggested readings) ----------
 

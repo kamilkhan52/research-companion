@@ -20,6 +20,7 @@ function render(onDone = jest.fn(), onClose = jest.fn()) {
         destPid="dest"
         destName="Quantization"
         slugs={['awq', 'smooth']}
+        notesEligible
         onClose={onClose}
         onDone={onDone}
       />
@@ -38,7 +39,24 @@ test('confirming a move posts to the destination and reports the new pid', async
       dest_pid: 'dest',
       slugs: ['awq', 'smooth'],
       remove_from_source: true,
+      draft_destination_notes: true,
+      cleanup_source_notes: false,
     }),
   );
   await waitFor(() => expect(onDone).toHaveBeenCalledWith('dest'));
+});
+
+test('a pre-R8.3 response still reports the committed move as successful', async () => {
+  jest.mocked(api.moveProject).mockResolvedValueOnce({
+    new_pid: 'dest',
+    name: 'Quantization',
+    moved: 2,
+    removed: true,
+  });
+  const onDone = jest.fn();
+  await render(onDone);
+
+  fireEvent.press(screen.getByText('Move papers'));
+  await waitFor(() => expect(onDone).toHaveBeenCalledWith('dest'));
+  expect(screen.queryByText('Could not move the papers.')).toBeNull();
 });

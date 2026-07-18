@@ -3,8 +3,21 @@ between two projects, slug validation, the running-job guard, and cites hygiene.
 network."""
 from __future__ import annotations
 
+import time
+
 import pytest
-from app import config, graph_store, jobs, project_split, projects, sessions, store
+from app import (
+    config,
+    graph_store,
+    jobs,
+    notes_jobs,
+    project_split,
+    projects,
+    sessions,
+    store,
+)
+from app.routers.projects_api import SplitReq
+from app.routers.projects_api import split_project as split_route
 
 from tests.conftest import add_paper
 
@@ -152,6 +165,88 @@ def test_split_of_an_uncommitted_only_paper_succeeds(temp_project):
                                       remove_from_source=True)
     assert res["removed"] is True and res["new_pid"]
     assert {p.slug for p in store.list_papers()} == {"awq", "core"}
+
+
+def test_split_route_starts_project_scoped_notes_proposals_after_relocation(
+    temp_project, monkeypatch,
+):
+    """R8.3: both LLM passes are real background jobs, admitted after deterministic phase 1
+    but before its reservations release; each worker sees the correct project's working notes."""
+    _seed_source(temp_project)
+    store.write_synthesis("# Working notes\n\nAWQ supports four-bit inference. Core remains.")
+    monkeypatch.setattr(config, "has_api_key", lambda: True)
+
+    def fake_events(target, prompt):
+        if "CURRENT DESTINATION" in prompt:
+            yield {"type": "final", "text": "# Working notes\n\nDestination synthesis."}
+        else:
+            yield {"type": "final", "text": "# Working notes\n\nCore remains."}
+
+    monkeypatch.setattr(notes_jobs, "_default_events", fake_events)
+    admitted_while_reserved = set()
+    original_destination = notes_jobs.start_split_destination
+    original_cleanup = notes_jobs.start_split_source_cleanup
+
+    def checked_destination(*args, **kwargs):
+        active = config.active_project_id()
+        assert active and config.project_is_busy(active)
+        admitted_while_reserved.add(("destination", active))
+        return original_destination(*args, **kwargs)
+
+    def checked_cleanup(*args, **kwargs):
+        active = config.active_project_id()
+        assert active and config.project_is_busy(active)
+        admitted_while_reserved.add(("source", active))
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(notes_jobs, "start_split_destination", checked_destination)
+    monkeypatch.setattr(notes_jobs, "start_split_source_cleanup", checked_cleanup)
+    notes_jobs._jobs.clear()
+    try:
+        result = split_route(
+            temp_project,
+            SplitReq(
+                name="Quantization",
+                slugs=["awq"],
+                remove_from_source=True,
+                draft_destination_notes=True,
+                cleanup_source_notes=True,
+            ),
+        )
+        dest_job_id = result["notes_jobs"]["destination"]["id"]
+        source_job_id = result["notes_jobs"]["source_cleanup"]["id"]
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            source = notes_jobs.get_job(source_job_id)
+            tok = _bind(result["new_pid"])
+            try:
+                dest = notes_jobs.get_job(dest_job_id)
+            finally:
+                config.reset_active_project(tok)
+            if source and dest and source.status != "running" and dest.status != "running":
+                break
+            time.sleep(0.02)
+
+        assert source and source.status == "done"
+        assert source.kind == "split_source_cleanup"
+        assert admitted_while_reserved == {
+            ("destination", result["new_pid"]),
+            ("source", temp_project),
+        }
+        tok = _bind(result["new_pid"])
+        try:
+            dest = notes_jobs.get_job(dest_job_id)
+            assert dest and dest.status == "done"
+            assert dest.kind == "split_destination"
+            # create_project scaffolds a starter document; the job must not replace it until
+            # approval.
+            assert "Destination synthesis" not in notes_jobs.read(notes_jobs.WORKING)
+        finally:
+            config.reset_active_project(tok)
+        assert "AWQ supports" in notes_jobs.read(notes_jobs.WORKING)
+    finally:
+        notes_jobs._jobs.clear()
 
 
 def test_mark_project_busy_is_exclusive(temp_project):

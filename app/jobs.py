@@ -98,6 +98,24 @@ def any_running_for_project(pid: str) -> str | None:
     return None
 
 
+def forget_finished_for_project(pid: str) -> None:
+    """Drop terminal in-process jobs when a project is soft-deleted.
+
+    Project ids can be reused after their directory moves to ``.trash``. Retaining an old
+    proposal under that pid would expose it through the newly created project's latest-job
+    endpoint, so deletion clears every terminal registry entry while its tombstone still blocks
+    new admission. Callers must already have refused running jobs.
+    """
+    for reg in _ALL_REGISTRIES:
+        with reg.lock:
+            stale = [
+                job_id for job_id, job in reg.jobs.items()
+                if getattr(job, _PID_ATTR, None) == pid and job.status != "running"
+            ]
+            for job_id in stale:
+                reg.jobs.pop(job_id, None)
+
+
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
@@ -207,23 +225,45 @@ class JobRegistry(Generic[J]):
 
     def put(self, key: str, job: J, *, project_id=_AMBIENT) -> J:
         """Register an already-terminal job (e.g. a result served straight from cache) with no
-        worker thread. Returns it."""
+        worker thread. Project mutation/deletion admission is gated exactly like
+        ``start_or_join`` so a cache hit cannot register after deletion's terminal-job purge
+        and leak into a later project that reuses the same id. Returns the job."""
         pid = _resolve_pid(project_id)
         with self._lock:
+            # Keep this check under the registry lock: deletion marks the tombstone before
+            # sweeping registries, so either this registration wins first and the sweep removes
+            # it, or the tombstone wins and registration is refused.
+            if pid is not None and (
+                config.project_is_deleting(pid) or config.project_is_busy(pid)
+            ):
+                raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
             self._prune()
         return job
 
-    def start_or_join(self, key: str, factory: Callable[[], J], work: Callable[[J], None],
-                      *, project_id=_AMBIENT) -> J:
+    def start_or_join(
+        self,
+        key: str,
+        factory: Callable[[], J],
+        work: Callable[[J], None],
+        *,
+        project_id=_AMBIENT,
+        admit: Callable[[J | None], None] | None = None,
+        allow_busy: bool = False,
+    ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
         `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
         active project (correct for request-scoped callers like chat/notes); a pid-keyed caller
         (graph/discovery) passes it explicitly so the worker binds the right project even if the
-        ambient context is absent or different. `work` populates the job's fields and returns; the
-        registry then marks it done (or error, if `work` raised)."""
+        ambient context is absent or different. When supplied, `admit` runs under the registry
+        lock with the newest retained job for the same key and project; it may raise to reject
+        registration atomically (proposal jobs use this to avoid hiding unapplied results).
+        `allow_busy` is reserved for a caller that already owns the project's busy reservation
+        and is admitting the follow-on job before releasing it; deletion tombstones still reject.
+        `work` populates the job's fields and returns; the registry then marks it done (or error,
+        if `work` raised)."""
         pid = _resolve_pid(project_id)
         # The lifecycle lines carry the job's AUTHORITATIVE project (the resolved pid), passed
         # explicitly so they aren't mistagged by the emitting thread's ambient context — the
@@ -238,8 +278,18 @@ class JobRegistry(Generic[J]):
             # busy BEFORE sweeping the registries, so with the check under the same lock the
             # sweep serializes against registration — either the sweep sees this job, or this
             # job sees the busy flag. Raised, not swallowed — the caller deserves the error.
-            if pid is not None and (config.project_is_deleting(pid) or config.project_is_busy(pid)):
+            if pid is not None and (
+                config.project_is_deleting(pid)
+                or (config.project_is_busy(pid) and not allow_busy)
+            ):
                 raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
+            matching = [
+                job for job in self._jobs.values()
+                if getattr(job, _KEY_ATTR, None) == key
+                and getattr(job, _PID_ATTR, None) == pid
+            ]
+            if admit is not None:
+                admit(matching[-1] if matching else None)
             existing = self._running_for(key, pid)
             if existing:
                 log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag)
