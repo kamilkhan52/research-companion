@@ -112,6 +112,18 @@ def get_review(slug: str):
 
 @project_router.post("/approve")
 def approve(req: ApproveReq):
+    # A split/move relocating this project's papers reserves it busy and rewrites its git
+    # index synchronously; an approval's commit (committer.commit → git add) would overlap
+    # that population/removal window and could commit the move's half-written files or race
+    # the index. Refuse while a reservation is held — the same entry-gate the add/remove/
+    # retrieval routes carry. (A writer already mid-commit is the documented residual — see
+    # docs/project-forking-design.md.)
+    pid = config.active_project_id()
+    if pid and config.project_is_busy(pid):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then approve.",
+        )
     # Proposal read + commit are one atomic unit under the session's mutation lock: a branch
     # switch between them could commit branch A's notes over branch B's transcript.
     with sessions.mutation_lock(req.slug):

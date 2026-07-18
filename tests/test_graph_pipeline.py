@@ -196,6 +196,15 @@ def test_status_flags_a_paper_absent_from_a_built_graph(temp_project):
     assert "b" in st["stale_papers"]  # missing from the snapshot ⇒ rebuild affordance lights
     assert "a" not in st["stale_papers"]
 
+    # Even a degenerate empty-node stored graph counts as "built" (has_graph=true), so a
+    # present paper must still surface for rebuild — guard on graph EXISTENCE, not node count.
+    data = graph_store.load()
+    graph_store.set_graph(data, {"built_at": "t", "revision": "r", "nodes": [], "edges": []})
+    graph_store.save(data)
+    st = graph.status(store.list_papers(sessions.session_states()))
+    assert st["has_graph"] is True
+    assert {"a", "b"}.issubset(set(st["stale_papers"]))
+
 
 def test_interrupted_cached_rebuild_marks_skeleton_for_resume(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="Stable text.")

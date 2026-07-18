@@ -170,8 +170,8 @@ project just as for a split. The move endpoint returns the same `departed_notes`
 
 **Concurrency — what the move guards, and a known residual.** The move reserves BOTH projects
 busy, sweeps background jobs on both, holds each moved slug's `mutation_lock` across
-snapshot+removal, and (this PR) gates the synchronous `add`/`remove`/`start`/`start_stream`
-routes on the busy flag (retroactively hardening the split too). It also refuses a destination
+snapshot+removal, and (this PR) gates the synchronous `add`/`remove`/`start`/`start_stream`/
+`approve` routes on the busy flag at entry (retroactively hardening the split too). It also refuses a destination
 that already has the slug's data (reading-list entry OR retained on-disk records) and validates
 every slug against the source's entries before any path building. **Residual, matching the
 shipped split (#147):** the busy flag is checked at each synchronous route's *entry*, and no

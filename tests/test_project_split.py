@@ -359,6 +359,21 @@ def test_synchronous_retrieval_refuses_while_relocating(temp_project):
         config.unmark_project_busy(temp_project)
 
 
+def test_approve_refuses_while_relocating(temp_project):
+    """/approve commits via git add; it must refuse while a split/move owns the project so its
+    commit can't overlap the relocation's index writes."""
+    from app.routers.notes import ApproveReq, approve
+    from fastapi import HTTPException
+    _seed_source(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            approve(ApproveReq(slug="awq"))
+        assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+
+
 def test_move_route_refuses_when_the_destination_is_busy(temp_project):
     """The /move route reserves BOTH sides; if the destination is already reserved (a split/
     move touching it) the request 409s rather than interleaving two mutations."""

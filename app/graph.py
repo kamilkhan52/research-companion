@@ -1046,11 +1046,13 @@ def status(papers: list[Paper]) -> dict:
     # The extraction checks above miss this when the paper arrived with a FRESH extraction
     # cache but was never graphed — a project move (R9.13) copies the extraction, so the
     # moved paper looks up to date yet isn't in the destination's stored snapshot. Light up
-    # the rebuild affordance so GET /graph isn't silently missing it. Guarded on a built
-    # graph existing (a project with none already shows "build the graph").
-    if g.get("nodes"):
+    # the rebuild affordance so GET /graph isn't silently missing it. Guard on a stored graph
+    # EXISTING (not on it having nodes): a degenerate empty-node graph still reports
+    # has_graph=true, so its papers must still surface for rebuild. A project with no graph at
+    # all already shows "build the graph".
+    if data.get("graph") is not None:
         graphed = {
-            n["slug"] for n in g["nodes"]
+            n["slug"] for n in (g.get("nodes") or [])
             if n.get("kind") == "project" and n.get("slug")
         }
         for p in papers:
