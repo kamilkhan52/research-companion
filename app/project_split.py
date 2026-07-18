@@ -218,25 +218,36 @@ def _snapshot_dest(dest_pid: str) -> dict:
 
 def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
     """Best-effort rollback of a FAILED move's destination writes (contextvar bound to dest),
-    so the destination looks untouched and a retry isn't blocked by the collision check. Never
-    raises — a rollback failure must not mask the original error."""
-    try:
-        # Undo the move's commit if one landed (keep the working tree); a no-op if we hadn't
-        # committed, since HEAD is still the snapshot.
-        projects._git(dest_pid, "reset", "--soft", snap["head"])
-        # Remove the files this move wrote for the moved slugs — all new in the destination
-        # (the collision check guaranteed it had none), so deleting them loses nothing of its.
-        for slug in slugs:
+    so the destination looks untouched and a retry isn't blocked by the collision check. Does
+    the DATA restoration (remove the moved-in files, restore the destination's own reading-list
+    + graph caches) FIRST and independently of git, then the fallible git cleanup — so a git
+    failure can't leave the destination's own record half-restored. Never raises."""
+    # 1. Data restoration — pure filesystem, isolated. The moved-in files are all new in the
+    #    destination (the collision check guaranteed it had none), so deleting them loses
+    #    nothing of the destination's own; the reading-list + graph are restored to snapshots.
+    for slug in slugs:
+        try:
             for p in (store.corpus_path(slug), *sessions.transcript_paths(slug),
                       _cover_path(slug), graph_store._retrieved_text_file(slug)):
                 p.unlink(missing_ok=True)
-        # Restore the reading list + graph caches to their pre-move snapshots.
+        except Exception:
+            log.warning("could not remove moved-in file(s) for %s from %s", slug, dest_pid,
+                        exc_info=True)
+    try:
         store._reading_list().write_bytes(snap["reading_list"])
         store._parse_cache.clear()
+    except Exception:
+        log.warning("could not restore destination reading list for %s", dest_pid,
+                    exc_info=True)
+    try:
         graph_store.save(snap["graph"])
-        # Unstage exactly the paths the move could have staged (reading-list + each moved slug's
-        # corpus/transcript), leaving the destination's OTHER staging untouched. After this the
-        # working tree matches HEAD for those paths (reading-list restored; moved files gone).
+    except Exception:
+        log.warning("could not restore destination graph caches for %s", dest_pid,
+                    exc_info=True)
+    # 2. Fallible git cleanup LAST — undo the move's commit if one landed (reset --soft keeps
+    #    the working tree, now restored), then unstage the paths the move could have staged.
+    try:
+        projects._git(dest_pid, "reset", "--soft", snap["head"])
         reset_paths = ["reading-list.md"]
         root = config.project_dir()
         for slug in slugs:
@@ -244,7 +255,8 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
                 reset_paths.append(str(f.relative_to(root)))
         projects._git(dest_pid, "reset", "-q", "--", *reset_paths)
     except Exception:
-        log.warning("move rollback of destination %s was incomplete", dest_pid, exc_info=True)
+        log.warning("git cleanup of destination rollback %s was incomplete", dest_pid,
+                    exc_info=True)
 
 
 def move_to_existing(
@@ -378,14 +390,16 @@ def _finish_source_removal(source_pid: str, slugs: list[str], bundle: dict,
 
 
 def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict) -> None:
-    """Undo a failed source removal (contextvar bound to source): re-materialize the removed
-    papers' on-disk files from the captured bundle, restore the reading-list bytes + graph
-    caches from the snapshot, and undo any partial commit with `reset --soft` (keeps the
-    source's OWN working-tree edits). Never raises — a rollback failure must not mask the
-    original error."""
-    try:
-        projects._git(source_pid, "reset", "--soft", snap["head"])  # undo a partial commit
-        for slug in slugs:
+    """Undo a failed source removal (contextvar bound to source). Restore the DATA first —
+    re-materialize the removed papers' on-disk files from the captured bundle, then the
+    reading-list bytes + graph caches from the snapshot — all pure filesystem writes that do
+    NOT depend on git. Only AFTER the data is safe does it run the fallible git cleanup, so a
+    git failure (e.g. a read-only `.git`, the very case that failed the removal) can never skip
+    restoration and lose the papers from both projects. Never raises."""
+    # 1. Data restoration — independent of git, each step isolated so one failure never skips
+    #    the rest. This is what actually prevents data loss.
+    for slug in slugs:
+        try:
             b = bundle[slug]
             if b["corpus_bytes"] is not None:
                 store.corpus_path(slug).write_bytes(b["corpus_bytes"])
@@ -406,11 +420,22 @@ def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict)
                 gpath.write_bytes(b["gcorpus_bytes"])
             if b["session_meta"] is not None:
                 sessions.import_session(slug, b["session_meta"])
+        except Exception:
+            log.warning("could not restore source file(s) for %s", slug, exc_info=True)
+    try:
         store._reading_list().write_bytes(snap["reading_list"])
         store._parse_cache.clear()
+    except Exception:
+        log.warning("could not restore source reading list for %s", source_pid, exc_info=True)
+    try:
         graph_store.save(snap["graph"])
-        # Unstage only the reading-list + moved slugs' paths (leave the source's OTHER staging
-        # untouched), so the working tree — now restored — matches HEAD for them.
+    except Exception:
+        log.warning("could not restore source graph caches for %s", source_pid, exc_info=True)
+    # 2. Fallible git cleanup LAST — the working tree already holds the restored data, so this
+    #    only re-aligns the index/HEAD. Undo any partial commit (reset --soft keeps the source's
+    #    OWN working-tree edits), then unstage the reading-list + moved slugs' paths.
+    try:
+        projects._git(source_pid, "reset", "--soft", snap["head"])
         reset_paths = ["reading-list.md"]
         root = config.project_dir()
         for slug in slugs:
@@ -418,7 +443,8 @@ def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict)
                 reset_paths.append(str(f.relative_to(root)))
         projects._git(source_pid, "reset", "-q", "--", *reset_paths)
     except Exception:
-        log.warning("move rollback of source %s was incomplete", source_pid, exc_info=True)
+        log.warning("git cleanup of source rollback %s was incomplete", source_pid,
+                    exc_info=True)
 
 
 def split_project(

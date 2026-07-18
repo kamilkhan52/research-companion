@@ -426,3 +426,28 @@ def test_move_rolls_the_source_back_on_a_failed_source_commit(temp_project, monk
         assert store.corpus_path("awq").exists() is False
     finally:
         config.reset_active_project(tok)
+
+
+def test_source_data_survives_even_when_git_cleanup_fails(temp_project, monkeypatch):
+    """The worst case (a read-only source `.git`): every source git WRITE fails, but the data
+    restoration is pure filesystem and runs first, so the moved papers are never lost from
+    both projects."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    real_git = projects._git
+
+    def flaky_git(pid, *args):
+        # Source: reads (rev-parse, ls-files) work; every write-ish git op fails.
+        if pid == temp_project and args[:1] in (("commit",), ("add",), ("reset",)):
+            raise projects.ProjectError("read-only .git")
+        return real_git(pid, *args)
+
+    monkeypatch.setattr(projects, "_git", flaky_git)
+    with pytest.raises(Exception):  # noqa: B017
+        project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    monkeypatch.setattr(projects, "_git", real_git)
+
+    # Despite git failing throughout the source rollback, the paper's DATA is restored on disk.
+    assert store.corpus_path("awq").exists()
+    assert "4-bit works" in store.read_notes("awq")
+    assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
