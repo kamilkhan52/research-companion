@@ -191,15 +191,19 @@ def _progress_source(progress: dict) -> dict | None:
         text = ("The written response is complete. Its spoken adaptation is still being "
                 "prepared, and the amount remaining is not yet known.")
     elif phase == "audio_synthesis":
-        # Playback starts only when the COMPLETE stitched track exists (polish plan I.1), so
-        # this must never claim the response "is ready" — that phrasing, repeated across the
-        # cues generated during synthesis, was exactly the on-device "several announcements,
-        # then nothing plays yet" bug (I.2). The response speaks for itself when it starts.
+        # The text is finished and on screen to read NOW — say so (R9.6: the listener wanted to
+        # know the response is ready to read while audio is still being prepared). Playback of
+        # the AUDIO still starts only when the COMPLETE stitched track exists (polish plan I.1),
+        # so this must not claim the audio "is ready" or "about to play" — that repeated across
+        # synthesis cues was the I.2 "several announcements, then nothing plays" bug. The
+        # coordinator now emits a synthesis cue only when a segment actually lands (R9.6), so
+        # this phrasing is spoken on real progress, not on a loop.
         done = progress.get("segments_done")
         total = progress.get("segments_total")
         counted = f" ({done} of {total} parts synthesized)" if total else ""
-        text = ("The written response is complete and its audio is being synthesized"
-                f"{counted}; it will begin playing automatically once assembled.")
+        text = ("The written response is complete and available to read on screen now; its "
+                f"audio is still being synthesized{counted} and will begin playing "
+                "automatically once assembled.")
     else:
         return None
     return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
@@ -394,6 +398,14 @@ def start_coordinator(
             if (cue := get_job(cue_id)) is not None and cue.status == "done" and cue.cue
         ]
         last_started = last_started_at
+        # During audio synthesis the wait is bounded and its only news is segment progress, so
+        # a fresh cue is worth speaking ONLY when a segment has actually landed since the last
+        # one — otherwise the cue track just repeats "…still synthesizing" on the cadence timer,
+        # which is the R9.6 complaint. -1 lets the first synthesis cue always fire (announcing
+        # the text is ready to read); after that it's progress-gated. Unknown-remaining phases
+        # (analysis, narration adaptation) keep the plain time cadence — there's no progress
+        # signal to gate on and the wait is genuinely open-ended.
+        last_synth_done = -1
         while True:
             audio_job = audio_jobs.get_job(audio_job_id)
             phase, progress, ready = _audio_progress(audio_job)
@@ -416,8 +428,12 @@ def start_coordinator(
                     previous_cues.append(previous.cue)
 
             now = time.monotonic()
-            if now - last_started >= cadence_seconds:
+            synth_done = int(progress.get("segments_done") or 0)
+            progressed = phase != "audio_synthesis" or synth_done > last_synth_done
+            if now - last_started >= cadence_seconds and progressed:
                 last_started = now
+                if phase == "audio_synthesis":
+                    last_synth_done = synth_done
                 try:
                     cue = start_job(
                         chat_job_id,
