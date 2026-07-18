@@ -341,6 +341,25 @@ def test_move_to_existing_refuses_retained_on_disk_data(temp_project):
         config.reset_active_project(tok)
 
 
+def test_move_to_existing_refuses_a_retained_graph_record(temp_project):
+    """A dest that graphed a same-slug metadata-only paper and removed it can retain the slug
+    in reference-graph.json with no files. A move of that slug must be refused, or the fresh
+    caches combine with the old graph node and the Map serves stale edges with no rebuild."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    tok = _bind(dest)
+    try:
+        data = graph_store.load()
+        graph_store.set_paper_extraction(data, "awq", {"slug": "awq", "status": "done",
+                                                       "references": [], "content_hash": "old"})
+        graph_store.save(data)  # graph record for awq, but no corpus/reading-list entry
+        assert store.corpus_path("awq").exists() is False
+    finally:
+        config.reset_active_project(tok)
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(temp_project, dest, ["awq"])
+
+
 def test_move_to_existing_rejects_traversal_and_self(temp_project):
     _seed_source(temp_project)
     dest = _make_dest()
