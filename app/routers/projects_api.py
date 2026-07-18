@@ -166,6 +166,60 @@ def split_project(pid: str, req: SplitReq):
     return {k: v for k, v in result.items() if k != "departed_notes"}
 
 
+class MoveReq(BaseModel):
+    dest_pid: str                    # an EXISTING destination project
+    slugs: list[str]                 # papers to move (must be current source entries)
+    remove_from_source: bool = True  # move (default) vs. copy
+
+
+@project_router.post("/move")
+def move_papers(pid: str, req: MoveReq):
+    """Move selected papers (and their work) into an EXISTING project (R9.13). The deterministic
+    sibling of /split — a plain confirmed POST that git-commits both sides.
+
+    Reserves BOTH the source and the destination for the whole move: mark each busy, then sweep
+    jobs on each, so a chat turn or graph build on either side can't write into files being
+    relocated (the same mark-then-sweep the split route uses for the source, applied to both).
+    Distinct 409s let the client tell the user which side is busy."""
+    dest = req.dest_pid
+    if dest == pid:
+        raise HTTPException(status_code=400, detail="Choose a different project to move into.")
+    if not projects.exists(dest):
+        raise HTTPException(status_code=404, detail="The destination project no longer exists.")
+    if not config.mark_project_busy(pid):
+        raise HTTPException(status_code=409, detail="This project is already being modified.")
+    try:
+        if config.project_is_deleting(pid):
+            raise HTTPException(status_code=409, detail="This project is being deleted.")
+        if not config.mark_project_busy(dest):
+            raise HTTPException(
+                status_code=409, detail="The destination project is being modified.")
+        try:
+            if config.project_is_deleting(dest):
+                raise HTTPException(
+                    status_code=409, detail="The destination project is being deleted.")
+            for side, label in ((pid, "this project"), (dest, "the destination")):
+                busy = jobs.any_running_for_project(side)
+                if busy:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"A background job ({busy}) is running for {label} — "
+                               "wait, then move.",
+                    )
+            result = project_split.move_to_existing(
+                pid, dest, req.slugs, remove_from_source=req.remove_from_source,
+            )
+        finally:
+            config.unmark_project_busy(dest)
+    except SplitError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        config.unmark_project_busy(pid)
+    return {k: v for k, v in result.items() if k != "departed_notes"}
+
+
 @project_router.get("/state")
 def get_state(pid: str):
     settings = config.load_settings()

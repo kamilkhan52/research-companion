@@ -252,6 +252,28 @@ export function useSplitProject(pid: string | null) {
   });
 }
 
+export function useMoveProject(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { dest_pid: string; slugs: string[]; remove_from_source: boolean }) =>
+      api.moveProject(pid as string, body),
+    onSuccess: (_res, { dest_pid, remove_from_source }) => {
+      qc.invalidateQueries({ queryKey: keys.projects });
+      qc.invalidateQueries({ queryKey: keys.recentSessions });
+      // The destination gained papers (and graph nodes/authors).
+      qc.invalidateQueries({ queryKey: keys.projectState(dest_pid) });
+      qc.invalidateQueries({ queryKey: keys.graph(dest_pid) });
+      qc.invalidateQueries({ queryKey: keys.graphAuthors(dest_pid) });
+      if (pid && remove_from_source) {
+        // The source lost papers (and possibly graph nodes/authors).
+        qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+        qc.invalidateQueries({ queryKey: keys.graph(pid) });
+        qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+      }
+    },
+  });
+}
+
 export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({

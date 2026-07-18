@@ -129,6 +129,45 @@ a fresh local project. Marketplace concerns (publishing, discovery, identity, ve
 notes-privacy) stay future work and should not shape v1 beyond keeping `project_split.py`'s
 copy path reusable.
 
+## R9.13 — generalize Split into "Move" (new OR existing project)
+
+The device pass asked for the Library multi-select menu to read as standard actions: a general
+**Move** (to a *new* project — today's split — OR an *existing* one) plus **Delete** alongside
+it. The backend gains a move-to-existing variant; the deterministic phase-1 machinery is
+otherwise identical to the split, so this is an extraction, not a rewrite.
+
+**Backend (`project_split.py`).** Factor the population + source-removal out of
+`split_project` into a shared core, then add `move_to_existing(source_pid, dest_pid, slugs, *,
+remove_from_source=True)`. The differences from the new-project path, all load-bearing:
+
+- **Destination validation:** `dest_pid` must exist, differ from the source, and not be
+  deleting/busy — checked, then reserved with `mark_project_busy(dest_pid)` for the population
+  window (same reason the split marks the fresh pid busy: a client refresh + graph/retrieval
+  job mid-population would read a half-written reading list).
+- **Slug-collision refusal:** if any moved slug already exists in the destination's reading
+  list, refuse the whole move with a clear error (a duplicate entry would corrupt the list).
+  All-or-nothing — no partial move.
+- **Cite-keep set:** the split keeps `set(slugs)` (cross-refs to non-moved papers drop). A move
+  into a populated project keeps `slugs ∪ destination's existing slugs`, so a moved paper's
+  cite to a paper *already in the destination* survives as a live edge.
+- **Commit by pathspec, not `add -A`:** the destination has unrelated (possibly dirty) files,
+  so its commit stages exactly the paths we wrote — `reading-list.md` + each moved
+  `corpus/<slug>.md` + (on move) `sessions/<slug>.jsonl`. The scaffold path keeps `add -A`
+  (everything in a fresh repo is split-owned). `.state/*` (covers, graph caches, branches) is
+  gitignored in both.
+- **Same locks + source removal:** hold each moved slug's `mutation_lock` across snapshot +
+  removal (unchanged), and reuse `_remove_from_source` verbatim.
+
+The route: `POST /api/projects/{pid}/move` with `{dest_pid, slugs, remove_from_source}`,
+guarded exactly like `/split` (deleting/busy 409s, jobs sweep). `/split` stays for
+move-to-new. Mobile: the multi-select bar's single "Split" action becomes a **Move** action
+opening a small chooser (New project… → the existing Split sheet; or pick an existing project
+→ confirm) plus a **Delete** action reusing the per-paper removal flow in a batch.
+
+**R8.3 nuance carries over:** the source working-notes cleanup pass (a later PR) is offered
+only when the moved papers actually influenced the working notes — for a move to an existing
+project just as for a split. The move endpoint returns the same `departed_notes` map to feed it.
+
 ## Open questions for Kamil
 
 1. **Defaults check:** remove-from-source defaults **on** (move semantics, per "moving the

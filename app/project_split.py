@@ -152,6 +152,110 @@ def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
     return committed_paths
 
 
+def _dest_existing_slugs(dest_pid: str) -> set[str]:
+    """Slugs already in the destination's reading list (contextvar bound to it briefly)."""
+    token = config.set_active_project(dest_pid)
+    try:
+        return {p.slug for p in store.list_papers()}
+    finally:
+        config.reset_active_project(token)
+
+
+def _written_dest_paths(slugs: list[str], *, move: bool) -> list[str]:
+    """Git-tracked paths a move WROTE into the destination (contextvar bound to dest), so its
+    commit stages exactly those — the destination has unrelated files, so `add -A` is unsafe
+    (unlike the fresh-scaffold split). Only existing files: `git add -- <missing>` errors, and
+    a copy writes no transcript. `.state/*` (covers, graph caches, branches) is gitignored."""
+    root = config.project_dir()
+    paths = ["reading-list.md"]  # always modified (the appended entry blocks)
+    for slug in slugs:
+        candidates = [store.corpus_path(slug)]
+        if move:
+            candidates.append(sessions.transcript_paths(slug)[0])
+        for f in candidates:
+            if f.exists():
+                paths.append(str(f.relative_to(root)))
+    return paths
+
+
+def move_to_existing(
+    source_pid: str,
+    dest_pid: str,
+    slugs: list[str],
+    *,
+    remove_from_source: bool = True,
+) -> dict:
+    """Move/copy `slugs` from `source_pid` into an EXISTING project `dest_pid` (R9.13).
+    Returns {new_pid, name, moved, removed, departed_notes} — `new_pid` is `dest_pid`, so the
+    caller can switch to it exactly as for a split. Same deterministic phase-1 contract as
+    `split_project`; the only differences are destination validation, slug-collision refusal,
+    a cite-keep set that includes the destination's existing papers, and a pathspec commit
+    (not `add -A`) into the populated destination. LLM notes passes remain separate.
+
+    The route holds BOTH the source and destination busy for the whole call, and has swept
+    background jobs on both (so nothing writes into either mid-move), exactly as the split
+    route does for the source. This function assumes that reservation — it never marks busy
+    itself (which would double-mark the destination the route already holds)."""
+    if dest_pid == source_pid:
+        raise SplitError("Choose a different project to move into.")
+    if not projects.exists(dest_pid):
+        raise SplitError("The destination project no longer exists.")
+    slugs = list(dict.fromkeys(slugs))  # de-dupe, keep order
+    if not slugs:
+        raise SplitError("Select at least one paper to move.")
+
+    dest_slugs = _dest_existing_slugs(dest_pid)
+    collisions = [s for s in slugs if s in dest_slugs]
+    if collisions:
+        raise SplitError(
+            "These papers are already in the destination project: " + ", ".join(collisions)
+        )
+    # A moved paper's cite to a paper ALREADY in the destination stays a live edge, so keep is
+    # the moved set plus the destination's existing papers (the split keeps only the moved set).
+    keep = set(slugs) | dest_slugs
+
+    dest_name = projects._read_meta(dest_pid).get("name") or dest_pid
+    token = config.set_active_project(source_pid)
+    try:
+        with contextlib.ExitStack() as locks:
+            for slug in sorted(slugs):
+                locks.enter_context(sessions.mutation_lock(slug))
+            bundle = _gather_source(slugs)
+            departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+
+            new_token = config.set_active_project(dest_pid)
+            try:
+                _write_new_project(dest_pid, bundle, keep, move=remove_from_source)
+                written = _written_dest_paths(slugs, move=remove_from_source)
+            finally:
+                config.reset_active_project(new_token)
+            # Pathspec, not `add -A`: the destination has its own (possibly dirty) files.
+            projects._git(dest_pid, "add", "--", *written)
+            projects._git(dest_pid, "commit", "-q", "-m",
+                          f"Move {len(slugs)} paper(s) from {source_pid}", "--", *written)
+
+            removed = False
+            if remove_from_source:
+                changed = _remove_from_source(source_pid, slugs)
+                projects._git(source_pid, "add", "--", *changed)
+                staged = projects._git(source_pid, "diff", "--cached", "--name-only",
+                                       "--", *changed)
+                if staged.strip():
+                    projects._git(source_pid, "commit", "-q", "-m",
+                                  f"Move {len(slugs)} paper(s) to {dest_name}", "--", *changed)
+                removed = True
+    finally:
+        config.reset_active_project(token)
+
+    return {
+        "new_pid": dest_pid,
+        "name": dest_name,
+        "moved": len(slugs),
+        "removed": removed,
+        "departed_notes": departed_notes,
+    }
+
+
 def split_project(
     source_pid: str,
     name: str,

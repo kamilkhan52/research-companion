@@ -163,7 +163,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R9.11 | Continue Reading: drop paper status, show project name | polish | [#152](https://github.com/kamilkhan52/research-companion/pull/152) |
 | R9.1 | Proper draggable bottom sheets (drag-to-resize/snap points) as standard | feature | Queued |
 | R9.12 | Paper sort options (name/pub date/date added/status), distinct from filters | feature | [#159](https://github.com/kamilkhan52/research-companion/pull/159) — client-side sort (added order = reading-list), Sort control opens OptionsSheet |
-| R9.13 | Generalize Split → "Move" (new OR existing project) + Delete in multi-select menu | feature | Queued — extends R8.2 |
+| R9.13 | Generalize Split → "Move" (new OR existing project) + Delete in multi-select menu | feature | [#161](https://github.com/kamilkhan52/research-companion/pull/161) — backend `move_to_existing` + `POST /move` (reserves both sides, collision-refused, dest-inclusive cite keep) + client binding; **UI menu reorg (Move/Delete) is the follow-up PR** |
 | R9.2 | Select text → comment on spans → queue comments → attach quotes+comments to next response | feature | Queued — design doc first |
 | R9.4 | Default theme = System | confirmed | Already the default; no-op |
 

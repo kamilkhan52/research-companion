@@ -433,6 +433,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move Papers
+         * @description Move selected papers (and their work) into an EXISTING project (R9.13). The deterministic
+         *     sibling of /split — a plain confirmed POST that git-commits both sides.
+         *
+         *     Reserves BOTH the source and the destination for the whole move: mark each busy, then sweep
+         *     jobs on each, so a chat turn or graph build on either side can't write into files being
+         *     relocated (the same mark-then-sweep the split route uses for the source, applied to both).
+         *     Distinct 409s let the client tell the user which side is busy.
+         */
+        post: operations["move_papers_api_projects__pid__move_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/state": {
         parameters: {
             query?: never;
@@ -1217,10 +1243,14 @@ export interface paths {
         };
         /**
          * Get Figure Asset
-         * @description Cached figure image bytes. The asset name comes from the manifest; figures.asset_path
-         *     is the trust boundary (store-shaped slug, sanitizer-shaped filename only). Cacheable but
-         *     not immutable — a re-derivation can rewrite an asset under the same name, so clients
-         *     append the manifest's fetched_ts as a version query param.
+         * @description Cached figure image bytes. Two trust checks: figures.asset_path bounds the path
+         *     (store-shaped slug, sanitizer-shaped filename only), and the asset must be listed in the
+         *     slug's CURRENT `done` manifest — so after an identity correction the withheld stale
+         *     manifest's assets can't be served under the corrected slug (even from a leaked URL)
+         *     before the next derivation deletes them. Cacheable but not immutable — a re-derivation
+         *     can rewrite an asset under the same name, so clients append the manifest's fetched_ts as
+         *     a `?v=` version param; the cache is kept short-lived and revalidated rather than
+         *     immutable so a stale URL doesn't stick in a client cache across a correction.
          */
         get: operations["get_figure_asset_api_projects__pid__papers__slug__figures__asset__get"];
         put?: never;
@@ -1761,6 +1791,18 @@ export interface components {
              * @enum {string}
              */
             mode: "balanced" | "background" | "technical" | "detailed";
+        };
+        /** MoveReq */
+        MoveReq: {
+            /** Dest Pid */
+            dest_pid: string;
+            /** Slugs */
+            slugs: string[];
+            /**
+             * Remove From Source
+             * @default true
+             */
+            remove_from_source: boolean;
         };
         /** NarrateReq */
         NarrateReq: {
@@ -2646,6 +2688,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SplitReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_papers_api_projects__pid__move_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveReq"];
             };
         };
         responses: {

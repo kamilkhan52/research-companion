@@ -172,7 +172,7 @@ def test_delete_refuses_while_a_split_reserves_the_project(temp_project):
     _seed_source(temp_project)
     config.mark_project_busy(temp_project)
     try:
-        with pytest.raises(projects.ProjectError, match="being split"):
+        with pytest.raises(projects.ProjectError, match="being moved or split"):
             projects.delete_project(temp_project)
         assert projects.exists(temp_project) is True
     finally:
@@ -193,3 +193,124 @@ def test_busy_source_admits_no_new_jobs(temp_project):
     finally:
         config.unmark_project_busy(temp_project)
         jobs._ALL_REGISTRIES.remove(reg)
+
+
+# --- R9.13: move to an EXISTING project ------------------------------------------------------
+
+def _make_dest(name="Existing", papers=(("base", "Base Paper"),)):
+    """Create a second, committed project to move papers into."""
+    dpid = projects.create_project(name)["id"]
+    tok = _bind(dpid)
+    try:
+        for slug, title in papers:
+            add_paper(dpid, slug, title, full_text=f"{title} text")
+        projects._git(dpid, "add", "-A")
+        projects._git(dpid, "commit", "-q", "-m", "seed dest")
+    finally:
+        config.reset_active_project(tok)
+    return dpid
+
+
+def test_move_to_existing_appends_and_removes_from_source(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest()
+
+    res = project_split.move_to_existing(temp_project, dest, ["awq", "smooth"],
+                                         remove_from_source=True)
+    assert res["new_pid"] == dest and res["moved"] == 2 and res["removed"] is True
+    assert "awq" in res["departed_notes"]
+
+    tok = _bind(dest)
+    try:
+        # Destination now has its original paper PLUS the moved ones and their work.
+        assert {p.slug for p in store.list_papers()} == {"base", "awq", "smooth"}
+        assert "4-bit works" in store.read_notes("awq")
+        assert sessions.get_state("awq") == "in_discussion"
+        assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+    finally:
+        config.reset_active_project(tok)
+
+    # Source lost the moved papers, kept 'core', no dangling cite.
+    assert {p.slug for p in store.list_papers()} == {"core"}
+
+
+def test_move_to_existing_keeps_a_cite_to_a_destination_paper(temp_project):
+    """awq cites 'smooth' (moving) and 'core' (staying). Moving awq+smooth into a dest that
+    already contains a paper slugged 'core' should keep BOTH cites — the cross-ref to the
+    destination's existing paper stays a live edge (the split would have dropped it)."""
+    _seed_source(temp_project)
+    dest = _make_dest(papers=(("core", "Core In Dest"),))
+
+    project_split.move_to_existing(temp_project, dest, ["awq", "smooth"],
+                                   remove_from_source=True)
+    tok = _bind(dest)
+    try:
+        assert store.entry_details("awq")["cites"] == ["smooth", "core"]
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_move_to_existing_refuses_a_slug_collision(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest(papers=(("awq", "AWQ already here"),))
+    with pytest.raises(project_split.SplitError, match="already in the destination"):
+        project_split.move_to_existing(temp_project, dest, ["awq", "smooth"])
+    # Nothing moved: the source still has all three.
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+
+
+def test_move_to_existing_rejects_self_and_unknown_dest(temp_project):
+    _seed_source(temp_project)
+    with pytest.raises(project_split.SplitError, match="different project"):
+        project_split.move_to_existing(temp_project, temp_project, ["awq"])
+    with pytest.raises(project_split.SplitError, match="no longer exists"):
+        project_split.move_to_existing(temp_project, "ghost-pid", ["awq"])
+
+
+def test_move_to_existing_leaves_dest_repo_clean(temp_project):
+    """The destination commit stages exactly the paths the move wrote (pathspec, not add -A),
+    so no committed record file is left uncommitted afterward."""
+    import subprocess
+
+    _seed_source(temp_project)
+    dest = _make_dest()
+    project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+
+    status = subprocess.run(["git", "status", "--porcelain"],
+                            cwd=str(projects.project_path(dest)),
+                            capture_output=True, text=True).stdout.splitlines()
+    dirty = [ln for ln in status if ".state/" not in ln]
+    assert dirty == [], f"destination repo dirty after move: {dirty!r}"
+
+
+def test_move_route_refuses_when_the_destination_is_busy(temp_project):
+    """The /move route reserves BOTH sides; if the destination is already reserved (a split/
+    move touching it) the request 409s rather than interleaving two mutations."""
+    from app.routers.projects_api import MoveReq, move_papers
+    from fastapi import HTTPException
+    _seed_source(temp_project)
+    dest = _make_dest()
+    config.mark_project_busy(dest)  # someone else is already modifying the destination
+    try:
+        with pytest.raises(HTTPException) as exc:
+            move_papers(temp_project, MoveReq(dest_pid=dest, slugs=["awq"]))
+        assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(dest)
+    # The reservation is fully released — source not left marked busy by the failed call.
+    assert config.project_is_busy(temp_project) is False
+
+
+def test_copy_to_existing_leaves_source_whole_and_no_session_travels(temp_project):
+    _seed_source(temp_project)
+    dest = _make_dest()
+    res = project_split.move_to_existing(temp_project, dest, ["awq"],
+                                         remove_from_source=False)
+    assert res["removed"] is False
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}  # source whole
+    tok = _bind(dest)
+    try:
+        assert {p.slug for p in store.list_papers()} == {"base", "awq"}
+        assert sessions.get_state("awq") is None  # discussion stays in the source on copy
+    finally:
+        config.reset_active_project(tok)
