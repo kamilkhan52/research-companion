@@ -497,6 +497,7 @@ async def start_paper_stream(req: StartReq):
 async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
     """Last-resort source: the user uploads the paper's PDF directly (when it isn't on arXiv and
     there's no public PDF link). Extract its text and cache it like a normal retrieval."""
+    _refuse_if_relocating()  # writes corpus synchronously — same guard as /start
     paper = store.get_paper(slug)
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")

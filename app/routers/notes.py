@@ -85,6 +85,15 @@ def get_notes(target: str):
 def save_notes(target: str, req: NotesSaveReq):
     """Persist a human-approved notes document (a manual edit, or an applied agent proposal)
     and git-commit it."""
+    # notes_jobs.save stages with git add; refuse while a split/move owns the project so its
+    # commit can't overlap the relocation's index writes (entry-gate; see task #75 / design
+    # doc for the mid-commit residual).
+    pid = config.active_project_id()
+    if pid and config.project_is_busy(pid):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then save notes.",
+        )
     try:
         result = notes_jobs.save(target, req.markdown, req.summary or "")
     except notes_jobs.NotesError as e:
