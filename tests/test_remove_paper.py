@@ -147,3 +147,82 @@ def test_recent_sessions_drops_removed_papers(temp_project):
     assert "b" in slugs
     # The transcript index entry itself is retained (warm re-add) — only the listing filters.
     assert "a" in sessions.session_index()
+
+
+def test_remove_batch_removes_all_in_one_commit(temp_project):
+    """The multi-select Delete removes every selected paper atomically — one commit, and
+    unknown slugs are skipped so a retry of a partial earlier attempt is idempotent."""
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    add_paper(temp_project, "c", "Paper C")
+    before = _git_log(config.project_dir()).count("\n")
+
+    res = remove_papers(temp_project, RemoveBatchReq(slugs=["a", "c", "ghost"]))
+    assert set(res["removed"]) == {"a", "c"}  # ghost skipped
+    assert {p.slug for p in store.list_papers()} == {"b"}
+    # Exactly ONE commit added for the whole batch (atomic).
+    assert _git_log(config.project_dir()).count("\n") == before + 1
+
+
+def test_remove_batch_refuses_while_relocating(temp_project):
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            remove_papers(temp_project, RemoveBatchReq(slugs=["a"]))
+        assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+    assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed
+
+
+def test_remove_batch_rolls_back_on_commit_failure(temp_project, monkeypatch):
+    """A failed batch commit rolls the reading-list removals back — all-or-nothing — so a
+    retry isn't left with an applied-but-uncommitted state that it would then skip."""
+    from app import committer
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    rl_before = store._reading_list().read_text()
+
+    real_git = committer._git
+
+    def flaky_git(*args):
+        if args[:1] == ("commit",):
+            raise committer.CommitError("index locked")
+        return real_git(*args)
+
+    monkeypatch.setattr(committer, "_git", flaky_git)
+    with pytest.raises(HTTPException) as exc:
+        remove_papers(temp_project, RemoveBatchReq(slugs=["a", "b"]))
+    assert exc.value.status_code == 500
+    monkeypatch.setattr(committer, "_git", real_git)
+
+    # Nothing removed — the reading list is exactly as before.
+    assert {p.slug for p in store.list_papers()} == {"a", "b"}
+    assert store._reading_list().read_text() == rl_before
+
+
+def test_remove_batch_refuses_while_a_job_runs(temp_project):
+    """The batch reserves the project like a split — a running background job blocks it, so no
+    job can write into the record mid-batch."""
+    from app import jobs
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    reg = jobs.JobRegistry("batchkind")
+    try:
+        job = jobs.Job(id="j1")
+        setattr(job, jobs._PID_ATTR, temp_project)
+        reg.jobs["j1"] = job
+        with pytest.raises(HTTPException) as exc:
+            remove_papers(temp_project, RemoveBatchReq(slugs=["a"]))
+        assert exc.value.status_code == 409
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)
+    assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed

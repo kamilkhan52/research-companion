@@ -426,17 +426,28 @@ export function useAddPaper(pid: string) {
   });
 }
 
+function invalidateAfterRemoval(qc: ReturnType<typeof useQueryClient>, pid: string | null) {
+  if (!pid) return;
+  qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+  qc.invalidateQueries({ queryKey: keys.graph(pid) });
+  qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
+  qc.invalidateQueries({ queryKey: keys.projects });
+  qc.invalidateQueries({ queryKey: keys.recentSessions });
+}
+
 export function useRemovePaper(pid: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (slug: string) => api.removePaper(pid as string, slug),
-    onSuccess: () => {
-      if (!pid) return;
-      qc.invalidateQueries({ queryKey: keys.projectState(pid) });
-      qc.invalidateQueries({ queryKey: keys.graph(pid) });
-      qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
-      qc.invalidateQueries({ queryKey: keys.projects });
-      qc.invalidateQueries({ queryKey: keys.recentSessions });
-    },
+    onSuccess: () => invalidateAfterRemoval(qc, pid),
+  });
+}
+
+/** Atomic batch removal for the multi-select Delete (R9.13): one request, one commit. */
+export function useRemovePapers(pid: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (slugs: string[]) => api.removePapersBatch(pid as string, slugs),
+    onSuccess: () => invalidateAfterRemoval(qc, pid),
   });
 }

@@ -129,6 +129,92 @@ def remove_paper(pid: str, slug: str):
     return {"removed": slug, "notes_kept": notes_kept}
 
 
+class RemoveBatchReq(BaseModel):
+    slugs: list[str]
+
+
+@project_router.post("/papers/remove-batch")
+def remove_papers(pid: str, req: RemoveBatchReq):
+    """Remove several papers in ONE atomic git commit (the multi-select Delete, R9.13). A
+    client-side loop of single removals could half-apply if the app disconnects partway; this
+    does all of them under one reservation + one commit, so it's all-or-nothing — a fast
+    deterministic op (no LLM/network), so a single request, not a background job. Same
+    notes-kept + retained-files posture as the single removal. Unknown slugs are skipped
+    (idempotent), so a retry of a partially-succeeded earlier attempt is safe.
+
+    Reserved like a split (its snapshot→mutate→commit→rollback rewrites the whole reading list
+    on failure, so it must be fully isolated): mark busy FIRST (gating project deletion + new
+    background-job admission), then sweep in-flight jobs, then take the EXCLUSIVE project lock
+    (draining in-flight synchronous writers) — so nothing can add/remove/approve, retrieve, or
+    move the project directory underneath the batch."""
+    slugs = list(dict.fromkeys(req.slugs))
+    if not slugs:
+        raise HTTPException(status_code=400, detail="No papers selected.")
+    if not config.mark_project_busy(pid):
+        raise HTTPException(status_code=409, detail="This project is already being modified.")
+    try:
+        if config.project_is_deleting(pid):
+            raise HTTPException(status_code=409, detail="This project is being deleted.")
+        busy = jobs.any_running_for_project(pid)
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A background job ({busy}) is running for this project — wait, then "
+                       "delete.",
+            )
+        with config.project_exclusive(pid):
+            # Snapshot the touched files BEFORE mutating, so a git failure (index lock,
+            # read-only .git) rolls the working tree back to pre-batch — the removals must be
+            # all-or-nothing, not applied-but-uncommitted (a retry would then skip them and
+            # never commit). Pure-filesystem restore, independent of git.
+            reading_list_before = store._reading_list().read_bytes()
+            corpus_before: dict[str, bytes] = {}
+            removed: list[str] = []
+            changed = ["reading-list.md"]
+            try:
+                for slug in slugs:
+                    paper = store.get_paper(slug)
+                    if paper is None:
+                        continue  # already gone — skip so a retry is idempotent
+                    corpus = store.corpus_path(slug)
+                    if store.has_notes(slug):
+                        corpus_before[slug] = corpus.read_bytes()
+                        store.append_removed_marker(slug)
+                        changed.append(str(corpus.relative_to(config.project_dir())))
+                    store.remove_entry(slug)
+                    removed.append(slug)
+                if removed:
+                    committer._git("add", "--", *changed)
+                    try:
+                        committer._git(
+                            "commit", "-q", "-m",
+                            f"Remove {len(removed)} paper(s) from reading list", "--", *changed,
+                        )
+                    except CommitError as e:
+                        if "nothing to commit" not in str(e):
+                            raise
+            except Exception as e:
+                # Restore the working tree to pre-batch (files first, git cleanup best-effort).
+                store._reading_list().write_bytes(reading_list_before)
+                store._parse_cache.clear()
+                for slug, data in corpus_before.items():
+                    try:
+                        store.corpus_path(slug).write_bytes(data)
+                    except OSError:
+                        pass
+                try:
+                    committer._git("reset", "-q", "--", *changed)
+                except CommitError:
+                    pass
+                if isinstance(e, HTTPException):
+                    raise
+                raise HTTPException(
+                    status_code=500, detail="Could not remove the papers.") from e
+    finally:
+        config.unmark_project_busy(pid)
+    return {"removed": removed}
+
+
 class SplitReq(BaseModel):
     name: str                       # the new project's name
     slugs: list[str]                # papers to split out (must be current source entries)

@@ -184,6 +184,11 @@ export const removePaper = (pid: string, slug: string) =>
     `${P(pid)}/papers/${encodeURIComponent(slug)}`,
   );
 
+/** Remove several papers in ONE atomic commit (the multi-select Delete). All-or-nothing, so a
+ *  disconnect can't half-apply a confirmed batch; unknown slugs are skipped (idempotent). */
+export const removePapersBatch = (pid: string, slugs: string[]) =>
+  apiPost<{ removed: string[] }>(`${P(pid)}/papers/remove-batch`, { slugs });
+
 // Stream endpoint paths (used with streamPost from stream.ts).
 export const streamPaths = (pid: string) => ({
   chatStart: `${P(pid)}/chat/start_stream`,
