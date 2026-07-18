@@ -167,15 +167,17 @@ export default function RootLayout() {
               <ListeningProvider>
                 <GraphSettingsProvider>
                 <AudioProvider>
-                <PaperEntityProvider>
                 {/* Portal hosts render their nodes at the provider's own tree position. Keep
-                    this INSIDE every app context (query/project/listening/audio/entity) so a
-                    portalled sheet sees exactly the same providers as its caller, while the
-                    outer ToastProvider still paints confirmations above it. */}
+                    this inside the query/project/listening/audio contexts, but outside
+                    PaperEntityProvider: that provider renders its app-wide RelatedWorksSheet
+                    after `children`, so nesting the modal provider below it leaves that sheet
+                    without BottomSheetModalInternalContext at launch. The outer ToastProvider
+                    still paints confirmations above portalled sheets. */}
                 <BottomSheetModalProvider>
+                <PaperEntityProvider>
                 <ThemedShell />
-                </BottomSheetModalProvider>
                 </PaperEntityProvider>
+                </BottomSheetModalProvider>
                 </AudioProvider>
                 </GraphSettingsProvider>
               </ListeningProvider>
