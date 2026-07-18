@@ -6,7 +6,7 @@
 // works menu" and the menu will actually contain X.
 
 import { useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { useAddPaper, useRelatedWorks } from '@/api/queries';
 import type { RelatedWork } from '@/api/types';
@@ -33,7 +33,7 @@ export function RelatedWorksSheet({
   const related = useRelatedWorks(pid, slug, visible); // fetch only once the menu opens
 
   return (
-    <BottomSheet visible={visible} onClose={onClose}>
+    <BottomSheet visible={visible} onClose={onClose} scrollable>
       <Text variant="editorial" style={{ marginBottom: 4 }}>
         Related works
       </Text>
@@ -48,16 +48,11 @@ export function RelatedWorksSheet({
           Nothing yet — build the reference graph to populate this menu.
         </Text>
       ) : (
-        // flexShrink (not flex:1 or a % maxHeight) bounds the ScrollView against the sheet's
-        // own content-driven maxHeight cap; minHeight: 0 lets it shrink past its content's
-        // automatic minimum size. Confirmed correct on-device (frameH < contentH).
-        <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
-          <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-            {related.data.map((work) => (
-              <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
-            ))}
-          </View>
-        </ScrollView>
+        <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+          {related.data.map((work) => (
+            <RelatedCard key={work.id} pid={pid} work={work} onOpenPaper={onOpenPaper} />
+          ))}
+        </View>
       )}
     </BottomSheet>
   );

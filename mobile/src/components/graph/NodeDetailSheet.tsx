@@ -5,7 +5,7 @@
 // Recommendations panel), since a user can reach any external node directly from the canvas.
 
 import { useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { useAddPaper, useProjectMembership } from '@/api/queries';
 import type { GraphEdge, GraphNode } from '@/api/types';
@@ -32,7 +32,13 @@ export function NodeDetailSheet({
 }) {
   if (!node) return null;
   return (
-    <BottomSheet visible onClose={onClose} maxHeightPct={85} style={{ paddingBottom: space.xl }}>
+    <BottomSheet
+      visible
+      onClose={onClose}
+      maxHeightPct={85}
+      scrollable
+      style={{ paddingBottom: space.xl }}
+    >
       {/* Keyed by node.id: this sheet stays mounted across different nodes (the parent just
          swaps the `node` prop), so per-node local state (e.g. "just added") must reset when
          the node changes rather than leaking from whichever node was viewed previously. */}
@@ -83,10 +89,7 @@ function SheetContent({
   }
 
   return (
-    // flexShrink (RN's default is 0, unlike web CSS) + minHeight: 0 bound this against the
-    // sheet's maxHeight cap instead of rendering at full natural content size — see
-    // RelatedWorksSheet.tsx for the on-device confirmation.
-    <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
+    <>
       <View style={styles.headerRow}>
         <Chip
           label={node.kind === 'project' ? 'In this project' : 'External reference'}
@@ -194,7 +197,7 @@ function SheetContent({
       ) : null}
 
       <View style={{ height: space.xl }} />
-    </ScrollView>
+    </>
   );
 }
 

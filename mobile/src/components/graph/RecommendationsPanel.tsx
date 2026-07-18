@@ -5,7 +5,7 @@
 // this sheet, since that's the whole point of a recommendation.
 
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { useAddPaper, useProjectMembership } from '@/api/queries';
 import type { GraphRecommendation } from '@/api/types';
@@ -47,7 +47,7 @@ export function RecommendationsPanel({
   const canShowMore = visibleLimit < Math.min(MAX_VISIBLE, recommendations.length);
 
   return (
-    <BottomSheet visible={visible} onClose={onClose}>
+    <BottomSheet visible={visible} onClose={onClose} scrollable>
       <Text variant="editorial" style={{ marginBottom: 4 }}>
         Recommended additions
       </Text>
@@ -60,20 +60,18 @@ export function RecommendationsPanel({
           No strong recommendations yet — build (or rebuild) the graph once more papers have been read.
         </Text>
       ) : (
-        <ScrollView showsVerticalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
-          <View style={{ gap: space.sm, paddingBottom: space.xl }}>
-            {pageRecs.map((rec) => (
-              <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
-            ))}
-            {canShowMore ? (
-              <Button
-                title={`Show more (${pageRecs.length} of ${recommendations.length})`}
-                variant="ghost"
-                onPress={() => setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE))}
-              />
-            ) : null}
-          </View>
-        </ScrollView>
+        <View style={{ gap: space.sm, paddingBottom: space.xl }}>
+          {pageRecs.map((rec) => (
+            <RecommendationCard key={rec.id} pid={pid} rec={rec} onSelect={() => onSelect(rec)} />
+          ))}
+          {canShowMore ? (
+            <Button
+              title={`Show more (${pageRecs.length} of ${recommendations.length})`}
+              variant="ghost"
+              onPress={() => setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE))}
+            />
+          ) : null}
+        </View>
       )}
     </BottomSheet>
   );
