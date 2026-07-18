@@ -421,8 +421,10 @@ export interface paths {
          *     the removal endpoint above. The optional AI working-notes passes are separate jobs.
          *
          *     Refused (409) while any background job is running for the source project: a chat turn or
-         *     graph build mid-move would write into files being relocated (`jobs.any_running_for_project`,
-         *     the same sweep project deletion uses).
+         *     graph build mid-move would write into files being relocated. Mark the source busy FIRST,
+         *     then sweep — so a job admitted after the sweep is refused by the busy gate
+         *     (`jobs.start_or_join`), closing the window between the check and the move (the same
+         *     atomic tombstone-then-sweep shape project deletion uses).
          */
         post: operations["split_project_api_projects__pid__split_post"];
         delete?: never;
@@ -1189,6 +1191,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/papers/{slug}/figures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Figure Manifest */
+        get: operations["get_figure_manifest_api_projects__pid__papers__slug__figures_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/papers/{slug}/figures/{asset}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Figure Asset
+         * @description Cached figure image bytes. The asset name comes from the manifest; figures.asset_path
+         *     is the trust boundary (store-shaped slug, sanitizer-shaped filename only). Cacheable but
+         *     not immutable — a re-derivation can rewrite an asset under the same name, so clients
+         *     append the manifest's fetched_ts as a version query param.
+         */
+        get: operations["get_figure_asset_api_projects__pid__papers__slug__figures__asset__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/notes/jobs/active/{target}": {
         parameters: {
             query?: never;
@@ -1657,6 +1699,22 @@ export interface components {
             /** Text */
             text: string;
         };
+        /**
+         * FigureManifestResponse
+         * @description `status`: `done` (figures usable), `none` (no HTML rendering, or not derived yet —
+         *     the client renders exactly as before figures existed). `fetched_ts` doubles as the
+         *     cache-busting version for asset URLs (a re-derivation changes it).
+         */
+        FigureManifestResponse: {
+            /** Status */
+            status: string;
+            /** Figures */
+            figures: components["schemas"]["PaperFigure"][];
+            /** Source */
+            source?: string | null;
+            /** Fetched Ts */
+            fetched_ts?: number | null;
+        };
         /** FinishReq */
         FinishReq: {
             /**
@@ -1722,6 +1780,31 @@ export interface components {
             markdown: string;
             /** Summary */
             summary?: string | null;
+        };
+        /** PaperFigure */
+        PaperFigure: {
+            /** Id */
+            id: string;
+            /** Number */
+            number?: number | null;
+            /**
+             * Caption
+             * @default
+             */
+            caption: string;
+            /**
+             * Alt
+             * @default
+             */
+            alt: string;
+            /** Src */
+            src: string;
+            /** Asset */
+            asset: string;
+            /** Width */
+            width?: number | null;
+            /** Height */
+            height?: number | null;
         };
         /** ProjectReq */
         ProjectReq: {
@@ -3885,6 +3968,71 @@ export interface operations {
             path: {
                 pid: string;
                 slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_figure_manifest_api_projects__pid__papers__slug__figures_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FigureManifestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_figure_asset_api_projects__pid__papers__slug__figures__asset__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+                asset: string;
             };
             cookie?: never;
         };

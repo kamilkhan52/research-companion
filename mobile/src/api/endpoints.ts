@@ -11,6 +11,7 @@ import type {
   DiscoveryJob,
   DiscoveryResponse,
   FavoriteModel,
+  FigureManifest,
   GraphBuildStartResponse,
   GraphBuildStatusResponse,
   GraphResponse,
@@ -301,6 +302,21 @@ export const getPaperCover = (pid: string, slug: string) =>
  *  once getPaperCover reports `ready`; 404s before then. */
 export const paperCoverImageUrl = (pid: string, slug: string): string =>
   mediaUrl(`${P(pid)}/papers/${encodeURIComponent(slug)}/cover.png`);
+
+// ---------- paper figures (R.10) ----------
+
+/** The paper's arXiv-HTML figure manifest. `status: 'none'` (no HTML rendering, or not
+ *  derived yet) means render exactly as before figures existed — no cards. Cheap; derivation
+ *  happens server-side in the retrieval warm / graph enrichment, this only reads the cache. */
+export const getPaperFigures = (pid: string, slug: string) =>
+  apiGet<FigureManifest>(`${P(pid)}/papers/${encodeURIComponent(slug)}/figures`);
+
+/** Absolute, ?token-authed URL for one cached figure image (for <Image>). `version` is the
+ *  manifest's fetched_ts — appended so a re-derivation busts the client/image cache. */
+export const figureAssetUrl = (pid: string, slug: string, asset: string, version?: number | null): string => {
+  const base = mediaUrl(`${P(pid)}/papers/${encodeURIComponent(slug)}/figures/${encodeURIComponent(asset)}`);
+  return version ? `${base}${base.includes('?') ? '&' : '?'}v=${version}` : base;
+};
 
 /** Absolute URL for a media path (relative like "/api/audio/<hash>.mp3"), with ?token for
  *  the audio player which can't send an Authorization header. */

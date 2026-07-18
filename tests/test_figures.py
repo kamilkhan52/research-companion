@@ -224,6 +224,39 @@ def test_asset_path_is_a_trust_boundary(temp_project):
     assert figures.asset_path("slug", "01-S2.F1.png") is not None
 
 
+# --- serving routes --------------------------------------------------------------------------
+
+def test_manifest_route_returns_none_shape_when_absent(temp_project):
+    from app.routers.figures_api import get_figure_manifest
+    paper()
+    resp = get_figure_manifest(temp_project, "deepstack")
+    assert resp.status == "none" and resp.figures == []
+
+
+def test_manifest_and_asset_routes_serve_the_cache(temp_project):
+    from app.routers.figures_api import get_figure_asset, get_figure_manifest
+    slug = paper()
+    figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
+    resp = get_figure_manifest(temp_project, slug)
+    assert resp.status == "done"
+    assert [f.number for f in resp.figures] == [1, 2]
+    assert resp.fetched_ts is not None
+    served = get_figure_asset(temp_project, slug, resp.figures[0].asset)
+    assert str(served.path) == str(figures.asset_path(slug, resp.figures[0].asset))
+
+
+def test_asset_route_rejects_traversal_and_unknowns(temp_project):
+    import pytest
+    from app.routers.figures_api import get_figure_asset
+    from fastapi import HTTPException
+    slug = paper()
+    figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
+    for bad_slug, bad_asset in [("..", "01-x.png"), (slug, "../secrets.png"),
+                                (slug, ".hidden"), (slug, "not-there.png")]:
+        with pytest.raises(HTTPException):
+            get_figure_asset(temp_project, bad_slug, bad_asset)
+
+
 # --- enrichment pass -------------------------------------------------------------------------
 
 def test_enrichment_pass_never_raises_and_skips_papers_without_identity(temp_project):

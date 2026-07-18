@@ -21,6 +21,7 @@ from .routers import (
     catalogue,
     covers,
     discovery,
+    figures_api,
     graph,
     notes,
     projects_api,
@@ -85,6 +86,7 @@ app.include_router(projects_api.project_router)
 app.include_router(usage.project_router)
 app.include_router(session.project_router)
 app.include_router(covers.project_router)
+app.include_router(figures_api.project_router)
 app.include_router(notes.project_router)
 app.include_router(discovery.project_router)
 app.include_router(graph.project_router)
