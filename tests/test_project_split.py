@@ -390,6 +390,9 @@ def test_move_rolls_the_destination_back_on_a_failed_commit(temp_project, monkey
     try:
         assert {p.slug for p in store.list_papers()} == {"base"}
         assert store.corpus_path("awq").exists() is False
+        # No phantom session left behind: the move imported awq's session index entry, which
+        # the rollback must drop (else a re-add would look resumable with no transcript).
+        assert sessions.get_state("awq") is None
     finally:
         config.reset_active_project(tok)
     # Source untouched (removal never ran), so a retry moves cleanly.

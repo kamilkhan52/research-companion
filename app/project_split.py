@@ -230,6 +230,11 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
             for p in (store.corpus_path(slug), *sessions.transcript_paths(slug),
                       _cover_path(slug), graph_store._retrieved_text_file(slug)):
                 p.unlink(missing_ok=True)
+            # A move imported the paper's session-index entry (.state/sessions.json) too; drop
+            # it, or the destination keeps a phantom `in_discussion` session for a paper it no
+            # longer has (a later re-add would look resumable with no transcript). No-op on a
+            # copy, which imports no session.
+            sessions.drop_session(slug)
         except Exception:
             log.warning("could not remove moved-in file(s) for %s from %s", slug, dest_pid,
                         exc_info=True)
