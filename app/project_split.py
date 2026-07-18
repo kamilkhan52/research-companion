@@ -21,9 +21,12 @@ human-confirmed action, so its two git commits are the same invariant-4 posture 
 from __future__ import annotations
 
 import contextlib
+import copy
 import re
 
-from . import config, graph_store, projects, sessions, store
+from . import config, graph_store, logging_config, projects, sessions, store
+
+log = logging_config.get("project_split")
 
 _CITES_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
 
@@ -150,6 +153,230 @@ def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
     graph_store.save(data)
     store.drop_dangling_cites(gone)
     return committed_paths
+
+
+# ---------- move to an EXISTING project (R9.13) ----------
+
+def _dest_existing_slugs(dest_pid: str) -> set[str]:
+    """Slugs already in the destination's reading list (contextvar bound to it briefly)."""
+    token = config.set_active_project(dest_pid)
+    try:
+        return {p.slug for p in store.list_papers()}
+    finally:
+        config.reset_active_project(token)
+
+
+def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
+    """Of `slugs`, those the destination ALREADY has data for — a reading-list entry OR
+    retained on-disk records. The removal endpoint (DELETE /papers/{slug}) deliberately keeps
+    a removed paper's corpus + transcript + branches on disk (warm re-add), so a slug absent
+    from the reading list can still own files; writing over them would silently destroy the
+    destination's historical notes/discussion. Both cases are collisions."""
+    token = config.set_active_project(dest_pid)
+    try:
+        occupied = {p.slug for p in store.list_papers()}
+        for slug in slugs:
+            jsonl, branches = sessions.transcript_paths(slug)
+            if (store.corpus_path(slug).exists() or jsonl.exists() or branches.exists()
+                    or _cover_path(slug).exists()
+                    or graph_store._retrieved_text_file(slug).exists()):
+                occupied.add(slug)
+        return occupied
+    finally:
+        config.reset_active_project(token)
+
+
+def _written_dest_paths(slugs: list[str], *, move: bool) -> list[str]:
+    """Git-tracked paths a move WROTE into the destination (contextvar bound to dest), so its
+    commit stages exactly those — the destination has unrelated files, so `add -A` is unsafe
+    (unlike the fresh-scaffold split). Only existing files: `git add -- <missing>` errors, and
+    a copy writes no transcript. `.state/*` (covers, graph caches, branches) is gitignored."""
+    root = config.project_dir()
+    paths = ["reading-list.md"]  # always modified (the appended entry blocks)
+    for slug in slugs:
+        candidates = [store.corpus_path(slug)]
+        if move:
+            candidates.append(sessions.transcript_paths(slug)[0])
+        for f in candidates:
+            if f.exists():
+                paths.append(str(f.relative_to(root)))
+    return paths
+
+
+def _snapshot_dest(dest_pid: str) -> dict:
+    """Capture the destination's pre-move state for rollback (contextvar bound to dest): its
+    HEAD, the reading-list bytes, and a deep copy of the graph-store data (extraction/provider/
+    retrieval caches). Enough to restore the destination to exactly its pre-move state on a
+    partial failure, without a `git reset --hard` that would discard the destination's OWN
+    uncommitted work."""
+    return {
+        "head": projects._git(dest_pid, "rev-parse", "HEAD").strip(),
+        "reading_list": store._reading_list().read_bytes(),
+        "graph": copy.deepcopy(graph_store.load()),
+    }
+
+
+def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
+    """Best-effort rollback of a FAILED move's destination writes (contextvar bound to dest),
+    so the destination looks untouched and a retry isn't blocked by the collision check. Never
+    raises — a rollback failure must not mask the original error."""
+    try:
+        # Undo the move's commit if one landed (keep the working tree); a no-op if we hadn't
+        # committed, since HEAD is still the snapshot.
+        projects._git(dest_pid, "reset", "--soft", snap["head"])
+        # Remove the files this move wrote for the moved slugs — all new in the destination
+        # (the collision check guaranteed it had none), so deleting them loses nothing of its.
+        for slug in slugs:
+            for p in (store.corpus_path(slug), *sessions.transcript_paths(slug),
+                      _cover_path(slug), graph_store._retrieved_text_file(slug)):
+                p.unlink(missing_ok=True)
+        # Restore the reading list + graph caches to their pre-move snapshots.
+        store._reading_list().write_bytes(snap["reading_list"])
+        store._parse_cache.clear()
+        graph_store.save(snap["graph"])
+        # Unstage exactly the paths the move could have staged (reading-list + each moved slug's
+        # corpus/transcript), leaving the destination's OTHER staging untouched. After this the
+        # working tree matches HEAD for those paths (reading-list restored; moved files gone).
+        reset_paths = ["reading-list.md"]
+        root = config.project_dir()
+        for slug in slugs:
+            for f in (store.corpus_path(slug), sessions.transcript_paths(slug)[0]):
+                reset_paths.append(str(f.relative_to(root)))
+        projects._git(dest_pid, "reset", "-q", "--", *reset_paths)
+    except Exception:
+        log.warning("move rollback of destination %s was incomplete", dest_pid, exc_info=True)
+
+
+def move_to_existing(
+    source_pid: str,
+    dest_pid: str,
+    slugs: list[str],
+    *,
+    remove_from_source: bool = True,
+) -> dict:
+    """Move/copy `slugs` from `source_pid` into an EXISTING project `dest_pid` (R9.13).
+    Returns {new_pid, name, moved, removed, departed_notes} — `new_pid` is `dest_pid`, so the
+    caller switches to it exactly as for a split. Same deterministic phase-1 contract as
+    `split_project`; the differences are destination validation, slug-collision refusal, a
+    cite-keep set that includes the destination's existing papers, a pathspec commit (not
+    `add -A`) into the populated destination, and a rollback of the destination on failure.
+
+    The route holds BOTH projects busy (refusing new synchronous writers) and has swept jobs on
+    both. This acquires each project's EXCLUSIVE write lock (sorted, so two moves can't
+    deadlock) to also drain any writer ALREADY in flight, giving the move sole access to both
+    records + git indexes."""
+    if dest_pid == source_pid:
+        raise SplitError("Choose a different project to move into.")
+    if not projects.exists(dest_pid):
+        raise SplitError("The destination project no longer exists.")
+    slugs = list(dict.fromkeys(slugs))  # de-dupe, keep order
+    if not slugs:
+        raise SplitError("Select at least one paper to move.")
+
+    # Validate every slug is a CURRENT source entry BEFORE any path building. `slugs` is
+    # client-controlled and is otherwise fed into corpus/transcript/graph path helpers by the
+    # collision check below; a non-entry value (including a traversal attempt like `../x`) is
+    # never a parsed reading-list slug, so this rejects it before any filesystem access.
+    token0 = config.set_active_project(source_pid)
+    try:
+        source_slugs = {p.slug for p in store.list_papers()}
+    finally:
+        config.reset_active_project(token0)
+    unknown = [s for s in slugs if s not in source_slugs]
+    if unknown:
+        raise SplitError("Not current papers in this project: " + ", ".join(unknown))
+
+    occupied = _dest_occupied_slugs(dest_pid, slugs)
+    collisions = [s for s in slugs if s in occupied]
+    if collisions:
+        raise SplitError(
+            "These papers already have data in the destination project (an entry, or notes/"
+            "discussion retained from a past removal): " + ", ".join(collisions)
+        )
+    # A moved paper's cite to a paper ALREADY in the destination stays a live edge, so keep is
+    # the moved set plus the destination's existing reading-list papers (the split keeps only
+    # the moved set). Only reading-list slugs matter for cites.
+    keep = set(slugs) | _dest_existing_slugs(dest_pid)
+    dest_name = projects._read_meta(dest_pid).get("name") or dest_pid
+
+    # Exclusive write lock on BOTH projects (sorted ⇒ no lock-cycle between two moves), draining
+    # any synchronous writer already in flight on either side before we touch its record.
+    first, second = sorted([source_pid, dest_pid])
+    token = config.set_active_project(source_pid)
+    try:
+        with config.project_exclusive(first), config.project_exclusive(second), \
+                contextlib.ExitStack() as locks:
+            for slug in sorted(slugs):
+                locks.enter_context(sessions.mutation_lock(slug))
+            bundle = _gather_source(slugs)
+            departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+
+            dest_token = config.set_active_project(dest_pid)
+            try:
+                snap = _snapshot_dest(dest_pid)
+                try:
+                    _write_new_project(dest_pid, bundle, keep, move=remove_from_source)
+                    written = _written_dest_paths(slugs, move=remove_from_source)
+                    # Pathspec, not `add -A`: the destination has its own (possibly dirty)
+                    # files, and only the paths this move wrote may enter its commit. (Same
+                    # accepted reading-list-pathspec tradeoff as the shipped removal endpoint /
+                    # PR #147: a pre-existing uncommitted reading-list add rides along; the busy
+                    # reservation blocks a CONCURRENT add during the move window.)
+                    projects._git(dest_pid, "add", "--", *written)
+                    projects._git(dest_pid, "commit", "-q", "-m",
+                                  f"Move {len(slugs)} paper(s) from {source_pid}", "--", *written)
+                    removed = _finish_source_removal(source_pid, slugs, dest_name) \
+                        if remove_from_source else False
+                except Exception:
+                    # Roll the destination back to its pre-move state so a retry isn't blocked
+                    # by the collision check (the moved papers' data is safe in the SOURCE — the
+                    # source removal is the last step and either fully committed or is itself
+                    # rolled back by _finish_source_removal on its own failure).
+                    _restore_dest(dest_pid, slugs, snap)
+                    raise
+            finally:
+                config.reset_active_project(dest_token)
+    finally:
+        config.reset_active_project(token)
+
+    return {
+        "new_pid": dest_pid,
+        "name": dest_name,
+        "moved": len(slugs),
+        "removed": removed,
+        "departed_notes": departed_notes,
+    }
+
+
+def _finish_source_removal(source_pid: str, slugs: list[str], dest_name: str) -> bool:
+    """Remove the moved papers from the source and commit (contextvar currently bound to the
+    destination — rebind to source). On failure, restore the source's tracked files so it
+    isn't left with uncommitted deletions, then re-raise (the caller rolls back the dest)."""
+    src_token = config.set_active_project(source_pid)
+    try:
+        head = projects._git(source_pid, "rev-parse", "HEAD").strip()
+        reading_list = store._reading_list().read_bytes()
+        try:
+            changed = _remove_from_source(source_pid, slugs)
+            projects._git(source_pid, "add", "--", *changed)
+            staged = projects._git(source_pid, "diff", "--cached", "--name-only", "--", *changed)
+            if staged.strip():
+                projects._git(source_pid, "commit", "-q", "-m",
+                              f"Move {len(slugs)} paper(s) to {dest_name}", "--", *changed)
+            return True
+        except Exception:
+            # Best-effort source restore: undo any commit + restore tracked deletions + the
+            # reading list. The moved data survives in the destination regardless.
+            try:
+                projects._git(source_pid, "reset", "--hard", head)
+                store._reading_list().write_bytes(reading_list)
+                store._parse_cache.clear()
+            except Exception:
+                log.warning("move rollback of source %s was incomplete", source_pid,
+                            exc_info=True)
+            raise
+    finally:
+        config.reset_active_project(src_token)
 
 
 def split_project(

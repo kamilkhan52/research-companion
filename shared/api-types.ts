@@ -398,6 +398,10 @@ export interface paths {
          *     the client only calls it after the user's explicit in-app confirmation, so the human
          *     approval that invariant 4 requires has already happened. Deterministic and fast (no LLM,
          *     no network) ⇒ a plain request, not a background job.
+         *
+         *     Held under the project write guard: a split/move relocating this project reserves it and
+         *     rewrites its reading list + git index synchronously, so this removal's own commit must not
+         *     overlap that window (see config.project_write_guard / task #75).
          */
         delete: operations["remove_paper_api_projects__pid__papers__slug__delete"];
         options?: never;
@@ -427,6 +431,33 @@ export interface paths {
          *     atomic tombstone-then-sweep shape project deletion uses).
          */
         post: operations["split_project_api_projects__pid__split_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move Papers
+         * @description Move selected papers (and their work) into an EXISTING project (R9.13) — the
+         *     deterministic sibling of /split.
+         *
+         *     Reserves BOTH the source and the destination for the whole move: mark each busy, then sweep
+         *     jobs on each, so a chat turn or graph build on either side can't write into files being
+         *     relocated (the same mark-then-sweep the split route uses for the source, applied to both);
+         *     `move_to_existing` then takes each project's exclusive write lock to drain in-flight
+         *     synchronous writers. Distinct 409s let the client tell the user which side is busy.
+         */
+        post: operations["move_papers_api_projects__pid__move_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1217,10 +1248,14 @@ export interface paths {
         };
         /**
          * Get Figure Asset
-         * @description Cached figure image bytes. The asset name comes from the manifest; figures.asset_path
-         *     is the trust boundary (store-shaped slug, sanitizer-shaped filename only). Cacheable but
-         *     not immutable — a re-derivation can rewrite an asset under the same name, so clients
-         *     append the manifest's fetched_ts as a version query param.
+         * @description Cached figure image bytes. Two trust checks: figures.asset_path bounds the path
+         *     (store-shaped slug, sanitizer-shaped filename only), and the asset must be listed in the
+         *     slug's CURRENT `done` manifest — so after an identity correction the withheld stale
+         *     manifest's assets can't be served under the corrected slug (even from a leaked URL)
+         *     before the next derivation deletes them. Cacheable but not immutable — a re-derivation
+         *     can rewrite an asset under the same name, so clients append the manifest's fetched_ts as
+         *     a `?v=` version param; the cache is kept short-lived and revalidated rather than
+         *     immutable so a stale URL doesn't stick in a client cache across a correction.
          */
         get: operations["get_figure_asset_api_projects__pid__papers__slug__figures__asset__get"];
         put?: never;
@@ -1302,7 +1337,8 @@ export interface paths {
         /**
          * Save Notes
          * @description Persist a human-approved notes document (a manual edit, or an applied agent proposal)
-         *     and git-commit it.
+         *     and git-commit it. Held under the project write guard (task #75): notes_jobs.save stages
+         *     with git add, which must not overlap a split/move's index writes.
          */
         post: operations["save_notes_api_projects__pid__notes__target__post"];
         delete?: never;
@@ -1380,7 +1416,8 @@ export interface paths {
          * @description Add a new *unread* entry to this project's reading list — e.g. accepting a reference-
          *     graph recommendation. Metadata only: full text stays lazily retrieved (first time it's
          *     opened, like every other paper) and nothing is git-committed (like every other change to
-         *     the record, that stays an explicit human action via /approve).
+         *     the record, that stays an explicit human action via /approve). Held under the project write
+         *     guard (task #75): the reading-list append must not interleave with a split/move's.
          */
         post: operations["add_paper_api_projects__pid__papers_post"];
         delete?: never;
@@ -1761,6 +1798,18 @@ export interface components {
              * @enum {string}
              */
             mode: "balanced" | "background" | "technical" | "detailed";
+        };
+        /** MoveReq */
+        MoveReq: {
+            /** Dest Pid */
+            dest_pid: string;
+            /** Slugs */
+            slugs: string[];
+            /**
+             * Remove From Source
+             * @default true
+             */
+            remove_from_source: boolean;
         };
         /** NarrateReq */
         NarrateReq: {
@@ -2646,6 +2695,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SplitReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_papers_api_projects__pid__move_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveReq"];
             };
         };
         responses: {

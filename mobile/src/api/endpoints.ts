@@ -97,6 +97,14 @@ export const splitProject = (
 ) => apiPost<{ new_pid: string; name: string; moved: number; removed: boolean }>(
   `/api/projects/${encodeURIComponent(pid)}/split`, body);
 
+/** Move (or copy) selected papers into an EXISTING project (R9.13). Same result shape as
+ *  splitProject — `new_pid` is the destination, so the caller switches to it the same way. */
+export const moveProject = (
+  pid: string,
+  body: { dest_pid: string; slugs: string[]; remove_from_source: boolean },
+) => apiPost<{ new_pid: string; name: string; moved: number; removed: boolean }>(
+  `/api/projects/${encodeURIComponent(pid)}/move`, body);
+
 // ---------- background retrieval + auto-analysis (R7.8) ----------
 
 /** Start (or join) connection-independent retrieval. With auto_analyze the server chains the

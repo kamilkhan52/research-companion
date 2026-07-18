@@ -1042,6 +1042,21 @@ def status(papers: list[Paper]) -> dict:
         if n.get("kind") == "project" and n.get("slug") and n["slug"] not in current
     })
     stale.extend(removed)
+    # Forward direction: a current project paper with NO node in an existing built graph.
+    # The extraction checks above miss this when the paper arrived with a FRESH extraction
+    # cache but was never graphed — a project move (R9.13) copies the extraction, so the
+    # moved paper looks up to date yet isn't in the destination's stored snapshot. Light up
+    # the rebuild affordance so GET /graph isn't silently missing it. Guard on a stored graph
+    # EXISTING (not on it having nodes): a degenerate empty-node graph still reports
+    # has_graph=true, so its papers must still surface for rebuild.
+    if data.get("graph") is not None:
+        graphed = {
+            n["slug"] for n in (g.get("nodes") or [])
+            if n.get("kind") == "project" and n.get("slug")
+        }
+        for p in papers:
+            if p.slug not in graphed and p.slug not in stale:
+                stale.append(p.slug)
     provider_enabled = bool(semantic_scholar.api_key())
     provider_records = {
         p.slug: graph_store.get_provider_paper(data, "semantic_scholar", p.slug) for p in papers
