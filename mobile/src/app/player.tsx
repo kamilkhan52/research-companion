@@ -78,7 +78,7 @@ export default function PlayerScreen() {
         <Pressable
           onPress={cycleRate}
           hitSlop={8}
-          style={styles.rateBtn}
+          style={[styles.rateBtn, playbackRate !== 1 && { borderColor: t.mint }]}
           accessibilityRole="button"
           accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change.`}>
           <Text style={[styles.rateLabel, playbackRate !== 1 && { color: t.mint }]}>
@@ -294,14 +294,20 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   sentenceGlyph: { gap: 2, alignItems: 'flex-start' },
   sentenceGlyphLine: { height: 1.5, borderRadius: 1, backgroundColor: t.mint },
   skipGlyph: { color: t.text, fontSize: 12, fontFamily: fonts.bodySemiBold },
+  // R9.10 — a proper pill (bg + border), bigger than the old bare-text control, so the speed
+  // affordance is prominent enough to find and tap.
   rateBtn: {
-    width: 42,
-    height: 42,
+    minWidth: 52,
+    height: 36,
+    paddingHorizontal: 12,
     borderRadius: radius.pill,
+    backgroundColor: t.elevated,
+    borderWidth: 1,
+    borderColor: t.line,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  rateLabel: { color: t.muted, fontSize: 13, fontFamily: fonts.bodySemiBold },
+  rateLabel: { color: t.muted, fontSize: 15, fontFamily: fonts.bodySemiBold },
   prepTrack: {
     width: '70%',
     height: 3,
