@@ -7,13 +7,10 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   Pressable,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import {
   useCreateProject,
@@ -21,6 +18,7 @@ import {
   useProjects,
   useUpdateProjectMeta,
 } from '@/api/queries';
+import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { Button, Card, Icon, IconButton, Text } from '@/ui';
 import { showToast } from '@/ui/Toast';
 import type { Project } from '@/api/types';
@@ -70,105 +68,99 @@ export function ProjectSwitcher({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={handleClose}>
-      <Pressable style={styles.backdrop} onPress={handleClose}>
-        {/* Lifts the sheet above the keyboard for the create/rename inputs (see
-           SplitProjectSheet for the pattern rationale). */}
-        <KeyboardAvoidingView behavior="padding" style={styles.avoider}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
+    <BottomSheet
+      visible={visible}
+      onClose={handleClose}
+      maxHeightPct={85}
+      scrollable
+    >
+      {managing ? (
+        <ProjectSettingsPanel
+          project={managing}
+          projects={projects ?? []}
+          activePid={activePid}
+          onSelect={onSelect}
+          onBack={() => setManaging(null)}
+          onDone={handleClose}
+        />
+      ) : (
+        <>
+          <Text variant="title" style={{ marginBottom: space.md }}>
+            Projects
+          </Text>
 
-          {managing ? (
-            <ProjectSettingsPanel
-              project={managing}
-              projects={projects ?? []}
-              activePid={activePid}
-              onSelect={onSelect}
-              onBack={() => setManaging(null)}
-              onDone={handleClose}
-            />
-          ) : (
-            <>
-              <Text variant="title" style={{ marginBottom: space.md }}>
-                Projects
+          {isLoading ? (
+            <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
+          ) : projectsQuery.isError ? (
+            <View style={{ paddingVertical: space.md, gap: space.sm }}>
+              <Text variant="body" color={t.muted}>
+                Couldn't reach the server — check the connection or the server URL in Settings.
               </Text>
-
-              {isLoading ? (
-                <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xl }} />
-              ) : projectsQuery.isError ? (
-                <View style={{ paddingVertical: space.md, gap: space.sm }}>
-                  <Text variant="body" color={t.muted}>
-                    Couldn't reach the server — check the connection or the server URL in
-                    Settings.
-                  </Text>
-                  <Button title="Retry" variant="ghost" onPress={() => projectsQuery.refetch()} />
-                </View>
-              ) : (
-                <View style={{ gap: space.sm }}>
-                  {(projects ?? []).map((p) => (
-                    <ProjectRow
-                      key={p.id}
-                      project={p}
-                      active={p.id === activePid}
-                      onPress={() => {
-                        onSelect(p.id);
-                        handleClose();
-                      }}
-                      onManage={() => setManaging(p)}
-                    />
-                  ))}
-                  {projects && projects.length === 0 ? (
-                    <Text variant="caption" style={{ paddingVertical: space.md }}>
-                      No projects yet — create your first below.
-                    </Text>
-                  ) : null}
-                </View>
-              )}
-
-              <View style={{ marginTop: space.lg }}>
-                {creating ? (
-                  <View style={{ gap: space.sm }}>
-                    <TextInput
-                      value={name}
-                      onChangeText={setName}
-                      placeholder="Project name"
-                      placeholderTextColor={t.muted}
-                      style={styles.input}
-                      autoFocus
-                      returnKeyType="done"
-                      onSubmitEditing={handleCreate}
-                    />
-                    <View style={{ flexDirection: 'row', gap: space.sm }}>
-                      <Button
-                        title="Cancel"
-                        variant="ghost"
-                        onPress={() => setCreating(false)}
-                        style={{ flex: 1 }}
-                      />
-                      <Button
-                        title="Create"
-                        onPress={handleCreate}
-                        loading={createProject.isPending}
-                        disabled={!name.trim()}
-                        style={{ flex: 1 }}
-                      />
-                    </View>
-                  </View>
-                ) : (
-                  <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
-                )}
-                {createError ? (
-                  <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-                    {createError}
-                  </Text>
-                ) : null}
-              </View>
-            </>
+              <Button title="Retry" variant="ghost" onPress={() => projectsQuery.refetch()} />
+            </View>
+          ) : (
+            <View style={{ gap: space.sm }}>
+              {(projects ?? []).map((p) => (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  active={p.id === activePid}
+                  onPress={() => {
+                    onSelect(p.id);
+                    handleClose();
+                  }}
+                  onManage={() => setManaging(p)}
+                />
+              ))}
+              {projects && projects.length === 0 ? (
+                <Text variant="caption" style={{ paddingVertical: space.md }}>
+                  No projects yet — create your first below.
+                </Text>
+              ) : null}
+            </View>
           )}
-        </Pressable>
-        </KeyboardAvoidingView>
-      </Pressable>
-    </Modal>
+
+          <View style={{ marginTop: space.lg }}>
+            {creating ? (
+              <View style={{ gap: space.sm }}>
+                <BottomSheetTextInput
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Project name"
+                  placeholderTextColor={t.muted}
+                  style={styles.input}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={handleCreate}
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  <Button
+                    title="Cancel"
+                    variant="ghost"
+                    onPress={() => setCreating(false)}
+                    style={{ flex: 1 }}
+                  />
+                  <Button
+                    title="Create"
+                    onPress={handleCreate}
+                    loading={createProject.isPending}
+                    disabled={!name.trim()}
+                    style={{ flex: 1 }}
+                  />
+                </View>
+              </View>
+            ) : (
+              <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
+            )}
+            {createError ? (
+              <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+                {createError}
+              </Text>
+            ) : null}
+          </View>
+        </>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -308,7 +300,7 @@ function ProjectSettingsPanel({
         <Text variant="label" color={t.muted}>
           Name
         </Text>
-        <TextInput
+        <BottomSheetTextInput
           value={name}
           onChangeText={setName}
           placeholder="Project name"
@@ -345,28 +337,6 @@ function ProjectSettingsPanel({
 }
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: t.scrim, justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: t.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: t.line,
-    padding: space.lg,
-    paddingBottom: space.xxl,
-  },
-  // The height cap lives on the KeyboardAvoidingView, not the sheet: a percentage maxHeight
-  // resolves against the parent's height, and the KAV (auto-height) has none — against the
-  // flex:1 backdrop it caps reliably, keyboard padding included.
-  avoider: { maxHeight: '85%' },
-  handle: {
-    width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: t.line2,
-    alignSelf: 'center',
-    marginBottom: space.md,
-  },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   rowActive: { borderColor: t.mint },
   panelHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm },

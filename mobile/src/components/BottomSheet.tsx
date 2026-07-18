@@ -1,133 +1,177 @@
-// Shared bottom-sheet chrome: Modal + dimmed backdrop + swipe-down-to-dismiss handle, used by
-// every bottom-anchored sheet in the app (Related works, Recommended additions, graph node
-// detail). Two touch-arbitration lessons are baked in here, confirmed on-device, so no other
-// sheet has to relearn them:
-//
-// 1. The backdrop's tap-to-dismiss layer must sit BEHIND the sheet as a sibling (absolutely
-//    positioned), never as an ancestor Pressable wrapping the sheet's content. An ancestor
-//    Pressable claims the touch responder and silently blocks a descendant ScrollView's native
-//    drag-to-scroll on Android, even though the ScrollView still receives onTouchMove events —
-//    it just never turns into an actual scroll. Because the sheet renders after (on top of) the
-//    dismiss layer, touches inside the sheet hit the sheet's own views first and never reach it.
-// 2. The swipe-to-dismiss gesture is scoped to the handle bar only (a small fixed hit area), not
-//    the whole sheet body — so it can never compete with the body's own ScrollView for the touch
-//    responder. A Modal on Android portals into a separate native view hierarchy outside the
-//    app's single root-level GestureHandlerRootView (app/_layout.tsx), so a GestureDetector here
-//    needs its own nested one (RNGH's own documented requirement for gestures inside a Modal).
+// Shared bottom-sheet chrome. R9.1 replaces the hand-rolled Modal/handle gesture with
+// @gorhom/bottom-sheet's modal: content and handle can both resize the sheet, short content
+// opens at its measured height, the explicit maximum is a second snap point, and every sheet
+// gets the same pan-down close, backdrop, safe-area and keyboard behavior.
 
-import { useCallback, useEffect } from 'react';
-import { Modal, Pressable, StyleSheet, View } from 'react-native';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  BottomSheetScrollView,
+  BottomSheetView,
+  type BottomSheetBackdropProps,
+} from '@gorhom/bottom-sheet';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  type StyleProp,
+  StyleSheet,
+  type ViewStyle,
+  useWindowDimensions,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useThemedStyles } from '@/theme/ThemeProvider';
+import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
 
-const DISMISS_DISTANCE = 120; // px dragged down before a release counts as "dismiss"
-const DISMISS_VELOCITY = 800; // px/s downward fling that dismisses regardless of distance
-const OFFSCREEN_Y = 700; // slide-out target before handing off to the Modal's own hide
+export { BottomSheetScrollView };
+export { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 
 export function BottomSheet({
   visible,
   onClose,
   maxHeightPct = 75,
+  scrollable = false,
   style,
   children,
 }: {
   visible: boolean;
   onClose: () => void;
-  /** Percentage of screen height the sheet is capped at (see each sheet's own maxHeight). */
+  /** Maximum percentage of the screen the expanded sheet may occupy. */
   maxHeightPct?: number;
-  style?: object;
+  /** Use Gorhom's gesture-aware scroll container for long sheet content. */
+  scrollable?: boolean;
+  /** Content-container style (not the animated sheet shell). */
+  style?: StyleProp<ViewStyle>;
   children: React.ReactNode;
 }) {
+  const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const translateY = useSharedValue(0);
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const modalRef = useRef<BottomSheetModal>(null);
+  const presentedRef = useRef(false);
+  const ownerDismissPendingRef = useRef(false);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
 
-  // The component stays mounted across opens (only the Modal's `visible` toggles), so a prior
-  // drag's offset must reset before the next open, not carry over.
+  const boundedPct = Math.max(30, Math.min(95, maxHeightPct));
+  const snapPoints = useMemo(() => [`${boundedPct}%`], [boundedPct]);
+  const maxDynamicContentSize = Math.max(
+    1,
+    Math.round((height - insets.top) * boundedPct / 100),
+  );
+
   useEffect(() => {
-    if (visible) translateY.value = 0;
-  }, [visible, translateY]);
+    if (visible && ownerDismissPendingRef.current) {
+      // A close animation requested by the controlled owner is still running. onDismiss will
+      // see the new desired state and present again; presenting mid-dismiss lets the stale
+      // onDismiss callback close the newly opened sheet.
+      return;
+    }
+    if (visible && !presentedRef.current) {
+      presentedRef.current = true;
+      modalRef.current?.present();
+    } else if (!visible && presentedRef.current) {
+      ownerDismissPendingRef.current = true;
+      modalRef.current?.dismiss();
+      // BottomSheetModal internally defers present() by one animation frame. If the owner
+      // opens and closes in that same frame, the first dismiss can arrive before the modal has
+      // mounted; repeat after its queued present so a stale sheet cannot appear.
+      requestAnimationFrame(() => {
+        if (!visibleRef.current && ownerDismissPendingRef.current) {
+          modalRef.current?.dismiss();
+        }
+      });
+    }
+  }, [visible]);
 
-  // Deliberately does NOT reset translateY here: doing so snaps the sheet back to its normal
-  // on-screen position for a frame before the Modal's own `visible`-driven hide animation plays,
-  // producing a double slide-down. Leaving it at OFFSCREEN_Y makes that second animation a no-op
-  // (already off-screen); the `visible` effect below resets it for the next open instead.
-  const finishClose = useCallback(() => {
-    onClose();
+  // A gesture/backdrop dismissal must update the controlled `visible` prop. A parent-driven
+  // close already set it false before dismiss(), so avoid firing its callback twice.
+  const handleDismiss = useCallback(() => {
+    const ownerDismiss = ownerDismissPendingRef.current;
+    ownerDismissPendingRef.current = false;
+    presentedRef.current = false;
+    if (ownerDismiss) {
+      // The owner may have reopened while the closing animation was in flight. Honor that
+      // latest state only after the stale presentation has fully unmounted.
+      if (visibleRef.current) {
+        presentedRef.current = true;
+        modalRef.current?.present();
+      }
+      return;
+    }
+    if (visibleRef.current) onClose();
   }, [onClose]);
 
-  const pan = Gesture.Pan()
-    .onUpdate((e) => {
-      translateY.value = Math.max(0, e.translationY);
-    })
-    .onEnd((e) => {
-      const shouldDismiss = translateY.value > DISMISS_DISTANCE || e.velocityY > DISMISS_VELOCITY;
-      if (shouldDismiss) {
-        translateY.value = withTiming(OFFSCREEN_Y, { duration: 180 }, (finished) => {
-          if (finished) runOnJS(finishClose)();
-        });
-      } else {
-        translateY.value = withTiming(0);
-      }
-    });
+  const renderBackdrop = useCallback(
+    (props: BottomSheetBackdropProps) => (
+      <BottomSheetBackdrop
+        {...props}
+        appearsOnIndex={0}
+        disappearsOnIndex={-1}
+        opacity={1}
+        pressBehavior="close"
+        style={[props.style, { backgroundColor: t.scrim }]}
+      />
+    ),
+    [t.scrim],
+  );
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
+  const contentStyle = [
+    styles.content,
+    { paddingBottom: Math.max(space.lg, insets.bottom + space.sm) },
+    style,
+  ];
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        {/* box-none: this wrapper spans the full screen (flex:1) and sits on top of the dismiss
-           Pressable above in z-order, so without box-none its own empty space would win Android's
-           touch hit-test over any tap that isn't on the sheet itself, swallowing backdrop taps
-           before they reach the dismiss layer. box-none lets those pass through to it while the
-           sheet/handle underneath still receive touches normally. */}
-        <GestureHandlerRootView pointerEvents="box-none" style={styles.gestureRoot}>
-          <Animated.View style={[styles.sheet, { maxHeight: `${maxHeightPct}%` }, style, animatedStyle]}>
-            <GestureDetector gesture={pan}>
-              <View style={styles.handleHitArea}>
-                <View style={styles.handle} />
-              </View>
-            </GestureDetector>
-            {children}
-          </Animated.View>
-        </GestureHandlerRootView>
-      </View>
-    </Modal>
+    <BottomSheetModal
+      ref={modalRef}
+      index={0}
+      snapPoints={snapPoints}
+      enableDynamicSizing
+      maxDynamicContentSize={maxDynamicContentSize}
+      enablePanDownToClose
+      enableContentPanningGesture
+      enableHandlePanningGesture
+      keyboardBehavior="interactive"
+      keyboardBlurBehavior="restore"
+      enableBlurKeyboardOnGesture
+      android_keyboardInputMode="adjustResize"
+      topInset={insets.top}
+      backdropComponent={renderBackdrop}
+      backgroundStyle={styles.background}
+      handleStyle={styles.handleArea}
+      handleIndicatorStyle={styles.handle}
+      onDismiss={handleDismiss}
+      accessibilityLabel="Bottom sheet"
+    >
+      {scrollable ? (
+        <BottomSheetScrollView
+          contentContainerStyle={contentStyle}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {children}
+        </BottomSheetScrollView>
+      ) : (
+        <BottomSheetView style={contentStyle}>{children}</BottomSheetView>
+      )}
+    </BottomSheetModal>
   );
 }
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: t.scrim,
-    justifyContent: 'flex-end',
-  },
-  // GestureHandlerRootView is only well-tested as a full-screen flex:1 wrapper (every RNGH
-  // example uses it that way); a flexShrink-to-content style here clipped the sheet's bottom
-  // edge on-device. flex:1 + justifyContent:'flex-end' fills the backdrop and bottom-anchors
-  // the sheet itself, matching what `backdrop` did for it directly before this wrapper existed.
-  gestureRoot: { flex: 1, justifyContent: 'flex-end' },
-  sheet: {
+  background: {
     backgroundColor: t.surface,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     borderWidth: 1,
     borderColor: t.line,
-    padding: space.lg,
   },
-  // Bigger tap/drag target than the visible pill, pulled up via negative margin so it doesn't
-  // push the title down.
-  handleHitArea: {
-    paddingVertical: 10,
-    marginTop: -10,
-    marginBottom: -2,
-    alignItems: 'center',
+  content: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.xs,
   },
+  handleArea: { paddingVertical: space.sm },
   handle: {
     width: 40,
     height: 4,

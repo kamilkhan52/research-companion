@@ -56,11 +56,13 @@ Grouped by type; rough priority within each group. IDs R9.1–R9.15.
 
 ## Features
 
-- **R9.1 — Proper draggable bottom sheets.** Our sheets are custom `Modal`s that can't be
-  dragged from the top to grow/shrink. Adopt standard bottom-sheet behavior (drag handle +
-  snap points + grab-anywhere resize) as the default across sheets. Evaluate
-  `@gorhom/bottom-sheet` vs. adding gesture-handler-driven snap points to the existing
-  `BottomSheet` component. (Shared component — affects every sheet.)
+- **R9.1 — Proper draggable bottom sheets (implemented).** `@gorhom/bottom-sheet` v5 now
+  provides the shared bottom-anchored surface: measured-height opening, an expanded maximum
+  snap point, handle/content panning, pan-down close, backdrop close, gesture-aware scrolling,
+  safe-area padding, and integrated keyboard inputs. Project switch/create/rename, split,
+  move, related works, recommendations, author detail, graph node detail, and retrieval errors
+  all use it. The centered options menu remains a dialog, and Notes Review remains a full-page
+  approval surface; neither is bottom-sheet navigation.
 - **R9.12 — Sort options for the paper list.** With no subcategories, add a **sort** control
   (by name, publication date, date added to project, paper status, …), DISTINCT from the
   existing status filters (which stay). "Date added" = reading-list order (verify it's

@@ -12,6 +12,7 @@ import {
   Newsreader_600SemiBold,
 } from '@expo-google-fonts/newsreader';
 import { Feather } from '@expo/vector-icons';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 // Theme APIs come from expo-router itself: as of SDK 56 the bundler rejects any direct
@@ -167,7 +168,13 @@ export default function RootLayout() {
                 <GraphSettingsProvider>
                 <AudioProvider>
                 <PaperEntityProvider>
+                {/* Portal hosts render their nodes at the provider's own tree position. Keep
+                    this INSIDE every app context (query/project/listening/audio/entity) so a
+                    portalled sheet sees exactly the same providers as its caller, while the
+                    outer ToastProvider still paints confirmations above it. */}
+                <BottomSheetModalProvider>
                 <ThemedShell />
+                </BottomSheetModalProvider>
                 </PaperEntityProvider>
                 </AudioProvider>
                 </GraphSettingsProvider>

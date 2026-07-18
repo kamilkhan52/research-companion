@@ -532,27 +532,19 @@ export function RetrievalErrors({
           ) : null}
         </Pressable>
       </View>
-      <BottomSheet visible={open} onClose={() => setOpen(false)}>
+      <BottomSheet visible={open} onClose={() => setOpen(false)} scrollable>
         <Text variant="heading">Papers that could not be retrieved</Text>
         <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
           The map still works; these papers just have no full text yet.
         </Text>
-        {/* Bounded against the sheet's height cap (see RelatedWorksSheet.tsx for the RN
-            flexShrink/minHeight incantation) so a long error list scrolls and never pushes
-            Retry/Dismiss out of the viewport. */}
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          style={{ flexGrow: 0, flexShrink: 1, minHeight: 0, marginTop: space.md }}
-        >
-          <View style={{ gap: space.sm }}>
-            {entries.map(([slug, detail]) => (
-              <View key={slug}>
-                <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
-                <Text variant="caption" color={t.muted}>{detail}</Text>
-              </View>
-            ))}
-          </View>
-        </ScrollView>
+        <View style={{ gap: space.sm, marginTop: space.md }}>
+          {entries.map(([slug, detail]) => (
+            <View key={slug}>
+              <Text variant="heading" style={{ fontSize: 14 }}>{slug}</Text>
+              <Text variant="caption" color={t.muted}>{detail}</Text>
+            </View>
+          ))}
+        </View>
         <Button
           title="Retry missing papers"
           onPress={() => {

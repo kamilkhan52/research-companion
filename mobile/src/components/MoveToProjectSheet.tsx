@@ -4,13 +4,14 @@
 // server-side (a plain confirmed action, not a job).
 
 import { useState } from 'react';
-import { Modal, Pressable, StyleSheet, Switch, View } from 'react-native';
+import { StyleSheet, Switch, View } from 'react-native';
 
 import { useMoveProject } from '@/api/queries';
+import { BottomSheet } from '@/components/BottomSheet';
 import { Button, Text } from '@/ui';
 import { showToast } from '@/ui/Toast';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { radius, space, type ThemePalette } from '@/theme/tokens';
+import { useTheme } from '@/theme/ThemeProvider';
+import { space } from '@/theme/tokens';
 
 export function MoveToProjectSheet({
   visible,
@@ -33,7 +34,6 @@ export function MoveToProjectSheet({
   onDone: (destPid: string) => void;
 }) {
   const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
   const move = useMoveProject(pid);
   const [remove, setRemove] = useState(true);
   const [draftNotes, setDraftNotes] = useState(true);
@@ -75,106 +75,87 @@ export function MoveToProjectSheet({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <View style={styles.handle} />
-          <Text variant="title">Move to “{destName}”</Text>
-          <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
-            {count} paper{count === 1 ? '' : 's'} and the work done on them (notes, discussions,
-            cached analysis) go to “{destName}”.
-          </Text>
+    <BottomSheet visible={visible} onClose={onClose} maxHeightPct={85} scrollable>
+      <Text variant="title">Move to “{destName}”</Text>
+      <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
+        {count} paper{count === 1 ? '' : 's'} and the work done on them (notes, discussions,
+        cached analysis) go to “{destName}”.
+      </Text>
 
+      <View style={styles.toggleRow}>
+        <View style={{ flex: 1, paddingRight: space.md }}>
+          <Text variant="body">Remove from this project</Text>
+          <Text variant="caption" color={t.muted}>
+            {remove
+              ? 'Moves the papers out of the current project.'
+              : 'Keeps copies here as well.'}
+          </Text>
+        </View>
+        <Switch
+          value={remove}
+          onValueChange={setRemove}
+          trackColor={{ true: t.mint, false: t.line2 }}
+          thumbColor={t.surface}
+        />
+      </View>
+
+      {notesEligible ? (
+        <>
           <View style={styles.toggleRow}>
             <View style={{ flex: 1, paddingRight: space.md }}>
-              <Text variant="body">Remove from this project</Text>
+              <Text variant="body">Update destination working notes</Text>
               <Text variant="caption" color={t.muted}>
-                {remove
-                  ? 'Moves the papers out of the current project.'
-                  : 'Keeps copies here as well.'}
+                AI proposes integrating the selected papers’ committed Notes.
               </Text>
             </View>
             <Switch
-              value={remove}
-              onValueChange={setRemove}
+              value={draftNotes}
+              onValueChange={setDraftNotes}
               trackColor={{ true: t.mint, false: t.line2 }}
               thumbColor={t.surface}
             />
           </View>
 
-          {notesEligible ? (
-            <>
-              <View style={styles.toggleRow}>
-                <View style={{ flex: 1, paddingRight: space.md }}>
-                  <Text variant="body">Update destination working notes</Text>
-                  <Text variant="caption" color={t.muted}>
-                    AI proposes integrating the selected papers’ committed Notes.
-                  </Text>
-                </View>
-                <Switch
-                  value={draftNotes}
-                  onValueChange={setDraftNotes}
-                  trackColor={{ true: t.mint, false: t.line2 }}
-                  thumbColor={t.surface}
-                />
+          {remove ? (
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1, paddingRight: space.md }}>
+                <Text variant="body">Clean up this project’s working notes</Text>
+                <Text variant="caption" color={t.muted}>
+                  AI proposes removing contributions tied to the papers leaving.
+                </Text>
               </View>
-
-              {remove ? (
-                <View style={styles.toggleRow}>
-                  <View style={{ flex: 1, paddingRight: space.md }}>
-                    <Text variant="body">Clean up this project’s working notes</Text>
-                    <Text variant="caption" color={t.muted}>
-                      AI proposes removing contributions tied to the papers leaving.
-                    </Text>
-                  </View>
-                  <Switch
-                    value={cleanupSource}
-                    onValueChange={setCleanupSource}
-                    trackColor={{ true: t.mint, false: t.line2 }}
-                    thumbColor={t.surface}
-                  />
-                </View>
-              ) : null}
-            </>
+              <Switch
+                value={cleanupSource}
+                onValueChange={setCleanupSource}
+                trackColor={{ true: t.mint, false: t.line2 }}
+                thumbColor={t.surface}
+              />
+            </View>
           ) : null}
+        </>
+      ) : null}
 
-          {error ? (
-            <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-              {error}
-            </Text>
-          ) : null}
+      {error ? (
+        <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+          {error}
+        </Text>
+      ) : null}
 
-          <View style={styles.actions}>
-            <Button title="Cancel" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
-            <Button
-              title={remove ? 'Move papers' : 'Copy papers'}
-              onPress={handleMove}
-              loading={move.isPending}
-              disabled={count === 0 || !destPid}
-              style={{ flex: 1 }}
-            />
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+      <View style={styles.actions}>
+        <Button title="Cancel" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+        <Button
+          title={remove ? 'Move papers' : 'Copy papers'}
+          onPress={handleMove}
+          loading={move.isPending}
+          disabled={count === 0 || !destPid}
+          style={{ flex: 1 }}
+        />
+      </View>
+    </BottomSheet>
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: t.scrim, justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: t.surface,
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    borderWidth: 1,
-    borderColor: t.line,
-    padding: space.lg,
-    paddingBottom: space.xxl,
-  },
-  handle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: t.line2,
-    alignSelf: 'center', marginBottom: space.md,
-  },
+const styles = StyleSheet.create({
   toggleRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.md },
   actions: { flexDirection: 'row', gap: space.sm, marginTop: space.lg },
 });
