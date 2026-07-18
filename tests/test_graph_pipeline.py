@@ -170,6 +170,33 @@ def test_status_reports_stale_and_missing_text(temp_project):
     assert st["stale_papers"] == []
 
 
+def test_status_flags_a_paper_absent_from_a_built_graph(temp_project):
+    """A paper present in the project but with NO node in the existing built graph is stale —
+    even when its extraction cache is fresh (the R9.13 move copies a paper's extraction, so
+    the moved paper looks up to date but isn't in the destination's snapshot)."""
+    from app import graph_store
+
+    add_paper(temp_project, "a", "Paper A", full_text="Text A.")
+    papers = store.list_papers(sessions.session_states())
+    list(graph.build_graph(papers, extract_fn=fake_extractor([])))
+    assert graph.status(store.list_papers(sessions.session_states()))["stale_papers"] == []
+
+    # Simulate a moved-in paper: a reading-list entry + corpus + a FRESH extraction cache,
+    # but no node in the already-built graph.
+    add_paper(temp_project, "b", "Paper B", full_text="Text B.")
+    data = graph_store.load()
+    graph_store.set_paper_extraction(data, "b", {
+        "slug": "b", "status": "done", "references": [],
+        "content_hash": graph_store.content_hash("Text B."),
+    })
+    graph_store.save(data)
+
+    st = graph.status(store.list_papers(sessions.session_states()))
+    assert st["has_graph"] is True
+    assert "b" in st["stale_papers"]  # missing from the snapshot ⇒ rebuild affordance lights
+    assert "a" not in st["stale_papers"]
+
+
 def test_interrupted_cached_rebuild_marks_skeleton_for_resume(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="Stable text.")
     papers = store.list_papers(sessions.session_states())

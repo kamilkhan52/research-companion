@@ -168,6 +168,22 @@ opening a small chooser (New project… → the existing Split sheet; or pick an
 only when the moved papers actually influenced the working notes — for a move to an existing
 project just as for a split. The move endpoint returns the same `departed_notes` map to feed it.
 
+**Concurrency — what the move guards, and a known residual.** The move reserves BOTH projects
+busy, sweeps background jobs on both, holds each moved slug's `mutation_lock` across
+snapshot+removal, and (this PR) gates the synchronous `add`/`remove`/`start`/`start_stream`
+routes on the busy flag (retroactively hardening the split too). It also refuses a destination
+that already has the slug's data (reading-list entry OR retained on-disk records) and validates
+every slug against the source's entries before any path building. **Residual, matching the
+shipped split (#147):** the busy flag is checked at each synchronous route's *entry*, and no
+lock is held across a writer's whole operation, so a request that passed its check can still be
+mid-flight when the move starts (e.g. a `/start` retrieval that began just before the
+reservation, or a destination `/approve` whose `git add -A` commit overlaps the population
+window). Fully closing this needs a **project-wide synchronous-writer mutation lock (or
+in-flight registry)** applied uniformly to split and move — a cross-cutting hardening tracked
+separately, not scoped into the move feature. For the single-household, single-worker
+deployment (invariant 6) the interleaving requires two conflicting record mutations on one
+project inside the sub-second population window, so it is deferred, not ignored.
+
 ## Open questions for Kamil
 
 1. **Defaults check:** remove-from-source defaults **on** (move semantics, per "moving the
