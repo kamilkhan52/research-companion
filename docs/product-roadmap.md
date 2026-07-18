@@ -159,7 +159,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R9.5 | Preview cues: prior cues into context + verify the cue model sees the real generated response | audio | Queued |
 | R9.3 | Reply/composer redesign: button inside, full-width, remove stray separator line (Gemini ref) | Figma | Queued — needs Kamil's screenshots |
 | R9.8 | `+15/-15` skip buttons restyle to match the sentence control | Figma | Queued |
-| R9.10 | Playback speed control larger/more prominent | polish | Queued |
+| R9.10 | Playback speed control larger/more prominent | polish | [#158](https://github.com/kamilkhan52/research-companion/pull/158) — speed pill (bg+border, 15px), mint outline when non-default |
 | R9.11 | Continue Reading: drop paper status, show project name | polish | [#152](https://github.com/kamilkhan52/research-companion/pull/152) |
 | R9.1 | Proper draggable bottom sheets (drag-to-resize/snap points) as standard | feature | Queued |
 | R9.12 | Paper sort options (name/pub date/date added/status), distinct from filters | feature | Queued |
