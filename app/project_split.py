@@ -174,14 +174,17 @@ def split_project(
         raise SplitError("Select at least one paper to split out.")
     keep = set(slugs)
 
-    # Hold each selected paper's transcript mutation lock across BOTH the snapshot and the
-    # source removal, so a concurrent /approve or /branch_switch (synchronous routes the busy
-    # marker doesn't gate — only jobs go through start_or_join) can't commit newer state into
-    # a paper we then delete, which would strand that state and leave the copy stale. Sorted +
-    # ExitStack so ordering is deterministic (no lock-cycle deadlock).
+    # Two layers of locking (task #75):
+    #  1. `project_exclusive(source_pid)` — the project WRITE lock. The route already marked
+    #     the source busy (refusing NEW synchronous writers at entry); acquiring this drains any
+    #     writer already IN FLIGHT (an /approve, /start, notes-save mid-commit) before we
+    #     relocate, so nothing's git-committing operation overlaps ours.
+    #  2. Each selected paper's `mutation_lock` across BOTH snapshot and source removal, so a
+    #     transcript rewrite for one of the moved papers can't commit newer state into a paper
+    #     we then delete. Sorted + ExitStack so ordering is deterministic (no lock cycle).
     token = config.set_active_project(source_pid)
     try:
-        with contextlib.ExitStack() as locks:
+        with config.project_exclusive(source_pid), contextlib.ExitStack() as locks:
             for slug in sorted(slugs):
                 locks.enter_context(sessions.mutation_lock(slug))
             bundle = _gather_source(slugs)

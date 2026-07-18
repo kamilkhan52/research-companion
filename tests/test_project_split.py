@@ -193,3 +193,73 @@ def test_busy_source_admits_no_new_jobs(temp_project):
     finally:
         config.unmark_project_busy(temp_project)
         jobs._ALL_REGISTRIES.remove(reg)
+
+
+def test_synchronous_committing_writers_refuse_while_reserved(temp_project):
+    """Task #75: the fast git-committing writers (add/remove/approve/notes-save) hold the
+    project write guard, which refuses while a split/move reserves the project — so none can
+    START a commit that would overlap the relocation's index writes."""
+    from app.routers.notes import (
+        AddPaperReq,
+        ApproveReq,
+        NotesSaveReq,
+        add_paper,
+        approve,
+        save_notes,
+    )
+    from app.routers.projects_api import remove_paper
+    from fastapi import HTTPException
+    _seed_source(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        for call in (
+            lambda: add_paper(temp_project, AddPaperReq(title="New")),
+            lambda: remove_paper(temp_project, "awq"),
+            lambda: approve(ApproveReq(slug="awq")),
+            lambda: save_notes("working-notes", NotesSaveReq(markdown="x", summary="y")),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                call()
+            assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+    # Reservation freed: the source is intact (no refused call mutated it).
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+
+
+def test_split_drains_an_in_flight_writer_before_relocating(temp_project):
+    """The split acquires the project's exclusive lock, which waits for a synchronous writer
+    already holding the read guard — so a commit in flight when the split starts completes
+    first rather than overlapping the relocation."""
+    import threading
+
+    _seed_source(temp_project)
+    reader_holding = threading.Event()
+    release_reader = threading.Event()
+
+    def in_flight_writer():
+        with config.project_write_guard(temp_project):
+            reader_holding.set()
+            release_reader.wait(5)
+
+    r = threading.Thread(target=in_flight_writer)
+    r.start()
+    assert reader_holding.wait(5)
+
+    split_done = threading.Event()
+
+    def run_split():
+        config.set_active_project(temp_project)
+        project_split.split_project(temp_project, "Drained", ["smooth"],
+                                    remove_from_source=True)
+        split_done.set()
+
+    s = threading.Thread(target=run_split)
+    s.start()
+    assert not split_done.wait(0.3)  # split blocked draining the in-flight writer
+
+    release_reader.set()
+    assert split_done.wait(10)  # writer drained ⇒ split proceeds
+    r.join(5)
+    s.join(10)
+    assert {p.slug for p in store.list_papers()} == {"awq", "core"}
