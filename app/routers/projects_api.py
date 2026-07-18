@@ -146,27 +146,53 @@ def remove_papers(pid: str, req: RemoveBatchReq):
         raise HTTPException(status_code=400, detail="No papers selected.")
     try:
         with config.project_write_guard(pid):
+            # Snapshot the touched files BEFORE mutating, so a git failure (index lock,
+            # read-only .git) rolls the working tree back to pre-batch — the removals must be
+            # all-or-nothing, not applied-but-uncommitted (a retry would then skip them and
+            # never commit). Pure-filesystem restore, independent of git.
+            reading_list_before = store._reading_list().read_bytes()
+            corpus_before: dict[str, bytes] = {}
             removed: list[str] = []
             changed = ["reading-list.md"]
-            for slug in slugs:
-                paper = store.get_paper(slug)
-                if paper is None:
-                    continue  # already gone — skip so a retry is idempotent
-                if store.has_notes(slug):
-                    store.append_removed_marker(slug)
-                    changed.append(str(store.corpus_path(slug).relative_to(config.project_dir())))
-                store.remove_entry(slug)
-                removed.append(slug)
-            if removed:
-                try:
+            try:
+                for slug in slugs:
+                    paper = store.get_paper(slug)
+                    if paper is None:
+                        continue  # already gone — skip so a retry is idempotent
+                    corpus = store.corpus_path(slug)
+                    if store.has_notes(slug):
+                        corpus_before[slug] = corpus.read_bytes()
+                        store.append_removed_marker(slug)
+                        changed.append(str(corpus.relative_to(config.project_dir())))
+                    store.remove_entry(slug)
+                    removed.append(slug)
+                if removed:
                     committer._git("add", "--", *changed)
-                    committer._git(
-                        "commit", "-q", "-m",
-                        f"Remove {len(removed)} paper(s) from reading list", "--", *changed,
-                    )
-                except CommitError as e:
-                    if "nothing to commit" not in str(e):
-                        raise HTTPException(status_code=500, detail=str(e)) from e
+                    try:
+                        committer._git(
+                            "commit", "-q", "-m",
+                            f"Remove {len(removed)} paper(s) from reading list", "--", *changed,
+                        )
+                    except CommitError as e:
+                        if "nothing to commit" not in str(e):
+                            raise
+            except Exception as e:
+                # Restore the working tree to pre-batch (files first, git cleanup best-effort).
+                store._reading_list().write_bytes(reading_list_before)
+                store._parse_cache.clear()
+                for slug, data in corpus_before.items():
+                    try:
+                        store.corpus_path(slug).write_bytes(data)
+                    except OSError:
+                        pass
+                try:
+                    committer._git("reset", "-q", "--", *changed)
+                except CommitError:
+                    pass
+                if isinstance(e, HTTPException):
+                    raise
+                raise HTTPException(
+                    status_code=500, detail="Could not remove the papers.") from e
     except config.ProjectBusyError as e:
         raise HTTPException(
             status_code=409,

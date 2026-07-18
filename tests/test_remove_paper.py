@@ -178,3 +178,31 @@ def test_remove_batch_refuses_while_relocating(temp_project):
     finally:
         config.unmark_project_busy(temp_project)
     assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed
+
+
+def test_remove_batch_rolls_back_on_commit_failure(temp_project, monkeypatch):
+    """A failed batch commit rolls the reading-list removals back — all-or-nothing — so a
+    retry isn't left with an applied-but-uncommitted state that it would then skip."""
+    from app import committer
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    rl_before = store._reading_list().read_text()
+
+    real_git = committer._git
+
+    def flaky_git(*args):
+        if args[:1] == ("commit",):
+            raise committer.CommitError("index locked")
+        return real_git(*args)
+
+    monkeypatch.setattr(committer, "_git", flaky_git)
+    with pytest.raises(HTTPException) as exc:
+        remove_papers(temp_project, RemoveBatchReq(slugs=["a", "b"]))
+    assert exc.value.status_code == 500
+    monkeypatch.setattr(committer, "_git", real_git)
+
+    # Nothing removed — the reading list is exactly as before.
+    assert {p.slug for p in store.list_papers()} == {"a", "b"}
+    assert store._reading_list().read_text() == rl_before
