@@ -75,6 +75,9 @@ _IMAGE_EXTS = {
 _NUM_FROM_CAPTION = re.compile(r"^\s*Fig(?:ure)?\.?\s*(\d+)", re.I)
 _NUM_FROM_ID = re.compile(r"F(\d+)$")
 _SAFE_ASSET_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+# Store-derived slugs only (lowercase alnum + hyphens). The serving routes pass a raw URL
+# path segment as `slug`, so the readers below are a trust boundary like asset_path.
+_SAFE_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 # --- paths -----------------------------------------------------------------------------------
@@ -93,7 +96,10 @@ def asset_dir(slug: str) -> Path:
 
 def asset_path(slug: str, asset: str) -> Path | None:
     """Resolve a manifest asset filename to its cached file — the trust boundary for the
-    serving route. Only plain filenames the sanitizer could have produced are accepted."""
+    serving route. Only store-shaped slugs and plain filenames the sanitizer could have
+    produced are accepted."""
+    if not _SAFE_SLUG.match(slug or ""):
+        return None
     if not asset or _SAFE_ASSET_CHARS.search(asset) or asset.startswith("."):
         return None
     return asset_dir(slug) / asset
@@ -155,6 +161,8 @@ def manifest_for(slug: str) -> dict | None:
     """The slug's manifest, but only when it matches the paper's CURRENT identity — a
     just-corrected retrieval must never serve the previous paper's figures. (A version
     advance keeps the same base: the old figures serve until the rebuild lands.)"""
+    if not _SAFE_SLUG.match(slug or ""):
+        return None  # routes pass a raw path segment — never build paths from it unchecked
     manifest = read_manifest(slug)
     if not manifest:
         return None

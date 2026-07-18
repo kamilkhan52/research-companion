@@ -55,6 +55,28 @@ export interface Paper {
   kind?: string;
 }
 
+/** One figure from the paper's arXiv-HTML rendering (R.10). `asset` is the cached image's
+ *  filename — build its URL with figureAssetUrl(); `number` is the paper's own "Figure N". */
+export interface PaperFigure {
+  id: string;
+  number: number | null;
+  caption: string;
+  alt: string;
+  src: string;
+  asset: string;
+  width?: number | null;
+  height?: number | null;
+}
+
+/** GET .../papers/{slug}/figures — `none` means render exactly as before figures existed. */
+export interface FigureManifest {
+  status: 'done' | 'none';
+  figures: PaperFigure[];
+  source?: string | null;
+  /** Doubles as the cache-busting version for asset URLs (changes on re-derivation). */
+  fetched_ts?: number | null;
+}
+
 /** What the agent proposes at completion, pending human approval. */
 export interface ProposedCommit {
   summary: string;
