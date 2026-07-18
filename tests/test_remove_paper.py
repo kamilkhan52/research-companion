@@ -147,3 +147,34 @@ def test_recent_sessions_drops_removed_papers(temp_project):
     assert "b" in slugs
     # The transcript index entry itself is retained (warm re-add) — only the listing filters.
     assert "a" in sessions.session_index()
+
+
+def test_remove_batch_removes_all_in_one_commit(temp_project):
+    """The multi-select Delete removes every selected paper atomically — one commit, and
+    unknown slugs are skipped so a retry of a partial earlier attempt is idempotent."""
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    add_paper(temp_project, "b", "Paper B")
+    add_paper(temp_project, "c", "Paper C")
+    before = _git_log(config.project_dir()).count("\n")
+
+    res = remove_papers(temp_project, RemoveBatchReq(slugs=["a", "c", "ghost"]))
+    assert set(res["removed"]) == {"a", "c"}  # ghost skipped
+    assert {p.slug for p in store.list_papers()} == {"b"}
+    # Exactly ONE commit added for the whole batch (atomic).
+    assert _git_log(config.project_dir()).count("\n") == before + 1
+
+
+def test_remove_batch_refuses_while_relocating(temp_project):
+    from app.routers.projects_api import RemoveBatchReq, remove_papers
+
+    add_paper(temp_project, "a", "Paper A")
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            remove_papers(temp_project, RemoveBatchReq(slugs=["a"]))
+        assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+    assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed

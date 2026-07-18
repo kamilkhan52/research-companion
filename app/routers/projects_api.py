@@ -129,6 +129,52 @@ def remove_paper(pid: str, slug: str):
     return {"removed": slug, "notes_kept": notes_kept}
 
 
+class RemoveBatchReq(BaseModel):
+    slugs: list[str]
+
+
+@project_router.post("/papers/remove-batch")
+def remove_papers(pid: str, req: RemoveBatchReq):
+    """Remove several papers in ONE atomic git commit (the multi-select Delete, R9.13). A
+    client-side loop of single removals could half-apply if the app disconnects partway; this
+    does all of them under one write guard + one commit, so it's all-or-nothing — a fast
+    deterministic op (no LLM/network), so a single request, not a background job. Same
+    notes-kept + retained-files posture as the single removal. Unknown slugs are skipped
+    (idempotent), so a retry of a partially-succeeded earlier attempt is safe."""
+    slugs = list(dict.fromkeys(req.slugs))
+    if not slugs:
+        raise HTTPException(status_code=400, detail="No papers selected.")
+    try:
+        with config.project_write_guard(pid):
+            removed: list[str] = []
+            changed = ["reading-list.md"]
+            for slug in slugs:
+                paper = store.get_paper(slug)
+                if paper is None:
+                    continue  # already gone — skip so a retry is idempotent
+                if store.has_notes(slug):
+                    store.append_removed_marker(slug)
+                    changed.append(str(store.corpus_path(slug).relative_to(config.project_dir())))
+                store.remove_entry(slug)
+                removed.append(slug)
+            if removed:
+                try:
+                    committer._git("add", "--", *changed)
+                    committer._git(
+                        "commit", "-q", "-m",
+                        f"Remove {len(removed)} paper(s) from reading list", "--", *changed,
+                    )
+                except CommitError as e:
+                    if "nothing to commit" not in str(e):
+                        raise HTTPException(status_code=500, detail=str(e)) from e
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then remove.",
+        ) from e
+    return {"removed": removed}
+
+
 class SplitReq(BaseModel):
     name: str                       # the new project's name
     slugs: list[str]                # papers to split out (must be current source entries)

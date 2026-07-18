@@ -409,6 +409,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/papers/remove-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove Papers
+         * @description Remove several papers in ONE atomic git commit (the multi-select Delete, R9.13). A
+         *     client-side loop of single removals could half-apply if the app disconnects partway; this
+         *     does all of them under one write guard + one commit, so it's all-or-nothing — a fast
+         *     deterministic op (no LLM/network), so a single request, not a background job. Same
+         *     notes-kept + retained-files posture as the single removal. Unknown slugs are skipped
+         *     (idempotent), so a retry of a partially-succeeded earlier attempt is safe.
+         */
+        post: operations["remove_papers_api_projects__pid__papers_remove_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/split": {
         parameters: {
             query?: never;
@@ -1869,6 +1894,11 @@ export interface components {
             /** Value */
             value?: string | null;
         };
+        /** RemoveBatchReq */
+        RemoveBatchReq: {
+            /** Slugs */
+            slugs: string[];
+        };
         /** ReplyReq */
         ReplyReq: {
             /**
@@ -2662,6 +2692,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_papers_api_projects__pid__papers_remove_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RemoveBatchReq"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

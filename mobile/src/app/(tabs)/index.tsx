@@ -21,11 +21,11 @@ import { backfillCovers, getOpeningDraft, getSession } from '@/api/endpoints';
 import {
   keys,
   useBaseUrl,
-  useMoveProject,
   useProjectState,
   useProjects,
   useRecentSessions,
   useRemovePaper,
+  useRemovePapers,
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
@@ -127,11 +127,11 @@ export default function LibraryScreen() {
   const stateQuery = useProjectState(activePid);
   const activeProject = projects?.find((p) => p.id === activePid);
   const removePaper = useRemovePaper(activePid);
-  useMoveProject(activePid);  // warms the mutation cache; the actual move runs in the sheet
+  const removePapers = useRemovePapers(activePid);
 
-  // Batch-delete the multi-selection (R9.13). One confirmed destructive action; the backend
-  // serializes the per-paper removals under the project write lock, so firing them in sequence
-  // is safe. Notes are kept + marked removed, same as the single-paper swipe-remove.
+  // Batch-delete the multi-selection (R9.13). One confirmed destructive action → one atomic
+  // server request (all removals in a single commit), so a disconnect can't half-apply it.
+  // Notes are kept + marked removed, same as the single-paper swipe-remove.
   function confirmBatchDelete() {
     const slugs = [...selected];
     if (slugs.length === 0) return;
@@ -143,19 +143,12 @@ export default function LibraryScreen() {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: async () => {
-            let failed = 0;
-            for (const slug of slugs) {
-              try {
-                await removePaper.mutateAsync(slug);
-              } catch {
-                failed += 1;
-              }
-            }
+          onPress: () => {
+            removePapers.mutate(slugs, {
+              onError: (e) =>
+                Alert.alert('Could not remove the papers', (e as Error).message),
+            });
             exitSelect();
-            if (failed > 0) {
-              Alert.alert('Some papers could not be removed', `${failed} failed — try again.`);
-            }
           },
         },
       ],
