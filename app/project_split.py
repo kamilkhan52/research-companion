@@ -273,34 +273,12 @@ def move_to_existing(
     if not slugs:
         raise SplitError("Select at least one paper to move.")
 
-    # Validate every slug is a CURRENT source entry BEFORE any path building. `slugs` is
-    # client-controlled and is otherwise fed into corpus/transcript/graph path helpers by the
-    # collision check below; a non-entry value (including a traversal attempt like `../x`) is
-    # never a parsed reading-list slug, so this rejects it before any filesystem access.
-    token0 = config.set_active_project(source_pid)
-    try:
-        source_slugs = {p.slug for p in store.list_papers()}
-    finally:
-        config.reset_active_project(token0)
-    unknown = [s for s in slugs if s not in source_slugs]
-    if unknown:
-        raise SplitError("Not current papers in this project: " + ", ".join(unknown))
-
-    occupied = _dest_occupied_slugs(dest_pid, slugs)
-    collisions = [s for s in slugs if s in occupied]
-    if collisions:
-        raise SplitError(
-            "These papers already have data in the destination project (an entry, or notes/"
-            "discussion retained from a past removal): " + ", ".join(collisions)
-        )
-    # A moved paper's cite to a paper ALREADY in the destination stays a live edge, so keep is
-    # the moved set plus the destination's existing reading-list papers (the split keeps only
-    # the moved set). Only reading-list slugs matter for cites.
-    keep = set(slugs) | _dest_existing_slugs(dest_pid)
-    dest_name = projects._read_meta(dest_pid).get("name") or dest_pid
-
     # Exclusive write lock on BOTH projects (sorted ⇒ no lock-cycle between two moves), draining
-    # any synchronous writer already in flight on either side before we touch its record.
+    # any synchronous writer already in flight on either side before we touch its record. ALL
+    # racy reads (source-entry validation, destination occupancy, cite-keep) happen INSIDE the
+    # locks: a writer that added a selected slug to the destination just before the busy flag
+    # was set could otherwise finish after an unlocked collision check, and _write_new_project
+    # would then append a duplicate entry.
     first, second = sorted([source_pid, dest_pid])
     token = config.set_active_project(source_pid)
     try:
@@ -308,6 +286,26 @@ def move_to_existing(
                 contextlib.ExitStack() as locks:
             for slug in sorted(slugs):
                 locks.enter_context(sessions.mutation_lock(slug))
+
+            # Validate every slug is a CURRENT source entry before any path building — a
+            # non-entry value (incl. a `../x` traversal) is never a parsed reading-list slug,
+            # so this rejects it before the collision check feeds it into path helpers.
+            source_slugs = {p.slug for p in store.list_papers()}  # bound to source
+            unknown = [s for s in slugs if s not in source_slugs]
+            if unknown:
+                raise SplitError("Not current papers in this project: " + ", ".join(unknown))
+
+            occupied = _dest_occupied_slugs(dest_pid, slugs)
+            collisions = [s for s in slugs if s in occupied]
+            if collisions:
+                raise SplitError(
+                    "These papers already have data in the destination project (an entry, or "
+                    "notes/discussion retained from a past removal): " + ", ".join(collisions))
+            # A moved paper's cite to a paper ALREADY in the destination stays a live edge, so
+            # keep is the moved set plus the destination's existing reading-list papers.
+            keep = set(slugs) | _dest_existing_slugs(dest_pid)
+            dest_name = projects._read_meta(dest_pid).get("name") or dest_pid
+
             bundle = _gather_source(slugs)
             departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
 
@@ -325,13 +323,13 @@ def move_to_existing(
                     projects._git(dest_pid, "add", "--", *written)
                     projects._git(dest_pid, "commit", "-q", "-m",
                                   f"Move {len(slugs)} paper(s) from {source_pid}", "--", *written)
-                    removed = _finish_source_removal(source_pid, slugs, dest_name) \
+                    removed = _finish_source_removal(source_pid, slugs, bundle, dest_name) \
                         if remove_from_source else False
                 except Exception:
                     # Roll the destination back to its pre-move state so a retry isn't blocked
-                    # by the collision check (the moved papers' data is safe in the SOURCE — the
-                    # source removal is the last step and either fully committed or is itself
-                    # rolled back by _finish_source_removal on its own failure).
+                    # by the collision check. Safe because the source is only touched AFTER a
+                    # successful dest commit and restores itself on its own failure (below), so
+                    # the moved data is never lost.
                     _restore_dest(dest_pid, slugs, snap)
                     raise
             finally:
@@ -348,14 +346,22 @@ def move_to_existing(
     }
 
 
-def _finish_source_removal(source_pid: str, slugs: list[str], dest_name: str) -> bool:
+def _finish_source_removal(source_pid: str, slugs: list[str], bundle: dict,
+                           dest_name: str) -> bool:
     """Remove the moved papers from the source and commit (contextvar currently bound to the
-    destination — rebind to source). On failure, restore the source's tracked files so it
-    isn't left with uncommitted deletions, then re-raise (the caller rolls back the dest)."""
+    destination — rebind to source). On ANY failure, restore the source COMPLETELY from the
+    captured bundle + a pre-removal snapshot — never `git reset --hard`, which would discard
+    the source's own unrelated working-tree edits and cannot restore the untracked corpus/
+    transcript/.state files `_remove_from_source` deletes. Then re-raise (the caller rolls the
+    destination back). Since the source is restored, the moved papers' data is never lost even
+    though the destination copies are removed."""
     src_token = config.set_active_project(source_pid)
     try:
-        head = projects._git(source_pid, "rev-parse", "HEAD").strip()
-        reading_list = store._reading_list().read_bytes()
+        snap = {
+            "head": projects._git(source_pid, "rev-parse", "HEAD").strip(),
+            "reading_list": store._reading_list().read_bytes(),
+            "graph": copy.deepcopy(graph_store.load()),
+        }
         try:
             changed = _remove_from_source(source_pid, slugs)
             projects._git(source_pid, "add", "--", *changed)
@@ -365,18 +371,54 @@ def _finish_source_removal(source_pid: str, slugs: list[str], dest_name: str) ->
                               f"Move {len(slugs)} paper(s) to {dest_name}", "--", *changed)
             return True
         except Exception:
-            # Best-effort source restore: undo any commit + restore tracked deletions + the
-            # reading list. The moved data survives in the destination regardless.
-            try:
-                projects._git(source_pid, "reset", "--hard", head)
-                store._reading_list().write_bytes(reading_list)
-                store._parse_cache.clear()
-            except Exception:
-                log.warning("move rollback of source %s was incomplete", source_pid,
-                            exc_info=True)
+            _restore_source(source_pid, slugs, bundle, snap)
             raise
     finally:
         config.reset_active_project(src_token)
+
+
+def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict) -> None:
+    """Undo a failed source removal (contextvar bound to source): re-materialize the removed
+    papers' on-disk files from the captured bundle, restore the reading-list bytes + graph
+    caches from the snapshot, and undo any partial commit with `reset --soft` (keeps the
+    source's OWN working-tree edits). Never raises — a rollback failure must not mask the
+    original error."""
+    try:
+        projects._git(source_pid, "reset", "--soft", snap["head"])  # undo a partial commit
+        for slug in slugs:
+            b = bundle[slug]
+            if b["corpus_bytes"] is not None:
+                store.corpus_path(slug).write_bytes(b["corpus_bytes"])
+            jsonl, branches = sessions.transcript_paths(slug)
+            if b["jsonl_bytes"] is not None:
+                jsonl.parent.mkdir(parents=True, exist_ok=True)
+                jsonl.write_bytes(b["jsonl_bytes"])
+            if b["branches_bytes"] is not None:
+                branches.parent.mkdir(parents=True, exist_ok=True)
+                branches.write_bytes(b["branches_bytes"])
+            if b["cover_bytes"] is not None:
+                cover = _cover_path(slug)
+                cover.parent.mkdir(parents=True, exist_ok=True)
+                cover.write_bytes(b["cover_bytes"])
+            if b["gcorpus_bytes"] is not None:
+                gpath = graph_store._retrieved_text_file(slug)
+                gpath.parent.mkdir(parents=True, exist_ok=True)
+                gpath.write_bytes(b["gcorpus_bytes"])
+            if b["session_meta"] is not None:
+                sessions.import_session(slug, b["session_meta"])
+        store._reading_list().write_bytes(snap["reading_list"])
+        store._parse_cache.clear()
+        graph_store.save(snap["graph"])
+        # Unstage only the reading-list + moved slugs' paths (leave the source's OTHER staging
+        # untouched), so the working tree — now restored — matches HEAD for them.
+        reset_paths = ["reading-list.md"]
+        root = config.project_dir()
+        for slug in slugs:
+            for f in (store.corpus_path(slug), sessions.transcript_paths(slug)[0]):
+                reset_paths.append(str(f.relative_to(root)))
+        projects._git(source_pid, "reset", "-q", "--", *reset_paths)
+    except Exception:
+        log.warning("move rollback of source %s was incomplete", source_pid, exc_info=True)
 
 
 def split_project(

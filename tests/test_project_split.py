@@ -396,3 +396,33 @@ def test_move_rolls_the_destination_back_on_a_failed_commit(temp_project, monkey
     assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
     res = project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
     assert res["removed"] is True
+
+
+def test_move_rolls_the_source_back_on_a_failed_source_commit(temp_project, monkeypatch):
+    """If the SOURCE commit fails after removal, the source is fully restored from the captured
+    bundle (files, notes, transcript, graph) — no data loss — and the dest is rolled back too."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    real_git = projects._git
+
+    def flaky_git(pid, *args):
+        if pid == temp_project and args[:1] == ("commit",):  # fail the SOURCE commit
+            raise projects.ProjectError("boom: source commit failed")
+        return real_git(pid, *args)
+
+    monkeypatch.setattr(projects, "_git", flaky_git)
+    with pytest.raises(Exception):  # noqa: B017
+        project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+    monkeypatch.setattr(projects, "_git", real_git)
+
+    # Source fully restored from the bundle — the moved paper's entry, notes, and graph text
+    # are all back (no data loss), even though the destination copy was rolled back.
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+    assert "4-bit works" in store.read_notes("awq")
+    assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+    tok = _bind(dest)
+    try:
+        assert {p.slug for p in store.list_papers()} == {"base"}  # dest rolled back
+        assert store.corpus_path("awq").exists() is False
+    finally:
+        config.reset_active_project(tok)
