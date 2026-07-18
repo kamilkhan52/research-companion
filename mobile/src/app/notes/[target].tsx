@@ -37,6 +37,15 @@ import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type Mode = 'view' | 'edit';
+type ProposalRef = {
+  baseRevision: string;
+  jobId: string;
+  summary: string;
+};
+type NotesEditDraft = {
+  markdown: string;
+  proposal: ProposalRef | null;
+};
 
 export default function NotesScreen() {
   const router = useRouter();
@@ -51,7 +60,8 @@ export default function NotesScreen() {
   const notes = useNotes(pid, target ?? null);
   const projectState = useProjectState(pid);
   const agent = useNotesAgent(pid, target ?? null);
-  const editDraft = usePersistedDraft<string | null>(
+  // `string` remains in the read type to migrate drafts written by earlier app versions.
+  const editDraft = usePersistedDraft<NotesEditDraft | string | null>(
     pid && target ? draftKey(pid, 'notes', target, 'manual-edit') : null,
     null,
   );
@@ -61,8 +71,18 @@ export default function NotesScreen() {
   );
 
   const [mode, setMode] = useState<Mode>('view');
-  const draft = editDraft.value; // non-null while editing
-  const setDraft = editDraft.setValue;
+  const draft = typeof editDraft.value === 'string'
+    ? editDraft.value
+    : editDraft.value?.markdown ?? null;
+  const editingProposal = typeof editDraft.value === 'object'
+    ? editDraft.value?.proposal ?? null
+    : null;
+  const setDraft = (next: string) => {
+    editDraft.setValue({
+      markdown: next,
+      proposal: editingProposal,
+    });
+  };
   const [asking, setAsking] = useState(false);              // instruction composer open
   const instruction = instructionDraft.value;
   const setInstruction = instructionDraft.setValue;
@@ -74,6 +94,14 @@ export default function NotesScreen() {
   const title = notes.data?.title ?? (target === 'working' ? 'Working notes' : 'Notes');
   const paper = target === 'working' ? undefined : projectState.data?.papers.find((item) => item.slug === target);
   const paperUrl = paper ? fullPaperUrl(paper) : null;
+
+  // This tab stays mounted across project switches. Keep local editor/proposal metadata scoped
+  // to the active document; persisted drafts reload from their own project-keyed storage below.
+  useEffect(() => {
+    setMode('view');
+    setAsking(false);
+    setSaveError(null);
+  }, [pid, target]);
 
   // Reattach to an agent edit already in flight for this document (navigated away and back).
   useEffect(() => {
@@ -109,18 +137,28 @@ export default function NotesScreen() {
     }
   }, [agent.job?.instruction, instruction, instructionDraft.clear, instructionDraft.submitted]);
 
-  async function persist(text: string, summary?: string) {
+  async function persist(
+    text: string,
+    summary?: string,
+    proposal = editingProposal,
+  ) {
     if (!pid || !target) return;
     setSaving(true);
     setSaveError(null);
     if (text === draft) await editDraft.markSubmitted();
     try {
-      await saveNotes(pid, target, text, summary);
+      await saveNotes(pid, target, text, {
+        summary,
+        base_revision: proposal?.baseRevision,
+        job_id: proposal?.jobId,
+      });
       qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       setMode('view');
       await editDraft.clear(null);
-      agent.dismissProposal();
+      // Only an edit-first/apply save sent a job id for the backend to discard. A separate
+      // proposal that happened to finish while a manual draft was open must remain reviewable.
+      if (proposal) agent.proposalApplied();
     } catch (e) {
       setSaveError((e as Error).message ?? 'Save failed.');
       await qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
@@ -129,10 +167,13 @@ export default function NotesScreen() {
     }
   }
 
-  function startEdit(from: string) {
-    setDraft(from);
+  function startEdit(
+    from: string,
+    proposal?: ProposalRef,
+  ) {
+    editDraft.setValue({ markdown: from, proposal: proposal ?? null });
     setMode('edit');
-    agent.dismissProposal();
+    if (!proposal) agent.dismissProposal();
   }
 
   function cancelEdit() {
@@ -288,13 +329,25 @@ export default function NotesScreen() {
               <Button
                 title="Edit first"
                 variant="ghost"
-                onPress={() => startEdit(agent.proposal!)}
+                onPress={() => startEdit(agent.proposal!, {
+                  baseRevision: agent.job?.base_revision ?? '',
+                  jobId: agent.job?.id ?? '',
+                  summary: agent.job?.summary ?? '',
+                })}
                 style={{ flex: 1 }}
               />
               <Button
                 title="Apply"
                 onPress={() =>
-                  void persist(agent.proposal!, `Notes edit (agent): ${agent.job?.instruction ?? ''}`.trim())
+                  void persist(
+                    agent.proposal!,
+                    agent.job?.summary || `Notes edit (agent): ${agent.job?.instruction ?? ''}`.trim(),
+                    {
+                      baseRevision: agent.job?.base_revision ?? '',
+                      jobId: agent.job?.id ?? '',
+                      summary: agent.job?.summary ?? '',
+                    },
+                  )
                 }
                 loading={saving}
                 style={{ flex: 1.4 }}

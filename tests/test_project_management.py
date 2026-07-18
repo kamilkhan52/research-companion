@@ -38,6 +38,21 @@ def test_delete_moves_to_trash_and_hides_from_registry(root):
     assert (trashed[0] / ".git").is_dir()
 
 
+def test_delete_forgets_terminal_jobs_before_project_id_can_be_reused(root):
+    pid = projects.create_project("Reusable")["id"]
+    reg = jobs.JobRegistry("retained-proposal")
+    try:
+        reg.put("working", jobs.Job(id="finished", status="done"), project_id=pid)
+
+        projects.delete_project(pid)
+        recreated = projects.create_project("Reusable")
+
+        assert recreated["id"] == pid
+        assert reg.latest_for("working", project_id=pid) is None
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)
+
+
 def test_delete_unknown_project_raises(root):
     with pytest.raises(projects.ProjectError):
         projects.delete_project("nope")
@@ -75,6 +90,10 @@ def test_tombstoned_project_admits_no_new_jobs(root):
             reg.start_or_join(
                 "k", lambda: jobs.Job(id="j2"), lambda job: None, project_id=pid
             )
+        # Cache-hit paths use put() instead of a worker. They must share the tombstone gate:
+        # otherwise one can register after deletion's purge and survive into a reused pid.
+        with pytest.raises(RuntimeError, match="being modified"):
+            reg.put("cached", jobs.Job(id="cached", status="done"), project_id=pid)
         assert reg.jobs == {}  # nothing registered
     finally:
         config.unmark_project_deleting(pid)

@@ -177,6 +177,10 @@ export default function LibraryScreen() {
   }
 
   const papers = useMemo(() => stateQuery.data?.papers ?? [], [stateQuery.data]);
+  const selectedHaveNotes = useMemo(
+    () => papers.some((paper) => selected.has(paper.slug) && paper.has_notes),
+    [papers, selected],
+  );
   const counts = useMemo(() => {
     const c = { all: papers.length, toread: 0, inprogress: 0, done: 0 };
     for (const p of papers) c[filterBucket(p)] += 1;
@@ -411,6 +415,7 @@ export default function LibraryScreen() {
         visible={splitOpen}
         pid={activePid}
         slugs={[...selected]}
+        notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
         onClose={() => setSplitOpen(false)}
         onDone={(newPid) => {
           setSplitOpen(false);
@@ -450,6 +455,7 @@ export default function LibraryScreen() {
         destPid={moveDest?.pid ?? null}
         destName={moveDest?.name ?? ''}
         slugs={[...selected]}
+        notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
         onClose={() => setMoveDest(null)}
         onDone={(destPid) => {
           setMoveDest(null);

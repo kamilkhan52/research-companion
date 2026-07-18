@@ -50,6 +50,8 @@ export const saveNotes = unexpected('saveNotes');
 export const startNotesAgent = unexpected('startNotesAgent');
 export const getNotesJob = unexpected('getNotesJob');
 export const getActiveNotesJob = unexpected('getActiveNotesJob');
+export const getLatestNotesJob = unexpected('getLatestNotesJob');
+export const discardNotesJob = unexpected('discardNotesJob');
 export const startDiscovery = unexpected('startDiscovery');
 export const getDiscovery = unexpected('getDiscovery');
 export const getGraph = unexpected('getGraph');
@@ -59,10 +61,22 @@ export const startGraphBuild = unexpected('startGraphBuild');
 export const getGraphBuildStatus = unexpected('getGraphBuildStatus');
 export const mediaUrl = jest.fn((path: string) => `https://api.test${path}`);
 export const moveProject = jest.fn(
-  async (_pid: string, body: { dest_pid: string; slugs: string[]; remove_from_source: boolean }) => ({
+  async (_pid: string, body: {
+    dest_pid: string;
+    slugs: string[];
+    remove_from_source: boolean;
+    draft_destination_notes: boolean;
+    cleanup_source_notes: boolean;
+  }) => ({
     new_pid: body.dest_pid,
     name: 'Destination',
     moved: body.slugs.length,
     removed: body.remove_from_source,
+    notes_jobs: {
+      destination: null,
+      source_cleanup: null,
+      destination_error: null,
+      source_cleanup_error: null,
+    },
   }),
 );

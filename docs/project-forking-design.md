@@ -50,10 +50,12 @@ served; "moving the work done" means notes always travel).
 ## Flow
 
 Phase 1 is synchronous and deterministic; 2 and 3 are independent LLM background jobs.
+R8.2 shipped phase 1; R8.3 ships the two proposal jobs and their controls.
 
 1. **Split (plain POST — fast, no LLM, no network).**
    `POST /api/projects/{pid}/split` with
-   `{name, goals?, slugs: [...], remove_from_source: bool, draft_new_notes: bool, cleanup_source_notes: bool}`:
+   `{name, goals?, slugs: [...], remove_from_source: bool,
+   draft_destination_notes: bool, cleanup_source_notes: bool}`:
    - **Guards:** every requested slug must resolve to a parsed entry of the source's
      current reading list before anything is touched — slugs are caller-supplied and the
      path helpers (`corpus_path`, session/cover paths) compose paths without validating, so
@@ -77,10 +79,12 @@ Phase 1 is synchronous and deterministic; 2 and 3 are independent LLM background
      in-app confirmation — the same invariant-4 posture as `DELETE /papers/{slug}`, which
      already git-commits directly on confirmed quick actions.
    - The response returns the new pid; the client switches projects (the R7.5 machinery).
-2. **New project's working notes (background job + approval)** — when `draft_new_notes`:
-   an LLM pass synthesizes a `working-notes.md` proposal from the migrated papers' Notes
-   (the assembler already gathers these). Normal proposal → review → approve via
-   `committer.py`; nothing reaches the record unapproved (invariant 4).
+2. **Destination working notes (background job + approval)** — when
+   `draft_destination_notes`: an LLM pass synthesizes a `working-notes.md` proposal from the
+   migrated papers' committed Notes. For a new project it builds on the starter document; for
+   an existing project it integrates the papers without discarding the destination's current
+   synthesis. Normal proposal → review → apply through the notes save path; nothing reaches
+   the record unapproved (invariant 4).
 3. **Source cleanup (background job + approval)** — when `cleanup_source_notes` (implies
    remove-on): an LLM pass proposes the source's working notes with the departed papers'
    contributions removed. Working-notes content is synthesized without per-paper
@@ -94,7 +98,8 @@ Phases 2–3 are `notes_jobs`-shaped (invariant 1), rebind their project's conte
 (invariant 2), can run in parallel, and can each be skipped or re-run. Each captures a
 **base revision** (hash of that project's `working-notes.md` at job start) that rides on the
 proposal; approval rejects with a conflict if the live file changed meanwhile — the same
-optimistic-concurrency shape as U.14's `proposal_revision`.
+optimistic-concurrency shape as U.14's `proposal_revision`. Completed proposals remain
+recoverable through the latest-job endpoint until the user applies or discards them.
 
 ## UI (mobile first)
 
@@ -106,6 +111,10 @@ optimistic-concurrency shape as U.14's `proposal_revision`.
   discussions and caches to '<name>'; propose a cleanup of this project's working notes").
   Confirm → POST → switch to the new project with the notes-draft job visible in the
   existing job-status UI. Completion toasts ride the R6.5 toast machinery.
+- The two AI toggles appear only when at least one selected paper has committed Notes. This is
+  the practical evidence that the paper was read and could have influenced working notes;
+  unread metadata-only papers do not trigger a misleading cleanup offer. Source cleanup is
+  additionally hidden for copy operations and safely skips when the source has no working notes.
 - **Second entry point:** the R7.5 project-settings panel gains "Split project…", which
   routes to the Library in selection mode.
 - Web follows only if trivial (the endpoint is client-agnostic).
@@ -169,12 +178,8 @@ a fresh local project. Marketplace concerns (publishing, discovery, identity, ve
 notes-privacy) stay future work and should not shape v1 beyond keeping `project_split.py`'s
 copy path reusable.
 
-## Open questions for Kamil
+## Decisions now implemented
 
-1. **Defaults check:** remove-from-source defaults **on** (move semantics, per "moving the
-   papers and any work done") — right call, or default to the safer copy?
-2. **Transcripts on move:** this draft moves them (they are work done). If you'd rather
-   discussions always stay archived in the source, phase 1 gets simpler still.
-3. **Wipe scope:** is the source cleanup pass (phase 3) working-notes-only, as specced? Or
-   did "wipe any analysis contributed" also mean e.g. the source's graph caches for the
-   departed papers (those are dropped automatically on the next build either way)?
+- Remove-from-source defaults on; copy remains available.
+- Transcripts move only with a move, not a copy.
+- Cleanup is working-notes-only, always an AI proposal requiring explicit apply.

@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import committer, config, jobs, project_split, projects, sessions, store
+from .. import committer, config, jobs, notes_jobs, project_split, projects, sessions, store
 from ..committer import CommitError
 from ..project_split import SplitError
 from ..projects import ProjectError
@@ -220,6 +220,10 @@ class SplitReq(BaseModel):
     slugs: list[str]                # papers to split out (must be current source entries)
     remove_from_source: bool = True  # move (default) vs. copy
     goals: str | None = None        # optional theme for the new project (seeds discovery etc.)
+    # Optional R8.3 proposal jobs. False on the wire for backward compatibility; the current
+    # client defaults the destination pass on when at least one selected paper has Notes.
+    draft_destination_notes: bool = False
+    cleanup_source_notes: bool = False
 
 
 @project_router.post("/split")
@@ -233,6 +237,15 @@ def split_project(pid: str, req: SplitReq):
     then sweep — so a job admitted after the sweep is refused by the busy gate
     (`jobs.start_or_join`), closing the window between the check and the move (the same
     atomic tombstone-then-sweep shape project deletion uses)."""
+    if req.cleanup_source_notes and not req.remove_from_source:
+        raise HTTPException(
+            status_code=400,
+            detail="Source working notes can only be cleaned up when papers leave the source.",
+        )
+    if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
+
+    source_name = (projects._read_meta(pid).get("name") or pid)
     # Exclusive reservation: a second concurrent split of the same project is rejected rather
     # than interleaving two mutations of one reading list / git index (and the first's
     # unmark would otherwise re-admit jobs while the second still runs).
@@ -254,20 +267,59 @@ def split_project(pid: str, req: SplitReq):
             pid, req.name, req.slugs,
             remove_from_source=req.remove_from_source, goals=req.goals,
         )
+        dest = result["new_pid"]
+        if req.draft_destination_notes or req.cleanup_source_notes:
+            # Keep both documents reserved through job admission. A concurrent delete either
+            # sees this busy flag and refuses, or wins first; in the latter case the checks after
+            # marking busy detect the missing/tombstoned destination and skip the jobs without
+            # turning the already-committed deterministic split into a failure.
+            if not config.mark_project_busy(dest):
+                notes = _relocation_notes_error(
+                    req.draft_destination_notes,
+                    req.cleanup_source_notes,
+                    "The destination project is being modified; AI notes proposals did not start.",
+                )
+            else:
+                try:
+                    if config.project_is_deleting(dest) or not projects.exists(dest):
+                        notes = _relocation_notes_error(
+                            req.draft_destination_notes,
+                            req.cleanup_source_notes,
+                            "The destination project was deleted; AI notes proposals did not start.",
+                        )
+                    else:
+                        notes = _start_relocation_notes(
+                            result,
+                            source_pid=pid,
+                            source_name=source_name,
+                            destination_pid=dest,
+                            destination_name=result["name"],
+                            draft_destination=req.draft_destination_notes,
+                            cleanup_source=req.cleanup_source_notes,
+                            allow_busy=True,
+                        )
+                finally:
+                    config.unmark_project_busy(dest)
+        else:
+            notes = _relocation_notes_error(False, False, "")
     except SplitError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         config.unmark_project_busy(pid)
-    # departed_notes is server-side context for the (future) source-cleanup pass; not returned.
-    return {k: v for k, v in result.items() if k != "departed_notes"}
+    return {
+        **_public_relocation_result(result),
+        "notes_jobs": notes,
+    }
 
 
 class MoveReq(BaseModel):
     dest_pid: str                    # an EXISTING destination project
     slugs: list[str]                 # papers to move (must be current source entries)
     remove_from_source: bool = True  # move (default) vs. copy
+    draft_destination_notes: bool = False
+    cleanup_source_notes: bool = False
 
 
 @project_router.post("/move")
@@ -281,10 +333,18 @@ def move_papers(pid: str, req: MoveReq):
     `move_to_existing` then takes each project's exclusive write lock to drain in-flight
     synchronous writers. Distinct 409s let the client tell the user which side is busy."""
     dest = req.dest_pid
+    if req.cleanup_source_notes and not req.remove_from_source:
+        raise HTTPException(
+            status_code=400,
+            detail="Source working notes can only be cleaned up when papers leave the source.",
+        )
+    if (req.draft_destination_notes or req.cleanup_source_notes) and not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
     if dest == pid:
         raise HTTPException(status_code=400, detail="Choose a different project to move into.")
     if not projects.exists(dest):
         raise HTTPException(status_code=404, detail="The destination project no longer exists.")
+    source_name = (projects._read_meta(pid).get("name") or pid)
     if not config.mark_project_busy(pid):
         raise HTTPException(status_code=409, detail="This project is already being modified.")
     try:
@@ -308,6 +368,18 @@ def move_papers(pid: str, req: MoveReq):
             result = project_split.move_to_existing(
                 pid, dest, req.slugs, remove_from_source=req.remove_from_source,
             )
+            # Admit both optional jobs before releasing either reservation. Once registered,
+            # project deletion's running-job sweep keeps their project directories alive.
+            notes = _start_relocation_notes(
+                result,
+                source_pid=pid,
+                source_name=source_name,
+                destination_pid=dest,
+                destination_name=result["name"],
+                draft_destination=req.draft_destination_notes,
+                cleanup_source=req.cleanup_source_notes,
+                allow_busy=True,
+            )
         finally:
             config.unmark_project_busy(dest)
     except SplitError as e:
@@ -316,7 +388,97 @@ def move_papers(pid: str, req: MoveReq):
         raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         config.unmark_project_busy(pid)
-    return {k: v for k, v in result.items() if k != "departed_notes"}
+    return {
+        **_public_relocation_result(result),
+        "notes_jobs": notes,
+    }
+
+
+def _public_relocation_result(result: dict) -> dict:
+    """Strip the captured Notes/title context that exists only to seed R8.3 jobs."""
+    return {
+        k: v for k, v in result.items()
+        if k not in {"departed_notes", "departed_titles"}
+    }
+
+
+def _relocation_notes_error(
+    draft_destination: bool,
+    cleanup_source: bool,
+    detail: str,
+) -> dict:
+    return {
+        "destination": None,
+        "source_cleanup": None,
+        "destination_error": detail if draft_destination else None,
+        "source_cleanup_error": detail if cleanup_source else None,
+    }
+
+
+def _start_relocation_notes(
+    result: dict,
+    *,
+    source_pid: str,
+    source_name: str,
+    destination_pid: str,
+    destination_name: str,
+    draft_destination: bool,
+    cleanup_source: bool,
+    allow_busy: bool = False,
+) -> dict:
+    """Start the optional R8.3 proposal jobs while relocation reservations are still held.
+
+    Phase 1 has already committed at this point. A scheduling failure therefore never pretends
+    the move failed or rolls it back; it is returned beside the successful move so the client
+    can explain which proposal did not start. Each registry captures the explicitly rebound
+    project and rebinds it again in its worker (CLAUDE.md invariant 2). ``allow_busy`` is only
+    used by the relocation owner so job admission is atomic with releasing those reservations.
+    """
+    notes = result.get("departed_notes") or {}
+    titles = result.get("departed_titles") or {}
+    papers = [
+        {"slug": slug, "title": titles.get(slug, slug), "notes": markdown}
+        for slug, markdown in notes.items()
+        if str(markdown).strip()
+    ]
+    launched: dict = {
+        "destination": None,
+        "source_cleanup": None,
+        "destination_error": None,
+        "source_cleanup_error": None,
+    }
+
+    if draft_destination:
+        token = config.set_active_project(destination_pid)
+        try:
+            try:
+                job = notes_jobs.start_split_destination(
+                    papers,
+                    source_name=source_name,
+                    allow_busy=allow_busy,
+                )
+                launched["destination"] = notes_jobs.snapshot(job.id)
+            except (notes_jobs.NotesError, RuntimeError) as e:
+                launched["destination_error"] = str(e)
+        finally:
+            config.reset_active_project(token)
+
+    if cleanup_source:
+        token = config.set_active_project(source_pid)
+        try:
+            try:
+                job = notes_jobs.start_split_source_cleanup(
+                    papers,
+                    destination_name=destination_name,
+                    allow_busy=allow_busy,
+                )
+                launched["source_cleanup"] = notes_jobs.snapshot(job.id)
+            except (notes_jobs.NotesError, RuntimeError) as e:
+                launched["source_cleanup_error"] = str(e)
+        finally:
+            config.reset_active_project(token)
+
+    return launched
 
 
 @project_router.get("/state")

@@ -38,6 +38,10 @@ class AddPaperReq(BaseModel):
 class NotesSaveReq(BaseModel):
     markdown: str
     summary: str | None = None   # optional commit message override
+    # Present when applying an agent proposal. The save is rejected if the committed document
+    # changed after the job captured its input; manual edits intentionally omit it.
+    base_revision: str | None = None
+    job_id: str | None = None
 
 
 class NotesAgentReq(BaseModel):
@@ -72,6 +76,14 @@ def notes_job_status(job_id: str):
     return {"job": snap}
 
 
+@project_router.post("/notes/jobs/{job_id}/discard")
+def notes_job_discard(job_id: str):
+    """Dismiss a settled proposal so it does not reappear through the latest-job endpoint."""
+    if not notes_jobs.discard(job_id):
+        raise HTTPException(status_code=404, detail="Unknown or still-running notes job")
+    return {"ok": True}
+
+
 @project_router.get("/notes/{target}")
 def get_notes(target: str):
     try:
@@ -87,8 +99,24 @@ def save_notes(target: str, req: NotesSaveReq):
     and git-commit it. Held under the project write guard (task #75): notes_jobs.save stages
     with git add, which must not overlap a split/move's index writes."""
     try:
-        with config.project_write_guard(config.active_project_id()):
+        with config.project_write_guard(config.active_project_id()), \
+                notes_jobs.mutation_lock(target):
+            if req.base_revision is not None and req.base_revision != notes_jobs.revision(target):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "These notes changed after the AI proposal was prepared. Reload the "
+                        "document and generate or review a fresh proposal."
+                    ),
+                )
             result = notes_jobs.save(target, req.markdown, req.summary or "")
+            if req.job_id:
+                notes_jobs.discard(req.job_id, target=target)
+            else:
+                # Compatibility with pre-R8.3 clients, whose apply request has no job id.
+                # Exact stored-result matching prevents their applied proposal from remaining
+                # retained and blocking the next revision.
+                notes_jobs.discard_if_applied(target)
     except config.ProjectBusyError as e:
         raise HTTPException(
             status_code=409,
@@ -125,7 +153,8 @@ def approve(req: ApproveReq):
     # A's notes over branch B's transcript.
     try:
         with config.project_write_guard(config.active_project_id()), \
-                sessions.mutation_lock(req.slug):
+                sessions.mutation_lock(req.slug), \
+                notes_jobs.mutation_lock(notes_jobs.WORKING):
             if req.notes_block is not None or req.synthesis is not None:
                 live = sessions.proposal_revision(req.slug)
                 if req.proposal_revision != live:

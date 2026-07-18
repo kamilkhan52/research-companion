@@ -10,6 +10,7 @@ import time
 
 import pytest
 from app import notes_jobs, projects, store
+from fastapi import HTTPException
 
 from tests.conftest import add_paper
 
@@ -149,6 +150,50 @@ def test_second_start_for_same_target_joins_the_running_job(temp_project):
     assert notes_jobs.latest_for("p1") is first
 
 
+def test_completed_proposal_must_be_resolved_before_another_starts(temp_project):
+    add_paper(temp_project, "p1", "Paper One")
+    notes_jobs.save("p1", "## Notes\n\nOriginal.")
+    first = notes_jobs.start_edit(
+        "p1",
+        "first revision",
+        runner=_sync_runner([{"type": "final", "text": "## Notes\n\nFirst proposal."}]),
+    )
+    assert _wait_until_settled(first.id).status == "done"
+
+    with pytest.raises(notes_jobs.NotesError, match="apply, or discard"):
+        notes_jobs.start_edit(
+            "p1",
+            "second revision",
+            runner=_sync_runner([{"type": "final", "text": "## Notes\n\nSecond proposal."}]),
+        )
+
+    assert notes_jobs.latest_for("p1") is first
+
+
+def test_relocation_pass_rejects_an_existing_running_proposal(temp_project):
+    release = threading.Event()
+
+    def slow(target, prompt):
+        release.wait(5)
+        yield {"type": "final", "text": "# Working notes\n\nFirst proposal."}
+
+    first = notes_jobs.start_split_destination(
+        [{"slug": "p1", "title": "Paper One", "notes": "## Notes\n\nFirst."}],
+        source_name="Source",
+        runner=slow,
+    )
+    try:
+        with pytest.raises(notes_jobs.NotesError, match="already running"):
+            notes_jobs.start_split_destination(
+                [{"slug": "p2", "title": "Paper Two", "notes": "## Notes\n\nSecond."}],
+                source_name="Another source",
+                runner=_sync_runner([]),
+            )
+    finally:
+        release.set()
+    assert _wait_until_settled(first.id).status == "done"
+
+
 def test_edit_prompt_contains_document_and_instruction(temp_project):
     add_paper(temp_project, "p1", "Paper One")
     notes_jobs.save("p1", "## Notes\n\nOriginal.")
@@ -163,6 +208,137 @@ def test_edit_prompt_contains_document_and_instruction(temp_project):
     assert "Original." in seen["prompt"]
     assert "make it shorter" in seen["prompt"]
     assert "Paper One" in seen["prompt"]
+
+
+def test_split_destination_drafts_from_committed_notes_when_working_notes_are_empty(
+    temp_project,
+):
+    captured = {}
+
+    def runner(target, prompt):
+        captured["target"] = target
+        captured["prompt"] = prompt
+        yield {"type": "final", "text": "# Working notes\n\nA grounded synthesis."}
+
+    job = notes_jobs.start_split_destination(
+        [
+            {"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit weights work."},
+            {"slug": "unread", "title": "Unread", "notes": ""},
+        ],
+        source_name="Inference",
+        runner=runner,
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.kind == "split_destination"
+    assert finished.base_revision == notes_jobs.revision(notes_jobs.WORKING)
+    assert "AWQ (slug: awq)" in captured["prompt"]
+    assert "Four-bit weights work" in captured["prompt"]
+    assert "Unread" not in captured["prompt"]
+    assert notes_jobs.read(notes_jobs.WORKING) == ""  # proposal only
+
+
+def test_split_source_cleanup_is_grounded_in_departed_notes(temp_project):
+    notes_jobs.save(
+        notes_jobs.WORKING,
+        "# Working notes\n\nAWQ supports fast four-bit inference. Core remains relevant.",
+    )
+    captured = {}
+
+    def runner(target, prompt):
+        captured["prompt"] = prompt
+        yield {"type": "final", "text": "# Working notes\n\nCore remains relevant."}
+
+    job = notes_jobs.start_split_source_cleanup(
+        [{"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit inference."}],
+        destination_name="Quantization",
+        runner=runner,
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.kind == "split_source_cleanup"
+    assert "If a passage cannot be confidently tied" in captured["prompt"]
+    assert "Four-bit inference" in captured["prompt"]
+    assert "AWQ supports" in notes_jobs.read(notes_jobs.WORKING)  # still unmodified
+
+
+def test_stale_notes_proposal_cannot_overwrite_a_newer_document(temp_project):
+    from app.routers.notes import NotesSaveReq, save_notes
+
+    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    job = notes_jobs.start_edit(
+        notes_jobs.WORKING,
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nProposal."}]),
+    )
+    finished = _wait_until_settled(job.id)
+    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nNewer human edit.")
+
+    with pytest.raises(HTTPException) as exc:
+        save_notes(
+            notes_jobs.WORKING,
+            NotesSaveReq(
+                markdown=finished.result or "",
+                base_revision=finished.base_revision,
+                job_id=finished.id,
+            ),
+        )
+    assert exc.value.status_code == 409
+    assert "Newer human edit" in notes_jobs.read(notes_jobs.WORKING)
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is finished
+
+
+def test_applying_a_proposal_discards_it_from_latest(temp_project):
+    from app.routers.notes import NotesSaveReq, save_notes
+
+    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    job = notes_jobs.start_edit(
+        notes_jobs.WORKING,
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nApplied."}]),
+    )
+    finished = _wait_until_settled(job.id)
+
+    save_notes(
+        notes_jobs.WORKING,
+        NotesSaveReq(
+            markdown=finished.result or "",
+            summary=finished.summary,
+            base_revision=finished.base_revision,
+            job_id=finished.id,
+        ),
+    )
+
+    assert "Applied." in notes_jobs.read(notes_jobs.WORKING)
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is None
+
+
+def test_legacy_apply_without_job_id_discards_an_exact_matching_proposal(temp_project):
+    from app.routers.notes import NotesSaveReq, save_notes
+
+    notes_jobs.save(notes_jobs.WORKING, "# Working notes\n\nOriginal.")
+    first = notes_jobs.start_edit(
+        notes_jobs.WORKING,
+        "revise",
+        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nApplied."}]),
+    )
+    finished = _wait_until_settled(first.id)
+
+    # The pre-R8.3 mobile save contract sent only markdown + summary.
+    save_notes(
+        notes_jobs.WORKING,
+        NotesSaveReq(markdown=finished.result or "", summary="Legacy apply"),
+    )
+
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is None
+    second = notes_jobs.start_edit(
+        notes_jobs.WORKING,
+        "revise again",
+        runner=_sync_runner([{"type": "final", "text": "# Working notes\n\nNext."}]),
+    )
+    assert second.id != first.id
+    assert _wait_until_settled(second.id).status == "done"
 
 
 def test_default_notes_editor_includes_math_contract(monkeypatch):

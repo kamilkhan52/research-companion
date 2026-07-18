@@ -237,7 +237,14 @@ export function useUpdateProjectMeta() {
 export function useSplitProject(pid: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; slugs: string[]; remove_from_source: boolean; goals?: string }) =>
+    mutationFn: (body: {
+      name: string;
+      slugs: string[];
+      remove_from_source: boolean;
+      goals?: string;
+      draft_destination_notes: boolean;
+      cleanup_source_notes: boolean;
+    }) =>
       api.splitProject(pid as string, body),
     onSuccess: (_res, { remove_from_source }) => {
       qc.invalidateQueries({ queryKey: keys.projects });
@@ -255,7 +262,13 @@ export function useSplitProject(pid: string | null) {
 export function useMoveProject(pid: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { dest_pid: string; slugs: string[]; remove_from_source: boolean }) =>
+    mutationFn: (body: {
+      dest_pid: string;
+      slugs: string[];
+      remove_from_source: boolean;
+      draft_destination_notes: boolean;
+      cleanup_source_notes: boolean;
+    }) =>
       api.moveProject(pid as string, body),
     onSuccess: (_res, { dest_pid, remove_from_source }) => {
       qc.invalidateQueries({ queryKey: keys.projects });

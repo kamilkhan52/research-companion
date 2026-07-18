@@ -12,11 +12,14 @@ it through save(); "agent proposes, human commits" applies to notes edits too.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import re
+import threading
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import agent, agent_harness, committer, prompts, store
+from . import agent, agent_harness, committer, config, prompts, store
 from .jobs import Job, JobRegistry, new_id
 
 # The pseudo-target for the cross-paper working notes; anything else is a paper slug.
@@ -75,6 +78,11 @@ def save(target: str, markdown: str, summary: str = "") -> dict:
 class NotesJob(Job):
     target: str = ""                 # notes document being edited (also the registry dedup key)
     instruction: str = ""
+    kind: str = "edit"               # edit | split_destination | split_source_cleanup
+    summary: str = ""                # suggested human-approved commit message
+    # Optimistic-concurrency token for the document the proposal was generated from. Applying
+    # a proposal after the working notes changed would silently overwrite newer human work.
+    base_revision: str = ""
     # Live progress as the client renders it: merged text runs + tool calls, arrival order
     # ({kind:'text', text} | {kind:'tool', name, detail}) — same shape as chat job items.
     items: list = field(default_factory=list)
@@ -84,6 +92,18 @@ class NotesJob(Job):
 # `_jobs` aliases the registry dict so tests can clear() it to reset.
 _registry: JobRegistry[NotesJob] = JobRegistry("notes", max_finished=20)
 _jobs = _registry.jobs
+_mutation_locks_guard = threading.Lock()
+_mutation_locks: dict[tuple[str | None, str], threading.RLock] = {}
+
+
+@contextlib.contextmanager
+def mutation_lock(target: str):
+    """Serialize capture/check/apply sequences for one project's notes document."""
+    key = (config.active_project_id(), target)
+    with _mutation_locks_guard:
+        lock = _mutation_locks.setdefault(key, threading.RLock())
+    with lock:
+        yield
 
 
 def get_job(job_id: str) -> NotesJob | None:
@@ -108,19 +128,214 @@ def latest_for(target: str) -> NotesJob | None:
     return _registry.latest_for(target)
 
 
+def discard(job_id: str, *, target: str | None = None) -> bool:
+    """Forget a settled proposal after the user applies or explicitly discards it.
+
+    Completed proposals live only in the in-process registry. Removing one here keeps
+    ``latest_for`` useful for re-entry without making an applied/discarded proposal reappear.
+    A running job cannot be discarded through this proposal-only path.
+    """
+    visible = _registry.get(job_id)
+    if visible is None or (target is not None and visible.target != target):
+        return False
+    with _registry.lock:
+        job = _registry.jobs.get(job_id)
+        if (job is None or job.status == "running"
+                or (target is not None and job.target != target)):
+            return False
+        _registry.jobs.pop(job_id, None)
+    return True
+
+
+def discard_if_applied(target: str) -> bool:
+    """Resolve a retained proposal whose exact result is now the committed document.
+
+    R8.2-era clients apply through the notes-save endpoint without sending a job id. Exact
+    content matching preserves that wire contract without letting an unrelated manual save
+    discard a proposal.
+    """
+    latest = latest_for(target)
+    if (
+        latest is None
+        or latest.status != "done"
+        or not latest.result
+        or read(target).strip() != latest.result.strip()
+    ):
+        return False
+    return discard(latest.id, target=target)
+
+
+def revision(target: str) -> str:
+    """Stable revision of the exact committed notes document (including the empty document)."""
+    return _content_revision(read(target))
+
+
+def _content_revision(markdown: str) -> str:
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()[:16]
+
+
 def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) -> NotesJob:
     """Start revising `target`'s notes per `instruction` in a background thread, or join the
     job already running for it. The result stays on the job as a proposal — callers poll
     get_job(id) and apply the revision explicitly via save()."""
-    _require_target(target)
-    current = read(target)
-    if not current.strip():
-        raise NotesError("No notes to edit yet for this target.")
-    if not instruction.strip():
-        raise NotesError("Instruction cannot be empty.")
-    instruction = instruction.strip()
+    with mutation_lock(target):
+        _require_target(target)
+        current = read(target)
+        if not current.strip():
+            raise NotesError("No notes to edit yet for this target.")
+        if not instruction.strip():
+            raise NotesError("Instruction cannot be empty.")
+        instruction = instruction.strip()
+        prompt = _edit_prompt(target, current, instruction)
+        return _start_proposal(
+            target,
+            instruction,
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="edit",
+            summary=f"Notes edit (agent): {instruction}",
+            reject_running=False,
+        )
+
+
+def start_split_destination(
+    papers: list[dict],
+    *,
+    source_name: str,
+    runner: RunnerFn | None = None,
+    allow_busy: bool = False,
+) -> NotesJob:
+    """Propose working notes for the destination after papers were split/moved into it.
+
+    Unlike a normal edit, the destination may not have working notes yet. Only committed
+    per-paper Notes captured before the relocation are supplied; the model is explicitly
+    forbidden from inventing or researching beyond that material.
+    """
+    with mutation_lock(WORKING):
+        usable = _usable_papers(papers)
+        if not usable:
+            raise NotesError("The selected papers do not have committed Notes to synthesize.")
+        current = read(WORKING)
+        action = "integrate into" if current.strip() else "draft"
+        instruction = (
+            f"{action.capitalize()} the destination project's working notes from "
+            f"{len(usable)} paper{'s' if len(usable) != 1 else ''} moved from {source_name}."
+        )
+        prompt = (
+            "=== CURRENT DESTINATION WORKING NOTES ===\n"
+            f"{current.strip() or '(none yet)'}\n"
+            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== COMMITTED NOTES FROM THE MIGRATED PAPERS ===\n"
+            f"{_paper_notes_context(usable)}\n"
+            "=== END MIGRATED PAPER NOTES ===\n\n"
+            "Instruction: Produce the COMPLETE destination working-notes document. Integrate "
+            "the migrated papers' established findings, methods, relationships, tensions, and "
+            "open questions into the current document; if it is empty, create a concise, "
+            "well-structured first synthesis. Use ONLY the supplied committed Notes and current "
+            "document. Do not research, invent facts, or imply relationships unsupported by "
+            "them. Preserve current content unless integration requires reorganization."
+        )
+        return _start_proposal(
+            WORKING,
+            instruction,
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="split_destination",
+            summary=f"Integrate {len(usable)} moved paper(s) into working notes",
+            reject_running=True,
+            allow_busy=allow_busy,
+        )
+
+
+def start_split_source_cleanup(
+    papers: list[dict],
+    *,
+    destination_name: str,
+    runner: RunnerFn | None = None,
+    allow_busy: bool = False,
+) -> NotesJob:
+    """Propose removing departed papers' contributions from the source working notes."""
+    with mutation_lock(WORKING):
+        current = read(WORKING)
+        if not current.strip():
+            raise NotesError("This project has no working notes to clean up.")
+        usable = _usable_papers(papers)
+        if not usable:
+            raise NotesError("The moved papers did not have committed Notes to identify.")
+        instruction = (
+            f"Remove contributions attributable to {len(usable)} paper"
+            f"{'s' if len(usable) != 1 else ''} moved to {destination_name}."
+        )
+        prompt = (
+            "=== CURRENT SOURCE WORKING NOTES ===\n"
+            f"{current.strip()}\n"
+            "=== END CURRENT WORKING NOTES ===\n\n"
+            "=== DEPARTED PAPERS AND THEIR COMMITTED NOTES ===\n"
+            f"{_paper_notes_context(usable)}\n"
+            "=== END DEPARTED PAPER NOTES ===\n\n"
+            "Instruction: Produce the COMPLETE revised source working-notes document. Remove "
+            "only claims, evidence, comparisons, and framing attributable exclusively to the "
+            "departed papers. Preserve material supported by papers that remain, including "
+            "shared insights or cross-paper synthesis that is still valid. Reflow headings and "
+            "transitions only as needed after removal. Do not add new facts, research, or "
+            "interpretations. If a passage cannot be confidently tied to the departed Notes, "
+            "keep it."
+        )
+        return _start_proposal(
+            WORKING,
+            instruction,
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="split_source_cleanup",
+            summary=f"Clean working notes after moving {len(usable)} paper(s)",
+            reject_running=True,
+            allow_busy=allow_busy,
+        )
+
+
+def _usable_papers(papers: list[dict]) -> list[dict]:
+    return [p for p in papers if str(p.get("notes") or "").strip()]
+
+
+def _paper_notes_context(papers: list[dict]) -> str:
+    sections = []
+    for paper in papers:
+        title = str(paper.get("title") or paper.get("slug") or "Untitled paper").strip()
+        slug = str(paper.get("slug") or "").strip()
+        label = f"{title} (slug: {slug})" if slug else title
+        sections.append(f"## {label}\n{str(paper['notes']).strip()}")
+    return "\n\n".join(sections)
+
+
+def _start_proposal(
+    target: str,
+    instruction: str,
+    prompt: str,
+    *,
+    base_revision: str,
+    runner: RunnerFn | None,
+    kind: str,
+    summary: str,
+    reject_running: bool,
+    allow_busy: bool = False,
+) -> NotesJob:
     runner = runner or _default_events
-    prompt = _edit_prompt(target, current, instruction)
+
+    def admit(existing: NotesJob | None) -> None:
+        if existing is None or existing.status in {"error", "cancelled"}:
+            return
+        if existing.status == "done" and existing.result:
+            raise NotesError(
+                "Review, apply, or discard the existing notes proposal before starting another."
+            )
+        if reject_running and existing.status == "running":
+            raise NotesError(
+                "A notes proposal is already running for this project. "
+                "Wait for it, then apply or discard it before starting another."
+            )
 
     def work(job: NotesJob) -> None:
         events = runner(job.target, prompt)
@@ -136,7 +351,19 @@ def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) ->
             job.result = result
 
     return _registry.start_or_join(
-        target, lambda: NotesJob(id=new_id(), target=target, instruction=instruction), work)
+        target,
+        lambda: NotesJob(
+            id=new_id(),
+            target=target,
+            instruction=instruction,
+            kind=kind,
+            summary=summary,
+            base_revision=base_revision,
+        ),
+        work,
+        admit=admit,
+        allow_busy=allow_busy,
+    )
 
 
 def _edit_prompt(target: str, current: str, instruction: str) -> str:

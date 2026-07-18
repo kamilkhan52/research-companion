@@ -422,10 +422,16 @@ export interface paths {
          * Remove Papers
          * @description Remove several papers in ONE atomic git commit (the multi-select Delete, R9.13). A
          *     client-side loop of single removals could half-apply if the app disconnects partway; this
-         *     does all of them under one write guard + one commit, so it's all-or-nothing — a fast
+         *     does all of them under one reservation + one commit, so it's all-or-nothing — a fast
          *     deterministic op (no LLM/network), so a single request, not a background job. Same
          *     notes-kept + retained-files posture as the single removal. Unknown slugs are skipped
          *     (idempotent), so a retry of a partially-succeeded earlier attempt is safe.
+         *
+         *     Reserved like a split (its snapshot→mutate→commit→rollback rewrites the whole reading list
+         *     on failure, so it must be fully isolated): mark busy FIRST (gating project deletion + new
+         *     background-job admission), then sweep in-flight jobs, then take the EXCLUSIVE project lock
+         *     (draining in-flight synchronous writers) — so nothing can add/remove/approve, retrieve, or
+         *     move the project directory underneath the batch.
          */
         post: operations["remove_papers_api_projects__pid__papers_remove_batch_post"];
         delete?: never;
@@ -1349,6 +1355,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/notes/jobs/{job_id}/discard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Notes Job Discard
+         * @description Dismiss a settled proposal so it does not reappear through the latest-job endpoint.
+         */
+        post: operations["notes_job_discard_api_projects__pid__notes_jobs__job_id__discard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/notes/{target}": {
         parameters: {
             query?: never;
@@ -1835,6 +1861,16 @@ export interface components {
              * @default true
              */
             remove_from_source: boolean;
+            /**
+             * Draft Destination Notes
+             * @default false
+             */
+            draft_destination_notes: boolean;
+            /**
+             * Cleanup Source Notes
+             * @default false
+             */
+            cleanup_source_notes: boolean;
         };
         /** NarrateReq */
         NarrateReq: {
@@ -1854,6 +1890,10 @@ export interface components {
             markdown: string;
             /** Summary */
             summary?: string | null;
+            /** Base Revision */
+            base_revision?: string | null;
+            /** Job Id */
+            job_id?: string | null;
         };
         /** PaperFigure */
         PaperFigure: {
@@ -2006,6 +2046,16 @@ export interface components {
             remove_from_source: boolean;
             /** Goals */
             goals?: string | null;
+            /**
+             * Draft Destination Notes
+             * @default false
+             */
+            draft_destination_notes: boolean;
+            /**
+             * Cleanup Source Notes
+             * @default false
+             */
+            cleanup_source_notes: boolean;
         };
         /** StartReq */
         StartReq: {
@@ -4272,6 +4322,38 @@ export interface operations {
         };
     };
     notes_job_status_api_projects__pid__notes_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    notes_job_discard_api_projects__pid__notes_jobs__job_id__discard_post: {
         parameters: {
             query?: never;
             header?: never;

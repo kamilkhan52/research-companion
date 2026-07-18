@@ -337,6 +337,9 @@ def move_to_existing(
 
             bundle = _gather_source(slugs)
             departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+            departed_titles = {
+                s: b["entry"]["title"] for s, b in bundle.items() if b["notes"].strip()
+            }
 
             dest_token = config.set_active_project(dest_pid)
             try:
@@ -372,6 +375,7 @@ def move_to_existing(
         "moved": len(slugs),
         "removed": removed,
         "departed_notes": departed_notes,
+        "departed_titles": departed_titles,
     }
 
 
@@ -501,6 +505,9 @@ def split_project(
                 locks.enter_context(sessions.mutation_lock(slug))
             bundle = _gather_source(slugs)
             departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
+            departed_titles = {
+                s: b["entry"]["title"] for s, b in bundle.items() if b["notes"].strip()
+            }
 
             # Scaffold the new project (takes a pid, not the contextvar) and populate it —
             # inside the locks so the moved snapshot can't drift before the source removal.
@@ -549,4 +556,5 @@ def split_project(
         "moved": len(slugs),
         "removed": removed,
         "departed_notes": departed_notes,
+        "departed_titles": departed_titles,
     }
