@@ -57,13 +57,22 @@ def get_figure_manifest(pid: str, slug: str):
 
 @project_router.get("/papers/{slug}/figures/{asset}")
 def get_figure_asset(pid: str, slug: str, asset: str):
-    """Cached figure image bytes. The asset name comes from the manifest; figures.asset_path
-    is the trust boundary (store-shaped slug, sanitizer-shaped filename only). Cacheable but
-    not immutable — a re-derivation can rewrite an asset under the same name, so clients
-    append the manifest's fetched_ts as a version query param."""
+    """Cached figure image bytes. Two trust checks: figures.asset_path bounds the path
+    (store-shaped slug, sanitizer-shaped filename only), and the asset must be listed in the
+    slug's CURRENT `done` manifest — so after an identity correction the withheld stale
+    manifest's assets can't be served under the corrected slug (even from a leaked URL)
+    before the next derivation deletes them. Cacheable but not immutable — a re-derivation
+    can rewrite an asset under the same name, so clients append the manifest's fetched_ts as
+    a `?v=` version param; the cache is kept short-lived and revalidated rather than
+    immutable so a stale URL doesn't stick in a client cache across a correction."""
     path = figures.asset_path(slug, asset)
     if path is None or not path.exists():
         raise HTTPException(status_code=404, detail="Figure asset not found")
+    manifest = figures.manifest_for(slug)
+    if not manifest or manifest.get("status") != "done":
+        raise HTTPException(status_code=404, detail="Figure asset not found")
+    if not any(fig.get("asset") == asset for fig in manifest.get("figures", [])):
+        raise HTTPException(status_code=404, detail="Figure asset not found")
     media = _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media,
-                        headers={"Cache-Control": "public, max-age=604800"})
+                        headers={"Cache-Control": "public, max-age=86400, must-revalidate"})

@@ -257,6 +257,23 @@ def test_asset_route_rejects_traversal_and_unknowns(temp_project):
             get_figure_asset(temp_project, bad_slug, bad_asset)
 
 
+def test_asset_route_refuses_stale_assets_after_identity_correction(temp_project):
+    """A leaked/guessed asset URL must not serve the previous paper's figure once the slug's
+    identity is corrected — even before the next derivation deletes the old files."""
+    import pytest
+    from app.routers.figures_api import get_figure_asset
+    from fastapi import HTTPException
+    slug = paper()
+    manifest = figures.derive_for_slug(slug, fetch_html=fake_html(), fetch_image=fake_image())
+    asset = manifest["figures"][0]["asset"]
+    store.annotate_entry(slug, arxiv_id="2502.99999", authoritative=True)
+    store.write_full_text(slug, "DeepStack", "the other paper's text",
+                          {"slug": slug, "arxiv_id": "2502.99999"})
+    assert figures.asset_path(slug, asset).exists()  # not yet cleaned up
+    with pytest.raises(HTTPException):
+        get_figure_asset(temp_project, slug, asset)
+
+
 # --- enrichment pass -------------------------------------------------------------------------
 
 def test_enrichment_pass_never_raises_and_skips_papers_without_identity(temp_project):
