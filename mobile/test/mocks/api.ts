@@ -24,6 +24,11 @@ export const getRecentSessions = jest.fn(async () => ({ sessions: [] }));
 export const backfillCovers = jest.fn(async () => ({ status: 'running' }));
 export const getPaperCover = jest.fn(async () => ({ status: 'unavailable' as const }));
 export const paperCoverImageUrl = jest.fn(() => '');
+export const getPaperFigures = jest.fn(async () => ({ status: 'none' as const, figures: [] }));
+export const figureAssetUrl = jest.fn(
+  (pid: string, slug: string, asset: string, version?: number | null) =>
+    `https://api.test/fig/${pid}/${slug}/${asset}${version ? `?v=${version}` : ''}`,
+);
 export const createProject = unexpected('createProject');
 export const getProjectState = unexpected('getProjectState');
 export const getUsage = unexpected('getUsage');

@@ -33,6 +33,7 @@ export const keys = {
   notes: (pid: string, target: string) => ['project', pid, 'notes', target] as const,
   usage: (pid: string) => ['project', pid, 'usage'] as const,
   paperCover: (pid: string, slug: string) => ['project', pid, 'cover', slug] as const,
+  paperFigures: (pid: string, slug: string) => ['project', pid, 'figures', slug] as const,
 };
 
 /** Whether the backend runs in developer mode (RC_DEV). Gates operator-only affordances —
@@ -78,6 +79,21 @@ export function usePaperCover(pid: string | null, slug: string | null) {
     enabled: hasUrl && !!pid && !!slug,
     refetchInterval: (query) => (query.state.data === 'pending' ? 1500 : false),
     staleTime: 60_000,
+  });
+}
+
+/** The paper's arXiv-HTML figure manifest (R.10). A `none` status (no HTML rendering, or not
+ *  derived yet) is the common, non-error case — the discussion just renders without cards.
+ *  Manifests can land AFTER a turn was written (enrichment backfill), so this refetches on a
+ *  slow cadence while still `none` to pick up a late-arriving manifest, then settles. */
+export function usePaperFigures(pid: string | null, slug: string | null) {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: pid && slug ? keys.paperFigures(pid, slug) : ['project', 'none', 'figures'],
+    queryFn: () => api.getPaperFigures(pid as string, slug as string),
+    enabled: hasUrl && !!pid && !!slug,
+    refetchInterval: (query) => (query.state.data?.status === 'done' ? false : 30_000),
+    staleTime: 30_000,
   });
 }
 
