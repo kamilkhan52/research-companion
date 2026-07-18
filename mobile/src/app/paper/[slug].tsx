@@ -1103,10 +1103,15 @@ function DiscussionThread({
         </View>
       );
     }
+    // R9.3 — one full-width rounded card (the `primary` row) with the send button INSIDE it,
+    // floating on the plain chat background: the container is transparent with side margins (so
+    // no full-width strip/separator shows), and the elevated rounded surface + border live on
+    // the primary row that already holds [composer | send].
     return (
       <InputToolbar
         {...props}
         containerStyle={styles.toolbar}
+        primaryStyle={styles.composerCard}
         renderSend={renderSend}
         renderAccessory={renderAccessory}
       />
@@ -1845,33 +1850,43 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     elevation: 0,
     shadowOpacity: 0,
   },
-  // ---- toolbar ----
+  // ---- toolbar (R9.3: one floating rounded card, no full-width strip) ----
+  // The container is transparent with side margins, so its edge never reads as a separator
+  // line across the chat; the elevated rounded surface lives on `composerCard` (the primary
+  // row), which holds the input + send button together.
   toolbar: {
     borderTopWidth: 0,
-    backgroundColor: t.bg,
-    paddingHorizontal: space.sm,
-    paddingVertical: space.sm,
+    backgroundColor: 'transparent',
+    paddingHorizontal: space.md,
+    paddingTop: space.xs,
+    paddingBottom: space.sm,
+  },
+  composerCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: t.elevated,
+    borderWidth: 1,
+    borderColor: t.line2,
+    borderRadius: 24,
+    paddingLeft: space.md,
+    paddingRight: 6,   // the send button sits close to the right edge, inside the card
+    paddingVertical: 6,
   },
   composerInput: {
+    flex: 1,
     color: t.text,
     fontFamily: fonts.body,
     fontSize: 15,
     // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
     // the height bounds live on the input style itself.
-    minHeight: 46,
+    minHeight: 34,
     maxHeight: 120,
-    // The pill composer from Figma 08a: the input itself carries the rounded elevated
-    // surface, since the library's composer container isn't styleable from here.
-    backgroundColor: t.elevated,
-    borderWidth: 1,
-    borderColor: t.line2,
-    // FIXED radius = half the single-line height: the resting state still reads as a pill,
-    // but a grown multiline input keeps the same 23px corners instead of pill-rounding to
-    // half its new height — which curved into the text area and visually clipped lines
-    // (device-pass finding, U.13).
-    borderRadius: 23,
-    paddingHorizontal: space.lg,
-    paddingVertical: 12,
+    // Transparent: the surrounding card (composerCard) IS the elevated rounded surface now,
+    // so the input carries no pill of its own (that + an external send button was the R9.3
+    // "separator line + button outside" problem).
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingVertical: 6,
   },
   committedBar: {
     borderTopWidth: 1,
@@ -1891,12 +1906,11 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   sendBtn: {
     backgroundColor: t.mint,
     borderRadius: radius.pill,
-    width: 42,
-    height: 42,
+    width: 38,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
-    marginHorizontal: space.sm,
-    marginBottom: 4,
+    marginLeft: 6,   // sits inside the card's right edge, aligned to the input's bottom
   },
   sendBtnDisabled: { backgroundColor: t.elevated },
   // ---- compose-first (Start Reading) ----
