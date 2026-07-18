@@ -145,7 +145,16 @@ def remove_papers(pid: str, req: RemoveBatchReq):
     if not slugs:
         raise HTTPException(status_code=400, detail="No papers selected.")
     try:
-        with config.project_write_guard(pid):
+        # EXCLUSIVE lock, not the shared write guard: the batch's snapshot→mutate→commit→
+        # rollback must be atomic against every OTHER synchronous writer too, or a concurrent
+        # add/remove/approve could land between the snapshot and a rollback and be silently
+        # discarded when we restore. The exclusive side drains in-flight writers and blocks new
+        # ones for the batch's (brief) duration. The busy-check refuses the batch while a
+        # split/move has reserved the project (its exclusive lock would otherwise just make us
+        # wait, then run — but a relocation means the record is being rewritten, so 409).
+        with config.project_exclusive(pid):
+            if config.project_is_busy(pid):
+                raise config.ProjectBusyError(pid)
             # Snapshot the touched files BEFORE mutating, so a git failure (index lock,
             # read-only .git) rolls the working tree back to pre-batch — the removals must be
             # all-or-nothing, not applied-but-uncommitted (a retry would then skip them and
