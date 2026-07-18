@@ -42,7 +42,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import * as api from '@/api/endpoints';
 import { streamPaths, turnJobPaths } from '@/api/endpoints';
-import { useFavoriteModels, useOpeningDraft, useSession, useSettings } from '@/api/queries';
+import { useFavoriteModels, useOpeningDraft, usePaperFigures, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
 import type { ChatJob, FavoriteModel, ReadingMode, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
@@ -61,7 +61,7 @@ import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
-import { LinkHandlerContext, Markdown, type LinkHandler } from '@/components/Markdown';
+import { LinkHandlerContext, Markdown, type FigureContext, type LinkHandler } from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
@@ -641,6 +641,15 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
+  // `none`/absent = no cards, so this is purely additive; resolved at render time so a
+  // manifest that lands after a turn was written still cards it on the next render.
+  const figuresQuery = usePaperFigures(pid, slug);
+  const figureContext = useMemo<FigureContext | undefined>(() => {
+    const data = figuresQuery.data;
+    if (data?.status !== 'done' || !data.figures.length) return undefined;
+    return { pid, slug, figures: data.figures, version: data.fetched_ts };
+  }, [figuresQuery.data, pid, slug]);
   // Keep lifecycle-specific keys: if the server advances to notes_drafted while a reply is
   // being authored elsewhere, that reply stays recoverable when the discussion is reopened
   // instead of being relabeled as request-changes feedback.
@@ -979,6 +988,7 @@ function DiscussionThread({
           canRetry={canRetry}
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
+          figureContext={figureContext}
         />
       );
     }
@@ -992,7 +1002,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles]);
+  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1494,6 +1504,7 @@ function AssistantBody({
   canRetry,
   onSwitchBranch,
   switchDisabled,
+  figureContext,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
@@ -1503,6 +1514,7 @@ function AssistantBody({
   canRetry: boolean;
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
+  figureContext?: FigureContext;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -1558,7 +1570,7 @@ function AssistantBody({
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
         <AgentTrail trail={entry.agent_trail} />
       ) : null}
-      <Markdown text={canonical} />
+      <Markdown text={canonical} figureContext={figureContext} />
       {modelLabel ? (
         <Text
           variant="caption"

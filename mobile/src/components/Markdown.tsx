@@ -11,11 +11,25 @@ import { Linking, Platform, StyleSheet, Text as RNText, View } from 'react-nativ
 // the Android gesture negotiation and simply doesn't pan.
 import { ScrollView } from 'react-native-gesture-handler';
 
+import { FigureCard } from '@/components/FigureCard';
 import { InlineMath, MathBlock } from '@/components/MathView';
+import type { PaperFigure } from '@/api/types';
+import { planFigurePlacement } from '@/lib/figures';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
+
+/** When present, the paper's figures are carded inline after the first paragraph that
+ *  references each one (R.10). Absent everywhere except the committed discussion transcript,
+ *  so every other Markdown surface (notes, streaming) renders exactly as before. */
+export interface FigureContext {
+  pid: string;
+  slug: string;
+  figures: PaperFigure[];
+  /** Manifest fetched_ts, forwarded to figureAssetUrl for cache-busting. */
+  version?: number | null;
+}
 
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
 // monospace member, so code falls back to the platform's own mono face.
@@ -62,7 +76,15 @@ function buildTitleMatcher(papers: { title: string; slug: string }[]): TitleMatc
   };
 }
 
-export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: LinkHandler }) {
+export function Markdown({
+  text,
+  onLinkPress,
+  figureContext,
+}: {
+  text: string;
+  onLinkPress?: LinkHandler;
+  figureContext?: FigureContext;
+}) {
   // Old transcripts may carry leaked `<search for="…">` pseudo tool tags (G.2); the backend
   // cleans new ones before recording, this pass cleans the archive at render time.
   const blocks = useMemo(() => parseBlocks(stripPseudoToolTags(text)), [text]);
@@ -70,11 +92,30 @@ export function Markdown({ text, onLinkPress }: { text: string; onLinkPress?: Li
   const papers = useContext(PaperIndexContext);
   const matcher = useMemo(() => (papers?.length ? buildTitleMatcher(papers) : null), [papers]);
   const handleLink = onLinkPress ?? contextHandler ?? defaultLinkPress;
+  // Which figures to card after each block — resolved at render time against the paper's
+  // current manifest (a late-arriving manifest cards older turns on the next render).
+  const figureCards = useMemo(() => {
+    const figures = figureContext?.figures;
+    if (!figures?.length) return null;
+    const texts = blocks.map((b) => (b.kind === 'paragraph' ? b.text : null));
+    return planFigurePlacement(texts, figures);
+  }, [blocks, figureContext?.figures]);
   return (
     <TitleMatcherContext.Provider value={matcher}>
       <View style={{ gap: space.sm }}>
         {blocks.map((block, i) => (
-          <Block key={i} block={block} onLinkPress={handleLink} />
+          <Fragment key={i}>
+            <Block block={block} onLinkPress={handleLink} />
+            {figureCards?.[i]?.map((fig) => (
+              <FigureCard
+                key={fig.id}
+                pid={figureContext!.pid}
+                slug={figureContext!.slug}
+                figure={fig}
+                version={figureContext!.version}
+              />
+            ))}
+          </Fragment>
         ))}
       </View>
     </TitleMatcherContext.Provider>
