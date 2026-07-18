@@ -91,29 +91,41 @@ def remove_paper(pid: str, slug: str):
     This is the one write path besides /approve and notes-save that git-commits directly:
     the client only calls it after the user's explicit in-app confirmation, so the human
     approval that invariant 4 requires has already happened. Deterministic and fast (no LLM,
-    no network) ⇒ a plain request, not a background job."""
+    no network) ⇒ a plain request, not a background job.
+
+    Held under the project write guard: a split/move relocating this project reserves it and
+    rewrites its reading list + git index synchronously, so this removal's own commit must not
+    overlap that window (see config.project_write_guard / task #75)."""
     paper = store.get_paper(slug)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
-    notes_kept = store.has_notes(slug)
-    if notes_kept:
-        store.append_removed_marker(slug)
-    store.remove_entry(slug)
-    # Stage and commit ONLY what this removal changed. The confirm approved removing this
-    # paper — not whatever else happens to be dirty in the project tree (an in-flight job's
-    # transcript write, another request's edit), so a blanket `add -A` here would sweep
-    # unapproved changes into the record. The pathspec on commit bounds it the same way.
-    changed = ["reading-list.md"]
-    if notes_kept:
-        changed.append(str(store.corpus_path(slug).relative_to(config.project_dir())))
     try:
-        committer._git("add", "--", *changed)
-        committer._git(
-            "commit", "-q", "-m", f"Remove {paper.title} from reading list", "--", *changed,
-        )
-    except CommitError as e:
-        if "nothing to commit" not in str(e):
-            raise HTTPException(status_code=500, detail=str(e)) from e
+        with config.project_write_guard(pid):
+            notes_kept = store.has_notes(slug)
+            if notes_kept:
+                store.append_removed_marker(slug)
+            store.remove_entry(slug)
+            # Stage and commit ONLY what this removal changed. The confirm approved removing
+            # this paper — not whatever else happens to be dirty in the project tree (an
+            # in-flight job's transcript write, another request's edit), so a blanket `add -A`
+            # here would sweep unapproved changes into the record. The pathspec bounds it too.
+            changed = ["reading-list.md"]
+            if notes_kept:
+                changed.append(str(store.corpus_path(slug).relative_to(config.project_dir())))
+            try:
+                committer._git("add", "--", *changed)
+                committer._git(
+                    "commit", "-q", "-m", f"Remove {paper.title} from reading list",
+                    "--", *changed,
+                )
+            except CommitError as e:
+                if "nothing to commit" not in str(e):
+                    raise HTTPException(status_code=500, detail=str(e)) from e
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then remove.",
+        ) from e
     return {"removed": slug, "notes_kept": notes_kept}
 
 

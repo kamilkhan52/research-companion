@@ -84,9 +84,16 @@ def get_notes(target: str):
 @project_router.post("/notes/{target}")
 def save_notes(target: str, req: NotesSaveReq):
     """Persist a human-approved notes document (a manual edit, or an applied agent proposal)
-    and git-commit it."""
+    and git-commit it. Held under the project write guard (task #75): notes_jobs.save stages
+    with git add, which must not overlap a split/move's index writes."""
     try:
-        result = notes_jobs.save(target, req.markdown, req.summary or "")
+        with config.project_write_guard(config.active_project_id()):
+            result = notes_jobs.save(target, req.markdown, req.summary or "")
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then save notes.",
+        ) from e
     except notes_jobs.NotesError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {**result, "target": target}
@@ -112,23 +119,33 @@ def get_review(slug: str):
 
 @project_router.post("/approve")
 def approve(req: ApproveReq):
-    # Proposal read + commit are one atomic unit under the session's mutation lock: a branch
-    # switch between them could commit branch A's notes over branch B's transcript.
-    with sessions.mutation_lock(req.slug):
-        if req.notes_block is not None or req.synthesis is not None:
-            live = sessions.proposal_revision(req.slug)
-            if req.proposal_revision != live:
-                raise HTTPException(status_code=409, detail=(
-                    "The proposal changed since this review was loaded (a branch switch or "
-                    "regeneration) — reload the review before approving."))
-        proposed = sessions.latest_proposed_commit(req.slug) or {}
-        notes = req.notes_block if req.notes_block is not None else proposed.get("notes_block", "")
-        synth = req.synthesis if req.synthesis is not None else proposed.get("synthesis", "")
-        summary = req.summary or proposed.get("summary", "")
-        try:
-            result = committer.commit(req.slug, notes, synth, summary)
-        except CommitError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+    # Held under the project write guard (task #75): committer.commit git-commits, which must
+    # not overlap a split/move's index writes. Inside it, proposal read + commit are one atomic
+    # unit under the session's mutation lock: a branch switch between them could commit branch
+    # A's notes over branch B's transcript.
+    try:
+        with config.project_write_guard(config.active_project_id()), \
+                sessions.mutation_lock(req.slug):
+            if req.notes_block is not None or req.synthesis is not None:
+                live = sessions.proposal_revision(req.slug)
+                if req.proposal_revision != live:
+                    raise HTTPException(status_code=409, detail=(
+                        "The proposal changed since this review was loaded (a branch switch or "
+                        "regeneration) — reload the review before approving."))
+            proposed = sessions.latest_proposed_commit(req.slug) or {}
+            notes = (req.notes_block if req.notes_block is not None
+                     else proposed.get("notes_block", ""))
+            synth = req.synthesis if req.synthesis is not None else proposed.get("synthesis", "")
+            summary = req.summary or proposed.get("summary", "")
+            try:
+                result = committer.commit(req.slug, notes, synth, summary)
+            except CommitError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then approve.",
+        ) from e
     return {"result": result, "paper": _paper_dict(req.slug)}
 
 
@@ -137,10 +154,17 @@ def add_paper(pid: str, req: AddPaperReq):
     """Add a new *unread* entry to this project's reading list — e.g. accepting a reference-
     graph recommendation. Metadata only: full text stays lazily retrieved (first time it's
     opened, like every other paper) and nothing is git-committed (like every other change to
-    the record, that stays an explicit human action via /approve)."""
+    the record, that stays an explicit human action via /approve). Held under the project write
+    guard (task #75): the reading-list append must not interleave with a split/move's."""
     try:
-        slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
-                               abstract=req.abstract, year=req.year)
+        with config.project_write_guard(pid):
+            slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
+                                   abstract=req.abstract, year=req.year)
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then add papers.",
+        ) from e
     except store.DuplicatePaperError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:

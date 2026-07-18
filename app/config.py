@@ -13,6 +13,7 @@ so nothing binds a single project at import time.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import os
@@ -199,6 +200,97 @@ def unmark_project_busy(pid: str) -> None:
 def project_is_busy(pid: str) -> bool:
     with _busy_lock:
         return pid in _busy_projects
+
+
+# ---- per-project synchronous-writer lock (split/move serialization) ----
+#
+# The busy flag above gates NEW work at entry, but a synchronous record-writer (add/remove/
+# retrieve/approve/notes-save) that already passed its busy-check can still be mid-write when a
+# split/move begins — its git-committing operation would then overlap the relocation's index
+# writes, or recreate a source paper the relocation is removing. This readers/writer lock closes
+# that: every synchronous writer holds the SHARED side across its whole operation
+# (`project_write_guard`); a split/move holds the EXCLUSIVE side (`project_exclusive`), which
+# drains in-flight writers and — combined with the busy flag stopping new ones — gives the
+# relocation sole access to the project's record + git index. Writer-preferring so a pending
+# relocation is never starved by a stream of readers.
+class ProjectBusyError(Exception):
+    """A synchronous writer found the project reserved by a split/move; map to HTTP 409."""
+
+
+class _RWLock:
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer = False
+        self._writers_waiting = 0
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._writer or self._writers_waiting > 0:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._writers_waiting += 1
+            try:
+                while self._writer or self._readers > 0:
+                    self._cond.wait()
+            finally:
+                self._writers_waiting -= 1
+            self._writer = True
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writer = False
+            self._cond.notify_all()
+
+
+_rw_locks: dict[str, _RWLock] = {}
+_rw_locks_guard = threading.Lock()
+
+
+def _rw_lock_for(pid: str) -> _RWLock:
+    with _rw_locks_guard:
+        return _rw_locks.setdefault(pid, _RWLock())
+
+
+@contextlib.contextmanager
+def project_write_guard(pid: str | None):
+    """Hold across a synchronous record-writer's whole git-committing operation. Raises
+    ProjectBusyError (⇒ 409) if the project is reserved by a split/move: either this writer
+    got the shared lock while the relocation was waiting for readers to drain (busy already
+    set ⇒ bail so it can proceed), or it got the lock first and the relocation will wait for
+    it to release (busy not yet set ⇒ proceed; the relocation snapshots only after)."""
+    if not pid:
+        yield
+        return
+    lock = _rw_lock_for(pid)
+    lock.acquire_read()
+    try:
+        if project_is_busy(pid):
+            raise ProjectBusyError(pid)
+        yield
+    finally:
+        lock.release_read()
+
+
+@contextlib.contextmanager
+def project_exclusive(pid: str):
+    """Held by a split/move across the whole relocation of `pid` (mark it busy FIRST, so new
+    synchronous writers are refused at entry, then take this to drain any already in flight)."""
+    lock = _rw_lock_for(pid)
+    lock.acquire_write()
+    try:
+        yield
+    finally:
+        lock.release_write()
 
 
 def set_active_project(project_id: str | None) -> contextvars.Token:
