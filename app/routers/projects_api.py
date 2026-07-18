@@ -92,6 +92,15 @@ def remove_paper(pid: str, slug: str):
     the client only calls it after the user's explicit in-app confirmation, so the human
     approval that invariant 4 requires has already happened. Deterministic and fast (no LLM,
     no network) ⇒ a plain request, not a background job."""
+    # A split/move relocating papers reserves the project busy and rewrites reading-list.md +
+    # the git index outside the job system; a concurrent removal here would race that shared
+    # state (its whole-file reading-list commit could capture the move's half-written append,
+    # or collide on the index), so refuse while a reservation is held.
+    if config.project_is_busy(pid):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then remove.",
+        )
     paper = store.get_paper(slug)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")

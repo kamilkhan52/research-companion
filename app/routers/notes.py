@@ -138,6 +138,15 @@ def add_paper(pid: str, req: AddPaperReq):
     graph recommendation. Metadata only: full text stays lazily retrieved (first time it's
     opened, like every other paper) and nothing is git-committed (like every other change to
     the record, that stays an explicit human action via /approve)."""
+    # A split/move relocating papers reserves the project busy and appends to reading-list.md
+    # outside the job system; a concurrent add here would interleave reading-list writes with
+    # the move's append (and the move's whole-file commit could then capture this add). Refuse
+    # while a reservation is held — the same guard the removal route carries.
+    if config.project_is_busy(pid):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then add papers.",
+        )
     try:
         slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
                                abstract=req.abstract, year=req.year)

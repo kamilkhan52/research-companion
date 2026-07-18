@@ -253,7 +253,7 @@ def test_move_to_existing_keeps_a_cite_to_a_destination_paper(temp_project):
 def test_move_to_existing_refuses_a_slug_collision(temp_project):
     _seed_source(temp_project)
     dest = _make_dest(papers=(("awq", "AWQ already here"),))
-    with pytest.raises(project_split.SplitError, match="already in the destination"):
+    with pytest.raises(project_split.SplitError, match="already have data"):
         project_split.move_to_existing(temp_project, dest, ["awq", "smooth"])
     # Nothing moved: the source still has all three.
     assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
@@ -281,6 +281,56 @@ def test_move_to_existing_leaves_dest_repo_clean(temp_project):
                             capture_output=True, text=True).stdout.splitlines()
     dirty = [ln for ln in status if ".state/" not in ln]
     assert dirty == [], f"destination repo dirty after move: {dirty!r}"
+
+
+def test_move_refuses_a_slug_with_retained_data_in_dest(temp_project):
+    """The removal endpoint keeps a paper's corpus/transcript on disk after dropping its
+    reading-list entry. A move of the same slug into that dest must be refused as a collision,
+    or _write_new_project would overwrite the destination's retained notes/discussion."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    # Simulate a paper previously removed from the dest: its reading-list entry is gone but its
+    # corpus (with notes) and transcript remain on disk under the SAME slug we now move.
+    tok = _bind(dest)
+    try:
+        store.write_full_text("awq", "Old AWQ", "retained body", {"slug": "awq"})
+        store.append_notes_block("awq", "Old AWQ", "## Notes\n\nDESTINATION's own history.")
+        jsonl, _ = sessions.transcript_paths("awq")
+        jsonl.parent.mkdir(parents=True, exist_ok=True)
+        jsonl.write_text('{"role":"user","text":"dest history"}\n')
+    finally:
+        config.reset_active_project(tok)
+
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(temp_project, dest, ["awq"])
+    # The destination's retained history is untouched, and the source still has awq.
+    tok = _bind(dest)
+    try:
+        assert "DESTINATION's own history" in store.read_notes("awq")
+    finally:
+        config.reset_active_project(tok)
+    assert store.corpus_path("awq").exists()  # source (contextvar reset to source) intact
+
+
+def test_add_and_remove_routes_refuse_while_a_reservation_is_held(temp_project):
+    """Split/move rewrite the reading list + git index outside the job system; the synchronous
+    add/remove routes must refuse while the busy reservation is held (P1 serialization)."""
+    from app.routers.notes import AddPaperReq, add_paper
+    from app.routers.projects_api import remove_paper
+    from fastapi import HTTPException
+    _seed_source(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(HTTPException) as add_exc:
+            add_paper(temp_project, AddPaperReq(title="New Paper"))
+        assert add_exc.value.status_code == 409
+        with pytest.raises(HTTPException) as rm_exc:
+            remove_paper(temp_project, "awq")
+        assert rm_exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+    # Freed: the routes work again (awq still present, unremoved by the refused call).
+    assert "awq" in {p.slug for p in store.list_papers()}
 
 
 def test_move_route_refuses_when_the_destination_is_busy(temp_project):

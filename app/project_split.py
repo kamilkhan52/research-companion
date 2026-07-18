@@ -161,6 +161,26 @@ def _dest_existing_slugs(dest_pid: str) -> set[str]:
         config.reset_active_project(token)
 
 
+def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
+    """Of `slugs`, those the destination ALREADY has data for — a reading-list entry OR
+    retained on-disk records. The removal endpoint (DELETE /papers/{slug}) deliberately keeps
+    a removed paper's corpus + transcript + branches on disk (warm re-add), so a slug absent
+    from the reading list can still own files; writing over them would silently destroy the
+    destination's historical notes/discussion. Both cases are collisions."""
+    token = config.set_active_project(dest_pid)
+    try:
+        occupied = {p.slug for p in store.list_papers()}
+        for slug in slugs:
+            jsonl, branches = sessions.transcript_paths(slug)
+            if (store.corpus_path(slug).exists() or jsonl.exists() or branches.exists()
+                    or _cover_path(slug).exists()
+                    or graph_store._retrieved_text_file(slug).exists()):
+                occupied.add(slug)
+        return occupied
+    finally:
+        config.reset_active_project(token)
+
+
 def _written_dest_paths(slugs: list[str], *, move: bool) -> list[str]:
     """Git-tracked paths a move WROTE into the destination (contextvar bound to dest), so its
     commit stages exactly those — the destination has unrelated files, so `add -A` is unsafe
@@ -204,15 +224,18 @@ def move_to_existing(
     if not slugs:
         raise SplitError("Select at least one paper to move.")
 
-    dest_slugs = _dest_existing_slugs(dest_pid)
-    collisions = [s for s in slugs if s in dest_slugs]
+    occupied = _dest_occupied_slugs(dest_pid, slugs)
+    collisions = [s for s in slugs if s in occupied]
     if collisions:
         raise SplitError(
-            "These papers are already in the destination project: " + ", ".join(collisions)
+            "These papers already have data in the destination project (an entry, or notes/"
+            "discussion retained from a past removal): " + ", ".join(collisions)
         )
     # A moved paper's cite to a paper ALREADY in the destination stays a live edge, so keep is
-    # the moved set plus the destination's existing papers (the split keeps only the moved set).
-    keep = set(slugs) | dest_slugs
+    # the moved set plus the destination's existing reading-list papers (the split keeps only
+    # the moved set). Only reading-list slugs matter for cites — retained-artifact-only slugs
+    # aren't in anyone's cite list.
+    keep = set(slugs) | _dest_existing_slugs(dest_pid)
 
     dest_name = projects._read_meta(dest_pid).get("name") or dest_pid
     token = config.set_active_project(source_pid)
@@ -229,7 +252,15 @@ def move_to_existing(
                 written = _written_dest_paths(slugs, move=remove_from_source)
             finally:
                 config.reset_active_project(new_token)
-            # Pathspec, not `add -A`: the destination has its own (possibly dirty) files.
+            # Pathspec, not `add -A`: the destination has its own (possibly dirty) files, and
+            # only the paths this move wrote may enter its commit. Caveat (same accepted
+            # tradeoff as the shipped removal endpoint and PR #147's source side): a pathspec
+            # bounds FILES, not hunks, so a pre-existing UNCOMMITTED reading-list add in the
+            # destination (reading-list adds deliberately don't auto-commit) rides along in
+            # this commit. Reading-list entries are human metadata, not invariant-4 agent
+            # proposals, and a git pathspec can't stage a sub-file hunk — so this is kept
+            # consistent with the source side rather than adding checkpoint-commit surprise.
+            # The busy reservation (route) blocks a CONCURRENT add during the move window.
             projects._git(dest_pid, "add", "--", *written)
             projects._git(dest_pid, "commit", "-q", "-m",
                           f"Move {len(slugs)} paper(s) from {source_pid}", "--", *written)
