@@ -39,6 +39,21 @@ from . import make_project_router
 project_router = make_project_router()
 
 
+def _refuse_if_relocating() -> None:
+    """A split/move relocating this project's papers reserves it busy and rewrites its corpus/
+    reading-list/git index synchronously (outside the job system). The synchronous retrieval
+    writers below (/start, /start_stream) would otherwise write corpus + identity into files
+    being relocated — recreating an orphaned source file after a move, or leaving the
+    destination without the newly retrieved work. Refuse while the reservation is held, the
+    same guard the add/remove routes carry."""
+    pid = config.active_project_id()
+    if pid and config.project_is_busy(pid):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then retrieve.",
+        )
+
+
 # ---------- request models ----------
 
 class StartReq(BaseModel):
@@ -315,6 +330,7 @@ def _opening_prompt_templates(base: str) -> dict[str, str]:
 def start_paper(req: StartReq):
     """Retrieve + cache a paper's full text (no session, no turn). The compose-first screen
     fires the first turn separately via /api/chat/start_stream."""
+    _refuse_if_relocating()
     paper = store.get_paper(req.slug)
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")
@@ -418,6 +434,7 @@ async def start_paper_stream(req: StartReq):
     agent's tool calls) so the client can show what retrieval is doing, then 'done' /
     'needs_confirmation' / 'error'. Escalation: deterministic retriever first (fast, free);
     if it fails, an agentic web hunt for the PDF (papers not on arXiv, throttled APIs...)."""
+    _refuse_if_relocating()
     paper = store.get_paper(req.slug)
 
     async def gen():

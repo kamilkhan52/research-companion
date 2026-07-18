@@ -224,6 +224,21 @@ def move_to_existing(
     if not slugs:
         raise SplitError("Select at least one paper to move.")
 
+    # Validate every slug is a CURRENT source entry BEFORE any path building. `slugs` is
+    # client-controlled and is otherwise fed into corpus/transcript/graph path helpers by the
+    # collision check below; a non-entry value (including a traversal attempt like `../x`) is
+    # never a parsed reading-list slug, so this rejects it before any filesystem access. (The
+    # split reaches the same guard via _gather_source, which runs before it touches the new
+    # project; the move touches the destination first, so it must validate up front.)
+    token0 = config.set_active_project(source_pid)
+    try:
+        source_slugs = {p.slug for p in store.list_papers()}
+    finally:
+        config.reset_active_project(token0)
+    unknown = [s for s in slugs if s not in source_slugs]
+    if unknown:
+        raise SplitError("Not current papers in this project: " + ", ".join(unknown))
+
     occupied = _dest_occupied_slugs(dest_pid, slugs)
     collisions = [s for s in slugs if s in occupied]
     if collisions:

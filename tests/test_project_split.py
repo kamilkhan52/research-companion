@@ -333,6 +333,32 @@ def test_add_and_remove_routes_refuse_while_a_reservation_is_held(temp_project):
     assert "awq" in {p.slug for p in store.list_papers()}
 
 
+def test_move_rejects_a_traversal_slug_before_touching_the_destination(temp_project):
+    """`slugs` is client-controlled; a non-entry value (incl. a traversal attempt) must be
+    rejected before any corpus/transcript path is built from it."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    with pytest.raises(project_split.SplitError, match="Not current papers"):
+        project_split.move_to_existing(temp_project, dest, ["awq", "../../etc/passwd"])
+    # Nothing moved — the source still has all three.
+    assert {p.slug for p in store.list_papers()} == {"awq", "smooth", "core"}
+
+
+def test_synchronous_retrieval_refuses_while_relocating(temp_project):
+    """The /start and /start_stream retrieval writers must refuse while a split/move owns the
+    project — they write corpus/identity outside the job system."""
+    from app.routers.session import StartReq, start_paper
+    from fastapi import HTTPException
+    _seed_source(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            start_paper(StartReq(slug="awq"))
+        assert exc.value.status_code == 409
+    finally:
+        config.unmark_project_busy(temp_project)
+
+
 def test_move_route_refuses_when_the_destination_is_busy(temp_project):
     """The /move route reserves BOTH sides; if the destination is already reserved (a split/
     move touching it) the request 409s rather than interleaving two mutations."""
