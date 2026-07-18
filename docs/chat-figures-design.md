@@ -153,14 +153,20 @@ fails to load ⇒ the card degrades to caption + source link (no broken-image bo
 
 ## Phasing (each its own PR after this doc)
 
-1. **Backend fetch + manifest + cache** (`retriever.py` HTML fetch, `figures.py` parser, the
-   identity-keyed `.state` cache, the enrichment-step wiring with per-paper persist +
-   deadline) — network-free tests with injected HTML fixtures (like the citations/extraction
-   fakes).
-2. **Serving routes** (manifest + asset bytes) + `shared/api-types.ts` regen + mobile endpoints.
-3. **Shared reference resolution** (the matching spec above, as a pure helper with tests);
-   optionally the `sessions.py` cached hint — the renderer must work without it.
-4. **`FigureCard` + renderer placement** (mobile) + Jest fixtures for referenced/missing figures.
+1. **[SHIPPED #154]** Backend fetch + manifest + cache — `app/figures.py` (own module, not
+   `retriever.py`): deterministic arXiv/ar5iv HTML → manifest parser, identity-keyed `.state`
+   cache with a miss cool-down, SSRF-guarded image download, retrieval-time warm + graph-build
+   enrichment wiring (per-paper persist + deadline + orphan lifecycle accounting). Network-free
+   tests with injected HTML fixtures.
+2. **[SHIPPED #155]** Serving routes (`app/routers/figures_api.py`: manifest + asset bytes,
+   with a current-manifest identity check on the asset route) + `shared/api-types.ts` regen +
+   mobile endpoints (`getPaperFigures`, `figureAssetUrl`).
+3. **[SHIPPED #156]** Shared reference resolution — `mobile/src/lib/figures.ts`
+   (`figureNumbersInText` + `planFigurePlacement`), a pure helper with tests. (The optional
+   `sessions.py` cached hint was not needed — render-time resolution against the live manifest
+   is the single source of truth.)
+4. **[SHIPPED #156]** `FigureCard` + renderer placement (`Markdown` `figureContext`) + Jest
+   fixtures for referenced/missing figures.
 5. (Deferred) assistant-authored SVG via a new marker + `SvgXml`.
 
 ## Verification
