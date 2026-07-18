@@ -58,3 +58,11 @@ export const getRelated = unexpected('getRelated');
 export const startGraphBuild = unexpected('startGraphBuild');
 export const getGraphBuildStatus = unexpected('getGraphBuildStatus');
 export const mediaUrl = jest.fn((path: string) => `https://api.test${path}`);
+export const moveProject = jest.fn(
+  async (_pid: string, body: { dest_pid: string; slugs: string[]; remove_from_source: boolean }) => ({
+    new_pid: body.dest_pid,
+    name: 'Destination',
+    moved: body.slugs.length,
+    removed: body.remove_from_source,
+  }),
+);

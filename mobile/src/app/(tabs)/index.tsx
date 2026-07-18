@@ -21,6 +21,7 @@ import { backfillCovers, getOpeningDraft, getSession } from '@/api/endpoints';
 import {
   keys,
   useBaseUrl,
+  useMoveProject,
   useProjectState,
   useProjects,
   useRecentSessions,
@@ -28,6 +29,7 @@ import {
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
+import { MoveToProjectSheet } from '@/components/MoveToProjectSheet';
 import { PaperCover } from '@/components/PaperCover';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
@@ -73,10 +75,13 @@ export default function LibraryScreen() {
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [sort, setSort] = useState<SortKey>('added');
   const [sortOpen, setSortOpen] = useState(false);
-  // Multi-select for "Split to new project" (R8.1): entered by long-pressing a paper.
+  // Multi-select (R8.1 → R9.13): long-press a paper to enter; the action bar offers Move (to a
+  // new OR existing project) and Delete.
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [splitOpen, setSplitOpen] = useState(false);
+  const [moveDestOpen, setMoveDestOpen] = useState(false);  // the destination chooser
+  const [moveDest, setMoveDest] = useState<{ pid: string; name: string } | null>(null);
 
   function toggleSelected(slug: string) {
     setSelected((prev) => {
@@ -122,6 +127,40 @@ export default function LibraryScreen() {
   const stateQuery = useProjectState(activePid);
   const activeProject = projects?.find((p) => p.id === activePid);
   const removePaper = useRemovePaper(activePid);
+  useMoveProject(activePid);  // warms the mutation cache; the actual move runs in the sheet
+
+  // Batch-delete the multi-selection (R9.13). One confirmed destructive action; the backend
+  // serializes the per-paper removals under the project write lock, so firing them in sequence
+  // is safe. Notes are kept + marked removed, same as the single-paper swipe-remove.
+  function confirmBatchDelete() {
+    const slugs = [...selected];
+    if (slugs.length === 0) return;
+    Alert.alert(
+      `Delete ${slugs.length} paper${slugs.length === 1 ? '' : 's'}?`,
+      'They are removed from this project; their notes are kept and marked as removed.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            let failed = 0;
+            for (const slug of slugs) {
+              try {
+                await removePaper.mutateAsync(slug);
+              } catch {
+                failed += 1;
+              }
+            }
+            exitSelect();
+            if (failed > 0) {
+              Alert.alert('Some papers could not be removed', `${failed} failed — try again.`);
+            }
+          },
+        },
+      ],
+    );
+  }
 
   // Swipe reveals the trash; this confirm is the human approval the backend's git commit
   // rides on ("agent proposes, human commits" — here the human does both).
@@ -346,15 +385,25 @@ export default function LibraryScreen() {
           <Pressable onPress={exitSelect} hitSlop={8}>
             <Text variant="label" color={t.muted}>Cancel</Text>
           </Pressable>
-          <Text variant="caption" color={t.muted}>
+          <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
             {selected.size} selected
           </Text>
-          <Button
-            title="Split to new project"
-            icon="git-branch"
-            onPress={() => setSplitOpen(true)}
-            disabled={selected.size === 0}
-          />
+          <View style={styles.selectActions}>
+            <Button
+              title="Move"
+              icon="corner-up-right"
+              variant="ghost"
+              onPress={() => setMoveDestOpen(true)}
+              disabled={selected.size === 0}
+            />
+            <Button
+              title="Delete"
+              icon="trash-2"
+              variant="danger"
+              onPress={confirmBatchDelete}
+              disabled={selected.size === 0}
+            />
+          </View>
         </View>
       ) : null}
 
@@ -374,6 +423,45 @@ export default function LibraryScreen() {
           setSplitOpen(false);
           exitSelect();
           setActivePid(newPid);
+        }}
+      />
+
+      {/* Move destination chooser (R9.13): a new project, or any existing one but the active. */}
+      <OptionsSheet
+        visible={moveDestOpen}
+        onClose={() => setMoveDestOpen(false)}
+        title={`Move ${selected.size} paper${selected.size === 1 ? '' : 's'} to`}
+        options={[
+          {
+            key: 'new',
+            title: 'New project…',
+            icon: 'plus' as const,
+            accent: t.mint,
+            onPress: () => setSplitOpen(true),
+          },
+          ...(projects ?? [])
+            .filter((p) => p.id !== activePid)
+            .map((p, i) => ({
+              key: p.id,
+              title: p.name,
+              icon: 'folder' as const,
+              section: i === 0,  // divider between "New project…" and existing projects
+              onPress: () => setMoveDest({ pid: p.id, name: p.name }),
+            })),
+        ]}
+      />
+
+      <MoveToProjectSheet
+        visible={moveDest !== null}
+        pid={activePid}
+        destPid={moveDest?.pid ?? null}
+        destName={moveDest?.name ?? ''}
+        slugs={[...selected]}
+        onClose={() => setMoveDest(null)}
+        onDone={(destPid) => {
+          setMoveDest(null);
+          exitSelect();
+          setActivePid(destPid);
         }}
       />
 
@@ -643,10 +731,11 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   checkboxOn: { backgroundColor: t.mint, borderColor: t.mint },
   selectBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    flexDirection: 'row', alignItems: 'center',
     gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md,
     borderTopWidth: 1, borderTopColor: t.line, backgroundColor: t.surface,
   },
+  selectActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   paperMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },
   rowAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
