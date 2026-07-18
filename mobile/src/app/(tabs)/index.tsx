@@ -27,17 +27,24 @@ import {
   useRemovePaper,
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
+import { OptionsSheet } from '@/components/chat/OptionsSheet';
 import { PaperCover } from '@/components/PaperCover';
 import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { SplitProjectSheet } from '@/components/SplitProjectSheet';
 import { useActiveProject } from '@/store/project';
 import { fullPaperUrl } from '@/lib/paperLinks';
+import {
+  filterBucket,
+  paperStateKey,
+  sortPapers,
+  SORTS,
+  type SortKey,
+  type StatusFilter,
+} from '@/lib/paperSort';
 import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
-
-type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
 
 // The base URL the cover backfill has already succeeded for (module-level so it survives Library
 // remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
@@ -50,17 +57,6 @@ const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'inprogress', label: 'In progress' },
   { key: 'done', label: 'Done' },
 ];
-
-function paperStateKey(p: Paper): string {
-  return p.session_state ?? (p.list_status === 'read' ? 'committed' : 'unread');
-}
-
-function filterBucket(p: Paper): Exclude<StatusFilter, 'all'> {
-  const s = paperStateKey(p);
-  if (s === 'committed' || s === 'read') return 'done';
-  if (s === 'in_discussion' || s === 'notes_drafted') return 'inprogress';
-  return 'toread';
-}
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -75,6 +71,8 @@ export default function LibraryScreen() {
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [sort, setSort] = useState<SortKey>('added');
+  const [sortOpen, setSortOpen] = useState(false);
   // Multi-select for "Split to new project" (R8.1): entered by long-pressing a paper.
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -155,10 +153,10 @@ export default function LibraryScreen() {
   // Flat list, no reading-list category headers (polish plan F.6): the sections were
   // hand-written for the first project and no reliable categorization method exists for new
   // ones — `Paper.group` stays in the API for when one is defined.
-  const visiblePapers = useMemo(
-    () => (filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter)),
-    [papers, filter],
-  );
+  const visiblePapers = useMemo(() => {
+    const filtered = filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter);
+    return sortPapers(filtered, sort);
+  }, [papers, filter, sort]);
   const continueSession = recentQuery.data?.find(
     (session) => session.kind === 'paper' && session.state !== 'committed',
   );
@@ -257,21 +255,34 @@ export default function LibraryScreen() {
         ) : null}
 
         {papers.length > 0 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.filters}
-            contentContainerStyle={{ gap: space.sm }}>
-            {FILTERS.map((f) => (
-              <Chip
-                key={f.key}
-                label={`${f.label} ${counts[f.key]}`}
-                dot={false}
-                selected={filter === f.key}
-                onPress={() => setFilter(f.key)}
-              />
-            ))}
-          </ScrollView>
+          <View style={styles.filterRow}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.filters}
+              contentContainerStyle={{ gap: space.sm }}>
+              {FILTERS.map((f) => (
+                <Chip
+                  key={f.key}
+                  label={`${f.label} ${counts[f.key]}`}
+                  dot={false}
+                  selected={filter === f.key}
+                  onPress={() => setFilter(f.key)}
+                />
+              ))}
+            </ScrollView>
+            {/* Sort is separate from the filter chips (R9.12): tap to reorder the shown list. */}
+            <Pressable
+              onPress={() => setSortOpen(true)}
+              style={styles.sortBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Sort papers. Currently ${SORTS.find((s) => s.key === sort)?.label}.`}>
+              <Icon name="sliders" size={15} color={sort === 'added' ? t.muted : t.mint} />
+              <Text variant="caption" color={sort === 'added' ? t.muted : t.mint}>
+                Sort
+              </Text>
+            </Pressable>
+          </View>
         ) : null}
 
         {!activePid && projectsQuery.isError ? (
@@ -364,6 +375,19 @@ export default function LibraryScreen() {
           exitSelect();
           setActivePid(newPid);
         }}
+      />
+
+      <OptionsSheet
+        visible={sortOpen}
+        onClose={() => setSortOpen(false)}
+        title="Sort papers"
+        options={SORTS.map((s) => ({
+          key: s.key,
+          title: s.label,
+          icon: s.icon,
+          selected: sort === s.key,
+          onPress: () => setSort(s.key),
+        }))}
       />
     </Screen>
   );
@@ -598,7 +622,19 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   resumeBtn: { height: 42, paddingHorizontal: space.lg },
   progressCard: { gap: space.md, marginBottom: space.md },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  filters: { marginBottom: space.lg, flexGrow: 0 },
+  filterRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.lg },
+  filters: { flexGrow: 0, flexShrink: 1 },
+  sortBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.line,
+    backgroundColor: t.elevated,
+  },
   paperRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   paperRowSelected: { borderColor: t.mint },
   checkbox: {
