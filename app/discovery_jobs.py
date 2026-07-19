@@ -1,7 +1,7 @@
 """Background discovery runs (goals -> suggested readings), on the shared JobRegistry.
 
-A run makes two LLM calls and 4-6 paced arXiv searches (~3s apart each, plus a Semantic
-Scholar batch), so it routinely takes minutes — the same territory where a request-tied design
+A run makes two LLM calls plus paced arXiv, Semantic Scholar, and OpenAlex work, so it routinely
+takes minutes — the same territory where a request-tied design
 gets killed by the tunnel (see app/jobs.py and CLAUDE.md invariant 1). One job per project at a
 time (keyed by pid), run in a background thread decoupled from any connection; clients POLL a
 cheap snapshot endpoint. The finished result is persisted to the project's .state/discovery.json
@@ -21,7 +21,7 @@ RunFn = Callable[..., "Iterator[dict]"]
 
 @dataclass
 class DiscoveryJob(Job):
-    phase: str = "queries"    # queries | searching | citations | scoring | done
+    phase: str = "queries"    # queries | searching | citations | evidence | scoring | done
     goals: str = ""
     focus: str = ""
     queries: list = field(default_factory=list)
@@ -83,6 +83,8 @@ def _apply_event(job: DiscoveryJob, event: dict) -> None:
     elif etype == "citations":
         job.phase = "citations"
         job.found = event.get("count", job.found)
+    elif etype == "evidence":
+        job.phase = "evidence"
     elif etype == "scoring":
         job.phase = "scoring"
     elif etype == "done":

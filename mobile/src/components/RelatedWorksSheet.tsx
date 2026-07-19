@@ -85,11 +85,12 @@ function RelatedCard({
   async function handleAdd() {
     if (!pid || added) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title: work.title,
         arxivId: work.arxiv_id ?? undefined,
         year: work.year ?? undefined,
       });
+      if (!result.paper) return;
       setAdded(true);
     } catch {
       // surfaced inline via addPaper.isError

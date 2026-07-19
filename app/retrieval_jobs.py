@@ -26,6 +26,11 @@ class RetrievalJob(Job):
     items: list = field(default_factory=list)
     candidates: list = field(default_factory=list)
     retrieved: bool = False
+    # Identity discovered by the deterministic resolver. The reading-list title is never
+    # rewritten silently; clients may show this as a human-confirmed rename after retrieval.
+    matched_title: str | None = None
+    arxiv_id: str | None = None
+    source: str | None = None
     # Auto-analysis chain (R7.8): when the caller asked for a first analysis, the chat job it
     # spawned after successful retrieval — pollers follow this id to know when the opening
     # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
@@ -105,17 +110,17 @@ def start_retrieval(
             return
 
         if result:
+            with _registry.lock:
+                job.matched_title = result.get("matched_title") or None
+                job.arxiv_id = result.get("arxiv_id") or None
+                job.source = result.get("source") or None
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
-                     result.get("source"), match_score=result.get("score"))
+                     result.get("source"), match_score=result.get("score"),
+                     pdf_bytes=result.get("pdf_bytes"), authoritative_id=arxiv_id)
             # An id the user explicitly supplied corrects any machine-resolved one on the
             # entry (a wrong title-search match must not outlive the correction). Only when
             # the result IS that id: a failed explicit download falls back to title search,
             # whose machine-selected id must not masquerade as the user's.
-            if (arxiv_id and result.get("arxiv_id")
-                    and store.arxiv_base_id(result["arxiv_id"]) == store.arxiv_base_id(arxiv_id)):
-                store.annotate_entry(slug, arxiv_id=result["arxiv_id"], authoritative=True)
-            # Reuse the PDF retrieval just downloaded to render the cover — no second download.
-            cover_jobs.render_from_pdf(slug, result.get("pdf_bytes"))
             with _registry.lock:
                 job.phase = "done"
                 job.retrieved = True
@@ -142,7 +147,12 @@ def start_retrieval(
             job._after_retrieved = after_retrieved  # read back under the registry lock
         return job
 
-    job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    try:
+        job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    except RuntimeError as exc:
+        raise RetrievalError(
+            "This project is being moved or split — wait, then fetch the paper again.",
+        ) from exc
     if after_retrieved is not None and not created:
         # Joined a retrieval another request started (possibly without a hook): attach the
         # continuation and register a settle callback — the registry reads callbacks in the
@@ -193,7 +203,13 @@ async def _consume_hunt(
         if event["type"] != "result":
             continue
         if event.get("ok") and event.get("full_text"):
-            _persist(job.slug, title, event["full_text"], None, event.get("source"))
+            with _registry.lock:
+                job.matched_title = event.get("matched_title") or None
+                job.source = event.get("source") or None
+            _persist(
+                job.slug, title, event["full_text"], None, event.get("source"),
+                pdf_bytes=event.get("pdf_bytes"),
+            )
             with _registry.lock:
                 job.phase = "done"
                 job.retrieved = True
@@ -203,15 +219,85 @@ async def _consume_hunt(
     raise RetrievalError(first_error or "The PDF hunt ended without a result.")
 
 
-def _persist(slug: str, title: str, full_text: str, arxiv_id: str | None,
-             source: str | None, match_score: float | None = None) -> None:
-    store.write_full_text(slug, title, full_text, {
-        "slug": slug,
-        "arxiv_id": arxiv_id,
-        "source": source,
-        "match_score": match_score,
-    })
+def _persist(
+    slug: str,
+    title: str,
+    full_text: str,
+    arxiv_id: str | None,
+    source: str | None,
+    match_score: float | None = None,
+    *,
+    pdf_bytes: bytes | None = None,
+    authoritative_id: str | None = None,
+) -> None:
+    """Persist a background retrieval under the same relocation guard as synchronous writes."""
+    try:
+        with config.project_write_guard(config.active_project_id()):
+            if store.get_paper(slug) is None:
+                raise RetrievalError(
+                    "This paper is no longer in the project (it may have just been moved).",
+                )
+            store.write_full_text(slug, title, full_text, {
+                "slug": slug,
+                "arxiv_id": arxiv_id,
+                "source": source,
+                "match_score": match_score,
+            })
+            if (
+                authoritative_id
+                and arxiv_id
+                and store.arxiv_base_id(arxiv_id) == store.arxiv_base_id(authoritative_id)
+            ):
+                store.annotate_entry(slug, arxiv_id=arxiv_id, authoritative=True)
+            # Reuse the already-downloaded/uploaded PDF. Keep it inside the guard so a move
+            # cannot remove the paper between the corpus write and this derived cache write.
+            cover_jobs.render_from_pdf(slug, pdf_bytes)
+    except config.ProjectBusyError as exc:
+        raise RetrievalError(
+            "This project is being moved or split — wait, then fetch the paper again.",
+        ) from exc
     # Warm the paper's figure manifest (R.10) the moment its text lands — fire-and-forget on
     # a daemon thread, so it never delays the job's `done` or the chained auto-analysis.
     # Best-effort: the graph build's enrichment pass backfills anything this misses.
     figures.warm_async(slug)
+
+
+def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:
+    """Extract an uploaded PDF in a registered background job and persist it like retrieval."""
+    paper = store.get_paper(slug)
+    if not paper:
+        raise RetrievalError("Unknown paper")
+    if not data:
+        raise RetrievalError("Empty file.")
+
+    def make_job() -> RetrievalJob:
+        return RetrievalJob(
+            id=new_id(),
+            slug=slug,
+            phase="resolving",
+            detail=filename[:120],
+            source=f"upload:{filename}",
+        )
+
+    def work(job: RetrievalJob) -> None:
+        full_text = retriever.extract_pdf_bytes(data)
+        if not full_text.strip():
+            raise RetrievalError("Could not extract text from that PDF.")
+        _persist(
+            slug,
+            paper.title,
+            full_text,
+            None,
+            f"upload:{filename}",
+            pdf_bytes=data,
+        )
+        with _registry.lock:
+            job.phase = "done"
+            job.retrieved = True
+
+    try:
+        return _registry.start_or_join(slug, make_job, work)
+    except RuntimeError as exc:
+        raise RetrievalError(
+            "This project is being moved or split — wait, then upload the PDF again.",
+        ) from exc

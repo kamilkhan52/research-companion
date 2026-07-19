@@ -1,7 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { apiDelete, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
+import { apiDelete, apiForm, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AudioJob,
   AuthConfig,
@@ -22,6 +22,7 @@ import type {
   ModelOption,
   OpeningDraft,
   Paper,
+  PaperMatchResponse,
   Review,
   PromptStatus,
   Project,
@@ -150,6 +151,10 @@ export const startRetrievalJob = (
 ) => apiPost<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs`, { slug, ...opts });
 export const getRetrievalJob = (pid: string, id: string) =>
   apiGet<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/${encodeURIComponent(id)}`);
+export const getLatestRetrievalJob = (pid: string, slug: string) =>
+  apiGet<{ job: RetrievalJob | null }>(
+    `/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`,
+  );
 
 // ---------- per-project ----------
 
@@ -225,12 +230,38 @@ export const addPaper = (
     // Dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
     year: year ?? undefined,
   });
+/** App-wide duplicate-awareness preflight. Read-only despite POST: the candidate can include
+ *  a long title/source URL, and no project record changes until the user chooses Copy/Move. */
+export const findPaperMatches = (
+  pid: string,
+  candidate: { title: string; arxiv_id?: string; source_url?: string },
+) =>
+  apiPost<PaperMatchResponse>(`${P(pid)}/paper-matches`, candidate);
 /** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
  *  the backend git-commits this change — the caller must have shown a confirm first. */
 export const removePaper = (pid: string, slug: string) =>
   apiDelete<{ removed: string; notes_kept: boolean }>(
     `${P(pid)}/papers/${encodeURIComponent(slug)}`,
   );
+export const updatePaper = (pid: string, slug: string, title: string) =>
+  apiPatch<{ paper: Paper }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`, { title });
+
+export interface NativeUploadFile {
+  uri: string;
+  name: string;
+  mimeType?: string | null;
+}
+
+export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) => {
+  const body = new FormData();
+  body.append('slug', slug);
+  body.append('file', {
+    uri: file.uri,
+    name: file.name,
+    type: file.mimeType || 'application/pdf',
+  } as unknown as Blob);
+  return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body);
+};
 
 /** Remove several papers in ONE atomic commit (the multi-select Delete). All-or-nothing, so a
  *  disconnect can't half-apply a confirmed batch; unknown slugs are skipped (idempotent). */

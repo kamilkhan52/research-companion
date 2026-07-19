@@ -67,11 +67,20 @@ depends on screenshots Kamil has not attached yet.
 - **R10.10 — Prominent empty-project Add Papers hub.** An empty Library should present a
   designed add surface offering (a) add a specific paper and (b) explore Discover. Adding a
   paper must not feel owned by the Discover tab or appear as one long text button.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** the two card-like entry paths are first-class; the specific-paper path opens
+  directly as the primary form rather than below the Discover search.
 - **R10.11 — Improve discovery quality and ranking.** Audit whether candidate recall is
   over-dependent on arXiv keyword search. Rank with an LLM pass grounded in topical relevance,
   paper credibility, and credible institution/lab signals, reusing Map ranking/enrichment
   logic where it is genuinely shared. Evaluate with fixed project/query fixtures before
   changing production ranking.
+  **Implemented in [#186](https://github.com/kamilkhan52/research-companion/pull/186):** each
+  planned concept now searches arXiv and Semantic Scholar; reciprocal-rank fusion preserves
+  source diversity before the context cap; Map's citation and paper-scoped OpenAlex evidence
+  feed a relevance-dominant rank with capped credibility/impact terms. The fixed offline
+  landmark fixture and tradeoffs are recorded in
+  [`discovery-quality-evaluation.md`](discovery-quality-evaluation.md).
 
 ## Library sorting, paper identity, and actions
 
@@ -79,22 +88,38 @@ depends on screenshots Kamil has not attached yet.
   date, or Date added reveals a clean second level underneath with a preselected direction.
   Alphabetical defaults A→Z; both date sorts default oldest→newest because the expected reading
   order is chronological. The user can choose the revealed option or Back out of the menu.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** nested choices stay inside the standard OptionsSheet; date and name sorts
+  support both directions, with unknown publication years kept last.
 - **R10.13 — Canonicalize a title after resolution, with confirmation.** When a title query
   resolves to a paper, show what was found and offer to replace incomplete/mistyped input with
   the canonical title. Do not silently rewrite the reading-list record.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** durable retrieval snapshots carry the matched source title; both first-read
+  and auto-analysis re-entry ask before a stable-slug rename.
 - **R10.14 — Paper edit menu.** Provide basic Rename/Delete and any justified identity/source
   actions from a standard paper menu. Existing swipe-delete stays; investigate a swipe in the
   opposite direction only if it remains discoverable and does not conflict with navigation.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** the paper overflow offers Rename and Delete; rename commits only the bounded
+  reading-list/corpus paths and preserves the slug, Notes, and discussion history.
 - **R10.15 — Fetch status, explicit Fetch, and recovery.** Replace “the analyst will fetch…”
   prose with a compact source status and Fetch action. Starting reading still auto-fetches.
   Show resolution progress/results cleanly, scroll first-read progress to the current stage,
   expose failures, and offer PDF link or PDF upload using existing confirmation/retrieval
   paths where possible.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** mobile uses durable retrieval jobs and reattachment instead of retrieval SSE;
+  the source card exposes Fetch, Fetch & Start, live progress, terminal errors, candidate/link
+  recovery, and native PDF upload. Upload extraction is itself a guarded background job.
 - **R10.16 — Multi-select action redesign.** The current horizontal bar crowds `N selected`
   vertically and oversizes Move/Delete. Use a standard compact selection action surface with
   explicit **Move** and **Copy**; only Move implies source removal. Notes handling remains an
   explicit follow-up for read papers. Screenshot-informed visual tuning can follow, but the
   information architecture is approved now.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** compact icon-label actions expose Move, Copy, and Delete directly; relocation
+  confirmations inherit that explicit operation and retain the existing Notes approval choices.
 
 ## Cross-project paper and migration architecture
 
@@ -111,12 +136,31 @@ depends on screenshots Kamil has not attached yet.
   elsewhere, offer Cancel, reuse/copy into this project, or move it, with explicit Notes/chat
   handling. Design around a stable cross-project paper identity and shared reusable source
   artifacts without weakening each project's independent git-backed record or approval flow.
+  **Implemented:** deterministic arXiv/DOI/source/exact-title identity preflight now covers
+  every add surface. The chooser defaults to Copy, makes Move explicit, shows reusable full
+  text/Notes/discussion work, and opens the sequential Notes-integration review immediately
+  when requested. Reuse materializes independent project records through the existing
+  transactional move/copy engine; see `docs/cross-project-paper-identity.md`.
 
 ## Discussion, audio, figures, and threads
 
 - **R9.2 approved — sentence annotations.** Implement the four phases in
   `docs/text-comments-design.md`. Long-press keeps the existing action menu; **Comment on this**
   enters sentence selection. Native arbitrary character-range selection remains unavailable.
+  **Phase 1 implemented in
+  [#178](https://github.com/kamilkhan52/research-companion/pull/178):** committed prose has
+  an opt-in sentence-span path with tap handling, violet selection/annotation marks, a
+  comment-count badge, and link suppression during annotation; all ordinary Markdown callers
+  stay on the unchanged renderer.
+  **Phase 2 implemented in
+  [#179](https://github.com/kamilkhan52/research-companion/pull/179):** long-press offers
+  **Comment on this**, sentence taps open an inline quote/comment editor, and a per-paper
+  persisted queue renders editable/removable attached-comment chips above the composer.
+  **Phase 3 implemented in
+  [#180](https://github.com/kamilkhan52/research-companion/pull/180):** reply contracts accept
+  optional quote/comment pairs, one shared deterministic formatter records them as a normal
+  Markdown user turn, pure-annotation sends are valid, shared API types are regenerated, and
+  mobile clears the persisted queue only after server acceptance (with transcript recovery).
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
@@ -130,6 +174,11 @@ depends on screenshots Kamil has not attached yet.
 - **R10.20 — Preview cues continue until playable audio is ready.** In stitched-full and
   segmented modes, cues must bridge from analysis generation through the actual audio-ready
   boundary, without repetition. Text completion alone must not stop them.
+  **Implemented in
+  [#177](https://github.com/kamilkhan52/research-companion/pull/177):** the coordinator still
+  reacts immediately to finished synthesis segments, but a bounded keepalive now permits a
+  fresh grounded cue during a long flat segment. Terminal audio status remains the only
+  ready boundary, and pending late cues are suppressed there.
 - **R10.21 — Multiple threads per paper.** Let the reader start a clean thread with arbitrary
   text once the source is available, switch among independent threads, retain the main chat's
   tools, and synthesize concluded insights from all threads into the notes proposal.
@@ -175,11 +224,25 @@ depends on screenshots Kamil has not attached yet.
   P-shaped mark grounded in the app's editorial/research philosophy and themes, carry it
   through the Figma workflow, select with Kamil if materially different finalists remain,
   then implement all platform icon assets.
+  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  a deterministic warm-paper slab-serif P carries a mint research path to one violet evidence
+  node. The same source generates the generic/iOS icon, Android adaptive foreground and
+  monochrome mark, splash, and favicon; an editable canonical SVG ships beside the PNGs.
 - **R9.8 authorized — skip controls.** Complete the Figma restyle of `−15/+15` to harmonize
   with sentence navigation, then implement it.
+  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  production now matches selected K1's 64×52 outboard time-jump pills while the 52 px
+  mint-outlined sentence controls retain semantic priority.
 - **Palette refinement authorized.** Refine Light/Dim/Black variables in Figma and implement
   the chosen token values. Preserve semantic contrast and verify sheets, graphs, annotations,
   progress indicators, and audio controls in all modes.
+  **Implementation in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  Dim remains byte-identical, Black keeps a true-#000 canvas, and Light mint/amber move to
+  `#15795F`/`#8F6411` so every semantic accent clears 4.5:1 on the warm canvas. The local
+  Figma Desktop Bridge pass is complete: the editable Dim/Black/Light comparison board is
+  backed by 66/40/40 variables with no duplicate names or broken aliases, the final Paradigm
+  P board includes primary, small-size, adaptive-safe-zone, and monochrome proofs, and the
+  selected K1 player controls were screenshot-verified against the production dimensions.
 
 ## Screenshot-dependent follow-up
 

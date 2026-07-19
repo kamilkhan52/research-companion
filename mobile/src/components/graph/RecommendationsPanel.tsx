@@ -99,11 +99,12 @@ function RecommendationCard({
   async function handleAdd() {
     if (!pid || inProject) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title: rec.title,
         arxivId: rec.arxiv_id ?? undefined,
         year: rec.year ?? undefined,
       });
+      if (!result.paper) return;
       setAdded(true);
     } catch {
       // surfaced inline below via addPaper.isError; nothing else to do here

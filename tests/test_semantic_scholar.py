@@ -62,6 +62,59 @@ def test_resolve_paper_uses_key_header_without_exposing_it_in_result():
     assert "private-key" not in repr(result)
 
 
+def test_search_papers_normalizes_cross_venue_results_and_allows_anonymous_access():
+    client = FakeClient(FakeResponse(200, {"data": [{
+        "paperId": "s2-landmark",
+        "title": "Conference Landmark",
+        "abstract": "A systems result.",
+        "authors": [{"authorId": "a1", "name": "A. Author"}],
+        "year": 2019,
+        "venue": "OSDI",
+        "externalIds": {"DOI": "10.1/example"},
+        "url": "https://www.semanticscholar.org/paper/s2-landmark",
+        "citationCount": 500,
+        "influentialCitationCount": 30,
+        "fieldsOfStudy": ["Computer Science"],
+        "publicationTypes": ["Conference"],
+        "publicationDate": "2019-10-01",
+    }]}))
+
+    result = s2.search_papers(
+        "memory systems", key="", client=client, pacer=no_wait_pacer()
+    )
+
+    assert result[0] == {
+        "provider": "semantic_scholar",
+        "paper_id": "s2-landmark",
+        "title": "Conference Landmark",
+        "abstract": "A systems result.",
+        "authors": ["A. Author"],
+        "author_ids": ["a1"],
+        "year": 2019,
+        "venue": "OSDI",
+        "arxiv_id": None,
+        "doi": "10.1/example",
+        "url": "https://doi.org/10.1/example",
+        "provider_url": "https://www.semanticscholar.org/paper/s2-landmark",
+        "pdf_url": "",
+        "citation_count": 500,
+        "influential_citation_count": 30,
+        "fields_of_study": ["Computer Science"],
+        "publication_types": ["Conference"],
+        "publication_date": "2019-10-01",
+        "category": "Computer Science",
+    }
+    assert client.calls[0]["path"] == "/paper/search"
+    assert client.calls[0]["headers"] == {}
+    assert client.calls[0]["params"]["fields"] == s2.SEARCH_FIELDS
+
+
+def test_search_papers_rejects_malformed_provider_payload():
+    client = FakeClient(FakeResponse(200, {"data": {}}))
+    with pytest.raises(s2.SemanticScholarError, match="malformed search metadata"):
+        s2.search_papers("query", key="", client=client, pacer=no_wait_pacer())
+
+
 def test_references_normalizes_edges_and_follows_pagination():
     first = FakeResponse(200, {
         "next": 1,

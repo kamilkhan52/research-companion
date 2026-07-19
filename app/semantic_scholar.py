@@ -23,6 +23,10 @@ BASE_URL = "https://api.semanticscholar.org/graph/v1"
 REFERENCE_FIELDS = (
     "contexts,intents,isInfluential,title,authors,year,venue,externalIds,url"
 )
+SEARCH_FIELDS = (
+    "paperId,title,abstract,authors,year,venue,externalIds,url,citationCount,"
+    "influentialCitationCount,fieldsOfStudy,publicationTypes,publicationDate,openAccessPdf"
+)
 MIN_REQUEST_INTERVAL_S = 1.1
 MAX_RETRIES = 3
 TIMEOUT_S = 45.0
@@ -100,12 +104,14 @@ def paper_identifier(*, arxiv_id: str | None = None, doi: str | None = None) -> 
     return None
 
 
-def _headers(key: str | None) -> dict[str, str]:
+def _headers(key: str | None, *, required: bool = True) -> dict[str, str]:
     effective = (key if key is not None else api_key()).strip()
     if not effective:
-        raise SemanticScholarError(
-            "No Semantic Scholar API key is configured. Add one in Settings."
-        )
+        if required:
+            raise SemanticScholarError(
+                "No Semantic Scholar API key is configured. Add one in Settings."
+            )
+        return {}
     return {"x-api-key": effective}
 
 
@@ -117,8 +123,9 @@ def _request(
     key: str | None = None,
     pacer: RequestPacer = _PACER,
     sleep: Callable[[float], None] = time.sleep,
+    require_key: bool = True,
 ) -> httpx.Response:
-    headers = _headers(key)
+    headers = _headers(key, required=require_key)
     response: httpx.Response | None = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -144,6 +151,123 @@ def _request(
     if response.status_code >= 400:
         raise SemanticScholarError(f"Semantic Scholar returned HTTP {response.status_code}.")
     return response
+
+
+def _normalize_search_result(row: dict[str, Any]) -> dict[str, Any] | None:
+    title = str(row.get("title") or "").strip()
+    paper_id = str(row.get("paperId") or "").strip()
+    if not title or not paper_id:
+        return None
+    external_ids = row.get("externalIds") or {}
+    if not isinstance(external_ids, dict):
+        external_ids = {}
+    raw_authors = row.get("authors") or []
+    raw_fields = row.get("fieldsOfStudy") or []
+    raw_types = row.get("publicationTypes") or []
+    doi = external_ids.get("DOI")
+    arxiv_id = external_ids.get("ArXiv") or external_ids.get("ARXIV")
+    open_access = row.get("openAccessPdf") or {}
+    if not isinstance(open_access, dict):
+        open_access = {}
+    pdf_url = str(open_access.get("url") or "").strip()
+    if not pdf_url and arxiv_id:
+        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
+    return {
+        "provider": "semantic_scholar",
+        "paper_id": paper_id,
+        "title": title,
+        "abstract": str(row.get("abstract") or "").strip(),
+        "authors": [
+            str(author.get("name") or "").strip()
+            for author in raw_authors
+            if isinstance(author, dict) and author.get("name")
+        ],
+        "author_ids": [
+            str(author.get("authorId") or "").strip()
+            for author in raw_authors
+            if isinstance(author, dict) and author.get("authorId")
+        ],
+        "year": row.get("year") if isinstance(row.get("year"), int) else None,
+        "venue": str(row.get("venue") or "").strip(),
+        "arxiv_id": arxiv_id,
+        "doi": doi,
+        "url": f"https://doi.org/{doi}" if doi else str(row.get("url") or "").strip(),
+        "provider_url": str(row.get("url") or "").strip(),
+        "pdf_url": pdf_url,
+        "citation_count": (
+            row.get("citationCount") if isinstance(row.get("citationCount"), int) else None
+        ),
+        "influential_citation_count": (
+            row.get("influentialCitationCount")
+            if isinstance(row.get("influentialCitationCount"), int)
+            else None
+        ),
+        "fields_of_study": [
+            str(value).strip() for value in raw_fields if str(value).strip()
+        ],
+        "publication_types": [
+            str(value).strip() for value in raw_types if str(value).strip()
+        ],
+        "publication_date": str(row.get("publicationDate") or "").strip() or None,
+        "category": str(raw_fields[0]).strip() if raw_fields else "",
+    }
+
+
+def search_papers(
+    query: str,
+    limit: int = 25,
+    *,
+    key: str | None = None,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer = _PACER,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict[str, Any]]:
+    """Relevance search across Semantic Scholar's cross-venue corpus.
+
+    Unlike reference-graph metadata, discovery may use the documented anonymous tier when no
+    key is configured. The shared pacer still serializes every request account-wide; rate limits
+    and provider failures surface as SemanticScholarError so discovery can degrade to arXiv.
+    """
+    query = query.strip()
+    if not query:
+        return []
+    own_client = client is None
+    client = client or httpx.Client(base_url=BASE_URL, timeout=TIMEOUT_S)
+    try:
+        response = _request(
+            client,
+            "/paper/search",
+            params={
+                "query": query,
+                "limit": max(1, min(100, int(limit))),
+                "fields": SEARCH_FIELDS,
+            },
+            key=key,
+            pacer=pacer,
+            sleep=sleep,
+            require_key=False,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise TypeError("search response is not an object")
+        rows = payload.get("data")
+        if rows is None:
+            rows = []
+        if not isinstance(rows, list):
+            raise TypeError("search data is not a list")
+        return [
+            normalized
+            for row in rows
+            if isinstance(row, dict)
+            and (normalized := _normalize_search_result(row)) is not None
+        ]
+    except (TypeError, ValueError) as exc:
+        raise SemanticScholarError(
+            "Semantic Scholar returned malformed search metadata."
+        ) from exc
+    finally:
+        if own_client:
+            client.close()
 
 
 def resolve_paper(

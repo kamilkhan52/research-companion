@@ -1,0 +1,11 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Paradigm P mark</title>
+  <g fill="#F3F0E8">
+    <rect x="328" y="212" width="124" height="600" rx="10"/>
+    <rect x="300" y="200" width="270" height="40" rx="8"/>
+    <rect x="300" y="772" width="220" height="40" rx="8"/>
+    <path fill-rule="evenodd" d="M710 392C710 496.934 611.503 582 490 582C368.497 582 270 496.934 270 392C270 287.066 368.497 202 490 202C611.503 202 710 287.066 710 392ZM612 395C612 444.706 561.856 485 500 485C438.144 485 388 444.706 388 395C388 345.294 438.144 305 500 305C561.856 305 612 345.294 612 395Z" clip-rule="evenodd"/>
+  </g>
+  <path d="M405 690C405 560 600 560 555 405" stroke="#65D6B4" stroke-width="28" stroke-linecap="round"/>
+  <circle cx="555" cy="405" r="38" fill="#9B8AFB"/>
+</svg>

@@ -36,10 +36,22 @@ export const getSession = unexpected('getSession');
 export const createDiscussionThread = unexpected('createDiscussionThread');
 export const getOpeningDraft = unexpected('getOpeningDraft');
 export const startPaper = unexpected('startPaper');
+export const startRetrievalJob = unexpected('startRetrievalJob');
+export const getRetrievalJob = unexpected('getRetrievalJob');
+export const getLatestRetrievalJob = jest.fn(async () => ({ job: null }));
+export const uploadPaper = unexpected('uploadPaper');
+export const updatePaper = unexpected('updatePaper');
+export const removePaper = unexpected('removePaper');
 export const reopen = unexpected('reopen');
 export const approve = unexpected('approve');
 export const getReview = unexpected('getReview');
 export const addPaper = unexpected('addPaper');
+export const findPaperMatches = jest.fn(async (_pid: string, candidate: { title: string }) => ({
+  target_project: { id: _pid, name: 'Project' },
+  can_update_notes: true,
+  matches: [],
+  candidate,
+}));
 export const switchBranch = unexpected('switchBranch');
 export const streamPaths = jest.fn(() => ({}));
 export const turnJobPaths = jest.fn(() => ({}));

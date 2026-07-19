@@ -1,14 +1,14 @@
-// Discover — scan arXiv for papers relevant to what you want to explore, at any point in a
+// Discover — scan scholarly sources for papers relevant to what you want to explore, at any
 // project (not just when starting one). A clean text field ("what would you like to explore?")
-// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv
-// searches, citation counts, and a
-// relevance ranking. The screen polls the job for live phase progress (job survives
+// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv and
+// Semantic Scholar searches, Map-style citation/authorship enrichment, and a relevance-first
+// ranking. The screen polls the job for live phase progress (job survives
 // backgrounding — see useDiscoveryRun), then shows the top suggestions with the rest behind
 // "show more". A "specific paper" box covers the other entry path: paste a title or an
 // arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt) takes over
 // on the paper's Discussion screen.
 
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   Linking,
@@ -36,6 +36,7 @@ export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  const { specific } = useLocalSearchParams<{ specific?: string }>();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
@@ -55,6 +56,12 @@ export default function DiscoverScreen() {
   const [editingGoals, setEditingGoals] = useState(false);
   const [showSpecific, setShowSpecific] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
+
+  // The Library's empty-project hub can deep-link directly into this entry path. Tabs may stay
+  // mounted between navigations, so react to param changes rather than only using an initializer.
+  useEffect(() => {
+    if (specific === '1') setShowSpecific(true);
+  }, [specific]);
 
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
@@ -77,6 +84,7 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
+  const specificEntry = specific === '1' && !hasRunContext;
 
   async function runDiscovery() {
     const text = goals.trim();
@@ -97,12 +105,23 @@ export default function DiscoverScreen() {
       />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          {showEditor ? (
+          {specificEntry && pid ? (
+            <>
+              <SpecificPaper pid={pid} />
+              <Button
+                title="Discover papers instead"
+                icon="compass"
+                variant="ghost"
+                onPress={() => router.replace('/discover')}
+                style={{ marginTop: space.md }}
+              />
+            </>
+          ) : showEditor ? (
             <Card style={{ gap: space.sm }}>
               <Text variant="overline">Explore</Text>
               <Text variant="caption">
                 What would you like to explore? Describe a topic, question, or method — we’ll
-                scan arXiv for relevant papers.
+                scan scholarly sources for relevant papers.
               </Text>
               <TextInput
                 value={goals}
@@ -165,13 +184,13 @@ export default function DiscoverScreen() {
             <View style={{ marginTop: space.xl }}>
               <Text variant="editorial">Results</Text>
               <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
-                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} arXiv papers,
-                ranked by relevance.
+                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
+                scholarly sources, ranked by fit and evidence.
               </Text>
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
                   <SuggestionCard
-                    key={s.arxiv_id}
+                    key={s.candidate_id}
                     pid={pid!}
                     suggestion={s}
                     rank={i + 1}
@@ -192,7 +211,7 @@ export default function DiscoverScreen() {
 
           {/* On a fresh screen the specific-paper box is a primary entry option; once a
               search owns the screen it folds behind a toggle. */}
-          {pid ? (
+          {pid && !specificEntry ? (
             hasRunContext && !showSpecific ? (
               <Button
                 title="Have a specific paper? Add by name or link"
@@ -221,7 +240,7 @@ export default function DiscoverScreen() {
 
 // ---------- live phase progress (mirrors the job's phase field) ----------
 
-const PHASE_ORDER = ['queries', 'searching', 'citations', 'scoring', 'done'] as const;
+const PHASE_ORDER = ['queries', 'searching', 'citations', 'evidence', 'scoring', 'done'] as const;
 
 // The mint check timeline from Figma `02 · Discover` ("Planned → Reviewed → Checked →
 // Ranked"), with the live phase's detail line underneath — the polled job data the old
@@ -237,10 +256,11 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
       label: 'Searched',
       detail: job.total_queries
         ? `${job.searched}/${job.total_queries} searches · ${job.found} papers`
-        : 'Searching arXiv…',
+        : 'Searching scholarly sources…',
     },
-    { key: 'citations', label: 'Checked', detail: `Citations for ${job.found} papers` },
-    { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance' },
+    { key: 'citations', label: 'Impact', detail: `Citation evidence for ${job.found} papers` },
+    { key: 'evidence', label: 'Evidence', detail: 'Checking authors, venues, and institutions' },
+    { key: 'scoring', label: 'Ranked', detail: 'Ranking by fit and evidence' },
   ];
   const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
   const done = job.phase === 'done' || job.status === 'done';
@@ -295,8 +315,9 @@ function SuggestionCard({
   const meta = [
     authors || null,
     s.year,
+    s.venue || null,
     s.citation_count != null ? `~${s.citation_count.toLocaleString()} citations` : null,
-    `arXiv:${s.arxiv_id}`,
+    s.arxiv_id ? `arXiv:${s.arxiv_id}` : s.doi ? `DOI:${s.doi}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -304,12 +325,14 @@ function SuggestionCard({
   async function handleAdd() {
     if (inLibrary) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title: s.title,
-        arxivId: s.arxiv_id,
+        arxivId: s.arxiv_id ?? undefined,
+        pdfUrl: s.pdf_url || undefined,
         abstract: s.abstract,
         year: s.year ?? undefined,
       });
+      if (!result.paper) return;
       setAdded(true);
       onAdded?.();
     } catch {
@@ -415,13 +438,15 @@ function SpecificPaper({ pid }: { pid: string }) {
       source = s;
     }
     try {
-      const { paper } = await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title,
         arxivId,
         // A pasted non-arXiv URL is a direct PDF source; the analysis offer must fetch
         // exactly it, mirroring what ?source= does for the manual Start path below.
         pdfUrl: !arxivId && source ? source : undefined,
       });
+      if (!result.paper) return;
+      const { paper } = result;
       await textDraft.clear('');
       router.push(
         `/paper/${encodeURIComponent(paper.slug)}${source ? `?source=${encodeURIComponent(source)}` : ''}`,

@@ -1,6 +1,7 @@
 import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
 
-import { Markdown } from '@/components/Markdown';
+import { Markdown, splitAnnotatableSentences } from '@/components/Markdown';
+import { themes } from '@/theme/tokens';
 
 // U.15 — rendering defects Kamil hit on device with a long analysis response (the AWQ
 // briefing): glued headings, links inside bold spans, pipe tables, and ordered-list numbering.
@@ -134,5 +135,67 @@ describe('ordered list numbering', () => {
     const text = '9. ninth\n10. tenth';
     await renderAsync(<Markdown text={text} />);
     expect(screen.getByText('10.')).toBeTruthy();
+  });
+});
+
+describe('sentence annotation render path', () => {
+  test('splits committed prose on the same tolerant sentence boundary as preview cues', () => {
+    expect(splitAnnotatableSentences(
+      'First claim. “Second claim?” Final fragment without punctuation',
+    )).toEqual([
+      'First claim.',
+      '“Second claim?”',
+      'Final fragment without punctuation',
+    ]);
+  });
+
+  test('is fully opt-in for ordinary Markdown surfaces', async () => {
+    await renderAsync(<Markdown text="First claim. Second claim." />);
+    expect(screen.queryByTestId('md-sentence-0')).toBeNull();
+  });
+
+  test('renders tappable sentence spans with selected and annotated states', async () => {
+    const onSentencePress = jest.fn();
+    await renderAsync(
+      <Markdown
+        text="First claim. Second claim."
+        sentenceAnnotations={{
+          active: true,
+          onSentencePress,
+          stateForSentence: (quote) => (
+            quote === 'Second claim.'
+              ? { selected: true, annotated: true, commentCount: 2 }
+              : undefined
+          ),
+        }}
+      />,
+    );
+
+    await fireEventAsync.press(screen.getByTestId('md-sentence-1'));
+    expect(onSentencePress).toHaveBeenCalledWith('Second claim.');
+    expect(screen.getByLabelText('2 attached comments')).toBeTruthy();
+    expect(screen.getByTestId('md-sentence-1')).toHaveStyle({
+      backgroundColor: themes.dim.violetWash,
+      borderLeftColor: themes.dim.violet,
+      borderLeftWidth: 2,
+      textDecorationColor: themes.dim.violet,
+      textDecorationLine: 'underline',
+    });
+  });
+
+  test('sentence tap wins over link navigation while annotation mode is active', async () => {
+    const onSentencePress = jest.fn();
+    const onLinkPress = jest.fn();
+    await renderAsync(
+      <Markdown
+        text="[Linked paper](https://example.com) matters."
+        onLinkPress={onLinkPress}
+        sentenceAnnotations={{ active: true, onSentencePress }}
+      />,
+    );
+
+    await fireEventAsync.press(screen.getByTestId('md-sentence-0'));
+    expect(onSentencePress).toHaveBeenCalledWith('Linked paper matters.');
+    expect(onLinkPress).not.toHaveBeenCalled();
   });
 });
