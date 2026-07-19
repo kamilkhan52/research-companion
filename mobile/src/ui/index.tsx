@@ -19,7 +19,11 @@ import {
 import { useSafeAreaInsets, type Edge } from 'react-native-safe-area-context';
 
 import { impactTap } from '@/lib/haptics';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import {
+  useTheme,
+  useThemedStyles,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type TextVariant =
@@ -35,32 +39,80 @@ type TextVariant =
   | 'serifBody'
   | 'serifItalic';
 
-const makeTextStyles = (t: ThemePalette) => StyleSheet.create({
+const makeTextStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
   // Manrope — UI scale (DS: Display/32, Section heading/22, body, METADATA·13/MEDIUM)
-  display: { fontFamily: fonts.bodySemiBold, fontSize: 30, lineHeight: 38, color: t.text },
-  title: { fontFamily: fonts.bodySemiBold, fontSize: 21, lineHeight: 28, color: t.text },
-  heading: { fontFamily: fonts.bodySemiBold, fontSize: 16, lineHeight: 22, color: t.text },
-  body: { fontFamily: fonts.body, fontSize: 15.5, lineHeight: 24, color: t.text },
-  label: { fontFamily: fonts.bodyMedium, fontSize: 13, color: t.muted, letterSpacing: 0.2 },
+  display: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: tight ? 27 : 30,
+    lineHeight: tight ? 34 : 38,
+    color: t.text,
+  },
+  title: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: tight ? 19 : 21,
+    lineHeight: tight ? 25 : 28,
+    color: t.text,
+  },
+  heading: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: tight ? 15 : 16,
+    lineHeight: tight ? 20 : 22,
+    color: t.text,
+  },
+  body: {
+    fontFamily: fonts.body,
+    fontSize: tight ? 14 : 15.5,
+    lineHeight: tight ? 21 : 24,
+    color: t.text,
+  },
+  label: {
+    fontFamily: fonts.bodyMedium,
+    fontSize: tight ? 12.5 : 13,
+    color: t.muted,
+    letterSpacing: 0.2,
+  },
   overline: {
     fontFamily: fonts.bodyMedium,
-    fontSize: 12.5,
+    fontSize: tight ? 11.5 : 12.5,
     color: t.muted,
     letterSpacing: 1.1,
     textTransform: 'uppercase' as const,
   },
-  caption: { fontFamily: fonts.body, fontSize: 12.5, lineHeight: 17, color: t.muted },
+  caption: {
+    fontFamily: fonts.body,
+    fontSize: tight ? 12 : 12.5,
+    lineHeight: tight ? 16 : 17,
+    color: t.muted,
+  },
   // Newsreader — editorial scale
-  editorial: { fontFamily: fonts.serifMedium, fontSize: 26, lineHeight: 32, color: t.text },
-  serifTitle: { fontFamily: fonts.serifMedium, fontSize: 20, lineHeight: 26, color: t.text },
-  serifBody: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26, color: t.text },
-  serifItalic: {
-    fontFamily: fonts.serifItalic,
-    fontSize: 17,
-    lineHeight: 26,
+  editorial: {
+    fontFamily: fonts.serifMedium,
+    fontSize: tight ? 23 : 26,
+    lineHeight: tight ? 29 : 32,
     color: t.text,
   },
-});
+  serifTitle: {
+    fontFamily: fonts.serifMedium,
+    fontSize: tight ? 18 : 20,
+    lineHeight: tight ? 23 : 26,
+    color: t.text,
+  },
+  serifBody: {
+    fontFamily: fonts.serif,
+    fontSize: tight ? 15.5 : 17,
+    lineHeight: tight ? 23 : 26,
+    color: t.text,
+  },
+  serifItalic: {
+    fontFamily: fonts.serifItalic,
+    fontSize: tight ? 15.5 : 17,
+    lineHeight: tight ? 23 : 26,
+    color: t.text,
+  },
+  });
+};
 
 export function Text({
   variant = 'body',
@@ -289,24 +341,30 @@ export function Button({
 
 export { ScrollView };
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
   screen: { flex: 1, backgroundColor: t.bg },
   card: {
     backgroundColor: t.surface,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line,
-    padding: space.lg,
+    padding: tight ? space.md : space.lg,
   },
-  divider: { height: 1, backgroundColor: t.line, marginVertical: space.md },
+  divider: {
+    height: 1,
+    backgroundColor: t.line,
+    marginVertical: tight ? space.sm : space.md,
+  },
   chip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     borderWidth: 1,
     borderRadius: radius.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    paddingHorizontal: tight ? 12 : 14,
+    paddingVertical: tight ? 6 : 7,
     alignSelf: 'flex-start',
   },
   chipDot: { width: 6, height: 6, borderRadius: 3 },
@@ -328,7 +386,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     flexGrow: 1,
   },
   btn: {
-    height: 50,
+    height: tight ? 48 : 50,
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
@@ -341,4 +399,5 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   btnDanger: { backgroundColor: t.elevated, borderWidth: 1, borderColor: t.danger },
   pressed: { opacity: 0.82 },
   disabled: { opacity: 0.45 },
-});
+  });
+};

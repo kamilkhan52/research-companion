@@ -17,7 +17,7 @@ import type { PaperFigure } from '@/api/types';
 import { planFigurePlacement } from '@/lib/figures';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, Text } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 /** When present, the paper's figures are carded inline after the first paragraph that
@@ -89,6 +89,7 @@ export function Markdown({
   // cleans new ones before recording, this pass cleans the archive at render time.
   const blocks = useMemo(() => parseBlocks(stripPseudoToolTags(text)), [text]);
   const contextHandler = useContext(LinkHandlerContext);
+  const density = useDensity();
   const papers = useContext(PaperIndexContext);
   const matcher = useMemo(() => (papers?.length ? buildTitleMatcher(papers) : null), [papers]);
   const handleLink = onLinkPress ?? contextHandler ?? defaultLinkPress;
@@ -102,7 +103,7 @@ export function Markdown({
   }, [blocks, figureContext?.figures]);
   return (
     <TitleMatcherContext.Provider value={matcher}>
-      <View style={{ gap: space.sm }}>
+      <View style={{ gap: density === 'tight' ? 6 : space.sm }}>
         {blocks.map((block, i) => (
           <Fragment key={i}>
             <Block block={block} onLinkPress={handleLink} />
@@ -329,16 +330,24 @@ const HEADING_STYLES: Record<number, object> = {
   3: { fontFamily: fonts.serifMedium, fontSize: 18, lineHeight: 24 },
   4: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 22 },
 };
+const TIGHT_HEADING_STYLES: Record<number, object> = {
+  1: { fontFamily: fonts.serifMedium, fontSize: 22, lineHeight: 27 },
+  2: { fontFamily: fonts.serifMedium, fontSize: 19, lineHeight: 24 },
+  3: { fontFamily: fonts.serifMedium, fontSize: 17, lineHeight: 22 },
+  4: { fontFamily: fonts.bodySemiBold, fontSize: 14.5, lineHeight: 20 },
+};
 
 function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
   const t = useTheme();
+  const density = useDensity();
   const styles = useThemedStyles(makeStyles);
+  const headingStyles = density === 'tight' ? TIGHT_HEADING_STYLES : HEADING_STYLES;
   switch (block.kind) {
     case 'heading':
       return (
         <Text
           style={[
-            HEADING_STYLES[block.level] ?? HEADING_STYLES[4],
+            headingStyles[block.level] ?? headingStyles[4],
             { color: t.text, marginTop: space.xs },
           ]}>
           <Inline text={block.text} onLinkPress={onLinkPress} serif={block.level < 4} />

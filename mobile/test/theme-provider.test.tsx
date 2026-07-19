@@ -4,9 +4,10 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, renderAsync, screen } from '@testing-library/react-native';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
+  type DensityMode,
   resolveThemeName,
   ThemeProvider,
   useThemedStyles,
@@ -14,21 +15,29 @@ import {
 } from '@/theme/ThemeProvider';
 import { themes, type ThemePalette } from '@/theme/tokens';
 
-const makeProbeStyles = (t: ThemePalette) => StyleSheet.create({
-  pill: { backgroundColor: t.bg },
+const makeProbeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
+  pill: { backgroundColor: t.bg, padding: density === 'tight' ? 12 : 16 },
 });
 
 const seenStyles: unknown[] = [];
 
 function Probe() {
-  const { mode, themeName, theme, setMode } = useThemeMode();
+  const { mode, themeName, theme, setMode, density, setDensity } = useThemeMode();
   const styles = useThemedStyles(makeProbeStyles);
   seenStyles.push(styles);
   return (
-    <Pressable accessibilityLabel="cycle" onPress={() => setMode('black')}>
+    <View>
       <Text>{`mode:${mode} name:${themeName} bg:${theme.bg}`}</Text>
-      <Text>{`stylebg:${StyleSheet.flatten(styles.pill).backgroundColor}`}</Text>
-    </Pressable>
+      <Text>{`density:${density}`}</Text>
+      <Text>
+        {`stylebg:${StyleSheet.flatten(styles.pill).backgroundColor} padding:${StyleSheet.flatten(styles.pill).padding}`}
+      </Text>
+      <Pressable accessibilityLabel="cycle" onPress={() => setMode('black')} />
+      <Pressable
+        accessibilityLabel="toggle density"
+        onPress={() => setDensity(density === 'tight' ? 'comfortable' : 'tight')}
+      />
+    </View>
   );
 }
 
@@ -51,8 +60,9 @@ test('the Dim palette values are frozen (default stays a visual no-op)', () => {
   expect(themes.dim.mint).toBe('#65D6B4');
 });
 
-test('restores a persisted mode and persists changes', async () => {
+test('restores persisted appearance choices and persists changes', async () => {
   await AsyncStorage.setItem('rc.themeMode', 'light');
+  await AsyncStorage.setItem('rc.layoutDensity', 'tight');
   await renderAsync(
     <ThemeProvider>
       <Probe />
@@ -60,16 +70,24 @@ test('restores a persisted mode and persists changes', async () => {
   );
 
   expect(screen.getByText(`mode:light name:light bg:${themes.light.bg}`)).toBeTruthy();
+  expect(screen.getByText('density:tight')).toBeTruthy();
 
   await act(async () => {
     fireEvent.press(screen.getByLabelText('cycle'));
   });
   expect(screen.getByText(`mode:black name:black bg:${themes.black.bg}`)).toBeTruthy();
   expect(await AsyncStorage.getItem('rc.themeMode')).toBe('black');
+
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('toggle density'));
+  });
+  expect(screen.getByText('density:comfortable')).toBeTruthy();
+  expect(await AsyncStorage.getItem('rc.layoutDensity')).toBe('comfortable');
 });
 
-test('junk persisted mode falls back to system (following the OS scheme)', async () => {
+test('junk persisted appearance falls back to system and Comfortable', async () => {
   await AsyncStorage.setItem('rc.themeMode', 'banana');
+  await AsyncStorage.setItem('rc.layoutDensity', 'cramped');
   await renderAsync(
     <ThemeProvider>
       <Probe />
@@ -78,9 +96,10 @@ test('junk persisted mode falls back to system (following the OS scheme)', async
 
   // Jest's RN preset reports an OS scheme of 'light', so system resolves to Light here.
   expect(screen.getByText(`mode:system name:light bg:${themes.light.bg}`)).toBeTruthy();
+  expect(screen.getByText('density:comfortable')).toBeTruthy();
 });
 
-test('useThemedStyles caches one StyleSheet per palette and rebuilds on theme change', async () => {
+test('useThemedStyles caches by palette and density', async () => {
   await AsyncStorage.setItem('rc.themeMode', 'dim');
   await renderAsync(
     <ThemeProvider>
@@ -88,25 +107,34 @@ test('useThemedStyles caches one StyleSheet per palette and rebuilds on theme ch
     </ThemeProvider>,
   );
 
-  expect(screen.getByText(`stylebg:${themes.dim.bg}`)).toBeTruthy();
+  expect(screen.getByText(`stylebg:${themes.dim.bg} padding:16`)).toBeTruthy();
   const before = seenStyles[seenStyles.length - 1];
+
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('toggle density'));
+  });
+  expect(screen.getByText(`stylebg:${themes.dim.bg} padding:12`)).toBeTruthy();
+  const tight = seenStyles[seenStyles.length - 1];
+  expect(tight).not.toBe(before);
 
   await act(async () => {
     fireEvent.press(screen.getByLabelText('cycle')); // → black
   });
-  expect(screen.getByText(`stylebg:${themes.black.bg}`)).toBeTruthy();
+  expect(screen.getByText(`stylebg:${themes.black.bg} padding:12`)).toBeTruthy();
   const after = seenStyles[seenStyles.length - 1];
-  expect(after).not.toBe(before); // new palette → new styles
+  expect(after).not.toBe(tight); // new palette → new styles
 
-  // Same palette across re-renders → the exact same StyleSheet object (the cache).
-  const dimRenders = seenStyles.filter((s) => {
+  // Same palette+density across re-renders → the exact same StyleSheet object (the cache).
+  const dimComfortableRenders = seenStyles.filter((s) => {
     const pill = (s as ReturnType<typeof makeProbeStyles>).pill;
-    return StyleSheet.flatten(pill).backgroundColor === themes.dim.bg;
+    const flat = StyleSheet.flatten(pill);
+    return flat.backgroundColor === themes.dim.bg && flat.padding === 16;
   });
-  expect(new Set(dimRenders).size).toBe(1);
+  expect(new Set(dimComfortableRenders).size).toBe(1);
 });
 
 test('without a provider, components render Dim (migration-period default)', async () => {
   await renderAsync(<Probe />);
   expect(screen.getByText(`mode:system name:dim bg:${themes.dim.bg}`)).toBeTruthy();
+  expect(screen.getByText('density:comfortable')).toBeTruthy();
 });

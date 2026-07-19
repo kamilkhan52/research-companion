@@ -45,7 +45,11 @@ import {
   type StatusFilter,
 } from '@/lib/paperSort';
 import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import {
+  useTheme,
+  useThemedStyles,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
 
 // The base URL the cover backfill has already succeeded for (module-level so it survives Library
@@ -689,29 +693,43 @@ function Empty({ heading, body, action }: { heading: string; body: string; actio
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    marginHorizontal: space.lg,
+    gap: tight ? space.sm : space.md,
+    marginHorizontal: tight ? space.md : space.lg,
     marginBottom: space.sm,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingVertical: tight ? space.sm : space.md,
     backgroundColor: t.surface,
     borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: t.line,
   },
-  list: { padding: space.lg, paddingTop: space.sm, paddingBottom: space.xxl },
-  continueWrap: { marginBottom: space.md },
-  continueCard: { gap: space.md, borderColor: t.line2 },
-  continueBody: { flexDirection: 'row', gap: space.lg },
+  list: {
+    padding: tight ? space.md : space.lg,
+    paddingTop: space.sm,
+    paddingBottom: space.xxl,
+  },
+  continueWrap: { marginBottom: tight ? space.sm : space.md },
+  continueCard: { gap: tight ? space.sm : space.md, borderColor: t.line2 },
+  continueBody: { flexDirection: 'row', gap: tight ? space.md : space.lg },
   continueActions: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: space.sm, marginTop: space.xs },
   resumeBtn: { height: 42, paddingHorizontal: space.lg },
-  progressCard: { gap: space.md, marginBottom: space.md },
+  progressCard: {
+    gap: tight ? space.sm : space.md,
+    marginBottom: tight ? space.sm : space.md,
+  },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  filterRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.lg },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginBottom: tight ? space.md : space.lg,
+  },
   filters: { flexGrow: 0, flexShrink: 1 },
   sortBtn: {
     flexDirection: 'row',
@@ -733,7 +751,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   checkboxOn: { backgroundColor: t.mint, borderColor: t.mint },
   selectBar: {
     flexDirection: 'row', alignItems: 'center',
-    gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md,
+    gap: space.md,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingVertical: tight ? space.sm : space.md,
     borderTopWidth: 1, borderTopColor: t.line, backgroundColor: t.surface,
   },
   selectActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
@@ -751,5 +771,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  empty: { paddingVertical: space.xxl * 1.5, paddingHorizontal: space.lg, alignItems: 'center' },
-});
+  empty: {
+    paddingVertical: tight ? space.xxl : space.xxl * 1.5,
+    paddingHorizontal: space.lg,
+    alignItems: 'center',
+  },
+  });
+};
