@@ -11,6 +11,14 @@ interface StoredDraft<T> {
   acceptedBaseline: number | null;
 }
 
+function fallbackFingerprint(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? `${typeof value}:${String(value)}`;
+  } catch {
+    return `${typeof value}:${String(value)}`;
+  }
+}
+
 export function draftKey(...parts: (string | number)[]): string {
   return `${PREFIX}:${parts.map((part) => encodeURIComponent(String(part))).join(':')}`;
 }
@@ -29,6 +37,7 @@ export interface PersistedDraft<T> {
 }
 
 export function usePersistedDraft<T>(key: string | null, fallback: T): PersistedDraft<T> {
+  const currentFallbackFingerprint = fallbackFingerprint(fallback);
   const [value, setValueState] = useState<T>(fallback);
   const [ready, setReady] = useState(false);
   const [hasDraft, setHasDraft] = useState(false);
@@ -36,12 +45,14 @@ export function usePersistedDraft<T>(key: string | null, fallback: T): Persisted
   const [acceptedBaseline, setAcceptedBaseline] = useState<number | null>(null);
   const valueRef = useRef(value);
   const fallbackRef = useRef(fallback);
-  const appliedFallbackRef = useRef(fallback);
+  const fallbackFingerprintRef = useRef(currentFallbackFingerprint);
+  const appliedFallbackFingerprintRef = useRef(currentFallbackFingerprint);
   const editVersionRef = useRef(0);
   const loadVersionRef = useRef(0);
   const writeVersionRef = useRef(0);
   valueRef.current = value;
   fallbackRef.current = fallback;
+  fallbackFingerprintRef.current = currentFallbackFingerprint;
 
   useEffect(() => {
     const loadVersion = ++loadVersionRef.current;
@@ -51,7 +62,7 @@ export function usePersistedDraft<T>(key: string | null, fallback: T): Persisted
     setSubmitted(false);
     setAcceptedBaseline(null);
     valueRef.current = fallbackRef.current;
-    appliedFallbackRef.current = fallbackRef.current;
+    appliedFallbackFingerprintRef.current = fallbackFingerprintRef.current;
     setValueState(fallbackRef.current);
     if (!key) {
       setReady(true);
@@ -80,12 +91,16 @@ export function usePersistedDraft<T>(key: string | null, fallback: T): Persisted
   }, [key]);
 
   useEffect(() => {
-    if (ready && !hasDraft && !Object.is(appliedFallbackRef.current, fallback)) {
-      appliedFallbackRef.current = fallback;
-      valueRef.current = fallback;
-      setValueState(fallback);
+    if (
+      ready
+      && !hasDraft
+      && appliedFallbackFingerprintRef.current !== currentFallbackFingerprint
+    ) {
+      appliedFallbackFingerprintRef.current = currentFallbackFingerprint;
+      valueRef.current = fallbackRef.current;
+      setValueState(fallbackRef.current);
     }
-  }, [fallback, hasDraft, ready]);
+  }, [currentFallbackFingerprint, hasDraft, ready]);
 
   useEffect(() => {
     if (!key || !ready || !hasDraft) return;

@@ -87,7 +87,21 @@ export function usePreviewCues({
               }
               handledPreviewJobs.add(jobId);
               if (job.status === 'done' && !job.suppressed && job.url) {
-                await playPreview(`preview:${job.id}`, `Preview · ${title}`, job.url);
+                const accepted = await playPreview(
+                  `preview:${job.id}`,
+                  `Preview · ${title}`,
+                  job.url,
+                );
+                if (accepted) {
+                  // Playback admission is the useful semantic boundary: later cues should
+                  // avoid everything this listener has heard or is already queued to hear.
+                  // A failed acknowledgement must not replay a cue that was already admitted.
+                  try {
+                    await api.markPreviewPlayed(project, job.id);
+                  } catch {
+                    // Best effort. `generated_cues` still prevents repetition server-side.
+                  }
+                }
               }
               return;
             } catch {

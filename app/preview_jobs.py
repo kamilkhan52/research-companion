@@ -7,6 +7,7 @@ until final narration becomes playable, then suppresses unfinished/queued late c
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -18,6 +19,7 @@ from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
 MAX_CUE_CHARS = 240
+TARGET_CUE_CHARS = 200
 CONTINUATION_POLL_SECONDS = 0.25
 # Segment completion remains the preferred synthesis cue trigger, but a single slow segment
 # must not leave the listener in silence until the stitched track is ready.
@@ -44,6 +46,8 @@ class PreviewJob(Job):
     url: str | None = None
     model: str | None = None
     suppressed: bool = False
+    played: bool = False
+    played_at: str | None = None
     timings: dict[str, str] = field(default_factory=dict)
 
 
@@ -143,37 +147,79 @@ def research_sources(slug: str) -> list[dict]:
     )
 
 
-# One bounded web lookup per paper per process (polish plan I.3): context EXTERNAL to the
-# paper that makes the waiting time genuinely informative — the authors and their other
-# work, publication/version status, public discussion. Fetched in the coordinator's thread
-# (never on the analysis path), cached so repeat listens cost nothing, and typed as
+# One bounded web-agent run per paper per process: context EXTERNAL to the paper that makes
+# waiting informative — authors and their other work, publication/version status, and
+# scholarly context. It runs in the coordinator's project-bound worker (never on the analysis
+# path), is cached within that project so repeat listens cost nothing, and is typed as
 # untrusted web content for the cue prompt.
 _external_cache: dict[str, list[dict]] = {}
 _EXTERNAL_CACHE_MAX = 64
+MAX_RESEARCH_AGENT_REQUESTS = 7
+MAX_RESEARCH_AGENT_TOOL_CALLS = 5
 
 
-def external_sources(slug: str) -> list[dict]:
-    if slug in _external_cache:
-        return _external_cache[slug]
+def _research_with_agent(title: str, paper_metadata: str) -> str:
+    """Run a small read-only search/fetch agent and return its sourced findings."""
+    # Imported lazily: pydantic_ai is heavyweight and tests inject a research function.
+    from pydantic_ai import Agent
+    from pydantic_ai.usage import UsageLimits
+
+    from . import agent_harness, research_tools, usage
+
+    def web_search(objective: str, search_queries: list[str]) -> str:
+        """Search for reliable context. Use 1-3 focused queries; results include URLs."""
+        return research_tools.web_search(objective, search_queries[:3])
+
+    def web_fetch(urls: list[str], objective: str) -> str:
+        """Fetch up to 3 promising primary or scholarly pages and return readable text."""
+        return research_tools.web_fetch(urls[:3], objective)
+
+    model = resolve_model()
+    research_agent = Agent(
+        agent_harness._openrouter_model(model),
+        system_prompt=prompts.get("listening_preview_research"),
+        tools=[web_search, web_fetch],
+        output_type=str,
+        retries=2,
+    )
+    result = asyncio.run(
+        research_agent.run(
+            f"Paper title: {title}\n\nKnown project metadata:\n{paper_metadata[:4_000]}",
+            usage_limits=UsageLimits(
+                request_limit=MAX_RESEARCH_AGENT_REQUESTS,
+                tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
+            ),
+        ),
+    )
+    run_usage = result.usage()
+    usage.record("listening_preview_research", model, {
+        "prompt_tokens": getattr(run_usage, "input_tokens", 0) or 0,
+        "completion_tokens": getattr(run_usage, "output_tokens", 0) or 0,
+    })
+    return str(result.output or "")[:6_000]
+
+
+def external_sources(
+    slug: str,
+    research_fn: Callable[[str, str], str] | None = None,
+) -> list[dict]:
     paper = store.get_paper(slug)
     if not paper:
         return []
+    cache_key = f"{config.active_project_id()}:{slug}:{paper.title}"
+    if cache_key in _external_cache:
+        return _external_cache[cache_key]
     title = paper.title
+    research_fn = research_fn or _research_with_agent
     try:
-        from . import research_tools  # late import: keeps preview module import-light
-        result = research_tools.web_search(
-            f"Context around the research paper \"{title}\": the authors and their "
-            "affiliations, other notable work by the same authors, whether a newer version "
-            "or a publication venue exists for this paper, and any public discussion of it.",
-            [f"{title} authors affiliation", f"{title} published venue discussion"],
-        )
+        result = research_fn(title, store.entry_markdown(slug))
     except Exception as exc:
-        log.warning("external context lookup failed slug=%s: %s", slug, str(exc)[:200])
+        log.warning("external context research agent failed slug=%s: %s", slug, str(exc)[:200])
         return []
     chunks = _source_chunks(str(result or ""), "web", "external_web_context", 12)
     if len(_external_cache) >= _EXTERNAL_CACHE_MAX:
         _external_cache.clear()
-    _external_cache[slug] = chunks
+    _external_cache[cache_key] = chunks
     return chunks
 
 
@@ -191,22 +237,14 @@ def _progress_source(progress: dict) -> dict | None:
         text = ("The written analysis is still in progress; the amount remaining is not yet "
                 "known.")
     elif phase == "narration_adaptation":
-        text = ("The written response is complete. Its spoken adaptation is still being "
-                "prepared, and the amount remaining is not yet known.")
+        text = ("The final spoken response is still being adapted for listening and will play "
+                "automatically after preparation and synthesis finish.")
     elif phase == "audio_synthesis":
-        # The text is finished and on screen to read NOW — say so (R9.6: the listener wanted to
-        # know the response is ready to read while audio is still being prepared). Playback of
-        # the AUDIO still starts only when the COMPLETE stitched track exists (polish plan I.1),
-        # so this must not claim the audio "is ready" or "about to play" — that repeated across
-        # synthesis cues was the I.2 "several announcements, then nothing plays" bug. The
-        # coordinator now emits a synthesis cue only when a segment actually lands (R9.6), so
-        # this phrasing is spoken on real progress, not on a loop.
         done = progress.get("segments_done")
         total = progress.get("segments_total")
         counted = f" ({done} of {total} parts synthesized)" if total else ""
-        text = ("The written response is complete and available to read on screen now; its "
-                f"audio is still being synthesized{counted} and will begin playing "
-                "automatically once assembled.")
+        text = (f"The full spoken response is still being synthesized{counted} and will begin "
+                "playing automatically once the complete track is assembled.")
     else:
         return None
     return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
@@ -243,12 +281,42 @@ def validate_result(raw: str, sentences: list[dict]) -> tuple[str, list[str]]:
     return cue, list(dict.fromkeys(source_ids))
 
 
+def _compact_overlong_result(raw: str) -> str:
+    """Deterministically salvage an otherwise valid overlong cue before TTS.
+
+    The strict validator remains strict for callers and tests. The generation path gets one
+    bounded repair so a verbose model cannot repeatedly punch holes in a long preview sequence.
+    """
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(value, dict) or not isinstance(value.get("cue"), str):
+        return raw
+    cue = re.sub(r"\s+", " ", value["cue"]).strip()
+    if len(cue) <= MAX_CUE_CHARS:
+        value["cue"] = cue
+        return json.dumps(value, ensure_ascii=False)
+
+    prefix = cue[:MAX_CUE_CHARS]
+    sentence_ends = [m.end() for m in re.finditer(r"[.!?](?:[\"”’')\]]*)", prefix)]
+    cut = max((end for end in sentence_ends if end >= 80), default=0)
+    if cut:
+        compact = prefix[:cut].strip()
+    else:
+        word_cut = prefix.rfind(" ", 80)
+        compact = prefix[:word_cut if word_cut > 0 else MAX_CUE_CHARS - 1]
+        compact = compact.rstrip(" ,;:-") + "…"
+    value["cue"] = compact[:MAX_CUE_CHARS]
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _default_generate(messages: list[dict], model: str | None) -> str:
     return llm.complete(
         messages,
         model=model,
         temperature=0.2,
-        max_tokens=300,
+        max_tokens=180,
         operation="listening_preview",
     )
 
@@ -273,8 +341,36 @@ def suppress(job_ids: list[str]) -> None:
                 job.suppressed = True
 
 
+def acknowledge_played(job_id: str) -> dict | None:
+    """Record that the active project's audio layer accepted this cue for playback."""
+    job = _registry.get(job_id)
+    if not job:
+        return None
+    with _registry.lock:
+        if not job.played:
+            job.played = True
+            job.played_at = now_iso()
+    return _registry.snapshot(job_id)
+
+
+def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Return complete chronological (played, generated) histories for a preview wait."""
+    generated: list[str] = []
+    played: list[str] = []
+    for job_id in job_ids:
+        cue_job = get_job(job_id)
+        if cue_job is None or cue_job.status != "done" or not cue_job.cue:
+            continue
+        generated.append(cue_job.cue)
+        if getattr(cue_job, "played", False):
+            played.append(cue_job.cue)
+    return played, generated
+
+
 def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cue: str = "",
               progress: dict | None = None,
+              *, played_cues: list[str] | None = None,
+              generated_cues: list[str] | None = None,
               generate_fn: GenerateFn | None = None,
               synth_fn: SynthFn | None = None) -> PreviewJob:
     if not sentences:
@@ -282,6 +378,8 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
     generate_fn = generate_fn or _default_generate
     synth_fn = synth_fn or tts.openai_speech
     progress_copy = dict(progress or {})
+    played_copy = list(played_cues or [])
+    generated_copy = list(generated_cues or [])
     sentence_copy = [
         {
             "id": str(item["id"]),
@@ -303,7 +401,13 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
         messages = [
             {"role": "system", "content": (
                 prompts.get("listening_preview") + "\n\n"
-                + prompts.get("listening_preview_priorities")
+                + prompts.get("listening_preview_priorities") + "\n\n"
+                + "Runtime requirements: `played_cues` and `generated_cues` below are complete "
+                  "chronological histories for this wait. Compare against every cue in both and "
+                  "do not repeat any topic, fact, framing, transition, or progress wording. Never "
+                  "tell the researcher to read the response or look at the screen; they are "
+                  "waiting for automatic audio playback. Keep cue text at or below "
+                  f"{MAX_CUE_CHARS} characters."
             )},
             {"role": "user", "content": json.dumps({
                 # Kept for compatibility with existing user-edited preview prompts.
@@ -312,10 +416,23 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
                 ],
                 "grounded_sources": sentence_copy,
                 "previous_cue": previous_cue,
+                "played_cues": played_copy,
+                "generated_cues": generated_copy,
                 "preparation_progress": progress_copy,
             }, ensure_ascii=False)},
         ]
-        cue, source_ids = validate_result(generate_fn(messages, model), sentence_copy)
+        raw = generate_fn(messages, model)
+        try:
+            cue, source_ids = validate_result(raw, sentence_copy)
+        except PreviewError as exc:
+            if f"exceeds {MAX_CUE_CHARS}" not in str(exc):
+                raise
+            repaired = _compact_overlong_result(raw)
+            cue, source_ids = validate_result(repaired, sentence_copy)
+            log.warning(
+                "compacted overlong preview cue chat=%s ordinal=%s target=%s hard_max=%s",
+                chat_job_id[:8], ordinal, TARGET_CUE_CHARS, MAX_CUE_CHARS,
+            )
         with _registry.lock:
             job.cue = cue
             job.source_sentence_ids = source_ids
@@ -367,7 +484,7 @@ def _audio_progress(audio_job) -> tuple[str, dict, bool]:
     return "narration_adaptation", {
         "phase": "narration_adaptation",
         "remaining_known": False,
-        "status": "The written response is complete; its spoken adaptation is still being prepared.",
+        "status": "The final spoken response is still being prepared for automatic playback.",
     }, ready
 
 
@@ -396,10 +513,6 @@ def start_coordinator(
             except Exception as exc:
                 log.warning("external sources failed chat=%s: %s",
                             chat_job_id[:8], str(exc)[:200])
-        previous_cues = [
-            cue.cue for cue_id in cue_ids
-            if (cue := get_job(cue_id)) is not None and cue.status == "done" and cue.cue
-        ]
         last_started = last_started_at
         # During audio synthesis, segment progress is the preferred cue trigger — it keeps
         # progress language honest and avoids the old rapid "…still synthesizing" loop. But a
@@ -426,9 +539,6 @@ def start_coordinator(
             if previous and previous.status == "running":
                 time.sleep(CONTINUATION_POLL_SECONDS)
                 continue
-            if previous and previous.status == "done" and previous.cue:
-                if not previous_cues or previous_cues[-1] != previous.cue:
-                    previous_cues.append(previous.cue)
 
             now = time.monotonic()
             synth_done = int(progress.get("segments_done") or 0)
@@ -443,12 +553,15 @@ def start_coordinator(
                 if phase == "audio_synthesis":
                     last_synth_done = synth_done
                 try:
+                    played_cues, generated_cues = cue_history(cue_ids)
                     cue = start_job(
                         chat_job_id,
                         len(cue_ids) + 1,
                         source_copy,
-                        "\n".join(previous_cues[-8:]),
+                        "\n".join(played_cues or generated_cues),
                         progress,
+                        played_cues=played_cues,
+                        generated_cues=generated_cues,
                     )
                     cue_ids.append(cue.id)
                     publish(cue_ids, phase, progress, False)

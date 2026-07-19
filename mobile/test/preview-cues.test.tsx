@@ -16,6 +16,8 @@ const doneCue: PreviewJob = {
   url: '/api/audio/cue.mp3',
   model: 'preview/model',
   suppressed: false,
+  played: false,
+  played_at: null,
   timings: {},
   error: null,
   started_at: '2026-07-07T00:00:00Z',
@@ -68,6 +70,10 @@ test('a completed grounded cue is polled and offered to idle playback once', asy
     'Preview · Paper A',
     '/api/audio/cue.mp3',
   ));
+  await waitFor(() => expect(api.markPreviewPlayed).toHaveBeenCalledWith(
+    'project-a',
+    'cue-job-1',
+  ));
   expect(api.getPreviewJob).toHaveBeenCalledTimes(1);
   await rendered.unmountAsync();
 });
@@ -83,6 +89,7 @@ test('a server-suppressed late cue is never offered to playback', async () => {
 
   await waitFor(() => expect(api.getPreviewJob).toHaveBeenCalledWith('project-a', 'cue-job-2'));
   expect(input.playPreview).not.toHaveBeenCalled();
+  expect(api.markPreviewPlayed).not.toHaveBeenCalled();
   await rendered.unmountAsync();
 });
 

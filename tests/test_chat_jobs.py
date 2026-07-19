@@ -299,13 +299,16 @@ def test_listening_turn_starts_grounded_preview_without_blocking_analysis(
                        "kind": "prior_project_context"}],
     )
 
-    def fake_preview(chat_job_id, ordinal, sentences, previous_cue, progress):
+    def fake_preview(
+        chat_job_id, ordinal, sentences, previous_cue, progress, **history,
+    ):
         captured.update(
             chat_job_id=chat_job_id,
             ordinal=ordinal,
             sentences=sentences,
             previous_cue=previous_cue,
             progress=progress,
+            history=history,
         )
         return SimpleNamespace(id="preview-job")
 
@@ -358,6 +361,7 @@ def test_listening_turn_starts_grounded_preview_without_blocking_analysis(
             "completed_response_sentences": 1,
             "remaining_known": False,
         },
+        "history": {"played_cues": [], "generated_cues": []},
     }
     assert coordinator["audio_id"] == "audio-job"
     assert coordinator["existing_ids"] == ["preview-job"]
@@ -380,8 +384,10 @@ def test_preview_cadence_uses_new_sentences_context_and_previous_cue(monkeypatch
     monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 3)
     monkeypatch.setattr(chat_jobs.time, "monotonic", lambda: 20.0 + len(calls) * 3)
 
-    def fake_start(chat_job_id, ordinal, sentences, previous_cue, progress):
-        calls.append((chat_job_id, ordinal, sentences, previous_cue, progress))
+    def fake_start(
+        chat_job_id, ordinal, sentences, previous_cue, progress, **history,
+    ):
+        calls.append((chat_job_id, ordinal, sentences, previous_cue, progress, history))
         return SimpleNamespace(id=f"preview-{ordinal}")
 
     monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_start)
@@ -404,6 +410,10 @@ def test_preview_cadence_uses_new_sentences_context_and_previous_cue(monkeypatch
     assert calls[1][2][0] == {"id": "s0002", "text": "Two.", "kind": "live_response"}
     assert calls[1][3] == "spoken preview-1"
     assert calls[1][4]["completed_response_sentences"] == 2
+    assert calls[1][5] == {
+        "played_cues": [],
+        "generated_cues": ["spoken preview-1"],
+    }
     assert all(call[0] == "chat-1" for call in calls)
 
 

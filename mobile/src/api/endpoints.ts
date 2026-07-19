@@ -322,6 +322,12 @@ export const cancelChatJob = (pid: string, id: string) =>
 /** Poll one independently generated grounded listening cue. */
 export const getPreviewJob = (pid: string, id: string) =>
   apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`);
+/** Tell later cue generations that the audio layer accepted this cue for playback. */
+export const markPreviewPlayed = (pid: string, id: string) =>
+  apiPost<{ job: PreviewJob }>(
+    `${P(pid)}/preview/jobs/${encodeURIComponent(id)}/played`,
+    {},
+  );
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
 // target = a paper slug, or 'working' for the cross-paper working notes.
