@@ -345,6 +345,10 @@ export interface NotesJob {
   kind: 'edit' | 'split_destination' | 'split_source_cleanup';
   summary: string;
   base_revision: string;
+  /** Present for a paper-by-paper relocation integration queue. */
+  relocation_index: number | null;
+  relocation_total: number | null;
+  relocation_title: string | null;
   status: 'running' | 'done' | 'error' | 'cancelled';
   items: StreamItem[];
   result: string | null;

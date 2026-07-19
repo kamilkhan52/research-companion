@@ -26,6 +26,10 @@ depends on screenshots Kamil has not attached yet.
   migration flow should process selected papers sequentially and present each notes
   integration for review/commit at the migration point. Keep proposals durable and
   human-approved; never make the migration HTTP request wait on the LLM.
+  **Implemented in [#172](https://github.com/kamilkhan52/research-companion/pull/172):**
+  relocation now opens Working Notes
+  immediately, generates one paper-scoped background proposal at a time, and advances only
+  after Apply or Discard. Each Apply commits before the next proposal reads the updated notes.
 - **R10.4 — Graph Build first-tap feedback.** The first Build Graph tap on a new project appears
   inert. The UI must immediately show a starting/running state and remain idempotent if tapped
   again; verify whether the job already starts and fix client invalidation/transition rather
@@ -86,6 +90,11 @@ depends on screenshots Kamil has not attached yet.
   include every chat/thread, branches, committed Notes, corpus/source data, and per-paper graph
   cache. Reproduce the reported Reading Modes reset and fix any contract/cache/navigation
   issue that makes copied session history appear absent.
+  **Implemented in [#172](https://github.com/kamilkhan52/research-companion/pull/172):**
+  both Move and Copy carry transcript,
+  retry branches, and session metadata; Move then removes the source while Copy leaves two
+  independent histories. A committed-paper regression test covers the reported Reading Modes
+  fallback.
 - **R10.18 — App-wide duplicate awareness and reuse.** Before adding a paper already present
   elsewhere, offer Cancel, reuse/copy into this project, or move it, with explicit Notes/chat
   handling. Design around a stable cross-project paper identity and shared reusable source

@@ -274,7 +274,13 @@ export const saveNotes = (
   markdown: string,
   opts: { summary?: string; base_revision?: string; job_id?: string } = {},
 ) =>
-  apiPost<{ ok: boolean; rev: string; target: string }>(
+  apiPost<{
+    ok: boolean;
+    rev: string;
+    target: string;
+    next_job: NotesJob | null;
+    next_error: string | null;
+  }>(
     `${P(pid)}/notes/${encodeURIComponent(target)}`,
     { markdown, ...opts },
   );
@@ -293,7 +299,10 @@ export const getActiveNotesJob = (pid: string, target: string) =>
 export const getLatestNotesJob = (pid: string, target: string) =>
   apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`);
 export const discardNotesJob = (pid: string, id: string) =>
-  apiPost<{ ok: boolean }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}/discard`, {});
+  apiPost<{ ok: boolean; next_job: NotesJob | null; next_error: string | null }>(
+    `${P(pid)}/notes/jobs/${encodeURIComponent(id)}/discard`,
+    {},
+  );
 
 // ---------- discovery (goals -> suggested readings) ----------
 

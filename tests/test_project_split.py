@@ -109,9 +109,9 @@ def test_move_leaves_source_repo_clean(temp_project):
     assert dirty == [], f"source repo dirty after split: {dirty!r}"
 
 
-def test_copy_leaves_source_intact_and_does_not_migrate_sessions(temp_project):
+def test_copy_leaves_source_intact_and_copies_session_history(temp_project):
     _seed_source(temp_project)
-    # give the copied paper a session so we can prove it does NOT travel on copy
+    # Copy is an independent duplicate of the paper plus its work, including discussion.
     sessions.set_state("smooth", "in_discussion")
     res = project_split.split_project(temp_project, "Reading B", ["smooth", "awq"],
                                       remove_from_source=False)
@@ -121,9 +121,9 @@ def test_copy_leaves_source_intact_and_does_not_migrate_sessions(temp_project):
     tok = _bind(res["new_pid"])
     try:
         assert {p.slug for p in store.list_papers()} == {"smooth", "awq"}
-        # Copy semantics: the discussion stays in the source, so the copy has no session.
-        assert sessions.get_state("awq") is None
-        assert sessions.transcript_paths("awq")[0].exists() is False
+        assert sessions.get_state("awq") == "in_discussion"
+        assert sessions.transcript_paths("awq")[0].read_text() == \
+            '{"role":"user","text":"hi"}\n'
     finally:
         config.reset_active_project(tok)
 
@@ -376,6 +376,34 @@ def _make_dest(name="Existing", papers=(("base", "Base Paper"),)):
     return dpid
 
 
+def test_move_committed_paper_retains_the_user_facing_chat(temp_project):
+    """A read paper must not fall back to Reading Modes in the destination: committed state and
+    the transcript entries the mobile UI renders both travel together."""
+    _seed_source(temp_project)
+    jsonl, _ = sessions.transcript_paths("awq")
+    jsonl.write_text(
+        '{"role":"user","kind":"reply","text":"What is the key result?"}\n'
+        '{"role":"assistant","canonical":"Four-bit weights work.","narration":"",'
+        '"state_signal":"","proposed_commit":{"summary":"Read AWQ","notes_block":"n",'
+        '"synthesis":"s"},"proposal_committed":true}\n'
+    )
+    sessions.set_state("awq", "committed")
+    dest = _make_dest()
+
+    project_split.move_to_existing(
+        temp_project, dest, ["awq"], remove_from_source=True,
+    )
+    tok = _bind(dest)
+    try:
+        assert sessions.get_state("awq") == "committed"
+        assert [entry["role"] for entry in sessions.transcript("awq")] == [
+            "user", "assistant",
+        ]
+        assert sessions.transcript("awq")[1]["canonical"] == "Four-bit weights work."
+    finally:
+        config.reset_active_project(tok)
+
+
 def test_move_to_existing_appends_and_removes_from_source(temp_project):
     _seed_source(temp_project)
     dest = _make_dest()
@@ -432,6 +460,33 @@ def test_move_to_existing_refuses_retained_on_disk_data(temp_project):
     tok = _bind(dest)
     try:
         assert "DEST's own history" in store.read_notes("awq")  # untouched
+    finally:
+        config.reset_active_project(tok)
+
+
+def test_move_to_existing_refuses_retained_session_metadata(temp_project):
+    """Session state can survive without a corpus or transcript. It is still destination-owned
+    paper work and must not be silently overwritten by a same-slug Move or Copy."""
+    _seed_source(temp_project)
+    dest = _make_dest()
+    tok = _bind(dest)
+    try:
+        sessions.set_state("awq", "committed")
+        sessions.set_reading_mode("awq", "technical")
+        assert sessions.transcript_paths("awq")[0].exists() is False
+        assert store.corpus_path("awq").exists() is False
+    finally:
+        config.reset_active_project(tok)
+
+    with pytest.raises(project_split.SplitError, match="already have data"):
+        project_split.move_to_existing(
+            temp_project, dest, ["awq"], remove_from_source=False,
+        )
+
+    tok = _bind(dest)
+    try:
+        assert sessions.get_state("awq") == "committed"
+        assert sessions.get_reading_mode("awq") == "technical"
     finally:
         config.reset_active_project(tok)
 

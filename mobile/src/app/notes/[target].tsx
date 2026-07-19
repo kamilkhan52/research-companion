@@ -147,7 +147,7 @@ export default function NotesScreen() {
     setSaveError(null);
     if (text === draft) await editDraft.markSubmitted();
     try {
-      await saveNotes(pid, target, text, {
+      const saved = await saveNotes(pid, target, text, {
         summary,
         base_revision: proposal?.baseRevision,
         job_id: proposal?.jobId,
@@ -158,7 +158,13 @@ export default function NotesScreen() {
       await editDraft.clear(null);
       // Only an edit-first/apply save sent a job id for the backend to discard. A separate
       // proposal that happened to finish while a manual draft was open must remain reviewable.
-      if (proposal) agent.proposalApplied();
+      if (proposal) {
+        agent.proposalApplied();
+        if (saved.next_job) await agent.resume();
+        if (saved.next_error) {
+          setSaveError(`Saved, but the next migrated paper could not start: ${saved.next_error}`);
+        }
+      }
     } catch (e) {
       setSaveError((e as Error).message ?? 'Save failed.');
       await qc.invalidateQueries({ queryKey: keys.notes(pid, target) });
@@ -203,6 +209,10 @@ export default function NotesScreen() {
   }
 
   const showProposal = agent.proposal !== null && mode === 'view';
+  const relocationProgress =
+    agent.job?.relocation_index && agent.job?.relocation_total
+      ? `Paper ${agent.job.relocation_index} of ${agent.job.relocation_total}`
+      : null;
   const actions: SheetOption[] = [];
   if (paperUrl) {
     actions.push({
@@ -237,7 +247,13 @@ export default function NotesScreen() {
     <Screen edges={['top']}>
       <TopBar
         title={title}
-        subtitle={showProposal ? 'Proposed revision — review before applying' : 'Notes'}
+        subtitle={
+          relocationProgress
+            ? `${relocationProgress} · ${showProposal ? 'review before applying' : 'preparing notes'}`
+            : showProposal
+              ? 'Proposed revision — review before applying'
+              : 'Notes'
+        }
         onBack={router.canGoBack() ? () => router.back() : undefined}
         right={
           mode === 'view' && !asking && !showProposal ? (
@@ -301,7 +317,9 @@ export default function NotesScreen() {
                   “{agent.job?.instruction}”
                 </Text>
                 <Text variant="caption" color={t.violet} style={{ marginTop: space.xs }}>
-                  Review below — nothing is committed until you apply.
+                  {relocationProgress
+                    ? `${relocationProgress}${agent.job?.relocation_title ? ` · ${agent.job.relocation_title}` : ''}. Apply or discard to continue to the next paper.`
+                    : 'Review below — nothing is committed until you apply.'}
                 </Text>
               </Card>
             ) : null}

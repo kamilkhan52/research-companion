@@ -168,6 +168,13 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R9.2 | Select text → comment on spans → queue comments → attach quotes+comments to next response | feature | Design [#167](https://github.com/kamilkhan52/research-companion/pull/167) (`docs/text-comments-design.md`) — sentence-granularity approved 2026-07-18; phased implementation queued |
 | R9.4 | Default theme = System | confirmed | Already the default; no-op |
 
+## Round-10 device-pass queue (2026-07-18) — see docs/round10-device-pass-queue.md
+
+| Item | Change | PR | Status |
+|------|--------|----|--------|
+| R10.1–R10.2 | Hardware Back dismisses only the active sheet; keyboard focus expands sheets | [#171](https://github.com/kamilkhan52/research-companion/pull/171) | Complete |
+| R10.3 + R10.17 | Sequential paper-by-paper migration-notes review; Move/Copy preserve independent discussion history, branches, session state, Notes, corpus, and graph caches | [#172](https://github.com/kamilkhan52/research-companion/pull/172) | Complete |
+
 ## Theming implementation (R.2, per docs/theming-design.md)
 
 | Item | Change | PR | Status |

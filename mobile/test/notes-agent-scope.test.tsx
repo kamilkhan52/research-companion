@@ -12,6 +12,9 @@ function proposal(id: string, result: string): NotesJob {
     kind: 'split_destination',
     summary: 'Integrate moved papers',
     base_revision: 'revision',
+    relocation_index: null,
+    relocation_total: null,
+    relocation_title: null,
     status: 'done',
     items: [],
     result,
@@ -66,7 +69,7 @@ test('a failed discard keeps the proposal and job id available for retry', async
     .mockResolvedValueOnce({ job: proposal('job-a', 'Proposal to retain') });
   jest.mocked(api.discardNotesJob)
     .mockRejectedValueOnce(new Error('connection lost'))
-    .mockResolvedValueOnce({ ok: true });
+    .mockResolvedValueOnce({ ok: true, next_job: null, next_error: null });
 
   const rendered = await renderHookAsync(() => useNotesAgent('project-a', 'working'));
   await act(async () => rendered.result.current.resume());
@@ -79,6 +82,39 @@ test('a failed discard keeps the proposal and job id available for retry', async
   act(() => rendered.result.current.dismissProposal());
   await waitFor(() => expect(rendered.result.current.proposal).toBeNull());
   expect(rendered.result.current.job).toBeNull();
+  await rendered.unmountAsync();
+});
+
+test('discarding one relocation proposal adopts the next queued paper', async () => {
+  const first = {
+    ...proposal('job-a', 'First paper proposal'),
+    relocation_index: 1,
+    relocation_total: 2,
+    relocation_title: 'Paper A',
+  };
+  const next = {
+    ...proposal('job-b', ''),
+    status: 'running' as const,
+    result: null,
+    finished_at: null,
+    relocation_index: 2,
+    relocation_total: 2,
+    relocation_title: 'Paper B',
+  };
+  jest.mocked(api.getLatestNotesJob).mockResolvedValueOnce({ job: first });
+  jest.mocked(api.discardNotesJob).mockResolvedValueOnce({
+    ok: true,
+    next_job: next,
+    next_error: null,
+  });
+
+  const rendered = await renderHookAsync(() => useNotesAgent('project-a', 'working'));
+  await act(async () => rendered.result.current.resume());
+  act(() => rendered.result.current.dismissProposal());
+
+  await waitFor(() => expect(rendered.result.current.job?.id).toBe('job-b'));
+  expect(rendered.result.current.running).toBe(true);
+  expect(rendered.result.current.proposal).toBeNull();
   await rendered.unmountAsync();
 });
 

@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
+import type { RelocationResult } from '@/api/endpoints';
 import { useMoveProject } from '@/api/queries';
 import { BottomSheet } from '@/components/BottomSheet';
 import { Button, Text } from '@/ui';
@@ -30,8 +31,8 @@ export function MoveToProjectSheet({
   slugs: string[];
   notesEligible: boolean;
   onClose: () => void;
-  /** Called with the destination's id after a successful move (the caller switches to it). */
-  onDone: (destPid: string) => void;
+  /** The caller switches projects and opens immediate notes review when one was requested. */
+  onDone: (result: RelocationResult) => void;
 }) {
   const t = useTheme();
   const move = useMoveProject(pid);
@@ -68,7 +69,7 @@ export function MoveToProjectSheet({
       setRemove(true);
       setDraftNotes(true);
       setCleanupSource(false);
-      onDone(res.new_pid);
+      onDone(res);
     } catch (e) {
       setError((e as Error).message ?? 'Could not move the papers.');
     }
