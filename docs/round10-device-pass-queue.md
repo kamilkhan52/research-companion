@@ -117,6 +117,20 @@ depends on screenshots Kamil has not attached yet.
 - **R9.2 approved — sentence annotations.** Implement the four phases in
   `docs/text-comments-design.md`. Long-press keeps the existing action menu; **Comment on this**
   enters sentence selection. Native arbitrary character-range selection remains unavailable.
+  **Phase 1 implemented in
+  [#178](https://github.com/kamilkhan52/research-companion/pull/178):** committed prose has
+  an opt-in sentence-span path with tap handling, violet selection/annotation marks, a
+  comment-count badge, and link suppression during annotation; all ordinary Markdown callers
+  stay on the unchanged renderer.
+  **Phase 2 implemented in
+  [#179](https://github.com/kamilkhan52/research-companion/pull/179):** long-press offers
+  **Comment on this**, sentence taps open an inline quote/comment editor, and a per-paper
+  persisted queue renders editable/removable attached-comment chips above the composer.
+  **Phase 3 implemented in
+  [#180](https://github.com/kamilkhan52/research-companion/pull/180):** reply contracts accept
+  optional quote/comment pairs, one shared deterministic formatter records them as a normal
+  Markdown user turn, pure-annotation sends are valid, shared API types are regenerated, and
+  mobile clears the persisted queue only after server acceptance (with transcript recovery).
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
@@ -124,6 +138,11 @@ depends on screenshots Kamil has not attached yet.
 - **R10.20 — Preview cues continue until playable audio is ready.** In stitched-full and
   segmented modes, cues must bridge from analysis generation through the actual audio-ready
   boundary, without repetition. Text completion alone must not stop them.
+  **Implemented in
+  [#177](https://github.com/kamilkhan52/research-companion/pull/177):** the coordinator still
+  reacts immediately to finished synthesis segments, but a bounded keepalive now permits a
+  fresh grounded cue during a long flat segment. Terminal audio status remains the only
+  ready boundary, and pending late cues are suppressed there.
 - **R10.21 — Multiple threads per paper.** Let the reader start a clean thread with arbitrary
   text once the source is available, switch among independent threads, retain the main chat's
   tools, and synthesize concluded insights from all threads into the notes proposal. Requires
