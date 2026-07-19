@@ -16,6 +16,10 @@ jest.mock('expo-system-ui', () => ({
   setBackgroundColorAsync: jest.fn(async () => undefined),
 }));
 
+jest.mock('expo-document-picker', () => ({
+  getDocumentAsync: jest.fn(async () => ({ canceled: true, assets: [] })),
+}));
+
 jest.mock('react-native-safe-area-context', () =>
   require('react-native-safe-area-context/jest/mock').default,
 );
