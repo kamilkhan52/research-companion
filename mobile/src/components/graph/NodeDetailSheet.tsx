@@ -77,11 +77,12 @@ function SheetContent({
   async function handleAdd() {
     if (!pid || inProject) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title: node.title,
         arxivId: node.arxiv_id ?? undefined,
         year: node.year ?? undefined,
       });
+      if (!result.paper) return;
       setAdded(true);
     } catch {
       // surfaced inline via addPaper.isError

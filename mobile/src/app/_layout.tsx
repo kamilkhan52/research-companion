@@ -37,6 +37,7 @@ import { loadConfig } from '@/api/config';
 import { queryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
+import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
@@ -112,6 +113,8 @@ function ThemedShell() {
           </Stack>
         </View>
         <StackNowPlaying />
+        {/* Cross-project duplicate preflight raised by useAddPaper from every add surface. */}
+        <ExistingPaperOfferHost />
         {/* Global "start the first analysis?" offer, raised by useAddPaper from any add site. */}
         <InitialAnalysisOfferHost />
       </View>

@@ -406,7 +406,14 @@ export interface paths {
         delete: operations["remove_paper_api_projects__pid__papers__slug__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update Paper
+         * @description Apply a human-confirmed paper-title edit without changing the stable paper slug.
+         *
+         *     The client Save action is the approval boundary. Commit only the reading-list entry and
+         *     this paper's corpus heading; unrelated dirty session/project work must not ride along.
+         */
+        patch: operations["update_paper_api_projects__pid__papers__slug__patch"];
         trace?: never;
     };
     "/api/projects/{pid}/papers/remove-batch": {
@@ -708,7 +715,8 @@ export interface paths {
         /**
          * Upload Paper
          * @description Last-resort source: the user uploads the paper's PDF directly (when it isn't on arXiv and
-         *     there's no public PDF link). Extract its text and cache it like a normal retrieval.
+         *     there's no public PDF link). The request only receives the file; extraction and persistence
+         *     run in a registered background job that the client polls.
          */
         post: operations["upload_paper_api_projects__pid__upload_paper_post"];
         delete?: never;
@@ -1366,7 +1374,7 @@ export interface paths {
         put?: never;
         /**
          * Notes Job Discard
-         * @description Dismiss a settled proposal so it does not reappear through the latest-job endpoint.
+         * @description Dismiss a settled proposal. A relocation queue advances to its next paper.
          */
         post: operations["notes_job_discard_api_projects__pid__notes_jobs__job_id__discard_post"];
         delete?: never;
@@ -1471,6 +1479,30 @@ export interface paths {
          *     guard (task #75): the reading-list append must not interleave with a split/move's.
          */
         post: operations["add_paper_api_projects__pid__papers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/paper-matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Paper Matches
+         * @description Read-only preflight for every add surface.
+         *
+         *     Strong scholarly identifiers win; exact normalized title is only a conservative fallback.
+         *     The response says what reusable work exists so the client can explain Copy vs Move before
+         *     calling the existing relocation endpoint.
+         */
+        post: operations["paper_matches_api_projects__pid__paper_matches_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1919,6 +1951,20 @@ export interface components {
             width?: number | null;
             /** Height */
             height?: number | null;
+        };
+        /** PaperMatchReq */
+        PaperMatchReq: {
+            /** Title */
+            title: string;
+            /** Arxiv Id */
+            arxiv_id?: string | null;
+            /** Source Url */
+            source_url?: string | null;
+        };
+        /** PaperPatchReq */
+        PaperPatchReq: {
+            /** Title */
+            title: string;
         };
         /** ProjectReq */
         ProjectReq: {
@@ -2742,6 +2788,42 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_paper_api_projects__pid__papers__slug__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaperPatchReq"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -4568,6 +4650,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AddPaperReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paper_matches_api_projects__pid__paper_matches_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PaperMatchReq"];
             };
         };
         responses: {

@@ -55,6 +55,23 @@ export interface Paper {
   kind?: string;
 }
 
+/** One current location of the same scholarly paper in another project (R10.18). */
+export interface PaperLocation extends Paper {
+  project_id: string;
+  project_name: string;
+  /** Stable matched key: arxiv:, doi:, url:, or conservative title:. */
+  identity: string;
+  /** True when transcript, branches, or retained session metadata can be reused. */
+  has_discussion: boolean;
+}
+
+/** Read-only duplicate preflight before an add mutates the active reading list. */
+export interface PaperMatchResponse {
+  target_project: { id: string; name: string };
+  can_update_notes: boolean;
+  matches: PaperLocation[];
+}
+
 /** One figure from the paper's arXiv-HTML rendering (R.10). `asset` is the cached image's
  *  filename — build its URL with figureAssetUrl(); `number` is the paper's own "Figure N". */
 export interface PaperFigure {

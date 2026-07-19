@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from .. import committer, config, notes_jobs, sessions, store
+from .. import committer, config, notes_jobs, paper_identity, projects, sessions, store
 from ..committer import CommitError
 from . import make_project_router
 
@@ -33,6 +33,12 @@ class AddPaperReq(BaseModel):
     abstract: str | None = None   # pass it when the caller has one (Discover does)
     year: int | None = None       # pass it when the caller has one (graph nodes do); only
                                   # recorded for papers whose arXiv id can't date them
+
+
+class PaperMatchReq(BaseModel):
+    title: str
+    arxiv_id: str | None = None
+    source_url: str | None = None
 
 
 class NotesSaveReq(BaseModel):
@@ -196,10 +202,32 @@ def add_paper(pid: str, req: AddPaperReq):
     opened, like every other paper) and nothing is git-committed (like every other change to
     the record, that stays an explicit human action via /approve). Held under the project write
     guard (task #75): the reading-list append must not interleave with a split/move's."""
+    # Keep the server authoritative even if an older client has no preflight UI. This is a
+    # read-only cross-project scan; reuse itself remains an explicit, human-confirmed move/copy.
     try:
-        with config.project_write_guard(pid):
-            slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
-                                   abstract=req.abstract, year=req.year)
+        with paper_identity.add_guard():
+            elsewhere = paper_identity.find_locations(
+                title=req.title,
+                arxiv_id=req.arxiv_id,
+                exclude_pid=pid,
+            )
+            if elsewhere:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "paper_exists_elsewhere",
+                        "message": "This paper already exists in another project.",
+                        "matches": elsewhere,
+                    },
+                )
+            with config.project_write_guard(pid):
+                slug = store.add_entry(
+                    req.title,
+                    req.group or "Unsorted",
+                    arxiv_id=req.arxiv_id,
+                    abstract=req.abstract,
+                    year=req.year,
+                )
     except config.ProjectBusyError as e:
         raise HTTPException(
             status_code=409,
@@ -210,3 +238,26 @@ def add_paper(pid: str, req: AddPaperReq):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"paper": _paper_dict(slug)}
+
+
+@project_router.post("/paper-matches")
+def paper_matches(pid: str, req: PaperMatchReq):
+    """Read-only preflight for every add surface.
+
+    Strong scholarly identifiers win; exact normalized title is only a conservative fallback.
+    The response says what reusable work exists so the client can explain Copy vs Move before
+    calling the existing relocation endpoint.
+    """
+    if not projects.exists(pid):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+    target = projects._read_meta(pid)
+    return {
+        "target_project": {"id": pid, "name": target.get("name") or pid},
+        "can_update_notes": config.has_api_key(),
+        "matches": paper_identity.find_locations(
+            title=req.title,
+            arxiv_id=req.arxiv_id,
+            source_url=req.source_url,
+            exclude_pid=pid,
+        ),
+    }

@@ -6,7 +6,12 @@ import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
+import { ApiError } from './client';
 import type { Project } from './types';
+import {
+  requestExistingPaperReuse,
+  type AddPaperOutcome,
+} from '@/components/ExistingPaperOffer';
 import { offerInitialAnalysis } from '@/components/InitialAnalysisOffer';
 import { showToast } from '@/ui/Toast';
 
@@ -406,12 +411,13 @@ export function useProjectMembership(pid: string | null) {
 export function useAddPaper(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       title,
       group,
       arxivId,
       abstract,
       year,
+      pdfUrl,
     }: {
       title: string;
       group?: string;
@@ -421,11 +427,53 @@ export function useAddPaper(pid: string) {
       /** Direct PDF link when the caller has one (URL adds) — not sent to the add itself,
        *  but carried into the initial-analysis offer so retrieval fetches that exact source. */
       pdfUrl?: string;
-    }) => api.addPaper(pid, title, group, arxivId, abstract, year),
+    }): Promise<AddPaperOutcome> => {
+      const preflight = async () => {
+        try {
+          return await api.findPaperMatches(pid, {
+            title,
+            arxiv_id: arxivId,
+            source_url: pdfUrl,
+          });
+        } catch (e) {
+          // Rolling mobile/backend deploys: an older server has no preflight route. Preserve
+          // ordinary adds there; its existing in-project duplicate guard still applies.
+          if (e instanceof ApiError && e.status === 404) return null;
+          throw e;
+        }
+      };
+      const chooseExisting = async (
+        match: NonNullable<Awaited<ReturnType<typeof preflight>>>,
+      ) => requestExistingPaperReuse({
+        targetPid: match.target_project.id,
+        targetName: match.target_project.name,
+        candidateTitle: title,
+        canUpdateNotes: match.can_update_notes,
+        matches: match.matches,
+      });
+
+      const match = await preflight();
+      if (match?.matches.length) return chooseExisting(match);
+
+      try {
+        const { paper } = await api.addPaper(pid, title, group, arxivId, abstract, year);
+        return { action: 'added', paper };
+      } catch (e) {
+        // The backend repeats the check at mutation time. If another project gained the paper
+        // after our first scan, refresh once and still present the safe Copy/Move chooser.
+        if (e instanceof ApiError && e.status === 409) {
+          const raced = await preflight();
+          if (raced?.matches.length) return chooseExisting(raced);
+        }
+        throw e;
+      }
+    },
     onSuccess: (res, { arxivId, pdfUrl }) => {
+      if (!res.paper) return;
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
+      if (res.action !== 'added') return;  // reused papers already carry their reading work
       // Instead of a bare "added" toast, offer to kick the first analysis off in the
       // background (R7.8). The offer sheet has its own "Not now".
       offerInitialAnalysis({
