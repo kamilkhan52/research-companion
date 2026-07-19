@@ -45,7 +45,15 @@ import { streamPaths, turnJobPaths } from '@/api/endpoints';
 import { useFavoriteModels, useOpeningDraft, usePaperFigures, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { ChatJob, FavoriteModel, ReadingMode, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type {
+  ChatJob,
+  DiscussionThreadSummary,
+  FavoriteModel,
+  ReadingMode,
+  StartStreamEvent,
+  StreamItem,
+  TranscriptEntry,
+} from '@/api/types';
 import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
@@ -117,10 +125,11 @@ export default function DiscussionScreen() {
   const qc = useQueryClient();
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
-  const { slug, source, project } = useLocalSearchParams<{
+  const { slug, source, project, thread } = useLocalSearchParams<{
     slug: string;
     source?: string;
     project?: string;
+    thread?: string;
   }>();
   const { activePid, setActivePid } = useActiveProject();
   // Continue Reading can target a session in a different project. Prefer its explicit route
@@ -151,7 +160,13 @@ export default function DiscussionScreen() {
     setExternalRef({ href, label });
   }, [showPaperActions]);
 
-  const session = useSession(pid, slug ?? null);
+  const [activeThread, setActiveThread] = useState(
+    typeof thread === 'string' && thread ? thread : 'main',
+  );
+  useEffect(() => {
+    setActiveThread(typeof thread === 'string' && thread ? thread : 'main');
+  }, [slug, thread]);
+  const session = useSession(pid, slug ?? null, activeThread);
   const settings = useSettings();
   const favoriteModels = useFavoriteModels();
   // The model for the *next* new response in this discussion only (Gemini/ChatGPT-style
@@ -162,7 +177,7 @@ export default function DiscussionScreen() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   useEffect(() => {
     setSelectedModel(null);
-  }, [slug]);
+  }, [slug, activeThread]);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
   const handleTurnDone = useCallback(async (job: ChatJob) => {
@@ -173,7 +188,12 @@ export default function DiscussionScreen() {
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
     audio.enqueueJob(
       {
-        id: messageAudioId(pid, slug, job.assistant_index, canonical),
+        id: messageAudioId(
+          pid,
+          activeThread === 'main' ? slug : `${slug}--${activeThread}`,
+          job.assistant_index,
+          canonical,
+        ),
         title: session.data?.paper.title ?? 'Narration',
         text: canonical,
       },
@@ -181,12 +201,13 @@ export default function DiscussionScreen() {
       pid,
       job.id,
     );
-  }, [audio, listeningMode, pid, session.data?.paper.title, slug]);
+  }, [activeThread, audio, listeningMode, pid, session.data?.paper.title, slug]);
   const stream = useStreamingTurn(
     pid,
     slug ?? null,
     listeningMode ? 'listening' : 'reading',
     handleTurnDone,
+    activeThread,
   );
   usePreviewCues({
     enabled: listeningMode,
@@ -199,12 +220,14 @@ export default function DiscussionScreen() {
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
-  const hasSession = !!state && transcript.length > 0;
+  const hasSession = !!state && (transcript.length > 0 || activeThread !== 'main');
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
     project: pid,
-    slug: slug ?? null,
+    slug: slug
+      ? (activeThread === 'main' ? slug : `${slug}--${activeThread}`)
+      : null,
     title: session.data?.paper.title ?? 'Narration',
     transcript,
     enqueueJob: audio.enqueueJob,
@@ -215,9 +238,10 @@ export default function DiscussionScreen() {
   useEffect(() => {
     void stream.resume();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid, slug]);
+  }, [pid, slug, activeThread]);
 
   const [showRelated, setShowRelated] = useState(false);
+  const [threadPickerOpen, setThreadPickerOpen] = useState(false);
   // Model + reading-mode pickers live behind the kebab menu (polish plan H.1) — the header
   // stays quiet: back, title, one menu button.
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -231,12 +255,12 @@ export default function DiscussionScreen() {
   const switchMode = useCallback(async (mode: ReadingMode) => {
     if (!pid || !slug || mode === readingMode) return;
     try {
-      await api.setSessionMode(pid, slug, mode);
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await api.setSessionMode(pid, slug, mode, activeThread);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
     } catch (e) {
       Alert.alert('Could not switch mode', (e as Error).message ?? 'Request failed.');
     }
-  }, [pid, qc, readingMode, slug]);
+  }, [activeThread, pid, qc, readingMode, slug]);
   // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
   // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
   // sits above it in this app's layout, so without correcting for that height the composer
@@ -254,11 +278,22 @@ export default function DiscussionScreen() {
   async function continueFromCommitted() {
     if (!pid || !slug) return;
     try {
-      await api.continueDiscussion(pid, slug);
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await api.continueDiscussion(pid, slug, activeThread);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     } catch (e) {
       Alert.alert('Could not continue the discussion', (e as Error).message ?? 'Request failed.');
+    }
+  }
+
+  async function createThread() {
+    if (!pid || !slug || stream.streaming) return;
+    try {
+      const result = await api.createDiscussionThread(pid, slug);
+      setActiveThread(result.thread.id);
+      await qc.invalidateQueries({ queryKey: ['project', pid, 'session', slug] });
+    } catch (e) {
+      Alert.alert('Could not start a new thread', (e as Error).message ?? 'Request failed.');
     }
   }
 
@@ -271,7 +306,12 @@ export default function DiscussionScreen() {
         title={session.data?.paper.title ?? 'Discussion'}
         // Year first: it situates the paper on the timeline before the workflow state (U.17).
         subtitle={
-          [session.data?.paper.year, state ? STATE_LABEL[state] : undefined]
+          [
+            session.data?.paper.year,
+            activeThread === 'main'
+              ? (state ? STATE_LABEL[state] : undefined)
+              : session.data?.threads?.find((item) => item.id === activeThread)?.title,
+          ]
             .filter(Boolean)
             .join(' · ') || undefined
         }
@@ -288,7 +328,12 @@ export default function DiscussionScreen() {
             onRelatedWorks={() => setShowRelated(true)}
             onGraph={() => router.push('/graph')}
             paperUrl={paperUrl}
-            showFinishReading={hasSession && state !== 'notes_drafted' && state !== 'committed'}
+            showFinishReading={
+              hasSession
+              && transcript.length > 0
+              && state !== 'notes_drafted'
+              && state !== 'committed'
+            }
             finishReadingDisabled={stream.streaming}
             onFinishReading={() => void finishReadingFromMenu()}
             showContinue={state === 'committed'}
@@ -300,6 +345,9 @@ export default function DiscussionScreen() {
             showReadingMode={hasSession}
             readingModeLabel={READING_MODE_LABELS[readingMode]}
             onPickReadingMode={() => setModePickerOpen(true)}
+            showThreads={hasSession}
+            threadCount={session.data?.threads?.length ?? 0}
+            onThreads={() => setThreadPickerOpen(true)}
           />
         }
       />
@@ -318,6 +366,15 @@ export default function DiscussionScreen() {
         onClose={() => setModePickerOpen(false)}
         mode={readingMode}
         onPick={(m) => void switchMode(m)}
+      />
+      <ThreadPickerSheet
+        visible={threadPickerOpen}
+        onClose={() => setThreadPickerOpen(false)}
+        threads={session.data?.threads ?? []}
+        selected={activeThread}
+        disabled={stream.streaming}
+        onPick={setActiveThread}
+        onCreate={() => void createThread()}
       />
 
       <RelatedWorksSheet
@@ -352,6 +409,7 @@ export default function DiscussionScreen() {
         <DiscussionThread
           pid={pid}
           slug={slug!}
+          threadId={activeThread}
           state={state}
           stream={stream}
           paths={paths!}
@@ -365,7 +423,7 @@ export default function DiscussionScreen() {
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           onMutated={() => {
-            qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
+            qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
         />
@@ -406,6 +464,9 @@ function OverflowMenu({
   showReadingMode,
   readingModeLabel,
   onPickReadingMode,
+  showThreads,
+  threadCount,
+  onThreads,
 }: {
   listeningMode: boolean;
   onToggleListening: () => void;
@@ -424,6 +485,9 @@ function OverflowMenu({
   showReadingMode: boolean;
   readingModeLabel: string;
   onPickReadingMode: () => void;
+  showThreads: boolean;
+  threadCount: number;
+  onThreads: () => void;
 }) {
   const t = useTheme();
   const [open, setOpen] = useState(false);
@@ -452,6 +516,16 @@ function OverflowMenu({
       icon: 'external-link',
       accent: t.mint,
       onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
+    });
+  }
+  if (showThreads) {
+    options.push({
+      key: 'threads',
+      title: 'Discussion threads',
+      subtitle: `${threadCount} independent ${threadCount === 1 ? 'thread' : 'threads'}`,
+      icon: 'message-circle',
+      accent: t.mint,
+      onPress: onThreads,
     });
   }
   if (showFinishReading) {
@@ -508,6 +582,53 @@ function OverflowMenu({
       <IconButton name="more-vertical" onPress={() => setOpen(true)} accessibilityLabel="More actions" />
       <OptionsSheet visible={open} onClose={() => setOpen(false)} options={options} />
     </>
+  );
+}
+
+function ThreadPickerSheet({
+  visible,
+  onClose,
+  threads,
+  selected,
+  disabled,
+  onPick,
+  onCreate,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  threads: DiscussionThreadSummary[];
+  selected: string;
+  disabled: boolean;
+  onPick: (threadId: string) => void;
+  onCreate: () => void;
+}) {
+  const options: SheetOption[] = threads.map((thread, index) => ({
+    key: thread.id,
+    title: thread.title,
+    subtitle: thread.message_count
+      ? `${thread.message_count} message${thread.message_count === 1 ? '' : 's'}`
+      : 'Ready for your first message',
+    icon: index === 0 ? 'book-open' : 'message-circle',
+    selected: thread.id === selected,
+    disabled,
+    onPress: () => onPick(thread.id),
+  }));
+  options.push({
+    key: 'new-thread',
+    title: 'Start a new thread',
+    subtitle: 'Ask anything with the full paper in context',
+    icon: 'plus',
+    section: true,
+    disabled,
+    onPress: onCreate,
+  });
+  return (
+    <OptionsSheet
+      visible={visible}
+      onClose={onClose}
+      title="Discussion threads"
+      options={options}
+    />
   );
 }
 
@@ -603,13 +724,29 @@ function branchAudioId(
   pid: string,
   slug: string,
   entry: Extract<TranscriptEntry, { role: 'assistant' }>,
+  threadId = 'main',
 ): string {
-  return messageAudioId(pid, slug, entry.assistant_index, entry.canonical);
+  const conversation = threadId === 'main' ? slug : `${slug}--${threadId}`;
+  return messageAudioId(pid, conversation, entry.assistant_index, entry.canonical);
+}
+
+function discussionDraftKey(
+  pid: string,
+  slug: string,
+  threadId: string,
+  kind: string,
+): string {
+  // Preserve every pre-thread main draft under its original key; only additional threads add
+  // a namespace component, so rollout cannot make an existing unsent reply appear lost.
+  return threadId === 'main'
+    ? draftKey(pid, 'discussion', slug, kind)
+    : draftKey(pid, 'discussion', slug, threadId, kind);
 }
 
 function DiscussionThread({
   pid,
   slug,
+  threadId,
   state,
   stream,
   paths,
@@ -626,6 +763,7 @@ function DiscussionThread({
 }: {
   pid: string;
   slug: string;
+  threadId: string;
   state: string | null;
   stream: ReturnType<typeof useStreamingTurn>;
   paths: ReturnType<typeof turnJobPaths>;
@@ -643,7 +781,7 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
-  const opening = useOpeningDraft(pid, slug);
+  const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
   // manifest that lands after a turn was written still cards it on the next render.
@@ -657,12 +795,15 @@ function DiscussionThread({
   // being authored elsewhere, that reply stays recoverable when the discussion is reopened
   // instead of being relabeled as request-changes feedback.
   const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
-  const textDraft = usePersistedDraft(draftKey(pid, 'discussion', slug, draftKind), '');
+  const textDraft = usePersistedDraft(
+    discussionDraftKey(pid, slug, threadId, draftKind),
+    '',
+  );
   // Message editing: which user reply is being edited + its draft. reply_index counts only
   // user turns (matching the backend, whose transcript surfaces only kind=="reply" users).
   // The edit happens in the composer (long-press a reply → Edit), prefilled with its text.
   const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
-    draftKey(pid, 'discussion', slug, 'message-edit'),
+    discussionDraftKey(pid, slug, threadId, 'message-edit'),
     null,
   );
   const editing = editDraft.value;
@@ -740,9 +881,9 @@ function DiscussionThread({
     setSwitchingBranch(true);
     setRetryHide(null);  // switching is explicit navigation; never hide what it restores
     try {
-      await api.switchBranch(pid, slug, assistantIndex, branch);
-      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
-      await queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug) });
+      await api.switchBranch(pid, slug, assistantIndex, branch, threadId);
+      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
+      await queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
       // A switch can flip session_state (in_discussion <-> notes_drafted); library rows and
       // paper actions read it from project state.
       await queryClient.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -751,7 +892,7 @@ function DiscussionThread({
     } finally {
       setSwitchingBranch(false);
     }
-  }, [pid, queryClient, slug, stream.streaming, switchingBranch]);
+  }, [pid, queryClient, slug, stream.streaming, switchingBranch, threadId]);
 
   const hideFromIndex = useMemo(() => {
     if (!retryHide) return null;
@@ -902,10 +1043,10 @@ function DiscussionThread({
       assistant_index: assistantIndex,
       ...config,
     }).finally(() => {
-      void queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug) });
+      void queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths.retry, pid, queryClient, slug, state, stream.run, transcript]);
+  }, [paths.retry, pid, queryClient, slug, state, stream.run, threadId, transcript]);
 
   const handleFirstRetry = useCallback((config: FirstResponseRetryConfig) => {
     setFirstRetryOpen(false);
@@ -916,7 +1057,7 @@ function DiscussionThread({
     setBusy(true);
     setActionError(null);
     try {
-      await api.reopen(pid, slug);
+      await api.reopen(pid, slug, threadId);
       onMutated();
     } catch (e) {
       setActionError((e as Error).message ?? 'Could not reopen the discussion.');
@@ -973,7 +1114,7 @@ function DiscussionThread({
       });
     }
     if (entry.role === 'assistant') {
-      const audioId = branchAudioId(pid, slug, entry);
+      const audioId = branchAudioId(pid, slug, entry, threadId);
       options.push({
         key: 'listen',
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
@@ -1012,7 +1153,7 @@ function DiscussionThread({
     }
     setMsgMenu(options);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, stream.streaming, transcript, audio.currentId, audio.playText, favorites, handleRetry, pid, slug, title]);
+  }, [editing, state, stream.streaming, transcript, audio.currentId, audio.playText, favorites, handleRetry, pid, slug, threadId, title]);
 
   // A persisted edit can outlive its window (e.g. the notes were committed from another
   // device while an edit draft sat here). Committed state has no composer to show or cancel
@@ -1028,7 +1169,7 @@ function DiscussionThread({
       return (
         <AssistantBody
           entry={msg.entry}
-          audioId={branchAudioId(pid, slug, msg.entry)}
+          audioId={branchAudioId(pid, slug, msg.entry, threadId)}
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
@@ -1050,7 +1191,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1180,7 +1321,9 @@ function DiscussionThread({
     ? 'Edit your message…'
     : state === 'notes_drafted'
       ? 'Request changes to the draft…'
-      : 'Reply';
+      : transcript.length === 0
+        ? 'Start with any question about this paper…'
+        : 'Reply';
 
   return (
     <>
@@ -1254,6 +1397,7 @@ function DiscussionThread({
       visible={reviewOpen}
       pid={pid}
       slug={slug}
+      threadId={threadId}
       onClose={() => setReviewOpen(false)}
       onCommitted={() => { setReviewOpen(false); onMutated(); }}
     />

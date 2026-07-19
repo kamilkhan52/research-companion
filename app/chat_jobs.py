@@ -14,8 +14,8 @@ cheap snapshot endpoint. A client that comes back mid-turn reattaches to the run
 still sees the live progression (interleaved text and tool calls, in arrival order); one that
 comes back late finds the turn already in the transcript.
 
-One job per session slug at a time: starting while one is running joins it (server-side twin of
-the client's double-tap guard).
+One job per paper/thread at a time: starting again in the same thread joins it (server-side
+twin of the client's double-tap guard), while independent threads may generate concurrently.
 """
 from __future__ import annotations
 
@@ -38,7 +38,8 @@ log = logging_config.get("chat")
 
 @dataclass
 class ChatJob(Job):
-    slug: str = ""                   # session this turn belongs to (also the registry dedup key)
+    slug: str = ""
+    thread_id: str = sessions.MAIN_THREAD
     # The live turn as the client should render it: runs of assistant text and tool calls in
     # arrival order ({kind: 'text', text} | {kind: 'tool', name, detail}). Consecutive text is
     # merged server-side so a poll returns a handful of items, not thousands of deltas.
@@ -75,10 +76,15 @@ def snapshot(job_id: str) -> dict | None:
     return _registry.snapshot(job_id)
 
 
-def active_for(slug: str) -> ChatJob | None:
+def _session_key(slug: str, thread_id: str | None = None) -> str:
+    selected = thread_id if thread_id is not None else sessions.active_thread_id()
+    return f"{slug}::{sessions.validate_thread_id(selected)}"
+
+
+def active_for(slug: str, thread_id: str | None = None) -> ChatJob | None:
     """The running job for a session, if any — how a client that navigated away and returned
     finds the turn it left mid-flight."""
-    return _registry.active_for(slug)
+    return _registry.active_for(_session_key(slug, thread_id))
 
 
 def request_cancel(job_id: str) -> dict | None:
@@ -104,7 +110,8 @@ def override_label(model: str | None) -> str | None:
 
 
 def start_turn(slug: str, runner: RunnerFn | None = None,
-               delivery_mode: str = "reading", model: str | None = None) -> ChatJob:
+               delivery_mode: str = "reading", model: str | None = None,
+               thread_id: str | None = None) -> ChatJob:
     """Start generating the assistant turn for `slug` in a background thread, or join the job
     already running for it. The user message must already be recorded (history is rebuilt from
     the session file inside the thread). Callers poll get_job(id) until it settles; the turn is
@@ -114,6 +121,9 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     injected — that's the tests' seam, not a production caller)."""
     if delivery_mode not in ("reading", "listening"):
         raise ValueError(f"Unknown delivery mode: {delivery_mode}")
+    thread_id = sessions.validate_thread_id(
+        thread_id if thread_id is not None else sessions.active_thread_id(),
+    )
     runner = runner or (lambda s, h: _default_events(s, h, model=model))
 
     def generate(job: ChatJob) -> None:
@@ -240,25 +250,29 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
 
     def work(job: ChatJob) -> None:
         succeeded = False
-        try:
-            generate(job)
-            succeeded = True
-        finally:
-            # On success, the coordinator owns suppression and runs until final narration is
-            # ready. On any runner/parse/persistence failure, suppress before JobRegistry can
-            # publish the terminal parent error.
-            if not succeeded:
-                _suppress_previews(job)
-                # A failed turn that was a retry left an empty fork slot with no selector to
-                # escape it; restore the branch the fork left (no-op otherwise).
-                try:
-                    sessions.rollback_empty_fork(job.slug)
-                except Exception:
-                    log.warning("empty-fork rollback failed for %s", job.slug)
+        with sessions.thread_scope(job.thread_id):
+            try:
+                generate(job)
+                succeeded = True
+            finally:
+                # On success, the coordinator owns suppression and runs until final narration
+                # is ready. On any failure, suppress before JobRegistry publishes the error.
+                if not succeeded:
+                    _suppress_previews(job)
+                    # A failed retry left an empty fork slot with no selector to escape it.
+                    try:
+                        sessions.rollback_empty_fork(job.slug)
+                    except Exception:
+                        log.warning("empty-fork rollback failed for %s", job.slug)
 
     return _registry.start_or_join(
-        slug,
-        lambda: ChatJob(id=new_id(), slug=slug, delivery_mode=delivery_mode),
+        _session_key(slug, thread_id),
+        lambda: ChatJob(
+            id=new_id(),
+            slug=slug,
+            thread_id=thread_id,
+            delivery_mode=delivery_mode,
+        ),
         work,
     )
 

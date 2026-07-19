@@ -37,6 +37,24 @@ class SplitError(Exception):
     pass
 
 
+def _session_paths(slug: str) -> list:
+    return [path for pair in sessions.thread_storage_paths(slug) for path in pair]
+
+
+def _transcript_paths(slug: str) -> list:
+    return [pair[0] for pair in sessions.thread_storage_paths(slug)]
+
+
+def _enter_session_locks(stack: contextlib.ExitStack, slugs: list[str]) -> None:
+    """Freeze thread admission + every current transcript while relocating selected papers."""
+    for slug in sorted(slugs):
+        stack.enter_context(sessions.paper_lock(slug))
+        thread_ids = sorted(row["id"] for row in sessions.list_threads(slug))
+        for thread_id in thread_ids:
+            with sessions.thread_scope(thread_id):
+                stack.enter_context(sessions.mutation_lock(slug))
+
+
 def _rewrite_block_cites(block: str, keep: set[str]) -> str:
     """Drop from a copied block's `<!-- cites -->` any slug not also moving (it would dangle
     in the new project). An emptied comment is removed entirely."""
@@ -65,6 +83,7 @@ def _gather_source(slugs: list[str]) -> dict:
             "corpus_bytes": corpus.read_bytes() if corpus.exists() else None,
             "jsonl_bytes": jsonl.read_bytes() if jsonl.exists() else None,
             "branches_bytes": branches.read_bytes() if branches.exists() else None,
+            "thread_storage": sessions.export_thread_storage(slug),
             "cover_bytes": cover.read_bytes() if cover.exists() else None,
             "gcorpus_bytes": gcorpus.read_bytes() if gcorpus.exists() else None,
             "session_meta": sessions.index_entry(slug),
@@ -95,14 +114,17 @@ def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
         store.append_entry_block(b["entry"]["group"], block)
         if b["corpus_bytes"] is not None:
             store.corpus_path(slug).write_bytes(b["corpus_bytes"])
-        if b["jsonl_bytes"] is not None or b["session_meta"] is not None:
-            jsonl, branches = sessions.transcript_paths(slug)
-            jsonl.parent.mkdir(parents=True, exist_ok=True)
-            if b["jsonl_bytes"] is not None:
-                jsonl.write_bytes(b["jsonl_bytes"])
-            if b["branches_bytes"] is not None:
-                branches.parent.mkdir(parents=True, exist_ok=True)
-                branches.write_bytes(b["branches_bytes"])
+        if (any(item.get("jsonl_bytes") is not None or item.get("branches_bytes") is not None
+                for item in b.get("thread_storage") or [])
+                or b["session_meta"] is not None):
+            sessions.import_thread_storage(
+                slug,
+                b.get("thread_storage") or [{
+                    "thread_id": sessions.MAIN_THREAD,
+                    "jsonl_bytes": b["jsonl_bytes"],
+                    "branches_bytes": b["branches_bytes"],
+                }],
+            )
             if b["session_meta"] is not None:
                 sessions.import_session(slug, b["session_meta"])
         if b["cover_bytes"] is not None:
@@ -136,20 +158,21 @@ def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
     # paths git already knows about may go into the commit's pathspec.
     tracked = set(projects._git(source_pid, "ls-files").splitlines())
     committed_paths = ["reading-list.md"]  # always tracked and modified
-    jsonl_by_slug = {s: sessions.transcript_paths(s)[0] for s in slugs}
+    jsonl_by_slug = {s: _transcript_paths(s) for s in slugs}
     for slug in slugs:
         corpus = store.corpus_path(slug)
         # Both the corpus file and an approved transcript (sessions/<slug>.jsonl) are
         # git-tracked; a committed one's DELETION must ride in this commit's pathspec, or the
         # source is left dirty and a later approval commits the deletion by accident.
-        for tracked_file in (corpus, jsonl_by_slug[slug]):
+        for tracked_file in (corpus, *jsonl_by_slug[slug]):
             rel = str(tracked_file.relative_to(root))
             if rel in tracked:
                 committed_paths.append(rel)
         store.remove_entry(slug)
-        for p in (corpus, *sessions.transcript_paths(slug),
+        for p in (corpus, *_session_paths(slug),
                   _cover_path(slug), graph_store._retrieved_text_file(slug)):
             p.unlink(missing_ok=True)
+        sessions.remove_thread_storage(slug)
         sessions.drop_session(slug)
         data.get("papers", {}).pop(slug, None)
         data.get("providers", {}).get("semantic_scholar", {}).get("papers", {}).pop(slug, None)
@@ -188,8 +211,8 @@ def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
         graph_nodes = {n.get("slug") for n in (data.get("graph") or {}).get("nodes") or []
                        if n.get("kind") == "project" and n.get("slug")}
         for slug in slugs:
-            jsonl, branches = sessions.transcript_paths(slug)
-            if (store.corpus_path(slug).exists() or jsonl.exists() or branches.exists()
+            session_files = _session_paths(slug)
+            if (store.corpus_path(slug).exists() or any(p.exists() for p in session_files)
                     or sessions.index_entry(slug) is not None
                     or _cover_path(slug).exists()
                     or graph_store._retrieved_text_file(slug).exists()
@@ -211,7 +234,7 @@ def _written_dest_paths(slugs: list[str]) -> list[str]:
     root = config.project_dir()
     paths = ["reading-list.md"]  # always modified (the appended entry blocks)
     for slug in slugs:
-        candidates = [store.corpus_path(slug), sessions.transcript_paths(slug)[0]]
+        candidates = [store.corpus_path(slug), *_transcript_paths(slug)]
         for f in candidates:
             if f.exists():
                 paths.append(str(f.relative_to(root)))
@@ -242,9 +265,10 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
     #    nothing of the destination's own; the reading-list + graph are restored to snapshots.
     for slug in slugs:
         try:
-            for p in (store.corpus_path(slug), *sessions.transcript_paths(slug),
+            for p in (store.corpus_path(slug), *_session_paths(slug),
                       _cover_path(slug), graph_store._retrieved_text_file(slug)):
                 p.unlink(missing_ok=True)
+            sessions.remove_thread_storage(slug)
             # A move imported the paper's session-index entry (.state/sessions.json) too; drop
             # it, or the destination keeps a phantom session for a paper it no longer has (a
             # later re-add would look resumable with no transcript).
@@ -270,7 +294,7 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
         reset_paths = ["reading-list.md"]
         root = config.project_dir()
         for slug in slugs:
-            for f in (store.corpus_path(slug), sessions.transcript_paths(slug)[0]):
+            for f in (store.corpus_path(slug), *_transcript_paths(slug)):
                 reset_paths.append(str(f.relative_to(root)))
         projects._git(dest_pid, "reset", "-q", "--", *reset_paths)
     except Exception:
@@ -315,8 +339,7 @@ def move_to_existing(
     try:
         with config.project_exclusive(first), config.project_exclusive(second), \
                 contextlib.ExitStack() as locks:
-            for slug in sorted(slugs):
-                locks.enter_context(sessions.mutation_lock(slug))
+            _enter_session_locks(locks, slugs)
 
             # Validate every slug is a CURRENT source entry before any path building — a
             # non-entry value (incl. a `../x` traversal) is never a parsed reading-list slug,
@@ -428,13 +451,14 @@ def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict)
             b = bundle[slug]
             if b["corpus_bytes"] is not None:
                 store.corpus_path(slug).write_bytes(b["corpus_bytes"])
-            jsonl, branches = sessions.transcript_paths(slug)
-            if b["jsonl_bytes"] is not None:
-                jsonl.parent.mkdir(parents=True, exist_ok=True)
-                jsonl.write_bytes(b["jsonl_bytes"])
-            if b["branches_bytes"] is not None:
-                branches.parent.mkdir(parents=True, exist_ok=True)
-                branches.write_bytes(b["branches_bytes"])
+            sessions.import_thread_storage(
+                slug,
+                b.get("thread_storage") or [{
+                    "thread_id": sessions.MAIN_THREAD,
+                    "jsonl_bytes": b["jsonl_bytes"],
+                    "branches_bytes": b["branches_bytes"],
+                }],
+            )
             if b["cover_bytes"] is not None:
                 cover = _cover_path(slug)
                 cover.parent.mkdir(parents=True, exist_ok=True)
@@ -464,7 +488,7 @@ def _restore_source(source_pid: str, slugs: list[str], bundle: dict, snap: dict)
         reset_paths = ["reading-list.md"]
         root = config.project_dir()
         for slug in slugs:
-            for f in (store.corpus_path(slug), sessions.transcript_paths(slug)[0]):
+            for f in (store.corpus_path(slug), *_transcript_paths(slug)):
                 reset_paths.append(str(f.relative_to(root)))
         projects._git(source_pid, "reset", "-q", "--", *reset_paths)
     except Exception:
@@ -505,8 +529,7 @@ def split_project(
     token = config.set_active_project(source_pid)
     try:
         with config.project_exclusive(source_pid), contextlib.ExitStack() as locks:
-            for slug in sorted(slugs):
-                locks.enter_context(sessions.mutation_lock(slug))
+            _enter_session_locks(locks, slugs)
             bundle = _gather_source(slugs)
             departed_notes = {s: b["notes"] for s, b in bundle.items() if b["notes"].strip()}
             departed_titles = {

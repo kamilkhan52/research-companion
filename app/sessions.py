@@ -1,7 +1,8 @@
-"""Session state, transcript logs, and clean pause/resume (Section 9). One logical session
-per paper: turns are appended to sessions/<slug>.jsonl, and a small index in
-.state/sessions.json tracks the transient working state so a paper can sit in discussion for
-days across many short sessions and resume server-side without losing context.
+"""Session state, transcript logs, and clean pause/resume (Section 9). A paper keeps its
+backwards-compatible main discussion at sessions/<slug>.jsonl and may have independent
+request-scoped threads beneath sessions/<slug>.threads/. A small index in
+.state/sessions.json tracks their transient working state so discussions can sit for days
+across many app sessions and resume server-side without losing context.
 
 The giant opening message (paper full text) is NOT stored in the transcript — it is
 regenerated from the cached corpus text when reconstructing history, keeping logs compact.
@@ -10,7 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 from . import config, prompts, store
@@ -21,6 +26,36 @@ from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
 # A single-process lock matches the deployment model documented in CLAUDE.md and prevents one
 # project/session update from silently overwriting another update based on a stale read.
 _index_lock = threading.RLock()
+
+# Independent discussion threads are request-scoped, never selected through mutable project
+# state.  This matters when the same paper is open on two devices: switching a thread in one
+# client must not redirect the other client's next turn.  "main" keeps every pre-R10 path and
+# index field byte-for-byte compatible; additional thread ids are generated server-side and
+# validated before they can influence a filesystem path.
+MAIN_THREAD = "main"
+_THREAD_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+_active_thread: ContextVar[str] = ContextVar("discussion_thread", default=MAIN_THREAD)
+
+
+def validate_thread_id(thread_id: str | None) -> str:
+    value = thread_id or MAIN_THREAD
+    if not _THREAD_ID_RE.fullmatch(value):
+        raise ValueError("Invalid discussion thread id.")
+    return value
+
+
+def active_thread_id() -> str:
+    return _active_thread.get()
+
+
+@contextmanager
+def thread_scope(thread_id: str | None):
+    """Bind one validated conversation namespace for this request/worker only."""
+    token = _active_thread.set(validate_thread_id(thread_id))
+    try:
+        yield
+    finally:
+        _active_thread.reset(token)
 
 
 def _sessions_dir():
@@ -60,11 +95,39 @@ def session_index() -> dict[str, dict]:
 
 
 def session_states() -> dict[str, str]:
-    return {slug: meta.get("state") for slug, meta in _load_index().items()}
+    # A library row is paper-level, so surface the state requiring the most attention across
+    # its independent conversations.  Thread-local GETs still return the exact selected state.
+    priority = {NOTES_DRAFTED: 3, IN_DISCUSSION: 2, COMMITTED: 1, None: 0}
+    out: dict[str, str] = {}
+    for slug, meta in _load_index().items():
+        states = [meta.get("state")]
+        states.extend(t.get("state") for t in (meta.get("threads") or {}).values())
+        out[slug] = max(states, key=lambda state: priority.get(state, 0))
+    return out
+
+
+def _thread_meta(meta: dict, thread_id: str | None = None) -> dict:
+    tid = validate_thread_id(thread_id or active_thread_id())
+    if tid == MAIN_THREAD:
+        return meta
+    return (meta.get("threads") or {}).get(tid, {})
+
+
+def _mutate_thread_meta(meta: dict, thread_id: str, update) -> dict:
+    """Apply `update(dict)` to one thread's metadata and return the paper metadata."""
+    if thread_id == MAIN_THREAD:
+        update(meta)
+        return meta
+    threads = dict(meta.get("threads") or {})
+    thread = dict(threads.get(thread_id) or {})
+    update(thread)
+    threads[thread_id] = thread
+    meta["threads"] = threads
+    return meta
 
 
 def get_state(slug: str) -> str | None:
-    return _load_index().get(slug, {}).get("state")
+    return _thread_meta(_load_index().get(slug, {})).get("state")
 
 
 def index_entry(slug: str) -> dict | None:
@@ -78,6 +141,72 @@ def transcript_paths(slug: str) -> tuple:
     """(transcript jsonl, branches file) paths for a slug in the active project — the on-disk
     session state a split moves. Either may not exist."""
     return _jsonl(slug), _branches_file(slug)
+
+
+def thread_storage_paths(slug: str) -> tuple:
+    """Every transcript/branch path belonging to a paper, including independent threads.
+
+    Callers that move/copy/remove a paper use this instead of guessing files from index
+    metadata.  Main paths remain first for stable git/path behavior.
+    """
+    paths = [(_jsonl(slug, MAIN_THREAD), _branches_file(slug, MAIN_THREAD))]
+    meta = _load_index().get(slug, {})
+    thread_ids = set((meta.get("threads") or {}).keys())
+    transcript_dir = _sessions_dir() / f"{slug}.threads"
+    branch_dir = config.state_dir() / "branches" / f"{slug}.threads"
+    for directory, suffix in ((transcript_dir, ".jsonl"), (branch_dir, ".branches.json")):
+        if directory.exists():
+            for path in directory.glob(f"*{suffix}"):
+                candidate = path.name.removesuffix(suffix)
+                if _THREAD_ID_RE.fullmatch(candidate):
+                    thread_ids.add(candidate)
+    for thread_id in sorted(thread_ids):
+        paths.append((_jsonl(slug, thread_id), _branches_file(slug, thread_id)))
+    return tuple(paths)
+
+
+def export_thread_storage(slug: str) -> list[dict]:
+    """Serializable session-file bundle used by deterministic project relocation."""
+    out = []
+    for jsonl, branches in thread_storage_paths(slug):
+        if jsonl == _jsonl(slug, MAIN_THREAD):
+            thread_id = MAIN_THREAD
+        else:
+            thread_id = jsonl.stem
+        out.append({
+            "thread_id": thread_id,
+            "jsonl_bytes": jsonl.read_bytes() if jsonl.exists() else None,
+            "branches_bytes": branches.read_bytes() if branches.exists() else None,
+        })
+    return out
+
+
+def import_thread_storage(slug: str, bundle: list[dict]) -> None:
+    for item in bundle:
+        thread_id = validate_thread_id(item.get("thread_id"))
+        jsonl = _jsonl(slug, thread_id)
+        branches = _branches_file(slug, thread_id)
+        if item.get("jsonl_bytes") is not None:
+            jsonl.parent.mkdir(parents=True, exist_ok=True)
+            jsonl.write_bytes(item["jsonl_bytes"])
+        if item.get("branches_bytes") is not None:
+            branches.parent.mkdir(parents=True, exist_ok=True)
+            branches.write_bytes(item["branches_bytes"])
+
+
+def remove_thread_storage(slug: str) -> None:
+    pairs = thread_storage_paths(slug)
+    for jsonl, branches in pairs:
+        jsonl.unlink(missing_ok=True)
+        branches.unlink(missing_ok=True)
+    for directory in (
+        _sessions_dir() / f"{slug}.threads",
+        config.state_dir() / "branches" / f"{slug}.threads",
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 def import_session(slug: str, meta: dict) -> None:
@@ -99,12 +228,68 @@ def drop_session(slug: str) -> None:
             _save_index_unlocked(idx)
 
 
+def list_threads(slug: str) -> list[dict]:
+    """Conversation switcher rows for one paper, oldest first (main is always first)."""
+    meta = _load_index().get(slug)
+    if not meta:
+        return []
+    rows = [{
+        "id": MAIN_THREAD,
+        "title": meta.get("thread_title") or "Main discussion",
+        "state": meta.get("state"),
+        "created_at": meta.get("started_at"),
+        "updated_at": meta.get("updated_at"),
+        "message_count": len(read_records(slug, MAIN_THREAD)),
+    }]
+    for thread_id, thread in (meta.get("threads") or {}).items():
+        rows.append({
+            "id": thread_id,
+            "title": thread.get("title") or "New thread",
+            "state": thread.get("state"),
+            "created_at": thread.get("started_at"),
+            "updated_at": thread.get("updated_at"),
+            "message_count": len(read_records(slug, thread_id)),
+        })
+    return rows
+
+
+def create_thread(slug: str, title: str = "New thread") -> dict:
+    """Create an empty independent conversation. No model/network work happens here."""
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug)
+        if not meta:
+            raise ValueError("Start the main discussion before creating another thread.")
+        thread_id = uuid.uuid4().hex[:12]
+        while thread_id in (meta.get("threads") or {}):
+            thread_id = uuid.uuid4().hex[:12]
+        now = _now()
+        threads = dict(meta.get("threads") or {})
+        threads[thread_id] = {
+            "state": IN_DISCUSSION,
+            "title": title.strip() or "New thread",
+            "kind": meta.get("kind", "paper"),
+            "reading_mode": meta.get("reading_mode") or "balanced",
+            "started_at": now,
+            "updated_at": now,
+        }
+        meta["threads"] = threads
+        meta["updated_at"] = now
+        idx[slug] = meta
+        _save_index_unlocked(idx)
+    return next(row for row in list_threads(slug) if row["id"] == thread_id)
+
+
 def set_state(slug: str, state: str) -> None:
+    thread_id = active_thread_id()
     with _index_lock:
         idx = _load_index_unlocked()
         meta = idx.get(slug, {})
-        meta["state"] = state
-        meta["updated_at"] = _now()
+        now = _now()
+        _mutate_thread_meta(meta, thread_id, lambda thread: thread.update(
+            {"state": state, "updated_at": now},
+        ))
+        meta["updated_at"] = now
         idx[slug] = meta
         _save_index_unlocked(idx)
 
@@ -117,36 +302,47 @@ READING_MODES = ("balanced", "background", "technical", "detailed")
 
 
 def get_reading_mode(slug: str) -> str:
-    return _load_index().get(slug, {}).get("reading_mode") or "balanced"
+    return _thread_meta(_load_index().get(slug, {})).get("reading_mode") or "balanced"
 
 
 def set_reading_mode(slug: str, mode: str) -> None:
     if mode not in READING_MODES:
         raise ValueError(f"Unknown reading mode: {mode}")
+    thread_id = active_thread_id()
     with _index_lock:
         idx = _load_index_unlocked()
         meta = idx.get(slug, {})
-        meta["reading_mode"] = mode
-        meta["updated_at"] = _now()
+        now = _now()
+        _mutate_thread_meta(meta, thread_id, lambda thread: thread.update(
+            {"reading_mode": mode, "updated_at": now},
+        ))
+        meta["updated_at"] = now
         idx[slug] = meta
         _save_index_unlocked(idx)
 
 
 def _touch_session(slug: str, timestamp: str) -> None:
+    thread_id = active_thread_id()
     with _index_lock:
         idx = _load_index_unlocked()
         meta = idx.get(slug, {})
+        _mutate_thread_meta(meta, thread_id, lambda thread: thread.update(
+            {"updated_at": timestamp},
+        ))
         meta["updated_at"] = timestamp
         idx[slug] = meta
         _save_index_unlocked(idx)
 
 
-def _jsonl(slug: str):
-    return _sessions_dir() / f"{slug}.jsonl"
+def _jsonl(slug: str, thread_id: str | None = None):
+    tid = validate_thread_id(thread_id or active_thread_id())
+    if tid == MAIN_THREAD:
+        return _sessions_dir() / f"{slug}.jsonl"
+    return _sessions_dir() / f"{slug}.threads" / f"{tid}.jsonl"
 
 
 def _append_record(slug: str, record: dict) -> dict:
-    _sessions_dir().mkdir(parents=True, exist_ok=True)
+    _jsonl(slug).parent.mkdir(parents=True, exist_ok=True)
     record["ts"] = _now()
     with _jsonl(slug).open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -154,8 +350,8 @@ def _append_record(slug: str, record: dict) -> dict:
     return record
 
 
-def read_records(slug: str) -> list[dict]:
-    p = _jsonl(slug)
+def read_records(slug: str, thread_id: str | None = None) -> list[dict]:
+    p = _jsonl(slug, thread_id)
     if not p.exists():
         return []
     out = []
@@ -170,13 +366,21 @@ def start_session(slug: str, title: str, kind: str = "paper", opening: str | Non
     """Begin (or restart) a discussion. For a paper, corpus full text must already be cached;
     kind="review" is the cross-paper working-notes review chat. `opening` is the (possibly
     user-edited) first-prompt template for this session; None falls back to the default."""
+    thread_id = active_thread_id()
     with _index_lock:
         idx = _load_index_unlocked()
         now = _now()
-        meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
-                "started_at": now, "updated_at": now}
+        old = idx.get(slug, {})
+        # Restarting/retrying main replaces only main's legacy fields; independent threads
+        # remain intact.  Before threads existed the equivalent was simply an empty dict.
+        meta = ({"threads": dict(old.get("threads") or {})}
+                if thread_id == MAIN_THREAD else dict(old))
+        thread_meta = {"state": IN_DISCUSSION, "title": title, "kind": kind,
+                       "started_at": now, "updated_at": now}
         if opening:
-            meta["opening"] = opening
+            thread_meta["opening"] = opening
+        _mutate_thread_meta(meta, thread_id, lambda thread: thread.update(thread_meta))
+        meta["updated_at"] = now
         idx[slug] = meta
         _save_index_unlocked(idx)
     # fresh transcript for a fresh session start
@@ -186,23 +390,30 @@ def start_session(slug: str, title: str, kind: str = "paper", opening: str | Non
 
 
 def get_kind(slug: str) -> str:
-    return _load_index().get(slug, {}).get("kind", "paper")
+    return _thread_meta(_load_index().get(slug, {})).get("kind", "paper")
 
 
 def get_opening(slug: str) -> str | None:
-    return _load_index().get(slug, {}).get("opening")
+    return _thread_meta(_load_index().get(slug, {})).get("opening")
 
 
 def set_opening(slug: str, opening: str | None) -> None:
     """Replace the generated first-message instruction without restarting the transcript."""
+    thread_id = active_thread_id()
     with _index_lock:
         idx = _load_index_unlocked()
         meta = idx.get(slug, {})
-        if opening:
-            meta["opening"] = opening
-        else:
-            meta.pop("opening", None)
-        meta["updated_at"] = _now()
+        now = _now()
+
+        def update(thread: dict) -> None:
+            if opening:
+                thread["opening"] = opening
+            else:
+                thread.pop("opening", None)
+            thread["updated_at"] = now
+
+        _mutate_thread_meta(meta, thread_id, update)
+        meta["updated_at"] = now
         idx[slug] = meta
         _save_index_unlocked(idx)
 
@@ -212,6 +423,22 @@ def record_user(slug: str, text: str, kind: str = "reply", *, authored_text: str
     if authored_text is not None:
         record["authored_text"] = authored_text
     _append_record(slug, record)
+    # Give a newly-created thread a useful switcher label without an extra model call.
+    if kind == "reply" and active_thread_id() != MAIN_THREAD:
+        with _index_lock:
+            idx = _load_index_unlocked()
+            meta = idx.get(slug, {})
+            thread_id = active_thread_id()
+            thread = _thread_meta(meta, thread_id)
+            if thread.get("title") == "New thread":
+                label = " ".join(text.strip().split())
+                if len(label) > 52:
+                    label = label[:49].rstrip() + "…"
+                _mutate_thread_meta(meta, thread_id, lambda item: item.update(
+                    {"title": label or "New thread"},
+                ))
+                idx[slug] = meta
+                _save_index_unlocked(idx)
 
 
 def record_assistant(slug: str, turn: Turn, *, delivery_mode: str = "reading",
@@ -324,6 +551,47 @@ def accepted_drafts(slug: str) -> list[dict]:
     return out
 
 
+def other_threads_context(slug: str) -> str:
+    """Model-facing transcript appendix for finishing notes from the selected thread.
+
+    The paper full text is already in the regenerated opening and is deliberately not copied.
+    Internal finish/revision instructions and prior proposal payloads are excluded; what
+    remains is the reader's authored discussion and the analyst's substantive responses.
+    """
+    selected = active_thread_id()
+    sections: list[str] = []
+    for row in list_threads(slug):
+        thread_id = row["id"]
+        if thread_id == selected:
+            continue
+        turns: list[str] = []
+        for record in read_records(slug, thread_id):
+            if record.get("role") == "user" and record.get("kind") == "reply":
+                turns.append(f"Reader: {record.get('text', '')}")
+            elif (record.get("role") == "user"
+                  and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                turns.append(f"Reader revision: {record['authored_text']}")
+            elif (record.get("role") == "assistant"
+                  and not record.get("proposed_commit")
+                  and record.get("canonical", "").strip()):
+                turns.append(f"Analyst: {record['canonical']}")
+        if turns:
+            sections.append(
+                f"[BEGIN DISCUSSION THREAD: {row['title']}]\n"
+                + "\n\n".join(turns)
+                + f"\n[END DISCUSSION THREAD: {row['title']}]"
+            )
+    if not sections:
+        return ""
+    return (
+        "\n\nAlso incorporate durable insights from every independent discussion below. "
+        "Do not mention thread mechanics in the proposed notes, and do not omit a useful "
+        "insight merely because it came from another thread.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
 def latest_proposed_commit(slug: str) -> dict | None:
     for rec in reversed(read_records(slug)):
         if rec["role"] == "assistant" and rec.get("proposed_commit"):
@@ -359,22 +627,30 @@ def finalize_proposal_for_commit(slug: str) -> None:
       notes_drafted from a proposal that already reached git.
     Safe if the git commit subsequently fails: the state stays notes_drafted, Approve remains
     available, and re-approving re-runs this idempotently."""
-    clear_branches(slug)
-    records = read_records(slug)
-    for rec in reversed(records):
-        if rec.get("role") == "assistant" and rec.get("proposed_commit"):
-            if not rec.get("proposal_committed"):
-                rec["proposal_committed"] = True
-                _rewrite(slug, records)
-            break
+    # Notes are paper-level and the finishing prompt incorporates every discussion. Approval
+    # therefore closes every thread's pending proposal/branch state as one human-reviewed
+    # boundary; otherwise switching to a sibling could re-offer a stale second proposal.
+    for row in list_threads(slug):
+        with thread_scope(row["id"]):
+            clear_branches(slug)
+            records = read_records(slug)
+            for rec in reversed(records):
+                if rec.get("role") == "assistant" and rec.get("proposed_commit"):
+                    if not rec.get("proposal_committed"):
+                        rec["proposal_committed"] = True
+                        _rewrite(slug, records)
+                    break
 
 
 def mark_committed(slug: str) -> None:
-    set_state(slug, COMMITTED)
+    for row in list_threads(slug):
+        with thread_scope(row["id"]):
+            set_state(slug, COMMITTED)
 
 
 def _rewrite(slug: str, records: list[dict]) -> None:
     body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+    _jsonl(slug).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(_jsonl(slug), body)
 
 
@@ -414,16 +690,18 @@ def truncate_before_assistant(slug: str, n: int) -> None:
 # records ride along inside whichever tail they belong to, but their selector state does not
 # survive (documented limitation of the flat baseline; a full conversation tree is v2).
 
-# Per-(project, slug) mutation locks: transcript-rewriting actions (turn preps, branch
+# Per-(project, slug, thread) mutation locks: transcript-rewriting actions (turn preps, branch
 # switches, approvals) hold this across their check-then-mutate sequence so snapshot guards
 # can't interleave (e.g. a switch between a reply's record_user and its job registration).
 # In-process is sufficient: single worker (CLAUDE.md invariant 6).
-_mutation_locks: dict[tuple[str | None, str], threading.Lock] = {}
+_mutation_locks: dict[tuple[str | None, str, str], threading.Lock] = {}
 _mutation_locks_guard = threading.Lock()
+_paper_locks: dict[tuple[str | None, str], threading.Lock] = {}
+_paper_locks_guard = threading.Lock()
 
 
 def mutation_lock(slug: str) -> threading.Lock:
-    key = (config.active_project_id(), slug)
+    key = (config.active_project_id(), slug, active_thread_id())
     with _mutation_locks_guard:
         lock = _mutation_locks.get(key)
         if lock is None:
@@ -431,11 +709,29 @@ def mutation_lock(slug: str) -> threading.Lock:
         return lock
 
 
-def _branches_file(slug: str):
+def paper_lock(slug: str) -> threading.Lock:
+    """Short admission/approval lock shared by every thread of one paper.
+
+    Turn generation itself remains parallel across threads; only check+registration is held.
+    Approval holds this lock while checking for active jobs and committing, closing the race
+    where a new finish could start immediately after the approval's active-job check.
+    """
+    key = (config.active_project_id(), slug)
+    with _paper_locks_guard:
+        lock = _paper_locks.get(key)
+        if lock is None:
+            lock = _paper_locks[key] = threading.Lock()
+        return lock
+
+
+def _branches_file(slug: str, thread_id: str | None = None):
     # Under .state/ (gitignored), NOT the sessions dir: transcripts are part of the committed
     # record, but sibling branches are switchable working state — committer.commit()'s
     # `git add -A` must never immortalize unchosen tails (or their stale drafts) in git.
-    return config.state_dir() / "branches" / f"{slug}.branches.json"
+    tid = validate_thread_id(thread_id or active_thread_id())
+    if tid == MAIN_THREAD:
+        return config.state_dir() / "branches" / f"{slug}.branches.json"
+    return config.state_dir() / "branches" / f"{slug}.threads" / f"{tid}.branches.json"
 
 
 def _read_branches(slug: str) -> dict:
