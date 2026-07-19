@@ -47,6 +47,7 @@ test('inline editor saves a sentence comment', async () => {
   const onSave = jest.fn();
   await renderAsync(
     <SentenceCommentComposer
+      active
       comments={[]}
       selected={{ assistantIndex: 1, quote: first.quote }}
       draft="Explain the evidence"
@@ -72,6 +73,7 @@ test('attached-comment chips reopen and remove queued comments', async () => {
   const onDone = jest.fn();
   await renderAsync(
     <SentenceCommentComposer
+      active={false}
       comments={[first, second]}
       selected={null}
       draft=""
@@ -89,6 +91,28 @@ test('attached-comment chips reopen and remove queued comments', async () => {
   expect(onOpen).toHaveBeenCalledWith(first);
   await fireEventAsync.press(screen.getByLabelText('Remove comment on: Second claim.'));
   expect(onRemove).toHaveBeenCalledWith(second);
+  await fireEventAsync.press(screen.getByText('Done'));
+  expect(onDone).toHaveBeenCalled();
+});
+
+test('annotation mode explains the next step before a sentence is selected', async () => {
+  const onDone = jest.fn();
+  await renderAsync(
+    <SentenceCommentComposer
+      active
+      comments={[]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={onDone}
+    />,
+  );
+
+  expect(screen.getByText('Select a sentence in the response')).toBeTruthy();
   await fireEventAsync.press(screen.getByText('Done'));
   expect(onDone).toHaveBeenCalled();
 });
