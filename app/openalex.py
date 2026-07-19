@@ -1,4 +1,4 @@
-"""OpenAlex enrichment: authorships (author names + institutions) for project papers.
+"""OpenAlex enrichment: authorships (author names + institutions) for scholarly papers.
 
 Why OpenAlex (U.9 source evaluation): project graph nodes are built with `authors: []` and
 nothing fills them — and the authors view needs affiliations too. OpenAlex's works endpoint,
@@ -9,12 +9,15 @@ that pass remains the future backfill for non-arXiv papers only.
 
 Shape mirrors citations.py: called from the graph build job only (never a request), a
 node-id-keyed cache persisted in the graph store so coverage accumulates across builds, and
-best-effort throughout — enrichment must never fail a build. Tests inject a fake client
-(suite stays network-free)."""
+best-effort throughout — enrichment must never fail a build. Discover also uses the same
+paper-scoped lookup for its bounded arXiv/DOI candidate set. Tests inject a fake client (suite
+stays network-free)."""
 from __future__ import annotations
 
 import os
+import re
 import time
+from urllib.parse import quote
 
 import httpx
 
@@ -35,19 +38,31 @@ def _headers() -> dict:
     return {"User-Agent": ua}
 
 
-def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | None:
-    """[{name, affiliation}] for one arXiv work, or None when the lookup fails/misses.
-    `affiliation` is the first institution's display name ("" when OpenAlex has none —
-    patchy coverage is expected and the UI omits unknowns rather than showing 'Unknown')."""
-    # OpenAlex's single-work endpoint does NOT accept an `arxiv:` key (it 404s) — but arXiv
-    # mints a DOI `10.48550/arXiv.<id>` for every paper, and the DOI lookup works. Use the
-    # canonical VERSIONLESS id (a `v3` suffix this repo preserves elsewhere would miss, and
-    # since misses aren't cached it would retry forever).
-    base_id = store.arxiv_base_id(arxiv_id)
-    if not base_id:
+def _work_lookup_id(*, arxiv_id: str | None = None, doi: str | None = None) -> str | None:
+    if arxiv_id:
+        base_id = store.arxiv_base_id(arxiv_id)
+        if base_id:
+            return f"doi:10.48550/arXiv.{base_id}"
+    clean_doi = (doi or "").strip()
+    clean_doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", clean_doi, flags=re.IGNORECASE)
+    return f"doi:{clean_doi}" if clean_doi else None
+
+
+def work_authorships_for(
+    *,
+    arxiv_id: str | None = None,
+    doi: str | None = None,
+    client: httpx.Client,
+) -> list[dict] | None:
+    """[{name, affiliation}] for one identified work, or None when the lookup misses."""
+    lookup = _work_lookup_id(arxiv_id=arxiv_id, doi=doi)
+    if not lookup:
         return None
-    r = client.get(f"{BASE}/works/doi:10.48550/arXiv.{base_id}",
-                   params={"select": "authorships"}, headers=_headers())
+    r = client.get(
+        f"{BASE}/works/{quote(lookup, safe=':./')}",
+        params={"select": "authorships"},
+        headers=_headers(),
+    )
     if r.status_code != 200:
         return None
     out = []
@@ -59,6 +74,58 @@ def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | Non
         affiliation = str((institutions[0].get("display_name") if institutions else "") or "")
         out.append({"name": name, "affiliation": affiliation})
     return out
+
+
+def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | None:
+    """[{name, affiliation}] for one arXiv work, or None when the lookup fails/misses.
+    `affiliation` is the first institution's display name ("" when OpenAlex has none —
+    patchy coverage is expected and the UI omits unknowns rather than showing 'Unknown')."""
+    # OpenAlex's single-work endpoint does NOT accept an `arxiv:` key (it 404s) — but arXiv
+    # mints a DOI `10.48550/arXiv.<id>` for every paper, and the DOI lookup works. Use the
+    # canonical VERSIONLESS id (a `v3` suffix this repo preserves elsewhere would miss, and
+    # since misses aren't cached it would retry forever).
+    return work_authorships_for(arxiv_id=arxiv_id, client=client)
+
+
+def annotate_discovery_authorships(
+    candidates: list[dict],
+    *,
+    client: httpx.Client | None = None,
+    sleep=time.sleep,
+) -> None:
+    """Best-effort author/institution metadata for a bounded discovery candidate set.
+
+    This reuses Map's paper-scoped OpenAlex lookup rather than guessing institutions from author
+    names. A transport outage aborts after one request; missing metadata never penalizes ranking.
+    """
+    own = client is None
+    client = client or httpx.Client(timeout=TIMEOUT_S)
+    try:
+        for candidate in candidates:
+            if not candidate.get("arxiv_id") and not candidate.get("doi"):
+                continue
+            try:
+                ships = work_authorships_for(
+                    arxiv_id=candidate.get("arxiv_id"),
+                    doi=candidate.get("doi"),
+                    client=client,
+                )
+            except httpx.HTTPError:
+                log.info("openalex unreachable — skipping discovery enrichment")
+                break
+            if ships is not None:
+                candidate["authorships"] = ships
+                if not candidate.get("authors"):
+                    candidate["authors"] = [ship["name"] for ship in ships]
+                candidate["affiliations"] = list(dict.fromkeys(
+                    ship["affiliation"] for ship in ships if ship.get("affiliation")
+                ))
+            sleep(_PACE_S)
+    except Exception:
+        pass
+    finally:
+        if own:
+            client.close()
 
 
 def annotate_project_authors(nodes: list[dict], cache: dict, *,

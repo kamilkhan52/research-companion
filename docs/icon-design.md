@@ -77,10 +77,18 @@ Kamil wants to be involved at the generation step — that is the real point of 
 - [x] First-pass concepts + generations + comps (superseded; kept on the Figma page for
       reference)
 - [x] Best-practices research + philosophy brief (this doc)
-- [ ] **Align concept directions with Kamil** ← next, collaborative
-- [ ] Co-write + run codex generation prompts
-- [ ] Vector comps (dark+light, 512+64px, safe zone, monochrome)
-- [ ] Kamil's final pick → polish + `app.json`/asset integration (new dev build)
+- [x] Kamil approved the new editorial **P** direction in the round-10 device pass
+- [x] Final editable Figma board: `Paradigm P · Final (R7.10)` on page
+      `03 · App Icon — Paradigm`
+- [x] Primary, warm-paper launcher context, 128/64/32 proofs, Android 66% safe-zone proof,
+      and monochrome fallback
+- [x] Deterministic canonical SVG plus generic/iOS, Android adaptive foreground,
+      monochrome, splash, and favicon assets implemented in
+      [#182](https://github.com/kamilkhan52/research-companion/pull/182)
+
+The final mark is a warm-paper slab-serif P on the ink canvas. A mint research path rises
+through the bowl to one violet evidence node. It keeps the editorial authority and
+frame-shift idea of the brief while remaining a single readable launcher silhouette.
 
 ## Sources
 

@@ -39,13 +39,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsPlaying } from 'react-native-track-player';
 
 import * as Clipboard from 'expo-clipboard';
+import * as DocumentPicker from 'expo-document-picker';
 
 import * as api from '@/api/endpoints';
-import { streamPaths, turnJobPaths } from '@/api/endpoints';
+import { turnJobPaths } from '@/api/endpoints';
 import { useFavoriteModels, useOpeningDraft, usePaperFigures, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
 import { streamPost } from '@/api/stream';
-import type { ChatJob, FavoriteModel, ReadingMode, StartStreamEvent, StreamItem, TranscriptEntry } from '@/api/types';
+import type {
+  ChatJob,
+  DiscussionThreadSummary,
+  FavoriteModel,
+  ReadingMode,
+  RetrievalJob,
+  StartStreamEvent,
+  StreamItem,
+  TranscriptEntry,
+} from '@/api/types';
 import { READING_MODE_LABELS } from '@/api/types';
 import { useAudio } from '@/audio/AudioProvider';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
@@ -57,11 +67,25 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
+import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
-import { LinkHandlerContext, Markdown, type FigureContext, type LinkHandler } from '@/components/Markdown';
+import {
+  FirstResponseRetrySheet,
+  OPENING_TEMPLATE_OPTIONS,
+  type FirstResponseRetryConfig,
+  type OpeningTemplateKey,
+} from '@/components/FirstResponseRetrySheet';
+import {
+  LinkHandlerContext,
+  Markdown,
+  type FigureContext,
+  type LinkHandler,
+  type SentenceAnnotations,
+} from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
@@ -73,6 +97,16 @@ import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { fullPaperUrl } from '@/lib/paperLinks';
+import {
+  composeSentenceReply,
+  removeSentenceComment,
+  sameSentence,
+  sentenceCommentPayload,
+  sentenceCommentsDraftKey,
+  upsertSentenceComment,
+  type PendingSentenceComment,
+  type SelectedSentence,
+} from '@/lib/sentenceComments';
 import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import {
   useTheme,
@@ -116,10 +150,11 @@ export default function DiscussionScreen() {
   const qc = useQueryClient();
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
-  const { slug, source, project } = useLocalSearchParams<{
+  const { slug, source, project, thread } = useLocalSearchParams<{
     slug: string;
     source?: string;
     project?: string;
+    thread?: string;
   }>();
   const { activePid, setActivePid } = useActiveProject();
   // Continue Reading can target a session in a different project. Prefer its explicit route
@@ -150,7 +185,13 @@ export default function DiscussionScreen() {
     setExternalRef({ href, label });
   }, [showPaperActions]);
 
-  const session = useSession(pid, slug ?? null);
+  const [activeThread, setActiveThread] = useState(
+    typeof thread === 'string' && thread ? thread : 'main',
+  );
+  useEffect(() => {
+    setActiveThread(typeof thread === 'string' && thread ? thread : 'main');
+  }, [slug, thread]);
+  const session = useSession(pid, slug ?? null, activeThread);
   const settings = useSettings();
   const favoriteModels = useFavoriteModels();
   // The model for the *next* new response in this discussion only (Gemini/ChatGPT-style
@@ -161,7 +202,7 @@ export default function DiscussionScreen() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   useEffect(() => {
     setSelectedModel(null);
-  }, [slug]);
+  }, [slug, activeThread]);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
   const handleTurnDone = useCallback(async (job: ChatJob) => {
@@ -172,7 +213,12 @@ export default function DiscussionScreen() {
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
     audio.enqueueJob(
       {
-        id: messageAudioId(pid, slug, job.assistant_index, canonical),
+        id: messageAudioId(
+          pid,
+          activeThread === 'main' ? slug : `${slug}--${activeThread}`,
+          job.assistant_index,
+          canonical,
+        ),
         title: session.data?.paper.title ?? 'Narration',
         text: canonical,
       },
@@ -180,12 +226,13 @@ export default function DiscussionScreen() {
       pid,
       job.id,
     );
-  }, [audio, listeningMode, pid, session.data?.paper.title, slug]);
+  }, [activeThread, audio, listeningMode, pid, session.data?.paper.title, slug]);
   const stream = useStreamingTurn(
     pid,
     slug ?? null,
     listeningMode ? 'listening' : 'reading',
     handleTurnDone,
+    activeThread,
   );
   usePreviewCues({
     enabled: listeningMode,
@@ -198,12 +245,14 @@ export default function DiscussionScreen() {
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
-  const hasSession = !!state && transcript.length > 0;
+  const hasSession = !!state && (transcript.length > 0 || activeThread !== 'main');
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
     project: pid,
-    slug: slug ?? null,
+    slug: slug
+      ? (activeThread === 'main' ? slug : `${slug}--${activeThread}`)
+      : null,
     title: session.data?.paper.title ?? 'Narration',
     transcript,
     enqueueJob: audio.enqueueJob,
@@ -214,30 +263,60 @@ export default function DiscussionScreen() {
   useEffect(() => {
     void stream.resume();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid, slug]);
+  }, [pid, slug, activeThread]);
 
   const [showRelated, setShowRelated] = useState(false);
+  const [threadPickerOpen, setThreadPickerOpen] = useState(false);
   // Model + reading-mode pickers live behind the kebab menu (polish plan H.1) — the header
   // stays quiet: back, title, one menu button.
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modePickerOpen, setModePickerOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [suggestedTitle, setSuggestedTitle] = useState<string | null>(null);
   const readingMode = session.data?.reading_mode ?? 'balanced';
   const paperUrl = session.data?.paper ? fullPaperUrl(session.data.paper) : null;
+  const selectedModelLabel =
+    selectedModel == null
+      ? (settings.data?.model ?? 'Project default')
+      : (favoriteModels.data?.find((m) => m.id === selectedModel)?.label ?? selectedModel);
   const switchMode = useCallback(async (mode: ReadingMode) => {
     if (!pid || !slug || mode === readingMode) return;
     try {
-      await api.setSessionMode(pid, slug, mode);
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await api.setSessionMode(pid, slug, mode, activeThread);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
     } catch (e) {
       Alert.alert('Could not switch mode', (e as Error).message ?? 'Request failed.');
     }
-  }, [pid, qc, readingMode, slug]);
+  }, [activeThread, pid, qc, readingMode, slug]);
   // The chat library's own KeyboardAvoidingView assumes it starts right below the safe area
   // (`keyboardVerticalOffset={insets.top}` in its source) — it has no way to know a TopBar
   // sits above it in this app's layout, so without correcting for that height the composer
   // stays partly under the keyboard. Measure the real header height and hand back the
   // corrected total (device inset + header) as the override.
   const [headerHeight, setHeaderHeight] = useState(0);
+
+  // Auto-analysis can fetch and open the first discussion while this screen is elsewhere.
+  // On re-entry, surface the resolver's canonical title even though ComposeFirst is skipped.
+  useEffect(() => {
+    if (!hasSession || !pid || !slug) return;
+    let active = true;
+    void api.getLatestRetrievalJob(pid, slug).then(
+      ({ job }) => {
+        const found = job?.retrieved ? job.matched_title?.trim() : null;
+        if (
+          active &&
+          found &&
+          comparableTitle(found) !== comparableTitle(session.data?.paper.title ?? '')
+        ) {
+          setSuggestedTitle(found);
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [hasSession, pid, session.data?.paper.title, slug]);
 
   async function finishReadingFromMenu() {
     if (!paths || !slug) return;
@@ -249,11 +328,47 @@ export default function DiscussionScreen() {
   async function continueFromCommitted() {
     if (!pid || !slug) return;
     try {
-      await api.continueDiscussion(pid, slug);
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await api.continueDiscussion(pid, slug, activeThread);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, activeThread) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     } catch (e) {
       Alert.alert('Could not continue the discussion', (e as Error).message ?? 'Request failed.');
+    }
+  }
+
+  function confirmDeletePaper() {
+    if (!pid || !slug || !session.data?.paper) return;
+    Alert.alert(
+      'Delete paper from this project?',
+      `“${session.data.paper.title}” will leave the reading list. Its notes and discussion history are kept for recovery.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void api.removePaper(pid, slug).then(
+              () => {
+                void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+                void qc.invalidateQueries({ queryKey: keys.recentSessions });
+                router.back();
+              },
+              (e) => Alert.alert('Could not delete the paper', (e as Error).message),
+            );
+          },
+        },
+      ],
+    );
+  }
+
+  async function createThread() {
+    if (!pid || !slug || stream.streaming) return;
+    try {
+      const result = await api.createDiscussionThread(pid, slug);
+      setActiveThread(result.thread.id);
+      await qc.invalidateQueries({ queryKey: ['project', pid, 'session', slug] });
+    } catch (e) {
+      Alert.alert('Could not start a new thread', (e as Error).message ?? 'Request failed.');
     }
   }
 
@@ -266,7 +381,12 @@ export default function DiscussionScreen() {
         title={session.data?.paper.title ?? 'Discussion'}
         // Year first: it situates the paper on the timeline before the workflow state (U.17).
         subtitle={
-          [session.data?.paper.year, state ? STATE_LABEL[state] : undefined]
+          [
+            session.data?.paper.year,
+            activeThread === 'main'
+              ? (state ? STATE_LABEL[state] : undefined)
+              : session.data?.threads?.find((item) => item.id === activeThread)?.title,
+          ]
             .filter(Boolean)
             .join(' · ') || undefined
         }
@@ -283,20 +403,28 @@ export default function DiscussionScreen() {
             onRelatedWorks={() => setShowRelated(true)}
             onGraph={() => router.push('/graph')}
             paperUrl={paperUrl}
-            showFinishReading={hasSession && state !== 'notes_drafted' && state !== 'committed'}
+            showFinishReading={
+              hasSession
+              && transcript.length > 0
+              && state !== 'notes_drafted'
+              && state !== 'committed'
+            }
             finishReadingDisabled={stream.streaming}
             onFinishReading={() => void finishReadingFromMenu()}
             showContinue={state === 'committed'}
             onContinue={() => void continueFromCommitted()}
             modelLabel={
-              selectedModel == null
-                ? (settings.data?.model ?? 'Default')
-                : (favoriteModels.data?.find((m) => m.id === selectedModel)?.label ?? selectedModel)
+              selectedModelLabel
             }
             onPickModel={() => setModelPickerOpen(true)}
             showReadingMode={hasSession}
             readingModeLabel={READING_MODE_LABELS[readingMode]}
             onPickReadingMode={() => setModePickerOpen(true)}
+            onRename={() => setRenameOpen(true)}
+            onDelete={confirmDeletePaper}
+            showThreads={hasSession}
+            threadCount={session.data?.threads?.length ?? 0}
+            onThreads={() => setThreadPickerOpen(true)}
           />
         }
       />
@@ -315,6 +443,44 @@ export default function DiscussionScreen() {
         onClose={() => setModePickerOpen(false)}
         mode={readingMode}
         onPick={(m) => void switchMode(m)}
+      />
+      <RenamePaperSheet
+        visible={renameOpen}
+        pid={pid}
+        slug={slug ?? null}
+        title={session.data?.paper.title ?? ''}
+        onClose={() => setRenameOpen(false)}
+        onRenamed={() => {
+          setRenameOpen(false);
+          if (pid && slug) {
+            void qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+            void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+          }
+        }}
+      />
+      <CanonicalTitleSheet
+        visible={!!suggestedTitle}
+        pid={pid}
+        slug={slug ?? null}
+        currentTitle={session.data?.paper.title ?? ''}
+        suggestedTitle={suggestedTitle ?? ''}
+        onClose={() => setSuggestedTitle(null)}
+        onUpdated={() => {
+          setSuggestedTitle(null);
+          if (pid && slug) {
+            void qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+            void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+          }
+        }}
+      />
+      <ThreadPickerSheet
+        visible={threadPickerOpen}
+        onClose={() => setThreadPickerOpen(false)}
+        threads={session.data?.threads ?? []}
+        selected={activeThread}
+        disabled={stream.streaming}
+        onPick={setActiveThread}
+        onCreate={() => void createThread()}
       />
 
       <RelatedWorksSheet
@@ -342,11 +508,15 @@ export default function DiscussionScreen() {
           initialSource={typeof source === 'string' && source ? source : undefined}
           sessionState={state}
           selectedModel={selectedModel}
+          modelLabel={selectedModelLabel}
+          onPickModel={() => setModelPickerOpen(true)}
+          retrieved={!!session.data?.paper.retrieved}
         />
       ) : (
         <DiscussionThread
           pid={pid}
           slug={slug!}
+          threadId={activeThread}
           state={state}
           stream={stream}
           paths={paths!}
@@ -355,10 +525,12 @@ export default function DiscussionScreen() {
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
           selectedModel={selectedModel}
+          defaultModelLabel={settings.data?.model ?? 'Project default'}
+          readingMode={readingMode}
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           onMutated={() => {
-            qc.invalidateQueries({ queryKey: keys.session(pid, slug!) });
+            qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
         />
@@ -399,6 +571,11 @@ function OverflowMenu({
   showReadingMode,
   readingModeLabel,
   onPickReadingMode,
+  onRename,
+  onDelete,
+  showThreads,
+  threadCount,
+  onThreads,
 }: {
   listeningMode: boolean;
   onToggleListening: () => void;
@@ -417,6 +594,11 @@ function OverflowMenu({
   showReadingMode: boolean;
   readingModeLabel: string;
   onPickReadingMode: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  showThreads: boolean;
+  threadCount: number;
+  onThreads: () => void;
 }) {
   const t = useTheme();
   const [open, setOpen] = useState(false);
@@ -445,6 +627,16 @@ function OverflowMenu({
       icon: 'external-link',
       accent: t.mint,
       onPress: () => void Linking.openURL(paperUrl).catch(() => undefined),
+    });
+  }
+  if (showThreads) {
+    options.push({
+      key: 'threads',
+      title: 'Discussion threads',
+      subtitle: `${threadCount} independent ${threadCount === 1 ? 'thread' : 'threads'}`,
+      icon: 'message-circle',
+      accent: t.mint,
+      onPress: onThreads,
     });
   }
   if (showFinishReading) {
@@ -495,12 +687,228 @@ function OverflowMenu({
     icon: 'headphones',
     onPress: onToggleListening,
   });
+  options.push(
+    {
+      key: 'rename',
+      title: 'Rename paper',
+      subtitle: 'Keep the same paper history and identity',
+      icon: 'edit-3',
+      section: true,
+      onPress: onRename,
+    },
+    {
+      key: 'delete',
+      title: 'Delete from project',
+      subtitle: 'Notes and discussion history are retained',
+      icon: 'trash-2',
+      accent: t.danger,
+      onPress: onDelete,
+    },
+  );
 
   return (
     <>
       <IconButton name="more-vertical" onPress={() => setOpen(true)} accessibilityLabel="More actions" />
       <OptionsSheet visible={open} onClose={() => setOpen(false)} options={options} />
     </>
+  );
+}
+
+export function RenamePaperSheet({
+  visible,
+  pid,
+  slug,
+  title,
+  onClose,
+  onRenamed,
+}: {
+  visible: boolean;
+  pid: string | null;
+  slug: string | null;
+  title: string;
+  onClose: () => void;
+  onRenamed: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [draft, setDraft] = useState(title);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (visible) {
+      setDraft(title);
+      setError(null);
+    }
+  }, [title, visible]);
+
+  async function save() {
+    const next = draft.trim();
+    if (!pid || !slug || !next || next === title.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updatePaper(pid, slug, next);
+      onRenamed();
+    } catch (e) {
+      setError((e as Error).message ?? 'Could not rename the paper.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <BottomSheet visible={visible} onClose={onClose} maxHeightPct={70} scrollable>
+      <Text variant="title">Rename paper</Text>
+      <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
+        The discussion, notes, and stable paper identity stay attached.
+      </Text>
+      <BottomSheetTextInput
+        value={draft}
+        onChangeText={setDraft}
+        placeholder="Paper title"
+        placeholderTextColor={t.muted}
+        style={styles.renameInput}
+        autoFocus
+        returnKeyType="done"
+        onSubmitEditing={() => void save()}
+      />
+      {error ? (
+        <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+          {error}
+        </Text>
+      ) : null}
+      <View style={styles.sheetActions}>
+        <Button title="Cancel" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+        <Button
+          title="Save name"
+          onPress={() => void save()}
+          loading={saving}
+          disabled={!draft.trim() || draft.trim() === title.trim()}
+          style={{ flex: 1 }}
+        />
+      </View>
+    </BottomSheet>
+  );
+}
+
+export function CanonicalTitleSheet({
+  visible,
+  pid,
+  slug,
+  currentTitle,
+  suggestedTitle,
+  onClose,
+  onUpdated,
+}: {
+  visible: boolean;
+  pid: string | null;
+  slug: string | null;
+  currentTitle: string;
+  suggestedTitle: string;
+  onClose: () => void;
+  onUpdated: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (visible) setError(null);
+  }, [visible]);
+
+  async function update() {
+    if (!pid || !slug || !suggestedTitle.trim() || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updatePaper(pid, slug, suggestedTitle.trim());
+      onUpdated();
+    } catch (e) {
+      setError((e as Error).message ?? 'Could not update the paper title.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <BottomSheet visible={visible} onClose={onClose} maxHeightPct={75} scrollable>
+      <Text variant="overline" color={t.mint}>Paper found</Text>
+      <Text variant="title" style={{ marginTop: space.xs }}>Use the source title?</Text>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+        You added
+      </Text>
+      <Text variant="body">{currentTitle}</Text>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
+        The source reports
+      </Text>
+      <Text variant="serifTitle">{suggestedTitle}</Text>
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
+        Updating the title keeps the same paper identity, notes, and discussion.
+      </Text>
+      {error ? (
+        <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+          {error}
+        </Text>
+      ) : null}
+      <View style={styles.sheetActions}>
+        <Button title="Keep current" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+        <Button
+          title="Update title"
+          onPress={() => void update()}
+          loading={saving}
+          style={{ flex: 1 }}
+        />
+      </View>
+    </BottomSheet>
+  );
+}
+
+function ThreadPickerSheet({
+  visible,
+  onClose,
+  threads,
+  selected,
+  disabled,
+  onPick,
+  onCreate,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  threads: DiscussionThreadSummary[];
+  selected: string;
+  disabled: boolean;
+  onPick: (threadId: string) => void;
+  onCreate: () => void;
+}) {
+  const options: SheetOption[] = threads.map((thread, index) => ({
+    key: thread.id,
+    title: thread.title,
+    subtitle: thread.message_count
+      ? `${thread.message_count} message${thread.message_count === 1 ? '' : 's'}`
+      : 'Ready for your first message',
+    icon: index === 0 ? 'book-open' : 'message-circle',
+    selected: thread.id === selected,
+    disabled,
+    onPress: () => onPick(thread.id),
+  }));
+  options.push({
+    key: 'new-thread',
+    title: 'Start a new thread',
+    subtitle: 'Ask anything with the full paper in context',
+    icon: 'plus',
+    section: true,
+    disabled,
+    onPress: onCreate,
+  });
+  return (
+    <OptionsSheet
+      visible={visible}
+      onClose={onClose}
+      title="Discussion threads"
+      options={options}
+    />
   );
 }
 
@@ -559,20 +967,6 @@ const MODE_OPTIONS: { mode: ReadingMode; icon: IconName; subtitle: string }[] = 
   { mode: 'detailed', icon: 'list', subtitle: 'Thorough walkthrough, nothing skipped' },
 ];
 
-type OpeningTemplateKey = ReadingMode | 'custom';
-const OPENING_TEMPLATE_OPTIONS: {
-  key: OpeningTemplateKey;
-  title: string;
-  description: string;
-  icon: IconName;
-}[] = [
-  { key: 'balanced', title: 'Balanced', description: 'A clear overview with context and technical substance.', icon: 'circle' },
-  { key: 'background', title: 'Background-heavy', description: 'Build the groundwork and explain unfamiliar ideas as they appear.', icon: 'book-open' },
-  { key: 'technical', title: 'Technical', description: 'Skip the basics and engage closely with methods, math, and assumptions.', icon: 'cpu' },
-  { key: 'detailed', title: 'Detailed', description: 'Walk through the paper thoroughly without compressing key steps.', icon: 'list' },
-  { key: 'custom', title: 'Customize prompt', description: 'Edit the complete opening instruction and control it directly.', icon: 'edit-3' },
-];
-
 function ModePickerSheet({
   visible,
   onClose,
@@ -610,13 +1004,29 @@ function branchAudioId(
   pid: string,
   slug: string,
   entry: Extract<TranscriptEntry, { role: 'assistant' }>,
+  threadId = 'main',
 ): string {
-  return messageAudioId(pid, slug, entry.assistant_index, entry.canonical);
+  const conversation = threadId === 'main' ? slug : `${slug}--${threadId}`;
+  return messageAudioId(pid, conversation, entry.assistant_index, entry.canonical);
+}
+
+function discussionDraftKey(
+  pid: string,
+  slug: string,
+  threadId: string,
+  kind: string,
+): string {
+  // Preserve every pre-thread main draft under its original key; only additional threads add
+  // a namespace component, so rollout cannot make an existing unsent reply appear lost.
+  return threadId === 'main'
+    ? draftKey(pid, 'discussion', slug, kind)
+    : draftKey(pid, 'discussion', slug, threadId, kind);
 }
 
 function DiscussionThread({
   pid,
   slug,
+  threadId,
   state,
   stream,
   paths,
@@ -625,12 +1035,15 @@ function DiscussionThread({
   title,
   favorites,
   selectedModel,
+  defaultModelLabel,
+  readingMode,
   onContinue,
   headerHeight,
   onMutated,
 }: {
   pid: string;
   slug: string;
+  threadId: string;
   state: string | null;
   stream: ReturnType<typeof useStreamingTurn>;
   paths: ReturnType<typeof turnJobPaths>;
@@ -639,6 +1052,8 @@ function DiscussionThread({
   title: string;
   favorites: FavoriteModel[];
   selectedModel: string | null;
+  defaultModelLabel: string;
+  readingMode: ReadingMode;
   onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
@@ -646,6 +1061,7 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
   // manifest that lands after a turn was written still cards it on the next render.
@@ -659,19 +1075,39 @@ function DiscussionThread({
   // being authored elsewhere, that reply stays recoverable when the discussion is reopened
   // instead of being relabeled as request-changes feedback.
   const draftKind = state === 'notes_drafted' ? 'request-changes' : 'reply';
-  const textDraft = usePersistedDraft(draftKey(pid, 'discussion', slug, draftKind), '');
+  const textDraft = usePersistedDraft(
+    discussionDraftKey(pid, slug, threadId, draftKind),
+    '',
+  );
   // Message editing: which user reply is being edited + its draft. reply_index counts only
   // user turns (matching the backend, whose transcript surfaces only kind=="reply" users).
   // The edit happens in the composer (long-press a reply → Edit), prefilled with its text.
   const editDraft = usePersistedDraft<{ replyIndex: number; draft: string } | null>(
-    draftKey(pid, 'discussion', slug, 'message-edit'),
+    discussionDraftKey(pid, slug, threadId, 'message-edit'),
     null,
   );
   const editing = editDraft.value;
   const setEditing = editDraft.setValue;
+  const sentenceCommentsDraft = usePersistedDraft<PendingSentenceComment[]>(
+    sentenceCommentsDraftKey(pid, slug, threadId),
+    [],
+  );
+  const sentenceComments = sentenceCommentsDraft.value;
+  const [annotatingAssistant, setAnnotatingAssistant] = useState<number | null>(null);
+  const [selectedSentence, setSelectedSentence] = useState<SelectedSentence | null>(null);
+  const [sentenceCommentText, setSentenceCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+
+  // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
+  // editor at the same boundary so a selection from the previous discussion cannot linger.
+  useEffect(() => {
+    setAnnotatingAssistant(null);
+    setSelectedSentence(null);
+    setSentenceCommentText('');
+  }, [threadId]);
+
   const disabled = stream.streaming || busy;
   // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
   // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
@@ -703,6 +1139,26 @@ function DiscussionThread({
       void textDraft.clear('');
     }
   }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
+
+  // If the start POST reached the server but its response was lost, onAccepted could not clear
+  // the queue. The composed user turn is deterministic, so the transcript itself is the
+  // authoritative recovery signal after useStreamingTurn's defensive refetch.
+  useEffect(() => {
+    if (!sentenceCommentsDraft.submitted || sentenceComments.length === 0) return;
+    const expected = composeSentenceReply(sentenceComments, textDraft.value);
+    if (transcript.some((entry) => entry.role === 'user' && entry.text === expected)) {
+      void sentenceCommentsDraft.clear([]);
+      setAnnotatingAssistant(null);
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+    }
+  }, [
+    sentenceComments,
+    sentenceCommentsDraft.clear,
+    sentenceCommentsDraft.submitted,
+    textDraft.value,
+    transcript,
+  ]);
 
   // U.14: the moment a retry starts, the reader must see the conversation reset to the last
   // user message — not the old response lingering until the refetch. The old tail is hidden
@@ -742,8 +1198,9 @@ function DiscussionThread({
     setSwitchingBranch(true);
     setRetryHide(null);  // switching is explicit navigation; never hide what it restores
     try {
-      await api.switchBranch(pid, slug, assistantIndex, branch);
-      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await api.switchBranch(pid, slug, assistantIndex, branch, threadId);
+      await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
+      await queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
       // A switch can flip session_state (in_discussion <-> notes_drafted); library rows and
       // paper actions read it from project state.
       await queryClient.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -752,7 +1209,7 @@ function DiscussionThread({
     } finally {
       setSwitchingBranch(false);
     }
-  }, [pid, queryClient, slug, stream.streaming, switchingBranch]);
+  }, [pid, queryClient, slug, stream.streaming, switchingBranch, threadId]);
 
   const hideFromIndex = useMemo(() => {
     if (!retryHide) return null;
@@ -800,6 +1257,69 @@ function DiscussionThread({
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
   // lifecycle draft (reply / request-changes). Both persist until server acceptance.
   const inputText = editing ? editing.draft : textDraft.value;
+
+  const openSentence = useCallback((assistantIndex: number, quote: string) => {
+    const next = { assistantIndex, quote };
+    if (selectedSentence && sameSentence(selectedSentence, next)) {
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+      return;
+    }
+    const existing = sentenceComments.find((comment) => sameSentence(comment, next));
+    setAnnotatingAssistant(assistantIndex);
+    setSelectedSentence(next);
+    setSentenceCommentText(existing?.comment ?? '');
+  }, [selectedSentence, sentenceComments]);
+
+  const openQueuedComment = useCallback((comment: PendingSentenceComment) => {
+    setAnnotatingAssistant(comment.assistantIndex);
+    setSelectedSentence({ assistantIndex: comment.assistantIndex, quote: comment.quote });
+    setSentenceCommentText(comment.comment);
+  }, []);
+
+  const saveSentenceComment = useCallback(() => {
+    const comment = sentenceCommentText.trim();
+    if (!selectedSentence || !comment) return;
+    sentenceCommentsDraft.setValue((current) => upsertSentenceComment(current, {
+      ...selectedSentence,
+      comment,
+    }));
+    setSelectedSentence(null);
+    setSentenceCommentText('');
+  }, [selectedSentence, sentenceCommentText, sentenceCommentsDraft.setValue]);
+
+  const removeQueuedComment = useCallback((comment: PendingSentenceComment) => {
+    sentenceCommentsDraft.setValue((current) => removeSentenceComment(current, comment));
+    if (selectedSentence && sameSentence(selectedSentence, comment)) {
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+    }
+  }, [selectedSentence, sentenceCommentsDraft.setValue]);
+
+  const sentenceAnnotationsFor = useCallback((
+    assistantIndex: number,
+  ): SentenceAnnotations | undefined => {
+    const messageComments = sentenceComments.filter(
+      (comment) => comment.assistantIndex === assistantIndex,
+    );
+    if (annotatingAssistant !== assistantIndex && messageComments.length === 0) return undefined;
+    return {
+      active: true,
+      onSentencePress: (quote) => openSentence(assistantIndex, quote),
+      stateForSentence: (quote) => {
+        const sentence = { assistantIndex, quote };
+        const count = messageComments.filter(
+          (comment) => sameSentence(comment, sentence),
+        ).length;
+        return {
+          selected: !!selectedSentence && sameSentence(selectedSentence, sentence),
+          annotated: count > 0,
+          commentCount: count,
+        };
+      },
+    };
+  }, [annotatingAssistant, openSentence, selectedSentence, sentenceComments]);
+
   // The library fires onChangeText('') once from its initial-layout input reset (and our
   // controlled `text` prop immediately overrides its internal state). Writing that '' into
   // the persisted draft would clobber the stored value mid-load — the exact draft-loss
@@ -855,13 +1375,26 @@ function DiscussionThread({
 
   async function send() {
     const t = textDraft.value.trim();
-    if (!t) return;
-    await textDraft.markSubmitted(acceptedDrafts.length);
+    if (!t && sentenceComments.length === 0) return;
+    if (t) await textDraft.markSubmitted(acceptedDrafts.length);
+    if (sentenceComments.length) await sentenceCommentsDraft.markSubmitted();
+    const rendered = composeSentenceReply(sentenceComments, t);
     await stream.run(
       paths.reply,
-      { slug, text: t, model: selectedModel ?? undefined },
-      t,
-      () => textDraft.clear(''),
+      {
+        slug,
+        text: t,
+        comments: sentenceCommentPayload(sentenceComments),
+        model: selectedModel ?? undefined,
+      },
+      rendered,
+      async () => {
+        await textDraft.clear('');
+        await sentenceCommentsDraft.clear([]);
+        setAnnotatingAssistant(null);
+        setSelectedSentence(null);
+        setSentenceCommentText('');
+      },
     );
   }
 
@@ -882,7 +1415,11 @@ function DiscussionThread({
   // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
   // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
   const canRetry = state !== 'committed';
-  const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+  const [firstRetryOpen, setFirstRetryOpen] = useState(false);
+  const handleRetry = useCallback((
+    assistantIndex: number,
+    config: { model?: string; prompt?: string; mode?: ReadingMode } = {},
+  ) => {
     if (state === 'committed') return;
     const old = transcript.find(
       (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
@@ -894,15 +1431,26 @@ function DiscussionThread({
         branchActive: old.branch_active ?? null,
       });
     }
-    void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
+    void stream.run(paths.retry, {
+      slug,
+      assistant_index: assistantIndex,
+      ...config,
+    }).finally(() => {
+      void queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths.retry, slug, state, stream.run, transcript]);
+  }, [paths.retry, pid, queryClient, slug, state, stream.run, threadId, transcript]);
+
+  const handleFirstRetry = useCallback((config: FirstResponseRetryConfig) => {
+    setFirstRetryOpen(false);
+    handleRetry(0, config);
+  }, [handleRetry]);
 
   async function reopen() {
     setBusy(true);
     setActionError(null);
     try {
-      await api.reopen(pid, slug);
+      await api.reopen(pid, slug, threadId);
       onMutated();
     } catch (e) {
       setActionError((e as Error).message ?? 'Could not reopen the discussion.');
@@ -920,7 +1468,7 @@ function DiscussionThread({
     // after toggling Listening. selectedModel is a dep for the same reason — omitting it sent
     // a stale (or no) model override whenever the pill was picked after the last keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel, sentenceComments]);
 
   // Long-press a message for its actions (copy everywhere; edit on user replies; the full
   // under-response row — Listen, Retry, Retry-with-model — on assistant responses, U.12: the
@@ -959,7 +1507,20 @@ function DiscussionThread({
       });
     }
     if (entry.role === 'assistant') {
-      const audioId = branchAudioId(pid, slug, entry);
+      const audioId = branchAudioId(pid, slug, entry, threadId);
+      if (state === 'in_discussion' && !stream.streaming && !editing) {
+        options.push({
+          key: 'comment',
+          title: 'Comment on this',
+          subtitle: 'Select a sentence to attach to your next reply',
+          icon: 'message-square',
+          onPress: () => {
+            setAnnotatingAssistant(entry.assistant_index);
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          },
+        });
+      }
       options.push({
         key: 'listen',
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
@@ -967,27 +1528,38 @@ function DiscussionThread({
         onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
       });
       if (!stream.streaming && canRetry) {
-        options.push({
-          key: 'retry',
-          title: 'Retry',
-          subtitle: 'Regenerate with the current model',
-          icon: 'rotate-ccw',
-          section: true,
-          onPress: () => handleRetry(entry.assistant_index),
-        });
-        for (const m of favorites) {
+        if (entry.assistant_index === 0) {
           options.push({
-            key: `retry-${m.id}`,
-            title: `Retry with ${m.label}`,
-            icon: 'zap',
-            onPress: () => handleRetry(entry.assistant_index, m.id),
+            key: 'retry-first',
+            title: 'Retry first response',
+            subtitle: 'Choose prompt type and model',
+            icon: 'rotate-ccw',
+            section: true,
+            onPress: () => setFirstRetryOpen(true),
           });
+        } else {
+          options.push({
+            key: 'retry',
+            title: 'Retry',
+            subtitle: 'Regenerate with the current model',
+            icon: 'rotate-ccw',
+            section: true,
+            onPress: () => handleRetry(entry.assistant_index),
+          });
+          for (const m of favorites) {
+            options.push({
+              key: `retry-${m.id}`,
+              title: `Retry with ${m.label}`,
+              icon: 'zap',
+              onPress: () => handleRetry(entry.assistant_index, { model: m.id }),
+            });
+          }
         }
       }
     }
     setMsgMenu(options);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, stream.streaming, transcript, audio.currentId, audio.playText, favorites, handleRetry, pid, slug, title]);
+  }, [editing, state, stream.streaming, transcript, audio.currentId, audio.playText, favorites, handleRetry, pid, slug, threadId, title]);
 
   // A persisted edit can outlive its window (e.g. the notes were committed from another
   // device while an edit draft sat here). Committed state has no composer to show or cancel
@@ -995,6 +1567,15 @@ function DiscussionThread({
   useEffect(() => {
     if (state === 'committed' && editing) void editDraft.clear(null);
   }, [editDraft.clear, editing, state]);
+  useEffect(() => {
+    if (state !== 'committed' || sentenceComments.length === 0) return;
+    // A commit from another device removes this screen's composer. Pending sentence comments
+    // are a reply overlay, not durable annotations, so do not strand invisible marks here.
+    void sentenceCommentsDraft.clear([]);
+    setAnnotatingAssistant(null);
+    setSelectedSentence(null);
+    setSentenceCommentText('');
+  }, [sentenceComments.length, sentenceCommentsDraft.clear, state]);
 
   const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
     const msg = props.currentMessage;
@@ -1003,14 +1584,16 @@ function DiscussionThread({
       return (
         <AssistantBody
           entry={msg.entry}
-          audioId={branchAudioId(pid, slug, msg.entry)}
+          audioId={branchAudioId(pid, slug, msg.entry, threadId)}
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
+          onConfigureFirstRetry={() => setFirstRetryOpen(true)}
           canRetry={canRetry}
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
           figureContext={figureContext}
+          sentenceAnnotations={sentenceAnnotationsFor(msg.entry.assistant_index)}
         />
       );
     }
@@ -1024,7 +1607,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1049,7 +1632,7 @@ function DiscussionThread({
       );
     }
     if (state === 'notes_drafted' && !editing) return null;
-    const canSend = !!inputText.trim() && !disabled;
+    const canSend = (!!inputText.trim() || sentenceComments.length > 0) && !disabled;
     return (
       <Pressable
         onPress={handleSend}
@@ -1063,7 +1646,7 @@ function DiscussionThread({
         />
       </Pressable>
     );
-  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop, styles, theme]);
+  }, [disabled, editing, handleSend, inputText, sentenceComments.length, state, stream.streaming, stream.stop, styles, theme]);
 
   const renderAccessory = useCallback(() => {
     if (editing) {
@@ -1130,15 +1713,49 @@ function DiscussionThread({
     // no full-width strip/separator shows), and the elevated rounded surface + border live on
     // the primary row that already holds [composer | send].
     return (
-      <InputToolbar
-        {...props}
-        containerStyle={styles.toolbar}
-        primaryStyle={styles.composerCard}
-        renderSend={renderSend}
-        renderAccessory={renderAccessory}
-      />
+      <View>
+        <SentenceCommentComposer
+          active={annotatingAssistant !== null}
+          comments={sentenceComments}
+          selected={selectedSentence}
+          draft={sentenceCommentText}
+          onChangeDraft={setSentenceCommentText}
+          onSave={saveSentenceComment}
+          onCancelSelection={() => {
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          }}
+          onOpen={openQueuedComment}
+          onRemove={removeQueuedComment}
+          onDone={() => {
+            setAnnotatingAssistant(null);
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          }}
+        />
+        <InputToolbar
+          {...props}
+          containerStyle={styles.toolbar}
+          primaryStyle={styles.composerCard}
+          renderSend={renderSend}
+          renderAccessory={renderAccessory}
+        />
+      </View>
     );
-  }, [onContinue, renderAccessory, renderSend, state, styles]);
+  }, [
+    onContinue,
+    annotatingAssistant,
+    openQueuedComment,
+    removeQueuedComment,
+    renderAccessory,
+    renderSend,
+    saveSentenceComment,
+    selectedSentence,
+    sentenceCommentText,
+    sentenceComments,
+    state,
+    styles,
+  ]);
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
@@ -1154,7 +1771,9 @@ function DiscussionThread({
     ? 'Edit your message…'
     : state === 'notes_drafted'
       ? 'Request changes to the draft…'
-      : 'Reply';
+      : transcript.length === 0
+        ? 'Start with any question about this paper…'
+        : 'Reply';
 
   return (
     <>
@@ -1213,10 +1832,22 @@ function DiscussionThread({
       onClose={() => setMsgMenu(null)}
       options={msgMenu ?? []}
     />
+    <FirstResponseRetrySheet
+      visible={firstRetryOpen}
+      onClose={() => setFirstRetryOpen(false)}
+      currentPrompt={opening.data?.prompt}
+      templates={opening.data?.templates}
+      currentMode={readingMode}
+      selectedModel={selectedModel}
+      defaultModelLabel={defaultModelLabel}
+      favorites={favorites}
+      onRetry={handleFirstRetry}
+    />
     <NotesReviewSheet
       visible={reviewOpen}
       pid={pid}
       slug={slug}
+      threadId={threadId}
       onClose={() => setReviewOpen(false)}
       onCommitted={() => { setReviewOpen(false); onMutated(); }}
     />
@@ -1235,7 +1866,13 @@ function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
   return { arxiv_id: s };
 }
 
-function ComposeFirst({
+const RETRIEVAL_POLL_MS = 1500;
+const RETRIEVAL_WAIT_MS = 25 * 60 * 1000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const comparableTitle = (value: string) =>
+  value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+export function ComposeFirst({
   pid,
   slug,
   title,
@@ -1244,6 +1881,9 @@ function ComposeFirst({
   initialSource,
   sessionState,
   selectedModel,
+  retrieved,
+  modelLabel = 'Project default',
+  onPickModel = () => undefined,
 }: {
   pid: string;
   slug: string;
@@ -1253,9 +1893,14 @@ function ComposeFirst({
   initialSource?: string;
   sessionState: string | null;
   selectedModel: string | null;
+  retrieved: boolean;
+  modelLabel?: string;
+  onPickModel?: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const qc = useQueryClient();
+  const scrollRef = useRef<ScrollView>(null);
   const opening = useOpeningDraft(pid, slug);
   const promptDraft = usePersistedDraft(
     draftKey(pid, 'discussion', slug, 'opening'),
@@ -1268,10 +1913,13 @@ function ComposeFirst({
   const customPrompt = promptDraft.value;
   const setCustomPrompt = promptDraft.setValue;
   const [starting, setStarting] = useState(false);
-  const [retrieveError, setRetrieveError] = useState<string | null>(null);
-  // When automatic retrieval is unsure or fails, we surface candidate matches and/or let the
-  // user supply a source directly (a PDF/arXiv URL, or an arXiv id).
-  const [candidates, setCandidates] = useState<SourceCandidate[] | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadedReady, setUploadedReady] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [retrievalJob, setRetrievalJob] = useState<RetrievalJob | null>(null);
+  const [dismissedMatchedTitle, setDismissedMatchedTitle] = useState<string | null>(null);
+  const [updatingTitle, setUpdatingTitle] = useState(false);
   const manualSource = sourceDraft.value;
   const setManualSource = sourceDraft.setValue;
   // Every Reading Mode is a visible prompt template. Customize Prompt is a peer template
@@ -1281,9 +1929,23 @@ function ComposeFirst({
     ? ''
     : opening.data?.templates?.[template] ?? opening.data?.prompt ?? '';
   const prompt = template === 'custom' ? customPrompt : presetPrompt;
-  // Live retrieval steps ("resolving on arXiv…", the PDF-hunt agent's tool calls) so the user
-  // sees what's happening during a fetch instead of an opaque spinner.
-  const [steps, setSteps] = useState<{ name: string; detail: string }[]>([]);
+  const isRetrieved = retrieved || uploadedReady || !!retrievalJob?.retrieved;
+  const candidates =
+    retrievalJob?.phase === 'confirmation'
+      ? (retrievalJob.candidates as SourceCandidate[])
+      : [];
+  const retrieveError = isRetrieved
+    ? null
+    : localError ??
+      (retrievalJob?.status === 'error'
+        ? retrievalJob.error || 'The paper could not be fetched.'
+        : null);
+  const matchedTitle = retrievalJob?.matched_title?.trim() || null;
+  const shouldOfferTitle =
+    isRetrieved &&
+    !!matchedTitle &&
+    comparableTitle(matchedTitle) !== comparableTitle(title) &&
+    dismissedMatchedTitle !== matchedTitle;
 
   useEffect(() => {
     if (initialSource && sourceDraft.ready && !sourceDraft.hasDraft) {
@@ -1297,6 +1959,57 @@ function ComposeFirst({
     }
   }, [customPrompt, opening.data?.prompt, promptDraft.clear, promptDraft.submitted, sessionState]);
 
+  // Reattach to a durable retrieval when this screen is reopened mid-fetch or after a failure.
+  useEffect(() => {
+    let active = true;
+    void api.getLatestRetrievalJob(pid, slug).then(
+      ({ job }) => {
+        if (active && job) setRetrievalJob(job);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [pid, slug]);
+
+  // A reattached running job keeps polling even though the request that started it is gone.
+  useEffect(() => {
+    if (retrievalJob?.status !== 'running') return;
+    let active = true;
+    const timer = setInterval(() => {
+      void api.getRetrievalJob(pid, retrievalJob.id).then(
+        ({ job }) => {
+          if (active) setRetrievalJob(job);
+        },
+        () => undefined,
+      );
+    }, RETRIEVAL_POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [pid, retrievalJob?.id, retrievalJob?.status]);
+
+  useEffect(() => {
+    if (!retrievalJob?.retrieved) return;
+    void qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+    void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+  }, [pid, qc, retrievalJob?.retrieved, slug]);
+
+  // Keep the live "Resolving / hunting" status in view on first read. The source surface sits
+  // at the end of the setup form, so scrollToEnd reveals progress and eventual recovery actions.
+  useEffect(() => {
+    if (retrievalJob?.status !== 'running') return;
+    const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
+    return () => clearTimeout(timer);
+  }, [
+    retrievalJob?.detail,
+    retrievalJob?.items?.length,
+    retrievalJob?.phase,
+    retrievalJob?.status,
+  ]);
+
   function selectTemplate(next: OpeningTemplateKey) {
     if (next === 'custom' && !promptDraft.hasDraft) {
       setCustomPrompt(prompt || opening.data?.prompt || '');
@@ -1304,30 +2017,61 @@ function ComposeFirst({
     setTemplate(next);
   }
 
-  async function start(source?: { arxiv_id?: string; pdf_url?: string }, sourceText?: string) {
-    setStarting(true);
-    setRetrieveError(null);
-    setSteps([]);
+  async function settleRetrieval(initial: RetrievalJob): Promise<RetrievalJob> {
+    let current = initial;
+    const deadline = Date.now() + RETRIEVAL_WAIT_MS;
+    while (current.status === 'running' && Date.now() < deadline) {
+      await sleep(RETRIEVAL_POLL_MS);
+      current = (await api.getRetrievalJob(pid, current.id)).job;
+      setRetrievalJob(current);
+    }
+    return current;
+  }
+
+  async function fetchPaper(
+    source?: { arxiv_id?: string; pdf_url?: string },
+    sourceText?: string,
+  ): Promise<boolean> {
+    setFetching(true);
+    setLocalError(null);
     try {
       if (sourceText) await sourceDraft.markSubmitted();
-      let ok = false;
-      await streamPost<StartStreamEvent>(streamPaths(pid).paperStart, { slug, ...source }, {
-        onEvent: (ev) => {
-          if (ev.type === 'step') {
-            setSteps((prev) => [...prev, { name: ev.name, detail: ev.detail }]);
-          } else if (ev.type === 'needs_confirmation') {
-            setCandidates((ev.candidates as SourceCandidate[]) ?? []);
-            setRetrieveError('Couldn’t confidently match this paper. Pick a source below, or paste a PDF/arXiv link.');
-          } else if (ev.type === 'error') {
-            setRetrieveError(ev.detail);
-          } else if (ev.type === 'done') {
-            ok = true;
-          }
-        },
-      });
-      if (!ok) return;
+      const started = (await api.startRetrievalJob(pid, slug, source)).job;
+      setRetrievalJob(started);
+      const settled = await settleRetrieval(started);
+      if (settled.phase === 'confirmation') {
+        setLocalError(
+          'Couldn’t confidently match this paper. Choose a source below, paste a link, or upload the PDF.',
+        );
+        return false;
+      }
+      if (settled.status !== 'done' || !settled.retrieved) {
+        setLocalError(settled.error || 'The paper could not be fetched.');
+        return false;
+      }
       if (sourceText) await sourceDraft.clear('');
-      setCandidates(null);
+      return true;
+    } catch (e) {
+      setLocalError((e as Error).message ?? 'Could not fetch the paper.');
+      return false;
+    } finally {
+      setFetching(false);
+    }
+  }
+
+  async function startReading() {
+    if (!prompt.trim() || starting) return;
+    setStarting(true);
+    setLocalError(null);
+    try {
+      const sourceText = manualSource.trim() || initialSource;
+      const ready =
+        isRetrieved ||
+        (await fetchPaper(
+          sourceText ? parseSource(sourceText) : undefined,
+          sourceText,
+        ));
+      if (!ready) return;
       if (template === 'custom') await promptDraft.markSubmitted();
       await stream.run(
         chatStartPath,
@@ -1349,18 +2093,63 @@ function ComposeFirst({
         },
       );
     } catch (e) {
-      setRetrieveError((e as Error).message ?? 'Could not fetch the paper.');
+      setLocalError((e as Error).message ?? 'Could not start reading.');
     } finally {
       setStarting(false);
-      setSteps([]);
     }
   }
 
-  // The "provide a PDF link / arXiv id" fallback when auto-retrieval can't find the paper.
-  function startFromManual() {
+  function fetchFromManual() {
     const s = manualSource.trim();
     if (!s) return;
-    void start(parseSource(s), s);
+    void fetchPaper(parseSource(s), s);
+  }
+
+  async function pickPdf() {
+    setLocalError(null);
+    const result = await DocumentPicker.getDocumentAsync({
+      type: 'application/pdf',
+      multiple: false,
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled) return;
+    const file = result.assets[0];
+    setUploading(true);
+    try {
+      const started = (await api.uploadPaper(pid, slug, {
+        uri: file.uri,
+        name: file.name,
+        mimeType: file.mimeType,
+      })).job;
+      setRetrievalJob(started);
+      const settled = await settleRetrieval(started);
+      if (settled.status !== 'done' || !settled.retrieved) {
+        setLocalError(settled.error || 'Could not extract text from that PDF.');
+        return;
+      }
+      setUploadedReady(true);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+    } catch (e) {
+      setLocalError((e as Error).message ?? 'Could not upload that PDF.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function acceptMatchedTitle() {
+    if (!matchedTitle || updatingTitle) return;
+    setUpdatingTitle(true);
+    setLocalError(null);
+    try {
+      await api.updatePaper(pid, slug, matchedTitle);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+    } catch (e) {
+      setLocalError((e as Error).message ?? 'Could not update the paper title.');
+    } finally {
+      setUpdatingTitle(false);
+    }
   }
 
   if (opening.isLoading) return <Centered loading />;
@@ -1389,13 +2178,16 @@ function ComposeFirst({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
-      <ScrollView contentContainerStyle={styles.composeFirst} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.composeFirst}
+        keyboardShouldPersistTaps="handled">
         {/* Hero card (Figma `09 · Start Reading`): status chip + editorial title. */}
         <Card style={styles.heroCard}>
-          <Chip label="Unread paper" dot={false} />
+          <Chip label={isRetrieved ? 'Paper ready' : 'Unread paper'} dot={false} />
           <Text variant="editorial">{title}</Text>
           <Text variant="body" color={t.muted}>
-            The analyst will fetch the paper and open with a comprehensive first read.
+            Choose how the analyst should open the discussion.
           </Text>
         </Card>
 
@@ -1410,32 +2202,38 @@ function ComposeFirst({
               <PromptTemplateOption
                 key={option.key}
                 title={option.title}
-                description={option.description}
+                description={template === option.key ? option.description : undefined}
                 icon={option.icon}
                 selected={template === option.key}
                 onPress={() => selectTemplate(option.key)}
               />
             ))}
           </View>
+          <Pressable
+            onPress={onPickModel}
+            accessibilityRole="button"
+            accessibilityLabel={`Model for first response. ${modelLabel}`}
+            style={({ pressed }) => [
+              styles.firstModelRow,
+              pressed && { opacity: 0.82 },
+            ]}>
+            <View style={styles.firstModelIcon}>
+              <Icon name="zap" size={16} color={t.violet} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text variant="heading">Model</Text>
+              <Text variant="caption" color={t.muted} numberOfLines={1}>
+                {modelLabel}
+              </Text>
+            </View>
+            <Text variant="label" color={t.mint}>Change</Text>
+          </Pressable>
         </View>
-        {retrieveError ? (
-          <Text variant="body" color={t.danger} style={{ marginTop: space.md }}>
-            {retrieveError}
-          </Text>
-        ) : null}
-        {starting && steps.length ? (
-          <View style={[styles.toolTrail, { marginTop: space.md }]}>
-            {steps.map((s, i) => (
-              <ToolLine key={i} name={s.name} detail={s.detail} />
-            ))}
-          </View>
-        ) : null}
-
         {template === 'custom' ? (
           <View style={{ marginTop: space.lg }}>
             <Text variant="overline">Opening prompt</Text>
             <Text variant="caption" style={{ marginBottom: space.sm, marginTop: space.xs }}>
-              Edit how the analyst should begin. The paper text is fetched when you start.
+              Edit how the analyst should begin.
             </Text>
             <TextInput
               value={prompt}
@@ -1453,60 +2251,171 @@ function ComposeFirst({
           </View>
         ) : null}
 
-        {candidates && candidates.length ? (
-          <Card style={{ marginTop: space.lg, gap: space.sm }}>
-            <Text variant="heading">Source candidates</Text>
+        <Card style={styles.sourceCard}>
+          <View style={styles.sourceHead}>
+            <View
+              style={[
+                styles.sourceIcon,
+                isRetrieved && { backgroundColor: t.mintWash, borderColor: t.mint },
+              ]}>
+              <Icon
+                name={
+                  isRetrieved
+                    ? 'check'
+                    : retrievalJob?.status === 'running'
+                      ? 'search'
+                      : retrieveError
+                        ? 'alert-circle'
+                        : 'download'
+                }
+                size={17}
+                color={isRetrieved ? t.mint : retrieveError ? t.danger : t.amber}
+              />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text variant="heading">
+                {isRetrieved
+                  ? 'Full text ready'
+                  : retrievalJob?.status === 'running'
+                    ? retrievalJob.phase === 'hunting'
+                      ? 'Finding a public PDF'
+                      : 'Resolving the paper'
+                    : retrievalJob?.phase === 'confirmation'
+                      ? 'Confirm the paper source'
+                    : retrieveError
+                      ? 'Paper not fetched'
+                      : 'Full text not fetched'}
+              </Text>
+              <Text variant="caption" color={t.muted}>
+                {isRetrieved
+                  ? 'The analyst can read and cite the paper.'
+                  : retrievalJob?.status === 'running'
+                    ? retrievalJob.detail || 'This continues if you leave the screen.'
+                    : 'Fetch now, or Start reading to fetch automatically.'}
+              </Text>
+            </View>
+            {retrievalJob?.status === 'running' ? (
+              <ActivityIndicator color={t.amber} size="small" />
+            ) : null}
+          </View>
+
+          {retrievalJob?.items?.length ? (
+            <AgentTrail trail={retrievalJob.items} />
+          ) : null}
+
+          {retrieveError ? (
+            <Text variant="caption" color={t.danger}>
+              {retrieveError}
+            </Text>
+          ) : null}
+
+          {!isRetrieved && retrievalJob?.status !== 'running' ? (
+            <Button
+              title={retrieveError ? 'Retry fetch' : 'Fetch paper'}
+              icon="download"
+              variant="ghost"
+              onPress={() => {
+                const sourceText = manualSource.trim() || initialSource;
+                void fetchPaper(
+                  sourceText ? parseSource(sourceText) : undefined,
+                  sourceText,
+                );
+              }}
+              loading={fetching}
+              disabled={starting || uploading}
+            />
+          ) : null}
+
+          {candidates.length ? (
+            <View style={{ gap: space.sm }}>
+              <Text variant="overline">Choose the paper you meant</Text>
             {candidates.map((c) => (
               <Pressable
                 key={c.arxiv_id}
-                onPress={() => void start({ arxiv_id: c.arxiv_id })}
-                disabled={starting}
+                  onPress={() => void fetchPaper({ arxiv_id: c.arxiv_id })}
+                  disabled={fetching || starting}
                 style={({ pressed }) => [styles.candidate, pressed && { opacity: 0.8 }]}>
                 <Text variant="body" numberOfLines={2}>{c.title}</Text>
                 <Text variant="caption" color={t.muted}>arXiv:{c.arxiv_id}</Text>
               </Pressable>
             ))}
-          </Card>
-        ) : null}
+            </View>
+          ) : null}
 
-        {/* Manual source fallback — surfaced when retrieval needs help (error/candidates) or
-            the user opened customization; hidden on the clean default path. */}
-        {retrieveError || candidates?.length || template === 'custom' ? (
-        <View style={{ marginTop: space.lg }}>
-          <Text variant="overline">Provide a source</Text>
-          <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.sm }}>
-            Paste a PDF link or an arXiv id if the paper can’t be found automatically.
-          </Text>
-          <TextInput
-            value={manualSource}
-            onChangeText={setManualSource}
-            style={styles.searchInput}
-            placeholder="https://…/paper.pdf  or  2501.01005"
-            placeholderTextColor={t.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <Button
-            title="Fetch from this source"
-            variant="ghost"
-            onPress={startFromManual}
-            disabled={!manualSource.trim() || !prompt.trim() || starting}
-            style={{ marginTop: space.sm }}
-          />
-        </View>
+          {!isRetrieved && (retrieveError || candidates.length > 0 || template === 'custom') ? (
+            <View style={{ gap: space.sm }}>
+              <Text variant="overline">Use your own source</Text>
+              <TextInput
+                value={manualSource}
+                onChangeText={setManualSource}
+                style={styles.searchInput}
+                placeholder="PDF link or arXiv ID"
+                placeholderTextColor={t.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <View style={styles.sourceActions}>
+                <Button
+                  title="Fetch link"
+                  variant="ghost"
+                  onPress={fetchFromManual}
+                  disabled={!manualSource.trim() || fetching || starting || uploading}
+                  style={{ flex: 1 }}
+                />
+                <Button
+                  title="Upload PDF"
+                  icon="upload"
+                  variant="ghost"
+                  onPress={() => void pickPdf()}
+                  loading={uploading}
+                  disabled={fetching || starting}
+                  style={{ flex: 1 }}
+                />
+              </View>
+            </View>
+          ) : null}
+        </Card>
+
+        {shouldOfferTitle ? (
+          <Card style={styles.identityCard}>
+            <Text variant="overline" color={t.mint}>Paper found</Text>
+            <Text variant="serifTitle">{matchedTitle}</Text>
+            <Text variant="caption" color={t.muted}>
+              This is the title reported by the source. Update the reading list?
+            </Text>
+            <View style={styles.sourceActions}>
+              <Button
+                title="Keep current"
+                variant="ghost"
+                onPress={() => setDismissedMatchedTitle(matchedTitle)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Update title"
+                onPress={() => void acceptMatchedTitle()}
+                loading={updatingTitle}
+                style={{ flex: 1 }}
+              />
+            </View>
+          </Card>
         ) : null}
       </ScrollView>
 
       {/* Sticky primary action; prompt customization is one of the Reading Mode choices. */}
       <View style={styles.startFooter}>
         <Button
-          title={starting ? 'Fetching paper…' : 'Start reading'}
-          onPress={() => void start(
-            initialSource ? parseSource(initialSource) : undefined,
-            initialSource,
-          )}
+          title={
+            starting
+              ? isRetrieved
+                ? 'Starting discussion…'
+                : 'Fetching & starting…'
+              : isRetrieved
+                ? 'Start reading'
+                : 'Fetch & start reading'
+          }
+          onPress={() => void startReading()}
           loading={starting}
-          disabled={!prompt.trim()}
+          disabled={!prompt.trim() || fetching || uploading}
           style={{ flex: 1 }}
         />
       </View>
@@ -1528,20 +2437,27 @@ function AssistantBody({
   title,
   favorites,
   onRetry,
+  onConfigureFirstRetry,
   canRetry,
   onSwitchBranch,
   switchDisabled,
   figureContext,
+  sentenceAnnotations,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
   title: string;
   favorites: FavoriteModel[];
-  onRetry: (assistantIndex: number, model?: string) => void;
+  onRetry: (
+    assistantIndex: number,
+    config?: { model?: string; prompt?: string; mode?: ReadingMode },
+  ) => void;
+  onConfigureFirstRetry: () => void;
   canRetry: boolean;
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
   figureContext?: FigureContext;
+  sentenceAnnotations?: SentenceAnnotations;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -1582,7 +2498,7 @@ function AssistantBody({
       key: `retry-${m.id}`,
       title: `Retry with ${m.label}`,
       icon: 'zap' as IconName,
-      onPress: () => onRetry(entry.assistant_index, m.id),
+      onPress: () => onRetry(entry.assistant_index, { model: m.id }),
     })),
   ];
 
@@ -1597,7 +2513,11 @@ function AssistantBody({
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
         <AgentTrail trail={entry.agent_trail} />
       ) : null}
-      <Markdown text={canonical} figureContext={figureContext} />
+      <Markdown
+        text={canonical}
+        figureContext={figureContext}
+        sentenceAnnotations={sentenceAnnotations}
+      />
       {modelLabel ? (
         <Text
           variant="caption"
@@ -1663,13 +2583,17 @@ function AssistantBody({
           <MsgAction
             icon="rotate-ccw"
             label="Retry"
-            onPress={() => setRetryMenu(true)}
+            onPress={
+              entry.assistant_index === 0
+                ? onConfigureFirstRetry
+                : () => setRetryMenu(true)
+            }
             accessibilityLabel="Retry this response, optionally with a different model"
           />
         ) : null}
       </View>
       <OptionsSheet
-        visible={retryMenu}
+        visible={entry.assistant_index !== 0 && retryMenu}
         onClose={() => setRetryMenu(false)}
         title="Retry response"
         options={retryOptions}
@@ -1774,6 +2698,25 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     gap: tight ? 6 : space.sm,
     marginTop: tight ? space.sm : space.md,
   },
+  firstModelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tight ? space.sm : space.md,
+    marginTop: tight ? space.sm : space.md,
+    padding: tight ? space.sm : space.md,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.md,
+    backgroundColor: t.surface,
+  },
+  firstModelIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    backgroundColor: t.elevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   streamingOnly: {
     padding: tight ? space.sm : space.md,
     paddingBottom: tight ? space.lg : space.xl,
@@ -1810,6 +2753,22 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     minHeight: 160,
     textAlignVertical: 'top',
     lineHeight: tight ? 21 : 22,
+  },
+  renameInput: {
+    backgroundColor: t.elevated,
+    borderWidth: 1,
+    borderColor: t.line2,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: tight ? 10 : 12,
+    color: t.text,
+    fontFamily: fonts.body,
+    fontSize: tight ? 14 : 15,
+  },
+  sheetActions: {
+    flexDirection: 'row',
+    gap: space.sm,
+    marginTop: tight ? space.md : space.lg,
   },
   // ---- thread ----
   messagesContainer: { backgroundColor: t.bg },
@@ -1948,6 +2907,32 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   sendBtnDisabled: { backgroundColor: t.elevated },
   // ---- compose-first (Start Reading) ----
   heroCard: { gap: tight ? space.sm : space.md, alignItems: 'flex-start' },
+  sourceCard: {
+    gap: tight ? space.sm : space.md,
+    marginTop: tight ? space.md : space.lg,
+    borderColor: t.line2,
+  },
+  sourceHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tight ? space.sm : space.md,
+  },
+  sourceIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: t.amberWash,
+    borderWidth: 1,
+    borderColor: t.amberLine,
+  },
+  sourceActions: { flexDirection: 'row', gap: space.sm },
+  identityCard: {
+    gap: space.sm,
+    marginTop: tight ? space.sm : space.md,
+    borderColor: t.mint,
+  },
   startFooter: {
     flexDirection: 'row',
     gap: space.sm,

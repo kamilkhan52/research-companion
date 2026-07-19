@@ -31,6 +31,20 @@ export interface FigureContext {
   version?: number | null;
 }
 
+export interface SentenceAnnotationVisual {
+  selected?: boolean;
+  annotated?: boolean;
+  commentCount?: number;
+}
+
+/** Opt-in sentence interaction for one assistant message. Ordinary Markdown callers omit
+ *  this, so notes, streaming text, and non-annotated messages keep the exact existing path. */
+export interface SentenceAnnotations {
+  active: boolean;
+  onSentencePress: (quote: string) => void;
+  stateForSentence?: (quote: string) => SentenceAnnotationVisual | undefined;
+}
+
 // Code is content fidelity, not UI chrome: the design system's Manrope/Newsreader pair has no
 // monospace member, so code falls back to the platform's own mono face.
 const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
@@ -80,10 +94,12 @@ export function Markdown({
   text,
   onLinkPress,
   figureContext,
+  sentenceAnnotations,
 }: {
   text: string;
   onLinkPress?: LinkHandler;
   figureContext?: FigureContext;
+  sentenceAnnotations?: SentenceAnnotations;
 }) {
   // Old transcripts may carry leaked `<search for="…">` pseudo tool tags (G.2); the backend
   // cleans new ones before recording, this pass cleans the archive at render time.
@@ -106,7 +122,11 @@ export function Markdown({
       <View style={{ gap: density === 'tight' ? 6 : space.sm }}>
         {blocks.map((block, i) => (
           <Fragment key={i}>
-            <Block block={block} onLinkPress={handleLink} />
+            <Block
+              block={block}
+              onLinkPress={handleLink}
+              sentenceAnnotations={sentenceAnnotations}
+            />
             {figureCards?.[i]?.map((fig) => (
               <FigureCard
                 key={fig.id}
@@ -173,6 +193,25 @@ const isThematicBreak = (line: string) => /^(-{3,}|_{3,}|\*{3,})$/.test(line.rep
 // A paragraph that is nothing but one display-math span renders as a standalone equation
 // block: `\[ … \]` (the output contract) or `$$ … $$` (compatibility with existing text).
 const DISPLAY_MATH_RE = /^(?:\\\[([\s\S]+)\\\]|\$\$([\s\S]+)\$\$)$/;
+const SENTENCE_END_RE = /(?<=[.!?])(?:["”’')\]]*)\s+/g;
+
+/** Sentence/block granularity for the mobile annotation flow. This deliberately matches the
+ *  preview-cue boundary: terminal punctuation followed by whitespace. The final fragment is
+ *  included because it is stable committed text even when it has no terminal punctuation. */
+export function splitAnnotatableSentences(text: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  SENTENCE_END_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SENTENCE_END_RE.exec(text)) !== null) {
+    const sentence = text.slice(start, SENTENCE_END_RE.lastIndex).trim();
+    if (sentence) sentences.push(sentence);
+    start = SENTENCE_END_RE.lastIndex;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) sentences.push(tail);
+  return sentences;
+}
 
 /** A math span that occupies its whole source line belongs to block layout even when the model
  * used inline delimiters (`\( … \)`). This matters especially inside Markdown blockquotes:
@@ -337,7 +376,15 @@ const TIGHT_HEADING_STYLES: Record<number, object> = {
   4: { fontFamily: fonts.bodySemiBold, fontSize: 14.5, lineHeight: 20 },
 };
 
-function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler }) {
+function Block({
+  block,
+  onLinkPress,
+  sentenceAnnotations,
+}: {
+  block: Block;
+  onLinkPress: LinkHandler;
+  sentenceAnnotations?: SentenceAnnotations;
+}) {
   const t = useTheme();
   const density = useDensity();
   const styles = useThemedStyles(makeStyles);
@@ -354,6 +401,15 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
         </Text>
       );
     case 'paragraph':
+      if (sentenceAnnotations?.active) {
+        return (
+          <AnnotatableParagraph
+            text={block.text}
+            onLinkPress={onLinkPress}
+            annotations={sentenceAnnotations}
+          />
+        );
+      }
       return (
         <Text variant="serifBody">
           <Inline text={block.text} onLinkPress={onLinkPress} />
@@ -368,7 +424,12 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
                 <Inline text={child.text} onLinkPress={onLinkPress} />
               </Text>
             ) : (
-              <Block key={index} block={child} onLinkPress={onLinkPress} />
+              <Block
+                key={index}
+                block={child}
+                onLinkPress={onLinkPress}
+                sentenceAnnotations={sentenceAnnotations}
+              />
             )
           ))}
         </View>
@@ -404,6 +465,63 @@ function Block({ block, onLinkPress }: { block: Block; onLinkPress: LinkHandler 
       );
     }
   }
+}
+
+function AnnotatableParagraph({
+  text,
+  onLinkPress,
+  annotations,
+}: {
+  text: string;
+  onLinkPress: LinkHandler;
+  annotations: SentenceAnnotations;
+}) {
+  const t = useTheme();
+  const sentences = useMemo(() => splitAnnotatableSentences(text), [text]);
+  return (
+    <Text variant="serifBody">
+      {sentences.map((sentence, index) => {
+        // Queue/display the sentence the reader actually sees, not its Markdown control
+        // syntax (`[label](url)`, emphasis markers). Equations retain explicit TeX delimiters
+        // so the agent still receives the precise formula being discussed.
+        const quote = annotationQuote(sentence);
+        const state = annotations.stateForSentence?.(quote);
+        return (
+          <Fragment key={`${index}:${sentence}`}>
+            <RNText
+              testID={`md-sentence-${index}`}
+              accessibilityRole="button"
+              accessibilityLabel={`Comment on: ${quote}`}
+              accessibilityState={{ selected: !!state?.selected }}
+              onPress={() => annotations.onSentencePress(quote)}
+              style={{
+                backgroundColor: state?.selected ? t.violetWash : undefined,
+                borderLeftColor: state?.annotated ? t.violet : undefined,
+                borderLeftWidth: state?.annotated ? 2 : 0,
+                paddingLeft: state?.annotated ? 2 : 0,
+                textDecorationColor: state?.annotated ? t.violet : undefined,
+                textDecorationLine: state?.annotated ? 'underline' : 'none',
+              }}>
+              <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks />
+              {state?.commentCount ? (
+                <RNText
+                  accessibilityLabel={`${state.commentCount} attached comments`}
+                  style={{
+                    backgroundColor: t.violet,
+                    color: t.bg,
+                    fontFamily: fonts.bodyBold,
+                    fontSize: 10,
+                  }}>
+                  {` ${state.commentCount} `}
+                </RNText>
+              ) : null}
+            </RNText>
+            {index < sentences.length - 1 ? ' ' : null}
+          </Fragment>
+        );
+      })}
+    </Text>
+  );
 }
 
 /** The marker for item `idx`. Ordered items keep their SOURCE number — a blank-line-separated
@@ -505,10 +623,12 @@ function Inline({
   text,
   onLinkPress,
   serif = true,
+  suppressLinks = false,
 }: {
   text: string;
   onLinkPress: LinkHandler;
   serif?: boolean;
+  suppressLinks?: boolean;
 }) {
   // `theme`, not `t`: renderToken's token param below is named `t`, which would shadow it.
   const theme = useTheme();
@@ -527,7 +647,7 @@ function Inline({
               // purpose-built reference: small paper glyph + violet semibold name, no underline.
               // Tapping opens the paper's action sheet (via the rc-paper link handler).
               <RNText
-                onPress={() => onLinkPress(t.href ?? '', t.text)}
+                onPress={suppressLinks ? undefined : () => onLinkPress(t.href ?? '', t.text)}
                 style={{
                   color: theme.violet,
                   fontFamily: serif ? fonts.serifSemiBold : fonts.bodySemiBold,
@@ -542,7 +662,7 @@ function Inline({
             ) : (
               <RNText
                 style={{ color: theme.mint, textDecorationLine: 'underline' }}
-                onPress={() => onLinkPress(t.href ?? '', t.text)}>
+                onPress={suppressLinks ? undefined : () => onLinkPress(t.href ?? '', t.text)}>
                 {t.text}
               </RNText>
             )
@@ -571,6 +691,15 @@ interface InlineToken {
   /** Emphasis content when it holds more than plain text (a link, code, or math inside a
    *  bold/italic span); the common plain case leaves this unset and renders as before. */
   children?: InlineToken[];
+}
+
+function annotationQuote(raw: string): string {
+  const plain = (tokens: InlineToken[]): string => tokens.map((token) => {
+    if (token.children) return plain(token.children);
+    if (token.type === 'math') return `\\(${token.text}\\)`;
+    return token.text;
+  }).join('');
+  return plain(tokenizeInline(raw)).trim();
 }
 
 /** Split plain-text tokens on exact known-title mentions, turning each into an rc-paper

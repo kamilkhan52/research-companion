@@ -22,18 +22,20 @@ export function NotesReviewSheet({
   visible,
   pid,
   slug,
+  threadId = 'main',
   onClose,
   onCommitted,
 }: {
   visible: boolean;
   pid: string;
   slug: string;
+  threadId?: string;
   onClose: () => void;
   onCommitted: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const review = useReview(pid, slug, visible);
+  const review = useReview(pid, slug, visible, threadId);
   const data = review.data;
 
   const [notes, setNotes] = useState('');
@@ -59,6 +61,7 @@ export function NotesReviewSheet({
     setError(null);
     try {
       await approveCommit(pid, slug, {
+        ...(threadId === 'main' ? {} : { thread_id: threadId }),
         notes_block: notes,
         synthesis,
         summary: data.summary,

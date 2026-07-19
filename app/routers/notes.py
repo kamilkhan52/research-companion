@@ -9,7 +9,16 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from .. import committer, config, notes_jobs, sessions, store
+from .. import (
+    chat_jobs,
+    committer,
+    config,
+    notes_jobs,
+    paper_identity,
+    projects,
+    sessions,
+    store,
+)
 from ..committer import CommitError
 from . import make_project_router
 
@@ -18,6 +27,7 @@ project_router = make_project_router()
 
 class ApproveReq(BaseModel):
     slug: str
+    thread_id: str = sessions.MAIN_THREAD
     notes_block: str | None = None
     synthesis: str | None = None
     summary: str | None = None
@@ -33,6 +43,12 @@ class AddPaperReq(BaseModel):
     abstract: str | None = None   # pass it when the caller has one (Discover does)
     year: int | None = None       # pass it when the caller has one (graph nodes do); only
                                   # recorded for papers whose arXiv id can't date them
+
+
+class PaperMatchReq(BaseModel):
+    title: str
+    arxiv_id: str | None = None
+    source_url: str | None = None
 
 
 class NotesSaveReq(BaseModel):
@@ -152,8 +168,12 @@ def notes_agent_job(target: str, req: NotesAgentReq):
 
 
 @project_router.get("/review/{slug}")
-def get_review(slug: str):
-    return committer.review(slug)
+def get_review(slug: str, thread_id: str = sessions.MAIN_THREAD):
+    try:
+        with sessions.thread_scope(thread_id):
+            return committer.review(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @project_router.post("/approve")
@@ -163,9 +183,21 @@ def approve(req: ApproveReq):
     # unit under the session's mutation lock: a branch switch between them could commit branch
     # A's notes over branch B's transcript.
     try:
-        with config.project_write_guard(config.active_project_id()), \
+        with sessions.thread_scope(req.thread_id), \
+                config.project_write_guard(config.active_project_id()), \
+                sessions.paper_lock(req.slug), \
                 sessions.mutation_lock(req.slug), \
                 notes_jobs.mutation_lock(notes_jobs.WORKING):
+            # Runtime import avoids a router-module import cycle; this is the compatibility
+            # guard for legacy web SSE clients (mobile turns are all chat_jobs).
+            from . import session as session_routes
+            if (any(chat_jobs.active_for(req.slug, row["id"])
+                    for row in sessions.list_threads(req.slug))
+                    or session_routes.any_sse_turn_active(req.slug)):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Wait for every discussion response to finish before approving notes.",
+                )
             if req.notes_block is not None or req.synthesis is not None:
                 live = sessions.proposal_revision(req.slug)
                 if req.proposal_revision != live:
@@ -186,6 +218,8 @@ def approve(req: ApproveReq):
             status_code=409,
             detail="This project is being moved or split — wait, then approve.",
         ) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"result": result, "paper": _paper_dict(req.slug)}
 
 
@@ -196,10 +230,32 @@ def add_paper(pid: str, req: AddPaperReq):
     opened, like every other paper) and nothing is git-committed (like every other change to
     the record, that stays an explicit human action via /approve). Held under the project write
     guard (task #75): the reading-list append must not interleave with a split/move's."""
+    # Keep the server authoritative even if an older client has no preflight UI. This is a
+    # read-only cross-project scan; reuse itself remains an explicit, human-confirmed move/copy.
     try:
-        with config.project_write_guard(pid):
-            slug = store.add_entry(req.title, req.group or "Unsorted", arxiv_id=req.arxiv_id,
-                                   abstract=req.abstract, year=req.year)
+        with paper_identity.add_guard():
+            elsewhere = paper_identity.find_locations(
+                title=req.title,
+                arxiv_id=req.arxiv_id,
+                exclude_pid=pid,
+            )
+            if elsewhere:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "paper_exists_elsewhere",
+                        "message": "This paper already exists in another project.",
+                        "matches": elsewhere,
+                    },
+                )
+            with config.project_write_guard(pid):
+                slug = store.add_entry(
+                    req.title,
+                    req.group or "Unsorted",
+                    arxiv_id=req.arxiv_id,
+                    abstract=req.abstract,
+                    year=req.year,
+                )
     except config.ProjectBusyError as e:
         raise HTTPException(
             status_code=409,
@@ -210,3 +266,26 @@ def add_paper(pid: str, req: AddPaperReq):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"paper": _paper_dict(slug)}
+
+
+@project_router.post("/paper-matches")
+def paper_matches(pid: str, req: PaperMatchReq):
+    """Read-only preflight for every add surface.
+
+    Strong scholarly identifiers win; exact normalized title is only a conservative fallback.
+    The response says what reusable work exists so the client can explain Copy vs Move before
+    calling the existing relocation endpoint.
+    """
+    if not projects.exists(pid):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+    target = projects._read_meta(pid)
+    return {
+        "target_project": {"id": pid, "name": target.get("name") or pid},
+        "can_update_notes": config.has_api_key(),
+        "matches": paper_identity.find_locations(
+            title=req.title,
+            arxiv_id=req.arxiv_id,
+            source_url=req.source_url,
+            exclude_pid=pid,
+        ),
+    }

@@ -6,7 +6,12 @@ import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
 import { getBaseUrl, subscribeBaseUrl } from './config';
+import { ApiError } from './client';
 import type { Project } from './types';
+import {
+  requestExistingPaperReuse,
+  type AddPaperOutcome,
+} from '@/components/ExistingPaperOffer';
 import { offerInitialAnalysis } from '@/components/InitialAnalysisOffer';
 import { showToast } from '@/ui/Toast';
 
@@ -20,9 +25,18 @@ export const keys = {
   projects: ['projects'] as const,
   recentSessions: ['recentSessions'] as const,
   projectState: (pid: string) => ['project', pid, 'state'] as const,
-  session: (pid: string, slug: string) => ['project', pid, 'session', slug] as const,
-  opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
-  review: (pid: string, slug: string) => ['project', pid, 'review', slug] as const,
+  session: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'session', slug] as const
+      : ['project', pid, 'session', slug, threadId] as const,
+  opening: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'opening', slug] as const
+      : ['project', pid, 'opening', slug, threadId] as const,
+  review: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'review', slug] as const
+      : ['project', pid, 'review', slug, threadId] as const,
   settings: ['settings'] as const,
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
@@ -115,11 +129,11 @@ export function useUsage(pid: string | null) {
   });
 }
 
-export function useSession(pid: string | null, slug: string | null) {
+export function useSession(pid: string | null, slug: string | null, threadId = 'main') {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.session(pid, slug) : ['project', 'none', 'session'],
-    queryFn: () => api.getSession(pid as string, slug as string),
+    queryKey: pid && slug ? keys.session(pid, slug, threadId) : ['project', 'none', 'session'],
+    queryFn: () => api.getSession(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl,
     // A short freshness window so a resume that was prefetched from the Library (index.tsx)
     // renders straight from cache without an immediate refetch flash (R.7). Mutations still
@@ -131,21 +145,26 @@ export function useSession(pid: string | null, slug: string | null) {
 /** The proposed commit for a notes-drafted paper (notes block + synthesis + revision token).
  *  `enabled` defers the fetch until the review surface is actually opened. Always refetched
  *  (staleTime 0) so the revision token guards a stale approve. */
-export function useReview(pid: string | null, slug: string | null, enabled = true) {
+export function useReview(
+  pid: string | null,
+  slug: string | null,
+  enabled = true,
+  threadId = 'main',
+) {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.review(pid, slug) : ['project', 'none', 'review'],
-    queryFn: () => api.getReview(pid as string, slug as string),
+    queryKey: pid && slug ? keys.review(pid, slug, threadId) : ['project', 'none', 'review'],
+    queryFn: () => api.getReview(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl && enabled,
     staleTime: 0,
   });
 }
 
-export function useOpeningDraft(pid: string | null, slug: string | null) {
+export function useOpeningDraft(pid: string | null, slug: string | null, threadId = 'main') {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
-    queryFn: () => api.getOpeningDraft(pid as string, slug as string),
+    queryKey: pid && slug ? keys.opening(pid, slug, threadId) : ['project', 'none', 'opening'],
+    queryFn: () => api.getOpeningDraft(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl,
     // staleTime 0 (the shared client defaults to 30s) so a prefetched draft still
     // background-refetches on mount and its displayed prompt stays current. The prefetch
@@ -406,12 +425,13 @@ export function useProjectMembership(pid: string | null) {
 export function useAddPaper(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       title,
       group,
       arxivId,
       abstract,
       year,
+      pdfUrl,
     }: {
       title: string;
       group?: string;
@@ -421,11 +441,53 @@ export function useAddPaper(pid: string) {
       /** Direct PDF link when the caller has one (URL adds) — not sent to the add itself,
        *  but carried into the initial-analysis offer so retrieval fetches that exact source. */
       pdfUrl?: string;
-    }) => api.addPaper(pid, title, group, arxivId, abstract, year),
+    }): Promise<AddPaperOutcome> => {
+      const preflight = async () => {
+        try {
+          return await api.findPaperMatches(pid, {
+            title,
+            arxiv_id: arxivId,
+            source_url: pdfUrl,
+          });
+        } catch (e) {
+          // Rolling mobile/backend deploys: an older server has no preflight route. Preserve
+          // ordinary adds there; its existing in-project duplicate guard still applies.
+          if (e instanceof ApiError && e.status === 404) return null;
+          throw e;
+        }
+      };
+      const chooseExisting = async (
+        match: NonNullable<Awaited<ReturnType<typeof preflight>>>,
+      ) => requestExistingPaperReuse({
+        targetPid: match.target_project.id,
+        targetName: match.target_project.name,
+        candidateTitle: title,
+        canUpdateNotes: match.can_update_notes,
+        matches: match.matches,
+      });
+
+      const match = await preflight();
+      if (match?.matches.length) return chooseExisting(match);
+
+      try {
+        const { paper } = await api.addPaper(pid, title, group, arxivId, abstract, year);
+        return { action: 'added', paper };
+      } catch (e) {
+        // The backend repeats the check at mutation time. If another project gained the paper
+        // after our first scan, refresh once and still present the safe Copy/Move chooser.
+        if (e instanceof ApiError && e.status === 409) {
+          const raced = await preflight();
+          if (raced?.matches.length) return chooseExisting(raced);
+        }
+        throw e;
+      }
+    },
     onSuccess: (res, { arxivId, pdfUrl }) => {
+      if (!res.paper) return;
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
+      if (res.action !== 'added') return;  // reused papers already carry their reading work
       // Instead of a bare "added" toast, offer to kick the first analysis off in the
       // background (R7.8). The offer sheet has its own "Not now".
       offerInitialAnalysis({

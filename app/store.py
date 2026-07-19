@@ -710,6 +710,52 @@ def remove_entry(slug: str) -> bool:
         return _remove_entry_locked(slug)
 
 
+def rename_entry(slug: str, title: str) -> bool:
+    """Rename a reading-list paper without changing its stable slug or any session paths.
+
+    The title line and cached corpus heading move together; the content below those headings
+    (identity comments, abstract, full text, Notes) stays unchanged. Deterministic and
+    offline. The caller owns human confirmation and the bounded git commit.
+    """
+    title = re.sub(r"\s+", " ", title or "").strip()
+    if not title:
+        raise ValueError("Title is required.")
+    if "**" in title or "\n" in title:
+        raise ValueError("Title contains unsupported markdown.")
+    with _RL_LOCK:
+        entries = _parse_entries()
+        target = next((e for e in entries if e["slug"] == slug), None)
+        if not target:
+            return False
+        if target["title"] == title:
+            return False
+        if any(e["slug"] != slug and e["title"].casefold() == title.casefold() for e in entries):
+            raise DuplicatePaperError("A paper with that title already exists in this project.")
+
+        rl = _reading_list()
+        lines = rl.read_text(encoding="utf-8").splitlines()
+        index = target["line_index"]
+        match = re.match(r"^(\s*)\*\*.*?\*\*(.*)$", lines[index])
+        if not match:
+            raise ValueError("Could not locate the paper title in the reading list.")
+        lines[index] = f"{match.group(1)}**{title}**{match.group(2)}"
+        atomic_write_text(rl, "\n".join(lines).rstrip() + "\n")
+        _parse_cache.pop(str(rl), None)
+
+        corpus = corpus_path(slug)
+        if corpus.exists():
+            text = corpus.read_text(encoding="utf-8")
+            corpus_lines = text.splitlines()
+            if corpus_lines and corpus_lines[0].startswith("# "):
+                corpus_lines[0] = f"# {title}"
+                atomic_write_text(
+                    corpus,
+                    "\n".join(corpus_lines) + ("\n" if text.endswith("\n") else ""),
+                )
+                _notes_cache.pop(str(corpus), None)
+        return True
+
+
 def _remove_entry_locked(slug: str) -> bool:
     target = next((e for e in _parse_entries() if e["slug"] == slug), None)
     if not target:

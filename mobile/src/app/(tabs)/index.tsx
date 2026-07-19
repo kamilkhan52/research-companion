@@ -41,10 +41,21 @@ import {
   paperStateKey,
   sortPapers,
   SORTS,
+  type SortDirection,
   type SortKey,
   type StatusFilter,
 } from '@/lib/paperSort';
-import { Button, Card, Chip, Icon, IconButton, ProgressBar, Screen, Text } from '@/ui';
+import {
+  Button,
+  Card,
+  Chip,
+  Icon,
+  IconButton,
+  ProgressBar,
+  Screen,
+  Text,
+  type IconName,
+} from '@/ui';
 import {
   useTheme,
   useThemedStyles,
@@ -78,6 +89,8 @@ export default function LibraryScreen() {
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [sort, setSort] = useState<SortKey>('added');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [expandedSort, setExpandedSort] = useState<SortKey | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
   // Multi-select (R8.1 → R9.13): long-press a paper to enter; the action bar offers Move (to a
   // new OR existing project) and Delete.
@@ -86,6 +99,7 @@ export default function LibraryScreen() {
   const [splitOpen, setSplitOpen] = useState(false);
   const [moveDestOpen, setMoveDestOpen] = useState(false);  // the destination chooser
   const [moveDest, setMoveDest] = useState<{ pid: string; name: string } | null>(null);
+  const [relocationMode, setRelocationMode] = useState<'move' | 'copy'>('move');
 
   function toggleSelected(slug: string) {
     setSelected((prev) => {
@@ -195,8 +209,8 @@ export default function LibraryScreen() {
   // ones — `Paper.group` stays in the API for when one is defined.
   const visiblePapers = useMemo(() => {
     const filtered = filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter);
-    return sortPapers(filtered, sort);
-  }, [papers, filter, sort]);
+    return sortPapers(filtered, sort, sortDirection);
+  }, [papers, filter, sort, sortDirection]);
   const continueSession = recentQuery.data?.find(
     (session) => session.kind === 'paper' && session.state !== 'committed',
   );
@@ -313,12 +327,21 @@ export default function LibraryScreen() {
             </ScrollView>
             {/* Sort is separate from the filter chips (R9.12): tap to reorder the shown list. */}
             <Pressable
-              onPress={() => setSortOpen(true)}
+              onPress={() => {
+                setExpandedSort(null);
+                setSortOpen(true);
+              }}
               style={styles.sortBtn}
               accessibilityRole="button"
               accessibilityLabel={`Sort papers. Currently ${SORTS.find((s) => s.key === sort)?.label}.`}>
-              <Icon name="sliders" size={15} color={sort === 'added' ? t.muted : t.mint} />
-              <Text variant="caption" color={sort === 'added' ? t.muted : t.mint}>
+              <Icon
+                name="sliders"
+                size={15}
+                color={sort === 'added' && sortDirection === 'asc' ? t.muted : t.mint}
+              />
+              <Text
+                variant="caption"
+                color={sort === 'added' && sortDirection === 'asc' ? t.muted : t.mint}>
                 Sort
               </Text>
             </Pressable>
@@ -351,10 +374,9 @@ export default function LibraryScreen() {
             action={<Button title="Retry" onPress={() => stateQuery.refetch()} />}
           />
         ) : papers.length === 0 ? (
-          <Empty
-            heading="Start this project"
-            body="Describe your research goals to get suggested foundational readings from arXiv — or bring a specific paper by name or link."
-            action={<Button title="Find foundational papers" onPress={() => router.push('/discover')} />}
+          <EmptyProjectHub
+            onAddSpecific={() => router.push('/discover?specific=1')}
+            onDiscover={() => router.push('/discover')}
           />
         ) : visiblePapers.length === 0 ? (
           <Text variant="caption" style={{ textAlign: 'center', paddingVertical: space.xl }}>
@@ -383,26 +405,39 @@ export default function LibraryScreen() {
 
       {selectMode ? (
         <View style={styles.selectBar}>
-          <Pressable onPress={exitSelect} hitSlop={8}>
-            <Text variant="label" color={t.muted}>Cancel</Text>
-          </Pressable>
-          <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+          <IconButton name="x" accessibilityLabel="Cancel selection" onPress={exitSelect} />
+          <Text
+            variant="label"
+            color={t.text}
+            numberOfLines={1}
+            style={styles.selectionCount}>
             {selected.size} selected
           </Text>
           <View style={styles.selectActions}>
-            <Button
-              title="Move"
+            <SelectionAction
+              label="Move"
               icon="corner-up-right"
-              variant="ghost"
-              onPress={() => setMoveDestOpen(true)}
+              onPress={() => {
+                setRelocationMode('move');
+                setMoveDestOpen(true);
+              }}
               disabled={selected.size === 0}
             />
-            <Button
-              title="Delete"
+            <SelectionAction
+              label="Copy"
+              icon="copy"
+              onPress={() => {
+                setRelocationMode('copy');
+                setMoveDestOpen(true);
+              }}
+              disabled={selected.size === 0}
+            />
+            <SelectionAction
+              label="Delete"
               icon="trash-2"
-              variant="danger"
               onPress={confirmBatchDelete}
               disabled={selected.size === 0}
+              destructive
             />
           </View>
         </View>
@@ -420,6 +455,7 @@ export default function LibraryScreen() {
         pid={activePid}
         slugs={[...selected]}
         notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
+        operation={relocationMode}
         onClose={() => setSplitOpen(false)}
         onDone={(result) => {
           setSplitOpen(false);
@@ -433,7 +469,7 @@ export default function LibraryScreen() {
       <OptionsSheet
         visible={moveDestOpen}
         onClose={() => setMoveDestOpen(false)}
-        title={`Move ${selected.size} paper${selected.size === 1 ? '' : 's'} to`}
+        title={`${relocationMode === 'move' ? 'Move' : 'Copy'} ${selected.size} paper${selected.size === 1 ? '' : 's'} to`}
         options={[
           {
             key: 'new',
@@ -461,6 +497,7 @@ export default function LibraryScreen() {
         destName={moveDest?.name ?? ''}
         slugs={[...selected]}
         notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
+        operation={relocationMode}
         onClose={() => setMoveDest(null)}
         onDone={(result) => {
           setMoveDest(null);
@@ -474,15 +511,73 @@ export default function LibraryScreen() {
         visible={sortOpen}
         onClose={() => setSortOpen(false)}
         title="Sort papers"
-        options={SORTS.map((s) => ({
-          key: s.key,
-          title: s.label,
-          icon: s.icon,
-          selected: sort === s.key,
-          onPress: () => setSort(s.key),
-        }))}
+        options={SORTS.flatMap((s) => {
+          const primary = {
+            key: s.key,
+            title: s.label,
+            icon: s.icon,
+            selected: sort === s.key,
+            closeOnPress: !s.directions,
+            onPress: () => {
+              setSort(s.key);
+              if (s.directions) {
+                setSortDirection('asc');
+                setExpandedSort(s.key);
+              } else {
+                setExpandedSort(null);
+              }
+            },
+          };
+          if (expandedSort !== s.key || !s.directions) return [primary];
+          return [
+            primary,
+            ...s.directions.map((direction) => ({
+              key: `${s.key}-${direction.key}`,
+              title: direction.label,
+              icon: direction.icon,
+              selected: sort === s.key && sortDirection === direction.key,
+              level: 1,
+              onPress: () => setSortDirection(direction.key),
+            })),
+          ];
+        })}
       />
     </Screen>
+  );
+}
+
+function SelectionAction({
+  label,
+  icon,
+  onPress,
+  disabled,
+  destructive = false,
+}: {
+  label: string;
+  icon: IconName;
+  onPress: () => void;
+  disabled?: boolean;
+  destructive?: boolean;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const color = destructive ? t.danger : t.mint;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [
+        styles.selectionAction,
+        pressed && !disabled && { backgroundColor: t.elevated },
+        disabled && { opacity: 0.4 },
+      ]}>
+      <Icon name={icon} size={17} color={color} />
+      <Text variant="caption" color={color} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -693,6 +788,62 @@ function Empty({ heading, body, action }: { heading: string; body: string; actio
   );
 }
 
+function EmptyProjectHub({
+  onAddSpecific,
+  onDiscover,
+}: {
+  onAddSpecific: () => void;
+  onDiscover: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.emptyProject}>
+      <View style={styles.emptyProjectMark}>
+        <Icon name="book-open" size={22} color={t.mint} />
+      </View>
+      <Text variant="title" style={{ textAlign: 'center' }}>
+        Add your first papers
+      </Text>
+      <Text variant="body" color={t.muted} style={styles.emptyProjectIntro}>
+        Start with a paper you know, or explore ranked suggestions for this project.
+      </Text>
+      <View style={styles.entryChoices}>
+        <Pressable
+          onPress={onAddSpecific}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.entryChoice, pressed && { opacity: 0.82 }]}>
+          <View style={styles.entryChoiceIcon}>
+            <Icon name="file-plus" size={19} color={t.mint} />
+          </View>
+          <View style={styles.entryChoiceText}>
+            <Text variant="heading">Add a specific paper</Text>
+            <Text variant="caption" color={t.muted} numberOfLines={2}>
+              Use a title, arXiv ID, DOI, or PDF link
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={18} color={t.muted} />
+        </Pressable>
+        <Pressable
+          onPress={onDiscover}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.entryChoice, pressed && { opacity: 0.82 }]}>
+          <View style={[styles.entryChoiceIcon, { backgroundColor: t.elevated }]}>
+            <Icon name="compass" size={19} color={t.violet} />
+          </View>
+          <View style={styles.entryChoiceText}>
+            <Text variant="heading">Discover papers</Text>
+            <Text variant="caption" color={t.muted} numberOfLines={2}>
+              Search and rank work for your research goal
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={18} color={t.muted} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 const makeStyles = (t: ThemePalette, density: DensityMode) => {
   const tight = density === 'tight';
   return StyleSheet.create({
@@ -751,12 +902,19 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   checkboxOn: { backgroundColor: t.mint, borderColor: t.mint },
   selectBar: {
     flexDirection: 'row', alignItems: 'center',
-    gap: space.md,
-    paddingHorizontal: tight ? space.md : space.lg,
-    paddingVertical: tight ? space.sm : space.md,
+    gap: space.sm, paddingHorizontal: space.sm, paddingVertical: space.xs,
     borderTopWidth: 1, borderTopColor: t.line, backgroundColor: t.surface,
   },
-  selectActions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  selectionCount: { flex: 1, minWidth: 64 },
+  selectActions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  selectionAction: {
+    width: 52,
+    minHeight: 48,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
   paperMeta: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stateDot: { width: 6, height: 6, borderRadius: 3 },
   rowAction: { flexDirection: 'row', alignItems: 'center', gap: 2 },
@@ -776,5 +934,49 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     paddingHorizontal: space.lg,
     alignItems: 'center',
   },
+  emptyProject: {
+    paddingVertical: tight ? space.lg : space.xl,
+    paddingHorizontal: space.sm,
+    alignItems: 'center',
+  },
+  emptyProjectMark: {
+    width: 52,
+    height: 52,
+    borderRadius: radius.pill,
+    backgroundColor: t.mintWash,
+    borderWidth: 1,
+    borderColor: t.mint,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: tight ? space.sm : space.md,
+  },
+  emptyProjectIntro: {
+    textAlign: 'center',
+    maxWidth: 320,
+    marginTop: space.xs,
+    marginBottom: tight ? space.md : space.lg,
+  },
+  entryChoices: { alignSelf: 'stretch', gap: tight ? space.xs : space.sm },
+  entryChoice: {
+    minHeight: tight ? 68 : 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tight ? space.sm : space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: tight ? space.xs : space.sm,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
+  },
+  entryChoiceIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.pill,
+    backgroundColor: t.mintWash,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  entryChoiceText: { flex: 1, minWidth: 0, gap: 2 },
   });
 };

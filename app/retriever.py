@@ -217,8 +217,16 @@ def retrieve(title: str, arxiv_id: str | None = None, pdf_url: str | None = None
         url = f"https://arxiv.org/pdf/{aid}"
         try:
             data = _fetch(url)
+            # An id pasted into the add flow often entered the reading list as "arXiv …".
+            # Resolve its canonical title while this background retrieval already owns the
+            # arXiv work. Failure is non-fatal: the PDF can still be read under the user's title.
+            try:
+                metadata = fetch_arxiv_metadata(aid)
+            except RetrievalError:
+                metadata = None
             return {"full_text": _extract_pdf(data), "arxiv_id": aid,
-                    "source": f"https://arxiv.org/abs/{aid}", "matched_title": title,
+                    "source": f"https://arxiv.org/abs/{aid}",
+                    "matched_title": (metadata or {}).get("title") or title,
                     "score": 1.0, "pdf_bytes": data}
         except RetrievalError:
             # A supplied arXiv id can be wrong — especially ids extracted from a bibliography by

@@ -169,3 +169,43 @@ test('refetches accepted state when the start response is lost', async () => {
   await unmountAsync();
   client.clear();
 });
+
+test('an independent thread qualifies the turn body and cache without changing main', async () => {
+  const sideJob: ChatJob = {
+    ...baseJob,
+    thread_id: 'side-thread',
+    delivery_mode: 'reading',
+  };
+  const done: ChatJob = {
+    ...sideJob,
+    status: 'done',
+    finished_at: '2026-07-06T00:00:01Z',
+  };
+  jest.mocked(apiPost).mockResolvedValueOnce({ job: sideJob });
+  jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = jest.spyOn(client, 'invalidateQueries');
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useStreamingTurn('project', 'paper', 'reading', undefined, 'side-thread'),
+    { wrapper: Wrapper },
+  );
+
+  await act(async () => {
+    await result.current.run('/turn', { slug: 'paper', text: 'Challenge the premise' });
+  });
+
+  expect(apiPost).toHaveBeenCalledWith('/turn', {
+    slug: 'paper',
+    text: 'Challenge the premise',
+    delivery_mode: 'reading',
+    thread_id: 'side-thread',
+  });
+  expect(invalidate).toHaveBeenCalledWith({
+    queryKey: ['project', 'project', 'session', 'paper', 'side-thread'],
+  });
+  await unmountAsync();
+  client.clear();
+});

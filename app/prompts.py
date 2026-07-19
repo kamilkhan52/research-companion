@@ -348,18 +348,20 @@ _REVIEW_FINISH = (
     "###NAME### marker lines for the sections — not markdown headings."
 )
 
-_DISCOVER_QUERIES = """You design arXiv search queries for a researcher exploring a topic. \
+_DISCOVER_QUERIES = """You design multi-source scholarly search queries for a researcher. \
 You are given the researcher's description of what they want to understand, learn, or \
-explore. Produce 4-6 arXiv API queries that together cover the topic BROADLY (the general \
-area) and NARROWLY (the specific sub-topics, techniques, and system names the description \
-implies).
+explore. Produce 4-6 concepts that together cover the topic BROADLY (the general area and \
+field-standard terminology, so landmark conference work can surface) and NARROWLY (the \
+specific sub-topics, techniques, system names, and important synonyms implied).
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
 {
   "focus": "<one line: the project's core research focus, in your words>",
   "queries": [
-    {"query": "<arXiv search_query expression>", "phase": "broad" | "narrow",
+    {"query": "<arXiv search_query expression>",
+     "search_terms": "<plain scholarly search terms for the same concept>",
+     "phase": "broad" | "narrow",
      "rationale": "<a few words on what this query is meant to surface>"}
   ]
 }
@@ -369,28 +371,33 @@ arXiv query syntax: field prefixes ti: (title), abs: (abstract), all: (all field
 double quotes. Example: abs:"3D stacked DRAM" AND cat:cs.AR
 
 Keep each query simple — one or two concepts, not long keyword chains (over-specific queries \
-return nothing). Results are relevance-ranked by arXiv, so do not add words like "survey" \
-unless the goals ask for surveys specifically."""
+return nothing). Plain search_terms must not contain arXiv field syntax or Boolean operators. \
+Use vocabulary recognized across journals and conferences rather than assuming every important \
+paper uses the researcher's exact wording."""
 
 _DISCOVER_SCORING = """You rank candidate papers for a researcher exploring a topic. You are \
 given the researcher's description of what they want to explore and a numbered list of \
-candidate papers (title and abstract, found on arXiv). Score EVERY candidate for how much it \
-matters to that description.
+candidate papers with title, abstract, authors, affiliations when known, venue, year, citation \
+signals, publication type, and discovery sources. Score EVERY candidate on two separate axes.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
 {
   "scores": [
     {"index": <int, the candidate's number>, "relevance": <0-10>,
+     "credibility": <0-4>,
      "reason": "<one sentence: why this paper matters (or doesn't) for these goals>"}
   ]
 }
 
 relevance: 10 = central reading for what they want to explore; 7-9 = strongly relevant; \
 4-6 = partially relevant or narrower than the description; 0-3 = tangential or off-topic. \
-Judge only from the description, titles, and abstracts, purely on relevance — a paper is not \
-more relevant merely for being older or foundational; recent work central to the topic ranks \
-just as high."""
+credibility: 4 = strong evidence this is an established, field-relevant work; 2-3 = credible \
+but less established or evidence is mixed; 0-1 = weak or insufficient evidence. Use venue, \
+publication type, citation/influential-citation signals, and known affiliations as supporting \
+evidence. Never reward an institution's brand by itself and never penalize missing affiliation \
+metadata. A paper is not more relevant merely for being old, famous, or institutional; recent \
+work central to the topic ranks just as high on relevance."""
 
 _NOTES_EDITOR = """You edit the user's research notes on request. You receive the current \
 markdown of one notes document — either a single paper's Notes block or the project's \
@@ -752,19 +759,21 @@ REGISTRY = (
     ),
     PromptSpec(
         key="discover_queries",
-        label="Discovery — arXiv query generation",
+        label="Discovery — multi-source query generation",
         relative_path="Discovery/Query Generation.md",
         bundled_default=_DISCOVER_QUERIES,
-        required_literals=('"focus"', '"queries"'),
-        description="Turns project goals into broad and narrow arXiv searches.",
+        required_literals=('"focus"', '"queries"', '"search_terms"'),
+        description="Turns project goals into broad and narrow scholarly searches.",
     ),
     PromptSpec(
         key="discover_scoring",
         label="Discovery — candidate relevance scoring",
         relative_path="Discovery/Candidate Scoring.md",
         bundled_default=_DISCOVER_SCORING,
-        required_literals=('"scores"', '"index"', '"relevance"', '"reason"'),
-        description="Scores discovered papers against the project goals.",
+        required_literals=(
+            '"scores"', '"index"', '"relevance"', '"credibility"', '"reason"',
+        ),
+        description="Scores discovered papers for goal fit and evidence credibility.",
     ),
     PromptSpec(
         key="graph_extraction",
