@@ -178,7 +178,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.24 + bounded Authors/Labs | Full player suppresses the redundant mini-player; ranked Author/Lab lists reveal bounded pages | [#174](https://github.com/kamilkhan52/research-companion/pull/174) | Complete |
 | R10.23 | Editing a user turn immediately rewinds the visible discussion to the preceding response; the original prompt and later tail stay hidden through regeneration | [#175](https://github.com/kamilkhan52/research-companion/pull/175) | Complete |
 | R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | [#176](https://github.com/kamilkhan52/research-companion/pull/176) | Complete |
-| R10.11 | Multi-source Discover recall (arXiv + Semantic Scholar), source-balanced fusion, Map citation/OpenAlex evidence, and fixed offline landmark evaluation | PR pending | Implemented — automated verification complete; device quality pass pending |
+| R10.11 | Multi-source Discover recall (arXiv + Semantic Scholar), source-balanced fusion, Map citation/OpenAlex evidence, and fixed offline landmark evaluation | [#186](https://github.com/kamilkhan52/research-companion/pull/186) | Implemented — automated verification complete; device quality pass pending |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
