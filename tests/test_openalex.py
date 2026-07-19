@@ -52,6 +52,37 @@ def test_work_authorships_miss_returns_none():
     assert openalex.work_authorships("", client=client) is None
 
 
+def test_work_authorships_for_supports_non_arxiv_doi():
+    client = FakeClient({"10.1145/123/456": _work(AWQ_SHIPS)})
+    ships = openalex.work_authorships_for(doi="https://doi.org/10.1145/123/456", client=client)
+    assert ships[0] == {"name": "Ji Lin", "affiliation": "MIT"}
+    assert "doi:10.1145/123/456" in client.calls[0]
+
+
+def test_discovery_authorships_adds_grounded_institutions_and_aborts_on_outage():
+    candidates = [
+        {"title": "Known", "arxiv_id": None, "doi": "10.1145/known", "authors": []},
+        {"title": "Later", "arxiv_id": "2401.00001", "doi": None, "authors": []},
+    ]
+    client = FakeClient({"10.1145/known": _work(AWQ_SHIPS)})
+    openalex.annotate_discovery_authorships(candidates, client=client, sleep=lambda *_: None)
+    assert candidates[0]["authors"] == ["Ji Lin", "Song Han"]
+    assert candidates[0]["affiliations"] == ["MIT"]
+    assert len(client.calls) == 2
+
+    calls = {"n": 0}
+
+    class OutageClient:
+        def get(self, *_a, **_k):
+            calls["n"] += 1
+            raise httpx.ConnectError("offline")
+
+    openalex.annotate_discovery_authorships(
+        candidates * 3, client=OutageClient(), sleep=lambda *_: None
+    )
+    assert calls["n"] == 1
+
+
 def _project_node(node_id: str, arxiv_id: str | None):
     return {"id": node_id, "kind": "project", "arxiv_id": arxiv_id, "authors": []}
 

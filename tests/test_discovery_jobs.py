@@ -27,6 +27,7 @@ def fake_run(delay: float = 0.0, fail: bool = False):
             raise DiscoveryError("simulated failure")
         yield {"type": "search", "query": "q1", "index": 1, "total": 1, "found": 2}
         yield {"type": "citations", "count": 2}
+        yield {"type": "evidence", "count": 2}
         yield {"type": "scoring", "count": 2}
         yield {"type": "done", "result": {"goals": goals, "suggestions": [{"title": "S"}],
                                           "candidate_count": 2, "top_n": 5}}

@@ -72,6 +72,11 @@ depends on screenshots Kamil has not attached yet.
   paper credibility, and credible institution/lab signals, reusing Map ranking/enrichment
   logic where it is genuinely shared. Evaluate with fixed project/query fixtures before
   changing production ranking.
+  **Implemented (PR pending):** each planned concept now searches arXiv and Semantic Scholar;
+  reciprocal-rank fusion preserves source diversity before the context cap; Map's citation and
+  paper-scoped OpenAlex evidence feed a relevance-dominant rank with capped credibility/impact
+  terms. The fixed offline landmark fixture and tradeoffs are recorded in
+  [`discovery-quality-evaluation.md`](discovery-quality-evaluation.md).
 
 ## Library sorting, paper identity, and actions
 
