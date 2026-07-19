@@ -12,6 +12,7 @@ import {
 } from '@gorhom/bottom-sheet';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
+  BackHandler,
   type StyleProp,
   StyleSheet,
   type ViewStyle,
@@ -84,6 +85,18 @@ export function BottomSheet({
     }
   }, [visible]);
 
+  useEffect(() => {
+    if (!visible) return;
+    // React Navigation also listens for Android hardware Back. Register only while this sheet
+    // is visible so our newer listener consumes the first press and lowers the sheet; once the
+    // controlled owner closes it, the next press is free to navigate the scene underneath.
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onClose, visible]);
+
   // A gesture/backdrop dismissal must update the controlled `visible` prop. A parent-driven
   // close already set it false before dismiss(), so avoid firing its callback twice.
   const handleDismiss = useCallback(() => {
@@ -132,7 +145,10 @@ export function BottomSheet({
       enablePanDownToClose
       enableContentPanningGesture
       enableHandlePanningGesture
-      keyboardBehavior="interactive"
+      // Focusing a sheet input should reveal the whole editing surface, not merely offset the
+      // short dynamic-height detent. Gorhom's `extend` snaps to this sheet's explicit maximum;
+      // the gesture-aware ScrollView then keeps longer project lists and actions reachable.
+      keyboardBehavior="extend"
       keyboardBlurBehavior="restore"
       enableBlurKeyboardOnGesture
       android_keyboardInputMode="adjustResize"
