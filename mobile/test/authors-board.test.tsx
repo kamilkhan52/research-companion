@@ -80,3 +80,64 @@ test('Labs mode groups by affiliation with unknowns last', async () => {
   expect(screen.getAllByText('MIT').length).toBeGreaterThanOrEqual(1);
   expect(screen.getByText('INDEPENDENT / UNKNOWN')).toBeTruthy();
 });
+
+test('Authors initially shows ten ranked cards and reveals the next page on demand', async () => {
+  const template = board.authors[0];
+  const manyAuthors = Array.from({ length: 12 }, (_, i) => ({
+    ...template,
+    name: `Author ${String(i + 1).padStart(2, '0')}`,
+    activity: 100 - i,
+    papers: [],
+  }));
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: manyAuthors,
+  });
+
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Author 01')).toBeTruthy());
+  expect(screen.getByText('Author 10')).toBeTruthy();
+  expect(screen.queryByText('Author 11')).toBeNull();
+
+  await fireEventAsync.press(screen.getByText('Show more authors (10 of 12)'));
+  expect(screen.getByText('Author 11')).toBeTruthy();
+  expect(screen.getByText('Author 12')).toBeTruthy();
+});
+
+test('Labs initially shows five researched groups and reveals more on demand', async () => {
+  const template = board.authors[0];
+  const labAuthors = Array.from({ length: 7 }, (_, i) => ({
+    ...template,
+    name: `Lab Member ${i + 1}`,
+    papers: [],
+  }));
+  const labs = labAuthors.map((author, i) => ({
+    lab_name: `Research Lab ${i + 1}`,
+    institution: `Institute ${i + 1}`,
+    url: '',
+    focus: `Focus ${i + 1}`,
+    members: [author.name],
+    in_project_count: author.in_project_count,
+    significant_count: author.significant_count,
+  }));
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs,
+      covered_authors: labAuthors.map((a) => a.name),
+      researched: true,
+      researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Lab Member 1')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  expect(screen.getByText('Research Lab 5')).toBeTruthy();
+  expect(screen.queryByText('Research Lab 6')).toBeNull();
+
+  await fireEventAsync.press(screen.getByText('Show more labs (5 of 7)'));
+  expect(screen.getByText('Research Lab 6')).toBeTruthy();
+  expect(screen.getByText('Research Lab 7')).toBeTruthy();
+});
