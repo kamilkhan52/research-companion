@@ -174,6 +174,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 |------|--------|----|--------|
 | R10.1–R10.2 | Hardware Back dismisses only the active sheet; keyboard focus expands sheets | [#171](https://github.com/kamilkhan52/research-companion/pull/171) | Complete |
 | R10.3 + R10.17 | Sequential paper-by-paper migration-notes review; Move/Copy preserve independent discussion history, branches, session state, Notes, corpus, and graph caches | [#172](https://github.com/kamilkhan52/research-companion/pull/172) | Complete |
+| R10.4–R10.9 | Project-scoped first-tap Map build; shared safe progress connectors; 50-node in-canvas pager; unambiguous citation labels; generic Discover placeholder | [#173](https://github.com/kamilkhan52/research-companion/pull/173) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 

@@ -72,6 +72,56 @@ function responseFor(graph: ReferenceGraph, build: GraphBuildJob): GraphResponse
   };
 }
 
+test('a pending start from the previous project cannot swallow the new project first tap', async () => {
+  let resolveProjectA!: (value: { build: GraphBuildJob }) => void;
+  const projectBJob: GraphBuildJob = {
+    ...runningJob,
+    current_slug: 'project-b-paper',
+    current_title: 'Project B Paper',
+  };
+  jest.mocked(api.startGraphBuild).mockImplementation((pid) => {
+    if (pid === 'project-a') {
+      return new Promise((resolve) => {
+        resolveProjectA = resolve;
+      });
+    }
+    return Promise.resolve({ build: projectBJob });
+  });
+  jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: projectBJob });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+
+  const rendered = await renderHookAsync(
+    ({ pid }: { pid: string }) => useGraphBuild(pid),
+    { wrapper: Wrapper, initialProps: { pid: 'project-a' } },
+  );
+  let projectAStart!: Promise<void>;
+  act(() => {
+    projectAStart = rendered.result.current.run();
+  });
+  expect(rendered.result.current.building).toBe(true);
+
+  await rendered.rerenderAsync({ pid: 'project-b' });
+  expect(rendered.result.current.building).toBe(false);
+
+  await act(async () => rendered.result.current.run());
+  expect(api.startGraphBuild).toHaveBeenCalledWith('project-b', false, {});
+  expect(rendered.result.current.progress?.currentTitle).toBe('Project B Paper');
+
+  await act(async () => {
+    resolveProjectA({ build: runningJob });
+    await projectAStart;
+  });
+  expect(rendered.result.current.progress?.currentTitle).toBe('Project B Paper');
+
+  await rendered.unmountAsync();
+  client.clear();
+});
+
 test('run(true) forwards force to startGraphBuild (rebuild from scratch)', async () => {
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: runningJob });

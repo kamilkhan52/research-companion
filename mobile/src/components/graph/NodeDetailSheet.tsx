@@ -122,9 +122,11 @@ function SheetContent({
       <View style={styles.statsRow}>
         <Stat label="Cited in project" value={String(node.cited_by_project_count)} />
         <Stat label="Significant citations" value={String(node.significant_cited_by_count)} />
-        {node.kind === 'project' ? <Stat label="Cites" value={String(node.cites_count)} /> : null}
+        {node.kind === 'project' ? (
+          <Stat label="References in map" value={String(node.cites_count)} />
+        ) : null}
         {typeof node.citation_count === 'number' ? (
-          <Stat label="Overall citations" value={node.citation_count.toLocaleString()} />
+          <Stat label="Total citations" value={node.citation_count.toLocaleString()} />
         ) : null}
       </View>
       <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
@@ -180,7 +182,7 @@ function SheetContent({
       ) : null}
 
       {citesOthers.length > 0 ? (
-        <Section title={`Cites (${citesOthers.length})`}>
+        <Section title={`References in map (${citesOthers.length})`}>
           {citesOthers.map((edge, i) => (
             <EdgeRow
               key={i}
