@@ -9,6 +9,7 @@ export const BottomSheetModalProvider = ({ children }: React.PropsWithChildren) 
 
 let deferDismiss = false;
 let pendingDismisses: Array<() => void> = [];
+let lastModalProps: Record<string, unknown> = {};
 export function __setDeferDismiss(value: boolean) {
   deferDismiss = value;
 }
@@ -17,11 +18,19 @@ export function __flushDismisses() {
   pendingDismisses = [];
   callbacks.forEach((callback) => callback());
 }
+export function __getLastModalProps() {
+  return lastModalProps;
+}
 
 export const BottomSheetModal = forwardRef(function MockBottomSheetModal(
-  { children, onDismiss }: React.PropsWithChildren<{ onDismiss?: () => void }>,
+  {
+    children,
+    onDismiss,
+    ...props
+  }: React.PropsWithChildren<{ onDismiss?: () => void; [key: string]: unknown }>,
   ref: React.ForwardedRef<{ present: () => void; dismiss: () => void }>,
 ) {
+  lastModalProps = props;
   const [open, setOpen] = useState(false);
   const dismissing = useRef(false);
   useImperativeHandle(ref, () => ({
