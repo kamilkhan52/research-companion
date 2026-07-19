@@ -1366,7 +1366,7 @@ export interface paths {
         put?: never;
         /**
          * Notes Job Discard
-         * @description Dismiss a settled proposal so it does not reappear through the latest-job endpoint.
+         * @description Dismiss a settled proposal. A relocation queue advances to its next paper.
          */
         post: operations["notes_job_discard_api_projects__pid__notes_jobs__job_id__discard_post"];
         delete?: never;
@@ -1939,6 +1939,13 @@ export interface components {
             /** Slugs */
             slugs: string[];
         };
+        /** ReplyComment */
+        ReplyComment: {
+            /** Quote */
+            quote: string;
+            /** Comment */
+            comment: string;
+        };
         /** ReplyReq */
         ReplyReq: {
             /**
@@ -1951,8 +1958,13 @@ export interface components {
             model?: string | null;
             /** Slug */
             slug: string;
-            /** Text */
+            /**
+             * Text
+             * @default
+             */
             text: string;
+            /** Comments */
+            comments?: components["schemas"]["ReplyComment"][];
         };
         /** RequestChangesReq */
         RequestChangesReq: {
@@ -2005,6 +2017,10 @@ export interface components {
             slug: string;
             /** Assistant Index */
             assistant_index: number;
+            /** Prompt */
+            prompt?: string | null;
+            /** Mode */
+            mode?: ("balanced" | "background" | "technical" | "detailed") | null;
         };
         /** SettingsReq */
         SettingsReq: {

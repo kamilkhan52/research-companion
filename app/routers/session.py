@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import (
     agent,
@@ -86,9 +86,15 @@ class ModeReq(BaseModel):
     mode: Literal["balanced", "background", "technical", "detailed"]
 
 
+class ReplyComment(BaseModel):
+    quote: str = Field(min_length=1, max_length=4000)
+    comment: str = Field(min_length=1, max_length=4000)
+
+
 class ReplyReq(DeliveryReq):
     slug: str
-    text: str
+    text: str = ""
+    comments: list[ReplyComment] = Field(default_factory=list, max_length=20)
 
 
 class FinishReq(DeliveryReq):
@@ -103,6 +109,10 @@ class RequestChangesReq(DeliveryReq):
 class RetryReq(DeliveryReq):
     slug: str
     assistant_index: int
+    # The first response can be retried with the same prompt-type/model choices as session
+    # start. These are branch-scoped; later-turn retries cannot change the opening context.
+    prompt: str | None = None
+    mode: Literal["balanced", "background", "technical", "detailed"] | None = None
 
 
 class BranchSwitchReq(BaseModel):
@@ -534,37 +544,24 @@ async def start_paper_stream(req: StartReq):
 @project_router.post("/upload_paper")
 async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
     """Last-resort source: the user uploads the paper's PDF directly (when it isn't on arXiv and
-    there's no public PDF link). Extract its text and cache it like a normal retrieval."""
+    there's no public PDF link). The request only receives the file; extraction and persistence
+    run in a registered background job that the client polls."""
     paper = store.get_paper(slug)
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")
-    data = await file.read()
+    max_bytes = 40_000_000
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(status_code=413, detail="PDF is larger than the 40 MB limit.")
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail="PDF is larger than the 40 MB limit.")
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
     try:
-        full_text = retriever.extract_pdf_bytes(data)
+        job = retrieval_jobs.start_upload(slug, data, file.filename or "paper.pdf")
     except RetrievalError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    if not full_text.strip():
-        raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
-
-    def _write():
-        store.write_full_text(slug, paper.title, full_text,
-                              {"slug": slug, "source": f"upload:{file.filename}"})
-        cover_jobs.render_from_pdf(slug, data)  # rasterize the uploaded PDF (sync, in-thread)
-
-    # Guard + re-check + write run in one worker thread, off the event loop (task #75b).
-    try:
-        await asyncio.to_thread(_guarded_write, slug, _write)
-    except config.ProjectBusyError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This project is being moved or split — wait, then upload.") from e
-    except _PaperGoneError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This paper is no longer in the project (it may have just been moved).") from e
-    return {"ok": True, "retrieved": True}
+    return {"job": retrieval_jobs.snapshot(job.id)}
 
 
 # ---- turn setup, shared by the SSE endpoints (web) and the job endpoints (mobile).
@@ -597,7 +594,38 @@ def _prep_chat_start(req: ChatStartReq) -> None:
 
 def _prep_reply(req: ReplyReq) -> None:
     _require_session(req.slug)
-    sessions.record_user(req.slug, req.text, kind="reply")
+    rendered = _compose_reply_text(req)
+    sessions.record_user(
+        req.slug,
+        rendered,
+        kind="reply",
+        # Once comments change the durable text, keep the human's composer text separately so
+        # persisted-draft reconciliation compares like with like.
+        authored_text=req.text if req.comments else None,
+    )
+
+
+def _compose_reply_text(req: ReplyReq) -> str:
+    """Deterministically turn transient sentence comments into the ordinary durable user turn.
+
+    Empty comments preserve the existing endpoint byte-for-byte. With comments, each reader-
+    visible quote and its comment becomes a Markdown blockquote, followed by optional free text.
+    The transcript and model history therefore need no annotation protocol or side store.
+    """
+    if not req.comments:
+        return req.text
+    parts = ["Regarding specific passages of your last response:"]
+    for item in req.comments:
+        quote = item.quote.strip()
+        comment = item.comment.strip()
+        if not quote or not comment:
+            raise HTTPException(status_code=400, detail="Passage comments cannot be empty.")
+        quoted = "\n".join(f"> {line}" for line in f"“{quote}”".splitlines())
+        noted = "\n".join(f"> {line}" for line in f"— {comment}".splitlines())
+        parts.append(f"{quoted}\n>\n{noted}")
+    if req.text.strip():
+        parts.append(req.text.strip())
+    return "\n\n".join(parts)
 
 
 def _prep_continue(req: FinishReq) -> None:
@@ -618,7 +646,18 @@ def _prep_retry(req: RetryReq) -> None:
                             detail="Notes are committed — continue the discussion first.")
     # U.14: a retry forks the conversation instead of discarding the old response — the
     # previous tail is archived as a branch, switchable via /branch_switch.
-    sessions.fork_before_assistant(req.slug, req.assistant_index)
+    context = None
+    if req.prompt is not None or req.mode is not None:
+        if req.assistant_index != 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Opening prompt and reading mode can only change on the first response.",
+            )
+        context = {
+            "opening": req.prompt if req.prompt is not None else sessions.get_opening(req.slug),
+            "reading_mode": req.mode or sessions.get_reading_mode(req.slug),
+        }
+    sessions.fork_before_assistant(req.slug, req.assistant_index, context=context)
 
 
 def _prep_edit(req: EditReq) -> None:
@@ -655,9 +694,8 @@ def chat_start_stream(req: ChatStartReq):
 
 @project_router.post("/reply")
 def reply(req: ReplyReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    sessions.record_user(req.slug, req.text, kind="reply")
+    with sessions.mutation_lock(req.slug):
+        _prep_reply(req)
     turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 

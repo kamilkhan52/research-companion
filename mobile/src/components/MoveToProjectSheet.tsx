@@ -1,7 +1,5 @@
-// Move-to-existing-project confirm sheet (R9.13). Reached from the Library multi-select →
-// Move → an existing destination. Confirms move (default) vs copy, then POST /move. Same
-// result shape as split, so the caller switches to the destination on success. Deterministic
-// server-side (a plain confirmed action, not a job).
+// Relocate-to-existing-project confirm sheet. The Library makes Move vs Copy explicit before
+// choosing a destination; this sheet handles notes choices and final confirmation.
 
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
@@ -21,6 +19,7 @@ export function MoveToProjectSheet({
   destName,
   slugs,
   notesEligible,
+  operation,
   onClose,
   onDone,
 }: {
@@ -30,18 +29,19 @@ export function MoveToProjectSheet({
   destName: string;
   slugs: string[];
   notesEligible: boolean;
+  operation: 'move' | 'copy';
   onClose: () => void;
   /** The caller switches projects and opens immediate notes review when one was requested. */
   onDone: (result: RelocationResult) => void;
 }) {
   const t = useTheme();
   const move = useMoveProject(pid);
-  const [remove, setRemove] = useState(true);
   const [draftNotes, setDraftNotes] = useState(true);
   const [cleanupSource, setCleanupSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const count = slugs.length;
+  const remove = operation === 'move';
 
   async function handleMove() {
     if (!pid || !destPid || count === 0 || move.isPending) return;
@@ -66,39 +66,23 @@ export function MoveToProjectSheet({
             ? `${movedMessage}. Preparing AI notes proposals.`
             : movedMessage,
       );
-      setRemove(true);
       setDraftNotes(true);
       setCleanupSource(false);
       onDone(res);
     } catch (e) {
-      setError((e as Error).message ?? 'Could not move the papers.');
+      setError((e as Error).message ?? `Could not ${operation} the papers.`);
     }
   }
 
   return (
     <BottomSheet visible={visible} onClose={onClose} maxHeightPct={85} scrollable>
-      <Text variant="title">Move to “{destName}”</Text>
+      <Text variant="title">
+        {operation === 'move' ? 'Move' : 'Copy'} to “{destName}”
+      </Text>
       <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
         {count} paper{count === 1 ? '' : 's'} and the work done on them (notes, discussions,
-        cached analysis) go to “{destName}”.
+        cached analysis) {remove ? 'move' : 'are copied'} to “{destName}”.
       </Text>
-
-      <View style={styles.toggleRow}>
-        <View style={{ flex: 1, paddingRight: space.md }}>
-          <Text variant="body">Remove from this project</Text>
-          <Text variant="caption" color={t.muted}>
-            {remove
-              ? 'Moves the papers out of the current project.'
-              : 'Keeps copies here as well.'}
-          </Text>
-        </View>
-        <Switch
-          value={remove}
-          onValueChange={setRemove}
-          trackColor={{ true: t.mint, false: t.line2 }}
-          thumbColor={t.surface}
-        />
-      </View>
 
       {notesEligible ? (
         <>

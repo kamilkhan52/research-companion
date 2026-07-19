@@ -59,6 +59,17 @@ export async function apiSend<T>(
   return res.json() as Promise<T>;
 }
 
+/** Multipart POST for native file uploads. Do not set Content-Type: fetch adds the boundary. */
+export async function apiForm<T>(path: string, body: FormData): Promise<T> {
+  const res = await fetch(apiUrl(path), {
+    method: 'POST',
+    headers: { ...authHeaders() },
+    body,
+  });
+  if (!res.ok) return parseError(res);
+  return res.json() as Promise<T>;
+}
+
 export const apiPost = <T>(path: string, body?: unknown) => apiSend<T>(path, 'POST', body);
 export const apiPatch = <T>(path: string, body?: unknown) => apiSend<T>(path, 'PATCH', body);
 export const apiDelete = <T>(path: string) => apiSend<T>(path, 'DELETE');

@@ -9,8 +9,9 @@
 //           forfeits the battery win); same content/accent inks as Dim.
 //   Light — warm paper. Accents re-tuned darker for contrast on light surfaces.
 //
-// Black/Light hex here are PROVISIONAL engineering derivations — the codex→Figma palette
-// pass may retune them; this file is the only place they live.
+// Black/Light were contrast-reviewed in the codex→Figma palette pass. Light accent inks
+// are deliberately darker than their Dim counterparts so small labels remain AA on the
+// warm canvas; this file remains the only runtime source.
 //
 // Components read the ACTIVE palette via useTheme()/useThemedStyles()
 // (theme/ThemeProvider.tsx). The migration is complete: there is no flat `colors` export any
@@ -38,6 +39,7 @@ export interface ThemePalette {
   // guard keeps them here). Wash = a soft fill behind selected/accented content.
   mintWash: string;
   mintWashStrong: string;
+  violetWash: string;
   amberWash: string;
   amberLine: string;
   dangerWash: string;
@@ -64,6 +66,7 @@ const dim: ThemePalette = {
   scrim: 'rgba(0,0,0,0.55)',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  violetWash: 'rgba(155, 138, 251, 0.14)',
   amberWash: 'rgba(228, 184, 92, 0.08)',
   amberLine: 'rgba(228, 184, 92, 0.4)',
   dangerWash: 'rgba(229, 115, 140, 0.12)',
@@ -89,6 +92,7 @@ const black: ThemePalette = {
   scrim: 'rgba(0,0,0,0.65)',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  violetWash: 'rgba(155, 138, 251, 0.14)',
   amberWash: 'rgba(228, 184, 92, 0.08)',
   amberLine: 'rgba(228, 184, 92, 0.4)',
   dangerWash: 'rgba(229, 115, 140, 0.12)',
@@ -106,16 +110,17 @@ const light: ThemePalette = {
   text: '#1C2129',
   muted: '#5D6879',
 
-  mint: '#177E63',
+  mint: '#15795F',
   mintInk: '#F5FBF8',
   violet: '#6A55E0',
-  amber: '#A87A17',
+  amber: '#8F6411',
   danger: '#C2385A',
   scrim: 'rgba(20, 24, 32, 0.45)',
-  mintWash: 'rgba(23, 126, 99, 0.10)',
-  mintWashStrong: 'rgba(23, 126, 99, 0.16)',
-  amberWash: 'rgba(168, 122, 23, 0.10)',
-  amberLine: 'rgba(168, 122, 23, 0.45)',
+  mintWash: 'rgba(21, 121, 95, 0.10)',
+  mintWashStrong: 'rgba(21, 121, 95, 0.16)',
+  violetWash: 'rgba(106, 85, 224, 0.12)',
+  amberWash: 'rgba(143, 100, 17, 0.10)',
+  amberLine: 'rgba(143, 100, 17, 0.45)',
   dangerWash: 'rgba(194, 56, 90, 0.10)',
   elevatedGlass: 'rgba(255, 255, 255, 0.80)',
 };
@@ -171,4 +176,3 @@ export function stateMetaFor(t: ThemePalette): Record<string, { label: string; c
     read: { label: 'Read', color: t.mint },
   };
 }
-

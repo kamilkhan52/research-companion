@@ -1,7 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { apiDelete, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
+import { apiDelete, apiForm, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
 import type {
   AudioJob,
   AuthConfig,
@@ -149,6 +149,10 @@ export const startRetrievalJob = (
 ) => apiPost<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs`, { slug, ...opts });
 export const getRetrievalJob = (pid: string, id: string) =>
   apiGet<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/${encodeURIComponent(id)}`);
+export const getLatestRetrievalJob = (pid: string, slug: string) =>
+  apiGet<{ job: RetrievalJob | null }>(
+    `/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`,
+  );
 
 // ---------- per-project ----------
 
@@ -210,6 +214,25 @@ export const removePaper = (pid: string, slug: string) =>
   apiDelete<{ removed: string; notes_kept: boolean }>(
     `${P(pid)}/papers/${encodeURIComponent(slug)}`,
   );
+export const updatePaper = (pid: string, slug: string, title: string) =>
+  apiPatch<{ paper: Paper }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`, { title });
+
+export interface NativeUploadFile {
+  uri: string;
+  name: string;
+  mimeType?: string | null;
+}
+
+export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) => {
+  const body = new FormData();
+  body.append('slug', slug);
+  body.append('file', {
+    uri: file.uri,
+    name: file.name,
+    type: file.mimeType || 'application/pdf',
+  } as unknown as Blob);
+  return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body);
+};
 
 /** Remove several papers in ONE atomic commit (the multi-select Delete). All-or-nothing, so a
  *  disconnect can't half-apply a confirmed batch; unknown slugs are skipped (idempotent). */

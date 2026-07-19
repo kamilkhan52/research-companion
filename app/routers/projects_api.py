@@ -29,6 +29,10 @@ class MetaPatchReq(BaseModel):
     favorite: bool | None = None
 
 
+class PaperPatchReq(BaseModel):
+    title: str
+
+
 @router.get("/api/projects")
 def list_projects():
     return {"projects": projects.list_projects()}
@@ -127,6 +131,68 @@ def remove_paper(pid: str, slug: str):
             detail="This project is being moved or split — wait, then remove.",
         ) from e
     return {"removed": slug, "notes_kept": notes_kept}
+
+
+@project_router.patch("/papers/{slug}")
+def update_paper(pid: str, slug: str, req: PaperPatchReq):
+    """Apply a human-confirmed paper-title edit without changing the stable paper slug.
+
+    The client Save action is the approval boundary. Commit only the reading-list entry and
+    this paper's corpus heading; unrelated dirty session/project work must not ride along.
+    """
+    paper = store.get_paper(slug)
+    if paper is None:
+        raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
+    reading_list = store._reading_list()
+    corpus = store.corpus_path(slug)
+    reading_before: bytes | None = None
+    corpus_before: bytes | None = None
+    changed: list[str] = []
+    try:
+        with config.project_write_guard(pid):
+            if store.get_paper(slug) is None:
+                raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
+            # Snapshot only after acquiring the shared write guard: a relocation waiting for
+            # writers cannot race a rollback into restoring stale pre-relocation bytes.
+            reading_before = reading_list.read_bytes()
+            corpus_before = corpus.read_bytes() if corpus.exists() else None
+            changed = ["reading-list.md"]
+            if corpus_before is not None:
+                changed.append(str(corpus.relative_to(config.project_dir())))
+            if not store.rename_entry(slug, req.title):
+                current = store.get_paper(slug, sessions.session_states())
+                return {"paper": current.to_dict() if current else {"slug": slug}}
+            committer._git("add", "--", *changed)
+            try:
+                committer._git(
+                    "commit", "-q", "-m", f"Rename paper to {req.title.strip()}", "--", *changed,
+                )
+            except CommitError as e:
+                if "nothing to commit" not in str(e):
+                    raise
+    except config.ProjectBusyError as e:
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then rename the paper.",
+        ) from e
+    except (ValueError, store.DuplicatePaperError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        if reading_before is not None:
+            reading_list.write_bytes(reading_before)
+        if corpus_before is not None:
+            corpus.write_bytes(corpus_before)
+        store._parse_cache.clear()
+        if changed:
+            try:
+                committer._git("reset", "-q", "--", *changed)
+            except CommitError:
+                pass
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail="Could not rename the paper.") from e
+    updated = store.get_paper(slug, sessions.session_states())
+    return {"paper": updated.to_dict() if updated else {"slug": slug}}
 
 
 class RemoveBatchReq(BaseModel):
