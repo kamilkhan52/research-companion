@@ -25,9 +25,18 @@ export const keys = {
   projects: ['projects'] as const,
   recentSessions: ['recentSessions'] as const,
   projectState: (pid: string) => ['project', pid, 'state'] as const,
-  session: (pid: string, slug: string) => ['project', pid, 'session', slug] as const,
-  opening: (pid: string, slug: string) => ['project', pid, 'opening', slug] as const,
-  review: (pid: string, slug: string) => ['project', pid, 'review', slug] as const,
+  session: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'session', slug] as const
+      : ['project', pid, 'session', slug, threadId] as const,
+  opening: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'opening', slug] as const
+      : ['project', pid, 'opening', slug, threadId] as const,
+  review: (pid: string, slug: string, threadId = 'main') =>
+    threadId === 'main'
+      ? ['project', pid, 'review', slug] as const
+      : ['project', pid, 'review', slug, threadId] as const,
   settings: ['settings'] as const,
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
@@ -120,11 +129,11 @@ export function useUsage(pid: string | null) {
   });
 }
 
-export function useSession(pid: string | null, slug: string | null) {
+export function useSession(pid: string | null, slug: string | null, threadId = 'main') {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.session(pid, slug) : ['project', 'none', 'session'],
-    queryFn: () => api.getSession(pid as string, slug as string),
+    queryKey: pid && slug ? keys.session(pid, slug, threadId) : ['project', 'none', 'session'],
+    queryFn: () => api.getSession(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl,
     // A short freshness window so a resume that was prefetched from the Library (index.tsx)
     // renders straight from cache without an immediate refetch flash (R.7). Mutations still
@@ -136,21 +145,26 @@ export function useSession(pid: string | null, slug: string | null) {
 /** The proposed commit for a notes-drafted paper (notes block + synthesis + revision token).
  *  `enabled` defers the fetch until the review surface is actually opened. Always refetched
  *  (staleTime 0) so the revision token guards a stale approve. */
-export function useReview(pid: string | null, slug: string | null, enabled = true) {
+export function useReview(
+  pid: string | null,
+  slug: string | null,
+  enabled = true,
+  threadId = 'main',
+) {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.review(pid, slug) : ['project', 'none', 'review'],
-    queryFn: () => api.getReview(pid as string, slug as string),
+    queryKey: pid && slug ? keys.review(pid, slug, threadId) : ['project', 'none', 'review'],
+    queryFn: () => api.getReview(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl && enabled,
     staleTime: 0,
   });
 }
 
-export function useOpeningDraft(pid: string | null, slug: string | null) {
+export function useOpeningDraft(pid: string | null, slug: string | null, threadId = 'main') {
   const hasUrl = !!useBaseUrl();
   return useQuery({
-    queryKey: pid && slug ? keys.opening(pid, slug) : ['project', 'none', 'opening'],
-    queryFn: () => api.getOpeningDraft(pid as string, slug as string),
+    queryKey: pid && slug ? keys.opening(pid, slug, threadId) : ['project', 'none', 'opening'],
+    queryFn: () => api.getOpeningDraft(pid as string, slug as string, threadId),
     enabled: !!pid && !!slug && hasUrl,
     // staleTime 0 (the shared client defaults to 30s) so a prefetched draft still
     // background-refetches on mount and its displayed prompt stays current. The prefetch

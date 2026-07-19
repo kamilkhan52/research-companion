@@ -172,12 +172,24 @@ export const READING_MODE_LABELS: Record<ReadingMode, string> = {
 };
 
 /** GET /api/projects/{pid}/session/{slug} */
+export interface DiscussionThreadSummary {
+  id: string;
+  title: string;
+  state: SessionState;
+  created_at: string | null;
+  updated_at: string | null;
+  message_count: number;
+}
+
 export interface Session {
   paper: Paper;
   state: SessionState;
   reading_mode: ReadingMode;
   transcript: TranscriptEntry[];
   accepted_drafts: { kind: 'reply' | 'revision'; text: string }[];
+  /** Added with independent discussions; absent only on an older backend during rollout. */
+  thread_id?: string;
+  threads?: DiscussionThreadSummary[];
 }
 
 /** GET /api/projects/{pid}/review/{slug} — the proposed commit for the notes-drafted review. */
@@ -308,6 +320,7 @@ export type AgentTrailItem = Exclude<StreamItem, { kind: 'text' }>;
 export interface ChatJob {
   id: string;
   slug: string;
+  thread_id?: string;
   status: 'running' | 'done' | 'error';
   items: StreamItem[];
   turn: Turn | null;

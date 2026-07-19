@@ -68,6 +68,7 @@ class StartReq(BaseModel):
 
 class DeliveryReq(BaseModel):
     delivery_mode: Literal["reading", "listening"] = "reading"
+    thread_id: str = sessions.MAIN_THREAD
     # One-shot model override for this turn only — never persisted to settings (locked product
     # decision: composer model selection applies to one response only and never silently
     # changes the default). None falls through to the account's configured default.
@@ -84,6 +85,7 @@ class ChatStartReq(DeliveryReq):
 class ModeReq(BaseModel):
     slug: str
     mode: Literal["balanced", "background", "technical", "detailed"]
+    thread_id: str = sessions.MAIN_THREAD
 
 
 class ReplyComment(BaseModel):
@@ -119,12 +121,24 @@ class BranchSwitchReq(BaseModel):
     slug: str
     assistant_index: int
     branch: int  # 1-based ordinal shown in the selector ("2/3" -> branch=2)
+    thread_id: str = sessions.MAIN_THREAD
 
 
 class EditReq(DeliveryReq):
     slug: str
     reply_index: int
     text: str
+
+
+class CreateThreadReq(BaseModel):
+    title: str | None = None
+
+
+def _thread_id(value: str | None) -> str:
+    try:
+        return sessions.validate_thread_id(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------- streaming helpers ----------
@@ -150,68 +164,100 @@ def _sse(event: dict) -> str:
 # Entries carry a timestamp: if a response object is never consumed, its finally never runs,
 # so stale entries expire instead of wedging the session's guards forever. Single-worker
 # process (CLAUDE.md invariant 6).
-_active_sse_turns: dict[tuple[str | None, str], float] = {}
+_active_sse_turns: dict[tuple[str | None, str, str], float] = {}
 _active_sse_lock = threading.Lock()
 _SSE_TURN_TTL_S = 2 * 60 * 60.0
 
 
 def _register_sse_turn(slug: str) -> None:
     with _active_sse_lock:
-        _active_sse_turns[(config.active_project_id(), slug)] = time.monotonic()
+        _active_sse_turns[
+            (config.active_project_id(), slug, sessions.active_thread_id())
+        ] = time.monotonic()
 
 
 def _discard_sse_turn(slug: str) -> None:
     with _active_sse_lock:
-        _active_sse_turns.pop((config.active_project_id(), slug), None)
+        _active_sse_turns.pop(
+            (config.active_project_id(), slug, sessions.active_thread_id()),
+            None,
+        )
 
 
 def _sse_turn_active(slug: str) -> bool:
     with _active_sse_lock:
-        started = _active_sse_turns.get((config.active_project_id(), slug))
+        started = _active_sse_turns.get(
+            (config.active_project_id(), slug, sessions.active_thread_id()),
+        )
         return started is not None and time.monotonic() - started < _SSE_TURN_TTL_S
 
 
-def _turn_stream(slug: str, model: str | None = None):
+def any_sse_turn_active(slug: str) -> bool:
+    """Whether any independent thread for this paper has a live legacy SSE turn."""
+    pid = config.active_project_id()
+    now = time.monotonic()
+    with _active_sse_lock:
+        return any(
+            key_pid == pid and key_slug == slug and now - started < _SSE_TURN_TTL_S
+            for (key_pid, key_slug, _thread_id_), started in _active_sse_turns.items()
+        )
+
+
+def _turn_stream(
+    slug: str,
+    model: str | None = None,
+    thread_id: str = sessions.MAIN_THREAD,
+):
     """Stream the analysis turn as SSE: incremental CANONICAL text, then a final 'done'
     event carrying the parsed+recorded turn. The user message must already be recorded."""
-    _register_sse_turn(slug)
-    try:
-        history = sessions.build_history(slug)
-        pieces: list[str] = []
-        sent = 0
+    with sessions.thread_scope(thread_id):
         try:
-            for piece in agent.stream_tokens(slug, history, model=model):
-                pieces.append(piece)
-                canon = agent.canonical_prefix("".join(pieces))
-                if len(canon) > sent:
-                    yield _sse({"type": "delta", "text": canon[sent:]})
-                    sent = len(canon)
-        except AgentError as e:
-            yield _sse({"type": "error", "detail": str(e)})
-            return
-        turn = agent.parse("".join(pieces))
-        if not turn.canonical.strip():
-            yield _sse({"type": "error", "detail":
-                        "The model returned an empty response. Try again, or switch the analysis "
-                        "model in Settings."})
-            return
-        sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
-        yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
-    finally:
-        _discard_sse_turn(slug)
+            _register_sse_turn(slug)
+            history = sessions.build_history(slug)
+            pieces: list[str] = []
+            sent = 0
+            try:
+                for piece in agent.stream_tokens(slug, history, model=model):
+                    pieces.append(piece)
+                    canon = agent.canonical_prefix("".join(pieces))
+                    if len(canon) > sent:
+                        yield _sse({"type": "delta", "text": canon[sent:]})
+                        sent = len(canon)
+            except AgentError as e:
+                yield _sse({"type": "error", "detail": str(e)})
+                return
+            turn = agent.parse("".join(pieces))
+            if not turn.canonical.strip():
+                yield _sse({"type": "error", "detail":
+                            "The model returned an empty response. Try again, or switch the "
+                            "analysis model in Settings."})
+                return
+            sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
+            yield _sse({
+                "type": "done",
+                "turn": turn.to_dict(),
+                "state": sessions.get_state(slug),
+            })
+        finally:
+            _discard_sse_turn(slug)
 
 
-async def _agentic_turn_stream(slug: str, model: str | None = None):
+async def _agentic_turn_stream(
+    slug: str,
+    model: str | None = None,
+    thread_id: str = sessions.MAIN_THREAD,
+):
     """Streaming turn through the Pydantic AI tool loop (when RC_AGENTIC is on). Same client
     contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
     'tool' events announcing each research tool the model calls. The final answer is parsed from
     the agent's authoritative output."""
-    _register_sse_turn(slug)
-    try:
-        async for chunk in _agentic_turn_events(slug, model):
-            yield chunk
-    finally:
-        _discard_sse_turn(slug)
+    with sessions.thread_scope(thread_id):
+        _register_sse_turn(slug)
+        try:
+            async for chunk in _agentic_turn_events(slug, model):
+                yield chunk
+        finally:
+            _discard_sse_turn(slug)
 
 
 async def _agentic_turn_events(slug: str, model: str | None = None):
@@ -262,12 +308,16 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
     yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
 
 
-def _stream_for(slug: str, model: str | None = None):
+def _stream_for(
+    slug: str,
+    model: str | None = None,
+    thread_id: str = sessions.MAIN_THREAD,
+):
     """Pick the streaming turn implementation: the agentic tool loop when enabled, else the
     proven single-shot stream. Both are (async/sync) generators StreamingResponse can consume."""
     if agent_harness.AGENTIC_ENABLED:
-        return _agentic_turn_stream(slug, model=model)
-    return _turn_stream(slug, model=model)
+        return _agentic_turn_stream(slug, model=model, thread_id=thread_id)
+    return _turn_stream(slug, model=model, thread_id=thread_id)
 
 
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -276,13 +326,29 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 # ---------- session flows (Section 9) ----------
 
 @project_router.get("/session/{slug}")
-def get_session(slug: str):
+def get_session(slug: str, thread_id: str = sessions.MAIN_THREAD):
+    thread_id = _thread_id(thread_id)
+    with sessions.thread_scope(thread_id):
+        return _get_session(slug, thread_id)
+
+
+def _get_session(slug: str, thread_id: str):
+    if thread_id != sessions.MAIN_THREAD:
+        known = {thread["id"] for thread in sessions.list_threads(slug)}
+        if thread_id not in known:
+            raise HTTPException(status_code=404, detail="Unknown discussion thread")
     # Durable empty-fork recovery: a crash/restart between a retry's fork and its response
     # loses the worker's own rollback. If no turn is generating and an aged fork's active
     # tail is still empty, restore the branch it left (no-op otherwise; the grace window
     # keeps this from racing a retry that was just prepped).
-    if not chat_jobs.active_for(slug) and not _sse_turn_active(slug):
-        sessions.rollback_empty_fork(slug, min_age_s=30.0)
+    if (not config.project_is_busy(config.active_project_id())
+            and not chat_jobs.active_for(slug)
+            and not _sse_turn_active(slug)):
+        with sessions.paper_lock(slug), sessions.mutation_lock(slug):
+            if (not config.project_is_busy(config.active_project_id())
+                    and not chat_jobs.active_for(slug)
+                    and not _sse_turn_active(slug)):
+                sessions.rollback_empty_fork(slug, min_age_s=30.0)
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
                  "list_status": "n/a", "session_state": sessions.get_state(REVIEW_SLUG)}
@@ -297,30 +363,52 @@ def get_session(slug: str):
         "reading_mode": sessions.get_reading_mode(slug),
         "transcript": sessions.transcript(slug),
         "accepted_drafts": sessions.accepted_drafts(slug),
+        "thread_id": thread_id,
+        "threads": sessions.list_threads(slug),
     }
 
 
 @project_router.get("/opening_draft/{slug}")
-def opening_draft(slug: str):
+def opening_draft(slug: str, thread_id: str = sessions.MAIN_THREAD):
     """The editable first-prompt + default model for the compose-first screen. Returns the
     session's edited opening if one exists (for first-response retry), else the default."""
-    model = config.load_settings().get("model")
-    stored = sessions.get_opening(slug)
+    with sessions.thread_scope(_thread_id(thread_id)):
+        model = config.load_settings().get("model")
+        stored = sessions.get_opening(slug)
+        if slug == REVIEW_SLUG:
+            base = prompts.get("review_opening")
+            title = REVIEW_TITLE
+        else:
+            p = store.get_paper(slug)
+            if not p:
+                raise HTTPException(status_code=404, detail="Unknown paper")
+            base = prompts.get("opening_message").replace("{title}", p.title)
+            title = p.title
+        return {
+            "prompt": stored or base,
+            "templates": _opening_prompt_templates(base),
+            "model": model,
+            "title": title,
+        }
+
+
+@project_router.post("/session/{slug}/threads")
+def create_thread(slug: str, req: CreateThreadReq):
     if slug == REVIEW_SLUG:
-        base = prompts.get("review_opening")
-        title = REVIEW_TITLE
-    else:
-        p = store.get_paper(slug)
-        if not p:
-            raise HTTPException(status_code=404, detail="Unknown paper")
-        base = prompts.get("opening_message").replace("{title}", p.title)
-        title = p.title
-    return {
-        "prompt": stored or base,
-        "templates": _opening_prompt_templates(base),
-        "model": model,
-        "title": title,
-    }
+        raise HTTPException(status_code=400, detail="The working-notes review has one thread.")
+    if not store.get_paper(slug):
+        raise HTTPException(status_code=404, detail="Unknown paper")
+    if config.project_is_busy(config.active_project_id()):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then start a thread.",
+        )
+    try:
+        with sessions.paper_lock(slug):
+            thread = sessions.create_thread(slug, req.title or "New thread")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"thread": thread, "threads": sessions.list_threads(slug)}
 
 
 def _opening_prompt_templates(base: str) -> dict[str, str]:
@@ -672,7 +760,10 @@ def _prep_finish(req: FinishReq) -> None:
     _require_session(req.slug)
     # The review chat folds the discussion into the working notes; a paper drafts its Notes.
     key = "review_finish" if req.slug == REVIEW_SLUG else "finish_instruction"
-    sessions.record_user(req.slug, prompts.get(key), kind="finish")
+    instruction = prompts.get(key)
+    if req.slug != REVIEW_SLUG:
+        instruction += sessions.other_threads_context(req.slug)
+    sessions.record_user(req.slug, instruction, kind="finish")
 
 
 def _prep_request_changes(req: RequestChangesReq) -> None:
@@ -685,36 +776,50 @@ def _prep_request_changes(req: RequestChangesReq) -> None:
 def chat_start_stream(req: ChatStartReq):
     """Fire the first response for any chat (paper or review) with the edited opening prompt
     and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_chat_start(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/reply")
 def reply(req: ReplyReq):
-    with sessions.mutation_lock(req.slug):
-        _prep_reply(req)
-    turn = _run_and_record(req.slug, model=req.model)
-    return {"state": sessions.get_state(req.slug), "turn": turn}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        with sessions.mutation_lock(req.slug):
+            _prep_reply(req)
+        turn = _run_and_record(req.slug, model=req.model)
+        return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/reply_stream")
 def reply_stream(req: ReplyReq):
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_reply(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/continue_stream")
 def continue_stream(req: FinishReq):
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_continue(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -722,10 +827,14 @@ def continue_stream(req: FinishReq):
 def retry_stream(req: RetryReq):
     """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
     response to the preceding user message."""
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_retry(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -733,28 +842,40 @@ def retry_stream(req: RetryReq):
 def edit_stream(req: EditReq):
     """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
     old response and everything after it, then stream a fresh answer to the edited message."""
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_edit(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/finish_stream")
 def finish_stream(req: FinishReq):
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_finish(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
 @project_router.post("/request_changes_stream")
 def request_changes_stream(req: RequestChangesReq):
-    with sessions.mutation_lock(req.slug):
+    thread_id = _thread_id(req.thread_id)
+    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _no_turn_in_flight(req.slug)
         _prep_request_changes(req)
         _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model), media_type="text/event-stream",
+    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -766,19 +887,27 @@ def request_changes_stream(req: RequestChangesReq):
 def _no_turn_in_flight(slug: str) -> None:
     """Job starts mutate the session first (record/truncate/edit), so refuse while a turn is
     already generating — the client should reattach to it instead."""
-    if chat_jobs.active_for(slug):
+    if config.project_is_busy(config.active_project_id()):
+        raise HTTPException(
+            status_code=409,
+            detail="This project is being moved or split — wait, then try again.",
+        )
+    if chat_jobs.active_for(slug) or _sse_turn_active(slug):
         raise HTTPException(status_code=409,
                             detail="A response is already being generated for this paper.")
 
 
 def _started_job(slug: str, delivery_mode: str, model: str | None = None) -> dict:
+    # start_turn reads the request-scoped thread context; keeping the public call shape stable
+    # also preserves injected test runners and older internal callers.
     job = chat_jobs.start_turn(slug, delivery_mode=delivery_mode, model=model)
     return {"job": chat_jobs.snapshot(job.id)}
 
 
 @project_router.post("/chat/start_job")
 def chat_start_job(req: ChatStartReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_chat_start(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -786,7 +915,8 @@ def chat_start_job(req: ChatStartReq):
 
 @project_router.post("/reply_job")
 def reply_job(req: ReplyReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_reply(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -794,7 +924,8 @@ def reply_job(req: ReplyReq):
 
 @project_router.post("/continue_job")
 def continue_job(req: FinishReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_continue(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -805,10 +936,11 @@ def branch_switch(req: BranchSwitchReq):
     """Make another retry branch the live conversation at a fork point. Quick action (no
     LLM); the client refreshes from the returned transcript/state. Refused while a turn is
     generating — the in-flight job appends to whichever tail is live."""
-    _require_session(req.slug)
-    # Checks and mutation share the per-slug lock: a snapshot guard alone could interleave
+    # Checks and mutation share the per-thread lock: a snapshot guard alone could interleave
     # with a turn prep (between record_user and job registration) or an approval.
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        _require_session(req.slug)
         if sessions.get_state(req.slug) == COMMITTED:
             # Switching would rewrite the transcript under a committed record, and restoring
             # an older proposed-draft branch would re-offer Approve for notes already in git.
@@ -829,7 +961,8 @@ def branch_switch(req: BranchSwitchReq):
 
 @project_router.post("/retry_job")
 def retry_job(req: RetryReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_retry(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -837,7 +970,8 @@ def retry_job(req: RetryReq):
 
 @project_router.post("/edit_job")
 def edit_job(req: EditReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_edit(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -845,7 +979,8 @@ def edit_job(req: EditReq):
 
 @project_router.post("/finish_job")
 def finish_job(req: FinishReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_finish(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
@@ -853,17 +988,18 @@ def finish_job(req: FinishReq):
 
 @project_router.post("/request_changes_job")
 def request_changes_job(req: RequestChangesReq):
-    with sessions.mutation_lock(req.slug):
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
         _no_turn_in_flight(req.slug)
         _prep_request_changes(req)
         return _started_job(req.slug, req.delivery_mode, model=req.model)
 
 
 @project_router.get("/chat/jobs/active/{slug}")
-def chat_job_active(slug: str):
+def chat_job_active(slug: str, thread_id: str = sessions.MAIN_THREAD):
     """The running turn job for a session, if any — lets a client that navigated away (or got
     disconnected) reattach to the live turn instead of finding a silent screen."""
-    job = chat_jobs.active_for(slug)
+    job = chat_jobs.active_for(slug, _thread_id(thread_id))
     return {"job": chat_jobs.snapshot(job.id) if job else None}
 
 
@@ -900,29 +1036,36 @@ def preview_job_status(job_id: str):
 def continue_turn(req: FinishReq):
     """Generate the assistant response for a reply that was recorded but never answered
     (e.g. a prior turn errored). No new user message is added."""
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    records = sessions.read_records(req.slug)
-    if not records or records[-1]["role"] != "user":
-        raise HTTPException(status_code=409, detail="Nothing to continue — last turn already answered.")
-    turn = _run_and_record(req.slug, model=req.model)
-    return {"state": sessions.get_state(req.slug), "turn": turn}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        if not sessions.get_state(req.slug):
+            raise HTTPException(status_code=409, detail="No active session for this paper.")
+        records = sessions.read_records(req.slug)
+        if not records or records[-1]["role"] != "user":
+            raise HTTPException(
+                status_code=409,
+                detail="Nothing to continue — last turn already answered.",
+            )
+        turn = _run_and_record(req.slug, model=req.model)
+        return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/finish")
 def finish(req: FinishReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    sessions.record_user(req.slug, prompts.get("finish_instruction"), kind="finish")
-    turn = _run_and_record(req.slug, model=req.model)
-    return {"state": sessions.get_state(req.slug), "turn": turn}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_finish(req)
+        turn = _run_and_record(req.slug, model=req.model)
+        return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/request_changes")
 def request_changes(req: RequestChangesReq):
-    _prep_request_changes(req)
-    turn = _run_and_record(req.slug, model=req.model)
-    return {"state": sessions.get_state(req.slug), "turn": turn}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
+        _no_turn_in_flight(req.slug)
+        _prep_request_changes(req)
+        turn = _run_and_record(req.slug, model=req.model)
+        return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/reopen")
@@ -932,14 +1075,21 @@ def reopen(req: FinishReq):
     ONLY — on a committed session the same truncation would delete the accepted finish/
     proposal records from the log (a stale client must get a 409, not silent data loss);
     committed sessions continue via /continue_discussion, which touches nothing."""
-    state = sessions.get_state(req.slug)
-    if not state:
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    if state != "notes_drafted":
-        raise HTTPException(status_code=409,
-                            detail="Nothing to reopen — no draft is awaiting review.")
-    sessions.reopen_discussion(req.slug)
-    return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        if config.project_is_busy(config.active_project_id()):
+            raise HTTPException(
+                status_code=409,
+                detail="This project is being moved or split — wait, then reopen.",
+            )
+        state = sessions.get_state(req.slug)
+        if not state:
+            raise HTTPException(status_code=409, detail="No active session for this paper.")
+        if state != "notes_drafted":
+            raise HTTPException(status_code=409,
+                                detail="Nothing to reopen — no draft is awaiting review.")
+        sessions.reopen_discussion(req.slug)
+        return {"state": sessions.get_state(req.slug), "transcript": sessions.transcript(req.slug)}
 
 
 @project_router.post("/continue_discussion")
@@ -948,20 +1098,34 @@ def continue_discussion(req: FinishReq):
     reading' without touching anything recorded — committed notes stay committed, the
     transcript stands, and a later finish proposes a fresh draft through the normal flow.
     Deterministic state change, so a plain request (invariant 1 does not apply)."""
-    state = sessions.get_state(req.slug)
-    if not state:
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    if state != "committed":
-        raise HTTPException(status_code=409, detail="The discussion is already open.")
-    sessions.continue_discussion(req.slug)
-    return {"state": sessions.get_state(req.slug)}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        if config.project_is_busy(config.active_project_id()):
+            raise HTTPException(
+                status_code=409,
+                detail="This project is being moved or split — wait, then continue.",
+            )
+        state = sessions.get_state(req.slug)
+        if not state:
+            raise HTTPException(status_code=409, detail="No active session for this paper.")
+        if state != "committed":
+            raise HTTPException(status_code=409, detail="The discussion is already open.")
+        sessions.continue_discussion(req.slug)
+        return {"state": sessions.get_state(req.slug)}
 
 
 @project_router.post("/session_mode")
 def session_mode(req: ModeReq):
     """Switch the session's reading mode (polish plan H.3) — applies to every subsequent
     turn. One tap from the overflow menu; deterministic, so a plain request."""
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    sessions.set_reading_mode(req.slug, req.mode)
-    return {"mode": sessions.get_reading_mode(req.slug)}
+    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug), \
+            sessions.mutation_lock(req.slug):
+        if config.project_is_busy(config.active_project_id()):
+            raise HTTPException(
+                status_code=409,
+                detail="This project is being moved or split — wait, then change mode.",
+            )
+        if not sessions.get_state(req.slug):
+            raise HTTPException(status_code=409, detail="No active session for this paper.")
+        sessions.set_reading_mode(req.slug, req.mode)
+        return {"mode": sessions.get_reading_mode(req.slug)}

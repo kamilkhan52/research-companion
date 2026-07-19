@@ -14,6 +14,18 @@ export interface SentenceCommentPayload {
   comment: string;
 }
 
+export function sentenceCommentsDraftKey(
+  pid: string,
+  slug: string,
+  threadId: string,
+): string {
+  // Preserve the pre-thread main annotation draft while isolating every additional
+  // discussion so pending comments cannot surface or send in another thread.
+  return threadId === 'main'
+    ? draftKey(pid, 'comments', slug)
+    : draftKey(pid, 'comments', slug, threadId);
+}
+
 export function sameSentence(
   left: SelectedSentence,
   right: SelectedSentence,
@@ -64,3 +76,4 @@ export function composeSentenceReply(
   if (freeText.trim()) parts.push(freeText.trim());
   return parts.join('\n\n');
 }
+import { draftKey } from '@/hooks/usePersistedDraft';

@@ -33,6 +33,7 @@ export const createProject = unexpected('createProject');
 export const getProjectState = unexpected('getProjectState');
 export const getUsage = unexpected('getUsage');
 export const getSession = unexpected('getSession');
+export const createDiscussionThread = unexpected('createDiscussionThread');
 export const getOpeningDraft = unexpected('getOpeningDraft');
 export const startPaper = unexpected('startPaper');
 export const startRetrievalJob = unexpected('startRetrievalJob');

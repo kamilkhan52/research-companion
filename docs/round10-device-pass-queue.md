@@ -181,8 +181,11 @@ depends on screenshots Kamil has not attached yet.
   ready boundary, and pending late cues are suppressed there.
 - **R10.21 — Multiple threads per paper.** Let the reader start a clean thread with arbitrary
   text once the source is available, switch among independent threads, retain the main chat's
-  tools, and synthesize concluded insights from all threads into the notes proposal. Requires
-  a session/thread storage design before implementation.
+  tools, and synthesize concluded insights from all threads into the notes proposal.
+  **Implemented:** request-scoped thread identity, isolated transcripts/retry branches/modes/jobs,
+  clean mobile switcher + arbitrary first message, all-thread notes context and paper-level
+  approval boundary, and complete Move/Copy relocation. See
+  `docs/paper-discussion-threads.md`.
 - **R10.22 — Figures are prefetched and explicitly prompted.** Confirm retrieval warms the
   figure manifest/assets. Give the analysis model concise, correct instructions for referring
   to available figures in the syntax the renderer recognizes; the initial analysis should use

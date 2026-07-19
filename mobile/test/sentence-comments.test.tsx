@@ -5,6 +5,7 @@ import {
   composeSentenceReply,
   removeSentenceComment,
   sentenceCommentPayload,
+  sentenceCommentsDraftKey,
   upsertSentenceComment,
   type PendingSentenceComment,
 } from '@/lib/sentenceComments';
@@ -19,6 +20,15 @@ const second: PendingSentenceComment = {
   quote: 'Second claim.',
   comment: 'Compare this.',
 };
+
+test('pending sentence comments are isolated by discussion thread', () => {
+  expect(sentenceCommentsDraftKey('project', 'paper', 'main')).toBe(
+    'rc.draft.v1:project:comments:paper',
+  );
+  expect(sentenceCommentsDraftKey('project', 'paper', 'thread-a')).not.toBe(
+    sentenceCommentsDraftKey('project', 'paper', 'thread-b'),
+  );
+});
 
 test('queue helpers add, edit in place, and remove by response plus quote', () => {
   expect(upsertSentenceComment([], first)).toEqual([first]);

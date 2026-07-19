@@ -9,7 +9,16 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from .. import committer, config, notes_jobs, paper_identity, projects, sessions, store
+from .. import (
+    chat_jobs,
+    committer,
+    config,
+    notes_jobs,
+    paper_identity,
+    projects,
+    sessions,
+    store,
+)
 from ..committer import CommitError
 from . import make_project_router
 
@@ -18,6 +27,7 @@ project_router = make_project_router()
 
 class ApproveReq(BaseModel):
     slug: str
+    thread_id: str = sessions.MAIN_THREAD
     notes_block: str | None = None
     synthesis: str | None = None
     summary: str | None = None
@@ -158,8 +168,12 @@ def notes_agent_job(target: str, req: NotesAgentReq):
 
 
 @project_router.get("/review/{slug}")
-def get_review(slug: str):
-    return committer.review(slug)
+def get_review(slug: str, thread_id: str = sessions.MAIN_THREAD):
+    try:
+        with sessions.thread_scope(thread_id):
+            return committer.review(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @project_router.post("/approve")
@@ -169,9 +183,21 @@ def approve(req: ApproveReq):
     # unit under the session's mutation lock: a branch switch between them could commit branch
     # A's notes over branch B's transcript.
     try:
-        with config.project_write_guard(config.active_project_id()), \
+        with sessions.thread_scope(req.thread_id), \
+                config.project_write_guard(config.active_project_id()), \
+                sessions.paper_lock(req.slug), \
                 sessions.mutation_lock(req.slug), \
                 notes_jobs.mutation_lock(notes_jobs.WORKING):
+            # Runtime import avoids a router-module import cycle; this is the compatibility
+            # guard for legacy web SSE clients (mobile turns are all chat_jobs).
+            from . import session as session_routes
+            if (any(chat_jobs.active_for(req.slug, row["id"])
+                    for row in sessions.list_threads(req.slug))
+                    or session_routes.any_sse_turn_active(req.slug)):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Wait for every discussion response to finish before approving notes.",
+                )
             if req.notes_block is not None or req.synthesis is not None:
                 live = sessions.proposal_revision(req.slug)
                 if req.proposal_revision != live:
@@ -192,6 +218,8 @@ def approve(req: ApproveReq):
             status_code=409,
             detail="This project is being moved or split — wait, then approve.",
         ) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"result": result, "paper": _paper_dict(req.slug)}
 
 

@@ -10,6 +10,7 @@ import type {
   ChatJob,
   DiscoveryJob,
   DiscoveryResponse,
+  DiscussionThreadSummary,
   FavoriteModel,
   FigureManifest,
   GraphBuildStartResponse,
@@ -162,10 +163,19 @@ const P = (pid: string) => `/api/projects/${encodeURIComponent(pid)}`;
 export const getProjectState = (pid: string) => apiGet<ProjectState>(`${P(pid)}/state`);
 /** This project's accumulated LLM token/cost usage (lifetime total + per-model/per-operation). */
 export const getUsage = (pid: string) => apiGet<UsageSummary>(`${P(pid)}/usage`);
-export const getSession = (pid: string, slug: string) =>
-  apiGet<Session>(`${P(pid)}/session/${encodeURIComponent(slug)}`);
-export const getOpeningDraft = (pid: string, slug: string) =>
-  apiGet<OpeningDraft>(`${P(pid)}/opening_draft/${encodeURIComponent(slug)}`);
+export const getSession = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<Session>(
+    `${P(pid)}/session/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  );
+export const getOpeningDraft = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<OpeningDraft>(
+    `${P(pid)}/opening_draft/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  );
+export const createDiscussionThread = (pid: string, slug: string, title?: string) =>
+  apiPost<{ thread: DiscussionThreadSummary; threads: DiscussionThreadSummary[] }>(
+    `${P(pid)}/session/${encodeURIComponent(slug)}/threads`,
+    title ? { title } : {},
+  );
 
 /** Retrieve + cache a paper's full text (no turn). Returns {ok,retrieved} or a confirm step. */
 export const startPaper = (pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) =>
@@ -177,19 +187,30 @@ export const startPaper = (pid: string, slug: string, opts?: { arxiv_id?: string
 // NOTE: every LLM turn must go through turnJobPaths below — a blocking POST holds the
 // request open for the whole generation and the tunnel kills it at ~100s (524). Only quick
 // non-generating actions (approve/reopen/addPaper) may use plain apiPost.
-export const reopen = (pid: string, slug: string) =>
-  apiPost<{ state: string | null; transcript: unknown[] }>(`${P(pid)}/reopen`, { slug });
+export const reopen = (pid: string, slug: string, threadId = 'main') =>
+  apiPost<{ state: string | null; transcript: unknown[] }>(
+    `${P(pid)}/reopen`,
+    { slug, thread_id: threadId },
+  );
 /** Committed -> InDiscussion: bring the composer back; nothing recorded is touched. */
-export const continueDiscussion = (pid: string, slug: string) =>
-  apiPost<{ state: string | null }>(`${P(pid)}/continue_discussion`, { slug });
+export const continueDiscussion = (pid: string, slug: string, threadId = 'main') =>
+  apiPost<{ state: string | null }>(
+    `${P(pid)}/continue_discussion`,
+    { slug, thread_id: threadId },
+  );
 /** Switch the session's reading mode — applies to every subsequent turn. */
-export const setSessionMode = (pid: string, slug: string, mode: ReadingMode) =>
-  apiPost<{ mode: ReadingMode }>(`${P(pid)}/session_mode`, { slug, mode });
+export const setSessionMode = (pid: string, slug: string, mode: ReadingMode, threadId = 'main') =>
+  apiPost<{ mode: ReadingMode }>(
+    `${P(pid)}/session_mode`,
+    { slug, mode, thread_id: threadId },
+  );
 export const approve = (pid: string, slug: string, body?: Record<string, unknown>) =>
   apiPost<{ result: unknown; paper: unknown }>(`${P(pid)}/approve`, { slug, ...body });
 /** The proposed commit awaiting review in the notes-drafted state (notes block + synthesis). */
-export const getReview = (pid: string, slug: string) =>
-  apiGet<Review>(`${P(pid)}/review/${encodeURIComponent(slug)}`);
+export const getReview = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<Review>(
+    `${P(pid)}/review/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  );
 /** Add a new *unread* entry to the reading list — e.g. accepting a graph recommendation.
  *  Pass the abstract when the caller has one: it is what an unread paper contributes to a
  *  discussion's context until someone reads it. */
@@ -263,11 +284,18 @@ export const streamPaths = (pid: string) => ({
 // arrives via cheap polls instead of one long-lived connection the tunnel can kill.
 /** Switch the live conversation to another retry branch at a fork point (quick action, no
  *  LLM). Returns the refreshed state + transcript. 409 while a turn is generating. */
-export const switchBranch = (pid: string, slug: string, assistantIndex: number, branch: number) =>
+export const switchBranch = (
+  pid: string,
+  slug: string,
+  assistantIndex: number,
+  branch: number,
+  threadId = 'main',
+) =>
   apiPost<{ state: SessionState; transcript: TranscriptEntry[] }>(`${P(pid)}/branch_switch`, {
     slug,
     assistant_index: assistantIndex,
     branch,
+    thread_id: threadId,
   });
 
 export const turnJobPaths = (pid: string) => ({
@@ -283,8 +311,10 @@ export const turnJobPaths = (pid: string) => ({
 export const getChatJob = (pid: string, id: string) =>
   apiGet<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}`);
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
-export const getActiveChatJob = (pid: string, slug: string) =>
-  apiGet<{ job: ChatJob | null }>(`${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}`);
+export const getActiveChatJob = (pid: string, slug: string, threadId = 'main') =>
+  apiGet<{ job: ChatJob | null }>(
+    `${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
+  );
 /** Best-effort stop for a running turn: the partial response is recorded marked as stopped
  * and the job settles through its normal done path (keep polling; it finishes early). */
 export const cancelChatJob = (pid: string, id: string) =>

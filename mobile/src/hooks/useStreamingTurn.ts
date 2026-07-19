@@ -59,6 +59,7 @@ export function useStreamingTurn(
   slug: string | null,
   deliveryMode: 'reading' | 'listening' = 'reading',
   onDone?: (job: ChatJob) => void | Promise<void>,
+  threadId = 'main',
 ): StreamingTurn {
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
@@ -87,14 +88,14 @@ export function useStreamingTurn(
 
   const settle = useCallback(async () => {
     if (pid && slug) {
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     }
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
     setPreviewJobIds([]);
-  }, [pid, slug, qc]);
+  }, [pid, slug, qc, threadId]);
 
   /** Poll one job until it settles (or we stop watching). */
   const watch = useCallback(
@@ -176,7 +177,11 @@ export function useStreamingTurn(
       const handoffEpoch = currentHandoffEligibilityEpoch();
       try {
         const payload = body && typeof body === 'object' && !Array.isArray(body)
-          ? { ...(body as Record<string, unknown>), delivery_mode: deliveryMode }
+          ? {
+              ...(body as Record<string, unknown>),
+              delivery_mode: deliveryMode,
+              ...(threadId === 'main' ? {} : { thread_id: threadId }),
+            }
           : body;
         const { job } = await apiPost<{ job: ChatJob }>(path, payload);
         if (job.delivery_mode === 'listening') {
@@ -198,9 +203,9 @@ export function useStreamingTurn(
           try {
             // The request may have reached the server even if its response was lost. Refetching
             // lets persisted authored drafts reconcile against accepted transcript inputs.
-            await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
-            await qc.invalidateQueries({ queryKey: keys.opening(pid, slug) });
-            const { job: active } = await getActiveChatJob(pid, slug);
+            await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
+            await qc.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
+            const { job: active } = await getActiveChatJob(pid, slug, threadId);
             if (active) {
               recoveredActiveJob = true;
               setError(null);
@@ -215,7 +220,7 @@ export function useStreamingTurn(
         busyRef.current = false;
       }
     },
-    [deliveryMode, pid, qc, slug, watch],
+    [deliveryMode, pid, qc, slug, threadId, watch],
   );
 
   const resume = useCallback(async () => {
@@ -223,7 +228,7 @@ export function useStreamingTurn(
     busyRef.current = true;
     const handoffEpoch = currentHandoffEligibilityEpoch();
     try {
-      const { job } = await getActiveChatJob(pid, slug);
+      const { job } = await getActiveChatJob(pid, slug, threadId);
       if (!job || !aliveRef.current) {
         setPreviewParentJobId(null);
         return;
@@ -233,7 +238,7 @@ export function useStreamingTurn(
       }
       // The message that started this turn is already recorded server-side; refresh the
       // transcript so it shows while we reattach to the live turn.
-      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
       await watch(job);
     } catch {
       setPreviewParentJobId(null);
@@ -241,7 +246,19 @@ export function useStreamingTurn(
     } finally {
       busyRef.current = false;
     }
-  }, [deliveryMode, pid, slug, qc, watch]);
+  }, [deliveryMode, pid, slug, qc, threadId, watch]);
+
+  // Switching conversations must never keep painting or polling the previous thread's job.
+  useEffect(() => {
+    watchRef.current = null;
+    busyRef.current = false;
+    setStreaming(false);
+    setPendingUser(null);
+    setItems([]);
+    setPreviewJobIds([]);
+    setPreviewParentJobId(null);
+    setError(null);
+  }, [pid, slug, threadId]);
 
   const cancel = useCallback(() => {
     watchRef.current = null;
