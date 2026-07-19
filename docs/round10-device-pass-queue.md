@@ -121,7 +121,8 @@ depends on screenshots Kamil has not attached yet.
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
   descriptions dynamically instead of crowding the first screen.
-  **Implemented locally (PR pending):** initial entry now shows only the selected prompt
+  **Implemented in [#185](https://github.com/kamilkhan52/research-companion/pull/185):**
+  initial entry now shows only the selected prompt
   description and a compact Model/Change row. Retrying the first response opens the same prompt
   modes in a keyboard-aware sheet with model choices collapsed under Change. Opening prompt and
   reading mode are stored alongside each retry branch, restored on branch switching, and rolled
