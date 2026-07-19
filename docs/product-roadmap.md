@@ -179,7 +179,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.23 | Editing a user turn immediately rewinds the visible discussion to the preceding response; the original prompt and later tail stay hidden through regeneration | [#175](https://github.com/kamilkhan52/research-companion/pull/175) | Complete |
 | R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | [#176](https://github.com/kamilkhan52/research-companion/pull/176) | Complete |
 | R10.19 | Compact first-turn prompt/model selection; first-response Retry reopens the same configuration and stores prompt/mode per response branch | [#185](https://github.com/kamilkhan52/research-companion/pull/185) | Complete — automated verification passed; device pass pending |
-| R10.21 | Independent per-paper discussion threads with arbitrary compose-first messages, thread-scoped jobs/drafts/audio/retries, all-thread notes synthesis, and complete Move/Copy history | pending | Complete — automated verification passed; device pass pending |
+| R10.21 | Independent per-paper discussion threads with arbitrary compose-first messages, thread-scoped jobs/drafts/audio/retries, all-thread notes synthesis, and complete Move/Copy history | [#187](https://github.com/kamilkhan52/research-companion/pull/187) | Complete — automated verification passed; device pass pending |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
