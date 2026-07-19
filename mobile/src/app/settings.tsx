@@ -34,7 +34,14 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { useGraphSettings } from '@/store/graphSettings';
 import { previewModelDraft, previewModelPatch } from '@/settings/previewModel';
-import { THEME_MODES, useTheme, useThemedStyles, useThemeMode } from '@/theme/ThemeProvider';
+import {
+  DENSITY_MODES,
+  THEME_MODES,
+  useTheme,
+  useThemedStyles,
+  useThemeMode,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { Button, Card, Screen, Text } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useToast } from '@/ui/Toast';
@@ -72,12 +79,22 @@ export default function SettingsScreen() {
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();
-  const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
+  const {
+    mode: themeMode,
+    setMode: setThemeMode,
+    density,
+    setDensity,
+  } = useThemeMode();
   const { toast } = useToast();
   function handleThemeMode(mode: ThemeMode) {
     if (mode === themeMode) return;
     setThemeMode(mode);
     toast(`Theme: ${THEME_MODES.find((m) => m.mode === mode)?.label ?? mode}`);
+  }
+  function handleDensity(mode: DensityMode) {
+    if (mode === density) return;
+    setDensity(mode);
+    toast(`Layout: ${DENSITY_MODES.find((item) => item.mode === mode)?.label ?? mode}`);
   }
 
   // Sync local fields from the server exactly once, on first successful load — NOT on every
@@ -292,6 +309,25 @@ export default function SettingsScreen() {
                       : themeMode === 'light'
                         ? 'Warm paper for bright surroundings.'
                         : 'The original Scholar dark.'}
+                </Text>
+                <Label
+                  text="Layout density"
+                  hint="stored on this device"
+                />
+                <View style={{ flexDirection: 'row', gap: space.sm }}>
+                  {DENSITY_MODES.map(({ mode, label }) => (
+                    <Toggle
+                      key={mode}
+                      label={label}
+                      active={density === mode}
+                      onPress={() => handleDensity(mode)}
+                    />
+                  ))}
+                </View>
+                <Text variant="caption" style={{ marginTop: space.xs }}>
+                  {density === 'tight'
+                    ? 'Smaller common type and closer reading-list rhythm. Tap targets, math, code, and audio controls stay full size.'
+                    : 'The original, more spacious reading rhythm.'}
                 </Text>
               </Section>
 
@@ -568,8 +604,13 @@ function ModelChips({
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  content: { padding: space.md, paddingBottom: space.xxl * 2 },
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
+  content: {
+    padding: tight ? space.sm : space.md,
+    paddingBottom: space.xxl * 2,
+  },
   lockedRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -583,10 +624,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
-    paddingVertical: 12,
+    paddingVertical: tight ? 10 : 12,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: tight ? 14 : 15,
   },
   toggle: {
     flex: 1,
@@ -609,4 +650,5 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line2,
   },
   modelChipActive: { borderColor: t.mint, backgroundColor: t.mintWash },
-});
+  });
+};

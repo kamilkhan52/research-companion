@@ -108,7 +108,12 @@ import {
   type SelectedSentence,
 } from '@/lib/sentenceComments';
 import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
-import { useTheme, useThemedStyles, useThemeMode } from '@/theme/ThemeProvider';
+import {
+  useTheme,
+  useThemedStyles,
+  useThemeMode,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 // The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
@@ -2685,15 +2690,20 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  composeFirst: { padding: space.md },
-  promptTemplates: { gap: space.sm, marginTop: space.md },
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
+  composeFirst: { padding: tight ? space.sm : space.md },
+  promptTemplates: {
+    gap: tight ? 6 : space.sm,
+    marginTop: tight ? space.sm : space.md,
+  },
   firstModelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    marginTop: space.md,
-    padding: space.md,
+    gap: tight ? space.sm : space.md,
+    marginTop: tight ? space.sm : space.md,
+    padding: tight ? space.sm : space.md,
     borderWidth: 1,
     borderColor: t.line,
     borderRadius: radius.md,
@@ -2707,14 +2717,17 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  streamingOnly: { padding: space.md, paddingBottom: space.xl },
+  streamingOnly: {
+    padding: tight ? space.sm : space.md,
+    paddingBottom: tight ? space.lg : space.xl,
+  },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {
     backgroundColor: t.elevated,
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: radius.md,
-    padding: space.md,
+    padding: tight ? space.sm : space.md,
     gap: 2,
   },
   searchInput: {
@@ -2726,20 +2739,20 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingVertical: space.sm,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: tight ? 14 : 15,
   },
   promptInput: {
     backgroundColor: t.surface,
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: radius.md,
-    padding: space.md,
+    padding: tight ? space.sm : space.md,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: tight ? 14 : 15,
     minHeight: 160,
     textAlignVertical: 'top',
-    lineHeight: 22,
+    lineHeight: tight ? 21 : 22,
   },
   renameInput: {
     backgroundColor: t.elevated,
@@ -2747,12 +2760,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line2,
     borderRadius: radius.md,
     paddingHorizontal: space.md,
-    paddingVertical: 12,
+    paddingVertical: tight ? 10 : 12,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: tight ? 14 : 15,
   },
-  sheetActions: { flexDirection: 'row', gap: space.sm, marginTop: space.lg },
+  sheetActions: {
+    flexDirection: 'row',
+    gap: space.sm,
+    marginTop: tight ? space.md : space.lg,
+  },
   // ---- thread ----
   messagesContainer: { backgroundColor: t.bg },
   assistantCard: { backgroundColor: t.surface },
@@ -2763,7 +2780,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignSelf: 'flex-start',
     marginTop: space.sm,
   },
-  assistantBody: { paddingHorizontal: space.md, paddingVertical: space.sm },
+  assistantBody: {
+    paddingHorizontal: tight ? space.sm : space.md,
+    paddingVertical: tight ? 6 : space.sm,
+  },
   // Full-width bands (see FULL_WIDTH_ROW): no left/right radius asymmetry or side margin —
   // those read as "floating chat bubble" cues that don't make sense once the tinted card
   // reaches both screen edges. A top/bottom border is enough to separate turns.
@@ -2786,26 +2806,26 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   userText: {
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15.5,
-    lineHeight: 24,
+    fontSize: tight ? 14 : 15.5,
+    lineHeight: tight ? 21 : 24,
     // MessageText's own margin is zeroed (ZERO_INSET) so this padding is the only inset,
     // matching assistantBody's — otherwise the two insets would stack.
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
+    paddingHorizontal: tight ? space.sm : space.md,
+    paddingVertical: tight ? 6 : space.sm,
   },
   msgActions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: space.lg,
-    marginTop: space.md,
+    gap: tight ? space.md : space.lg,
+    marginTop: tight ? space.sm : space.md,
     alignItems: 'center',
   },
   msgAction: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 32 },
   toolTrail: {
     gap: space.xs,
-    paddingVertical: space.sm,
-    paddingHorizontal: space.md,
-    marginBottom: space.sm,
+    paddingVertical: tight ? 6 : space.sm,
+    paddingHorizontal: tight ? space.sm : space.md,
+    marginBottom: tight ? 6 : space.sm,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: t.line,
@@ -2829,7 +2849,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: 'transparent',
-    paddingHorizontal: space.md,
+    paddingHorizontal: tight ? space.sm : space.md,
     paddingTop: space.xs,
     paddingBottom: space.sm,
   },
@@ -2840,7 +2860,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: 24,
-    paddingLeft: space.md,
+    paddingLeft: tight ? space.sm : space.md,
     paddingRight: 6,   // the send button sits close to the right edge, inside the card
     paddingVertical: 6,
   },
@@ -2848,7 +2868,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     flex: 1,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: tight ? 14 : 15,
     // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
     // the height bounds live on the input style itself.
     minHeight: 34,
@@ -2863,7 +2883,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   committedBar: {
     borderTopWidth: 1,
     borderTopColor: t.line,
-    padding: space.md,
+    padding: tight ? space.sm : space.md,
     paddingBottom: space.lg,
     backgroundColor: t.bg,
   },
@@ -2886,9 +2906,17 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   sendBtnDisabled: { backgroundColor: t.elevated },
   // ---- compose-first (Start Reading) ----
-  heroCard: { gap: space.md, alignItems: 'flex-start' },
-  sourceCard: { gap: space.md, marginTop: space.lg, borderColor: t.line2 },
-  sourceHead: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  heroCard: { gap: tight ? space.sm : space.md, alignItems: 'flex-start' },
+  sourceCard: {
+    gap: tight ? space.sm : space.md,
+    marginTop: tight ? space.md : space.lg,
+    borderColor: t.line2,
+  },
+  sourceHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: tight ? space.sm : space.md,
+  },
   sourceIcon: {
     width: 38,
     height: 38,
@@ -2900,14 +2928,19 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.amberLine,
   },
   sourceActions: { flexDirection: 'row', gap: space.sm },
-  identityCard: { gap: space.sm, marginTop: space.md, borderColor: t.mint },
+  identityCard: {
+    gap: space.sm,
+    marginTop: tight ? space.sm : space.md,
+    borderColor: t.mint,
+  },
   startFooter: {
     flexDirection: 'row',
     gap: space.sm,
-    padding: space.lg,
-    paddingTop: space.md,
+    padding: tight ? space.md : space.lg,
+    paddingTop: tight ? space.sm : space.md,
     borderTopWidth: 1,
     borderTopColor: t.line,
     backgroundColor: t.bg,
   },
-});
+  });
+};

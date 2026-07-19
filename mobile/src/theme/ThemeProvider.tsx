@@ -1,6 +1,5 @@
-// The theme runtime (R.2, per docs/theming-design.md): resolves the persisted Settings mode
-// (`system | dim | black | light`) plus the OS scheme into the active palette, and hands it
-// out via useTheme()/useThemedStyles().
+// The appearance runtime (R.2/R10.25): resolves the persisted color mode and layout density,
+// then hands both to useTheme()/useThemedStyles().
 //
 // Invariants the migration depends on:
 //  • useTheme() returns the SAME object identity per resolved theme (the static maps in
@@ -26,12 +25,20 @@ import { themes, type ThemeMode, type ThemeName, type ThemePalette } from './tok
 type OsScheme = 'light' | 'dark' | 'unspecified' | null | undefined;
 
 const MODE_KEY = 'rc.themeMode';
+const DENSITY_KEY = 'rc.layoutDensity';
+
+export type DensityMode = 'comfortable' | 'tight';
 
 export const THEME_MODES: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
   { mode: 'dim', label: 'Dim' },
   { mode: 'black', label: 'Black' },
   { mode: 'light', label: 'Light' },
+];
+
+export const DENSITY_MODES: { mode: DensityMode; label: string }[] = [
+  { mode: 'comfortable', label: 'Comfortable' },
+  { mode: 'tight', label: 'Tight' },
 ];
 
 export function resolveThemeName(mode: ThemeMode, osScheme: OsScheme): ThemeName {
@@ -47,6 +54,9 @@ interface ThemeContextValue {
   themeName: ThemeName;
   /** The active palette — stable identity per themeName. */
   theme: ThemePalette;
+  /** Device-local reading/list rhythm. Comfortable is the unchanged default. */
+  density: DensityMode;
+  setDensity: (density: DensityMode) => void;
 }
 
 // Default (no provider mounted): Dim, mode-setting a no-op. This keeps isolated component
@@ -57,20 +67,31 @@ const DEFAULT_VALUE: ThemeContextValue = {
   setMode: () => {},
   themeName: 'dim',
   theme: themes.dim,
+  density: 'comfortable',
+  setDensity: () => {},
 };
 
 const ThemeContext = createContext<ThemeContextValue>(DEFAULT_VALUE);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>('system');
+  const [density, setDensityState] = useState<DensityMode>('comfortable');
   const [ready, setReady] = useState(false);
   const osScheme = useColorScheme();
 
   useEffect(() => {
-    AsyncStorage.getItem(MODE_KEY)
-      .then((value) => {
-        if (value === 'system' || value === 'dim' || value === 'black' || value === 'light') {
-          setModeState(value);
+    Promise.all([AsyncStorage.getItem(MODE_KEY), AsyncStorage.getItem(DENSITY_KEY)])
+      .then(([storedMode, storedDensity]) => {
+        if (
+          storedMode === 'system' ||
+          storedMode === 'dim' ||
+          storedMode === 'black' ||
+          storedMode === 'light'
+        ) {
+          setModeState(storedMode);
+        }
+        if (storedDensity === 'comfortable' || storedDensity === 'tight') {
+          setDensityState(storedDensity);
         }
       })
       .finally(() => setReady(true));
@@ -82,12 +103,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       mode,
       themeName,
       theme: themes[themeName],
+      density,
       setMode: (next) => {
         setModeState(next);
         AsyncStorage.setItem(MODE_KEY, next);
       },
+      setDensity: (next) => {
+        setDensityState(next);
+        AsyncStorage.setItem(DENSITY_KEY, next);
+      },
     };
-  }, [mode, osScheme]);
+  }, [density, mode, osScheme]);
 
   if (!ready) return null; // pre-paint gate: never flash the wrong theme on cold boot
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -102,28 +128,36 @@ export function useTheme(): ThemePalette {
   return useThemeMode().theme;
 }
 
-// One StyleSheet per (factory, palette) pair, ever — palettes are static singletons, and
-// factories must be module-level constants for this cache (and the identity contract above)
-// to hold.
-const styleCache = new WeakMap<object, Map<ThemePalette, unknown>>();
+export function useDensity(): DensityMode {
+  return useThemeMode().density;
+}
+
+// One StyleSheet per (factory, palette, density) tuple, ever — palettes are static singletons,
+// and factories must be module-level constants for this cache to hold.
+const styleCache = new WeakMap<object, Map<ThemePalette, Map<DensityMode, unknown>>>();
 
 /** Replace a module-level `StyleSheet.create` with a themed factory:
  *    const makeStyles = (t: ThemePalette) => StyleSheet.create({ ... });
  *    …inside the component: const styles = useThemedStyles(makeStyles);
  */
 export function useThemedStyles<T extends StyleSheet.NamedStyles<T>>(
-  factory: (t: ThemePalette) => T,
+  factory: (t: ThemePalette, density: DensityMode) => T,
 ): T {
-  const theme = useTheme();
+  const { theme, density } = useThemeMode();
   let byTheme = styleCache.get(factory);
   if (!byTheme) {
     byTheme = new Map();
     styleCache.set(factory, byTheme);
   }
-  let styles = byTheme.get(theme);
+  let byDensity = byTheme.get(theme);
+  if (!byDensity) {
+    byDensity = new Map();
+    byTheme.set(theme, byDensity);
+  }
+  let styles = byDensity.get(density);
   if (!styles) {
-    styles = factory(theme);
-    byTheme.set(theme, styles);
+    styles = factory(theme, density);
+    byDensity.set(density, styles);
   }
   return styles as T;
 }

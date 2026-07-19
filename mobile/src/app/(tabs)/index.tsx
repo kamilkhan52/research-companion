@@ -56,7 +56,11 @@ import {
   Text,
   type IconName,
 } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import {
+  useTheme,
+  useThemedStyles,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
 
 // The base URL the cover backfill has already succeeded for (module-level so it survives Library
@@ -840,29 +844,43 @@ function EmptyProjectHub({
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    marginHorizontal: space.lg,
+    gap: tight ? space.sm : space.md,
+    marginHorizontal: tight ? space.md : space.lg,
     marginBottom: space.sm,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingVertical: tight ? space.sm : space.md,
     backgroundColor: t.surface,
     borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: t.line,
   },
-  list: { padding: space.lg, paddingTop: space.sm, paddingBottom: space.xxl },
-  continueWrap: { marginBottom: space.md },
-  continueCard: { gap: space.md, borderColor: t.line2 },
-  continueBody: { flexDirection: 'row', gap: space.lg },
+  list: {
+    padding: tight ? space.md : space.lg,
+    paddingTop: space.sm,
+    paddingBottom: space.xxl,
+  },
+  continueWrap: { marginBottom: tight ? space.sm : space.md },
+  continueCard: { gap: tight ? space.sm : space.md, borderColor: t.line2 },
+  continueBody: { flexDirection: 'row', gap: tight ? space.md : space.lg },
   continueActions: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: space.sm, marginTop: space.xs },
   resumeBtn: { height: 42, paddingHorizontal: space.lg },
-  progressCard: { gap: space.md, marginBottom: space.md },
+  progressCard: {
+    gap: tight ? space.sm : space.md,
+    marginBottom: tight ? space.sm : space.md,
+  },
   progressHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  filterRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.lg },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginBottom: tight ? space.md : space.lg,
+  },
   filters: { flexGrow: 0, flexShrink: 1 },
   sortBtn: {
     flexDirection: 'row',
@@ -911,9 +929,13 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  empty: { paddingVertical: space.xxl * 1.5, paddingHorizontal: space.lg, alignItems: 'center' },
+  empty: {
+    paddingVertical: tight ? space.xxl : space.xxl * 1.5,
+    paddingHorizontal: space.lg,
+    alignItems: 'center',
+  },
   emptyProject: {
-    paddingVertical: space.xl,
+    paddingVertical: tight ? space.lg : space.xl,
     paddingHorizontal: space.sm,
     alignItems: 'center',
   },
@@ -926,22 +948,22 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.mint,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: space.md,
+    marginBottom: tight ? space.sm : space.md,
   },
   emptyProjectIntro: {
     textAlign: 'center',
     maxWidth: 320,
     marginTop: space.xs,
-    marginBottom: space.lg,
+    marginBottom: tight ? space.md : space.lg,
   },
-  entryChoices: { alignSelf: 'stretch', gap: space.sm },
+  entryChoices: { alignSelf: 'stretch', gap: tight ? space.xs : space.sm },
   entryChoice: {
-    minHeight: 76,
+    minHeight: tight ? 68 : 76,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
+    gap: tight ? space.sm : space.md,
     paddingHorizontal: space.md,
-    paddingVertical: space.sm,
+    paddingVertical: tight ? space.xs : space.sm,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line2,
@@ -956,4 +978,5 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     justifyContent: 'center',
   },
   entryChoiceText: { flex: 1, minWidth: 0, gap: 2 },
-});
+  });
+};

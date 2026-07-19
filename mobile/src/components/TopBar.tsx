@@ -9,7 +9,11 @@ import { StyleSheet, View } from 'react-native';
 
 import { IconButton as UIIconButton, Text, type IconName } from '@/ui';
 import { Marquee } from '@/ui/Marquee';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import {
+  useTheme,
+  useThemedStyles,
+  type DensityMode,
+} from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
 export function TabHeader({
@@ -95,13 +99,15 @@ export function TopBar({
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => {
+  const tight = density === 'tight';
+  return StyleSheet.create({
   tabHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    paddingHorizontal: space.lg,
-    paddingTop: space.md,
-    paddingBottom: space.md,
+    paddingHorizontal: tight ? space.md : space.lg,
+    paddingTop: tight ? space.sm : space.md,
+    paddingBottom: tight ? space.sm : space.md,
     gap: space.sm,
   },
   tabActions: { flexDirection: 'row', gap: 2, marginTop: 4 },
@@ -118,7 +124,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: space.md,
-    paddingBottom: space.md,
+    paddingBottom: tight ? space.sm : space.md,
     paddingTop: space.xs,
     borderBottomWidth: 1,
     borderBottomColor: t.line,
@@ -127,5 +133,11 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   side: { minWidth: 44, flexDirection: 'row', gap: space.xs, justifyContent: 'center' },
   sideRight: { justifyContent: 'flex-end' },
   center: { flex: 1, minWidth: 0, alignItems: 'center' },
-  titleText: { fontFamily: fonts.bodySemiBold, fontSize: 15.5, lineHeight: 21, color: t.mint },
-});
+  titleText: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: tight ? 14.5 : 15.5,
+    lineHeight: tight ? 20 : 21,
+    color: t.mint,
+  },
+  });
+};

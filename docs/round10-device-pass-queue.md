@@ -136,7 +136,8 @@ depends on screenshots Kamil has not attached yet.
   elsewhere, offer Cancel, reuse/copy into this project, or move it, with explicit Notes/chat
   handling. Design around a stable cross-project paper identity and shared reusable source
   artifacts without weakening each project's independent git-backed record or approval flow.
-  **Implemented:** deterministic arXiv/DOI/source/exact-title identity preflight now covers
+  **Implemented in [#188](https://github.com/kamilkhan52/research-companion/pull/188):**
+  deterministic arXiv/DOI/source/exact-title identity preflight now covers
   every add surface. The chooser defaults to Copy, makes Move explicit, shows reusable full
   text/Notes/discussion work, and opens the sequential Notes-integration review immediately
   when requested. Reuse materializes independent project records through the existing
@@ -147,20 +148,12 @@ depends on screenshots Kamil has not attached yet.
 - **R9.2 approved — sentence annotations.** Implement the four phases in
   `docs/text-comments-design.md`. Long-press keeps the existing action menu; **Comment on this**
   enters sentence selection. Native arbitrary character-range selection remains unavailable.
-  **Phase 1 implemented in
-  [#178](https://github.com/kamilkhan52/research-companion/pull/178):** committed prose has
-  an opt-in sentence-span path with tap handling, violet selection/annotation marks, a
-  comment-count badge, and link suppression during annotation; all ordinary Markdown callers
-  stay on the unchanged renderer.
-  **Phase 2 implemented in
-  [#179](https://github.com/kamilkhan52/research-companion/pull/179):** long-press offers
-  **Comment on this**, sentence taps open an inline quote/comment editor, and a per-paper
-  persisted queue renders editable/removable attached-comment chips above the composer.
-  **Phase 3 implemented in
-  [#180](https://github.com/kamilkhan52/research-companion/pull/180):** reply contracts accept
-  optional quote/comment pairs, one shared deterministic formatter records them as a normal
-  Markdown user turn, pure-annotation sends are valid, shared API types are regenerated, and
-  mobile clears the persisted queue only after server acceptance (with transcript recovery).
+  **Implemented in [#178](https://github.com/kamilkhan52/research-companion/pull/178),
+  [#179](https://github.com/kamilkhan52/research-companion/pull/179),
+  [#180](https://github.com/kamilkhan52/research-companion/pull/180), and
+  [#181](https://github.com/kamilkhan52/research-companion/pull/181):** the opt-in
+  sentence renderer, persisted comment queue/editor, deterministic send contract, and final
+  selection-mode polish are complete. Ordinary Markdown and long-press behavior stay unchanged.
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
@@ -182,7 +175,8 @@ depends on screenshots Kamil has not attached yet.
 - **R10.21 — Multiple threads per paper.** Let the reader start a clean thread with arbitrary
   text once the source is available, switch among independent threads, retain the main chat's
   tools, and synthesize concluded insights from all threads into the notes proposal.
-  **Implemented:** request-scoped thread identity, isolated transcripts/retry branches/modes/jobs,
+  **Implemented in [#187](https://github.com/kamilkhan52/research-companion/pull/187):**
+  request-scoped thread identity, isolated transcripts/retry branches/modes/jobs,
   clean mobile switcher + arbitrary first message, all-thread notes context and paper-level
   approval boundary, and complete Move/Copy relocation. See
   `docs/paper-discussion-threads.md`.
@@ -215,6 +209,11 @@ depends on screenshots Kamil has not attached yet.
   global 20% font reduction: reduce the most common body/title scale and vertical spacing
   while preserving accessibility and math/chat legibility. Prepare the token/layout direction
   in Figma; final tuning may use Kamil's later screenshots.
+  **Implemented in [#189](https://github.com/kamilkhan52/research-companion/pull/189):**
+  Comfortable remains the default; Tight is restored before first paint and reduces the shared
+  type/card/list/chat rhythm by roughly 10–14% while preserving touch targets plus math, code,
+  and audio controls. The local Figma Desktop Bridge comparison is the screenshot-verified
+  `Density · Comfortable / Tight` section (`78:290`) on `01 · Design System`.
 - **Authors & Labs — bound initial results.** Add a sensible initial limit and Show More
   increments so the screen is scannable.
   **Implemented in [#174](https://github.com/kamilkhan52/research-companion/pull/174):**
@@ -247,5 +246,6 @@ depends on screenshots Kamil has not attached yet.
 ## Screenshot-dependent follow-up
 
 Kamil will attach screenshots later. Do not let that block functional work above. Hold only
-pixel-specific tuning that depends on the missing reference, especially the final compact
-multi-select composition and density/font comparison.
+pixel-specific tuning that depends on the missing reference. The multi-select information
+architecture and density comparison are implemented; later screenshots may still drive
+small spacing/type adjustments on specific devices.
