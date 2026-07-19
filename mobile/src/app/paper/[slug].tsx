@@ -39,7 +39,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsPlaying } from 'react-native-track-player';
 
 import * as Clipboard from 'expo-clipboard';
-import * as DocumentPicker from 'expo-document-picker';
 
 import * as api from '@/api/endpoints';
 import { turnJobPaths } from '@/api/endpoints';
@@ -2107,7 +2106,21 @@ export function ComposeFirst({
 
   async function pickPdf() {
     setLocalError(null);
-    const result = await DocumentPicker.getDocumentAsync({
+    // Native modules can be added to JavaScript before a tester has rebuilt their development
+    // client. Loading the picker only on demand keeps the entire paper route usable in that
+    // stale client; the upload action itself explains the required rebuild and existing link
+    // fallback instead of crashing Expo Router while it evaluates this module.
+    let documentPicker: typeof import('expo-document-picker');
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      documentPicker = require('expo-document-picker') as typeof import('expo-document-picker');
+    } catch {
+      setLocalError(
+        'This development build does not include PDF picking yet. Rebuild the app, or paste a direct PDF link above.',
+      );
+      return;
+    }
+    const result = await documentPicker.getDocumentAsync({
       type: 'application/pdf',
       multiple: false,
       copyToCacheDirectory: true,
