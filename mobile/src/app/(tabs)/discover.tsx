@@ -325,13 +325,14 @@ function SuggestionCard({
   async function handleAdd() {
     if (inLibrary) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title: s.title,
         arxivId: s.arxiv_id ?? undefined,
         pdfUrl: s.pdf_url || undefined,
         abstract: s.abstract,
         year: s.year ?? undefined,
       });
+      if (!result.paper) return;
       setAdded(true);
       onAdded?.();
     } catch {
@@ -437,13 +438,15 @@ function SpecificPaper({ pid }: { pid: string }) {
       source = s;
     }
     try {
-      const { paper } = await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         title,
         arxivId,
         // A pasted non-arXiv URL is a direct PDF source; the analysis offer must fetch
         // exactly it, mirroring what ?source= does for the manual Start path below.
         pdfUrl: !arxivId && source ? source : undefined,
       });
+      if (!result.paper) return;
+      const { paper } = result;
       await textDraft.clear('');
       router.push(
         `/paper/${encodeURIComponent(paper.slug)}${source ? `?source=${encodeURIComponent(source)}` : ''}`,

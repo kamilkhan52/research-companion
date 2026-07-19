@@ -136,6 +136,11 @@ depends on screenshots Kamil has not attached yet.
   elsewhere, offer Cancel, reuse/copy into this project, or move it, with explicit Notes/chat
   handling. Design around a stable cross-project paper identity and shared reusable source
   artifacts without weakening each project's independent git-backed record or approval flow.
+  **Implemented:** deterministic arXiv/DOI/source/exact-title identity preflight now covers
+  every add surface. The chooser defaults to Copy, makes Move explicit, shows reusable full
+  text/Notes/discussion work, and opens the sequential Notes-integration review immediately
+  when requested. Reuse materializes independent project records through the existing
+  transactional move/copy engine; see `docs/cross-project-paper-identity.md`.
 
 ## Discussion, audio, figures, and threads
 

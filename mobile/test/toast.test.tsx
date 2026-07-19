@@ -9,8 +9,12 @@ import { useAddPaper } from '@/api/queries';
 import { ToastProvider, useToast } from '@/ui/Toast';
 
 const mockOffer = jest.fn();
+const mockReuse = jest.fn(async (_offer: unknown) => ({ action: 'cancelled', paper: null }));
 jest.mock('@/components/InitialAnalysisOffer', () => ({
   offerInitialAnalysis: (offer: unknown) => mockOffer(offer),
+}));
+jest.mock('@/components/ExistingPaperOffer', () => ({
+  requestExistingPaperReuse: (offer: unknown) => mockReuse(offer),
 }));
 
 function Fire({ message }: { message: string }) {
@@ -64,6 +68,48 @@ test('adding a paper raises the initial-analysis offer (R7.8)', async () => {
       expect.objectContaining({ pid: 'proj', slug: 'awq', title: 'AWQ', arxivId: '2306.00978' }),
     ),
   );
+  await unmountAsync();
+  client.clear();
+});
+
+test('an existing paper is offered for reuse instead of silently added again', async () => {
+  await setBaseUrl('https://api.test');
+  jest.mocked(api.findPaperMatches).mockResolvedValueOnce({
+    target_project: { id: 'proj', name: 'Current project' },
+    can_update_notes: true,
+    matches: [{
+      project_id: 'source',
+      project_name: 'Source project',
+      identity: 'arxiv:2306.00978',
+      has_discussion: true,
+      slug: 'awq',
+      title: 'AWQ',
+      group: 'Core',
+      list_status: 'read',
+      cites: [],
+      retrieved: true,
+      has_notes: true,
+      session_state: 'committed',
+      arxiv_id: '2306.00978',
+    }],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const { unmountAsync } = await renderAsync(
+    <QueryClientProvider client={client}>
+      <AddButton />
+    </QueryClientProvider>,
+  );
+
+  await fireEventAsync.press(screen.getByText('add'));
+  await waitFor(() =>
+    expect(mockReuse).toHaveBeenCalledWith(expect.objectContaining({
+      targetPid: 'proj',
+      targetName: 'Current project',
+      matches: [expect.objectContaining({ project_id: 'source', slug: 'awq' })],
+    })),
+  );
+  expect(api.addPaper).not.toHaveBeenCalled();
+  expect(mockOffer).not.toHaveBeenCalled();
   await unmountAsync();
   client.clear();
 });

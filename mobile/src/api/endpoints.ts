@@ -21,6 +21,7 @@ import type {
   ModelOption,
   OpeningDraft,
   Paper,
+  PaperMatchResponse,
   Review,
   PromptStatus,
   Project,
@@ -208,6 +209,13 @@ export const addPaper = (
     // Dates non-arXiv papers (U.17); the backend ignores it when the arXiv id already does.
     year: year ?? undefined,
   });
+/** App-wide duplicate-awareness preflight. Read-only despite POST: the candidate can include
+ *  a long title/source URL, and no project record changes until the user chooses Copy/Move. */
+export const findPaperMatches = (
+  pid: string,
+  candidate: { title: string; arxiv_id?: string; source_url?: string },
+) =>
+  apiPost<PaperMatchResponse>(`${P(pid)}/paper-matches`, candidate);
 /** Remove a paper from the reading list. Notes are kept server-side (with a removal marker);
  *  the backend git-commits this change — the caller must have shown a confirm first. */
 export const removePaper = (pid: string, slug: string) =>

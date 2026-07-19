@@ -52,6 +52,7 @@ export function BottomSheet({
   const presentedRef = useRef(false);
   const ownerDismissPendingRef = useRef(false);
   const visibleRef = useRef(visible);
+  const dismissFrameRef = useRef<number | null>(null);
   visibleRef.current = visible;
 
   const boundedPct = Math.max(30, Math.min(95, maxHeightPct));
@@ -77,13 +78,22 @@ export function BottomSheet({
       // BottomSheetModal internally defers present() by one animation frame. If the owner
       // opens and closes in that same frame, the first dismiss can arrive before the modal has
       // mounted; repeat after its queued present so a stale sheet cannot appear.
-      requestAnimationFrame(() => {
+      if (dismissFrameRef.current !== null) cancelAnimationFrame(dismissFrameRef.current);
+      dismissFrameRef.current = requestAnimationFrame(() => {
+        dismissFrameRef.current = null;
         if (!visibleRef.current && ownerDismissPendingRef.current) {
           modalRef.current?.dismiss();
         }
       });
     }
   }, [visible]);
+
+  useEffect(() => () => {
+    if (dismissFrameRef.current !== null) {
+      cancelAnimationFrame(dismissFrameRef.current);
+      dismissFrameRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!visible) return;

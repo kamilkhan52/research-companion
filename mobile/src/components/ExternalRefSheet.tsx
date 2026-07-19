@@ -51,7 +51,7 @@ export function ExternalRefSheet({
   async function handleAdd() {
     if (!pid || inProject || addPaper.isPending) return;
     try {
-      await addPaper.mutateAsync({
+      const result = await addPaper.mutateAsync({
         // Never store a URL as a reading-list title; the arXiv placeholder mirrors the
         // Discover paste flow (retrieval fills in the real title).
         title: title ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
@@ -60,6 +60,7 @@ export function ExternalRefSheet({
         // analysis offer's retrieval fetches that link instead of title-searching.
         pdfUrl: arxivId ? undefined : refItem!.href,
       });
+      if (!result.paper) return;
       setAddedHref(refItem!.href);
     } catch (e) {
       Alert.alert('Could not add paper', (e as Error).message);
