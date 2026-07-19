@@ -12,7 +12,7 @@ export function PromptTemplateOption({
   onPress,
 }: {
   title: string;
-  description: string;
+  description?: string;
   icon: IconName;
   selected: boolean;
   onPress: () => void;
@@ -31,7 +31,9 @@ export function PromptTemplateOption({
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text variant="heading" color={selected ? t.mint : t.text}>{title}</Text>
-        <Text variant="caption" style={{ marginTop: 2 }}>{description}</Text>
+        {description ? (
+          <Text variant="caption" style={{ marginTop: 2 }}>{description}</Text>
+        ) : null}
       </View>
     </Pressable>
   );

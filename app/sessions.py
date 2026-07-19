@@ -193,6 +193,20 @@ def get_opening(slug: str) -> str | None:
     return _load_index().get(slug, {}).get("opening")
 
 
+def set_opening(slug: str, opening: str | None) -> None:
+    """Replace the generated first-message instruction without restarting the transcript."""
+    with _index_lock:
+        idx = _load_index_unlocked()
+        meta = idx.get(slug, {})
+        if opening:
+            meta["opening"] = opening
+        else:
+            meta.pop("opening", None)
+        meta["updated_at"] = _now()
+        idx[slug] = meta
+        _save_index_unlocked(idx)
+
+
 def record_user(slug: str, text: str, kind: str = "reply", *, authored_text: str | None = None) -> None:
     record = {"role": "user", "kind": kind, "text": text}
     if authored_text is not None:
@@ -456,7 +470,28 @@ def clear_branches(slug: str) -> None:
     _branches_file(slug).unlink(missing_ok=True)
 
 
-def fork_before_assistant(slug: str, n: int) -> None:
+def _discussion_context(slug: str) -> dict:
+    return {
+        "opening": get_opening(slug),
+        "reading_mode": get_reading_mode(slug),
+    }
+
+
+def _apply_discussion_context(slug: str, context: dict) -> None:
+    set_opening(slug, context.get("opening"))
+    set_reading_mode(slug, context.get("reading_mode") or "balanced")
+
+
+def _branch_contexts(entry: dict, slug: str) -> list[dict]:
+    """Context list parallel to tails. Old branch files predate this field; use their current
+    session context as the only truthful fallback and upgrade them on the next mutation."""
+    contexts = list(entry.get("contexts") or [])
+    while len(contexts) < len(entry.get("tails") or []):
+        contexts.append(_discussion_context(slug))
+    return contexts
+
+
+def fork_before_assistant(slug: str, n: int, *, context: dict | None = None) -> None:
     """Archive the live tail from the n-th assistant turn as a branch and truncate the live
     transcript, so a sibling response can be generated from the same user message. The NEW
     branch becomes active; the sibling generated next appends to the live transcript as usual.
@@ -468,14 +503,20 @@ def fork_before_assistant(slug: str, n: int) -> None:
     data = _read_branches(slug)
     key = str(n)
     entry = data.get(key) or {"tails": [], "active": -1}
+    contexts = _branch_contexts(entry, slug)
+    live_context = _discussion_context(slug)
     live_tail = records[pos:]
     if 0 <= entry["active"] < len(entry["tails"]):
         entry["tails"][entry["active"]] = live_tail   # sync the branch we are leaving
+        contexts[entry["active"]] = live_context
         entry["last_active"] = entry["active"]
     else:
         entry["tails"].append(live_tail)              # first fork: archive the original
+        contexts.append(live_context)
         entry["last_active"] = len(entry["tails"]) - 1
     entry["tails"].append([])                          # slot for the upcoming generation
+    contexts.append(context or live_context)
+    entry["contexts"] = contexts
     entry["active"] = len(entry["tails"]) - 1
     entry["forked_at"] = _now()
     data[key] = entry
@@ -483,6 +524,7 @@ def fork_before_assistant(slug: str, n: int) -> None:
     data = {k: v for k, v in data.items() if int(k) <= n}
     _write_branches(slug, data)
     _rewrite(slug, records[:pos])
+    _apply_discussion_context(slug, contexts[entry["active"]])
     set_state(slug, IN_DISCUSSION)
 
 
@@ -500,14 +542,18 @@ def switch_branch(slug: str, n: int, branch: int) -> bool:
     pos = _assistant_pos(records, n)
     head = records if pos is None else records[:pos]
     live_tail = [] if pos is None else records[pos:]
+    contexts = _branch_contexts(entry, slug)
     if 0 <= entry["active"] < len(entry["tails"]):
         entry["tails"][entry["active"]] = live_tail
+        contexts[entry["active"]] = _discussion_context(slug)
     entry["active"] = target
+    entry["contexts"] = contexts
     data[str(n)] = entry
     data = {k: v for k, v in data.items() if int(k) <= n}
     _write_branches(slug, data)
     restored = entry["tails"][target]
     _rewrite(slug, head + restored)
+    _apply_discussion_context(slug, contexts[target])
     set_state(slug, _restored_tail_state(restored))
     return True
 
@@ -550,9 +596,11 @@ def rollback_empty_fork(slug: str, *, min_age_s: float = 0.0) -> None:
     if _assistant_pos(records, n) is not None:
         return  # the live branch has content; nothing to roll back
     tails = entry.get("tails") or []
+    contexts = _branch_contexts(entry, slug)
     active = entry.get("active", -1)
     if 0 <= active < len(tails) and not tails[active]:
         tails.pop(active)
+        contexts.pop(active)
     if not tails:
         del data[str(n)]
         _write_branches(slug, data)
@@ -564,10 +612,12 @@ def rollback_empty_fork(slug: str, *, min_age_s: float = 0.0) -> None:
         del data[str(n)]              # a single branch is not a fork
     else:
         entry["tails"] = tails
+        entry["contexts"] = contexts
         entry["active"] = restore
         data[str(n)] = entry
     _write_branches(slug, data)
     _rewrite(slug, records + restored)
+    _apply_discussion_context(slug, contexts[restore])
     set_state(slug, _restored_tail_state(restored))
 
 

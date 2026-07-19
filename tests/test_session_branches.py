@@ -3,8 +3,11 @@ selector can switch the live conversation between branches at a fork point, and 
 never outlives the turns it annotates."""
 from __future__ import annotations
 
+import pytest
 from app import sessions
 from app.models import Turn
+from app.routers import session as session_router
+from fastapi import HTTPException
 
 
 def _assistant(slug: str, text: str, *, proposed: bool = False) -> None:
@@ -79,6 +82,80 @@ def test_repeated_retries_accumulate_ordinals(temp_project):
     assert t[-1]["branch_active"] == 3
     assert sessions.switch_branch(slug, 0, 2) is True
     assert sessions.transcript(slug)[-1]["canonical"] == "v2"
+
+
+def test_first_response_branches_restore_their_opening_prompt_and_mode(temp_project):
+    slug = "opening"
+    sessions.start_session(slug, "Paper", opening="Original opening")
+    sessions.set_reading_mode(slug, "background")
+    _assistant(slug, "original response")
+
+    sessions.fork_before_assistant(
+        slug,
+        0,
+        context={"opening": "Technical opening", "reading_mode": "technical"},
+    )
+    _assistant(slug, "technical response")
+    assert sessions.get_opening(slug) == "Technical opening"
+    assert sessions.get_reading_mode(slug) == "technical"
+
+    assert sessions.switch_branch(slug, 0, 1) is True
+    assert sessions.get_opening(slug) == "Original opening"
+    assert sessions.get_reading_mode(slug) == "background"
+
+    assert sessions.switch_branch(slug, 0, 2) is True
+    assert sessions.get_opening(slug) == "Technical opening"
+    assert sessions.get_reading_mode(slug) == "technical"
+
+
+def test_failed_first_response_retry_rolls_back_opening_context(temp_project):
+    slug = "opening"
+    sessions.start_session(slug, "Paper", opening="Original opening")
+    _assistant(slug, "original response")
+    sessions.fork_before_assistant(
+        slug,
+        0,
+        context={"opening": "Temporary opening", "reading_mode": "detailed"},
+    )
+
+    sessions.rollback_empty_fork(slug)
+
+    assert sessions.get_opening(slug) == "Original opening"
+    assert sessions.get_reading_mode(slug) == "balanced"
+
+
+def test_retry_request_can_change_context_only_for_the_first_response(temp_project):
+    slug = "opening"
+    sessions.start_session(slug, "Paper", opening="Original opening")
+    _assistant(slug, "original response")
+
+    session_router._prep_retry(session_router.RetryReq(
+        slug=slug,
+        assistant_index=0,
+        prompt="Detailed opening",
+        mode="detailed",
+    ))
+
+    assert sessions.get_opening(slug) == "Detailed opening"
+    assert sessions.get_reading_mode(slug) == "detailed"
+
+
+def test_later_response_retry_rejects_opening_context_changes(temp_project):
+    slug = _seed()
+    sessions.record_user(slug, "question two", kind="reply")
+    _assistant(slug, "answer two")
+
+    with pytest.raises(HTTPException) as exc:
+        session_router._prep_retry(session_router.RetryReq(
+            slug=slug,
+            assistant_index=1,
+            prompt="A different opening",
+            mode="technical",
+        ))
+
+    assert exc.value.status_code == 400
+    assert sessions.branch_map(slug) == {}
+    assert sessions.transcript(slug)[-1]["canonical"] == "answer two"
 
 
 def test_edit_and_restart_clear_stale_bookkeeping(temp_project):
