@@ -38,6 +38,7 @@ export interface ThemePalette {
   // guard keeps them here). Wash = a soft fill behind selected/accented content.
   mintWash: string;
   mintWashStrong: string;
+  violetWash: string;
   amberWash: string;
   amberLine: string;
   dangerWash: string;
@@ -64,6 +65,7 @@ const dim: ThemePalette = {
   scrim: 'rgba(0,0,0,0.55)',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  violetWash: 'rgba(155, 138, 251, 0.14)',
   amberWash: 'rgba(228, 184, 92, 0.08)',
   amberLine: 'rgba(228, 184, 92, 0.4)',
   dangerWash: 'rgba(229, 115, 140, 0.12)',
@@ -89,6 +91,7 @@ const black: ThemePalette = {
   scrim: 'rgba(0,0,0,0.65)',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
+  violetWash: 'rgba(155, 138, 251, 0.14)',
   amberWash: 'rgba(228, 184, 92, 0.08)',
   amberLine: 'rgba(228, 184, 92, 0.4)',
   dangerWash: 'rgba(229, 115, 140, 0.12)',
@@ -114,6 +117,7 @@ const light: ThemePalette = {
   scrim: 'rgba(20, 24, 32, 0.45)',
   mintWash: 'rgba(23, 126, 99, 0.10)',
   mintWashStrong: 'rgba(23, 126, 99, 0.16)',
+  violetWash: 'rgba(106, 85, 224, 0.12)',
   amberWash: 'rgba(168, 122, 23, 0.10)',
   amberLine: 'rgba(168, 122, 23, 0.45)',
   dangerWash: 'rgba(194, 56, 90, 0.10)',
@@ -171,4 +175,3 @@ export function stateMetaFor(t: ThemePalette): Record<string, { label: string; c
     read: { label: 'Read', color: t.mint },
   };
 }
-
