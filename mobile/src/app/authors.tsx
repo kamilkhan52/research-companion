@@ -33,6 +33,8 @@ function externalHref(p: AuthorPaper): string {
 
 type Mode = 'authors' | 'labs';
 const UNKNOWN_LABEL = 'Independent / unknown';
+export const AUTHORS_PAGE_SIZE = 10;
+export const LABS_PAGE_SIZE = 5;
 
 export default function AuthorsScreen() {
   const router = useRouter();
@@ -44,8 +46,12 @@ export default function AuthorsScreen() {
   const [showExplainer, setShowExplainer] = useState(false);
   const [selected, setSelected] = useState<BoardAuthor | null>(null);
   const [extRef, setExtRef] = useState<ExternalRef | null>(null);
+  const [authorLimit, setAuthorLimit] = useState(AUTHORS_PAGE_SIZE);
 
   const authors = board.data?.authors ?? [];
+  useEffect(() => {
+    setAuthorLimit(AUTHORS_PAGE_SIZE);
+  }, [pid, authors.length]);
 
   return (
     <Screen edges={['top']}>
@@ -77,11 +83,20 @@ export default function AuthorsScreen() {
           ) : null}
 
           {mode === 'authors' ? (
-            <View style={styles.cardGrid}>
-              {authors.map((a) => (
-                <AuthorCard key={a.name} author={a} onPress={() => setSelected(a)} />
-              ))}
-            </View>
+            <>
+              <View style={styles.cardGrid}>
+                {authors.slice(0, authorLimit).map((a) => (
+                  <AuthorCard key={a.name} author={a} onPress={() => setSelected(a)} />
+                ))}
+              </View>
+              {authorLimit < authors.length ? (
+                <Button
+                  title={`Show more authors (${Math.min(authorLimit, authors.length)} of ${authors.length})`}
+                  variant="ghost"
+                  onPress={() => setAuthorLimit((n) => n + AUTHORS_PAGE_SIZE)}
+                />
+              ) : null}
+            </>
           ) : (
             <LabsView
               pid={pid}
@@ -193,6 +208,8 @@ function LabsView({
   const qc = useQueryClient();
   const [job, setJob] = useState<LabsResearchJob | null>(runningJob);
   const [starting, setStarting] = useState(false);
+  const [labLimit, setLabLimit] = useState(LABS_PAGE_SIZE);
+  const [unmappedLimit, setUnmappedLimit] = useState(AUTHORS_PAGE_SIZE);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -250,9 +267,16 @@ function LabsView({
 
   const covered = new Set(labs?.covered_authors ?? []);
   const uncovered = authors.filter((a) => !covered.has(a.name));
-  const groups = groupByAffiliation(uncovered);
+  const visibleLabs = (labs?.labs ?? []).slice(0, labLimit);
+  const visibleUncovered = uncovered.slice(0, unmappedLimit);
+  const groups = groupByAffiliation(visibleUncovered);
   const researching = job?.status === 'running';
   const byName = new Map(authors.map((a) => [a.name, a]));
+
+  useEffect(() => {
+    setLabLimit(LABS_PAGE_SIZE);
+    setUnmappedLimit(AUTHORS_PAGE_SIZE);
+  }, [pid, labs?.labs.length, uncovered.length]);
 
   return (
     <>
@@ -282,7 +306,7 @@ function LabsView({
         </Text>
       ) : null}
 
-      {(labs?.labs ?? []).map((lab) => (
+      {visibleLabs.map((lab) => (
         <View key={lab.lab_name} style={styles.labCard}>
           <Text variant="heading">{lab.lab_name}</Text>
           {lab.institution ? (
@@ -319,6 +343,13 @@ function LabsView({
           ) : null}
         </View>
       ))}
+      {labLimit < (labs?.labs.length ?? 0) ? (
+        <Button
+          title={`Show more labs (${visibleLabs.length} of ${labs!.labs.length})`}
+          variant="ghost"
+          onPress={() => setLabLimit((n) => n + LABS_PAGE_SIZE)}
+        />
+      ) : null}
 
       {uncovered.length ? (
         <>
@@ -345,6 +376,13 @@ function LabsView({
               </View>
             </View>
           ))}
+          {unmappedLimit < uncovered.length ? (
+            <Button
+              title={`Show more unmapped authors (${visibleUncovered.length} of ${uncovered.length})`}
+              variant="ghost"
+              onPress={() => setUnmappedLimit((n) => n + AUTHORS_PAGE_SIZE)}
+            />
+          ) : null}
         </>
       ) : null}
     </>

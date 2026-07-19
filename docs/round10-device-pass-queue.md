@@ -138,6 +138,9 @@ depends on screenshots Kamil has not attached yet.
   rewind semantics.
 - **R10.24 — Mini-player transition.** Hide the bottom Now Playing bar when the full player is
   open, with a clean transition; reliably restore it when minimized or navigated back.
+  **Implemented in [#174](https://github.com/kamilkhan52/research-companion/pull/174):**
+  the full-player route suppresses only the redundant root mini-player; navigating back
+  restores it without changing playback state.
 
 ## Density, bounded lists, and Figma-authorized work
 
@@ -147,6 +150,9 @@ depends on screenshots Kamil has not attached yet.
   in Figma; final tuning may use Kamil's later screenshots.
 - **Authors & Labs — bound initial results.** Add a sensible initial limit and Show More
   increments so the screen is scannable.
+  **Implemented in [#174](https://github.com/kamilkhan52/research-companion/pull/174):**
+  Authors starts at 10; researched Labs starts at 5; both Lab cards and unmapped authors reveal
+  additional ranked pages explicitly.
 - **R7.10 direction replaced — Paradigm “P” icon.** Design an original, aesthetically strong
   P-shaped mark grounded in the app's editorial/research philosophy and themes, carry it
   through the Figma workflow, select with Kamil if materially different finalists remain,

@@ -39,6 +39,7 @@ import { AudioProvider } from '@/audio/AudioProvider';
 import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
+import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
@@ -49,11 +50,9 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // The four tab screens render NowPlaying inside the tab bar (above the tab row); the root
 // copy covers only stack screens pushed over the tabs, so the card never doubles up.
-const TAB_PATHS = new Set(['/', '/discover', '/notes', '/graph']);
-
 function StackNowPlaying() {
   const pathname = usePathname();
-  if (TAB_PATHS.has(pathname)) return null;
+  if (!shouldShowStackNowPlaying(pathname)) return null;
   return <NowPlaying />;
 }
 
