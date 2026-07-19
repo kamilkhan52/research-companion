@@ -636,24 +636,34 @@ export interface GraphBuildStartResponse {
 
 /** One ranked candidate paper from a discovery run. */
 export interface PaperSuggestion {
-  arxiv_id: string;
+  candidate_id: string;
+  arxiv_id: string | null;
+  doi?: string | null;
+  paper_id?: string | null;
   title: string;
   abstract: string;
   authors: string[];
+  affiliations: string[];
   year: number | null;
   category: string;
+  venue?: string;
   url: string;
   pdf_url: string;
   citation_count: number | null;
+  influential_citation_count?: number | null;
+  sources: ('arxiv' | 'semantic_scholar')[];
   /** LLM-scored fit to the project goals, 0-10. */
   relevance: number;
-  /** Blended rank score: relevance + a log-scaled, capped global-citations term. */
+  /** LLM-scored strength of available scholarly evidence, 0-4. */
+  credibility: number;
+  /** Relevance-dominant blend with capped credibility and global-impact terms. */
   score: number;
   reasons: string[];
 }
 
 export interface DiscoveryQuery {
   query: string;
+  search_terms?: string;
   phase: string; // 'broad' | 'narrow'
   rationale: string;
 }
@@ -666,17 +676,18 @@ export interface DiscoveryResult {
   model: string;
   queries: DiscoveryQuery[];
   candidate_count: number;
+  source_counts?: { arxiv: number; semantic_scholar: number };
   top_n: number;
   suggestions: PaperSuggestion[];
   generated_at: string;
 }
 
 /** A discovery job (app/discovery_jobs.py DiscoveryJob). Runs server-side in a background
- * thread — two LLM calls plus paced arXiv searches take minutes — and the client polls,
+ * thread — two LLM calls plus paced multi-source enrichment take minutes — and the client polls,
  * same pattern as GraphBuildJob. */
 export interface DiscoveryJob {
   status: 'running' | 'done' | 'error';
-  phase: 'queries' | 'searching' | 'citations' | 'scoring' | 'done';
+  phase: 'queries' | 'searching' | 'citations' | 'evidence' | 'scoring' | 'done';
   goals: string;
   focus: string;
   queries: DiscoveryQuery[];

@@ -1,8 +1,8 @@
-// Discover — scan arXiv for papers relevant to what you want to explore, at any point in a
+// Discover — scan scholarly sources for papers relevant to what you want to explore, at any
 // project (not just when starting one). A clean text field ("what would you like to explore?")
-// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv
-// searches, citation counts, and a
-// relevance ranking. The screen polls the job for live phase progress (job survives
+// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv and
+// Semantic Scholar searches, Map-style citation/authorship enrichment, and a relevance-first
+// ranking. The screen polls the job for live phase progress (job survives
 // backgrounding — see useDiscoveryRun), then shows the top suggestions with the rest behind
 // "show more". A "specific paper" box covers the other entry path: paste a title or an
 // arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt) takes over
@@ -121,7 +121,7 @@ export default function DiscoverScreen() {
               <Text variant="overline">Explore</Text>
               <Text variant="caption">
                 What would you like to explore? Describe a topic, question, or method — we’ll
-                scan arXiv for relevant papers.
+                scan scholarly sources for relevant papers.
               </Text>
               <TextInput
                 value={goals}
@@ -184,13 +184,13 @@ export default function DiscoverScreen() {
             <View style={{ marginTop: space.xl }}>
               <Text variant="editorial">Results</Text>
               <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
-                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} arXiv papers,
-                ranked by relevance.
+                {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
+                scholarly sources, ranked by fit and evidence.
               </Text>
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
                   <SuggestionCard
-                    key={s.arxiv_id}
+                    key={s.candidate_id}
                     pid={pid!}
                     suggestion={s}
                     rank={i + 1}
@@ -240,7 +240,7 @@ export default function DiscoverScreen() {
 
 // ---------- live phase progress (mirrors the job's phase field) ----------
 
-const PHASE_ORDER = ['queries', 'searching', 'citations', 'scoring', 'done'] as const;
+const PHASE_ORDER = ['queries', 'searching', 'citations', 'evidence', 'scoring', 'done'] as const;
 
 // The mint check timeline from Figma `02 · Discover` ("Planned → Reviewed → Checked →
 // Ranked"), with the live phase's detail line underneath — the polled job data the old
@@ -256,10 +256,11 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
       label: 'Searched',
       detail: job.total_queries
         ? `${job.searched}/${job.total_queries} searches · ${job.found} papers`
-        : 'Searching arXiv…',
+        : 'Searching scholarly sources…',
     },
-    { key: 'citations', label: 'Checked', detail: `Citations for ${job.found} papers` },
-    { key: 'scoring', label: 'Ranked', detail: 'Ranking by relevance' },
+    { key: 'citations', label: 'Impact', detail: `Citation evidence for ${job.found} papers` },
+    { key: 'evidence', label: 'Evidence', detail: 'Checking authors, venues, and institutions' },
+    { key: 'scoring', label: 'Ranked', detail: 'Ranking by fit and evidence' },
   ];
   const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
   const done = job.phase === 'done' || job.status === 'done';
@@ -314,8 +315,9 @@ function SuggestionCard({
   const meta = [
     authors || null,
     s.year,
+    s.venue || null,
     s.citation_count != null ? `~${s.citation_count.toLocaleString()} citations` : null,
-    `arXiv:${s.arxiv_id}`,
+    s.arxiv_id ? `arXiv:${s.arxiv_id}` : s.doi ? `DOI:${s.doi}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -325,7 +327,8 @@ function SuggestionCard({
     try {
       await addPaper.mutateAsync({
         title: s.title,
-        arxivId: s.arxiv_id,
+        arxivId: s.arxiv_id ?? undefined,
+        pdfUrl: s.pdf_url || undefined,
         abstract: s.abstract,
         year: s.year ?? undefined,
       });

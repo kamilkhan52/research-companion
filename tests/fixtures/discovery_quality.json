@@ -1,0 +1,97 @@
+{
+  "goals": "Understand foundational and modern memory disaggregation for datacenter systems.",
+  "focus": "Memory disaggregation systems",
+  "queries": [
+    {
+      "query": "all:\"memory disaggregation\"",
+      "search_terms": "memory disaggregation datacenter systems",
+      "phase": "broad",
+      "rationale": "core system architecture"
+    },
+    {
+      "query": "abs:\"remote memory\" AND cat:cs.DC",
+      "search_terms": "remote memory datacenter architecture",
+      "phase": "narrow",
+      "rationale": "remote-memory mechanisms"
+    }
+  ],
+  "arxiv_results": [
+    {
+      "arxiv_id": "2401.00001",
+      "title": "A Narrow Recent Remote Memory Variant",
+      "abstract": "A narrow optimization for one remote-memory workload.",
+      "authors": ["R. Recent"],
+      "year": 2024,
+      "category": "cs.DC",
+      "url": "https://arxiv.org/abs/2401.00001",
+      "pdf_url": "https://arxiv.org/pdf/2401.00001"
+    },
+    {
+      "arxiv_id": "2201.00002",
+      "title": "Shared Memory Disaggregation Paper",
+      "abstract": "A broadly relevant design available on arXiv.",
+      "authors": ["S. Shared"],
+      "year": 2022,
+      "category": "cs.DC",
+      "url": "https://arxiv.org/abs/2201.00002",
+      "pdf_url": "https://arxiv.org/pdf/2201.00002"
+    }
+  ],
+  "semantic_results": [
+    {
+      "paper_id": "conference-landmark",
+      "doi": "10.1145/landmark",
+      "arxiv_id": null,
+      "title": "Conference Landmark for Disaggregated Memory",
+      "abstract": "A foundational conference architecture for memory disaggregation.",
+      "authors": ["L. Landmark"],
+      "year": 2018,
+      "venue": "OSDI",
+      "url": "https://example.test/landmark",
+      "pdf_url": "",
+      "citation_count": 850,
+      "influential_citation_count": 75,
+      "publication_types": ["Conference"]
+    },
+    {
+      "paper_id": "shared-paper",
+      "arxiv_id": "2201.00002",
+      "doi": "10.1145/shared",
+      "title": "Shared Memory Disaggregation Paper",
+      "abstract": "A broadly relevant design available through two sources.",
+      "authors": ["S. Shared"],
+      "year": 2022,
+      "venue": "ASPLOS",
+      "url": "https://example.test/shared",
+      "pdf_url": "https://arxiv.org/pdf/2201.00002",
+      "citation_count": 120,
+      "influential_citation_count": 12,
+      "publication_types": ["Conference"]
+    }
+  ],
+  "affiliations": {
+    "Conference Landmark for Disaggregated Memory": ["MIT CSAIL"],
+    "Shared Memory Disaggregation Paper": ["University of Washington"]
+  },
+  "scores": {
+    "Conference Landmark for Disaggregated Memory": {
+      "relevance": 9.5,
+      "credibility": 4,
+      "reason": "Foundational architecture directly addressing the project goal."
+    },
+    "Shared Memory Disaggregation Paper": {
+      "relevance": 8.5,
+      "credibility": 3.5,
+      "reason": "Strong modern treatment found independently by both providers."
+    },
+    "A Narrow Recent Remote Memory Variant": {
+      "relevance": 5,
+      "credibility": 1.5,
+      "reason": "Useful but narrow and not a foundational reading."
+    }
+  },
+  "expected_top": [
+    "doi:10.1145/landmark",
+    "arxiv:2201.00002"
+  ]
+}

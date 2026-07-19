@@ -5,6 +5,8 @@ sequence, and per-project persistence of the ranked result."""
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 from app import config, discovery, prompts, retriever
@@ -13,8 +15,11 @@ from app.discovery import DiscoveryError
 QUERIES_JSON = {
     "focus": "3D-stacked DRAM architectures",
     "queries": [
-        {"query": 'all:"3D stacked DRAM"', "phase": "broad", "rationale": "core topic"},
-        {"query": 'abs:"processing in memory" AND cat:cs.AR', "phase": "narrow", "rationale": "PIM"},
+        {"query": 'all:"3D stacked DRAM"', "search_terms": "3D stacked DRAM architecture",
+         "phase": "broad", "rationale": "core topic"},
+        {"query": 'abs:"processing in memory" AND cat:cs.AR',
+         "search_terms": "processing in memory architecture", "phase": "narrow",
+         "rationale": "PIM"},
     ],
 }
 
@@ -51,6 +56,16 @@ def test_generate_queries_parses_fenced_json_and_keeps_phases():
     assert focus == "3D-stacked DRAM architectures"
     assert [q["phase"] for q in queries] == ["broad", "narrow"]
     assert queries[0]["query"] == 'all:"3D stacked DRAM"'
+    assert queries[0]["search_terms"] == "3D stacked DRAM architecture"
+
+
+def test_generate_queries_derives_plain_terms_for_an_older_prompt_override():
+    plan = {"queries": [{
+        "query": 'abs:"processing in memory" AND cat:cs.AR',
+        "phase": "broad",
+    }]}
+    _, queries = discovery.generate_queries("goals", "m", fake_llm(queries_json=plan))
+    assert queries[0]["search_terms"] == "processing in memory"
 
 
 def test_generate_queries_caps_at_max_queries():
@@ -91,7 +106,7 @@ def test_collect_candidates_dedupes_across_queries_first_hit_wins():
     assert events[-1]["found"] == 3
 
 
-def test_collect_candidates_caps_at_max_and_stops_early():
+def test_collect_candidates_caps_only_after_all_queries_for_recall_fusion():
     def search(query, n):
         return [_cand(f"2222.{i:05d}") for i in range(40)] if query == "q1" \
             else [_cand(f"3333.{i:05d}") for i in range(40)]
@@ -99,8 +114,102 @@ def test_collect_candidates_caps_at_max_and_stops_early():
     candidates, events = _collect(
         [{"query": "q1"}, {"query": "q2"}, {"query": "q3"}], search)
     assert len(candidates) == discovery.MAX_CANDIDATES
-    # The cap was hit on q2, so q3 never ran.
-    assert [e["index"] for e in events] == [1, 2]
+    # Every concept contributes evidence before the source-balanced cap is applied.
+    assert [e["index"] for e in events] == [1, 2, 3]
+
+
+def test_collect_candidates_merges_provider_identity_and_keeps_non_arxiv_work():
+    def arxiv_search(query, n):
+        return [_cand("1111.00001", "Shared paper")]
+
+    def semantic_search(query, n):
+        return [
+            {**_cand("1111.00001", "Shared paper"), "paper_id": "shared",
+             "citation_count": 200},
+            {"paper_id": "conference-only", "doi": "10.1/conf", "arxiv_id": None,
+             "title": "Conference Landmark", "abstract": "Important systems paper.",
+             "authors": ["B. Author"], "year": 2018, "venue": "OSDI",
+             "url": "https://example.test/conf", "pdf_url": ""},
+        ]
+
+    candidates, events = _collect(
+        [{"query": "all:systems", "search_terms": "systems"}],
+        lambda q, n: arxiv_search(q, n),
+    )
+    assert len(candidates) == 1  # legacy single-source seam remains supported
+
+    merged = [
+        event for event in discovery.collect_candidates(
+            [{"query": "all:systems", "search_terms": "systems"}],
+            arxiv_search,
+            semantic_search,
+        )
+        if event["type"] == "candidates"
+    ][0]["candidates"]
+    assert len(merged) == 2
+    shared = next(candidate for candidate in merged if candidate["title"] == "Shared paper")
+    assert shared["sources"] == ["arxiv", "semantic_scholar"]
+    assert shared["citation_count"] == 200
+    landmark = next(candidate for candidate in merged if candidate["paper_id"] == "conference-only")
+    assert landmark["arxiv_id"] is None
+    assert events[-1]["found"] == 1
+
+
+def test_collect_candidates_uses_normalized_title_as_a_cross_provider_alias():
+    def arxiv_search(query, n):
+        return [_cand("1111.00001", "The Shared-Paper: A Study")]
+
+    def semantic_search(query, n):
+        return [{
+            "paper_id": "shared",
+            "doi": "10.1/shared",
+            "title": "The shared paper — a study",
+            "abstract": "A richer abstract.",
+            "authors": ["A. Author"],
+            "year": 2020,
+            "venue": "OSDI",
+            "citation_count": 42,
+        }]
+
+    final = [
+        event["candidates"]
+        for event in discovery.collect_candidates(
+            [{"query": "all:shared", "search_terms": "shared"}],
+            arxiv_search,
+            semantic_search,
+        )
+        if event["type"] == "candidates"
+    ][0]
+
+    assert len(final) == 1
+    assert final[0]["candidate_id"] == "arxiv:1111.00001"
+    assert final[0]["doi"] == "10.1/shared"
+    assert final[0]["paper_id"] == "shared"
+    assert final[0]["sources"] == ["arxiv", "semantic_scholar"]
+
+
+def test_source_balanced_cap_reserves_semantic_scholar_only_candidates():
+    queries = [{"query": f"q{i}", "search_terms": f"q{i}"} for i in range(3)]
+
+    def arxiv_search(query, n):
+        return [_cand(f"2401.{i:05d}", f"arXiv {i}") for i in range(30)]
+
+    def semantic_search(query, n):
+        return [{
+            "paper_id": f"s2-{query}-{i}", "doi": f"10.1/{query}-{i}", "arxiv_id": None,
+            "title": f"Conference {query} {i}", "abstract": "systems", "authors": [],
+            "year": 2020, "venue": "OSDI", "url": "", "pdf_url": "",
+        } for i in range(10)]
+
+    final = [
+        event["candidates"]
+        for event in discovery.collect_candidates(queries, arxiv_search, semantic_search)
+        if event["type"] == "candidates"
+    ][0]
+    assert len(final) == discovery.MAX_CANDIDATES
+    assert sum(c["sources"] == ["semantic_scholar"] for c in final) >= (
+        discovery.MIN_PROVIDER_EXCLUSIVE
+    )
 
 
 def test_collect_candidates_tolerates_a_throttled_query():
@@ -139,15 +248,17 @@ def test_score_blend_relevance_dominates_but_citations_lift_landmarks():
     candidates[1]["citation_count"] = 1_000_000
     candidates[2]["citation_count"] = 1_000_000
     candidates[3]["citation_count"] = 10
-    scores = [{"index": 1, "relevance": 10, "reason": "exact fit"},
-              {"index": 2, "relevance": 8, "reason": "strong fit"},
-              {"index": 3, "relevance": 2, "reason": "tangential"}]
+    scores = [{"index": 1, "relevance": 10, "credibility": 1, "reason": "exact fit"},
+              {"index": 2, "relevance": 8, "credibility": 4, "reason": "strong fit"},
+              {"index": 3, "relevance": 2, "credibility": 4, "reason": "tangential"}]
 
     ranked = discovery.score_candidates("goals", candidates, "m", fake_llm(scores=scores))
 
-    # landmark (8 + capped 4) > exact match (10 + 0) > tangential-famous (2 + 4) > unscored (~1)
+    # Credibility/impact lift the strongly relevant landmark over the uncited exact match,
+    # without allowing the equally famous but tangential work to compete.
     assert [c["arxiv_id"] for c in ranked] == ["2", "1", "3", "4"]
-    assert ranked[0]["score"] == 12.0  # citation term capped at CITATION_TERM_CAP
+    assert ranked[0]["score"] == 11.5
+    assert ranked[1]["score"] == 10.5
     assert ranked[0]["reasons"][0] == "strong fit"
     assert any("1,000,000 citations" in r for r in ranked[0]["reasons"])
     assert ranked[3]["relevance"] == 0.0  # unscored -> ranked last, not dropped
@@ -174,7 +285,7 @@ def test_run_discovery_event_sequence_and_result_shape():
     types = [e["type"] for e in events]
     assert types[0] == "queries"
     assert types.count("search") == 2
-    assert types[-3:] == ["citations", "scoring", "done"]
+    assert types[-4:] == ["citations", "evidence", "scoring", "done"]
 
     result = events[-1]["result"]
     assert result["goals"] == "understand 3D DRAM"
@@ -198,7 +309,92 @@ def test_result_persists_per_project(temp_project):
     assert loaded["suggestions"][0]["title"] == "Café paper"
 
 
+def test_load_result_upgrades_arxiv_only_persisted_shape_without_rewriting(temp_project):
+    old = {
+        "goals": "g",
+        "suggestions": [{
+            "arxiv_id": "2201.00002",
+            "title": "Old result",
+            "relevance": 9,
+            "score": 10,
+            "reasons": [],
+        }],
+    }
+    path = config.project_dir() / ".state" / "discovery.json"
+    path.write_text(json.dumps(old))
+    before = path.read_text()
+
+    loaded = discovery.load_result()
+
+    assert loaded["suggestions"][0]["candidate_id"] == "arxiv:2201.00002"
+    assert loaded["suggestions"][0]["sources"] == ["arxiv"]
+    assert loaded["suggestions"][0]["credibility"] == 0.0
+    assert loaded["source_counts"] == {"arxiv": 1, "semantic_scholar": 0}
+    assert path.read_text() == before
+
+
 def test_load_result_returns_none_when_absent_or_corrupt(temp_project):
     assert discovery.load_result() is None
     (config.project_dir() / ".state" / "discovery.json").write_text("{not json")
     assert discovery.load_result() is None
+
+
+def test_fixed_quality_fixture_recovers_and_ranks_conference_landmark():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "discovery_quality.json").read_text()
+    )
+    scoring_inputs: list[str] = []
+
+    def llm_fn(model, system, user, max_tokens):
+        if system == prompts.get("discover_queries"):
+            return json.dumps({"focus": fixture["focus"], "queries": fixture["queries"]})
+        scoring_inputs.append(user)
+        titles = re.findall(r"(?m)^\d+\. (.+)$", user)
+        return json.dumps({"scores": [
+            {"index": index, **fixture["scores"][title]}
+            for index, title in enumerate(titles, 1)
+        ]})
+
+    def arxiv_search(query, n):
+        return fixture["arxiv_results"]
+
+    def semantic_search(query, n):
+        return fixture["semantic_results"]
+
+    def authorships(candidates):
+        for candidate in candidates:
+            candidate["affiliations"] = fixture["affiliations"].get(
+                candidate["title"], []
+            )
+
+    arxiv_only = [
+        event["candidates"]
+        for event in discovery.collect_candidates(
+            fixture["queries"], arxiv_search
+        )
+        if event["type"] == "candidates"
+    ][0]
+    assert "conference-landmark" not in {
+        candidate.get("paper_id") for candidate in arxiv_only
+    }
+
+    result = list(discovery.run_discovery(
+        fixture["goals"],
+        model="fixture-model",
+        search_fn=arxiv_search,
+        semantic_search_fn=semantic_search,
+        llm_fn=llm_fn,
+        citations_fn=fake_citations({
+            "2401.00001": 3,
+            "2201.00002": 120,
+        }),
+        authorships_fn=authorships,
+    ))[-1]["result"]
+
+    assert [candidate["candidate_id"] for candidate in result["suggestions"][:2]] == (
+        fixture["expected_top"]
+    )
+    assert result["source_counts"] == {"arxiv": 2, "semantic_scholar": 2}
+    assert "OSDI" in scoring_inputs[0]
+    assert "MIT CSAIL" in scoring_inputs[0]
+    assert result["suggestions"][0]["arxiv_id"] is None
