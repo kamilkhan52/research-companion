@@ -534,37 +534,24 @@ async def start_paper_stream(req: StartReq):
 @project_router.post("/upload_paper")
 async def upload_paper(slug: str = Form(...), file: UploadFile = File(...)):
     """Last-resort source: the user uploads the paper's PDF directly (when it isn't on arXiv and
-    there's no public PDF link). Extract its text and cache it like a normal retrieval."""
+    there's no public PDF link). The request only receives the file; extraction and persistence
+    run in a registered background job that the client polls."""
     paper = store.get_paper(slug)
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")
-    data = await file.read()
+    max_bytes = 40_000_000
+    if file.size is not None and file.size > max_bytes:
+        raise HTTPException(status_code=413, detail="PDF is larger than the 40 MB limit.")
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=413, detail="PDF is larger than the 40 MB limit.")
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
     try:
-        full_text = retriever.extract_pdf_bytes(data)
+        job = retrieval_jobs.start_upload(slug, data, file.filename or "paper.pdf")
     except RetrievalError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
-    if not full_text.strip():
-        raise HTTPException(status_code=422, detail="Could not extract text from that PDF.")
-
-    def _write():
-        store.write_full_text(slug, paper.title, full_text,
-                              {"slug": slug, "source": f"upload:{file.filename}"})
-        cover_jobs.render_from_pdf(slug, data)  # rasterize the uploaded PDF (sync, in-thread)
-
-    # Guard + re-check + write run in one worker thread, off the event loop (task #75b).
-    try:
-        await asyncio.to_thread(_guarded_write, slug, _write)
-    except config.ProjectBusyError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This project is being moved or split — wait, then upload.") from e
-    except _PaperGoneError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This paper is no longer in the project (it may have just been moved).") from e
-    return {"ok": True, "retrieved": True}
+    return {"job": retrieval_jobs.snapshot(job.id)}
 
 
 # ---- turn setup, shared by the SSE endpoints (web) and the job endpoints (mobile).

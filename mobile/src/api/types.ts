@@ -138,7 +138,11 @@ export interface RetrievalJob {
   phase: 'resolving' | 'hunting' | 'confirmation' | 'done';
   detail: string;
   candidates: unknown[];
+  items?: AgentTrailItem[];
   retrieved: boolean;
+  matched_title?: string | null;
+  arxiv_id?: string | null;
+  source?: string | null;
   analysis_job_id: string | null;
   analysis_error: string | null;
 }

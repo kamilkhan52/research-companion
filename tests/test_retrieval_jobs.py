@@ -41,13 +41,62 @@ def test_retrieval_persists_text_without_a_polling_client(temp_project):
             "full_text": "retrieved paper text",
             "arxiv_id": "2401.00001",
             "source": "https://arxiv.org/abs/2401.00001",
+            "matched_title": "The Canonical Paper One",
         },
     )
     snap = _settled(job.id)
 
     assert snap["status"] == "done" and snap["retrieved"] is True
+    assert snap["matched_title"] == "The Canonical Paper One"
+    assert snap["arxiv_id"] == "2401.00001"
+    assert snap["source"] == "https://arxiv.org/abs/2401.00001"
     assert store.read_full_text("p1") == "retrieved paper text"
+    # Resolution only proposes the canonical title; it never rewrites the record silently.
+    assert store.get_paper("p1").title == "Paper One"
     assert retrieval_jobs.latest_for("p1").id == job.id
+
+
+def test_uploaded_pdf_extracts_and_persists_in_a_background_job(temp_project, monkeypatch):
+    _unretrieved_paper(temp_project)
+    monkeypatch.setattr(
+        retrieval_jobs.retriever,
+        "extract_pdf_bytes",
+        lambda data: "uploaded full text",
+    )
+
+    job = retrieval_jobs.start_upload("p1", b"pdf bytes", "my-paper.pdf")
+    snap = _settled(job.id)
+
+    assert snap["status"] == "done"
+    assert snap["retrieved"] is True
+    assert snap["source"] == "upload:my-paper.pdf"
+    assert store.read_full_text("p1") == "uploaded full text"
+
+
+def test_background_retrieval_does_not_recreate_a_paper_removed_mid_fetch(temp_project):
+    _unretrieved_paper(temp_project)
+
+    def retrieve_then_remove(title, aid, url):
+        store.remove_entry("p1")
+        return {"full_text": "orphan", "source": "test"}
+
+    job = retrieval_jobs.start_retrieval("p1", retrieve_fn=retrieve_then_remove)
+    snap = _settled(job.id)
+
+    assert snap["status"] == "error"
+    assert "no longer in the project" in (snap["error"] or "")
+    assert store.corpus_path("p1").exists() is False
+
+
+def test_new_retrieval_job_is_refused_while_project_is_reserved(temp_project):
+    _unretrieved_paper(temp_project)
+    config.mark_project_busy(temp_project)
+    try:
+        with pytest.raises(RetrievalError, match="moved or split"):
+            retrieval_jobs.start_retrieval("p1")
+    finally:
+        config.unmark_project_busy(temp_project)
+    assert retrieval_jobs.latest_for("p1") is None
 
 
 def test_retrieval_warms_figures_for_new_and_already_fetched_papers(temp_project, monkeypatch):

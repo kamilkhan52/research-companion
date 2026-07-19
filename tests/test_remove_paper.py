@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 from app import config, store
-from app.routers.projects_api import remove_paper
+from app.routers.projects_api import PaperPatchReq, remove_paper, update_paper
 from fastapi import HTTPException
 
 from tests.conftest import add_paper
@@ -33,6 +33,44 @@ def test_remove_entry_unknown_slug_is_false(temp_project):
     add_paper(temp_project, "a", "Paper A")
     assert store.remove_entry("nope") is False
     assert {p.slug for p in store.list_papers()} == {"a"}
+
+
+def test_rename_entry_preserves_slug_metadata_and_notes(temp_project):
+    add_paper(temp_project, "stable-slug", "Rough Ttle")
+    store.annotate_entry("stable-slug", arxiv_id="2401.00001")
+    store.append_notes_block("stable-slug", "Rough Ttle", "## Notes\n\nKeep this.")
+
+    assert store.rename_entry("stable-slug", "The Canonical Title") is True
+    paper = store.get_paper("stable-slug")
+    assert paper is not None
+    assert paper.slug == "stable-slug"
+    assert paper.title == "The Canonical Title"
+    assert paper.arxiv_id == "2401.00001"
+    assert "Keep this." in store.read_notes("stable-slug")
+    assert store.corpus_path("stable-slug").read_text().startswith("# The Canonical Title\n")
+
+
+def test_update_paper_route_commits_only_the_confirmed_paper_files(temp_project):
+    add_paper(temp_project, "a", "Rough Title")
+    add_paper(temp_project, "b", "Other Paper")
+    unrelated = store.corpus_path("b")
+    unrelated.write_text(unrelated.read_text() + "\nmid-flight work\n")
+
+    result = update_paper(temp_project, "a", PaperPatchReq(title="Canonical Title"))
+
+    assert result["paper"]["slug"] == "a"
+    assert result["paper"]["title"] == "Canonical Title"
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=str(config.project_dir()), capture_output=True, text=True,
+    ).stdout
+    assert "reading-list.md" in committed
+    assert "corpus/a.md" in committed
+    assert "corpus/b.md" not in committed
+    assert "corpus/b.md" in subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(config.project_dir()),
+        capture_output=True, text=True,
+    ).stdout
 
 
 def test_remove_entry_takes_the_whole_block(temp_project):
