@@ -50,6 +50,28 @@ def test_retrieval_persists_text_without_a_polling_client(temp_project):
     assert retrieval_jobs.latest_for("p1").id == job.id
 
 
+def test_retrieval_warms_figures_for_new_and_already_fetched_papers(temp_project, monkeypatch):
+    warmed: list[str] = []
+    monkeypatch.setattr(retrieval_jobs.figures, "warm_async", warmed.append)
+
+    _unretrieved_paper(temp_project)
+    first = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {
+            "full_text": "retrieved paper text",
+            "arxiv_id": "2401.00001",
+            "source": "https://arxiv.org/abs/2401.00001",
+        },
+    )
+    _settled(first.id)
+
+    # The next first-read start short-circuits retrieval but still retries the best-effort
+    # figure warm, covering papers that predate the cache or whose earlier warm missed.
+    second = retrieval_jobs.start_retrieval("p1")
+    assert second.status == "done"
+    assert warmed == ["p1", "p1"]
+
+
 def test_retrieval_renders_cover_from_downloaded_pdf(temp_project):
     # A cover rides along on the PDF retrieval already downloaded — no second fetch.
     import fitz
