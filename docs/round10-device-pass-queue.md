@@ -124,6 +124,11 @@ depends on screenshots Kamil has not attached yet.
 - **R10.20 — Preview cues continue until playable audio is ready.** In stitched-full and
   segmented modes, cues must bridge from analysis generation through the actual audio-ready
   boundary, without repetition. Text completion alone must not stop them.
+  **Implemented in
+  [#177](https://github.com/kamilkhan52/research-companion/pull/177):** the coordinator still
+  reacts immediately to finished synthesis segments, but a bounded keepalive now permits a
+  fresh grounded cue during a long flat segment. Terminal audio status remains the only
+  ready boundary, and pending late cues are suppressed there.
 - **R10.21 — Multiple threads per paper.** Let the reader start a clean thread with arbitrary
   text once the source is available, switch among independent threads, retain the main chat's
   tools, and synthesize concluded insights from all threads into the notes proposal. Requires
