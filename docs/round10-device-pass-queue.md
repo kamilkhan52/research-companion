@@ -117,10 +117,11 @@ depends on screenshots Kamil has not attached yet.
 - **R9.2 approved — sentence annotations.** Implement the four phases in
   `docs/text-comments-design.md`. Long-press keeps the existing action menu; **Comment on this**
   enters sentence selection. Native arbitrary character-range selection remains unavailable.
-  **Phase 1 implemented in the current sentence-render slice:** committed prose has an opt-in
-  sentence-span path with tap handling, violet selection/annotation marks, a comment-count
-  badge, and link suppression during annotation; all ordinary Markdown callers stay on the
-  unchanged renderer.
+  **Phase 1 implemented in
+  [#178](https://github.com/kamilkhan52/research-companion/pull/178):** committed prose has
+  an opt-in sentence-span path with tap handling, violet selection/annotation marks, a
+  comment-count badge, and link suppression during annotation; all ordinary Markdown callers
+  stay on the unchanged renderer.
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
