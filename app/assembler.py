@@ -6,7 +6,7 @@ are assembled once at session start rather than rebuilt here every turn.
 """
 from __future__ import annotations
 
-from . import config, graph, prompts, store
+from . import config, figures, graph, prompts, store
 from .models import REVIEW_SLUG
 
 
@@ -116,6 +116,28 @@ def build_context(slug: str) -> str:
             head += (f"Published: {year}. Situate the paper in time — note which related "
                      "works predate or postdate it when weighing its contributions.\n\n")
         parts.append(head + entry)
+
+    manifest = figures.manifest_for(slug)
+    available = [
+        figure for figure in (manifest or {}).get("figures", [])
+        if figure.get("number") is not None
+    ]
+    if manifest and manifest.get("status") == "done" and available:
+        block = [
+            "# Prefetched figure cards available for this paper",
+            "(These exact printed labels have cached images in the app. To render a card inline, "
+            "write `Figure N` naturally in the paragraph where it matters; do not emit markdown "
+            "image syntax. Use only grounded, genuinely relevant figures.)",
+        ]
+        for figure in available:
+            caption = " ".join(str(figure.get("caption") or "").split())
+            if len(caption) > 360:
+                caption = caption[:357].rstrip() + "..."
+            line = f"- Figure {figure['number']}"
+            if caption:
+                line += f": {caption}"
+            block.append(line)
+        parts.append("\n".join(block))
 
     return "\n\n---\n\n".join(parts)
 

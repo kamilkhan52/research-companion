@@ -56,3 +56,21 @@ def test_all_scope_excludes_the_current_papers_own_notes(temp_project, monkeypat
     ctx = assembler.build_context("current")
     assert "Own notes marker." not in ctx  # the paper under discussion isn't its own prior
     assert "Unrelated finding: X beats Y." in ctx
+
+
+def test_reading_context_lists_only_prefetched_numbered_figure_cards(temp_project, monkeypatch):
+    add_paper(temp_project, "paper", "Paper With Figures", full_text="t")
+    monkeypatch.setattr(assembler.figures, "manifest_for", lambda slug: {
+        "status": "done",
+        "figures": [
+            {"number": 2, "caption": "  The main architecture.  "},
+            {"number": None, "caption": "Unnumbered appendix image."},
+        ],
+    })
+
+    ctx = assembler.build_context("paper")
+
+    assert "Prefetched figure cards available" in ctx
+    assert "- Figure 2: The main architecture." in ctx
+    assert "Unnumbered appendix image" not in ctx
+    assert "write `Figure N`" in ctx

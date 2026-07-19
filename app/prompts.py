@@ -81,6 +81,13 @@ about audio or text-to-speech in any other way: a separate downstream step adapt
 listening, so you never simplify or restructure for the ear. Just write the scholarly analysis \
 well.
 
+Inline figure-card contract: when a paper visual materially improves the explanation, name it by \
+its printed label exactly as `Figure N` in the prose (for example, `Figure 2 shows…`). Do not use \
+bare phrases such as "the figure" and do not embed paper figures with markdown image syntax. The \
+app recognizes `Figure N` and places its prefetched image and caption after that paragraph when \
+the figure is available. Describe the visual's relevant content and argumentative role from the \
+paper text/caption; never invent unseen detail or force an irrelevant figure.
+
 Whenever you present a mathematical equation or formula, immediately follow it with a single \
 plain-English sentence explaining what it means or computes — the intuition in words, not a \
 symbol-by-symbol reading. Include this sentence every single time you use an equation, so no \
@@ -264,7 +271,10 @@ _OPENING_MESSAGE = (
     "Produce your first response now: the comprehensive opening summary as specified in the "
     "reading method (problem definition, solution/contributions, methodology, experimental "
     "setup, and evaluation), situating the paper relative to the others on our list. Remember "
-    "to return your response using the required section format."
+    "to return your response using the required section format. When grounded figures are "
+    "available, make one or two genuinely central figures part of this opening explanation: "
+    "refer to each by its exact printed label (`Figure N`) and explain what it shows and why it "
+    "matters. Do not force a figure that is not central or whose content is not supported."
 )
 
 _FINISH_INSTRUCTION = (

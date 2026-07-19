@@ -86,6 +86,16 @@ def test_default_research_prompts_are_self_contained_and_never_defer_visuals():
     assert "never defer the reader\nto inspect it later or invent unseen content" in reading_method
 
 
+def test_default_analysis_prompts_expose_the_inline_figure_card_contract():
+    analysis = prompts.DEFAULTS["analysis_system"]
+    opening = prompts.DEFAULTS["opening_message"]
+
+    assert "printed label exactly as `Figure N`" in analysis
+    assert "do not embed paper figures with markdown image syntax" in analysis
+    assert "one or two genuinely central figures" in opening
+    assert "Do not force a figure" in opening
+
+
 def test_vault_then_legacy_then_default_precedence(prompt_environment):
     config.set_prompt_override("tts_instructions", "legacy override")
     assert prompts.get("tts_instructions") == "legacy override"

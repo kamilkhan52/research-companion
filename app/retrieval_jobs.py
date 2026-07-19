@@ -69,6 +69,10 @@ def start_retrieval(
         raise RetrievalError("Unknown paper")
 
     if paper.retrieved and not arxiv_id and not pdf_url:
+        # A paper may predate figure warming, or its earlier best-effort warm may have missed.
+        # Starting a first read is another safe opportunity to prefetch the manifest/assets.
+        # This remains a registered background job and never delays the request or analysis.
+        figures.warm_async(slug)
         job = _registry.put(
             slug,
             RetrievalJob(

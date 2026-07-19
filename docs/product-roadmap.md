@@ -177,6 +177,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.4–R10.9 | Project-scoped first-tap Map build; shared safe progress connectors; 50-node in-canvas pager; unambiguous citation labels; generic Discover placeholder | [#173](https://github.com/kamilkhan52/research-companion/pull/173) | Complete |
 | R10.24 + bounded Authors/Labs | Full player suppresses the redundant mini-player; ranked Author/Lab lists reveal bounded pages | [#174](https://github.com/kamilkhan52/research-companion/pull/174) | Complete |
 | R10.23 | Editing a user turn immediately rewinds the visible discussion to the preceding response; the original prompt and later tail stay hidden through regeneration | [#175](https://github.com/kamilkhan52/research-companion/pull/175) | Complete |
+| R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | current slice | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 

@@ -132,6 +132,10 @@ depends on screenshots Kamil has not attached yet.
   figure manifest/assets. Give the analysis model concise, correct instructions for referring
   to available figures in the syntax the renderer recognizes; the initial analysis should use
   one or two genuinely central figures when available, never force irrelevant ones.
+  **Implemented in the current R10.22 slice:** both new retrievals and already-fetched
+  first-read starts launch the registered background figure warm; ready numbered
+  figures/captions enter the reading context; the analysis and opening prompts specify the
+  exact `Figure N` inline-card contract and the one-or-two-central-figures rule.
 - **R10.23 — Edit-message view matches backend rewind.** While editing a user turn, hide that
   original user bubble and every subsequent assistant turn. Show only the assistant response
   preceding the edited turn plus the editable draft, exactly matching the server's branch
