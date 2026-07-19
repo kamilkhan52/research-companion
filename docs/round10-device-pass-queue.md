@@ -82,14 +82,24 @@ depends on screenshots Kamil has not attached yet.
 - **R10.13 — Canonicalize a title after resolution, with confirmation.** When a title query
   resolves to a paper, show what was found and offer to replace incomplete/mistyped input with
   the canonical title. Do not silently rewrite the reading-list record.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** durable retrieval snapshots carry the matched source title; both first-read
+  and auto-analysis re-entry ask before a stable-slug rename.
 - **R10.14 — Paper edit menu.** Provide basic Rename/Delete and any justified identity/source
   actions from a standard paper menu. Existing swipe-delete stays; investigate a swipe in the
   opposite direction only if it remains discoverable and does not conflict with navigation.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** the paper overflow offers Rename and Delete; rename commits only the bounded
+  reading-list/corpus paths and preserves the slug, Notes, and discussion history.
 - **R10.15 — Fetch status, explicit Fetch, and recovery.** Replace “the analyst will fetch…”
   prose with a compact source status and Fetch action. Starting reading still auto-fetches.
   Show resolution progress/results cleanly, scroll first-read progress to the current stage,
   expose failures, and offer PDF link or PDF upload using existing confirmation/retrieval
   paths where possible.
+  **Implemented in [#184](https://github.com/kamilkhan52/research-companion/pull/184)
+  (in review):** mobile uses durable retrieval jobs and reattachment instead of retrieval SSE;
+  the source card exposes Fetch, Fetch & Start, live progress, terminal errors, candidate/link
+  recovery, and native PDF upload. Upload extraction is itself a guarded background job.
 - **R10.16 — Multi-select action redesign.** The current horizontal bar crowds `N selected`
   vertically and oversizes Move/Delete. Use a standard compact selection action surface with
   explicit **Move** and **Copy**; only Move implies source removal. Notes handling remains an
