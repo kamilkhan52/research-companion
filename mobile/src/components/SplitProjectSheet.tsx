@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { StyleSheet, Switch, View } from 'react-native';
 
+import type { RelocationResult } from '@/api/endpoints';
 import { useSplitProject } from '@/api/queries';
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { Button, Text } from '@/ui';
@@ -28,8 +29,8 @@ export function SplitProjectSheet({
   /** At least one selected paper has committed Notes that can ground the AI passes. */
   notesEligible: boolean;
   onClose: () => void;
-  /** Called with the new project's id after a successful split (the caller switches to it). */
-  onDone: (newPid: string) => void;
+  /** The caller switches projects and opens immediate notes review when one was requested. */
+  onDone: (result: RelocationResult) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -73,7 +74,7 @@ export function SplitProjectSheet({
       setRemove(true);
       setDraftNotes(true);
       setCleanupSource(false);
-      onDone(res.new_pid);
+      onDone(res);
     } catch (e) {
       setError((e as Error).message ?? 'Could not split the project.');
     }

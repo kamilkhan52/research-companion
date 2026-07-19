@@ -35,7 +35,7 @@ No code ships with this document.
 |---|---|---|
 | Reading-list block (title, status, `<!-- arxiv/year/slug/cites -->`, abstract) | verbatim, under its source group heading | same |
 | Corpus file incl. committed `## Notes` | moves | copies |
-| Session transcript + retry branches (`sessions/<slug>*`, committed history) | moves (it is work done on that paper) | stays in source — duplicating a live discussion would fork its history |
+| Session transcript + retry branches (`sessions/<slug>*`, committed history) | moves (it is work done on that paper) | copies into an independent destination history; source history remains intact |
 | Per-paper graph caches (`.state/reference-graph.json` record, `.state/graph-corpus/<slug>.txt`, cover PNG) | copied either way — cheap files that save a paid re-extraction on the new project's first build | same |
 | Working notes | never move automatically — phases 2/3 below propose changes for humans to approve | same |
 | Usage ledger, whole-graph snapshot, session index | stay; the graph and index rebuild lazily like any new project | same |
@@ -79,12 +79,13 @@ R8.2 shipped phase 1; R8.3 ships the two proposal jobs and their controls.
      in-app confirmation — the same invariant-4 posture as `DELETE /papers/{slug}`, which
      already git-commits directly on confirmed quick actions.
    - The response returns the new pid; the client switches projects (the R7.5 machinery).
-2. **Destination working notes (background job + approval)** — when
-   `draft_destination_notes`: an LLM pass synthesizes a `working-notes.md` proposal from the
-   migrated papers' committed Notes. For a new project it builds on the starter document; for
-   an existing project it integrates the papers without discarding the destination's current
-   synthesis. Normal proposal → review → apply through the notes save path; nothing reaches
-   the record unapproved (invariant 4).
+2. **Destination working notes (background jobs + sequential approval)** — when
+   `draft_destination_notes`: the client immediately enters Working Notes and reviews one
+   migrated paper at a time. Each background job integrates only that paper's committed Notes
+   into the destination's then-current `working-notes.md`; Apply commits it before the next
+   paper starts, while Discard advances without writing. For a new project the first pass
+   builds on the starter document; for an existing project every pass preserves and extends
+   the current synthesis. Nothing reaches the record unapproved (invariant 4).
 3. **Source cleanup (background job + approval)** — when `cleanup_source_notes` (implies
    remove-on): an LLM pass proposes the source's working notes with the departed papers'
    contributions removed. Working-notes content is synthesized without per-paper
@@ -121,8 +122,9 @@ recoverable through the latest-job endpoint until the user applies or discards t
 
 ## Deliberate boundaries
 
-- **No transcript duplication on copy** — a discussion is a conversation in one project's
-  context; only a move relocates it, and only wholesale.
+- **Copy duplicates paper work into an independent destination record** — transcript,
+  retry branches, session state, Notes, corpus, and per-paper graph caches all travel. The
+  source remains untouched; subsequent conversations and commits diverge per project.
 - **No AI merge of two projects** (the reverse) — out of scope until splitting earns it.
 - **No partial-notes surgery on per-paper Notes** — they are the paper's record and travel
   atomically with it. Only working notes get LLM-mediated rewrites, always via approval.
@@ -139,9 +141,9 @@ all load-bearing:
 
 - **Destination validation + slug-collision refusal.** The destination must exist and differ
   from the source. A slug is refused if the destination already has its data — a reading-list
-  entry OR **retained on-disk records** (the removal endpoint keeps a removed paper's corpus/
-  transcript/branches on disk, so a slug absent from the reading list can still own files;
-  writing over them would destroy the destination's history). All-or-nothing.
+  entry, **retained session metadata**, OR retained on-disk records (the removal endpoint keeps
+  a removed paper's corpus/transcript/branches on disk, so a slug absent from the reading list
+  can still own work; writing over it would destroy the destination's history). All-or-nothing.
 - **Slug validation before path-building.** `slugs` is client input, fed into corpus/transcript
   path helpers by the collision check, so every slug is checked against the source's current
   entries up front — a non-entry value (including a `../x` traversal) is rejected before any
@@ -181,5 +183,6 @@ copy path reusable.
 ## Decisions now implemented
 
 - Remove-from-source defaults on; copy remains available.
-- Transcripts move only with a move, not a copy.
+- Transcripts and session state travel on both Move and Copy; Copy leaves an independent source
+  history in place.
 - Cleanup is working-notes-only, always an AI proposal requiring explicit apply.

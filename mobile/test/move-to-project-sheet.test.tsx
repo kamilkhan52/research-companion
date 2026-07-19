@@ -43,7 +43,9 @@ test('confirming a move posts to the destination and reports the new pid', async
       cleanup_source_notes: false,
     }),
   );
-  await waitFor(() => expect(onDone).toHaveBeenCalledWith('dest'));
+  await waitFor(() => expect(onDone).toHaveBeenCalledWith(expect.objectContaining({
+    new_pid: 'dest',
+  })));
 });
 
 test('a pre-R8.3 response still reports the committed move as successful', async () => {
@@ -57,6 +59,8 @@ test('a pre-R8.3 response still reports the committed move as successful', async
   await render(onDone);
 
   fireEvent.press(screen.getByText('Move papers'));
-  await waitFor(() => expect(onDone).toHaveBeenCalledWith('dest'));
+  await waitFor(() => expect(onDone).toHaveBeenCalledWith(expect.objectContaining({
+    new_pid: 'dest',
+  })));
   expect(screen.queryByText('Could not move the papers.')).toBeNull();
 });

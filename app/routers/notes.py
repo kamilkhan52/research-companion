@@ -78,10 +78,15 @@ def notes_job_status(job_id: str):
 
 @project_router.post("/notes/jobs/{job_id}/discard")
 def notes_job_discard(job_id: str):
-    """Dismiss a settled proposal so it does not reappear through the latest-job endpoint."""
-    if not notes_jobs.discard(job_id):
+    """Dismiss a settled proposal. A relocation queue advances to its next paper."""
+    job = notes_jobs.get_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Unknown or still-running notes job")
-    return {"ok": True}
+    with notes_jobs.mutation_lock(job.target):
+        resolved = notes_jobs.resolve_and_advance(job_id, target=job.target)
+    if not resolved["ok"]:
+        raise HTTPException(status_code=404, detail="Unknown or still-running notes job")
+    return resolved
 
 
 @project_router.get("/notes/{target}")
@@ -111,12 +116,13 @@ def save_notes(target: str, req: NotesSaveReq):
                 )
             result = notes_jobs.save(target, req.markdown, req.summary or "")
             if req.job_id:
-                notes_jobs.discard(req.job_id, target=target)
+                advance = notes_jobs.resolve_and_advance(req.job_id, target=target)
             else:
                 # Compatibility with pre-R8.3 clients, whose apply request has no job id.
                 # Exact stored-result matching prevents their applied proposal from remaining
                 # retained and blocking the next revision.
                 notes_jobs.discard_if_applied(target)
+                advance = {"next_job": None, "next_error": None}
     except config.ProjectBusyError as e:
         raise HTTPException(
             status_code=409,
@@ -124,7 +130,12 @@ def save_notes(target: str, req: NotesSaveReq):
         ) from e
     except notes_jobs.NotesError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return {**result, "target": target}
+    return {
+        **result,
+        "target": target,
+        "next_job": advance["next_job"],
+        "next_error": advance["next_error"],
+    }
 
 
 @project_router.post("/notes/{target}/agent_job")

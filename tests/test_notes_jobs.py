@@ -239,6 +239,74 @@ def test_split_destination_drafts_from_committed_notes_when_working_notes_are_em
     assert notes_jobs.read(notes_jobs.WORKING) == ""  # proposal only
 
 
+def test_relocation_notes_integrate_and_commit_one_paper_at_a_time(temp_project):
+    from app.routers.notes import NotesSaveReq, save_notes
+
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        if "SmoothQuant (slug: smooth)" in prompt:
+            yield {
+                "type": "final",
+                "text": "# Working notes\n\nAWQ is integrated.\n\nSmoothQuant is integrated.",
+            }
+        else:
+            yield {"type": "final", "text": "# Working notes\n\nAWQ is integrated."}
+
+    first = notes_jobs.start_split_destination_queue(
+        [
+            {"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit weights work."},
+            {
+                "slug": "smooth",
+                "title": "SmoothQuant",
+                "notes": "## Notes\n\nActivation smoothing helps.",
+            },
+        ],
+        source_name="Inference",
+        runner=runner,
+    )
+    first = _wait_until_settled(first.id)
+    assert (first.relocation_index, first.relocation_total, first.relocation_title) == (
+        1, 2, "AWQ",
+    )
+    assert "SmoothQuant (slug: smooth)" not in prompts_seen[0]
+
+    applied_first = save_notes(
+        notes_jobs.WORKING,
+        NotesSaveReq(
+            markdown=first.result or "",
+            summary=first.summary,
+            base_revision=first.base_revision,
+            job_id=first.id,
+        ),
+    )
+    assert "AWQ is integrated." in notes_jobs.read(notes_jobs.WORKING)
+    assert applied_first["next_job"]["relocation_index"] == 2
+
+    second = _wait_until_settled(applied_first["next_job"]["id"])
+    assert (second.relocation_index, second.relocation_total, second.relocation_title) == (
+        2, 2, "SmoothQuant",
+    )
+    # The second pass is grounded in both the newly committed first integration and only the
+    # second paper's committed Notes.
+    assert "AWQ is integrated." in prompts_seen[1]
+    assert "Activation smoothing helps." in prompts_seen[1]
+
+    applied_second = save_notes(
+        notes_jobs.WORKING,
+        NotesSaveReq(
+            markdown=second.result or "",
+            summary=second.summary,
+            base_revision=second.base_revision,
+            job_id=second.id,
+        ),
+    )
+    assert applied_second["next_job"] is None
+    assert notes_jobs.latest_for(notes_jobs.WORKING) is None
+    assert "SmoothQuant is integrated." in notes_jobs.read(notes_jobs.WORKING)
+
+
 def test_split_source_cleanup_is_grounded_in_departed_notes(temp_project):
     notes_jobs.save(
         notes_jobs.WORKING,

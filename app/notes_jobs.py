@@ -87,6 +87,11 @@ class NotesJob(Job):
     # ({kind:'text', text} | {kind:'tool', name, detail}) — same shape as chat job items.
     items: list = field(default_factory=list)
     result: str | None = None        # the proposed revised markdown, once done
+    # Relocation integrations are deliberately one paper at a time. These fields let the
+    # review UI say "Paper 2 of 4" without exposing the remaining papers' Notes payload.
+    relocation_index: int | None = None
+    relocation_total: int | None = None
+    relocation_title: str | None = None
 
 
 # `_jobs` aliases the registry dict so tests can clear() it to reset.
@@ -94,6 +99,7 @@ _registry: JobRegistry[NotesJob] = JobRegistry("notes", max_finished=20)
 _jobs = _registry.jobs
 _mutation_locks_guard = threading.Lock()
 _mutation_locks: dict[tuple[str | None, str], threading.RLock] = {}
+_RELOCATION_QUEUE_ATTR = "_rc_relocation_queue"
 
 
 @contextlib.contextmanager
@@ -247,6 +253,77 @@ def start_split_destination(
             reject_running=True,
             allow_busy=allow_busy,
         )
+
+
+def start_split_destination_queue(
+    papers: list[dict],
+    *,
+    source_name: str,
+    runner: RunnerFn | None = None,
+    allow_busy: bool = False,
+) -> NotesJob:
+    """Start a destination integration queue, one migrated paper per human review.
+
+    The queue is kept as private in-process job metadata, matching the existing proposal
+    lifecycle: completed notes proposals themselves live in the single-worker registry until
+    applied or discarded. Only the current paper's title and position serialize to clients;
+    the remaining Notes never leak through a job snapshot.
+    """
+    usable = _usable_papers(papers)
+    if not usable:
+        raise NotesError("The selected papers do not have committed Notes to synthesize.")
+    queue = {
+        "papers": usable,
+        "source_name": source_name,
+        "runner": runner,
+        "index": 0,
+    }
+    return _start_relocation_queue_item(queue, allow_busy=allow_busy)
+
+
+def resolve_and_advance(job_id: str, *, target: str | None = None) -> dict:
+    """Discard a settled proposal and, when it belongs to a relocation queue, start the next
+    paper's proposal against the now-current working notes.
+
+    Call this only after an Apply has committed the current result, or when the person explicitly
+    discards it. A scheduling failure does not undo the already-committed Apply; it is returned
+    beside the successful resolution so the client can explain and recover.
+    """
+    job = get_job(job_id)
+    if job is None or (target is not None and job.target != target):
+        return {"ok": False, "next_job": None, "next_error": None}
+    queue = getattr(job, _RELOCATION_QUEUE_ATTR, None)
+    if not discard(job_id, target=target):
+        return {"ok": False, "next_job": None, "next_error": None}
+    if not queue:
+        return {"ok": True, "next_job": None, "next_error": None}
+
+    queue["index"] += 1
+    if queue["index"] >= len(queue["papers"]):
+        return {"ok": True, "next_job": None, "next_error": None}
+    try:
+        next_job = _start_relocation_queue_item(queue)
+    except (NotesError, RuntimeError) as e:
+        return {"ok": True, "next_job": None, "next_error": str(e)}
+    return {"ok": True, "next_job": snapshot(next_job.id), "next_error": None}
+
+
+def _start_relocation_queue_item(queue: dict, *, allow_busy: bool = False) -> NotesJob:
+    index = int(queue["index"])
+    paper = queue["papers"][index]
+    job = start_split_destination(
+        [paper],
+        source_name=str(queue["source_name"]),
+        runner=queue.get("runner"),
+        allow_busy=allow_busy,
+    )
+    job.relocation_index = index + 1
+    job.relocation_total = len(queue["papers"])
+    job.relocation_title = str(
+        paper.get("title") or paper.get("slug") or "Untitled paper"
+    ).strip()
+    setattr(job, _RELOCATION_QUEUE_ATTR, queue)
+    return job
 
 
 def start_split_source_cleanup(

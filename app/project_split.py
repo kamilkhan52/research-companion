@@ -9,8 +9,10 @@ What travels per selected slug (see docs/project-forking-design.md for the full 
 reading-list block (verbatim, dangling cites dropped), corpus file incl. committed Notes,
 session transcript + retry branches, and the per-paper graph caches (extraction record,
 retrieved text, cover, provider record, retrieval record) — the caches are copied EITHER
-way because re-extraction is a paid call. With `remove_from_source` the source loses the
-papers through the same committed-removal posture as the by-hand removal endpoint.
+way because re-extraction is a paid call. Session history now follows the same rule: Copy
+duplicates it into an independent destination history; Move duplicates it and then removes
+the source. With `remove_from_source` the source loses the papers through the same
+committed-removal posture as the by-hand removal endpoint.
 
 Discipline: like `recent_sessions`, this rebinds the active-project contextvar as it crosses
 between the two projects, so `store`/`sessions`/`graph_store` stay pure single-project
@@ -80,18 +82,20 @@ def _cover_path(slug: str):
     return cover_jobs.cover_path(slug)
 
 
-def _write_new_project(new_pid: str, bundle: dict, keep: set[str], move: bool) -> None:
-    """Materialize the bundle into the NEW project (contextvar already bound to it). Session
-    state (transcript + branches + index entry) travels ONLY on a move — a discussion is a
-    conversation in one project's context, so a copy leaves it in the source (copying it would
-    make the paper falsely resumable and fork the history)."""
+def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
+    """Materialize the bundle into the NEW project (contextvar already bound to it).
+
+    A copy means "paper plus the work done on it", not a blank duplicate: transcript, retry
+    branches, and session metadata travel for both Move and Copy. On Copy the source simply
+    retains its own independent copy of that history.
+    """
     data = graph_store.load()
     for slug, b in bundle.items():
         block = _rewrite_block_cites(b["entry"]["block"], keep)
         store.append_entry_block(b["entry"]["group"], block)
         if b["corpus_bytes"] is not None:
             store.corpus_path(slug).write_bytes(b["corpus_bytes"])
-        if move and (b["jsonl_bytes"] is not None or b["session_meta"] is not None):
+        if b["jsonl_bytes"] is not None or b["session_meta"] is not None:
             jsonl, branches = sessions.transcript_paths(slug)
             jsonl.parent.mkdir(parents=True, exist_ok=True)
             if b["jsonl_bytes"] is not None:
@@ -186,6 +190,7 @@ def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
         for slug in slugs:
             jsonl, branches = sessions.transcript_paths(slug)
             if (store.corpus_path(slug).exists() or jsonl.exists() or branches.exists()
+                    or sessions.index_entry(slug) is not None
                     or _cover_path(slug).exists()
                     or graph_store._retrieved_text_file(slug).exists()
                     or slug in (data.get("papers") or {})
@@ -198,17 +203,15 @@ def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
         config.reset_active_project(token)
 
 
-def _written_dest_paths(slugs: list[str], *, move: bool) -> list[str]:
+def _written_dest_paths(slugs: list[str]) -> list[str]:
     """Git-tracked paths a move WROTE into the destination (contextvar bound to dest), so its
     commit stages exactly those — the destination has unrelated files, so `add -A` is unsafe
     (unlike the fresh-scaffold split). Only existing files: `git add -- <missing>` errors, and
-    a copy writes no transcript. `.state/*` (covers, graph caches, branches) is gitignored."""
+    `.state/*` (covers, graph caches, branches) is gitignored."""
     root = config.project_dir()
     paths = ["reading-list.md"]  # always modified (the appended entry blocks)
     for slug in slugs:
-        candidates = [store.corpus_path(slug)]
-        if move:
-            candidates.append(sessions.transcript_paths(slug)[0])
+        candidates = [store.corpus_path(slug), sessions.transcript_paths(slug)[0]]
         for f in candidates:
             if f.exists():
                 paths.append(str(f.relative_to(root)))
@@ -243,9 +246,8 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
                       _cover_path(slug), graph_store._retrieved_text_file(slug)):
                 p.unlink(missing_ok=True)
             # A move imported the paper's session-index entry (.state/sessions.json) too; drop
-            # it, or the destination keeps a phantom `in_discussion` session for a paper it no
-            # longer has (a later re-add would look resumable with no transcript). No-op on a
-            # copy, which imports no session.
+            # it, or the destination keeps a phantom session for a paper it no longer has (a
+            # later re-add would look resumable with no transcript).
             sessions.drop_session(slug)
         except Exception:
             log.warning("could not remove moved-in file(s) for %s from %s", slug, dest_pid,
@@ -345,16 +347,18 @@ def move_to_existing(
             try:
                 snap = _snapshot_dest(dest_pid)
                 try:
-                    _write_new_project(dest_pid, bundle, keep, move=remove_from_source)
-                    written = _written_dest_paths(slugs, move=remove_from_source)
+                    _write_new_project(dest_pid, bundle, keep)
+                    written = _written_dest_paths(slugs)
                     # Pathspec, not `add -A`: the destination has its own (possibly dirty)
                     # files, and only the paths this move wrote may enter its commit. (Same
                     # accepted reading-list-pathspec tradeoff as the shipped removal endpoint /
                     # PR #147: a pre-existing uncommitted reading-list add rides along; the busy
                     # reservation blocks a CONCURRENT add during the move window.)
                     projects._git(dest_pid, "add", "--", *written)
+                    action = "Move" if remove_from_source else "Copy"
                     projects._git(dest_pid, "commit", "-q", "-m",
-                                  f"Move {len(slugs)} paper(s) from {source_pid}", "--", *written)
+                                  f"{action} {len(slugs)} paper(s) from {source_pid}",
+                                  "--", *written)
                     removed = _finish_source_removal(source_pid, slugs, bundle, dest_name) \
                         if remove_from_source else False
                 except Exception:
@@ -523,7 +527,7 @@ def split_project(
                     projects.update_meta(new_pid, goals=goals.strip())
                 new_token = config.set_active_project(new_pid)
                 try:
-                    _write_new_project(new_pid, bundle, keep, move=remove_from_source)
+                    _write_new_project(new_pid, bundle, keep)
                 finally:
                     config.reset_active_project(new_token)
                 # Fresh scaffold — everything in it is split-owned, so `add -A` is safe here.

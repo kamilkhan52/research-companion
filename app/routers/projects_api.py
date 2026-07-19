@@ -452,7 +452,7 @@ def _start_relocation_notes(
         token = config.set_active_project(destination_pid)
         try:
             try:
-                job = notes_jobs.start_split_destination(
+                job = notes_jobs.start_split_destination_queue(
                     papers,
                     source_name=source_name,
                     allow_busy=allow_busy,

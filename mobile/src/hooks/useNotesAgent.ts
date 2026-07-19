@@ -54,6 +54,10 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
       return;
     }
     setJob(next);
+    // A queued relocation adopts a brand-new job immediately after resolving the previous
+    // proposal. Clear that previous terminal state before rendering the next running snapshot.
+    setProposal(null);
+    setError(null);
     if (next.status === 'running') {
       setRunning(true);
       return;
@@ -152,16 +156,19 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
     }
     const requestScope = scope;
     void discardNotesJob(pid, id)
-      .then(({ ok }) => {
+      .then(({ ok, next_job: nextJob, next_error: nextError }) => {
         if (!ok) throw new Error('The proposal is still retained on the server.');
-        if (scopeRef.current === requestScope) clearLocalJob();
+        if (scopeRef.current !== requestScope) return;
+        if (nextJob) applyJob(nextJob);
+        else clearLocalJob();
+        if (nextError) setError(`This proposal was resolved, but the next paper could not start: ${nextError}`);
       })
       .catch((e) => {
         if (scopeRef.current === requestScope) {
           setError((e as Error).message ?? 'Could not discard the proposal. Try again.');
         }
       });
-  }, [clearLocalJob, job?.id, pid, scope]);
+  }, [applyJob, clearLocalJob, job?.id, pid, scope]);
   // Error jobs are retained by the same latest-job endpoint, so clearing them uses the same
   // acknowledged discard path. A failed retry leaves both the job id and error recoverable.
   const clearError = useCallback(() => dismissProposal(), [dismissProposal]);

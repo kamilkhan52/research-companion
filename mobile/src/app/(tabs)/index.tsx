@@ -417,10 +417,11 @@ export default function LibraryScreen() {
         slugs={[...selected]}
         notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
         onClose={() => setSplitOpen(false)}
-        onDone={(newPid) => {
+        onDone={(result) => {
           setSplitOpen(false);
           exitSelect();
-          setActivePid(newPid);
+          setActivePid(result.new_pid);
+          if (result.notes_jobs?.destination) router.push('/notes/working');
         }}
       />
 
@@ -457,10 +458,11 @@ export default function LibraryScreen() {
         slugs={[...selected]}
         notesEligible={selectedHaveNotes && !!stateQuery.data?.has_key}
         onClose={() => setMoveDest(null)}
-        onDone={(destPid) => {
+        onDone={(result) => {
           setMoveDest(null);
           exitSelect();
-          setActivePid(destPid);
+          setActivePid(result.new_pid);
+          if (result.notes_jobs?.destination) router.push('/notes/working');
         }}
       />
 
