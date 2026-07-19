@@ -65,11 +65,18 @@ import {
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
+import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
-import { LinkHandlerContext, Markdown, type FigureContext, type LinkHandler } from '@/components/Markdown';
+import {
+  LinkHandlerContext,
+  Markdown,
+  type FigureContext,
+  type LinkHandler,
+  type SentenceAnnotations,
+} from '@/components/Markdown';
 import { usePaperActions } from '@/components/PaperEntityProvider';
 import { PromptTemplateOption } from '@/components/PromptTemplateOption';
 import { GeneratingBar } from '@/components/NarrationTranscript';
@@ -81,6 +88,15 @@ import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { fullPaperUrl } from '@/lib/paperLinks';
+import {
+  composeSentenceReply,
+  removeSentenceComment,
+  sameSentence,
+  sentenceCommentPayload,
+  upsertSentenceComment,
+  type PendingSentenceComment,
+  type SelectedSentence,
+} from '@/lib/sentenceComments';
 import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles, useThemeMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -927,6 +943,14 @@ function DiscussionThread({
   );
   const editing = editDraft.value;
   const setEditing = editDraft.setValue;
+  const sentenceCommentsDraft = usePersistedDraft<PendingSentenceComment[]>(
+    draftKey(pid, 'comments', slug),
+    [],
+  );
+  const sentenceComments = sentenceCommentsDraft.value;
+  const [annotatingAssistant, setAnnotatingAssistant] = useState<number | null>(null);
+  const [selectedSentence, setSelectedSentence] = useState<SelectedSentence | null>(null);
+  const [sentenceCommentText, setSentenceCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -961,6 +985,26 @@ function DiscussionThread({
       void textDraft.clear('');
     }
   }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
+
+  // If the start POST reached the server but its response was lost, onAccepted could not clear
+  // the queue. The composed user turn is deterministic, so the transcript itself is the
+  // authoritative recovery signal after useStreamingTurn's defensive refetch.
+  useEffect(() => {
+    if (!sentenceCommentsDraft.submitted || sentenceComments.length === 0) return;
+    const expected = composeSentenceReply(sentenceComments, textDraft.value);
+    if (transcript.some((entry) => entry.role === 'user' && entry.text === expected)) {
+      void sentenceCommentsDraft.clear([]);
+      setAnnotatingAssistant(null);
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+    }
+  }, [
+    sentenceComments,
+    sentenceCommentsDraft.clear,
+    sentenceCommentsDraft.submitted,
+    textDraft.value,
+    transcript,
+  ]);
 
   // U.14: the moment a retry starts, the reader must see the conversation reset to the last
   // user message — not the old response lingering until the refetch. The old tail is hidden
@@ -1058,6 +1102,69 @@ function DiscussionThread({
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
   // lifecycle draft (reply / request-changes). Both persist until server acceptance.
   const inputText = editing ? editing.draft : textDraft.value;
+
+  const openSentence = useCallback((assistantIndex: number, quote: string) => {
+    const next = { assistantIndex, quote };
+    if (selectedSentence && sameSentence(selectedSentence, next)) {
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+      return;
+    }
+    const existing = sentenceComments.find((comment) => sameSentence(comment, next));
+    setAnnotatingAssistant(assistantIndex);
+    setSelectedSentence(next);
+    setSentenceCommentText(existing?.comment ?? '');
+  }, [selectedSentence, sentenceComments]);
+
+  const openQueuedComment = useCallback((comment: PendingSentenceComment) => {
+    setAnnotatingAssistant(comment.assistantIndex);
+    setSelectedSentence({ assistantIndex: comment.assistantIndex, quote: comment.quote });
+    setSentenceCommentText(comment.comment);
+  }, []);
+
+  const saveSentenceComment = useCallback(() => {
+    const comment = sentenceCommentText.trim();
+    if (!selectedSentence || !comment) return;
+    sentenceCommentsDraft.setValue((current) => upsertSentenceComment(current, {
+      ...selectedSentence,
+      comment,
+    }));
+    setSelectedSentence(null);
+    setSentenceCommentText('');
+  }, [selectedSentence, sentenceCommentText, sentenceCommentsDraft.setValue]);
+
+  const removeQueuedComment = useCallback((comment: PendingSentenceComment) => {
+    sentenceCommentsDraft.setValue((current) => removeSentenceComment(current, comment));
+    if (selectedSentence && sameSentence(selectedSentence, comment)) {
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+    }
+  }, [selectedSentence, sentenceCommentsDraft.setValue]);
+
+  const sentenceAnnotationsFor = useCallback((
+    assistantIndex: number,
+  ): SentenceAnnotations | undefined => {
+    const messageComments = sentenceComments.filter(
+      (comment) => comment.assistantIndex === assistantIndex,
+    );
+    if (annotatingAssistant !== assistantIndex && messageComments.length === 0) return undefined;
+    return {
+      active: true,
+      onSentencePress: (quote) => openSentence(assistantIndex, quote),
+      stateForSentence: (quote) => {
+        const sentence = { assistantIndex, quote };
+        const count = messageComments.filter(
+          (comment) => sameSentence(comment, sentence),
+        ).length;
+        return {
+          selected: !!selectedSentence && sameSentence(selectedSentence, sentence),
+          annotated: count > 0,
+          commentCount: count,
+        };
+      },
+    };
+  }, [annotatingAssistant, openSentence, selectedSentence, sentenceComments]);
+
   // The library fires onChangeText('') once from its initial-layout input reset (and our
   // controlled `text` prop immediately overrides its internal state). Writing that '' into
   // the persisted draft would clobber the stored value mid-load — the exact draft-loss
@@ -1113,13 +1220,26 @@ function DiscussionThread({
 
   async function send() {
     const t = textDraft.value.trim();
-    if (!t) return;
-    await textDraft.markSubmitted(acceptedDrafts.length);
+    if (!t && sentenceComments.length === 0) return;
+    if (t) await textDraft.markSubmitted(acceptedDrafts.length);
+    if (sentenceComments.length) await sentenceCommentsDraft.markSubmitted();
+    const rendered = composeSentenceReply(sentenceComments, t);
     await stream.run(
       paths.reply,
-      { slug, text: t, model: selectedModel ?? undefined },
-      t,
-      () => textDraft.clear(''),
+      {
+        slug,
+        text: t,
+        comments: sentenceCommentPayload(sentenceComments),
+        model: selectedModel ?? undefined,
+      },
+      rendered,
+      async () => {
+        await textDraft.clear('');
+        await sentenceCommentsDraft.clear([]);
+        setAnnotatingAssistant(null);
+        setSelectedSentence(null);
+        setSentenceCommentText('');
+      },
     );
   }
 
@@ -1178,7 +1298,7 @@ function DiscussionThread({
     // after toggling Listening. selectedModel is a dep for the same reason — omitting it sent
     // a stale (or no) model override whenever the pill was picked after the last keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel, sentenceComments]);
 
   // Long-press a message for its actions (copy everywhere; edit on user replies; the full
   // under-response row — Listen, Retry, Retry-with-model — on assistant responses, U.12: the
@@ -1218,6 +1338,19 @@ function DiscussionThread({
     }
     if (entry.role === 'assistant') {
       const audioId = branchAudioId(pid, slug, entry);
+      if (state === 'in_discussion' && !stream.streaming && !editing) {
+        options.push({
+          key: 'comment',
+          title: 'Comment on this',
+          subtitle: 'Select a sentence to attach to your next reply',
+          icon: 'message-square',
+          onPress: () => {
+            setAnnotatingAssistant(entry.assistant_index);
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          },
+        });
+      }
       options.push({
         key: 'listen',
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
@@ -1253,6 +1386,15 @@ function DiscussionThread({
   useEffect(() => {
     if (state === 'committed' && editing) void editDraft.clear(null);
   }, [editDraft.clear, editing, state]);
+  useEffect(() => {
+    if (state !== 'committed' || sentenceComments.length === 0) return;
+    // A commit from another device removes this screen's composer. Pending sentence comments
+    // are a reply overlay, not durable annotations, so do not strand invisible marks here.
+    void sentenceCommentsDraft.clear([]);
+    setAnnotatingAssistant(null);
+    setSelectedSentence(null);
+    setSentenceCommentText('');
+  }, [sentenceComments.length, sentenceCommentsDraft.clear, state]);
 
   const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
     const msg = props.currentMessage;
@@ -1269,6 +1411,7 @@ function DiscussionThread({
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
           figureContext={figureContext}
+          sentenceAnnotations={sentenceAnnotationsFor(msg.entry.assistant_index)}
         />
       );
     }
@@ -1282,7 +1425,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext]);
+  }, [pid, slug, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1307,7 +1450,7 @@ function DiscussionThread({
       );
     }
     if (state === 'notes_drafted' && !editing) return null;
-    const canSend = !!inputText.trim() && !disabled;
+    const canSend = (!!inputText.trim() || sentenceComments.length > 0) && !disabled;
     return (
       <Pressable
         onPress={handleSend}
@@ -1321,7 +1464,7 @@ function DiscussionThread({
         />
       </Pressable>
     );
-  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop, styles, theme]);
+  }, [disabled, editing, handleSend, inputText, sentenceComments.length, state, stream.streaming, stream.stop, styles, theme]);
 
   const renderAccessory = useCallback(() => {
     if (editing) {
@@ -1388,15 +1531,49 @@ function DiscussionThread({
     // no full-width strip/separator shows), and the elevated rounded surface + border live on
     // the primary row that already holds [composer | send].
     return (
-      <InputToolbar
-        {...props}
-        containerStyle={styles.toolbar}
-        primaryStyle={styles.composerCard}
-        renderSend={renderSend}
-        renderAccessory={renderAccessory}
-      />
+      <View>
+        <SentenceCommentComposer
+          active={annotatingAssistant !== null}
+          comments={sentenceComments}
+          selected={selectedSentence}
+          draft={sentenceCommentText}
+          onChangeDraft={setSentenceCommentText}
+          onSave={saveSentenceComment}
+          onCancelSelection={() => {
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          }}
+          onOpen={openQueuedComment}
+          onRemove={removeQueuedComment}
+          onDone={() => {
+            setAnnotatingAssistant(null);
+            setSelectedSentence(null);
+            setSentenceCommentText('');
+          }}
+        />
+        <InputToolbar
+          {...props}
+          containerStyle={styles.toolbar}
+          primaryStyle={styles.composerCard}
+          renderSend={renderSend}
+          renderAccessory={renderAccessory}
+        />
+      </View>
     );
-  }, [onContinue, renderAccessory, renderSend, state, styles]);
+  }, [
+    onContinue,
+    annotatingAssistant,
+    openQueuedComment,
+    removeQueuedComment,
+    renderAccessory,
+    renderSend,
+    saveSentenceComment,
+    selectedSentence,
+    sentenceCommentText,
+    sentenceComments,
+    state,
+    styles,
+  ]);
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
@@ -2045,6 +2222,7 @@ function AssistantBody({
   onSwitchBranch,
   switchDisabled,
   figureContext,
+  sentenceAnnotations,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
   audioId: string;
@@ -2055,6 +2233,7 @@ function AssistantBody({
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
   figureContext?: FigureContext;
+  sentenceAnnotations?: SentenceAnnotations;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -2110,7 +2289,11 @@ function AssistantBody({
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
         <AgentTrail trail={entry.agent_trail} />
       ) : null}
-      <Markdown text={canonical} figureContext={figureContext} />
+      <Markdown
+        text={canonical}
+        figureContext={figureContext}
+        sentenceAnnotations={sentenceAnnotations}
+      />
       {modelLabel ? (
         <Text
           variant="caption"
