@@ -178,6 +178,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.24 + bounded Authors/Labs | Full player suppresses the redundant mini-player; ranked Author/Lab lists reveal bounded pages | [#174](https://github.com/kamilkhan52/research-companion/pull/174) | Complete |
 | R10.23 | Editing a user turn immediately rewinds the visible discussion to the preceding response; the original prompt and later tail stay hidden through regeneration | [#175](https://github.com/kamilkhan52/research-companion/pull/175) | Complete |
 | R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | [#176](https://github.com/kamilkhan52/research-companion/pull/176) | Complete |
+| R10.10 + R10.12 + R10.16 | Empty-project Add Papers hub; hierarchical sort directions with chronological defaults; compact explicit Move/Copy/Delete selection actions | [#183](https://github.com/kamilkhan52/research-companion/pull/183) | In review |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 

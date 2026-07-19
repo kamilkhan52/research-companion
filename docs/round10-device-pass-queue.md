@@ -67,6 +67,9 @@ depends on screenshots Kamil has not attached yet.
 - **R10.10 — Prominent empty-project Add Papers hub.** An empty Library should present a
   designed add surface offering (a) add a specific paper and (b) explore Discover. Adding a
   paper must not feel owned by the Discover tab or appear as one long text button.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** the two card-like entry paths are first-class; the specific-paper path opens
+  directly as the primary form rather than below the Discover search.
 - **R10.11 — Improve discovery quality and ranking.** Audit whether candidate recall is
   over-dependent on arXiv keyword search. Rank with an LLM pass grounded in topical relevance,
   paper credibility, and credible institution/lab signals, reusing Map ranking/enrichment
@@ -79,6 +82,9 @@ depends on screenshots Kamil has not attached yet.
   date, or Date added reveals a clean second level underneath with a preselected direction.
   Alphabetical defaults A→Z; both date sorts default oldest→newest because the expected reading
   order is chronological. The user can choose the revealed option or Back out of the menu.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** nested choices stay inside the standard OptionsSheet; date and name sorts
+  support both directions, with unknown publication years kept last.
 - **R10.13 — Canonicalize a title after resolution, with confirmation.** When a title query
   resolves to a paper, show what was found and offer to replace incomplete/mistyped input with
   the canonical title. Do not silently rewrite the reading-list record.
@@ -95,6 +101,9 @@ depends on screenshots Kamil has not attached yet.
   explicit **Move** and **Copy**; only Move implies source removal. Notes handling remains an
   explicit follow-up for read papers. Screenshot-informed visual tuning can follow, but the
   information architecture is approved now.
+  **Implemented in [#183](https://github.com/kamilkhan52/research-companion/pull/183)
+  (in review):** compact icon-label actions expose Move, Copy, and Delete directly; relocation
+  confirmations inherit that explicit operation and retain the existing Notes approval choices.
 
 ## Cross-project paper and migration architecture
 
