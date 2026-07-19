@@ -21,6 +21,10 @@ export interface SheetOption {
   disabled?: boolean;
   /** Draw a divider above this row (section break). */
   section?: boolean;
+  /** Keep the menu open after this row, for a nested choice revealed in-place. */
+  closeOnPress?: boolean;
+  /** Visually nest a child choice under its parent row. */
+  level?: number;
   onPress: () => void;
 }
 
@@ -64,7 +68,7 @@ export function OptionsSheet({
                 {opt.section ? <View style={styles.divider} /> : null}
                 <Pressable
                   onPress={() => {
-                    onClose();
+                    if (opt.closeOnPress !== false) onClose();
                     opt.onPress();
                   }}
                   disabled={opt.disabled}
@@ -75,6 +79,7 @@ export function OptionsSheet({
                   }}
                   style={({ pressed }) => [
                     styles.row,
+                    opt.level ? styles.nestedRow : null,
                     pressed && { backgroundColor: t.elevated },
                     opt.disabled && { opacity: 0.45 },
                   ]}
@@ -139,6 +144,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     gap: space.md,
     paddingHorizontal: space.lg,
     paddingVertical: 10,
+  },
+  nestedRow: {
+    paddingLeft: space.xl * 2,
+    backgroundColor: t.bg,
   },
   badge: {
     width: 38,

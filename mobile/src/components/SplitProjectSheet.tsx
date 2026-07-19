@@ -1,6 +1,5 @@
-// Split-to-new-project sheet (R8.1). Confirms the selection out of the Library's multi-select
-// mode: a name for the new project, an optional theme (seeds the new project's discovery /
-// author-profile / lab passes), and whether the papers leave the source (move) or are copied.
+// Relocate-to-new-project sheet. Confirms a name and optional theme after the Library has made
+// Move vs Copy explicit. The theme seeds the new project's discovery / author-profile / lab passes.
 // Confirm → POST /split → the app switches to the new project. Deterministic server-side, so
 // this is a plain confirmed action, not a job.
 
@@ -20,6 +19,7 @@ export function SplitProjectSheet({
   pid,
   slugs,
   notesEligible,
+  operation,
   onClose,
   onDone,
 }: {
@@ -28,6 +28,7 @@ export function SplitProjectSheet({
   slugs: string[];
   /** At least one selected paper has committed Notes that can ground the AI passes. */
   notesEligible: boolean;
+  operation: 'move' | 'copy';
   onClose: () => void;
   /** The caller switches projects and opens immediate notes review when one was requested. */
   onDone: (result: RelocationResult) => void;
@@ -37,13 +38,13 @@ export function SplitProjectSheet({
   const split = useSplitProject(pid);
   const [name, setName] = useState('');
   const [goals, setGoals] = useState('');
-  const [remove, setRemove] = useState(true);
   const [draftNotes, setDraftNotes] = useState(true);
   const [cleanupSource, setCleanupSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const count = slugs.length;
   const trimmed = name.trim();
+  const remove = operation === 'move';
 
   async function handleSplit() {
     if (!pid || !trimmed || count === 0 || split.isPending) return;
@@ -71,7 +72,6 @@ export function SplitProjectSheet({
       );
       setName('');
       setGoals('');
-      setRemove(true);
       setDraftNotes(true);
       setCleanupSource(false);
       onDone(res);
@@ -82,10 +82,12 @@ export function SplitProjectSheet({
 
   return (
     <BottomSheet visible={visible} onClose={onClose} maxHeightPct={85} scrollable>
-      <Text variant="title">Split to a new project</Text>
+      <Text variant="title">
+        {operation === 'move' ? 'Move' : 'Copy'} to a new project
+      </Text>
       <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
         {count} paper{count === 1 ? '' : 's'} and the work done on them (notes, discussions,
-        cached analysis) go to a new project.
+        cached analysis) {remove ? 'move' : 'are copied'} to a new project.
       </Text>
 
       <BottomSheetTextInput
@@ -105,23 +107,6 @@ export function SplitProjectSheet({
         style={[styles.input, { marginTop: space.sm, minHeight: 64 }]}
         multiline
       />
-
-      <View style={styles.toggleRow}>
-        <View style={{ flex: 1, paddingRight: space.md }}>
-          <Text variant="body">Remove from this project</Text>
-          <Text variant="caption" color={t.muted}>
-            {remove
-              ? 'Moves the papers out of the current project.'
-              : 'Keeps copies here as well.'}
-          </Text>
-        </View>
-        <Switch
-          value={remove}
-          onValueChange={setRemove}
-          trackColor={{ true: t.mint, false: t.line2 }}
-          thumbColor={t.surface}
-        />
-      </View>
 
       {notesEligible ? (
         <>
