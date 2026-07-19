@@ -122,6 +122,10 @@ depends on screenshots Kamil has not attached yet.
   an opt-in sentence-span path with tap handling, violet selection/annotation marks, a
   comment-count badge, and link suppression during annotation; all ordinary Markdown callers
   stay on the unchanged renderer.
+  **Phase 2 implemented in
+  [#179](https://github.com/kamilkhan52/research-companion/pull/179):** long-press offers
+  **Comment on this**, sentence taps open an inline quote/comment editor, and a per-paper
+  persisted queue renders editable/removable attached-comment chips above the composer.
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show
