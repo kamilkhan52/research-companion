@@ -35,6 +35,11 @@ export function toDiscussionMessages(
    *  the post-generation refetch. The reader must see the conversation reset immediately
    *  (U.14), not the response being replaced. */
   hideFromAssistantIndex: number | null = null,
+  /** While a user turn is being edited, mirror the backend rewind immediately: the draft
+   *  lives in the composer, so hide that recorded user entry and the complete tail after it.
+   *  The prefix remains available above the preceding assistant response, exactly as it was
+   *  when the reader first authored this turn. */
+  hideFromTranscriptIndex: number | null = null,
 ): DiscussionMessage[] {
   let visible = transcript;
   if (hideFromAssistantIndex != null) {
@@ -42,6 +47,13 @@ export function toDiscussionMessages(
       (e) => e.role === 'assistant' && e.assistant_index === hideFromAssistantIndex,
     );
     if (cut >= 0) visible = transcript.slice(0, cut);
+  }
+  if (
+    hideFromTranscriptIndex != null &&
+    hideFromTranscriptIndex >= 0 &&
+    hideFromTranscriptIndex < visible.length
+  ) {
+    visible = visible.slice(0, hideFromTranscriptIndex);
   }
   const out: DiscussionMessage[] = [];
   let replyIndex = -1;

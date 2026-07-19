@@ -764,14 +764,32 @@ function DiscussionThread({
       ? retryHide.index
       : null;
   }, [retryHide, transcript]);
+  const editTranscriptIndex = useMemo(() => {
+    if (!editing) return null;
+    let replyIndex = -1;
+    const cut = transcript.findIndex((entry) => {
+      if (entry.role !== 'user') return false;
+      replyIndex += 1;
+      return replyIndex === editing.replyIndex;
+    });
+    return cut >= 0 ? cut : null;
+  }, [editing, transcript]);
   const messages = useMemo(
     () => toDiscussionMessages(
       transcript,
       stream.pendingUser,
       stream.streaming ? stream.items : null,
       hideFromIndex,
+      editTranscriptIndex,
     ),
-    [transcript, stream.pendingUser, stream.streaming, stream.items, hideFromIndex],
+    [
+      transcript,
+      stream.pendingUser,
+      stream.streaming,
+      stream.items,
+      hideFromIndex,
+      editTranscriptIndex,
+    ],
   );
 
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
@@ -827,7 +845,6 @@ function DiscussionThread({
       paths.edit,
       { slug, reply_index: replyIndex, text, model: selectedModel ?? undefined },
       text,
-      () => editDraft.clear(null),
     );
   }
 

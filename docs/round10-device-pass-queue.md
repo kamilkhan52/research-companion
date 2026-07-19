@@ -135,7 +135,10 @@ depends on screenshots Kamil has not attached yet.
 - **R10.23 — Edit-message view matches backend rewind.** While editing a user turn, hide that
   original user bubble and every subsequent assistant turn. Show only the assistant response
   preceding the edited turn plus the editable draft, exactly matching the server's branch
-  rewind semantics.
+  rewind semantics. **Implemented in the current R10.23 slice:** the client cuts its cached
+  transcript at the edited user turn as soon as Edit begins, keeps the persisted draft in the
+  composer through job acceptance, and renders only the replacement optimistic turn while the
+  regenerated response is running.
 - **R10.24 — Mini-player transition.** Hide the bottom Now Playing bar when the full player is
   open, with a clean transition; reliably restore it when minimized or navigated back.
   **Implemented in [#174](https://github.com/kamilkhan52/research-companion/pull/174):**
