@@ -9,6 +9,11 @@ export interface SelectedSentence {
   quote: string;
 }
 
+export interface SentenceCommentPayload {
+  quote: string;
+  comment: string;
+}
+
 export function sameSentence(
   left: SelectedSentence,
   right: SelectedSentence,
@@ -34,4 +39,28 @@ export function removeSentenceComment(
   target: SelectedSentence,
 ): PendingSentenceComment[] {
   return comments.filter((comment) => !sameSentence(comment, target));
+}
+
+export function sentenceCommentPayload(
+  comments: PendingSentenceComment[],
+): SentenceCommentPayload[] {
+  return comments.map(({ quote, comment }) => ({ quote, comment }));
+}
+
+/** Optimistic user bubble matching the server's deterministic durable formatting. */
+export function composeSentenceReply(
+  comments: PendingSentenceComment[],
+  freeText: string,
+): string {
+  if (comments.length === 0) return freeText;
+  const parts = ['Regarding specific passages of your last response:'];
+  for (const item of comments) {
+    const quote = item.quote.trim();
+    const comment = item.comment.trim();
+    const quoted = `“${quote}”`.split('\n').map((line) => `> ${line}`).join('\n');
+    const noted = `— ${comment}`.split('\n').map((line) => `> ${line}`).join('\n');
+    parts.push(`${quoted}\n>\n${noted}`);
+  }
+  if (freeText.trim()) parts.push(freeText.trim());
+  return parts.join('\n\n');
 }

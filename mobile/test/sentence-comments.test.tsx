@@ -2,7 +2,9 @@ import { fireEventAsync, renderAsync, screen } from '@testing-library/react-nati
 
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import {
+  composeSentenceReply,
   removeSentenceComment,
+  sentenceCommentPayload,
   upsertSentenceComment,
   type PendingSentenceComment,
 } from '@/lib/sentenceComments';
@@ -25,6 +27,19 @@ test('queue helpers add, edit in place, and remove by response plus quote', () =
     comment: 'Updated question',
   })).toEqual([{ ...first, comment: 'Updated question' }, second]);
   expect(removeSentenceComment([first, second], first)).toEqual([second]);
+});
+
+test('reply payload drops UI identity and optimistic text matches the server format', () => {
+  expect(sentenceCommentPayload([first])).toEqual([{
+    quote: 'First claim.',
+    comment: 'Why?',
+  }]);
+  expect(composeSentenceReply([first], 'Also compare the baseline.')).toBe(
+    'Regarding specific passages of your last response:\n\n'
+    + '> “First claim.”\n>\n> — Why?\n\n'
+    + 'Also compare the baseline.',
+  );
+  expect(composeSentenceReply([], '  plain text  ')).toBe('  plain text  ');
 });
 
 test('inline editor saves a sentence comment', async () => {

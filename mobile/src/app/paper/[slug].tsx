@@ -81,8 +81,10 @@ import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import {
+  composeSentenceReply,
   removeSentenceComment,
   sameSentence,
+  sentenceCommentPayload,
   upsertSentenceComment,
   type PendingSentenceComment,
   type SelectedSentence,
@@ -721,6 +723,26 @@ function DiscussionThread({
     }
   }, [acceptedDrafts, draftKind, textDraft.acceptedBaseline, textDraft.clear, textDraft.submitted, textDraft.value]);
 
+  // If the start POST reached the server but its response was lost, onAccepted could not clear
+  // the queue. The composed user turn is deterministic, so the transcript itself is the
+  // authoritative recovery signal after useStreamingTurn's defensive refetch.
+  useEffect(() => {
+    if (!sentenceCommentsDraft.submitted || sentenceComments.length === 0) return;
+    const expected = composeSentenceReply(sentenceComments, textDraft.value);
+    if (transcript.some((entry) => entry.role === 'user' && entry.text === expected)) {
+      void sentenceCommentsDraft.clear([]);
+      setAnnotatingAssistant(null);
+      setSelectedSentence(null);
+      setSentenceCommentText('');
+    }
+  }, [
+    sentenceComments,
+    sentenceCommentsDraft.clear,
+    sentenceCommentsDraft.submitted,
+    textDraft.value,
+    transcript,
+  ]);
+
   // U.14: the moment a retry starts, the reader must see the conversation reset to the last
   // user message — not the old response lingering until the refetch. The old tail is hidden
   // client-side while the cached transcript still carries the exact entry that was forked
@@ -935,13 +957,26 @@ function DiscussionThread({
 
   async function send() {
     const t = textDraft.value.trim();
-    if (!t) return;
-    await textDraft.markSubmitted(acceptedDrafts.length);
+    if (!t && sentenceComments.length === 0) return;
+    if (t) await textDraft.markSubmitted(acceptedDrafts.length);
+    if (sentenceComments.length) await sentenceCommentsDraft.markSubmitted();
+    const rendered = composeSentenceReply(sentenceComments, t);
     await stream.run(
       paths.reply,
-      { slug, text: t, model: selectedModel ?? undefined },
-      t,
-      () => textDraft.clear(''),
+      {
+        slug,
+        text: t,
+        comments: sentenceCommentPayload(sentenceComments),
+        model: selectedModel ?? undefined,
+      },
+      rendered,
+      async () => {
+        await textDraft.clear('');
+        await sentenceCommentsDraft.clear([]);
+        setAnnotatingAssistant(null);
+        setSelectedSentence(null);
+        setSentenceCommentText('');
+      },
     );
   }
 
@@ -1000,7 +1035,7 @@ function DiscussionThread({
     // after toggling Listening. selectedModel is a dep for the same reason — omitting it sent
     // a stale (or no) model override whenever the pill was picked after the last keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel]);
+  }, [editing, state, textDraft.value, transcript, acceptedDrafts.length, stream.run, selectedModel, sentenceComments]);
 
   // Long-press a message for its actions (copy everywhere; edit on user replies; the full
   // under-response row — Listen, Retry, Retry-with-model — on assistant responses, U.12: the
@@ -1040,7 +1075,7 @@ function DiscussionThread({
     }
     if (entry.role === 'assistant') {
       const audioId = branchAudioId(pid, slug, entry);
-      if (state !== 'committed' && !stream.streaming && !editing) {
+      if (state === 'in_discussion' && !stream.streaming && !editing) {
         options.push({
           key: 'comment',
           title: 'Comment on this',
@@ -1152,7 +1187,7 @@ function DiscussionThread({
       );
     }
     if (state === 'notes_drafted' && !editing) return null;
-    const canSend = !!inputText.trim() && !disabled;
+    const canSend = (!!inputText.trim() || sentenceComments.length > 0) && !disabled;
     return (
       <Pressable
         onPress={handleSend}
@@ -1166,7 +1201,7 @@ function DiscussionThread({
         />
       </Pressable>
     );
-  }, [disabled, editing, handleSend, inputText, state, stream.streaming, stream.stop, styles, theme]);
+  }, [disabled, editing, handleSend, inputText, sentenceComments.length, state, stream.streaming, stream.stop, styles, theme]);
 
   const renderAccessory = useCallback(() => {
     if (editing) {
