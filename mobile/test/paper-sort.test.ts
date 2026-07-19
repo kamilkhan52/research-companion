@@ -34,12 +34,19 @@ describe('sortPapers', () => {
     expect(sortPapers(papers, 'added')).toBe(papers);
   });
 
-  test('name sorts case-insensitively', () => {
-    expect(sortPapers(papers, 'name').map((p) => p.slug)).toEqual(['b', 'c', 'a']);
+  test('added descending reverses server order without mutating it', () => {
+    expect(sortPapers(papers, 'added', 'desc').map((p) => p.slug)).toEqual(['c', 'b', 'a']);
+    expect(papers.map((p) => p.slug)).toEqual(['a', 'b', 'c']);
   });
 
-  test('pubdate sorts newest first, unknown years last', () => {
-    expect(sortPapers(papers, 'pubdate').map((p) => p.slug)).toEqual(['b', 'a', 'c']);
+  test('name sorts case-insensitively', () => {
+    expect(sortPapers(papers, 'name').map((p) => p.slug)).toEqual(['b', 'c', 'a']);
+    expect(sortPapers(papers, 'name', 'desc').map((p) => p.slug)).toEqual(['a', 'c', 'b']);
+  });
+
+  test('pubdate defaults to chronological order and keeps unknown years last', () => {
+    expect(sortPapers(papers, 'pubdate').map((p) => p.slug)).toEqual(['a', 'b', 'c']);
+    expect(sortPapers(papers, 'pubdate', 'desc').map((p) => p.slug)).toEqual(['b', 'a', 'c']);
   });
 
   test('status surfaces in-progress, then to-read, then done', () => {

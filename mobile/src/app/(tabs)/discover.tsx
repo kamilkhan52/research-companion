@@ -8,7 +8,7 @@
 // arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt) takes over
 // on the paper's Discussion screen.
 
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   Linking,
@@ -36,6 +36,7 @@ export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  const { specific } = useLocalSearchParams<{ specific?: string }>();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { activePid: pid } = useActiveProject();
@@ -55,6 +56,12 @@ export default function DiscoverScreen() {
   const [editingGoals, setEditingGoals] = useState(false);
   const [showSpecific, setShowSpecific] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
+
+  // The Library's empty-project hub can deep-link directly into this entry path. Tabs may stay
+  // mounted between navigations, so react to param changes rather than only using an initializer.
+  useEffect(() => {
+    if (specific === '1') setShowSpecific(true);
+  }, [specific]);
 
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
@@ -77,6 +84,7 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
+  const specificEntry = specific === '1' && !hasRunContext;
 
   async function runDiscovery() {
     const text = goals.trim();
@@ -97,7 +105,18 @@ export default function DiscoverScreen() {
       />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          {showEditor ? (
+          {specificEntry && pid ? (
+            <>
+              <SpecificPaper pid={pid} />
+              <Button
+                title="Discover papers instead"
+                icon="compass"
+                variant="ghost"
+                onPress={() => router.replace('/discover')}
+                style={{ marginTop: space.md }}
+              />
+            </>
+          ) : showEditor ? (
             <Card style={{ gap: space.sm }}>
               <Text variant="overline">Explore</Text>
               <Text variant="caption">
@@ -192,7 +211,7 @@ export default function DiscoverScreen() {
 
           {/* On a fresh screen the specific-paper box is a primary entry option; once a
               search owns the screen it folds behind a toggle. */}
-          {pid ? (
+          {pid && !specificEntry ? (
             hasRunContext && !showSpecific ? (
               <Button
                 title="Have a specific paper? Add by name or link"
