@@ -1270,6 +1270,7 @@ function DiscussionThread({
     return (
       <View>
         <SentenceCommentComposer
+          active={annotatingAssistant !== null}
           comments={sentenceComments}
           selected={selectedSentence}
           draft={sentenceCommentText}
@@ -1298,6 +1299,7 @@ function DiscussionThread({
     );
   }, [
     onContinue,
+    annotatingAssistant,
     openQueuedComment,
     removeQueuedComment,
     renderAccessory,

@@ -1,4 +1,9 @@
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import Animated, {
+  FadeInDown,
+  FadeOutDown,
+  LinearTransition,
+} from 'react-native-reanimated';
 
 import {
   type PendingSentenceComment,
@@ -9,6 +14,7 @@ import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function SentenceCommentComposer({
+  active,
   comments,
   selected,
   draft,
@@ -19,6 +25,7 @@ export function SentenceCommentComposer({
   onRemove,
   onDone,
 }: {
+  active: boolean;
   comments: PendingSentenceComment[];
   selected: SelectedSentence | null;
   draft: string;
@@ -31,10 +38,26 @@ export function SentenceCommentComposer({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  if (!selected && comments.length === 0) return null;
+  if (!active && !selected && comments.length === 0) return null;
 
   return (
-    <View style={styles.wrap}>
+    <Animated.View
+      entering={FadeInDown.duration(180)}
+      exiting={FadeOutDown.duration(140)}
+      layout={LinearTransition.duration(180)}
+      style={styles.wrap}>
+      {active && !selected && comments.length === 0 ? (
+        <View style={styles.hint}>
+          <Icon name="message-square" size={15} color={t.violet} />
+          <Text variant="caption" color={t.muted} style={styles.hintText}>
+            Select a sentence in the response
+          </Text>
+          <Pressable onPress={onDone} accessibilityRole="button">
+            <Text variant="label" color={t.violet}>Done</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {selected ? (
         <View style={styles.editor}>
           <View style={styles.editorHead}>
@@ -112,7 +135,7 @@ export function SentenceCommentComposer({
           </ScrollView>
         </View>
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -122,6 +145,18 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingHorizontal: space.md,
     paddingTop: space.xs,
   },
+  hint: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
+  },
+  hintText: { flex: 1 },
   editor: {
     gap: space.sm,
     padding: space.sm,
