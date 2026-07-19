@@ -182,6 +182,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R9.2 phase 2 | Per-paper persisted sentence-comment queue with inline editor and attached-comment chips above the composer | [#179](https://github.com/kamilkhan52/research-companion/pull/179) | Complete |
 | R9.2 phase 3 | Optional reply comments compose deterministically into the durable user turn; pure annotations send and clear only after server acceptance | [#180](https://github.com/kamilkhan52/research-companion/pull/180) | Complete |
 | R9.2 phase 4 | Annotate mode opens with a quiet sentence-selection cue and Done escape hatch; composer transitions animate without changing ordinary message rendering | [#181](https://github.com/kamilkhan52/research-companion/pull/181) | Complete — automated device bundle green; physical-device acceptance pending |
+| R10.20 | Listening preview cues continue through slow flat synthesis segments via a bounded grounded keepalive, stopping only at terminal/playable audio state | [#177](https://github.com/kamilkhan52/research-companion/pull/177) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
