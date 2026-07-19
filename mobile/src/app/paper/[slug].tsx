@@ -71,6 +71,12 @@ import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
+  FirstResponseRetrySheet,
+  OPENING_TEMPLATE_OPTIONS,
+  type FirstResponseRetryConfig,
+  type OpeningTemplateKey,
+} from '@/components/FirstResponseRetrySheet';
+import {
   LinkHandlerContext,
   Markdown,
   type FigureContext,
@@ -244,6 +250,10 @@ export default function DiscussionScreen() {
   const [suggestedTitle, setSuggestedTitle] = useState<string | null>(null);
   const readingMode = session.data?.reading_mode ?? 'balanced';
   const paperUrl = session.data?.paper ? fullPaperUrl(session.data.paper) : null;
+  const selectedModelLabel =
+    selectedModel == null
+      ? (settings.data?.model ?? 'Project default')
+      : (favoriteModels.data?.find((m) => m.id === selectedModel)?.label ?? selectedModel);
   const switchMode = useCallback(async (mode: ReadingMode) => {
     if (!pid || !slug || mode === readingMode) return;
     try {
@@ -358,9 +368,7 @@ export default function DiscussionScreen() {
             showContinue={state === 'committed'}
             onContinue={() => void continueFromCommitted()}
             modelLabel={
-              selectedModel == null
-                ? (settings.data?.model ?? 'Default')
-                : (favoriteModels.data?.find((m) => m.id === selectedModel)?.label ?? selectedModel)
+              selectedModelLabel
             }
             onPickModel={() => setModelPickerOpen(true)}
             showReadingMode={hasSession}
@@ -442,6 +450,8 @@ export default function DiscussionScreen() {
           initialSource={typeof source === 'string' && source ? source : undefined}
           sessionState={state}
           selectedModel={selectedModel}
+          modelLabel={selectedModelLabel}
+          onPickModel={() => setModelPickerOpen(true)}
           retrieved={!!session.data?.paper.retrieved}
         />
       ) : (
@@ -456,6 +466,8 @@ export default function DiscussionScreen() {
           title={session.data?.paper.title ?? 'Narration'}
           favorites={favoriteModels.data ?? []}
           selectedModel={selectedModel}
+          defaultModelLabel={settings.data?.model ?? 'Project default'}
+          readingMode={readingMode}
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           onMutated={() => {
@@ -833,20 +845,6 @@ const MODE_OPTIONS: { mode: ReadingMode; icon: IconName; subtitle: string }[] = 
   { mode: 'detailed', icon: 'list', subtitle: 'Thorough walkthrough, nothing skipped' },
 ];
 
-type OpeningTemplateKey = ReadingMode | 'custom';
-const OPENING_TEMPLATE_OPTIONS: {
-  key: OpeningTemplateKey;
-  title: string;
-  description: string;
-  icon: IconName;
-}[] = [
-  { key: 'balanced', title: 'Balanced', description: 'A clear overview with context and technical substance.', icon: 'circle' },
-  { key: 'background', title: 'Background-heavy', description: 'Build the groundwork and explain unfamiliar ideas as they appear.', icon: 'book-open' },
-  { key: 'technical', title: 'Technical', description: 'Skip the basics and engage closely with methods, math, and assumptions.', icon: 'cpu' },
-  { key: 'detailed', title: 'Detailed', description: 'Walk through the paper thoroughly without compressing key steps.', icon: 'list' },
-  { key: 'custom', title: 'Customize prompt', description: 'Edit the complete opening instruction and control it directly.', icon: 'edit-3' },
-];
-
 function ModePickerSheet({
   visible,
   onClose,
@@ -899,6 +897,8 @@ function DiscussionThread({
   title,
   favorites,
   selectedModel,
+  defaultModelLabel,
+  readingMode,
   onContinue,
   headerHeight,
   onMutated,
@@ -913,6 +913,8 @@ function DiscussionThread({
   title: string;
   favorites: FavoriteModel[];
   selectedModel: string | null;
+  defaultModelLabel: string;
+  readingMode: ReadingMode;
   onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
@@ -920,6 +922,7 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  const opening = useOpeningDraft(pid, slug);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
   // manifest that lands after a turn was written still cards it on the next render.
@@ -1046,6 +1049,7 @@ function DiscussionThread({
     try {
       await api.switchBranch(pid, slug, assistantIndex, branch);
       await queryClient.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug) });
       // A switch can flip session_state (in_discussion <-> notes_drafted); library rows and
       // paper actions read it from project state.
       await queryClient.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -1260,7 +1264,11 @@ function DiscussionThread({
   // overflow menu. Uses the already-implemented retry_job/RetryReq — this is its first mobile
   // caller. No optimistic user bubble: nothing new is "said" by the user for a retry.
   const canRetry = state !== 'committed';
-  const handleRetry = useCallback((assistantIndex: number, model?: string) => {
+  const [firstRetryOpen, setFirstRetryOpen] = useState(false);
+  const handleRetry = useCallback((
+    assistantIndex: number,
+    config: { model?: string; prompt?: string; mode?: ReadingMode } = {},
+  ) => {
     if (state === 'committed') return;
     const old = transcript.find(
       (e) => e.role === 'assistant' && e.assistant_index === assistantIndex,
@@ -1272,9 +1280,20 @@ function DiscussionThread({
         branchActive: old.branch_active ?? null,
       });
     }
-    void stream.run(paths.retry, { slug, assistant_index: assistantIndex, model });
+    void stream.run(paths.retry, {
+      slug,
+      assistant_index: assistantIndex,
+      ...config,
+    }).finally(() => {
+      void queryClient.invalidateQueries({ queryKey: keys.opening(pid, slug) });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths.retry, slug, state, stream.run, transcript]);
+  }, [paths.retry, pid, queryClient, slug, state, stream.run, transcript]);
+
+  const handleFirstRetry = useCallback((config: FirstResponseRetryConfig) => {
+    setFirstRetryOpen(false);
+    handleRetry(0, config);
+  }, [handleRetry]);
 
   async function reopen() {
     setBusy(true);
@@ -1358,21 +1377,32 @@ function DiscussionThread({
         onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
       });
       if (!stream.streaming && canRetry) {
-        options.push({
-          key: 'retry',
-          title: 'Retry',
-          subtitle: 'Regenerate with the current model',
-          icon: 'rotate-ccw',
-          section: true,
-          onPress: () => handleRetry(entry.assistant_index),
-        });
-        for (const m of favorites) {
+        if (entry.assistant_index === 0) {
           options.push({
-            key: `retry-${m.id}`,
-            title: `Retry with ${m.label}`,
-            icon: 'zap',
-            onPress: () => handleRetry(entry.assistant_index, m.id),
+            key: 'retry-first',
+            title: 'Retry first response',
+            subtitle: 'Choose prompt type and model',
+            icon: 'rotate-ccw',
+            section: true,
+            onPress: () => setFirstRetryOpen(true),
           });
+        } else {
+          options.push({
+            key: 'retry',
+            title: 'Retry',
+            subtitle: 'Regenerate with the current model',
+            icon: 'rotate-ccw',
+            section: true,
+            onPress: () => handleRetry(entry.assistant_index),
+          });
+          for (const m of favorites) {
+            options.push({
+              key: `retry-${m.id}`,
+              title: `Retry with ${m.label}`,
+              icon: 'zap',
+              onPress: () => handleRetry(entry.assistant_index, { model: m.id }),
+            });
+          }
         }
       }
     }
@@ -1407,6 +1437,7 @@ function DiscussionThread({
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
+          onConfigureFirstRetry={() => setFirstRetryOpen(true)}
           canRetry={canRetry}
           onSwitchBranch={handleSwitchBranch}
           switchDisabled={switchingBranch || stream.streaming}
@@ -1648,6 +1679,17 @@ function DiscussionThread({
       onClose={() => setMsgMenu(null)}
       options={msgMenu ?? []}
     />
+    <FirstResponseRetrySheet
+      visible={firstRetryOpen}
+      onClose={() => setFirstRetryOpen(false)}
+      currentPrompt={opening.data?.prompt}
+      templates={opening.data?.templates}
+      currentMode={readingMode}
+      selectedModel={selectedModel}
+      defaultModelLabel={defaultModelLabel}
+      favorites={favorites}
+      onRetry={handleFirstRetry}
+    />
     <NotesReviewSheet
       visible={reviewOpen}
       pid={pid}
@@ -1686,6 +1728,8 @@ export function ComposeFirst({
   sessionState,
   selectedModel,
   retrieved,
+  modelLabel = 'Project default',
+  onPickModel = () => undefined,
 }: {
   pid: string;
   slug: string;
@@ -1696,6 +1740,8 @@ export function ComposeFirst({
   sessionState: string | null;
   selectedModel: string | null;
   retrieved: boolean;
+  modelLabel?: string;
+  onPickModel?: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -2002,13 +2048,32 @@ export function ComposeFirst({
               <PromptTemplateOption
                 key={option.key}
                 title={option.title}
-                description={option.description}
+                description={template === option.key ? option.description : undefined}
                 icon={option.icon}
                 selected={template === option.key}
                 onPress={() => selectTemplate(option.key)}
               />
             ))}
           </View>
+          <Pressable
+            onPress={onPickModel}
+            accessibilityRole="button"
+            accessibilityLabel={`Model for first response. ${modelLabel}`}
+            style={({ pressed }) => [
+              styles.firstModelRow,
+              pressed && { opacity: 0.82 },
+            ]}>
+            <View style={styles.firstModelIcon}>
+              <Icon name="zap" size={16} color={t.violet} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text variant="heading">Model</Text>
+              <Text variant="caption" color={t.muted} numberOfLines={1}>
+                {modelLabel}
+              </Text>
+            </View>
+            <Text variant="label" color={t.mint}>Change</Text>
+          </Pressable>
         </View>
         {template === 'custom' ? (
           <View style={{ marginTop: space.lg }}>
@@ -2218,6 +2283,7 @@ function AssistantBody({
   title,
   favorites,
   onRetry,
+  onConfigureFirstRetry,
   canRetry,
   onSwitchBranch,
   switchDisabled,
@@ -2228,7 +2294,11 @@ function AssistantBody({
   audioId: string;
   title: string;
   favorites: FavoriteModel[];
-  onRetry: (assistantIndex: number, model?: string) => void;
+  onRetry: (
+    assistantIndex: number,
+    config?: { model?: string; prompt?: string; mode?: ReadingMode },
+  ) => void;
+  onConfigureFirstRetry: () => void;
   canRetry: boolean;
   onSwitchBranch: (assistantIndex: number, branch: number) => void;
   switchDisabled: boolean;
@@ -2274,7 +2344,7 @@ function AssistantBody({
       key: `retry-${m.id}`,
       title: `Retry with ${m.label}`,
       icon: 'zap' as IconName,
-      onPress: () => onRetry(entry.assistant_index, m.id),
+      onPress: () => onRetry(entry.assistant_index, { model: m.id }),
     })),
   ];
 
@@ -2359,13 +2429,17 @@ function AssistantBody({
           <MsgAction
             icon="rotate-ccw"
             label="Retry"
-            onPress={() => setRetryMenu(true)}
+            onPress={
+              entry.assistant_index === 0
+                ? onConfigureFirstRetry
+                : () => setRetryMenu(true)
+            }
             accessibilityLabel="Retry this response, optionally with a different model"
           />
         ) : null}
       </View>
       <OptionsSheet
-        visible={retryMenu}
+        visible={entry.assistant_index !== 0 && retryMenu}
         onClose={() => setRetryMenu(false)}
         title="Retry response"
         options={retryOptions}
@@ -2465,6 +2539,25 @@ function Centered({ text, loading }: { text?: string; loading?: boolean }) {
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   composeFirst: { padding: space.md },
   promptTemplates: { gap: space.sm, marginTop: space.md },
+  firstModelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginTop: space.md,
+    padding: space.md,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.md,
+    backgroundColor: t.surface,
+  },
+  firstModelIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    backgroundColor: t.elevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   streamingOnly: { padding: space.md, paddingBottom: space.xl },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   candidate: {

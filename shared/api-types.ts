@@ -2017,6 +2017,10 @@ export interface components {
             slug: string;
             /** Assistant Index */
             assistant_index: number;
+            /** Prompt */
+            prompt?: string | null;
+            /** Mode */
+            mode?: ("balanced" | "background" | "technical" | "detailed") | null;
         };
         /** SettingsReq */
         SettingsReq: {

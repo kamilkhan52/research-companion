@@ -109,6 +109,10 @@ class RequestChangesReq(DeliveryReq):
 class RetryReq(DeliveryReq):
     slug: str
     assistant_index: int
+    # The first response can be retried with the same prompt-type/model choices as session
+    # start. These are branch-scoped; later-turn retries cannot change the opening context.
+    prompt: str | None = None
+    mode: Literal["balanced", "background", "technical", "detailed"] | None = None
 
 
 class BranchSwitchReq(BaseModel):
@@ -642,7 +646,18 @@ def _prep_retry(req: RetryReq) -> None:
                             detail="Notes are committed — continue the discussion first.")
     # U.14: a retry forks the conversation instead of discarding the old response — the
     # previous tail is archived as a branch, switchable via /branch_switch.
-    sessions.fork_before_assistant(req.slug, req.assistant_index)
+    context = None
+    if req.prompt is not None or req.mode is not None:
+        if req.assistant_index != 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Opening prompt and reading mode can only change on the first response.",
+            )
+        context = {
+            "opening": req.prompt if req.prompt is not None else sessions.get_opening(req.slug),
+            "reading_mode": req.mode or sessions.get_reading_mode(req.slug),
+        }
+    sessions.fork_before_assistant(req.slug, req.assistant_index, context=context)
 
 
 def _prep_edit(req: EditReq) -> None:
