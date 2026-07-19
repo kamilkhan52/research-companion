@@ -20,6 +20,22 @@ const makeProbeStyles = (t: ThemePalette) => StyleSheet.create({
 
 const seenStyles: unknown[] = [];
 
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((start) => parseInt(hex.slice(start, start + 2), 16) / 255);
+  const [r, g, b] = channels.map((channel) => (
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrastRatio(a: string, b: string): number {
+  const [lighter, darker] = [relativeLuminance(a), relativeLuminance(b)]
+    .sort((x, y) => y - x);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 function Probe() {
   const { mode, themeName, theme, setMode } = useThemeMode();
   const styles = useThemedStyles(makeProbeStyles);
@@ -49,6 +65,19 @@ test('the Dim palette values are frozen (default stays a visual no-op)', () => {
   expect(themes.dim.bg).toBe('#0B0D12');
   expect(themes.dim.text).toBe('#F3F0E8');
   expect(themes.dim.mint).toBe('#65D6B4');
+});
+
+test('Light accent inks remain AA on the warm canvas', () => {
+  expect(themes.light.mint).toBe('#15795F');
+  expect(themes.light.amber).toBe('#8F6411');
+  for (const accent of [
+    themes.light.mint,
+    themes.light.violet,
+    themes.light.amber,
+    themes.light.danger,
+  ]) {
+    expect(contrastRatio(accent, themes.light.bg)).toBeGreaterThanOrEqual(4.5);
+  }
 });
 
 test('restores a persisted mode and persists changes', async () => {

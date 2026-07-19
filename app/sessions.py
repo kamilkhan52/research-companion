@@ -304,7 +304,10 @@ def accepted_drafts(slug: str) -> list[dict]:
             continue
         kind = record.get("kind")
         if kind == "reply":
-            out.append({"kind": kind, "text": record.get("text", "")})
+            out.append({
+                "kind": kind,
+                "text": record.get("authored_text", record.get("text", "")),
+            })
         elif kind == "revision" and record.get("authored_text") is not None:
             out.append({"kind": kind, "text": record["authored_text"]})
     return out
