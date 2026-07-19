@@ -166,11 +166,24 @@ depends on screenshots Kamil has not attached yet.
   P-shaped mark grounded in the app's editorial/research philosophy and themes, carry it
   through the Figma workflow, select with Kamil if materially different finalists remain,
   then implement all platform icon assets.
+  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  a deterministic warm-paper slab-serif P carries a mint research path to one violet evidence
+  node. The same source generates the generic/iOS icon, Android adaptive foreground and
+  monochrome mark, splash, and favicon; an editable canonical SVG ships beside the PNGs.
 - **R9.8 authorized — skip controls.** Complete the Figma restyle of `−15/+15` to harmonize
   with sentence navigation, then implement it.
+  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  production now matches selected K1's 64×52 outboard time-jump pills while the 52 px
+  mint-outlined sentence controls retain semantic priority.
 - **Palette refinement authorized.** Refine Light/Dim/Black variables in Figma and implement
   the chosen token values. Preserve semantic contrast and verify sheets, graphs, annotations,
   progress indicators, and audio controls in all modes.
+  **Implementation in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  Dim remains byte-identical, Black keeps a true-#000 canvas, and Light mint/amber move to
+  `#15795F`/`#8F6411` so every semantic accent clears 4.5:1 on the warm canvas. The connected
+  Figma collection gained the missing opaque tokens and first wash pairs; the remaining
+  boards/components are paused at a recorded idempotent checkpoint because the Starter-plan
+  MCP call quota was reached.
 
 ## Screenshot-dependent follow-up
 
