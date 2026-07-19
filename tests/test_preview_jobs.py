@@ -270,10 +270,9 @@ def test_coordinator_continues_cues_with_audio_progress_until_ready(
     assert publications[-1][3] is True
 
 
-def test_synthesis_cues_only_fire_on_segment_progress(temp_project, monkeypatch):
-    """R9.6: while audio synthesizes, a new cue is worth speaking only when a segment actually
-    lands — otherwise the cue track just loops '…still synthesizing'. Flat progress ⇒ no new
-    cue; an advanced segment count ⇒ exactly one more."""
+def test_synthesis_progress_triggers_a_cue_before_the_keepalive(temp_project, monkeypatch):
+    """A landed segment is still the preferred immediate trigger; flat progress does not fall
+    back to a keepalive until the bounded silence interval has actually elapsed."""
     audio = type("Audio", (), {
         "status": "running", "stage": "synthesizing",
         "segments_done": 1, "segments_total": 4,
@@ -292,6 +291,7 @@ def test_synthesis_cues_only_fire_on_segment_progress(temp_project, monkeypatch)
     monkeypatch.setattr(preview_jobs, "start_job", fake_start)
     monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: fake_start.cues.get(job_id))
     monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(preview_jobs, "SYNTHESIS_KEEPALIVE_SECONDS", 5)
 
     preview_jobs.start_coordinator(
         "chat-gate", "audio-gate",
@@ -301,7 +301,7 @@ def test_synthesis_cues_only_fire_on_segment_progress(temp_project, monkeypatch)
         cadence_seconds=0, last_started_at=0,
     )
 
-    # First synthesis cue fires (announces the text is readable); then progress stays flat.
+    # First synthesis cue fires; flat progress does not rapidly repeat it.
     deadline = time.time() + 2
     while not starts and time.time() < deadline:
         time.sleep(0.01)
@@ -317,6 +317,53 @@ def test_synthesis_cues_only_fire_on_segment_progress(temp_project, monkeypatch)
     assert len(starts) == 2
 
     audio.status = "done"
+
+
+def test_synthesis_keepalive_continues_cues_during_a_slow_segment(temp_project, monkeypatch):
+    """R10.20: stitched audio can spend a long time inside one segment. Preview cues must
+    continue until the complete track is playable, even while segments_done is flat."""
+    audio = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 1, "segments_total": 4,
+    })()
+    starts = []
+    cues = {}
+
+    def fake_start(chat_id, ordinal, sources, previous, progress):
+        cue = type("Cue", (), {
+            "id": f"cue-{ordinal}",
+            "status": "done",
+            "cue": f"distinct grounded cue {ordinal}",
+        })()
+        starts.append((previous, dict(progress)))
+        cues[cue.id] = cue
+        return cue
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
+    monkeypatch.setattr(preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(preview_jobs, "SYNTHESIS_KEEPALIVE_SECONDS", 0.05)
+
+    coordinator = preview_jobs.start_coordinator(
+        "chat-keepalive", "audio-keepalive",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [],
+        lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+
+    deadline = time.time() + 2
+    while len(starts) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    audio.status = "done"
+    while coordinator.status == "running" and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert len(starts) >= 2
+    assert starts[0][1]["segments_done"] == starts[1][1]["segments_done"] == 1
+    assert "distinct grounded cue 1" in starts[1][0]
+    assert coordinator.status == "done"
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,11 @@ beforeEach(async () => {
   jest.mocked(api.moveProject).mockClear();
 });
 
-function render(onDone = jest.fn(), onClose = jest.fn()) {
+function render(
+  onDone = jest.fn(),
+  onClose = jest.fn(),
+  operation: 'move' | 'copy' = 'move',
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return renderAsync(
     <QueryClientProvider client={client}>
@@ -21,6 +25,7 @@ function render(onDone = jest.fn(), onClose = jest.fn()) {
         destName="Quantization"
         slugs={['awq', 'smooth']}
         notesEligible
+        operation={operation}
         onClose={onClose}
         onDone={onDone}
       />
@@ -46,6 +51,24 @@ test('confirming a move posts to the destination and reports the new pid', async
   await waitFor(() => expect(onDone).toHaveBeenCalledWith(expect.objectContaining({
     new_pid: 'dest',
   })));
+});
+
+test('copy is explicit and keeps the source project', async () => {
+  const onDone = jest.fn();
+  await render(onDone, jest.fn(), 'copy');
+  expect(screen.getByText(/Copy to .Quantization./)).toBeTruthy();
+  expect(screen.queryByText('Remove from this project')).toBeNull();
+
+  fireEvent.press(screen.getByText('Copy papers'));
+  await waitFor(() =>
+    expect(api.moveProject).toHaveBeenCalledWith('source', {
+      dest_pid: 'dest',
+      slugs: ['awq', 'smooth'],
+      remove_from_source: false,
+      draft_destination_notes: true,
+      cleanup_source_notes: false,
+    }),
+  );
 });
 
 test('a pre-R8.3 response still reports the committed move as successful', async () => {

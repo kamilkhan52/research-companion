@@ -1939,6 +1939,13 @@ export interface components {
             /** Slugs */
             slugs: string[];
         };
+        /** ReplyComment */
+        ReplyComment: {
+            /** Quote */
+            quote: string;
+            /** Comment */
+            comment: string;
+        };
         /** ReplyReq */
         ReplyReq: {
             /**
@@ -1951,8 +1958,13 @@ export interface components {
             model?: string | null;
             /** Slug */
             slug: string;
-            /** Text */
+            /**
+             * Text
+             * @default
+             */
             text: string;
+            /** Comments */
+            comments?: components["schemas"]["ReplyComment"][];
         };
         /** RequestChangesReq */
         RequestChangesReq: {

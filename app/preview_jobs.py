@@ -19,6 +19,9 @@ from .jobs import Job, JobRegistry, new_id, now_iso
 
 MAX_CUE_CHARS = 240
 CONTINUATION_POLL_SECONDS = 0.25
+# Segment completion remains the preferred synthesis cue trigger, but a single slow segment
+# must not leave the listener in silence until the stitched track is ready.
+SYNTHESIS_KEEPALIVE_SECONDS = 18.0
 log = logging_config.get("preview")
 
 GenerateFn = Callable[[list[dict], str | None], str]
@@ -398,13 +401,13 @@ def start_coordinator(
             if (cue := get_job(cue_id)) is not None and cue.status == "done" and cue.cue
         ]
         last_started = last_started_at
-        # During audio synthesis the wait is bounded and its only news is segment progress, so
-        # a fresh cue is worth speaking ONLY when a segment has actually landed since the last
-        # one — otherwise the cue track just repeats "…still synthesizing" on the cadence timer,
-        # which is the R9.6 complaint. -1 lets the first synthesis cue always fire (announcing
-        # the text is ready to read); after that it's progress-gated. Unknown-remaining phases
-        # (analysis, narration adaptation) keep the plain time cadence — there's no progress
-        # signal to gate on and the wait is genuinely open-ended.
+        # During audio synthesis, segment progress is the preferred cue trigger — it keeps
+        # progress language honest and avoids the old rapid "…still synthesizing" loop. But a
+        # slow segment can take long enough that the previous cue ends well before the stitched
+        # track is playable. A bounded keepalive therefore permits a fresh, non-repeating,
+        # intellectually grounded cue even while the segment count is flat. -1 lets the first
+        # synthesis cue fire immediately. Unknown-remaining phases (analysis, narration
+        # adaptation) retain the normal cadence.
         last_synth_done = -1
         while True:
             audio_job = audio_jobs.get_job(audio_job_id)
@@ -430,7 +433,12 @@ def start_coordinator(
             now = time.monotonic()
             synth_done = int(progress.get("segments_done") or 0)
             progressed = phase != "audio_synthesis" or synth_done > last_synth_done
-            if now - last_started >= cadence_seconds and progressed:
+            elapsed = now - last_started
+            keepalive_due = (
+                phase == "audio_synthesis"
+                and elapsed >= max(cadence_seconds, SYNTHESIS_KEEPALIVE_SECONDS)
+            )
+            if elapsed >= cadence_seconds and (progressed or keepalive_due):
                 last_started = now
                 if phase == "audio_synthesis":
                     last_synth_done = synth_done

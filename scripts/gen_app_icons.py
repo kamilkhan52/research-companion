@@ -1,6 +1,10 @@
-"""Generate the Paradigm app icon set: a reference-graph constellation (two mint nodes, one
-violet, thin muted edges) on the scholar-dark canvas. Pure numpy + stdlib zlib PNG writer —
-no PIL. Analytic anti-aliasing via signed-distance smoothstep."""
+"""Generate the Paradigm “P” icon set.
+
+The mark combines an editorial slab-serif P, a mint research path, and a violet
+evidence node on the Scholar Dark canvas. Pure numpy + stdlib zlib PNG writer:
+no font rasterizer or image library, so every platform asset is reproducible.
+"""
+
 import struct
 import sys
 import zlib
@@ -9,9 +13,9 @@ import numpy as np
 
 INK = (0x0B, 0x0D, 0x12)
 GLOW = (0x11, 0x14, 0x1C)
+PAPER = (0xF3, 0xF0, 0xE8)
 MINT = (0x65, 0xD6, 0xB4)
 VIOLET = (0x9B, 0x8A, 0xFB)
-LINE = (0x99, 0xA3, 0xB7)
 
 
 def canvas(n):
@@ -20,7 +24,7 @@ def canvas(n):
 
 
 def aa(dist):
-    """signed distance (px, + outside) -> coverage 0..1 with ~1.2px feather."""
+    """Signed distance (px, + outside) → coverage with a ~1.2 px feather."""
     return np.clip(0.5 - dist / 1.2, 0.0, 1.0)
 
 
@@ -28,15 +32,47 @@ def circle(xx, yy, cx, cy, r):
     return aa(np.hypot(xx - cx, yy - cy) - r)
 
 
-def segment(xx, yy, ax, ay, bx, by, w):
+def ellipse(xx, yy, cx, cy, rx, ry):
+    # Accurate enough at the edge for analytic AA while remaining dependency-free.
+    normalized = np.hypot((xx - cx) / rx, (yy - cy) / ry)
+    return aa((normalized - 1) * min(rx, ry))
+
+
+def round_rect(xx, yy, cx, cy, hx, hy, r):
+    qx = np.abs(xx - cx) - (hx - r)
+    qy = np.abs(yy - cy) - (hy - r)
+    outside = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0))
+    inside = np.minimum(np.maximum(qx, qy), 0)
+    return aa(outside + inside - r)
+
+
+def segment(xx, yy, ax, ay, bx, by, width):
     px, py = xx - ax, yy - ay
     dx, dy = bx - ax, by - ay
     t = np.clip((px * dx + py * dy) / (dx * dx + dy * dy), 0.0, 1.0)
-    return aa(np.hypot(px - t * dx, py - t * dy) - w / 2)
+    return aa(np.hypot(px - t * dx, py - t * dy) - width / 2)
 
 
-def over(base_rgb, base_a, rgb, cov, alpha=1.0):
-    a = cov * alpha
+def cubic_path(xx, yy, p0, p1, p2, p3, width, steps=28):
+    ts = np.linspace(0, 1, steps + 1)
+    points = []
+    for t in ts:
+        u = 1 - t
+        points.append(
+            (
+                u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0],
+                u**3 * p0[1] + 3 * u**2 * t * p1[1] + 3 * u * t**2 * p2[1] + t**3 * p3[1],
+            )
+        )
+    coverage = np.zeros_like(xx)
+    for index in range(len(points) - 1):
+        a, b = points[index], points[index + 1]
+        coverage = np.maximum(coverage, segment(xx, yy, a[0], a[1], b[0], b[1], width))
+    return coverage
+
+
+def over(base_rgb, base_a, rgb, coverage, alpha=1.0):
+    a = coverage * alpha
     out_a = a + base_a * (1 - a)
     safe = np.where(out_a == 0, 1, out_a)
     out_rgb = [
@@ -46,16 +82,20 @@ def over(base_rgb, base_a, rgb, cov, alpha=1.0):
     return out_rgb, out_a
 
 
-def write_png(path, rgb, a, n):
+def write_png(path, rgb, alpha, n):
     img = np.zeros((n, n, 4), dtype=np.uint8)
     for i in range(3):
         img[..., i] = np.clip(rgb[i], 0, 255).astype(np.uint8)
-    img[..., 3] = np.clip(a * 255, 0, 255).astype(np.uint8)
+    img[..., 3] = np.clip(alpha * 255, 0, 255).astype(np.uint8)
     raw = b"".join(b"\x00" + img[row].tobytes() for row in range(n))
 
     def chunk(tag, data):
-        c = tag + data
-        return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c))
+        content = tag + data
+        return (
+            struct.pack(">I", len(data))
+            + content
+            + struct.pack(">I", zlib.crc32(content))
+        )
 
     with open(path, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n")
@@ -65,39 +105,59 @@ def write_png(path, rgb, a, n):
     print("wrote", path)
 
 
-def draw_mark(xx, yy, s, rgb, a, mono=False):
-    """The constellation, parameterized by scale s (1.0 = fills a 1024 canvas comfortably)
-    around the canvas center. Returns composited (rgb, a)."""
+def draw_mark(xx, yy, scale, rgb, alpha, mono=False):
+    """Composite the mark around the current canvas center.
+
+    ``scale=1`` uses the canonical 1024-unit geometry. Smaller values keep the
+    same optical proportions for adaptive and compact assets.
+    """
     n = xx.max() + 0.5
-    c = n / 2
-    # node positions (relative to center, in 1024-scale units)
-    A = (c - 215 * s, c - 35 * s)    # anchor node, mint, largest
-    B = (c + 140 * s, c - 160 * s)   # violet
-    C = (c + 65 * s, c + 200 * s)    # mint
-    line_rgb = (255, 255, 255) if mono else LINE
+    cx, cy = n / 2, n / 2
+
+    def pt(x, y):
+        return cx + (x - 512) * scale, cy + (y - 512) * scale
+
+    paper = (255, 255, 255) if mono else PAPER
     mint = (255, 255, 255) if mono else MINT
     violet = (255, 255, 255) if mono else VIOLET
-    # edges first (under the nodes)
-    for (p, q) in ((A, B), (A, C), (B, C)):
-        cov = segment(xx, yy, p[0], p[1], q[0], q[1], 13 * s)
-        rgb, a = over(rgb, a, line_rgb, cov, 0.55 if not mono else 1.0)
-    # nodes: outer ring (ink gap) + fill, so they read on any background
-    for (p, r, col) in ((A, 96 * s, mint), (B, 62 * s, violet), (C, 72 * s, mint)):
-        rgb, a = over(rgb, a, INK if not mono else (0, 0, 0), circle(xx, yy, p[0], p[1], r + 16 * s), 1.0 if not mono else 0.0)
-        rgb, a = over(rgb, a, col, circle(xx, yy, p[0], p[1], r))
-    return rgb, a
+
+    # P silhouette: quiet slab serifs plus an ample counter that remains open at 24 px.
+    stem = round_rect(xx, yy, *pt(390, 512), 62 * scale, 300 * scale, 10 * scale)
+    top_serif = round_rect(xx, yy, *pt(435, 220), 135 * scale, 20 * scale, 8 * scale)
+    bottom_serif = round_rect(xx, yy, *pt(410, 792), 110 * scale, 20 * scale, 8 * scale)
+    outer = ellipse(xx, yy, *pt(490, 392), 220 * scale, 190 * scale)
+    inner = ellipse(xx, yy, *pt(500, 395), 112 * scale, 90 * scale)
+    bowl = np.clip(outer - inner, 0, 1)
+    p_coverage = np.maximum.reduce((stem, top_serif, bottom_serif, bowl))
+    rgb, alpha = over(rgb, alpha, paper, p_coverage)
+
+    # One continuous research path rises through the counter to a grounded evidence node.
+    path = cubic_path(
+        xx,
+        yy,
+        pt(405, 690),
+        pt(405, 560),
+        pt(600, 560),
+        pt(555, 405),
+        28 * scale,
+    )
+    rgb, alpha = over(rgb, alpha, mint, path)
+    rgb, alpha = over(rgb, alpha, violet, circle(xx, yy, *pt(555, 405), 38 * scale))
+    return rgb, alpha
 
 
 def solid(n, color, glow=False):
     xx, yy = canvas(n)
     rgb = [np.full((n, n), c, dtype=np.float64) for c in color]
-    a = np.ones((n, n))
+    alpha = np.ones((n, n))
     if glow:
-        # two soft off-center atmosphere discs, like the app background
-        for (cx, cy, r) in ((n * 0.75, n * 0.2, n * 0.55), (n * 0.2, n * 0.85, n * 0.45)):
-            cov = np.clip(1 - np.hypot(xx - cx, yy - cy) / r, 0, 1) ** 2
-            rgb, a = over(rgb, a, GLOW, cov, 0.9)
-    return xx, yy, rgb, a
+        for cx, cy, radius in (
+            (n * 0.75, n * 0.20, n * 0.55),
+            (n * 0.20, n * 0.85, n * 0.45),
+        ):
+            coverage = np.clip(1 - np.hypot(xx - cx, yy - cy) / radius, 0, 1) ** 2
+            rgb, alpha = over(rgb, alpha, GLOW, coverage, 0.9)
+    return xx, yy, rgb, alpha
 
 
 def transparent(n):
@@ -105,30 +165,41 @@ def transparent(n):
     return xx, yy, [np.zeros((n, n)) for _ in range(3)], np.zeros((n, n))
 
 
+def downsample_rgba(rgb, alpha, factor):
+    def shrink(channel):
+        h, w = channel.shape
+        return channel.reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
+
+    return [shrink(channel) for channel in rgb], shrink(alpha)
+
+
 out = sys.argv[1] if len(sys.argv) > 1 else "."
 N = 1024
 
-# 1) generic icon: dark atmospheric bg + mark
-xx, yy, rgb, a = solid(N, INK, glow=True)
-rgb, a = draw_mark(xx, yy, 1.0, rgb, a)
-write_png(f"{out}/icon.png", rgb, a, N)
+# Generic + iOS icon.
+xx, yy, rgb, alpha = solid(N, INK, glow=True)
+rgb, alpha = draw_mark(xx, yy, 1.0, rgb, alpha)
+write_png(f"{out}/icon.png", rgb, alpha, N)
 
-# 2) adaptive foreground: mark only, scaled into the ~66% safe zone, transparent bg
-xx, yy, rgb, a = transparent(N)
-rgb, a = draw_mark(xx, yy, 0.62, rgb, a)
-write_png(f"{out}/android-icon-foreground.png", rgb, a, N)
+# Android adaptive foreground and themed monochrome stay inside the 66% safe zone.
+xx, yy, rgb, alpha = transparent(N)
+rgb, alpha = draw_mark(xx, yy, 0.68, rgb, alpha)
+write_png(f"{out}/android-icon-foreground.png", rgb, alpha, N)
 
-# 3) adaptive background: dark atmosphere
-xx, yy, rgb, a = solid(N, INK, glow=True)
-write_png(f"{out}/android-icon-background.png", rgb, a, N)
+xx, yy, rgb, alpha = solid(N, INK, glow=True)
+write_png(f"{out}/android-icon-background.png", rgb, alpha, N)
 
-# 4) monochrome (themed icons): white mark on transparent
-xx, yy, rgb, a = transparent(N)
-rgb, a = draw_mark(xx, yy, 0.62, rgb, a, mono=True)
-write_png(f"{out}/android-icon-monochrome.png", rgb, a, N)
+xx, yy, rgb, alpha = transparent(N)
+rgb, alpha = draw_mark(xx, yy, 0.68, rgb, alpha, mono=True)
+write_png(f"{out}/android-icon-monochrome.png", rgb, alpha, N)
 
-# 5) splash icon: mark on transparent (splash bg color comes from app.json)
-xx, yy, rgb, a = transparent(512)
-xx *= 2; yy *= 2  # keep 1024-scale geometry
-rgb, a = draw_mark(xx, yy, 1.0, rgb, a)
-write_png(f"{out}/splash-icon.png", rgb, a, 512)
+# Splash mark uses transparent pixels; the configured splash supplies the canvas.
+xx, yy, rgb, alpha = transparent(512)
+rgb, alpha = draw_mark(xx, yy, 0.50, rgb, alpha)
+write_png(f"{out}/splash-icon.png", rgb, alpha, 512)
+
+# Supersampled favicon so the same silhouette stays clean at browser-tab size.
+xx, yy, rgb, alpha = solid(192, INK, glow=True)
+rgb, alpha = draw_mark(xx, yy, 0.18, rgb, alpha)
+rgb, alpha = downsample_rgba(rgb, alpha, 4)
+write_png(f"{out}/favicon.png", rgb, alpha, 48)
