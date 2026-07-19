@@ -120,3 +120,46 @@ test('hiding stops when the hidden turn is absent (default null passes through)'
   expect(toDiscussionMessages(transcript, null, null).map((m) => m.text)).toContain('a1');
   expect(toDiscussionMessages(transcript, null, null, 5).map((m) => m.text)).toContain('a1');
 });
+
+// ---- R10.23: editing a user message immediately mirrors the backend rewind ----
+
+test('hideFromTranscriptIndex hides the edited user turn and its complete tail', () => {
+  const transcript = [
+    { role: 'user' as const, text: 'q1' },
+    assistantEntry(0, 'a1'),
+    { role: 'user' as const, text: 'q2' },
+    assistantEntry(1, 'a2'),
+    { role: 'user' as const, text: 'q3' },
+    assistantEntry(2, 'a3'),
+  ];
+  const msgs = toDiscussionMessages(transcript, null, null, null, 2);
+
+  expect(msgs.map((message) => message.text)).toEqual(['a1', 'q1']);
+  expect(msgs.map((message) => message.text)).not.toContain('q2');
+  expect(msgs.map((message) => message.text)).not.toContain('a2');
+  expect(msgs.map((message) => message.text)).not.toContain('q3');
+  expect(msgs.map((message) => message.text)).not.toContain('a3');
+});
+
+test('submitted edit appears only as the optimistic draft above the rewound prefix', () => {
+  const transcript = [
+    { role: 'user' as const, text: 'q1' },
+    assistantEntry(0, 'a1'),
+    { role: 'user' as const, text: 'old q2' },
+    assistantEntry(1, 'old a2'),
+  ];
+  const msgs = toDiscussionMessages(
+    transcript,
+    'new q2',
+    [{ kind: 'text', text: '…' }] as never,
+    null,
+    2,
+  );
+
+  expect(msgs[0]._id).toBe(STREAMING_MESSAGE_ID);
+  expect(msgs[1]._id).toBe(PENDING_MESSAGE_ID);
+  expect(msgs[1].text).toBe('new q2');
+  expect(msgs.map((message) => message.text)).not.toContain('old q2');
+  expect(msgs.map((message) => message.text)).not.toContain('old a2');
+  expect(msgs.map((message) => message.text)).toContain('a1');
+});
