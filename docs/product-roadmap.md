@@ -179,6 +179,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.23 | Editing a user turn immediately rewinds the visible discussion to the preceding response; the original prompt and later tail stay hidden through regeneration | [#175](https://github.com/kamilkhan52/research-companion/pull/175) | Complete |
 | R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | [#176](https://github.com/kamilkhan52/research-companion/pull/176) | Complete |
 | R9.2 phase 1 | Opt-in sentence-span Markdown path with violet selection/annotation marks and no behavior change for ordinary Markdown surfaces | [#178](https://github.com/kamilkhan52/research-companion/pull/178) | Complete |
+| R10.20 | Listening preview cues continue through slow flat synthesis segments via a bounded grounded keepalive, stopping only at terminal/playable audio state | [#177](https://github.com/kamilkhan52/research-companion/pull/177) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
