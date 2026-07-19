@@ -180,7 +180,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.22 | Figure assets warm in registered background jobs; ready figure labels/captions enter model context; opening analysis uses the exact inline `Figure N` card contract | [#176](https://github.com/kamilkhan52/research-companion/pull/176) | Complete |
 | R9.2 phase 1 | Opt-in sentence-span Markdown path with violet selection/annotation marks and no behavior change for ordinary Markdown surfaces | [#178](https://github.com/kamilkhan52/research-companion/pull/178) | Complete |
 | R9.2 phase 2 | Per-paper persisted sentence-comment queue with inline editor and attached-comment chips above the composer | [#179](https://github.com/kamilkhan52/research-companion/pull/179) | Complete |
-| R9.2 phase 3 | Optional reply comments compose deterministically into the durable user turn; pure annotations send and clear only after server acceptance | current slice | Complete |
+| R9.2 phase 3 | Optional reply comments compose deterministically into the durable user turn; pure annotations send and clear only after server acceptance | [#180](https://github.com/kamilkhan52/research-companion/pull/180) | Complete |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
