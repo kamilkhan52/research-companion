@@ -126,6 +126,10 @@ depends on screenshots Kamil has not attached yet.
   [#179](https://github.com/kamilkhan52/research-companion/pull/179):** long-press offers
   **Comment on this**, sentence taps open an inline quote/comment editor, and a per-paper
   persisted queue renders editable/removable attached-comment chips above the composer.
+  **Phase 3 implemented in the current sentence-send slice:** reply contracts accept optional
+  quote/comment pairs, one shared deterministic formatter records them as a normal Markdown
+  user turn, pure-annotation sends are valid, shared API types are regenerated, and mobile
+  clears the persisted queue only after server acceptance (with transcript recovery).
 - **R10.19 — First-turn and retry configuration.** Retry First Response should expose the same
   reading/prompt modes as initial entry. Add per-discussion model selection beside prompt type;
   keep the default compact, reveal model choices only under Change default model, and show

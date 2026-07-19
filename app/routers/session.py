@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import (
     agent,
@@ -86,9 +86,15 @@ class ModeReq(BaseModel):
     mode: Literal["balanced", "background", "technical", "detailed"]
 
 
+class ReplyComment(BaseModel):
+    quote: str = Field(min_length=1, max_length=4000)
+    comment: str = Field(min_length=1, max_length=4000)
+
+
 class ReplyReq(DeliveryReq):
     slug: str
-    text: str
+    text: str = ""
+    comments: list[ReplyComment] = Field(default_factory=list, max_length=20)
 
 
 class FinishReq(DeliveryReq):
@@ -597,7 +603,38 @@ def _prep_chat_start(req: ChatStartReq) -> None:
 
 def _prep_reply(req: ReplyReq) -> None:
     _require_session(req.slug)
-    sessions.record_user(req.slug, req.text, kind="reply")
+    rendered = _compose_reply_text(req)
+    sessions.record_user(
+        req.slug,
+        rendered,
+        kind="reply",
+        # Once comments change the durable text, keep the human's composer text separately so
+        # persisted-draft reconciliation compares like with like.
+        authored_text=req.text if req.comments else None,
+    )
+
+
+def _compose_reply_text(req: ReplyReq) -> str:
+    """Deterministically turn transient sentence comments into the ordinary durable user turn.
+
+    Empty comments preserve the existing endpoint byte-for-byte. With comments, each reader-
+    visible quote and its comment becomes a Markdown blockquote, followed by optional free text.
+    The transcript and model history therefore need no annotation protocol or side store.
+    """
+    if not req.comments:
+        return req.text
+    parts = ["Regarding specific passages of your last response:"]
+    for item in req.comments:
+        quote = item.quote.strip()
+        comment = item.comment.strip()
+        if not quote or not comment:
+            raise HTTPException(status_code=400, detail="Passage comments cannot be empty.")
+        quoted = "\n".join(f"> {line}" for line in f"“{quote}”".splitlines())
+        noted = "\n".join(f"> {line}" for line in f"— {comment}".splitlines())
+        parts.append(f"{quoted}\n>\n{noted}")
+    if req.text.strip():
+        parts.append(req.text.strip())
+    return "\n\n".join(parts)
 
 
 def _prep_continue(req: FinishReq) -> None:
@@ -655,9 +692,8 @@ def chat_start_stream(req: ChatStartReq):
 
 @project_router.post("/reply")
 def reply(req: ReplyReq):
-    if not sessions.get_state(req.slug):
-        raise HTTPException(status_code=409, detail="No active session for this paper.")
-    sessions.record_user(req.slug, req.text, kind="reply")
+    with sessions.mutation_lock(req.slug):
+        _prep_reply(req)
     turn = _run_and_record(req.slug, model=req.model)
     return {"state": sessions.get_state(req.slug), "turn": turn}
 
