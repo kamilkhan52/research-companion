@@ -34,9 +34,15 @@ depends on screenshots Kamil has not attached yet.
   inert. The UI must immediately show a starting/running state and remain idempotent if tapped
   again; verify whether the job already starts and fix client invalidation/transition rather
   than starting duplicates.
+  **Implemented in [#173](https://github.com/kamilkhan52/research-companion/pull/173):**
+  starts are scoped to the active project, so a pending request from the prior project cannot
+  consume the new project's first tap or apply a late snapshot to its UI.
 - **R10.5 — Progress connector lines never paint over completed circles.** Discover still draws
   a connector through/over a checkmark circle even though Map was locally fixed. Repair the
   shared progress-step primitive or introduce one, then use it everywhere.
+  **Implemented in [#173](https://github.com/kamilkhan52/research-companion/pull/173):**
+  Map and Discover now share one progress timeline whose connectors render in a single
+  background layer before every dot/check.
 
 ## Map
 
@@ -47,11 +53,17 @@ depends on screenshots Kamil has not attached yet.
 - **R10.8 — Put count/navigation controls inside the plot.** Remove the redundant `N matches`
   beside filters. Overlay `Showing n of N` and its controls inside the graph canvas, like Reset
   view, so the plot regains the horizontal strip.
+  **R10.6–R10.8 implemented in
+  [#173](https://github.com/kamilkhan52/research-companion/pull/173):** Map pages 50 at a time;
+  outgoing graph edges are labeled `References in map`, provider-wide impact is `Total
+  citations`; and the count/± controls now overlay the plot with the redundant match text
+  removed.
 
 ## Discover and empty-project onboarding
 
 - **R10.9 — Generic Discover input placeholder.** Remove the overly specific example; use
   brief field copy such as `Type a topic or question`.
+  **Implemented in [#173](https://github.com/kamilkhan52/research-companion/pull/173).**
 - **R10.10 — Prominent empty-project Add Papers hub.** An empty Library should present a
   designed add surface offering (a) add a specific paper and (b) explore Discover. Adding a
   paper must not feel owned by the Discover tab or appear as one long text button.

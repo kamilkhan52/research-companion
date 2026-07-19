@@ -3,7 +3,7 @@
 // already linked into the current build (expo-router's own Stack transitions depend on them),
 // so this ships with zero new native dependency / no EAS rebuild required.
 
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { PixelRatio, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -52,6 +52,7 @@ export function GraphCanvas({
   highlightIds,
   onSelectNode,
   layoutAlgo,
+  overlay,
 }: {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -60,6 +61,8 @@ export function GraphCanvas({
   onSelectNode: (node: GraphNode) => void;
   /** graph.layout.algo from the server — axis legends render only for 'semantic-v2'. */
   layoutAlgo?: string | null;
+  /** Screen-owned controls rendered over the plot, alongside Reset view. */
+  overlay?: ReactNode;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -294,6 +297,8 @@ export function GraphCanvas({
             );
           })}
         </Animated.View>
+
+      {overlay}
 
       <Pressable
         onPress={() => centerView(viewport.w, viewport.h, true)}

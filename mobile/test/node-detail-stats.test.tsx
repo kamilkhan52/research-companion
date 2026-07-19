@@ -46,8 +46,8 @@ test('stat tiles read label-first with unambiguous in-project vs overall labels'
   // "10 Significant in".
   expect(screen.getByLabelText('Cited in project: 10')).toBeTruthy();
   expect(screen.getByLabelText('Significant citations: 3')).toBeTruthy();
-  expect(screen.getByLabelText('Cites: 24')).toBeTruthy();
-  expect(screen.getByLabelText('Overall citations: 1,204')).toBeTruthy();
+  expect(screen.getByLabelText('References in map: 24')).toBeTruthy();
+  expect(screen.getByLabelText('Total citations: 1,204')).toBeTruthy();
 
   // "Significant" is defined right below the tiles.
   expect(
@@ -55,7 +55,7 @@ test('stat tiles read label-first with unambiguous in-project vs overall labels'
   ).toBeTruthy();
 });
 
-test('external node hides the outgoing Cites tile and unknown overall citations', async () => {
+test('external node hides the outgoing-reference tile and unknown total citations', async () => {
   await renderSheet({
     ...projectNode,
     id: 'ext:key',
@@ -66,6 +66,6 @@ test('external node hides the outgoing Cites tile and unknown overall citations'
   });
 
   expect(screen.getByLabelText('Cited in project: 10')).toBeTruthy();
-  expect(screen.queryByLabelText(/^Cites:/)).toBeNull();
-  expect(screen.queryByLabelText(/^Overall citations:/)).toBeNull();
+  expect(screen.queryByLabelText(/^References in map:/)).toBeNull();
+  expect(screen.queryByLabelText(/^Total citations:/)).toBeNull();
 });

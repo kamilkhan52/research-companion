@@ -11,7 +11,6 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Linking,
   Pressable,
   ScrollView,
@@ -23,6 +22,7 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
 import { useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
+import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
@@ -31,6 +31,8 @@ import { useActiveProject } from '@/store/project';
 import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+
+export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
 export default function DiscoverScreen() {
   const router = useRouter();
@@ -107,7 +109,7 @@ export default function DiscoverScreen() {
                 onChangeText={setGoals}
                 multiline
                 style={styles.goalsInput}
-                placeholder="e.g. I want to understand 3D-integrated DRAM: how vertical stacking changes bandwidth, latency and thermals, and what architectures exist…"
+                placeholder={DISCOVER_PLACEHOLDER}
                 placeholderTextColor={t.muted}
                 editable={!runState.running}
               />
@@ -247,26 +249,15 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
       <Text variant="serifTitle" color={t.mint}>
         {done ? 'Search complete' : 'Searching…'}
       </Text>
-      <View style={styles.stepsRow}>
-        {steps.map((step, i) => {
-          const state = done || i < current ? 'done' : i === current ? 'active' : 'pending';
-          return (
-            <View key={step.key} style={styles.step}>
-              {i > 0 ? <View style={[styles.stepLine, state !== 'pending' && styles.stepLineDone]} /> : null}
-              <View style={[styles.stepDot, state === 'done' && styles.stepDotDone]}>
-                {state === 'done' ? (
-                  <Icon name="check" size={13} color={t.mintInk} />
-                ) : state === 'active' ? (
-                  <ActivityIndicator size="small" color={t.mint} />
-                ) : null}
-              </View>
-              <Text variant="caption" color={state === 'pending' ? t.muted : t.text}>
-                {step.label}
-              </Text>
-            </View>
-          );
-        })}
-      </View>
+      <ProgressSteps
+        dotSize={28}
+        style={styles.stepsRow}
+        steps={steps.map((step, i) => ({
+          key: step.key,
+          label: step.label,
+          state: done || i < current ? 'done' : i === current ? 'active' : 'pending',
+        }))}
+      />
       {!done && active?.detail ? (
         <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center' }}>
           {active.detail}
@@ -501,32 +492,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   progressPanel: { gap: space.md, marginTop: space.md, alignItems: 'center' },
   stepsRow: {
-    flexDirection: 'row',
     alignSelf: 'stretch',
-    justifyContent: 'space-between',
     paddingHorizontal: space.sm,
   },
-  step: { alignItems: 'center', gap: 6, flex: 1 },
-  stepLine: {
-    position: 'absolute',
-    top: 14,
-    right: '50%',
-    left: '-50%',
-    height: 2,
-    backgroundColor: t.line2,
-  },
-  stepLineDone: { backgroundColor: t.mint },
-  stepDot: {
-    width: 28,
-    height: 28,
-    borderRadius: radius.pill,
-    borderWidth: 2,
-    borderColor: t.line2,
-    backgroundColor: t.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepDotDone: { backgroundColor: t.mint, borderColor: t.mint },
   goalsSummary: { padding: space.md, borderColor: t.line2 },
   goalsHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   rankNum: {

@@ -78,10 +78,18 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   const [error, setError] = useState<string | null>(null);
   // Guards a start against a fast double-tap in the same tick (before `building` re-renders).
   const startingRef = useRef(false);
+  // This hook remains mounted while the active project changes. A pending start from project A
+  // must never block the first tap in project B or apply A's late response to B's UI.
+  const startGenerationRef = useRef(0);
   const loadedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
+    startGenerationRef.current += 1;
+    startingRef.current = false;
     loadedSnapshotRef.current = null;
+    setBuilding(false);
+    setProgress(null);
+    setError(null);
   }, [pid]);
 
   // Apply a job snapshot from the server: update progress, and when the job has finished, tear
@@ -203,6 +211,8 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   const run = useCallback(
     async (force = false, retrievalSources: Record<string, string> = {}) => {
       if (!pid || startingRef.current || building) return;
+      const requestPid = pid;
+      const generation = ++startGenerationRef.current;
       startingRef.current = true;
       setError(null);
       setBuilding(true); // optimistic: disables the button immediately; applyJob corrects it
@@ -212,13 +222,15 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         retrievalCandidates: {},
       });
       try {
-        const { build } = await startGraphBuild(pid, force, retrievalSources);
+        const { build } = await startGraphBuild(requestPid, force, retrievalSources);
+        if (generation !== startGenerationRef.current) return;
         applyJob(build);
       } catch (e) {
+        if (generation !== startGenerationRef.current) return;
         setError((e as Error).message ?? 'Graph build failed.');
         setBuilding(false);
       } finally {
-        startingRef.current = false;
+        if (generation === startGenerationRef.current) startingRef.current = false;
       }
     },
     [pid, building, applyJob],

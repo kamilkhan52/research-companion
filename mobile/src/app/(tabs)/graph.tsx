@@ -12,6 +12,7 @@ import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { NodeDetailSheet } from '@/components/graph/NodeDetailSheet';
 import { RecommendationsPanel } from '@/components/graph/RecommendationsPanel';
+import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
 import { pageSignificant, significantNodes } from '@/graph/filter';
@@ -35,7 +36,7 @@ const FILTERS: { key: FilterKind; label: string }[] = [
 // Pagination: a project's full reference graph can run into the hundreds of external nodes, so
 // rather than render everything (or a fixed heuristic subset) we show a page at a time and let
 // "Show more" grow it, capped well short of "the whole graph" to keep the canvas responsive.
-const PAGE_SIZE = 20;
+export const GRAPH_PAGE_SIZE = 50;
 const MAX_VISIBLE = 100;
 
 /** Most load-bearing papers first, so pagination surfaces the ones worth seeing before the
@@ -68,13 +69,13 @@ export default function GraphScreen() {
   const [filter, setFilter] = useState<FilterKind>('significant');
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showRecs, setShowRecs] = useState(false);
-  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
+  const [visibleLimit, setVisibleLimit] = useState(GRAPH_PAGE_SIZE);
 
   // A filter/search change (or switching to a different project's graph — this tab stays
   // mounted across the Library's project switch) starts a fresh page rather than keeping
   // whatever limit was reached browsing the previous set.
   useEffect(() => {
-    setVisibleLimit(PAGE_SIZE);
+    setVisibleLimit(GRAPH_PAGE_SIZE);
   }, [filter, query, activePid]);
 
   const data = graphQuery.data;
@@ -147,8 +148,6 @@ export default function GraphScreen() {
     return [...ns].sort(rankNode);
   }, [graph, filter, query]);
 
-  const isFiltering = !!query.trim() || filter !== 'all';
-
   // What actually gets rendered: the current filter/search's matches, paginated (not "render all
   // and dim" — that rendered 700+ views even for the 'significant' tab, the cause of the slow
   // tabs). Edges are kept only between visible nodes.
@@ -173,15 +172,15 @@ export default function GraphScreen() {
   }, [graph, pagedNodes, selectedNode]);
 
   // The stepper is only worth showing once there's more than a single page to move between.
-  const showPager = filteredNodes.length > PAGE_SIZE;
+  const showPager = filteredNodes.length > GRAPH_PAGE_SIZE;
   const canIncrease = visibleLimit < Math.min(MAX_VISIBLE, filteredNodes.length);
-  const canDecrease = visibleLimit > PAGE_SIZE;
+  const canDecrease = visibleLimit > GRAPH_PAGE_SIZE;
   const hitCap = visibleLimit >= MAX_VISIBLE && filteredNodes.length > pagedNodes.length;
   function increaseVisible() {
-    setVisibleLimit((v) => Math.min(v + PAGE_SIZE, MAX_VISIBLE));
+    setVisibleLimit((v) => Math.min(v + GRAPH_PAGE_SIZE, MAX_VISIBLE));
   }
   function decreaseVisible() {
-    setVisibleLimit((v) => Math.max(v - PAGE_SIZE, PAGE_SIZE));
+    setVisibleLimit((v) => Math.max(v - GRAPH_PAGE_SIZE, GRAPH_PAGE_SIZE));
   }
 
   const staleCount = status?.stale_papers.length ?? 0;
@@ -316,37 +315,7 @@ export default function GraphScreen() {
             filters={filters}
             filter={filter}
             onFilterChange={setFilter}
-            resultCount={isFiltering ? filteredNodes.length : null}
           />
-
-          {showPager ? (
-            <View style={styles.pager}>
-              <Pressable
-                onPress={decreaseVisible}
-                disabled={!canDecrease}
-                hitSlop={8}
-                accessibilityLabel="Show fewer papers"
-                style={[styles.pagerBtn, !canDecrease && styles.pagerBtnDisabled]}>
-                <Icon name="minus" size={14} color={canDecrease ? t.text : t.muted} />
-              </Pressable>
-              <Text variant="caption" color={t.muted} style={{ marginHorizontal: space.sm }}>
-                Showing {pagedNodes.length} of {filteredNodes.length}
-              </Text>
-              <Pressable
-                onPress={increaseVisible}
-                disabled={!canIncrease}
-                hitSlop={8}
-                accessibilityLabel="Show more papers"
-                style={[styles.pagerBtn, !canIncrease && styles.pagerBtnDisabled]}>
-                <Icon name="plus" size={14} color={canIncrease ? t.text : t.muted} />
-              </Pressable>
-            </View>
-          ) : null}
-          {hitCap ? (
-            <Text variant="caption" color={t.muted} style={{ textAlign: 'center', marginTop: 4 }}>
-              Capped at {MAX_VISIBLE} · narrow the filter or search to see the rest
-            </Text>
-          ) : null}
 
           {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
             <Centered text="Significant citations appear once enrichment finishes — the fast map has metadata only." />
@@ -358,6 +327,17 @@ export default function GraphScreen() {
               highlightIds={null}
               onSelectNode={setSelectedNode}
               layoutAlgo={graph?.layout?.algo ?? null}
+              overlay={showPager ? (
+                <GraphPagerOverlay
+                  shown={pagedNodes.length}
+                  total={filteredNodes.length}
+                  canIncrease={canIncrease}
+                  canDecrease={canDecrease}
+                  hitCap={hitCap}
+                  onIncrease={increaseVisible}
+                  onDecrease={decreaseVisible}
+                />
+              ) : null}
             />
           )}
 
@@ -636,44 +616,17 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
       </View>
       {progress ? (
         <>
-          <View style={styles.buildStepsRow}>
-            {/* Connector segments live in one layer rendered BEFORE the step cells: a per-step
-                line reaching into the neighbour cell paints over that cell's dot on Android
-                (sibling order wins; zIndex can't reorder across parents). */}
-            <View style={styles.buildStepLineLayer} pointerEvents="none">
-              <View style={styles.buildStepLineGutter} />
-              {BUILD_STEPS.slice(1).map((step, i) => (
-                <View
-                  key={step.key}
-                  style={[styles.buildStepLine, i + 1 <= phaseIndex && styles.buildStepLineDone]}
-                />
-              ))}
-              <View style={styles.buildStepLineGutter} />
-            </View>
-            {BUILD_STEPS.map((step, i) => {
-              const state = i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending';
-              return (
-                <Pressable
-                  key={step.key}
-                  style={styles.buildStep}
-                  onPress={() => showHint(step.hint)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`What does ${step.label} mean?`}
-                >
-                  <View style={[styles.buildStepDot, state === 'done' && styles.buildStepDotDone]}>
-                    {state === 'done' ? (
-                      <Icon name="check" size={11} color={t.mintInk} />
-                    ) : state === 'active' ? (
-                      <ActivityIndicator size="small" color={t.mint} />
-                    ) : null}
-                  </View>
-                  <Text variant="caption" color={state === 'pending' ? t.muted : t.text}>
-                    {step.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <ProgressSteps
+            dotSize={22}
+            style={{ marginTop: space.md }}
+            steps={BUILD_STEPS.map((step, i) => ({
+              key: step.key,
+              label: step.label,
+              state: i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending',
+              onPress: () => showHint(step.hint),
+              accessibilityLabel: `What does ${step.label} mean?`,
+            }))}
+          />
           {hint ? (
             <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
               <Text variant="caption" color={t.mint} style={{ marginTop: space.sm }}>
@@ -725,7 +678,6 @@ function FilterBar({
   filters,
   filter,
   onFilterChange,
-  resultCount,
 }: {
   query: string;
   onQueryChange: (v: string) => void;
@@ -733,7 +685,6 @@ function FilterBar({
   filters: { key: FilterKind; label: string }[];
   filter: FilterKind;
   onFilterChange: (f: FilterKind) => void;
-  resultCount: number | null;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -762,13 +713,61 @@ function FilterBar({
               onPress={() => onFilterChange(f.key)}
             />
           ))}
-          {resultCount !== null ? (
-            <View style={styles.resultCount}>
-              <Text variant="caption">{resultCount} match{resultCount === 1 ? '' : 'es'}</Text>
-            </View>
-          ) : null}
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+export function GraphPagerOverlay({
+  shown,
+  total,
+  canIncrease,
+  canDecrease,
+  hitCap = false,
+  onIncrease,
+  onDecrease,
+}: {
+  shown: number;
+  total: number;
+  canIncrease: boolean;
+  canDecrease: boolean;
+  hitCap?: boolean;
+  onIncrease: () => void;
+  onDecrease: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.pagerOverlay}>
+      <View style={styles.pager}>
+        <Pressable
+          onPress={onDecrease}
+          disabled={!canDecrease}
+          hitSlop={8}
+          accessibilityLabel="Show fewer papers"
+          style={[styles.pagerBtn, !canDecrease && styles.pagerBtnDisabled]}
+        >
+          <Icon name="minus" size={14} color={canDecrease ? t.text : t.muted} />
+        </Pressable>
+        <Text variant="caption" color={t.muted} style={{ marginHorizontal: space.sm }}>
+          Showing {shown} of {total}
+        </Text>
+        <Pressable
+          onPress={onIncrease}
+          disabled={!canIncrease}
+          hitSlop={8}
+          accessibilityLabel="Show more papers"
+          style={[styles.pagerBtn, !canIncrease && styles.pagerBtnDisabled]}
+        >
+          <Icon name="plus" size={14} color={canIncrease ? t.text : t.muted} />
+        </Pressable>
+      </View>
+      {hitCap ? (
+        <Text variant="caption" color={t.muted} style={styles.pagerCap}>
+          Capped at {MAX_VISIBLE} · narrow the filter or search
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -814,39 +813,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: 'transparent',
     paddingHorizontal: 4,
   },
-  buildStepsRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginTop: space.md,
-  },
-  buildStep: { alignItems: 'center', gap: 4, flex: 1 },
-  // Half-cell gutters + flex:1 segments make each segment span dot-center to dot-center.
-  buildStepLineLayer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 11,
-    flexDirection: 'row',
-    height: 2,
-  },
-  buildStepLineGutter: { flex: 0.5 },
-  buildStepLine: {
-    flex: 1,
-    height: 2,
-    backgroundColor: t.line,
-  },
-  buildStepLineDone: { backgroundColor: t.mint },
-  buildStepDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: t.line,
-    backgroundColor: t.elevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  buildStepDotDone: { backgroundColor: t.mint, borderColor: t.mint },
   bannerLarge: { width: '100%', margin: 0 },
   progressTrack: {
     height: 6,
@@ -855,17 +821,27 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     overflow: 'hidden',
   },
   progressFill: { height: '100%', backgroundColor: t.mint, borderRadius: 3 },
+  pagerOverlay: {
+    position: 'absolute',
+    top: space.sm,
+    right: space.md,
+    alignItems: 'flex-end',
+    gap: 4,
+  },
   pager: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'center',
-    marginTop: space.sm,
     paddingHorizontal: space.xs,
     paddingVertical: space.xs,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: t.line2,
     backgroundColor: t.elevated,
+  },
+  pagerCap: {
+    maxWidth: 220,
+    textAlign: 'right',
+    paddingHorizontal: space.xs,
   },
   pagerBtn: {
     width: 28,
@@ -890,7 +866,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 14,
   },
-  resultCount: { justifyContent: 'center', paddingHorizontal: 4 },
   attribution: {
     alignSelf: 'center',
     paddingHorizontal: space.md,
