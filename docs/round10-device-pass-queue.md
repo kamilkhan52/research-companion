@@ -180,10 +180,11 @@ depends on screenshots Kamil has not attached yet.
   progress indicators, and audio controls in all modes.
   **Implementation in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
   Dim remains byte-identical, Black keeps a true-#000 canvas, and Light mint/amber move to
-  `#15795F`/`#8F6411` so every semantic accent clears 4.5:1 on the warm canvas. The connected
-  Figma collection gained the missing opaque tokens and first wash pairs; the remaining
-  boards/components are paused at a recorded idempotent checkpoint because the Starter-plan
-  MCP call quota was reached.
+  `#15795F`/`#8F6411` so every semantic accent clears 4.5:1 on the warm canvas. The local
+  Figma Desktop Bridge pass is complete: the editable Dim/Black/Light comparison board is
+  backed by 66/40/40 variables with no duplicate names or broken aliases, the final Paradigm
+  P board includes primary, small-size, adaptive-safe-zone, and monochrome proofs, and the
+  selected K1 player controls were screenshot-verified against the production dimensions.
 
 ## Screenshot-dependent follow-up
 
