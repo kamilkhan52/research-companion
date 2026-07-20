@@ -223,12 +223,14 @@ depends on screenshots Kamil has not attached yet.
   P-shaped mark grounded in the app's editorial/research philosophy and themes, carry it
   through the Figma workflow, select with Kamil if materially different finalists remain,
   then implement all platform icon assets.
-  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
+  **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182) and
+  finalized in [#194](https://github.com/kamilkhan52/research-companion/pull/194):**
   a deterministic warm-paper slab-serif P is the complete mark. The device-review
-  simplification removed the former mint path, violet node, and background glow from the
-  editable Figma proofs and the shared source that generates the generic/iOS icon, Android
-  adaptive foreground and monochrome mark, splash, and favicon; an editable canonical SVG
-  ships beside the PNGs.
+  simplification removed the former mint path, violet node, and background glow from all
+  seven editable Figma proofs and the shared source that generates the generic/iOS icon,
+  Android adaptive foreground and monochrome mark, splash, and favicon; an editable
+  canonical SVG ships beside the PNGs. A native rebuild/reinstall is required to see the
+  launcher icon; a Metro reload cannot replace installed launcher resources.
 - **R9.8 authorized — skip controls.** Complete the Figma restyle of `−15/+15` to harmonize
   with sentence navigation, then implement it.
   **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
@@ -244,6 +246,9 @@ depends on screenshots Kamil has not attached yet.
   backed by 66/40/40 variables with no duplicate names or broken aliases, the final Paradigm
   P board includes primary, small-size, adaptive-safe-zone, and monochrome proofs, and the
   selected K1 player controls were screenshot-verified against the production dimensions.
+  The 2026-07-19 completion audit found no authorized recent Figma graphic left
+  unimplemented: the P-only icon, K1 skip controls, palette refinement, and
+  Comfortable/Tight density comparison all have matching production work.
 
 ## Screenshot-dependent follow-up
 
