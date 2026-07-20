@@ -34,8 +34,9 @@ Synthesized from current iOS/Android guidance (sources below):
 
 - **Single focal point; ~0.5s to read.** One dominant element, no scene. It must be
   recognizable at 60×60 and in a home-screen grid, not just at 1024².
-- **2–3 colors max.** Our palette: deep ink ground (#0B0D12 family) + mint (#34D399) as the
-  living accent; at most one secondary spark (violet #6A55E0 or amber). No busy gradients.
+- **Two colors max.** The final direction uses only a deep ink ground (#0B0D12 family) and
+  the warm-paper P (#F3F0E8). No supporting accent, gradient, or decorative signal competes
+  with the letterform.
 - **Bold shapes, generous negative space.** Thin hairlines and fine detail vanish at small
   sizes and get crushed by the platforms' 2025 effects (see next point).
 - **Design for the platform's own treatment — don't pre-bake it.** iOS applies its rounded
@@ -85,10 +86,12 @@ Kamil wants to be involved at the generation step — that is the real point of 
 - [x] Deterministic canonical SVG plus generic/iOS, Android adaptive foreground,
       monochrome, splash, and favicon assets implemented in
       [#182](https://github.com/kamilkhan52/research-companion/pull/182)
+- [x] Simplified after device review to the editorial P alone; the mint path, violet node,
+      and background glow were removed from the Figma proofs and every platform asset.
 
-The final mark is a warm-paper slab-serif P on the ink canvas. A mint research path rises
-through the bowl to one violet evidence node. It keeps the editorial authority and
-frame-shift idea of the brief while remaining a single readable launcher silhouette.
+The final mark is a warm-paper slab-serif P on a flat ink canvas. The letterform is the
+entire idea: editorial authority, scholarship, and a single readable launcher silhouette
+without secondary symbols.
 
 ## Sources
 

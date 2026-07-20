@@ -1,8 +1,8 @@
 """Generate the Paradigm “P” icon set.
 
-The mark combines an editorial slab-serif P, a mint research path, and a violet
-evidence node on the Scholar Dark canvas. Pure numpy + stdlib zlib PNG writer:
-no font rasterizer or image library, so every platform asset is reproducible.
+The mark is one warm-paper editorial P on a flat Scholar Dark canvas. Pure numpy
++ stdlib zlib PNG writer: no font rasterizer or image library, so every platform
+asset is reproducible.
 """
 
 import struct
@@ -12,10 +12,7 @@ import zlib
 import numpy as np
 
 INK = (0x0B, 0x0D, 0x12)
-GLOW = (0x11, 0x14, 0x1C)
 PAPER = (0xF3, 0xF0, 0xE8)
-MINT = (0x65, 0xD6, 0xB4)
-VIOLET = (0x9B, 0x8A, 0xFB)
 
 
 def canvas(n):
@@ -26,10 +23,6 @@ def canvas(n):
 def aa(dist):
     """Signed distance (px, + outside) → coverage with a ~1.2 px feather."""
     return np.clip(0.5 - dist / 1.2, 0.0, 1.0)
-
-
-def circle(xx, yy, cx, cy, r):
-    return aa(np.hypot(xx - cx, yy - cy) - r)
 
 
 def ellipse(xx, yy, cx, cy, rx, ry):
@@ -44,31 +37,6 @@ def round_rect(xx, yy, cx, cy, hx, hy, r):
     outside = np.hypot(np.maximum(qx, 0), np.maximum(qy, 0))
     inside = np.minimum(np.maximum(qx, qy), 0)
     return aa(outside + inside - r)
-
-
-def segment(xx, yy, ax, ay, bx, by, width):
-    px, py = xx - ax, yy - ay
-    dx, dy = bx - ax, by - ay
-    t = np.clip((px * dx + py * dy) / (dx * dx + dy * dy), 0.0, 1.0)
-    return aa(np.hypot(px - t * dx, py - t * dy) - width / 2)
-
-
-def cubic_path(xx, yy, p0, p1, p2, p3, width, steps=28):
-    ts = np.linspace(0, 1, steps + 1)
-    points = []
-    for t in ts:
-        u = 1 - t
-        points.append(
-            (
-                u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0],
-                u**3 * p0[1] + 3 * u**2 * t * p1[1] + 3 * u * t**2 * p2[1] + t**3 * p3[1],
-            )
-        )
-    coverage = np.zeros_like(xx)
-    for index in range(len(points) - 1):
-        a, b = points[index], points[index + 1]
-        coverage = np.maximum(coverage, segment(xx, yy, a[0], a[1], b[0], b[1], width))
-    return coverage
 
 
 def over(base_rgb, base_a, rgb, coverage, alpha=1.0):
@@ -118,9 +86,6 @@ def draw_mark(xx, yy, scale, rgb, alpha, mono=False):
         return cx + (x - 512) * scale, cy + (y - 512) * scale
 
     paper = (255, 255, 255) if mono else PAPER
-    mint = (255, 255, 255) if mono else MINT
-    violet = (255, 255, 255) if mono else VIOLET
-
     # P silhouette: quiet slab serifs plus an ample counter that remains open at 24 px.
     stem = round_rect(xx, yy, *pt(390, 512), 62 * scale, 300 * scale, 10 * scale)
     top_serif = round_rect(xx, yy, *pt(435, 220), 135 * scale, 20 * scale, 8 * scale)
@@ -130,33 +95,13 @@ def draw_mark(xx, yy, scale, rgb, alpha, mono=False):
     bowl = np.clip(outer - inner, 0, 1)
     p_coverage = np.maximum.reduce((stem, top_serif, bottom_serif, bowl))
     rgb, alpha = over(rgb, alpha, paper, p_coverage)
-
-    # One continuous research path rises through the counter to a grounded evidence node.
-    path = cubic_path(
-        xx,
-        yy,
-        pt(405, 690),
-        pt(405, 560),
-        pt(600, 560),
-        pt(555, 405),
-        28 * scale,
-    )
-    rgb, alpha = over(rgb, alpha, mint, path)
-    rgb, alpha = over(rgb, alpha, violet, circle(xx, yy, *pt(555, 405), 38 * scale))
     return rgb, alpha
 
 
-def solid(n, color, glow=False):
+def solid(n, color):
     xx, yy = canvas(n)
     rgb = [np.full((n, n), c, dtype=np.float64) for c in color]
     alpha = np.ones((n, n))
-    if glow:
-        for cx, cy, radius in (
-            (n * 0.75, n * 0.20, n * 0.55),
-            (n * 0.20, n * 0.85, n * 0.45),
-        ):
-            coverage = np.clip(1 - np.hypot(xx - cx, yy - cy) / radius, 0, 1) ** 2
-            rgb, alpha = over(rgb, alpha, GLOW, coverage, 0.9)
     return xx, yy, rgb, alpha
 
 
@@ -177,7 +122,7 @@ out = sys.argv[1] if len(sys.argv) > 1 else "."
 N = 1024
 
 # Generic + iOS icon.
-xx, yy, rgb, alpha = solid(N, INK, glow=True)
+xx, yy, rgb, alpha = solid(N, INK)
 rgb, alpha = draw_mark(xx, yy, 1.0, rgb, alpha)
 write_png(f"{out}/icon.png", rgb, alpha, N)
 
@@ -186,7 +131,7 @@ xx, yy, rgb, alpha = transparent(N)
 rgb, alpha = draw_mark(xx, yy, 0.68, rgb, alpha)
 write_png(f"{out}/android-icon-foreground.png", rgb, alpha, N)
 
-xx, yy, rgb, alpha = solid(N, INK, glow=True)
+xx, yy, rgb, alpha = solid(N, INK)
 write_png(f"{out}/android-icon-background.png", rgb, alpha, N)
 
 xx, yy, rgb, alpha = transparent(N)
@@ -199,7 +144,7 @@ rgb, alpha = draw_mark(xx, yy, 0.50, rgb, alpha)
 write_png(f"{out}/splash-icon.png", rgb, alpha, 512)
 
 # Supersampled favicon so the same silhouette stays clean at browser-tab size.
-xx, yy, rgb, alpha = solid(192, INK, glow=True)
+xx, yy, rgb, alpha = solid(192, INK)
 rgb, alpha = draw_mark(xx, yy, 0.18, rgb, alpha)
 rgb, alpha = downsample_rgba(rgb, alpha, 4)
 write_png(f"{out}/favicon.png", rgb, alpha, 48)

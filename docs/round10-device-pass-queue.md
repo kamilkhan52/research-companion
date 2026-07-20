@@ -224,9 +224,11 @@ depends on screenshots Kamil has not attached yet.
   through the Figma workflow, select with Kamil if materially different finalists remain,
   then implement all platform icon assets.
   **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
-  a deterministic warm-paper slab-serif P carries a mint research path to one violet evidence
-  node. The same source generates the generic/iOS icon, Android adaptive foreground and
-  monochrome mark, splash, and favicon; an editable canonical SVG ships beside the PNGs.
+  a deterministic warm-paper slab-serif P is the complete mark. The device-review
+  simplification removed the former mint path, violet node, and background glow from the
+  editable Figma proofs and the shared source that generates the generic/iOS icon, Android
+  adaptive foreground and monochrome mark, splash, and favicon; an editable canonical SVG
+  ships beside the PNGs.
 - **R9.8 authorized — skip controls.** Complete the Figma restyle of `−15/+15` to harmonize
   with sentence navigation, then implement it.
   **Implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182):**
