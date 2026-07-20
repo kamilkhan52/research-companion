@@ -2,7 +2,7 @@
 Notes; 'all' includes every read paper's Notes — the single-project mode Kamil asked for."""
 from __future__ import annotations
 
-from app import assembler, config, store
+from app import assembler, config, graph_store, store
 
 from tests.conftest import add_paper
 
@@ -74,3 +74,33 @@ def test_reading_context_lists_only_prefetched_numbered_figure_cards(temp_projec
     assert "- Figure 2: The main architecture." in ctx
     assert "Unnumbered appendix image" not in ctx
     assert "write `Figure N`" in ctx
+
+
+def test_opening_context_explains_later_project_papers_that_cite_this_one(temp_project):
+    add_paper(temp_project, "foundation", "Foundation", full_text="t")
+    add_paper(temp_project, "follow-up", "Follow-up", full_text="t")
+    data = graph_store.load()
+    graph_store.set_graph(data, {
+        "nodes": [
+            {"id": "foundation", "slug": "foundation", "kind": "project",
+             "title": "Foundation", "year": 2020},
+            {"id": "follow-up", "slug": "follow-up", "kind": "project",
+             "title": "Follow-up", "year": 2024},
+        ],
+        "edges": [{
+            "source": "follow-up",
+            "target": "foundation",
+            "significant": True,
+            "reason": "Extends the memory model.",
+            "contexts": ["We extend Foundation with stacked memory."],
+            "full_text_verified": True,
+        }],
+    })
+    graph_store.save(data)
+
+    ctx = assembler.build_context("foundation")
+
+    assert "How papers in this project cite this paper" in ctx
+    assert "[Follow-up](rc-paper:follow-up)" in ctx
+    assert "published later; substantive citation" in ctx
+    assert "We extend Foundation with stacked memory." in ctx

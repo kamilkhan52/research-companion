@@ -51,6 +51,12 @@ export interface Paper {
   source_url?: string;
   /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
   year?: number | null;
+  /** Two most common current institutional affiliations, provider-first when available. */
+  affiliations?: string[];
+  /** Retrieval-triggered first-page enrichment lifecycle. */
+  affiliation_status?: 'idle' | 'pending' | 'done' | 'error';
+  /** Most recent authored or assistant turn across this paper's discussions. */
+  last_interacted_at?: string | null;
   // The review pseudo-paper carries an extra kind field.
   kind?: string;
 }
@@ -338,6 +344,8 @@ export interface ChatJob {
   preview_phase: string | null;
   preview_progress: Record<string, unknown>;
   timings: Record<string, string>;
+  activity?: string;
+  activity_detail?: string | null;
   /** True once a best-effort stop was requested; the job still settles as 'done'. */
   cancelled: boolean;
 }

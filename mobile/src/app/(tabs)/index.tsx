@@ -521,7 +521,7 @@ export default function LibraryScreen() {
             onPress: () => {
               setSort(s.key);
               if (s.directions) {
-                setSortDirection('asc');
+                setSortDirection(s.defaultDirection ?? 'asc');
                 setExpandedSort(s.key);
               } else {
                 setExpandedSort(null);
@@ -721,6 +721,11 @@ function PaperRow({
           <Text variant="heading" numberOfLines={3}>
             {paper.title}
           </Text>
+          {paper.affiliations?.length ? (
+            <Text variant="caption" color={t.muted} numberOfLines={1}>
+              {paper.affiliations.slice(0, 2).join(' · ')}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.rowAction}>
           {!selectMode && paperUrl ? (

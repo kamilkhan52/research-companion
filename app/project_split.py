@@ -8,7 +8,7 @@ are separate `notes_jobs`-shaped background jobs layered on top.
 What travels per selected slug (see docs/project-forking-design.md for the full table):
 reading-list block (verbatim, dangling cites dropped), corpus file incl. committed Notes,
 session transcript + retry branches, and the per-paper graph caches (extraction record,
-retrieved text, cover, provider record, retrieval record) — the caches are copied EITHER
+retrieved text, cover, provider record, retrieval record, first-page affiliations) — the caches are copied EITHER
 way because re-extraction is a paid call. Session history now follows the same rule: Copy
 duplicates it into an independent destination history; Move duplicates it and then removes
 the source. With `remove_from_source` the source loses the papers through the same
@@ -26,7 +26,7 @@ import contextlib
 import copy
 import re
 
-from . import config, graph_store, logging_config, projects, sessions, store
+from . import config, graph_store, logging_config, paper_metadata, projects, sessions, store
 
 log = logging_config.get("project_split")
 
@@ -91,6 +91,7 @@ def _gather_source(slugs: list[str]) -> dict:
             "extraction": graph_store.get_paper_extraction(data, slug),
             "provider": graph_store.get_provider_paper(data, "semantic_scholar", slug),
             "retrieval": graph_store.get_retrieval(data, slug),
+            "paper_affiliations": paper_metadata.affiliation_record(slug),
         }
     return bundle
 
@@ -141,6 +142,8 @@ def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
             graph_store.set_provider_paper(data, "semantic_scholar", slug, b["provider"])
         if b["retrieval"] is not None:
             graph_store.set_retrieval(data, slug, b["retrieval"])
+        if b["paper_affiliations"] is not None:
+            paper_metadata.set_affiliation_record(slug, b["paper_affiliations"])
     graph_store.save(data)
 
 

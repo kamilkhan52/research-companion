@@ -191,6 +191,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R10.21 | Independent per-paper discussion threads with arbitrary compose-first messages, thread-scoped jobs/drafts/audio/retries, all-thread notes synthesis, and complete Move/Copy history | [#187](https://github.com/kamilkhan52/research-companion/pull/187) | Complete — automated verification passed; device pass pending |
 | R10.18 | Cross-project deterministic paper identity, app-wide duplicate preflight, safe Copy default, explicit Move, reusable source/history visibility, and immediate sequential Notes integration | [#188](https://github.com/kamilkhan52/research-companion/pull/188) | Complete — automated verification passed; device pass pending |
 | R10.25 | Persisted Comfortable/Tight density, density-aware shared style cache, reduced common type/card/list/chat rhythm, protected touch/math/code/audio sizing, and verified local-Figma comparison | [#189](https://github.com/kamilkhan52/research-companion/pull/189) | Complete — automated verification passed; device pass pending |
+| R11.1–R11.6 | Context-aware response preparation activity; reliably growing discussion composer; Last Interacted sorting; retrieval-triggered top-two affiliation metadata; hard guard against unsolicited notes proposals; first-summary incoming project-citation context | [#196](https://github.com/kamilkhan52/research-companion/pull/196) | Complete — automated verification passed; device pass pending |
 
 ## Theming implementation (R.2, per docs/theming-design.md)
 
@@ -708,6 +709,8 @@ surrounding paper text; PDF-only papers keep the text/caption behavior.
 - Prompt status: source/path/validity/error/modified time/effective hash.
 - Turn requests: optional `delivery_mode` and one-shot `model`.
 - Chat/audio snapshots: phase, preview cues, final audio job, generated segments, timing data.
+- Chat snapshots: reader-facing `activity` / `activity_detail` while answer text is pending.
+- Paper payloads: bounded `affiliations`, `affiliation_status`, and `last_interacted_at`.
 - New recent-session and paper-source retrieval endpoints.
 - Transcript assistant entries: optional figure metadata.
 

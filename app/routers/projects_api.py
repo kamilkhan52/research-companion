@@ -9,7 +9,18 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .. import committer, config, jobs, notes_jobs, project_split, projects, sessions, store
+from .. import (
+    affiliation_jobs,
+    affiliations,
+    committer,
+    config,
+    jobs,
+    notes_jobs,
+    project_split,
+    projects,
+    sessions,
+    store,
+)
 from ..committer import CommitError
 from ..project_split import SplitError
 from ..projects import ProjectError
@@ -551,7 +562,16 @@ def _start_relocation_notes(
 def get_state(pid: str):
     settings = config.load_settings()
     states = sessions.session_states()
-    papers = [p.to_dict() for p in store.list_papers(states)]
+    session_index = sessions.session_index()
+    stored_papers = store.list_papers(states)
+    affiliation_jobs.reconcile_pending([paper.slug for paper in stored_papers])
+    affiliation_summaries = affiliations.paper_summaries([paper.slug for paper in stored_papers])
+    papers = []
+    for paper in stored_papers:
+        payload = paper.to_dict()
+        payload.update(affiliation_summaries[paper.slug])
+        payload["last_interacted_at"] = (session_index.get(paper.slug) or {}).get("updated_at")
+        papers.append(payload)
     return {
         "project": projects._read_meta(pid) or {"id": pid, "name": pid},
         "has_key": bool(settings.get("openrouter_api_key")),

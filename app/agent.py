@@ -59,7 +59,7 @@ class AgentError(Exception):
     pass
 
 
-def _parse(content: str) -> Turn:
+def _parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
     content = content if isinstance(content, str) else (content or "")
     matches = list(_SECTION_RE.finditer(content))
     if not matches:
@@ -84,7 +84,10 @@ def _parse(content: str) -> Turn:
 
     commit = None
     notes, synth, summary = val("NOTES_BLOCK"), val("SYNTHESIS"), val("COMMIT_SUMMARY")
-    if notes or synth:  # paper commit has both; the review chat has working notes (synth) only
+    if allow_proposed_commit and (notes or synth):
+        # Paper commit has both; the review chat has working notes (synth) only. Production
+        # callers pass the transcript's last human action here, so a model that drifts on an
+        # opening/reply cannot manufacture a notes-approval state the user never requested.
         commit = ProposedCommit(summary=summary or "Notes + working-notes update",
                                 notes_block=notes, synthesis=synth).to_dict()
 
@@ -109,9 +112,9 @@ def _complete(messages: list[dict], model: str | None = None,
         raise AgentError(str(e)) from e
 
 
-def parse(content: str) -> Turn:
+def parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
     """Public wrapper: parse a complete analysis response into a Turn."""
-    return _parse(content)
+    return _parse(content, allow_proposed_commit=allow_proposed_commit)
 
 
 def run_turn(slug: str, history: list[dict], model: str | None = None) -> Turn:
@@ -121,7 +124,10 @@ def run_turn(slug: str, history: list[dict], model: str | None = None) -> Turn:
     `model` is a one-shot override for this call only; None falls back to the account default
     (see llm._build_body)."""
     messages = [{"role": "system", "content": _system_for(slug)}] + history
-    return _parse(_complete(messages, model=model, max_tokens=16000))
+    return _parse(
+        _complete(messages, model=model, max_tokens=16000),
+        allow_proposed_commit=sessions.proposal_expected(slug),
+    )
 
 
 # ---- pseudo tool-call tags (polish plan G.2) ----

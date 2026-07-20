@@ -11,6 +11,7 @@ from app import (
     graph_store,
     jobs,
     notes_jobs,
+    paper_metadata,
     project_split,
     projects,
     sessions,
@@ -47,6 +48,11 @@ def _seed_source(pid):
                                                    "references": [], "content_hash": "x"})
     graph_store.write_retrieved_text("awq", "AWQ retrieved body")
     graph_store.save(data)
+    paper_metadata.set_affiliation_record("awq", {
+        "status": "done",
+        "key": "awq-text",
+        "authorships": [{"name": "A", "affiliation": "MIT"}],
+    })
 
 
 def test_move_carries_work_and_removes_from_source(temp_project):
@@ -70,6 +76,7 @@ def test_move_carries_work_and_removes_from_source(temp_project):
         data = graph_store.load()
         assert graph_store.get_paper_extraction(data, "awq")["status"] == "done"
         assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
+        assert paper_metadata.affiliation_record("awq")["authorships"][0]["affiliation"] == "MIT"
         # The cite to the STAYING paper (core) was dropped; the moving one (smooth) kept.
         awq = store.entry_details("awq")
         assert awq["cites"] == ["smooth"]
