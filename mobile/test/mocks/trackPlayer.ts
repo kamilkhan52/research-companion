@@ -21,7 +21,20 @@ export const Capability = {
 } as const;
 
 export const AppKilledPlaybackBehavior = {
+  ContinuePlayback: 'continue-playback',
   StopPlaybackAndRemoveNotification: 'stop-playback-and-remove-notification',
+} as const;
+
+export const AndroidAudioContentType = {
+  Speech: 'speech',
+} as const;
+
+export const IOSCategory = {
+  Playback: 'playback',
+} as const;
+
+export const IOSCategoryMode = {
+  SpokenAudio: 'spokenAudio',
 } as const;
 
 export const Event = {
