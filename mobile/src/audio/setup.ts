@@ -2,8 +2,11 @@
 // want for listening on a walk: play/pause, 15s skips, scrub, and stop.
 
 import TrackPlayer, {
+  AndroidAudioContentType,
   AppKilledPlaybackBehavior,
   Capability,
+  IOSCategory,
+  IOSCategoryMode,
 } from 'react-native-track-player';
 
 export const SKIP_SECONDS = 15;
@@ -15,7 +18,12 @@ export function setupPlayer(): Promise<void> {
   if (setupPromise) return setupPromise;
   setupPromise = (async () => {
     try {
-      await TrackPlayer.setupPlayer({ autoHandleInterruptions: true });
+      await TrackPlayer.setupPlayer({
+        androidAudioContentType: AndroidAudioContentType.Speech,
+        autoHandleInterruptions: true,
+        iosCategory: IOSCategory.Playback,
+        iosCategoryMode: IOSCategoryMode.SpokenAudio,
+      });
     } catch (e) {
       // "player already initialized" -> fine; anything else, reset the promise so we can retry.
       const msg = String((e as Error)?.message ?? e);
@@ -26,7 +34,9 @@ export function setupPlayer(): Promise<void> {
     }
     await TrackPlayer.updateOptions({
       android: {
-        appKilledPlaybackBehavior: AppKilledPlaybackBehavior.StopPlaybackAndRemoveNotification,
+        // Removing the React UI from recents must not tear down an active listening session.
+        // The registered playback service remains responsible for notification/headset controls.
+        appKilledPlaybackBehavior: AppKilledPlaybackBehavior.ContinuePlayback,
       },
       capabilities: [
         Capability.Play,
