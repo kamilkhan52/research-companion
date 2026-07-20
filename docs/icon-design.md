@@ -84,14 +84,20 @@ Kamil wants to be involved at the generation step — that is the real point of 
 - [x] Primary, warm-paper launcher context, 128/64/32 proofs, Android 66% safe-zone proof,
       and monochrome fallback
 - [x] Deterministic canonical SVG plus generic/iOS, Android adaptive foreground,
-      monochrome, splash, and favicon assets implemented in
+      monochrome, splash, and favicon assets introduced in
       [#182](https://github.com/kamilkhan52/research-companion/pull/182)
 - [x] Simplified after device review to the editorial P alone; the mint path, violet node,
-      and background glow were removed from the Figma proofs and every platform asset.
+      and background glow were removed from all Figma proofs and every platform asset in
+      [#194](https://github.com/kamilkhan52/research-companion/pull/194)
+- [x] Regression coverage verifies that the removed mint/violet secondary marks cannot
+      reappear in the canonical SVG or committed platform PNGs.
 
 The final mark is a warm-paper slab-serif P on a flat ink canvas. The letterform is the
 entire idea: editorial authority, scholarship, and a single readable launcher silhouette
 without secondary symbols.
+
+The icon files are native application resources. Rebuild and reinstall the development app
+to inspect the launcher icon on-device; reloading the Metro JavaScript bundle is not enough.
 
 ## Sources
 
