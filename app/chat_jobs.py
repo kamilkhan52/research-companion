@@ -401,15 +401,11 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
         last = preview_jobs.get_job(job.preview_job_ids[-1])
         if last and last.status == "running":
             return
-    # Feed ALL already-spoken cues (recent-first-capped) into the next one, not just the last,
-    # so the model can vary its focus across the whole sequence and not repeat itself (R9.5a).
-    # The coordinator does the same once analysis is done; this keeps the analysis-phase cues
-    # consistent with it.
-    spoken = [
-        c.cue for cid in job.preview_job_ids
-        if (c := preview_jobs.get_job(cid)) is not None and c.status == "done" and c.cue
-    ]
-    previous_cue = "\n".join(spoken[-8:])
+    # The client explicitly acknowledges cues its audio layer accepted. Give the next
+    # generation the complete played history, plus all generated cues as a second guard
+    # against repeating a cue that was produced but dropped during the audio handoff.
+    played_cues, generated_cues = preview_jobs.cue_history(job.preview_job_ids)
+    previous_cue = "\n".join(played_cues or generated_cues)
 
     sentences = (
         [
@@ -430,6 +426,8 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
                 "completed_response_sentences": len(completed),
                 "remaining_known": False,
             },
+            played_cues=played_cues,
+            generated_cues=generated_cues,
         )
     except Exception as exc:
         log.warning("could not start listening preview chat=%s: %s", job.id[:8], str(exc)[:200])

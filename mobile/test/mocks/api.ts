@@ -58,6 +58,7 @@ export const turnJobPaths = jest.fn(() => ({}));
 export const getChatJob = unexpected('getChatJob');
 export const getActiveChatJob = unexpected('getActiveChatJob');
 export const getPreviewJob = unexpected('getPreviewJob');
+export const markPreviewPlayed = unexpected('markPreviewPlayed');
 export const getNotes = unexpected('getNotes');
 export const saveNotes = unexpected('saveNotes');
 export const startNotesAgent = unexpected('startNotesAgent');

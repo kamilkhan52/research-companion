@@ -1032,6 +1032,15 @@ def preview_job_status(job_id: str):
     return {"job": snap}
 
 
+@project_router.post("/preview/jobs/{job_id}/played")
+def preview_job_played(job_id: str):
+    """Acknowledge that this project's audio layer accepted the cue for playback."""
+    snap = preview_jobs.acknowledge_played(job_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="Unknown preview job")
+    return {"job": snap}
+
+
 @project_router.post("/continue")
 def continue_turn(req: FinishReq):
     """Generate the assistant response for a reply that was recorded but never answered

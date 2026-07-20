@@ -68,3 +68,21 @@ test('an edit-first notes draft restores its proposal conflict metadata', async 
   expect(restored.result.current.value).toEqual(value);
   await restored.unmountAsync();
 });
+
+test('equivalent inline collection fallbacks do not trigger a render loop', async () => {
+  const key = draftKey('project-a', 'discussion', 'paper-a', 'sentence-comments');
+  let renders = 0;
+  const hook = await renderHookAsync(() => {
+    renders += 1;
+    return usePersistedDraft<string[]>(key, []);
+  });
+
+  await waitFor(() => expect(hook.result.current.ready).toBe(true));
+  const settledRenderCount = renders;
+  await hook.rerenderAsync({});
+  await hook.rerenderAsync({});
+
+  expect(hook.result.current.value).toEqual([]);
+  expect(renders - settledRenderCount).toBe(2);
+  await hook.unmountAsync();
+});

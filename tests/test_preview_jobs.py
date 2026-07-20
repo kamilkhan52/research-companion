@@ -84,6 +84,8 @@ def test_preview_job_generates_validates_and_synthesizes_in_project(temp_project
     assert payload["grounded_sources"] == payload["completed_sentences"]
     assert payload["preparation_progress"] == {}
     assert payload["previous_cue"] == ""
+    assert payload["played_cues"] == []
+    assert payload["generated_cues"] == []
 
 
 def test_research_sources_include_paper_opening_and_prior_project_context(monkeypatch):
@@ -148,6 +150,8 @@ def test_audio_synthesis_progress_is_citable_and_never_announces_readiness(temp_
     assert "2 of 4" in progress_source["text"]
     assert "ready" not in progress_source["text"].lower()
     assert "immediately" not in progress_source["text"].lower()
+    assert "read" not in progress_source["text"].lower()
+    assert "screen" not in progress_source["text"].lower()
 
 
 def test_audio_progress_ready_only_when_the_job_settles(temp_project):
@@ -178,32 +182,40 @@ def test_audio_progress_treats_cancelled_as_settled(temp_project):
     assert ready is True
 
 
-def test_external_sources_are_cached_and_fail_soft(temp_project, monkeypatch):
-    from app import research_tools, store
+def test_external_sources_use_bounded_agent_findings_cache_and_fail_soft(
+    temp_project, monkeypatch,
+):
+    from app import store
 
     store.add_entry("Attention Is All You Need")
     slug = store.list_papers()[0].slug
     calls = []
 
-    def fake_search(objective, queries=None):
-        calls.append(objective)
-        return "The authors were at Google Brain.\n\nA v2 appeared at NeurIPS."
+    def fake_research(title, metadata):
+        calls.append((title, metadata))
+        return (
+            "The authors were at Google Brain. Source: https://example.org/authors\n\n"
+            "A later version appeared at NeurIPS. Source: https://example.org/venue"
+        )
 
-    monkeypatch.setattr(research_tools, "web_search", fake_search)
     preview_jobs._external_cache.clear()
 
-    sources = preview_jobs.external_sources(slug)
+    sources = preview_jobs.external_sources(slug, fake_research)
     assert sources and all(item["kind"] == "external_web_context" for item in sources)
     assert any("Google Brain" in item["text"] for item in sources)
-    assert preview_jobs.external_sources(slug) == sources  # cached
+    assert preview_jobs.external_sources(
+        slug,
+        lambda *_: (_ for _ in ()).throw(AssertionError("cache missed")),
+    ) == sources
     assert len(calls) == 1
 
-    # Unknown paper and a failing search both degrade to no sources, never an exception.
-    assert preview_jobs.external_sources("ghost") == []
+    # Unknown paper and a failing agent both degrade to no sources, never an exception.
+    assert preview_jobs.external_sources("ghost", fake_research) == []
     preview_jobs._external_cache.clear()
-    monkeypatch.setattr(research_tools, "web_search",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
-    assert preview_jobs.external_sources(slug) == []
+    assert preview_jobs.external_sources(
+        slug,
+        lambda *_: (_ for _ in ()).throw(RuntimeError("offline")),
+    ) == []
 
 
 def test_coordinator_continues_cues_with_audio_progress_until_ready(
@@ -221,7 +233,7 @@ def test_coordinator_continues_cues_with_audio_progress_until_ready(
 
     monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
 
-    def fake_start(chat_id, ordinal, sources, previous, progress):
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
         cue = type("Cue", (), {
             "id": f"cue-{ordinal}",
             "status": "done",
@@ -279,7 +291,7 @@ def test_synthesis_progress_triggers_a_cue_before_the_keepalive(temp_project, mo
     })()
     starts = []
 
-    def fake_start(chat_id, ordinal, sources, previous, progress):
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
         cue = type("Cue", (), {"id": f"cue-{ordinal}", "status": "done",
                                "cue": f"spoken {ordinal}"})()
         starts.append(dict(progress))
@@ -329,7 +341,7 @@ def test_synthesis_keepalive_continues_cues_during_a_slow_segment(temp_project, 
     starts = []
     cues = {}
 
-    def fake_start(chat_id, ordinal, sources, previous, progress):
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
         cue = type("Cue", (), {
             "id": f"cue-{ordinal}",
             "status": "done",
@@ -381,6 +393,53 @@ def test_preview_validation_rejects_ungrounded_or_invalid_output(raw, message):
         preview_jobs.validate_result(raw, [{"id": "s0001", "text": "A grounded claim."}])
 
 
+def test_generation_compacts_an_overlong_cue_instead_of_failing(temp_project):
+    overlong = (
+        "This grounded context explains the method's central motivation clearly. "
+        + "The same grounded context adds another useful orientation sentence " * 5
+    )
+    job = preview_jobs.start_job(
+        "chat-long",
+        1,
+        [{"id": "s0001", "text": "Grounded context about the method."}],
+        generate_fn=lambda messages, model: json.dumps({
+            "cue": overlong,
+            "source_sentence_ids": ["s0001"],
+        }),
+        synth_fn=lambda cue: b"mp3",
+    )
+
+    finished = _wait(job.id)
+    assert finished.status == "done"
+    assert finished.cue
+    assert len(finished.cue) <= preview_jobs.MAX_CUE_CHARS
+    assert finished.url
+
+
+def test_complete_played_and_generated_histories_are_sent_to_the_next_cue(temp_project):
+    captured = {}
+    job = preview_jobs.start_job(
+        "chat-history",
+        1,
+        [{"id": "s0001", "text": "A distinct grounded angle."}],
+        "First cue.\nSecond cue.",
+        played_cues=["First cue."],
+        generated_cues=["First cue.", "Second cue."],
+        generate_fn=lambda messages, model: (
+            captured.update(payload=json.loads(messages[1]["content"]))
+            or json.dumps({
+                "cue": "A distinct grounded angle.",
+                "source_sentence_ids": ["s0001"],
+            })
+        ),
+        synth_fn=lambda cue: b"mp3",
+    )
+    assert _wait(job.id).status == "done"
+    assert captured["payload"]["played_cues"] == ["First cue."]
+    assert captured["payload"]["generated_cues"] == ["First cue.", "Second cue."]
+    assert "First cue.\nSecond cue." == captured["payload"]["previous_cue"]
+
+
 def test_completed_sentences_hold_back_the_streaming_fragment():
     assert preview_jobs.completed_sentences("First result. Second result is still") == [
         "First result."
@@ -429,11 +488,17 @@ def test_preview_poll_route_is_project_scoped(temp_project):
     )
     _wait(job.id)
     assert session_routes.preview_job_status(job.id)["job"]["id"] == job.id
+    played = session_routes.preview_job_played(job.id)["job"]
+    assert played["played"] is True
+    assert played["played_at"]
 
     token = config.set_active_project("another-project")
     try:
         with pytest.raises(HTTPException) as exc_info:
             session_routes.preview_job_status(job.id)
+        with pytest.raises(HTTPException) as played_exc:
+            session_routes.preview_job_played(job.id)
     finally:
         config.reset_active_project(token)
     assert exc_info.value.status_code == 404
+    assert played_exc.value.status_code == 404

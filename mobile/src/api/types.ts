@@ -355,6 +355,8 @@ export interface PreviewJob {
   url: string | null;
   model: string | null;
   suppressed: boolean;
+  played: boolean;
+  played_at: string | null;
   timings: Record<string, string>;
   error: string | null;
   started_at: string;
