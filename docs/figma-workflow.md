@@ -6,6 +6,7 @@ This project uses Figma as the working design surface for mobile UI redesigns. T
 - **File key:** `O62BbV7CcCOf3O55HKAjtK`
 - **Primary page:** `02 · Mobile Screens`
 - **Design-system page:** `01 · Design System`
+- **Icon page:** `03 · App Icon — Paradigm`
 
 Do not commit Figma access tokens or paste them into docs. Store the token in the local shell, MCP config, or a password manager.
 
@@ -75,6 +76,25 @@ with frames:
 - `11 · Notes AI Revision`
 - `12 · Audio Player`
 - `13 · Graph Recommendations`
+
+and the later implementation sections:
+
+- `14 · Player Jump Controls · Selected Design` — selected K1 transport layout, including
+  the 64×52 outboard ±15-second controls and 52×52 sentence controls
+- `15 · Paper Cover`
+- `16 · Prompts, Activity & General Actions`
+- `U.23 · Audio loading`
+
+The design-system page also contains the implemented comparison sections:
+
+- `Palette refinement · Dim / Black / Light`
+- `Density · Comfortable / Tight`
+
+The icon page contains:
+
+- `Icon comps — top 3 (R7.10)` — superseded exploration retained for history
+- `Paradigm P · Final (R7.10)` — the current P-only launcher, compact-size, adaptive-safe-zone,
+  and monochrome proofs
 
 Keep future work organized in named sections. Do not place loose components or frames directly on blank canvas unless they are labels for an existing frame group.
 
