@@ -68,6 +68,7 @@ import {
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
+import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
@@ -1099,7 +1100,6 @@ function DiscussionThread({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [composerHeight, setComposerHeight] = useState(34);
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
@@ -1258,10 +1258,6 @@ function DiscussionThread({
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
   // lifecycle draft (reply / request-changes). Both persist until server acceptance.
   const inputText = editing ? editing.draft : textDraft.value;
-  useEffect(() => {
-    if (!inputText) setComposerHeight(34);
-  }, [inputText]);
-
   const openSentence = useCallback((assistantIndex: number, quote: string) => {
     const next = { assistantIndex, quote };
     if (selectedSentence && sameSentence(selectedSentence, next)) {
@@ -1749,6 +1745,7 @@ function DiscussionThread({
           {...props}
           containerStyle={styles.toolbar}
           primaryStyle={styles.composerCard}
+          renderComposer={(composerProps) => <GrowingComposer {...composerProps} />}
           renderSend={renderSend}
           renderAccessory={renderAccessory}
         />
@@ -1798,13 +1795,9 @@ function DiscussionThread({
         onChangeText,
         editable: !disabled,
         multiline: true,
-        scrollEnabled: composerHeight >= 120,
-        onContentSizeChange: (event) => {
-          setComposerHeight(Math.min(120, Math.max(34, event.nativeEvent.contentSize.height)));
-        },
         placeholder,
         placeholderTextColor: theme.muted,
-        style: [styles.composerInput, { height: composerHeight }],
+        style: styles.composerInput,
       }}
       colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
@@ -2917,8 +2910,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     color: t.text,
     fontFamily: fonts.body,
     fontSize: tight ? 14 : 15,
-    // The library's min/maxComposerHeight props are dead in 4.1.0 (typed but unread), so
-    // the height bounds live on the input style itself.
+    lineHeight: tight ? 19 : 20,
+    textAlignVertical: 'top',
+    // GrowingComposer applies the measured height directly to the native input.
     minHeight: 34,
     maxHeight: 120,
     // Transparent: the surrounding card (composerCard) IS the elevated rounded surface now,
