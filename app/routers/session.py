@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import (
+    affiliation_jobs,
+    affiliations,
     agent,
     agent_harness,
     chat_jobs,
@@ -226,7 +228,10 @@ def _turn_stream(
             except AgentError as e:
                 yield _sse({"type": "error", "detail": str(e)})
                 return
-            turn = agent.parse("".join(pieces))
+            turn = agent.parse(
+                "".join(pieces),
+                allow_proposed_commit=sessions.proposal_expected(slug),
+            )
             if not turn.canonical.strip():
                 yield _sse({"type": "error", "detail":
                             "The model returned an empty response. Try again, or switch the "
@@ -297,7 +302,10 @@ async def _agentic_turn_events(slug: str, model: str | None = None):
     except AgentError as e:
         yield _sse({"type": "error", "detail": str(e)})
         return
-    turn = agent.parse(final_text or "".join(pieces))
+    turn = agent.parse(
+        final_text or "".join(pieces),
+        allow_proposed_commit=sessions.proposal_expected(slug),
+    )
     if not turn.canonical.strip():
         yield _sse({"type": "error", "detail":
                     "The model returned an empty response. Try again, or switch the analysis "
@@ -356,7 +364,10 @@ def _get_session(slug: str, thread_id: str):
         p = store.get_paper(slug, sessions.session_states())
         if not p:
             raise HTTPException(status_code=404, detail="Unknown paper")
+        affiliation_jobs.reconcile_pending([slug])
         paper = p.to_dict()
+        paper.update(affiliations.paper_summary(slug))
+        paper["last_interacted_at"] = (sessions.index_entry(slug) or {}).get("updated_at")
     return {
         "paper": paper,
         "state": sessions.get_state(slug),
@@ -436,6 +447,7 @@ def start_paper(req: StartReq):
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")
     if paper.retrieved and not req.arxiv_id and not req.pdf_url:
+        affiliation_jobs.warm_async(req.slug)
         return {"ok": True, "retrieved": True}
     try:
         res = retriever.retrieve(paper.title, req.arxiv_id, req.pdf_url)
@@ -466,6 +478,7 @@ def start_paper(req: StartReq):
         raise HTTPException(
             status_code=409,
             detail="This paper is no longer in the project (it may have just been moved).") from e
+    affiliation_jobs.warm_async(req.slug)
     return {"ok": True, "retrieved": True}
 
 
@@ -555,6 +568,7 @@ async def start_paper_stream(req: StartReq):
             yield _sse({"type": "error", "detail": "Unknown paper"})
             return
         if paper.retrieved and not req.arxiv_id and not req.pdf_url:
+            affiliation_jobs.warm_async(req.slug)
             yield _sse({"type": "done", "retrieved": True})
             return
         yield _sse({"type": "step", "name": "arxiv", "detail": req.arxiv_id or req.pdf_url or paper.title[:60]})
@@ -591,6 +605,7 @@ async def start_paper_stream(req: StartReq):
                 yield _sse({"type": "error", "detail":
                             "This paper is no longer in the project (it may have been moved)."})
                 return
+            affiliation_jobs.warm_async(req.slug)
             yield _sse({"type": "done", "retrieved": True})
             return
         # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
@@ -616,6 +631,7 @@ async def start_paper_stream(req: StartReq):
                             yield _sse({"type": "error", "detail":
                                         "This paper is no longer in the project."})
                             return
+                        affiliation_jobs.warm_async(req.slug)
                         yield _sse({"type": "done", "retrieved": True})
                     else:
                         yield _sse({"type": "error", "detail":

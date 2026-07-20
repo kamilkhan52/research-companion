@@ -28,6 +28,13 @@ def test_protocol_markers_parse():
     assert t.proposed_commit["synthesis"] == "The whole synthesis."
 
 
+def test_unsolicited_notes_sections_can_be_ignored_by_the_production_boundary():
+    t = agent.parse(PROTOCOL, allow_proposed_commit=False)
+
+    assert t.canonical == "The scholarly answer."
+    assert t.proposed_commit is None
+
+
 def test_h2_heading_markers_parse():
     # Orca's finish turn: "## NAME" headings, separated by rules.
     content = """## CANONICAL

@@ -7,7 +7,7 @@ import type { IconName } from '@/ui';
 
 export type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
 export type StatusBucket = Exclude<StatusFilter, 'all'>;
-export type SortKey = 'added' | 'name' | 'pubdate' | 'status';
+export type SortKey = 'added' | 'interacted' | 'name' | 'pubdate' | 'status';
 export type SortDirection = 'asc' | 'desc';
 
 export interface SortDirectionOption {
@@ -21,6 +21,7 @@ export interface PaperSortOption {
   label: string;
   icon: IconName;
   directions?: SortDirectionOption[];
+  defaultDirection?: SortDirection;
 }
 
 export function paperStateKey(p: Paper): string {
@@ -42,6 +43,16 @@ export const SORTS: PaperSortOption[] = [
     directions: [
       { key: 'asc', label: 'Oldest added first', icon: 'arrow-up' },
       { key: 'desc', label: 'Newest added first', icon: 'arrow-down' },
+    ],
+  },
+  {
+    key: 'interacted',
+    label: 'Last interacted',
+    icon: 'message-circle',
+    defaultDirection: 'desc',
+    directions: [
+      { key: 'desc', label: 'Most recent first', icon: 'arrow-down' },
+      { key: 'asc', label: 'Least recent first', icon: 'arrow-up' },
     ],
   },
   {
@@ -88,6 +99,17 @@ export function sortPapers(
         if (a.year == null) return 1;
         if (b.year == null) return -1;
         return sign * (a.year - b.year);
+      });
+    case 'interacted':
+      return copy.sort((a, b) => {
+        const aTime = a.last_interacted_at ? Date.parse(a.last_interacted_at) : Number.NaN;
+        const bTime = b.last_interacted_at ? Date.parse(b.last_interacted_at) : Number.NaN;
+        const aKnown = Number.isFinite(aTime);
+        const bKnown = Number.isFinite(bTime);
+        if (!aKnown && !bKnown) return 0;
+        if (!aKnown) return 1;
+        if (!bKnown) return -1;
+        return sign * (aTime - bTime);
       });
     case 'status':
       return copy.sort((a, b) => STATUS_RANK[filterBucket(a)] - STATUS_RANK[filterBucket(b)]);

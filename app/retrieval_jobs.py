@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import config, cover_jobs, figures, retrieval_agent, retriever, store
+from . import affiliation_jobs, config, cover_jobs, figures, retrieval_agent, retriever, store
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -78,6 +78,7 @@ def start_retrieval(
         # Starting a first read is another safe opportunity to prefetch the manifest/assets.
         # This remains a registered background job and never delays the request or analysis.
         figures.warm_async(slug)
+        affiliation_jobs.warm_async(slug)
         job = _registry.put(
             slug,
             RetrievalJob(
@@ -260,6 +261,7 @@ def _persist(
     # a daemon thread, so it never delays the job's `done` or the chained auto-analysis.
     # Best-effort: the graph build's enrichment pass backfills anything this misses.
     figures.warm_async(slug)
+    affiliation_jobs.warm_async(slug)
 
 
 def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:

@@ -24,7 +24,17 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import agent, agent_harness, audio_jobs, config, logging_config, preview_jobs, sessions
+from . import (
+    agent,
+    agent_harness,
+    audio_jobs,
+    config,
+    figures,
+    graph,
+    logging_config,
+    preview_jobs,
+    sessions,
+)
 from .agent import AgentError
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .models import Turn
@@ -56,6 +66,10 @@ class ChatJob(Job):
     preview_phase: str | None = None
     preview_progress: dict = field(default_factory=dict)
     timings: dict[str, str] = field(default_factory=dict)
+    # Honest reader-facing description while no canonical text is visible yet. It reflects
+    # context actually available to this turn and updates when the agent begins tool work.
+    activity: str = "Reading the paper…"
+    activity_detail: str | None = None
     # Best-effort stop requested by the user. The consume loops check it between runner events,
     # so the turn ends at the next event boundary; whatever canonical text already streamed is
     # recorded marked as stopped. The job still settles as 'done' — pollers see it finish early.
@@ -126,6 +140,8 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     )
     runner = runner or (lambda s, h: _default_events(s, h, model=model))
 
+    activity, activity_detail = _preparation_activity(slug)
+
     def generate(job: ChatJob) -> None:
         model_label = override_label(model)
         job._preview_enabled = (job.delivery_mode == "listening"
@@ -156,7 +172,10 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if job.cancelled:
             _record_cancelled(job, final_text, model_label=model_label)
             return
-        turn = agent.parse(final_text)
+        turn = agent.parse(
+            final_text,
+            allow_proposed_commit=sessions.proposal_expected(job.slug),
+        )
         with _registry.lock:
             job.timings["analysis_complete"] = now_iso()
         if not turn.canonical.strip():
@@ -272,9 +291,39 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             slug=slug,
             thread_id=thread_id,
             delivery_mode=delivery_mode,
+            activity=activity,
+            activity_detail=activity_detail,
         ),
         work,
     )
+
+
+def _preparation_activity(slug: str) -> tuple[str, str | None]:
+    """Describe real context available to the pending turn, without exposing model internals."""
+    if sessions.read_records(slug):
+        return "Reviewing the discussion…", "Connecting your message to the paper and prior turns."
+    manifest = figures.manifest_for(slug) or {}
+    has_figures = manifest.get("status") == "done" and bool(manifest.get("figures"))
+    has_citers = bool(graph.project_citers_for(slug))
+    if has_figures:
+        detail = "Reading the paper"
+        if has_citers:
+            detail += " and tracing how later project papers cite it"
+        return "Viewing figures…", detail + "."
+    if has_citers:
+        return "Tracing project citations…", "Reading the paper in its project context."
+    return "Reading the paper…", "Building a grounded response from the full text."
+
+
+def _tool_activity(name: str) -> tuple[str, str | None]:
+    labels = {
+        "web_search": ("Searching the literature…", "Looking for relevant external evidence."),
+        "web_fetch": ("Reading sources…", "Opening the most relevant research sources."),
+        "read_paper_text": ("Comparing project papers…", "Reading another paper in this project."),
+        "related_papers": ("Tracing project citations…", "Mapping how project papers connect."),
+        "list_project_papers": ("Reviewing the project…", "Checking the surrounding reading list."),
+    }
+    return labels.get(name, ("Gathering evidence…", None))
 
 
 def _default_events(slug: str, history: list, model: str | None = None):
@@ -340,6 +389,8 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
             return sent
         pieces.clear()
         with _registry.lock:
+            job.activity = "Analyzing results…"
+            job.activity_detail = "Connecting the gathered evidence into the response."
             # At most one live text item exists (each boundary demotes the previous one); it
             # sits before any tool items from the same segment, so demote it in place.
             for i in range(len(job.items) - 1, -1, -1):
@@ -371,6 +422,7 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     elif ev["type"] == "tool":
         with _registry.lock:
             job.items.append({"kind": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
+            job.activity, job.activity_detail = _tool_activity(str(ev.get("name") or ""))
         # Surface agentic tool use (web search, paper fetch, …) as grounded sources so listening
         # cues can narrate what the agent is doing, not just the prose it has written so far.
         acts = getattr(job, "_tool_activity", None)

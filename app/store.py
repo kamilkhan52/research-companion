@@ -527,28 +527,29 @@ def annotate_entry(slug: str, *, arxiv_id: str | None = None, year: int | None =
 # ---- corpus full-text ----
 
 def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
-    _corpus_dir().mkdir(parents=True, exist_ok=True)
-    lines = [f"# {title}", ""]
-    for k in ("slug", "arxiv_id", "source", "venue"):
-        if meta.get(k):
-            lines.append(f"- {k}: {meta[k]}")
-    lines.append(f"- retrieved: {_now()}")
-    lines += ["", "## Full text", "", full_text.strip(), ""]
-    p = corpus_path(slug)
-    atomic_write_text(p, "\n".join(lines))
-    _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
-    # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
-    # the reading-list entry never had — record it there too, so the entry gains its year and
-    # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
-    # an explicit/pdf retrieval (score 1.0) or a near-identical title match — retrieve()'s
-    # own 0.62 auto-accept floor is fine for fetching text but too weak to stamp identity
-    # (the same 0.95 bar backfill_abstracts uses, for the same near-miss reason). Never
-    # overwrites a pinned id. Invariant-4 note: this edits reading-list.md uncommitted,
-    # exactly like add_entry — and the same id is already in this corpus file's header, which
-    # the next approved commit sweeps regardless; the entry comment mirrors recorded fact.
-    if meta.get("arxiv_id") and float(meta.get("match_score") or 0) >= 0.95:
-        annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
-    return p
+    with config.paper_identity_guard(slug):
+        _corpus_dir().mkdir(parents=True, exist_ok=True)
+        lines = [f"# {title}", ""]
+        for k in ("slug", "arxiv_id", "source", "venue"):
+            if meta.get(k):
+                lines.append(f"- {k}: {meta[k]}")
+        lines.append(f"- retrieved: {_now()}")
+        lines += ["", "## Full text", "", full_text.strip(), ""]
+        p = corpus_path(slug)
+        atomic_write_text(p, "\n".join(lines))
+        _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
+        # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
+        # the reading-list entry never had — record it there too, so the entry gains its year and
+        # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
+        # an explicit/pdf retrieval (score 1.0) or a near-identical title match — retrieve()'s
+        # own 0.62 auto-accept floor is fine for fetching text but too weak to stamp identity
+        # (the same 0.95 bar backfill_abstracts uses, for the same near-miss reason). Never
+        # overwrites a pinned id. Invariant-4 note: this edits reading-list.md uncommitted,
+        # exactly like add_entry — and the same id is already in this corpus file's header, which
+        # the next approved commit sweeps regardless; the entry comment mirrors recorded fact.
+        if meta.get("arxiv_id") and float(meta.get("match_score") or 0) >= 0.95:
+            annotate_entry(slug, arxiv_id=str(meta["arxiv_id"]))
+        return p
 
 
 def read_full_text(slug: str) -> str:

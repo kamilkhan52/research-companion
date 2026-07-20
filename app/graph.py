@@ -960,14 +960,19 @@ def score_recommendations(nodes: list[dict], edges: list[dict], project_paper_co
     return out
 
 
-def related_works_for(slug: str, limit: int = 10) -> list[dict]:
+def related_works_for(
+    slug: str,
+    limit: int = 10,
+    *,
+    graph_data: dict | None = None,
+) -> list[dict]:
     """The most significant related works for one paper, from the stored graph: works it
     builds on / compares against (its significant outgoing citations) and project papers that
     build on it (significant incoming). Ranked by how load-bearing the work is (in-project
     citation breadth, then global citation count), capped small — this backs the reading
     session's 'Related works' menu and the matching context section the analyst sees.
     Cheap: reads the stored graph, no LLM."""
-    g = graph_store.load().get("graph")
+    g = (graph_data if graph_data is not None else graph_store.load()).get("graph")
     if not g:
         return []
     nodes = {n["id"]: n for n in g["nodes"]}
@@ -1013,6 +1018,65 @@ def related_works_for(slug: str, limit: int = 10) -> list[dict]:
             top[drop] = spare.pop(0)
         top.sort(key=rank)
     return top
+
+
+def project_citers_for(
+    slug: str,
+    limit: int = 8,
+    *,
+    graph_data: dict | None = None,
+) -> list[dict]:
+    """Project papers that cite ``slug``, with the graph's actual relationship evidence.
+
+    This is deliberately broader than ``related_works_for``: an incoming citation still helps
+    place a paper in the project's intellectual timeline even when the extraction judged it
+    background rather than significant. Cheap, read-only, and empty before Map has been built.
+    """
+    stored = (graph_data if graph_data is not None else graph_store.load()).get("graph")
+    if not isinstance(stored, dict):
+        return []
+    nodes = {
+        node.get("id"): node
+        for node in stored.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    target = nodes.get(slug)
+    if not target or target.get("kind") != "project":
+        return []
+    target_year = target.get("year")
+    out = []
+    for edge in stored.get("edges") or []:
+        if not isinstance(edge, dict) or edge.get("target") != slug:
+            continue
+        source = nodes.get(edge.get("source"))
+        if not source or source.get("kind") != "project":
+            continue
+        source_year = source.get("year")
+        later = (
+            isinstance(source_year, int)
+            and isinstance(target_year, int)
+            and source_year > target_year
+        )
+        out.append({
+            "slug": source.get("slug") or source.get("id"),
+            "title": source.get("title") or source.get("id"),
+            "year": source_year,
+            "later": later,
+            "significant": bool(edge.get("significant")),
+            "reason": str(edge.get("reason") or "").strip(),
+            "contexts": [
+                str(context).strip()
+                for context in (edge.get("contexts") or [])
+                if str(context).strip()
+            ][:2],
+            "full_text_verified": bool(edge.get("full_text_verified")),
+        })
+    out.sort(key=lambda row: (
+        not row["later"],
+        row["year"] if isinstance(row["year"], int) else 9999,
+        row["title"].casefold(),
+    ))
+    return out[:max(0, limit)]
 
 
 # ---------- status (cheap, no LLM) ----------

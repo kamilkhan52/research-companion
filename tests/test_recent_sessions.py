@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import config, projects, sessions, store
 from app.models import Turn
+from app.routers import projects_api
 
 from tests.conftest import add_paper
 
@@ -56,6 +57,34 @@ def test_every_authored_turn_advances_session_activity(temp_project, monkeypatch
 
     sessions.record_assistant("paper", Turn(role="assistant", canonical="Answer"))
     assert sessions.session_index()["paper"]["updated_at"] == "2026-07-07T10:02:00+00:00"
+
+
+def test_project_state_exposes_last_interaction_and_bounded_affiliations(
+    temp_project,
+    monkeypatch,
+):
+    add_paper(temp_project, "paper", "A Paper")
+    sessions.start_session("paper", "A Paper")
+    index = sessions.session_index()
+    index["paper"]["updated_at"] = "2026-07-07T10:02:00+00:00"
+    sessions._save_index_unlocked(index)
+    monkeypatch.setattr(
+        projects_api.affiliations,
+        "paper_summaries",
+        lambda slugs: {
+            slug: {
+                "affiliations": ["MIT", "Stanford University"],
+                "affiliation_status": "done",
+            }
+            for slug in slugs
+        },
+    )
+
+    paper = projects_api.get_state(temp_project)["papers"][0]
+
+    assert paper["last_interacted_at"] == "2026-07-07T10:02:00+00:00"
+    assert paper["affiliations"] == ["MIT", "Stanford University"]
+    assert paper["affiliation_status"] == "done"
 
 
 def test_recent_sessions_are_cross_project_and_sorted(temp_project):

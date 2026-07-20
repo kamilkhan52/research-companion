@@ -117,6 +117,12 @@ export function useProjectState(pid: string | null) {
     queryKey: pid ? keys.projectState(pid) : ['project', 'none', 'state'],
     queryFn: () => api.getProjectState(pid as string),
     enabled: !!pid && hasUrl,
+    // Full-text retrieval launches affiliation extraction independently so it never delays
+    // reading. Poll only while one of those short metadata passes is still outstanding.
+    refetchInterval: (query) =>
+      query.state.data?.papers.some((paper) => paper.affiliation_status === 'pending')
+        ? 3_000
+        : false,
   });
 }
 
@@ -139,6 +145,8 @@ export function useSession(pid: string | null, slug: string | null, threadId = '
     // renders straight from cache without an immediate refetch flash (R.7). Mutations still
     // invalidate this key explicitly, so committed turns refresh regardless.
     staleTime: 15_000,
+    refetchInterval: (query) =>
+      query.state.data?.paper.affiliation_status === 'pending' ? 3_000 : false,
   });
 }
 

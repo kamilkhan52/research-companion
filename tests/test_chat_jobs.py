@@ -76,6 +76,66 @@ def test_turn_is_recorded_even_if_no_client_ever_polls(temp_project):
     assert records[-1]["canonical"] == "The answer."
 
 
+@pytest.mark.parametrize("with_reply", [False, True], ids=["opening", "reply"])
+def test_opening_or_reply_cannot_create_an_unsolicited_notes_proposal(
+    temp_project,
+    with_reply,
+):
+    slug = _session_with_reply() if with_reply else "p"
+    if not with_reply:
+        sessions.start_session(slug, "Paper P")
+    drifted = """###CANONICAL###
+Opening analysis.
+###STATE###
+ready_to_draft_notes
+###COMMIT_SUMMARY###
+Drafted notes.
+###NOTES_BLOCK###
+## Notes
+Unrequested.
+###SYNTHESIS###
+Unrequested synthesis.
+###END###"""
+
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": drifted}]),
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.turn["proposed_commit"] is None
+    assert finished.state == "in_discussion"
+    assert sessions.read_records(slug)[-1]["proposed_commit"] is None
+
+
+def test_finish_turn_still_records_the_requested_notes_proposal(temp_project):
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    proposed = """###CANONICAL###
+Review this draft.
+###STATE###
+ready_to_draft_notes
+###COMMIT_SUMMARY###
+Drafted notes.
+###NOTES_BLOCK###
+## Notes
+Requested.
+###SYNTHESIS###
+Requested synthesis.
+###END###"""
+
+    job = chat_jobs.start_turn(
+        "p",
+        runner=_sync_runner([{"type": "final", "text": proposed}]),
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.turn["proposed_commit"]["notes_block"] == "## Notes\nRequested."
+    assert finished.state == "notes_drafted"
+
+
 def test_items_interleave_tool_calls_with_canonical_only_text(temp_project):
     slug = _session_with_reply()
     full = "### CANONICAL ###\nPart one. Part two.\n### STATE ###\nin_discussion\n### END ###"
@@ -92,10 +152,29 @@ def test_items_interleave_tool_calls_with_canonical_only_text(temp_project):
     assert finished.status == "done"
     assert [it["kind"] for it in finished.items] == ["text", "tool", "text"]
     assert finished.items[1]["name"] == "web_search"
+    assert finished.activity == "Searching the literature…"
+    assert finished.activity_detail == "Looking for relevant external evidence."
     # Only CANONICAL text ever reaches items — never the protocol scaffolding.
     joined = "".join(it["text"] for it in finished.items if it["kind"] == "text")
     assert joined.strip() == "Part one. Part two."
     assert "###" not in joined
+
+
+def test_first_turn_activity_reflects_available_figures_and_citation_context(
+    temp_project,
+    monkeypatch,
+):
+    sessions.start_session("p", "Paper P")
+    monkeypatch.setattr(chat_jobs.figures, "manifest_for", lambda slug: {
+        "status": "done",
+        "figures": [{"number": 1}],
+    })
+    monkeypatch.setattr(chat_jobs.graph, "project_citers_for", lambda slug: [{"slug": "later"}])
+
+    status, detail = chat_jobs._preparation_activity("p")
+
+    assert status == "Viewing figures…"
+    assert detail == "Reading the paper and tracing how later project papers cite it."
 
 
 def test_runner_failure_is_an_error_job_and_session_is_untouched(temp_project):
@@ -574,6 +653,7 @@ def test_segment_boundary_demotes_commentary_and_keeps_answer_clean(temp_project
     assert finished.items[0]["text"] == PREAMBLE
     joined_text = "".join(it["text"] for it in finished.items if it["kind"] == "text")
     assert joined_text.strip() == "The grounded answer."
+    assert finished.activity == "Analyzing results…"
 
 
 def test_agent_trail_is_persisted_on_the_recorded_turn(temp_project):

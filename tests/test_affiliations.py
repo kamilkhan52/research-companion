@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 
-from app import affiliations, llm
+from app import affiliations, jobs, llm
 from app.affiliations import _extract_missing as real_extract_missing
 
 from tests.conftest import add_paper
@@ -149,6 +149,7 @@ def test_stalled_llm_call_hits_the_hard_deadline_and_aborts_the_pass(temp_projec
 
     assert cache == {}          # nothing cached → retried next build
     assert len(calls) == 1      # aborted after the first stall
+    assert jobs.any_running_for_project(temp_project) == "affiliation-orphans"
 
     # While the orphaned worker is still alive, the next pass must not stack another
     # thread on the same dead provider — it skips entirely.
@@ -159,6 +160,32 @@ def test_stalled_llm_call_hits_the_hard_deadline_and_aborts_the_pass(temp_projec
     for orphan in list(affiliations._orphans):
         orphan.join(timeout=2)
     assert not affiliations._orphan_alive()
+
+
+def test_graph_result_cannot_replace_newer_texts_pending_affiliation(temp_project):
+    """An old graph pass finishing after retrieval replaced the text must lose the CAS."""
+    from app import paper_metadata, store
+
+    add_paper(temp_project, "paper", "Paper", full_text="Old header. Abstract...")
+    graph_node = node("paper", "paper")
+
+    def completes_after_retrieval(*args, **kwargs):
+        store.write_full_text("paper", "Paper", "New header. Abstract...", {"slug": "paper"})
+        paper_metadata.set_affiliation_record("paper", {
+            "status": "pending",
+            "key": affiliations._cache_key(graph_node),
+            "authorships": [],
+            "error": None,
+        })
+        return "Old Author | Old University"
+
+    cache = {}
+    real_extract_missing([graph_node], {}, cache, complete=completes_after_retrieval)
+
+    record = paper_metadata.affiliation_record("paper")
+    assert record["status"] == "pending"
+    assert record["key"] == affiliations._cache_key(graph_node)
+    assert cache == {}
 
 
 def test_each_paid_extraction_is_persisted_as_it_lands(temp_project):

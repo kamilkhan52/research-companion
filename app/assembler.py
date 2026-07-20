@@ -6,7 +6,7 @@ are assembled once at session start rather than rebuilt here every turn.
 """
 from __future__ import annotations
 
-from . import config, figures, graph, prompts, store
+from . import affiliations, config, figures, graph, graph_store, prompts, store
 from .models import REVIEW_SLUG
 
 
@@ -42,6 +42,7 @@ def build_context(slug: str) -> str:
 
     parts.append("# Working notes — the running cross-paper synthesis so far\n\n"
                  + store.read_synthesis().strip())
+    graph_data = graph_store.load()
 
     # Which prior per-paper Notes to include: the citation-related selection (compact, the
     # default), or every paper read so far (prior_notes_scope="all" — richer cross-paper
@@ -67,7 +68,7 @@ def build_context(slug: str) -> str:
     else:
         parts.append(empty)
 
-    related = graph.related_works_for(slug)
+    related = graph.related_works_for(slug, graph_data=graph_data)
     if related:
         block = ["# Significant related works (shown to the reader in this session's "
                  "'Related works' menu)",
@@ -96,6 +97,29 @@ def build_context(slug: str) -> str:
                          f"{rel}: {r['reason']}{link}")
         parts.append("\n".join(block))
 
+    citers = graph.project_citers_for(slug, graph_data=graph_data)
+    if citers:
+        block = [
+            "# How papers in this project cite this paper",
+            "(Evidence from the built reference graph. In the opening summary, explicitly "
+            "explain where this paper sits in the project through the later papers that cite "
+            "it. Distinguish substantive use from a background citation and stay within the "
+            "evidence below.)",
+        ]
+        for citer in citers:
+            timing = "published later" if citer["later"] else "project citer"
+            strength = "substantive citation" if citer["significant"] else "background citation"
+            line = (
+                f"- [{citer['title']}](rc-paper:{citer['slug']}) "
+                f"({citer.get('year') or 'n.d.'}; {timing}; {strength})"
+            )
+            if citer.get("reason"):
+                line += f" — {citer['reason']}"
+            block.append(line)
+            for context in citer.get("contexts") or []:
+                block.append(f"  Evidence from the citing paper: “{context}”")
+        parts.append("\n".join(block))
+
     parts.append("# The full reading list (for situating this paper)\n\n"
                  "(Entries not yet read carry their abstract — enough to speak to how they "
                  "relate to this paper, but not a substitute for having read them. Entries "
@@ -115,6 +139,13 @@ def build_context(slug: str) -> str:
             # situates the paper on the timeline: what existed before it, what came after.
             head += (f"Published: {year}. Situate the paper in time — note which related "
                      "works predate or postdate it when weighing its contributions.\n\n")
+        top_affiliations = affiliations.top_affiliations(slug, graph_data=graph_data)
+        if top_affiliations:
+            head += (
+                "Most common affiliations: "
+                + "; ".join(top_affiliations)
+                + ". Treat these as identifying context, not a credibility shortcut.\n\n"
+            )
         parts.append(head + entry)
 
     manifest = figures.manifest_for(slug)

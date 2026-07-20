@@ -382,6 +382,7 @@ export default function DiscussionScreen() {
         subtitle={
           [
             session.data?.paper.year,
+            session.data?.paper.affiliations?.slice(0, 2).join(', '),
             activeThread === 'main'
               ? (state ? STATE_LABEL[state] : undefined)
               : session.data?.threads?.find((item) => item.id === activeThread)?.title,
@@ -1098,6 +1099,7 @@ function DiscussionThread({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(34);
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
@@ -1256,6 +1258,9 @@ function DiscussionThread({
   // One composer, two persisted drafts: the in-place edit (when active) wins, otherwise the
   // lifecycle draft (reply / request-changes). Both persist until server acceptance.
   const inputText = editing ? editing.draft : textDraft.value;
+  useEffect(() => {
+    if (!inputText) setComposerHeight(34);
+  }, [inputText]);
 
   const openSentence = useCallback((assistantIndex: number, quote: string) => {
     const next = { assistantIndex, quote };
@@ -1578,7 +1583,15 @@ function DiscussionThread({
 
   const renderMessageText = useCallback((props: MessageTextProps<DiscussionMessage>) => {
     const msg = props.currentMessage;
-    if (msg?.streamItems) return <StreamingTurnBody items={msg.streamItems} />;
+    if (msg?.streamItems) {
+      return (
+        <StreamingTurnBody
+          items={msg.streamItems}
+          activity={stream.activity}
+          activityDetail={stream.activityDetail}
+        />
+      );
+    }
     if (msg?.entry?.role === 'assistant') {
       return (
         <AssistantBody
@@ -1606,7 +1619,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, styles, figureContext, sentenceAnnotationsFor]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.activityDetail, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -1784,9 +1797,14 @@ function DiscussionThread({
       textInputProps={{
         onChangeText,
         editable: !disabled,
+        multiline: true,
+        scrollEnabled: composerHeight >= 120,
+        onContentSizeChange: (event) => {
+          setComposerHeight(Math.min(120, Math.max(34, event.nativeEvent.contentSize.height)));
+        },
         placeholder,
         placeholderTextColor: theme.muted,
-        style: styles.composerInput,
+        style: [styles.composerInput, { height: composerHeight }],
       }}
       colorScheme={themeName === 'light' ? 'light' : 'dark'}
       disableKeyboardProvider
@@ -2174,7 +2192,11 @@ export function ComposeFirst({
       <View style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.streamingOnly}>
           <Card style={styles.assistantCard}>
-            <StreamingTurnBody items={stream.items} />
+            <StreamingTurnBody
+              items={stream.items}
+              activity={stream.activity}
+              activityDetail={stream.activityDetail}
+            />
           </Card>
         </ScrollView>
         <View style={styles.startFooter}>
@@ -2663,17 +2685,30 @@ function SmoothMarkdown({ text }: { text: string }) {
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
 // activity is interleaved with the response ("…answer so far… → 🔎 Searching → …more…") the way
 // agent UIs conventionally show it — rather than pinning all tools above all text. The streamed
-// Before text or a tool arrives, the shared activity component makes the pending response
+// Until answer text arrives, the shared activity component makes the current grounded work
 // explicit without exposing internal model-state language.
-function StreamingTurnBody({ items }: { items: StreamItem[] }) {
+function StreamingTurnBody({
+  items,
+  activity,
+  activityDetail,
+}: {
+  items: StreamItem[];
+  activity: string;
+  activityDetail: string | null;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const visibleItems = items.filter((item) => item.kind === 'tool' || item.text.trim().length > 0);
-  if (visibleItems.length === 0) {
-    return <AgentActivity status="Preparing a response…" testID="assistant-activity" />;
-  }
+  const hasVisibleText = visibleItems.some((item) => item.kind === 'text');
   return (
     <View style={styles.assistantBody}>
+      {!hasVisibleText ? (
+        <AgentActivity
+          status={activity}
+          detail={activityDetail ?? undefined}
+          testID="assistant-activity"
+        />
+      ) : null}
       {visibleItems.map((it, i) =>
         it.kind === 'text' ? (
           <SmoothMarkdown key={i} text={it.text} />

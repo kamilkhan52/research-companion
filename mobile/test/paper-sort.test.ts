@@ -12,6 +12,7 @@ const paper = (over: Partial<Paper>): Paper => ({
   session_state: over.session_state ?? null,
   arxiv_id: '',
   year: over.year,
+  last_interacted_at: over.last_interacted_at,
 });
 
 describe('filterBucket', () => {
@@ -47,6 +48,23 @@ describe('sortPapers', () => {
   test('pubdate defaults to chronological order and keeps unknown years last', () => {
     expect(sortPapers(papers, 'pubdate').map((p) => p.slug)).toEqual(['a', 'b', 'c']);
     expect(sortPapers(papers, 'pubdate', 'desc').map((p) => p.slug)).toEqual(['b', 'a', 'c']);
+  });
+
+  test('last interacted supports recent-first and keeps never-started papers last', () => {
+    const recent = paper({
+      slug: 'recent',
+      last_interacted_at: '2026-07-19T12:00:00+00:00',
+    });
+    const older = paper({
+      slug: 'older',
+      last_interacted_at: '2026-07-18T12:00:00+00:00',
+    });
+    const untouched = paper({ slug: 'untouched', last_interacted_at: null });
+
+    expect(sortPapers([older, untouched, recent], 'interacted', 'desc').map((p) => p.slug))
+      .toEqual(['recent', 'older', 'untouched']);
+    expect(sortPapers([recent, untouched, older], 'interacted', 'asc').map((p) => p.slug))
+      .toEqual(['older', 'recent', 'untouched']);
   });
 
   test('status surfaces in-progress, then to-read, then done', () => {

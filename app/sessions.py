@@ -502,6 +502,21 @@ def build_history(slug: str) -> list[dict]:
     return history
 
 
+def proposal_expected(slug: str) -> bool:
+    """Whether the reader's latest durable action explicitly requested a notes proposal.
+
+    Prompt instructions are not a sufficient approval boundary: models occasionally emit the
+    proposal sections during an opening summary. Only Finish and feedback on an existing draft
+    authorize those sections to become a reviewable ``proposed_commit``.
+    """
+    records = read_records(slug)
+    return bool(
+        records
+        and records[-1].get("role") == "user"
+        and records[-1].get("kind") in {"finish", "revision"}
+    )
+
+
 def transcript(slug: str) -> list[dict]:
     """UI-facing transcript (excludes the regenerated opening message)."""
     out = []

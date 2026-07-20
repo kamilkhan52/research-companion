@@ -49,6 +49,10 @@ We will read research papers as research academics. This involves:
 
 The first response after the paper is shared should be a comprehensive summary of the problem
 definition, solution/contributions, methodology, experimental setup, and evaluation.
+When the supplied project context shows that later papers in this project cite the current
+paper, the first response should also explain how those papers use it and what that reveals about
+the current paper's role in the project. Distinguish substantive use from background citation and
+do not infer relationships beyond the supplied citation evidence.
 
 Self-contained references: assume the researcher may never separately open the paper. Whenever a
 figure, diagram, table, algorithm, equation, or section matters, describe the relevant content and
@@ -294,8 +298,10 @@ _OPENING_MESSAGE = (
     "[END PAPER FULL TEXT]\n\n"
     "Produce your first response now: the comprehensive opening summary as specified in the "
     "reading method (problem definition, solution/contributions, methodology, experimental "
-    "setup, and evaluation), situating the paper relative to the others on our list. Remember "
-    "to return your response using the required section format. When grounded figures are "
+    "setup, and evaluation), situating the paper relative to the others on our list. "
+    "If the reading context includes papers in this project that cite this work, explicitly "
+    "cover how the later papers use it and what that says about this paper's place in the project. "
+    "Return your response using the required section format. When grounded figures are "
     "available, make one or two genuinely central figures part of this opening explanation: "
     "refer to each by its exact printed label (`Figure N`) and explain what it shows and why it "
     "matters. Do not force a figure that is not central or whose content is not supported."

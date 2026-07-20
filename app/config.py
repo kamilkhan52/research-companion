@@ -254,11 +254,29 @@ class _RWLock:
 
 _rw_locks: dict[str, _RWLock] = {}
 _rw_locks_guard = threading.Lock()
+_paper_identity_locks: dict[tuple[str | None, str], threading.RLock] = {}
+_paper_identity_locks_guard = threading.Lock()
 
 
 def _rw_lock_for(pid: str) -> _RWLock:
     with _rw_locks_guard:
         return _rw_locks.setdefault(pid, _RWLock())
+
+
+@contextlib.contextmanager
+def paper_identity_guard(slug: str):
+    """Serialize one paper's corpus identity with derived-metadata fingerprint publication.
+
+    ``project_write_guard`` is intentionally shared by ordinary writers; it only drains them
+    for relocation. Full-text replacement and any check+publish operation keyed to that text
+    need this narrower exclusive lock so an older fingerprint can never be published after a
+    newer corpus version. RLock permits store helpers to call other identity-aware helpers.
+    """
+    key = (active_project_id(), slug)
+    with _paper_identity_locks_guard:
+        lock = _paper_identity_locks.setdefault(key, threading.RLock())
+    with lock:
+        yield
 
 
 @contextlib.contextmanager

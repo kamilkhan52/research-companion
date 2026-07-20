@@ -35,7 +35,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from . import agent as agent_mod
-from . import config, prompts, research_tools
+from . import config, prompts, research_tools, sessions
 from .models import Turn
 
 # Off by default; set RC_AGENTIC=1 to route turns through the tool-using agent.
@@ -127,7 +127,10 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
         result = ag.run_sync(prompt, message_history=_to_message_history(prior))
     except Exception as e:  # normalize framework/provider errors into the app's error type
         raise agent_mod.AgentError(f"Agentic turn failed: {str(e)[:300]}") from e
-    return agent_mod._parse(result.output)
+    return agent_mod._parse(
+        result.output,
+        allow_proposed_commit=sessions.proposal_expected(slug),
+    )
 
 
 def _tool_detail(args) -> str:

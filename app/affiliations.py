@@ -17,7 +17,8 @@ from __future__ import annotations
 import hashlib
 import threading
 
-from . import config, graph_store, llm, logging_config, store
+from . import config, graph_store, llm, logging_config, paper_metadata, store
+from .jobs import Job, JobRegistry, new_id
 
 log = logging_config.get("affiliations")
 
@@ -113,12 +114,38 @@ def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] 
 # guard below skips the pass while any previous orphan is still alive.
 _orphans: list[threading.Thread] = []
 _orphans_lock = threading.Lock()
+_orphan_registry: JobRegistry[Job] = JobRegistry(
+    "affiliation-orphans",
+    max_finished=10,
+)
 
 
 def _orphan_alive() -> bool:
     with _orphans_lock:
         _orphans[:] = [t for t in _orphans if t.is_alive()]
         return bool(_orphans)
+
+
+def _track_orphan(worker: threading.Thread) -> bool:
+    """Keep a timed-out child visible to project move/delete admission until it exits.
+
+    Python cannot stop a stuck thread. The child can still return through ``llm.complete`` and
+    record usage under the project, so forgetting it when the graph/affiliation parent settles
+    would let a move or delete pull its directory away first. A tiny project-bound registry job
+    owns that remaining lifetime. If admission loses an unlikely deletion race, the caller
+    keeps its own parent alive by joining the child instead.
+    """
+    orphan_id = new_id()
+    try:
+        _orphan_registry.start_or_join(
+            orphan_id,
+            lambda: Job(id=orphan_id),
+            lambda _job: worker.join(),
+            allow_busy=True,
+        )
+    except RuntimeError:
+        return False
+    return True
 
 
 def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None]:
@@ -145,6 +172,10 @@ def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None
     if worker.is_alive():
         with _orphans_lock:
             _orphans.append(worker)
+        if not _track_orphan(worker):
+            # A deletion tombstone can reject the follow-on lifecycle job. Do not let the
+            # current project-bound parent settle while its child can still touch that project.
+            worker.join()
         log.info("affiliation extraction timed out for %s", slug)
         return True, None
     return False, result.get("ships")
@@ -184,6 +215,19 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
     for node in nodes:
         if node.get("kind") != "project" or not node.get("slug"):
             continue
+        key = _cache_key(node)
+        prefetched = paper_metadata.affiliation_record(node["slug"])
+        if (
+            key is not None
+            and prefetched
+            and prefetched.get("status") == "done"
+            and prefetched.get("key") == key
+        ):
+            cache[node["id"]] = {
+                "status": "done",
+                "key": key,
+                "authorships": prefetched.get("authorships") or [],
+            }
         hit = cache.get(node["id"])
         provider_ships = (openalex_cache.get(node["id"]) or {}).get("authorships") or []
         if any(s.get("affiliation") for s in provider_ships):
@@ -193,7 +237,6 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
             if hit is not None and hit.get("key") != _cache_key(node):
                 cache.pop(node["id"], None)
             continue
-        key = _cache_key(node)
         if key is None:
             if hit is not None:
                 cache.pop(node["id"], None)  # no text = no identity — never keep a record
@@ -208,6 +251,17 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
             if hit and hit.get("key") != key:
                 cache.pop(node["id"], None)  # never keep another paper's affiliations
             continue
+        # Retrieval can replace the paper text while this paid call is in flight. Serialize the
+        # final fingerprint check with full-text persistence and every independent-cache write;
+        # an old result then cannot replace a newer pending/result record.
+        with config.project_write_guard(config.active_project_id()), \
+                config.paper_identity_guard(node["slug"]):
+            if _cache_key(node) != key:
+                continue
+            paper_metadata.set_affiliation_record(
+                node["slug"],
+                {"status": "done", "key": key, "authorships": ships, "error": None},
+            )
         cache[node["id"]] = {"status": "done", "key": key, "authorships": ships}
         if persist is not None:
             try:
@@ -229,3 +283,88 @@ def apply_cached(nodes: list[dict], cache: dict) -> None:
         if hit.get("key") != key:
             continue
         node["authors"] = [s["name"] for s in hit.get("authorships") or [] if s.get("name")]
+
+
+def _top_affiliations(
+    slug: str,
+    graph_data: dict,
+    prefetched_records: dict[str, dict],
+    limit: int,
+) -> list[str]:
+    paper = store.get_paper(slug)
+    if paper is None:
+        return []
+    node = {
+        "id": slug,
+        "kind": "project",
+        "slug": slug,
+        "arxiv_id": paper.arxiv_id or None,
+    }
+    key = _cache_key(node)
+    provider = (graph_data.get("openalex", {}).get(slug) or {})
+    if (
+        paper.arxiv_id
+        and provider.get("arxiv_id") != store.arxiv_base_id(paper.arxiv_id)
+    ):
+        provider = {}
+    llm_record = graph_data.get("llm_affiliations", {}).get(slug) or {}
+    if key is None or llm_record.get("key") != key:
+        llm_record = {}
+    prefetched = prefetched_records.get(slug) or {}
+    if key is None or prefetched.get("key") != key or prefetched.get("status") != "done":
+        prefetched = {}
+
+    # Provider wins for an author it covers; the first-page pass fills the remaining authors.
+    by_author: dict[str, str] = {}
+    for record in (provider, llm_record, prefetched):
+        for ship in record.get("authorships") or []:
+            name = " ".join(str(ship.get("name") or "").split()).casefold()
+            affiliation = " ".join(str(ship.get("affiliation") or "").split())
+            if name and affiliation:
+                by_author.setdefault(name, affiliation)
+
+    counts: dict[str, tuple[str, int]] = {}
+    for affiliation in by_author.values():
+        normalized = affiliation.casefold()
+        display, count = counts.get(normalized, (affiliation, 0))
+        counts[normalized] = (display, count + 1)
+    ranked = sorted(counts.values(), key=lambda item: (-item[1], item[0].casefold()))
+    return [display for display, _ in ranked[:max(0, limit)]]
+
+
+def top_affiliations(
+    slug: str,
+    limit: int = 2,
+    *,
+    graph_data: dict | None = None,
+    prefetched_records: dict[str, dict] | None = None,
+) -> list[str]:
+    """The most common current affiliations for one paper, provider-first and space-bounded."""
+    return _top_affiliations(
+        slug,
+        graph_data if graph_data is not None else graph_store.load(),
+        prefetched_records if prefetched_records is not None
+        else paper_metadata.affiliation_records(),
+        limit,
+    )
+
+
+def paper_summary(slug: str) -> dict:
+    """API-facing, bounded affiliation metadata for Library and Discussion headers."""
+    return paper_summaries([slug]).get(
+        slug,
+        {"affiliations": [], "affiliation_status": "idle"},
+    )
+
+
+def paper_summaries(slugs: list[str]) -> dict[str, dict]:
+    """Bulk variant used by project state: read each potentially large cache only once."""
+    graph_data = graph_store.load()
+    prefetched = paper_metadata.affiliation_records()
+    out = {}
+    for slug in slugs:
+        top = _top_affiliations(slug, graph_data, prefetched, 2)
+        record = prefetched.get(slug) or {}
+        status = "done" if top else (record.get("status") or "idle")
+        out[slug] = {"affiliations": top, "affiliation_status": status}
+    return out
