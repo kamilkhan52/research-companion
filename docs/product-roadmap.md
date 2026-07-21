@@ -19,6 +19,12 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 - Post every actionable review finding directly on its PR. When review finds no actionable issue
   and CI passes, mark the PR ready and merge it without waiting for a separate merge request.
 
+## Active device acceptance
+
+Use [`current-device-test-checklist.md`](current-device-test-checklist.md) as the canonical,
+editable record for the current Android pass. It deduplicates the historical Round-9/Round-10
+queues, lists exact expected behavior, and provides result/evidence fields for each live check.
+
 ## Status
 
 | Order | Workstream | PR | Status |
