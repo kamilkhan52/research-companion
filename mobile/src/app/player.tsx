@@ -6,7 +6,7 @@
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Switch, View } from 'react-native';
 import TrackPlayer, {
   State,
   useActiveTrack,
@@ -22,6 +22,7 @@ import { checkpointPlayback } from '../../playback-persistence';
 import { seekSentence } from '../../sentence-seek';
 import { prepLabel, RollingTranscript } from '@/components/NarrationTranscript';
 import { Icon, IconButton, Screen, Text } from '@/ui';
+import { showToast } from '@/ui/Toast';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
@@ -42,13 +43,14 @@ export default function PlayerScreen() {
   const { state } = usePlaybackState();
   const { position, duration } = useProgress(250);
   const [scrubbing, setScrubbing] = useState<number | null>(null);
+  const [advancing, setAdvancing] = useState(false);
 
   const narration = audio.currentId ? audio.narrationById[audio.currentId] : undefined;
   const buffering = state === State.Buffering || state === State.Loading;
   const value = scrubbing ?? position;
 
   // R6.6 — tap to cycle narration speed; persisted and applied by AudioProvider.
-  const { playbackRate, setPlaybackRate } = useListeningMode();
+  const { listeningMode, playbackRate, setPlaybackRate } = useListeningMode();
   const cycleRate = () => {
     const i = PLAYBACK_RATES.indexOf(playbackRate);
     setPlaybackRate(PLAYBACK_RATES[(i + 1) % PLAYBACK_RATES.length]);
@@ -62,6 +64,13 @@ export default function PlayerScreen() {
       if (state === State.Ended) await TrackPlayer.seekTo(0);
       await TrackPlayer.play();
     }
+  }
+
+  async function playNextResponse() {
+    setAdvancing(true);
+    const advanced = await audio.playNextResponse();
+    setAdvancing(false);
+    if (!advanced) showToast('No next response');
   }
 
   return (
@@ -178,6 +187,40 @@ export default function PlayerScreen() {
                 <Icon name="rotate-cw" size={14} color={t.text} />
               </Pressable>
             </View>
+
+            {listeningMode ? (
+              <View style={styles.playlistRow}>
+                <Pressable
+                  onPress={() => void playNextResponse()}
+                  disabled={advancing}
+                  style={({ pressed }) => [
+                    styles.nextResponseBtn,
+                    (pressed || advancing) && { opacity: 0.6 },
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Play next response">
+                  {advancing ? (
+                    <ActivityIndicator size="small" color={t.mint} />
+                  ) : (
+                    <Icon name="skip-forward" size={16} color={t.mint} />
+                  )}
+                  <Text style={styles.nextResponseLabel}>Play next</Text>
+                </Pressable>
+                <View style={styles.autoplayControl}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="body">Autoplay</Text>
+                    <Text variant="caption" color={t.muted}>Continue through responses</Text>
+                  </View>
+                  <Switch
+                    value={audio.playlistAutoplay}
+                    onValueChange={audio.setPlaylistAutoplay}
+                    trackColor={{ true: t.mint, false: t.line2 }}
+                    thumbColor={t.surface}
+                    accessibilityLabel="Autoplay responses"
+                  />
+                </View>
+              </View>
+            ) : null}
           </View>
         </>
       ) : audio.prep ? (
@@ -258,6 +301,32 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginTop: space.md,
+  },
+  playlistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginTop: space.lg,
+  },
+  nextResponseBtn: {
+    minHeight: 44,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.mint,
+    backgroundColor: t.elevated,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+  },
+  nextResponseLabel: { color: t.mint, fontFamily: fonts.bodySemiBold },
+  autoplayControl: {
+    flex: 1,
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
   },
   playBtn: {
     width: 72,
