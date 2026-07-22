@@ -358,8 +358,11 @@ export default function DiscussionScreen() {
     };
   }, [hasSession, pid, session.data?.paper.title, slug]);
 
+  // Bumped to arm the Notes review auto-open (D03); the thread component owns the sheet.
+  const [finishArmNonce, setFinishArmNonce] = useState(0);
   async function finishReadingFromMenu() {
     if (!paths || !slug) return;
+    setFinishArmNonce((n) => n + 1);
     await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
   }
 
@@ -570,6 +573,7 @@ export default function DiscussionScreen() {
           readingMode={readingMode}
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
+          finishArmNonce={finishArmNonce}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -1081,6 +1085,7 @@ function DiscussionThread({
   onContinue,
   headerHeight,
   onMutated,
+  finishArmNonce,
 }: {
   pid: string;
   slug: string;
@@ -1098,6 +1103,8 @@ function DiscussionThread({
   onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
+  /** Bumped by the parent when Finish reading is invoked, to arm the review auto-open (D03). */
+  finishArmNonce: number;
 }) {
   const theme = useTheme();
   const { themeName } = useThemeMode();
@@ -1140,15 +1147,29 @@ function DiscussionThread({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // Auto-open the Notes review when a proposal becomes ready (D03): Finish reading — and a
-  // later Request changes — resolve into notes_drafted with a fresh proposal; without this the
-  // reader was told notes were written but had to hunt for "Review & commit" (or leave and
-  // reopen) to see them. See useReviewAutoOpen for the arming/disarming rules.
-  const [reviewOpen, setReviewOpen] = useReviewAutoOpen({
+  // later Request changes — draft a fresh proposal; without this the reader was told notes were
+  // written but had to hunt for "Review & commit" (or leave and reopen) to see them. The open
+  // is armed by those operations (armForReview) and keyed on a genuinely new proposal identity
+  // — see useReviewAutoOpen for why inferring from the streaming flag was wrong.
+  const proposalKey = useMemo(() => {
+    let latest: number | null = null;
+    for (const entry of transcript) {
+      if (entry.role === 'assistant' && entry.proposed_commit) latest = entry.assistant_index;
+    }
+    return latest;
+  }, [transcript]);
+  const { reviewOpen, setReviewOpen, armForReview } = useReviewAutoOpen({
     streaming: stream.streaming,
-    state,
-    editing: !!editing,
+    streamError: !!stream.error,
+    proposalKey,
     conversationKey: threadId,
   });
+  // Finish reading is triggered in the parent screen (the kebab menu), which bumps this nonce;
+  // Request changes arms directly below. Both feed the same arming path.
+  useEffect(() => {
+    if (finishArmNonce > 0) armForReview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishArmNonce]);
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
@@ -1451,6 +1472,7 @@ function DiscussionThread({
     const t = textDraft.value.trim();
     if (!t) return;
     setActionError(null);
+    armForReview();  // a successful revision re-opens the review with the new proposal (D03)
     await textDraft.markSubmitted(acceptedDrafts.length);
     await stream.run(
       paths.requestChanges,

@@ -1,51 +1,61 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Auto-opens the Notes review when a proposal becomes ready (D03).
  *
- * Finish reading — and a later Request changes — run a streaming turn that resolves into the
- * `notes_drafted` state with a fresh proposal. Without this the reader was told notes were
- * written but had to hunt for the "Review & commit" button (or leave and reopen the chat) to
- * see them. The hook arms when a turn starts streaming and opens the review once the turn has
- * both stopped streaming AND settled into `notes_drafted` — robust to the session-state query
- * lagging the stream end by a render.
+ * Finish reading — and a later Request changes — run a streaming turn that, on success, drafts
+ * a fresh proposal (a new assistant turn carrying a proposed_commit). Without this the reader
+ * was told notes were written but had to hunt for the "Review & commit" button — or leave and
+ * reopen the chat — to see them.
  *
- * The arm is set when a turn starts streaming and consumed only when the review opens (or on a
- * conversation change). We deliberately do NOT disarm when a turn ends in `in_discussion`: a
- * reply ending there simply never satisfies the open condition, and reaching `notes_drafted`
- * always requires a fresh streaming turn (which re-arms), so a plain reply cannot pop the
- * sheet. Eagerly disarming instead broke the common case, because the session-state query lags
- * the stream end by a render — the turn is briefly `(streaming: false, in_discussion)` before
- * it settles into `notes_drafted`. A fresh mount of an already-drafted paper never armed, so it
- * does not pop the sheet unbidden.
+ * The open is armed EXPLICITLY by the operations that draft a proposal (`armForReview`), never
+ * inferred from the streaming flag. Inferring from streaming was wrong two ways (sol review):
+ * a *failed* Request changes ends streaming with the OLD proposal still valid, so the sheet
+ * would open on stale notes the reader might approve; and a plain reply's arm could persist and
+ * pop the sheet on a later branch switch. Instead:
+ *   - `armForReview()` captures the current proposal identity as a baseline.
+ *   - A stream error while armed disarms (the turn failed → nothing new to review).
+ *   - Otherwise the review opens once, when the proposal identity moves to a NEW non-null value
+ *     while not streaming — i.e. a genuinely fresh proposal landed. This is lag-tolerant: it
+ *     does not matter whether the identity updates in the same render the stream ends or a
+ *     render later.
+ * A plain reply never arms, a branch switch never arms, and a fresh mount of an already-drafted
+ * paper never arms — so none of them pop the sheet.
+ *
+ * `proposalKey` is a monotonic-ish identity of the latest proposal (e.g. the assistant_index of
+ * the most recent proposal-bearing turn), or null when there is none.
  */
 export function useReviewAutoOpen(opts: {
   streaming: boolean;
-  /** The session's lifecycle state (`string | null` as the screen carries it). */
-  state: string | null;
-  editing: boolean;
+  streamError: boolean;
+  proposalKey: number | null;
   conversationKey: string;
-}): [boolean, (open: boolean) => void] {
-  const { streaming, state, editing, conversationKey } = opts;
+}): { reviewOpen: boolean; setReviewOpen: (open: boolean) => void; armForReview: () => void } {
+  const { streaming, streamError, proposalKey, conversationKey } = opts;
   const [reviewOpen, setReviewOpen] = useState(false);
-  const awaiting = useRef(false);
+  // undefined = disarmed; otherwise the proposal identity captured when the operation began.
+  const baseline = useRef<number | null | undefined>(undefined);
+
+  const armForReview = useCallback(() => {
+    baseline.current = proposalKey ?? null;
+  }, [proposalKey]);
 
   useEffect(() => {
-    if (streaming) awaiting.current = true;
-  }, [streaming]);
-
-  useEffect(() => {
-    if (streaming || editing) return;
-    if (awaiting.current && state === 'notes_drafted') {
-      awaiting.current = false;
+    if (baseline.current === undefined) return; // not armed
+    if (streamError) {
+      baseline.current = undefined; // the drafting turn failed → don't open the old proposal
+      return;
+    }
+    if (!streaming && proposalKey != null && proposalKey !== baseline.current) {
+      baseline.current = undefined;
       setReviewOpen(true);
     }
-  }, [streaming, state, editing]);
+  }, [streaming, streamError, proposalKey]);
 
   useEffect(() => {
-    awaiting.current = false;
+    baseline.current = undefined;
     setReviewOpen(false);
   }, [conversationKey]);
 
-  return [reviewOpen, setReviewOpen];
+  return { reviewOpen, setReviewOpen, armForReview };
 }
