@@ -244,8 +244,16 @@ export const removePaper = (pid: string, slug: string) =>
   apiDelete<{ removed: string; notes_kept: boolean }>(
     `${P(pid)}/papers/${encodeURIComponent(slug)}`,
   );
-export const updatePaper = (pid: string, slug: string, title: string) =>
-  apiPatch<{ paper: Paper }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`, { title });
+export const updatePaper = (
+  pid: string,
+  slug: string,
+  title?: string,
+  titleConfirmed = false,
+) =>
+  apiPatch<{ paper: Paper }>(`${P(pid)}/papers/${encodeURIComponent(slug)}`, {
+    ...(title === undefined ? {} : { title }),
+    ...(titleConfirmed ? { title_confirmed: true } : {}),
+  });
 
 export interface NativeUploadFile {
   uri: string;

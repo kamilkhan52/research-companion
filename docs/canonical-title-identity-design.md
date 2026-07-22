@@ -1,8 +1,8 @@
 # Canonical-title confirmation & paper rename — design (R12.13 / D12)
 
-**Status:** design only, no code. Written for a fresh implementing agent (GPT-5.6-sol).
-**This plan is a starting point — revise it as you implement** and keep it updated. File/line
-references were accurate at authoring; verify before relying on them.
+**Status:** implemented on `r12-13-canonical-title` (2026-07-22).
+This began as an implementation plan; the decisions and code seams below now describe the
+shipped R12.13 behavior. Historical file/line references remain useful root-cause context.
 
 > ⚠️ "Canonical title" here is the **paper's display title** discovered by the retrieval
 > resolver (`matched_title`) and the human confirmation around renaming it. This is a **different
@@ -96,15 +96,61 @@ changes; the menu action list is in `[slug].tsx` (the `rename`/actions block nea
   re-prompt effect.
 - **P4:** re-verify Delete (sub-issue 4).
 
-## Open questions
+## Implementation record (2026-07-22)
 
-1. Kept-marker home — committed reading-list comment (recommended, travels on move/split) vs
-   `paper-metadata.json`? Confirm the marker survives `rename_entry` and split/move copy.
-2. Should accepting the resolver's canonical title *rename* immediately, or only mark-kept and
-   leave the title for the user? (D12 says "shown and offered as a confirmation — not silently
-   applied," so: offer both "Use canonical title" and "Keep mine," and set the marker either way.)
-3. Does any web-client path share this rename UI, or is this mobile-only for now? (Backend PATCH
-   is client-agnostic; the UI fixes are mobile.)
+### P1 — preserve the active discussion
+
+The title-update callbacks now merge the PATCH response into the cache entry for
+`keys.session(pid, slug, activeThread)`, preserving that snapshot's transcript, lifecycle state,
+and `thread_id`, and then invalidate that exact active-thread key. Previously they used the
+main-shaped query prefix without applying the PATCH response to the active snapshot first. The
+render decision also treats
+durable `in_discussion`, `notes_drafted`, and `committed` states as an existing discussion even
+if a refetch temporarily has an empty transcript, so title refresh cannot route a live first turn
+back through ComposeFirst. The stable slug and R12.2 last-opened-thread record remain unchanged.
+
+### P2 — raw controlled rename input
+
+At implementation time the branch tip already used a raw `setDraft` callback (the design's
+per-keystroke normalization had moved), so the control was kept deliberately raw and made
+explicit: `onChangeText` echoes native input byte-for-byte, and the submitted value is also raw.
+A normalized value is used only to decide whether Save is valid/no-op; the deterministic backend
+remains the normalization authority. This is correct-by-construction for a mid-string caret and
+has a regression test that observes the raw controlled value and request payload; native caret
+behavior still needs the planned device pass.
+
+### P3 — durable title decision
+
+The chosen marker is `<!-- title-confirmed -->`, rather than `title-kept`, because the same fact
+is recorded after either **Update title** or **Keep mine**. `_parse_entries` exposes it as
+`Paper.title_confirmed`; `store.confirm_entry_title` inserts it under `_RL_LOCK`; `rename_entry`
+leaves it untouched; and split/copy/move carry it in the existing verbatim entry block.
+
+The existing `PATCH /papers/{slug}` accepts an optional `title` and `title_confirmed`. Rename plus
+confirmation is one bounded transaction/commit; Keep mine sends only `title_confirmed`. Both are
+explicit user actions and commit through `committer._git` with only `reading-list.md` and, for an
+actual rename, that paper's corpus path staged. The marker is consulted by both title-suggestion
+surfaces: the post-session canonical sheet and the ComposeFirst retrieval card. This second
+surface was beyond the original root-cause line reference but shared the same local-only Keep
+behavior, so it was brought onto the same persistence seam.
+
+### P4 — delete verification
+
+Delete remains available in the paper overflow menu as **Delete from project**, backed by the
+existing confirmation, and each non-selection Library row still exposes its right-swipe trash
+action. The overflow action has interaction-test coverage; the existing backend removal suite
+continues to cover the committed deletion behavior.
+
+## Resolved questions
+
+1. **Marker home:** committed reading-list identity comment. Tests cover parse round-trip,
+   survival across rename, and travel through both new-project split and existing-project move.
+2. **Acceptance behavior:** Update title renames immediately only after the user presses it;
+   Keep mine preserves the existing title. Both set the same confirmation marker. Resolver output
+   never silently rewrites the title.
+3. **Client scope:** the interaction fixes are mobile-only for R12.13. The PATCH contract and
+   `Paper.title_confirmed` response are client-agnostic; no current web rename surface shares this
+   UI.
 
 Related: [[round12-queue]] (R12.13/D12), `docs/round12-queue.md`, R12.2 last-opened-thread resume
 (#204), `docs/canonical-paper-pass-design.md` (the *other* canonical — data, not title).
