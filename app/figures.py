@@ -216,7 +216,7 @@ def _open_client() -> httpx.Client:
                         headers={"User-Agent": "research-companion-figures/1.0"})
 
 
-def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
+def _fetch_html_impl(requested_id: str) -> tuple[str, str | None, str | None]:
     """("ok", final_url, html_text) for the paper's HTML rendering; ("none", None, None)
     when the hosts definitively have none (cacheable miss); ("error", None, None) on fast
     transport errors (nothing cached — retried next build). Raises StallError on a timeout.
@@ -257,13 +257,24 @@ def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
                     ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
                     if ctype != "text/html":
                         break
-                    return "ok", url, resp.text
+                    html_text = resp.text
+                    # arXiv sometimes redirects an unavailable /html page to the paper's
+                    # ordinary /abs landing page (200 text/html), and some native renderings
+                    # contain no image-backed figures even though ar5iv does. Neither is a
+                    # usable figure source, so continue to the fallback renderer.
+                    if not parse_figures(html_text):
+                        break
+                    return "ok", url, html_text
             except httpx.TimeoutException as e:
                 raise StallError(str(e)[:120]) from e
             except httpx.HTTPError as e:
                 transient = True
                 log.info("figure HTML fetch failed for %s: %s", requested_id, str(e)[:120])
     return ("error" if transient else "none"), None, None
+
+
+def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
+    return _fetch_html_impl(requested_id)
 
 
 def _fetch_image(url: str) -> tuple[bytes, str] | None:
@@ -400,6 +411,30 @@ def _page_base(url: str) -> str:
     return url if last.endswith((".html", ".htm")) else url + "/"
 
 
+def _image_urls(page_url: str, raw_src: str) -> list[str]:
+    """Resolve figure image paths emitted by both arXiv HTML renderers.
+
+    ar5iv commonly emits page-directory-relative paths such as ``assets/x1.png``. Native
+    arXiv HTML now commonly emits document-relative paths prefixed with the paper id, such
+    as ``2401.00001v1/x1.png``. Treating the latter as page-directory-relative duplicates
+    the id (``.../2401.00001v1/2401.00001v1/x1.png``) and silently drops every figure.
+
+    Prefer the document-relative interpretation when the raw path starts with the final
+    page segment, then retain the other interpretation as a tolerant fallback. Absolute
+    paths/URLs collapse to one candidate.
+    """
+    directory_relative = urljoin(_page_base(page_url), raw_src)
+    document_relative = urljoin(page_url, raw_src)
+    page_segment = urlparse(page_url).path.rstrip("/").rsplit("/", 1)[-1]
+    raw_path = urlparse(raw_src).path.lstrip("/")
+    candidates = (
+        [document_relative, directory_relative]
+        if page_segment and raw_path.startswith(page_segment + "/")
+        else [directory_relative, document_relative]
+    )
+    return list(dict.fromkeys(candidates))
+
+
 # One derivation per slug at a time: the retrieval warm and a graph build's enrichment can
 # overlap for the same paper, and interleaved asset rebuilds would corrupt each other.
 _slug_locks: dict[str, threading.Lock] = {}
@@ -459,15 +494,19 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
     staging = figures_dir() / f".{slug}.staging"
     shutil.rmtree(staging, ignore_errors=True)
     entries: list[dict] = []
-    base_url = _page_base(final_url)
     try:
         for index, fig in enumerate(parsed[:MAX_FIGURES]):
-            src = urljoin(base_url, fig["src"])
-            if not _host_allowed(src):  # data: URIs and off-allowlist hosts drop here
-                continue
-            if urlparse(src).path.lower().endswith(".svg"):
-                continue
-            image = fetch_image(src)  # StallError propagates → staging discarded
+            src = None
+            image = None
+            for candidate in _image_urls(final_url, fig["src"]):
+                if not _host_allowed(candidate):
+                    continue  # data: URIs and off-allowlist hosts drop here
+                if urlparse(candidate).path.lower().endswith(".svg"):
+                    continue
+                image = fetch_image(candidate)  # StallError propagates → staging discarded
+                if image is not None:
+                    src = candidate
+                    break
             if image is None:
                 continue
             payload, ext = image

@@ -58,7 +58,7 @@ def test_all_scope_excludes_the_current_papers_own_notes(temp_project, monkeypat
     assert "Unrelated finding: X beats Y." in ctx
 
 
-def test_reading_context_lists_only_prefetched_numbered_figure_cards(temp_project, monkeypatch):
+def test_reading_context_lists_only_visible_numbered_figure_cards(temp_project, monkeypatch):
     add_paper(temp_project, "paper", "Paper With Figures", full_text="t")
     monkeypatch.setattr(assembler.figures, "manifest_for", lambda slug: {
         "status": "done",
@@ -70,10 +70,35 @@ def test_reading_context_lists_only_prefetched_numbered_figure_cards(temp_projec
 
     ctx = assembler.build_context("paper")
 
-    assert "Prefetched figure cards available" in ctx
+    assert "Figure-card visibility in this discussion" in ctx
+    assert "reader can see inline image cards" in ctx
     assert "- Figure 2: The main architecture." in ctx
     assert "Unnumbered appendix image" not in ctx
     assert "write `Figure N`" in ctx
+    assert "without a meta announcement" in ctx
+    assert "listed figures are available below" in ctx
+    assert "unlisted figure is visible" in ctx
+
+
+def test_reading_context_explicitly_says_when_no_figure_is_visible(temp_project, monkeypatch):
+    add_paper(temp_project, "paper", "Paper Without Figures", full_text="t")
+    manifests = (
+        None,
+        {"status": "none", "figures": []},
+        {"status": "done", "figures": []},
+    )
+    for manifest in manifests:
+        monkeypatch.setattr(
+            assembler.figures, "manifest_for", lambda slug, value=manifest: value
+        )
+        ctx = assembler.build_context("paper")
+
+        assert "Figure-card visibility in this discussion" in ctx
+        assert "No paper figure images are available" in ctx
+        assert "describe its data, structure, and conclusion completely in words" in ctx
+        assert "without announcing the missing image" in ctx
+        assert "figures are not available for this paper" in ctx
+        assert "Never imply that the reader can see an unavailable image" in ctx
 
 
 def test_opening_context_explains_later_project_papers_that_cite_this_one(temp_project):

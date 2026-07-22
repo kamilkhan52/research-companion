@@ -92,7 +92,12 @@ def test_default_analysis_prompts_expose_the_inline_figure_card_contract():
 
     assert "printed label exactly as `Figure N`" in analysis
     assert "do not embed paper figures with markdown image syntax" in analysis
+    assert "Only a `Figure N` listed there as visible" in analysis
+    assert "with no need for an availability announcement" in analysis
+    assert "begin with a plain availability statement" in analysis
+    assert "figures are not available for this paper" in analysis
     assert "one or two genuinely central figures" in opening
+    assert "without calling attention to its unavailability" in opening
     assert "Do not force a figure" in opening
 
 

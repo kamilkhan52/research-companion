@@ -75,6 +75,36 @@ def test_figure_number_falls_back_to_the_element_id():
     assert figures._figure_number({"caption": "", "id": "S4.T2"}) is None
 
 
+def test_html_fetch_falls_back_when_native_page_has_no_image_figures(monkeypatch):
+    native = "https://arxiv.org/html/2401.00001v1"
+    fallback = "https://ar5iv.labs.arxiv.org/html/2401.00001v1"
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __init__(self, text):
+            self.text = text
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response("<html>abstract only</html>" if url == native else HTML)
+
+    monkeypatch.setattr(figures, "_open_client", Client)
+    monkeypatch.setattr(figures, "_resolves_public", lambda url: True)
+    status, final_url, html = figures._fetch_html_impl("2401.00001v1")
+    assert calls == [native, fallback]
+    assert (status, final_url, html) == ("ok", fallback, HTML)
+
+
 # --- derivation + cache ----------------------------------------------------------------------
 
 def test_derive_writes_manifest_and_assets(temp_project):
@@ -96,6 +126,21 @@ def test_derive_writes_manifest_and_assets(temp_project):
     again = figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
     assert again["fetched_ts"] == manifest["fetched_ts"]
     assert len(html.calls) == 1
+
+
+def test_native_arxiv_id_prefixed_image_path_does_not_duplicate_id(temp_project):
+    slug = paper()
+    html = """<figure id="S2.F1">
+      <img src="2401.00001v1/Figures/model.png">
+      <figcaption>Figure 1: Native arXiv path.</figcaption>
+    </figure>"""
+    image = fake_image()
+    manifest = figures.derive_for_slug(
+        slug, fetch_html=fake_html(html=html), fetch_image=image
+    )
+    expected = "https://arxiv.org/html/2401.00001v1/Figures/model.png"
+    assert image.calls == [expected]
+    assert manifest["figures"][0]["src"] == expected
 
 
 def test_paper_without_arxiv_identity_keeps_no_manifest(temp_project):

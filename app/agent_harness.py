@@ -84,10 +84,12 @@ def model_override(model_id: str | None) -> Model | None:
     return _openrouter_model(model_id) if model_id else None
 
 
-def build_agent(slug: str, model: Model | None = None) -> Agent:
+def build_agent(slug: str, model: Model | None = None,
+                latest_user_text: str = "") -> Agent:
     """Construct the tool-using analyst agent for a session. `model` is injectable so tests can
     pass a FunctionModel/TestModel and exercise the whole tool loop with no network."""
-    system = agent_mod._system_for(slug) + "\n\n" + prompts.get("analyst_tool_guidance")
+    system = (agent_mod._system_for(slug, latest_user_text)
+              + "\n\n" + prompts.get("analyst_tool_guidance"))
     return Agent(model or _openrouter_model(), system_prompt=system, tools=TOOLS,
                  output_type=str, retries=2)
 
@@ -118,11 +120,11 @@ def _to_message_history(history: list[dict]) -> list:
 def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None) -> Turn:
     """Run one agentic turn and parse the result into a Turn (same protocol as agent.run_turn).
     The latest user message is the prompt; everything before it is prior context."""
-    ag = build_agent(slug, model=model)
     if history and history[-1]["role"] == "user":
         prompt, prior = history[-1]["content"], history[:-1]
     else:
         prompt, prior = "", history
+    ag = build_agent(slug, model=model, latest_user_text=prompt)
     try:
         result = ag.run_sync(prompt, message_history=_to_message_history(prior))
     except Exception as e:  # normalize framework/provider errors into the app's error type
@@ -156,11 +158,11 @@ async def stream_agentic_events(slug: str, history: list[dict],
 
     The caller extracts the canonical prefix from the accumulated 'text' for display, and parses
     'final' into a Turn. Tool execution (sync httpx tools) runs in Pydantic AI's threadpool."""
-    ag = build_agent(slug, model=model)
     if history and history[-1]["role"] == "user":
         prompt, prior = history[-1]["content"], history[:-1]
     else:
         prompt, prior = "", history
+    ag = build_agent(slug, model=model, latest_user_text=prompt)
     async for ev in stream_agent_events(ag, prompt, prior):
         yield ev
 

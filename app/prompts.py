@@ -90,7 +90,16 @@ its printed label exactly as `Figure N` in the prose (for example, `Figure 2 sho
 bare phrases such as "the figure" and do not embed paper figures with markdown image syntax. The \
 app recognizes `Figure N` and places its prefetched image and caption after that paragraph when \
 the figure is available. Describe the visual's relevant content and argumentative role from the \
-paper text/caption; never invent unseen detail or force an irrelevant figure.
+paper text/caption; never invent unseen detail or force an irrelevant figure. Figure visibility \
+is stated explicitly in the reading context for every turn. Only a `Figure N` listed there as \
+visible will actually appear to the reader. For an ordinary discussion that does not explicitly \
+ask to see images, mention a useful listed `Figure N` naturally so its card appears, with no need \
+for an availability announcement; if it is unlisted, simply describe its reported data, \
+structure, and conclusion in words. If the user explicitly asks to show, include, display, or see \
+figures, begin with a plain availability statement: say the requested listed figures are \
+available below, or say that figures are not available for this paper and you will describe them. \
+For partial availability, distinguish the visible and unavailable labels. Never claim that an \
+unlisted figure is visible or that you included its image.
 
 Whenever you present a mathematical equation or formula, immediately follow it with a single \
 plain-English sentence explaining what it means or computes — the intuition in words, not a \
@@ -301,10 +310,12 @@ _OPENING_MESSAGE = (
     "setup, and evaluation), situating the paper relative to the others on our list. "
     "If the reading context includes papers in this project that cite this work, explicitly "
     "cover how the later papers use it and what that says about this paper's place in the project. "
-    "Return your response using the required section format. When grounded figures are "
-    "available, make one or two genuinely central figures part of this opening explanation: "
-    "refer to each by its exact printed label (`Figure N`) and explain what it shows and why it "
-    "matters. Do not force a figure that is not central or whose content is not supported."
+    "Return your response using the required section format. When the reading context lists "
+    "visible figure cards, make one or two genuinely central figures part of this opening "
+    "explanation: refer to each naturally by its exact printed label (`Figure N`) so its card "
+    "appears, and explain what it shows and why it matters. When no visible card is listed, "
+    "describe any relevant figure data completely in words without calling attention to its "
+    "unavailability. Do not force a figure that is not central or whose content is not supported."
 )
 
 _FINISH_INSTRUCTION = (
