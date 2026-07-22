@@ -445,3 +445,45 @@ def test_hidden_survives_corrupt_file(temp_project):
     (Path(config.state_dir()) / "discovery-hidden.json").write_text("not json", encoding="utf-8")
     assert discovery.load_hidden() == []
     assert discovery.filter_hidden([{"title": "A"}]) == [{"title": "A"}]
+
+
+def test_title_match_never_bridges_conflicting_strong_ids(temp_project):
+    discovery.hide_candidate({"arxiv_id": "2401.00001", "title": "Shared Title Words"})
+    kept = discovery.filter_hidden([
+        {"arxiv_id": "2402.99999", "title": "Shared Title Words"},  # different work, same title
+        {"title": "Shared Title Words"},  # no ids — the title fallback still hides
+    ])
+    assert kept == [{"arxiv_id": "2402.99999", "title": "Shared Title Words"}]
+    # Hiding the conflicting work records its own entry rather than coalescing.
+    discovery.hide_candidate({"arxiv_id": "2402.99999", "title": "Shared Title Words"})
+    assert len(discovery.load_hidden()) == 2
+    # Undoing one entry leaves the other hidden.
+    assert discovery.unhide(["arxiv:2401.00001"]) is True
+    assert len(discovery.load_hidden()) == 1
+
+
+def test_degenerate_title_normalizations_never_match(temp_project):
+    discovery.hide_candidate({"title": "C++"})  # normalizes to "c" — too short to match
+    assert discovery.filter_hidden([{"title": "C#"}]) == [{"title": "C#"}]
+
+
+def test_concurrent_hides_lose_no_entries(temp_project):
+    """hide is a read-modify-write over one file; without the per-project lock concurrent
+    hides overwrite each other's snapshots (sol review, PR #206). Threads rebind the active
+    project like every production job runner (CLAUDE.md invariant 2)."""
+    import threading as _threading
+
+    def hide(index: int) -> None:
+        token = config.set_active_project(temp_project)
+        try:
+            discovery.hide_candidate(
+                {"arxiv_id": f"24{index:02d}.0000{index}", "title": f"Concurrent Paper {index}"})
+        finally:
+            config.reset_active_project(token)
+
+    threads = [_threading.Thread(target=hide, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(discovery.load_hidden()) == 8
