@@ -89,6 +89,15 @@
 > unchanged until then. Web search additionally needs a Brave key in Settings; local cross-paper
 > tools work with no key. If DeepSeek ever emits tool calls as plain text under load, pin
 > OpenRouter provider routing or use a sturdier tool-calling analyst model.
+
+**Update (R12.8, 2026-07-21):** the agentic tool loop is now the DEFAULT turn path — the
+blockquote above is the original point-in-time handoff. Flip it OFF with `RC_AGENTIC=0`. The
+default was flipped because the live deployment never set the flag, so every turn ran tool-less
+(models narrated searches they couldn't run). The path is now hardened: a per-turn request cap,
+best-effort token metering, and a single-shot fallback for tool-incompatible models (so DeepSeek
+degrades gracefully instead of failing). The turn SSE stream endpoints (`*_stream`) remain but
+are unused — every client delivers turns through the background-job path (`chat_jobs`), which is
+invariant-1 compliant.
 >
 > **ALL priorities this session are DONE:** #23, #24, #25, #26, #27/#10, #28 (D1+D2+D2b+D3).
 > Only non-code item left: `git push` (auth blocker above).

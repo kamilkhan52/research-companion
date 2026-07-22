@@ -82,7 +82,7 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   check-then-mutate sequence; keep new ones doing the same.
 - `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
 - `agent.py` — analysis turn (single-shot + streaming) and stage-2 narration; the marker parser.
-- `agent_harness.py` — agentic tool-loop turn via Pydantic AI (behind `RC_AGENTIC`).
+- `agent_harness.py` — agentic tool-loop turn via Pydantic AI (the default turn path; `RC_AGENTIC=0` opts out).
 - `llm.py` — the one raw-HTTP OpenRouter client: `complete`/`stream` (auth, retries+backoff,
   empty-response diagnostics, `LLMError`) + a TTL-cached model `catalogue()`. Every raw LLM
   call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
@@ -168,7 +168,7 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 
 ## Conventions
 
-- Env vars are prefixed `RC_`. Feature flags: `RC_AGENTIC` routes turns through the tool loop.
+- Env vars are prefixed `RC_`. The agentic tool loop is the default turn path; `RC_AGENTIC=0` restores the single-shot analyst (no tools).
 - Commits into a project's git store are made by the app with a pinned author
   (`config.git_identity_args()`, from `RC_GIT_AUTHOR_NAME` / `RC_GIT_AUTHOR_EMAIL`), so they
   never depend on the host's global git config. New commit paths must go through

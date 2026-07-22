@@ -252,7 +252,7 @@ async def _agentic_turn_stream(
     model: str | None = None,
     thread_id: str = sessions.MAIN_THREAD,
 ):
-    """Streaming turn through the Pydantic AI tool loop (when RC_AGENTIC is on). Same client
+    """Streaming turn through the Pydantic AI tool loop (the default; RC_AGENTIC=0 opts out). Same client
     contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
     'tool' events announcing each research tool the model calls. The final answer is parsed from
     the agent's authoritative output."""
