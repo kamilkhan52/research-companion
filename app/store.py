@@ -84,6 +84,7 @@ _SLUG_COMMENT_RE = re.compile(r"<!--\s*slug:\s*(?P<slug>[a-z0-9-]+)\s*-->", re.I
 _CITES_COMMENT_RE = re.compile(r"<!--\s*cites:\s*(?P<cites>[a-z0-9,\s-]+?)\s*-->", re.I)
 _ARXIV_COMMENT_RE = re.compile(r"<!--\s*arxiv:\s*(?P<arxiv_id>[^\s>]+?)\s*-->", re.I)
 _YEAR_COMMENT_RE = re.compile(r"<!--\s*year:\s*(?P<year>\d{4})\s*-->", re.I)
+_TITLE_CONFIRMED_COMMENT_RE = re.compile(r"<!--\s*title-confirmed\s*-->", re.I)
 _COMMENT_LINE_RE = re.compile(r"^\s*<!--.*-->\s*$")
 _ABSTRACT_LABEL_RE = re.compile(r"^Abstract:\s*(?P<head>.*)$", re.I)
 
@@ -227,6 +228,7 @@ def _parse_entries_uncached(rl: Path) -> list[dict]:
         # papers) wins over the year encoded in the arXiv id.
         year_c = _YEAR_COMMENT_RE.search(e["block"])
         e["year"] = int(year_c.group("year")) if year_c else year_from_arxiv_id(e["arxiv_id"])
+        e["title_confirmed"] = bool(_TITLE_CONFIRMED_COMMENT_RE.search(e["block"]))
         e["abstract"] = _extract_abstract(block_lines)
     return entries
 
@@ -309,6 +311,7 @@ def list_papers(session_states: dict[str, str] | None = None) -> list[Paper]:
             arxiv_id=e["arxiv_id"],
             source_url=source_url_for(slug),
             year=e["year"],
+            title_confirmed=e["title_confirmed"],
         ))
     return papers
 
@@ -757,6 +760,46 @@ def rename_entry(slug: str, title: str) -> bool:
         return True
 
 
+def confirm_entry_title(slug: str) -> bool:
+    """Persist the human's decision about the resolver-suggested title on this entry.
+
+    The marker deliberately lives in the reading-list block: it is part of the paper's durable,
+    human-readable identity and therefore travels verbatim through project copy/move. The caller
+    owns the explicit confirmation boundary and bounded git commit.
+    """
+    with _RL_LOCK:
+        target = next((e for e in _parse_entries() if e["slug"] == slug), None)
+        if not target:
+            return False
+        if target["title_confirmed"]:
+            return False
+
+        rl = _reading_list()
+        lines = rl.read_text(encoding="utf-8").splitlines()
+        start, end = target["line_index"], target["end_index"]
+        block = lines[start:end]
+        pos = 1
+        while pos < len(block) and _COMMENT_LINE_RE.match(block[pos]):
+            pos += 1
+        block.insert(pos, "<!-- title-confirmed -->")
+        atomic_write_text(rl, "\n".join(lines[:start] + block + lines[end:]).rstrip() + "\n")
+        _parse_cache.pop(str(rl), None)
+        return True
+
+
+def update_entry_title(
+    slug: str,
+    title: str | None = None,
+    *,
+    confirm: bool = False,
+) -> tuple[bool, bool]:
+    """Apply a rename and/or human title confirmation as one reading-list mutation unit."""
+    with _RL_LOCK:
+        renamed = rename_entry(slug, title) if title is not None else False
+        confirmed = confirm_entry_title(slug) if confirm else False
+        return renamed, confirmed
+
+
 def _remove_entry_locked(slug: str) -> bool:
     target = next((e for e in _parse_entries() if e["slug"] == slug), None)
     if not target:
@@ -780,7 +823,8 @@ def entry_details(slug: str) -> dict | None:
     for e in _parse_entries():
         if e["slug"] == slug:
             return {"slug": e["slug"], "title": e["title"], "group": e["group"],
-                    "status": e["status"], "cites": list(e["cites"]), "block": e["block"]}
+                    "status": e["status"], "cites": list(e["cites"]),
+                    "title_confirmed": e["title_confirmed"], "block": e["block"]}
     return None
 
 

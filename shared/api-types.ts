@@ -408,10 +408,11 @@ export interface paths {
         head?: never;
         /**
          * Update Paper
-         * @description Apply a human-confirmed paper-title edit without changing the stable paper slug.
+         * @description Apply a human-confirmed title edit and/or source-title decision.
          *
-         *     The client Save action is the approval boundary. Commit only the reading-list entry and
-         *     this paper's corpus heading; unrelated dirty session/project work must not ride along.
+         *     The client action is the approval boundary. Commit only the reading-list entry and, when
+         *     renamed, this paper's corpus heading; unrelated dirty session/project work must not ride
+         *     along. The stable slug, session paths, and active discussion identity never change.
          */
         patch: operations["update_paper_api_projects__pid__papers__slug__patch"];
         trace?: never;
@@ -2084,7 +2085,12 @@ export interface components {
         /** PaperPatchReq */
         PaperPatchReq: {
             /** Title */
-            title: string;
+            title?: string | null;
+            /**
+             * Title Confirmed
+             * @default false
+             */
+            title_confirmed: boolean;
         };
         /** ProjectReq */
         ProjectReq: {
