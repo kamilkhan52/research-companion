@@ -36,7 +36,7 @@ Update the Status column as items land.
 | R12.10 | Notes generation/review UX: visible progress, auto-open the proposal, Cancel/Approve/Request-edits together on the review screen | D03 | queued |
 | R12.11 | Opening summary must use completed-Map incoming-citation evidence (substantive vs background) | D06 | **mechanism done** (PR #213, folded into R12.9) — contexts now extracted at each paper's first read; needs Kamil's LIVE acceptance pass (design-doc P3) to confirm on-device |
 | R12.12 | New Project sheet: keyboard must reveal the name input/actions with 4+ existing projects | D08 | queued |
-| R12.13 | Canonical-title approval must keep the live discussion attached; fix mid-string edit cursor jump; "Keep it" persists and suppresses future prompts | D12 | **design** → `docs/canonical-title-identity-design.md`; backend rename already clean (stable slug), so 4 sub-issues are mostly client (thread re-attach, controlled-input caret, persisted keep-marker) |
+| R12.13 | Canonical-title approval must keep the live discussion attached; fix mid-string edit cursor jump; "Keep it" persists and suppresses future prompts | D12 | **done** (PR #214) — active-thread cache patched before invalidation (thread no longer detaches); raw controlled-input echo (caret fix); `<!-- title-confirmed -->` marker persists "Keep mine"/accept and travels on split/move. NEEDS Kamil device pass: mid-string caret + thread-resume after Update/Keep |
 | R12.14 | Build Graph / Discover Search first tap must keep the running view (no flash-revert); add search cancel + safe partial results | D17 + D18 note | queued |
 | R12.15 | Continue Reading opens with the prefetched draft — no ~1s stale/spinner pause | D39 | queued |
 
