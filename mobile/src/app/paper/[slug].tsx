@@ -1835,13 +1835,16 @@ function DiscussionThread({
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
+    // The chat footer renders below the message list at the physical bottom, where the composer
+    // now floats absolutely (R12.6). Lift it above the composer by its measured height so the
+    // error text + Dismiss button aren't hidden behind the pill.
     return (
-      <Card style={styles.errorCard}>
+      <Card style={[styles.errorCard, { marginBottom: composerHeight + space.md }]}>
         <Text variant="body" color={theme.danger}>{stream.error}</Text>
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
-  }, [stream.clearError, stream.error, styles, theme]);
+  }, [stream.clearError, stream.error, styles, theme, composerHeight]);
 
   const placeholder = editing
     ? 'Edit your message…'
@@ -1874,6 +1877,10 @@ function DiscussionThread({
       // the app's circular icon-button idiom.
       scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={theme.mint} />}
       scrollToBottomContentStyle={styles.scrollToBottomBtn}
+      // The button is positioned absolutely against the list's bottom (library default 30px up).
+      // The composer now floats there (R12.6), so lift the button above the measured composer so
+      // it isn't hidden behind the pill.
+      scrollToBottomStyle={{ bottom: composerHeight + space.sm }}
       isDayAnimationEnabled={false}
       renderDay={() => null}
       renderTime={() => null}

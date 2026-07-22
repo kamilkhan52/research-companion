@@ -292,6 +292,18 @@ export default function LibraryScreen() {
       {header}
 
       <View style={{ flex: 1 }}>
+      {/* The pill floats over the list — papers scroll behind/around it, hidden only under the
+          rounded card itself (R12.6). Rendered BEFORE the ScrollView so screen readers reach it
+          first (it's visually at the top); an explicit zIndex keeps it painted above the list. */}
+      <View
+        style={styles.pillOverlay}
+        onLayout={(e) => setPillHeight(e.nativeEvent.layout.height)}>
+        <ProjectPill
+          name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
+          subtitle={activeProject ? undefined : 'Tap to choose or create'}
+          onPress={() => setSwitcherOpen(true)}
+        />
+      </View>
       <ScrollView
         contentContainerStyle={[styles.list, { paddingTop: pillHeight + space.sm }]}
         refreshControl={
@@ -417,17 +429,6 @@ export default function LibraryScreen() {
           </View>
         )}
       </ScrollView>
-      {/* The pill floats over the list — papers scroll behind/around it, hidden only under the
-          rounded card itself (R12.6). Rendered after the ScrollView so it sits on top. */}
-      <View
-        style={styles.pillOverlay}
-        onLayout={(e) => setPillHeight(e.nativeEvent.layout.height)}>
-        <ProjectPill
-          name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
-          subtitle={activeProject ? undefined : 'Tap to choose or create'}
-          onPress={() => setSwitcherOpen(true)}
-        />
-      </View>
       </View>
 
       {selectMode ? (
@@ -874,8 +875,9 @@ function EmptyProjectHub({
 const makeStyles = (t: ThemePalette, density: DensityMode) => {
   const tight = density === 'tight';
   return StyleSheet.create({
-  // Transparent absolute holder so the pill floats over the scrolling list (R12.6).
-  pillOverlay: { position: 'absolute', top: 0, left: 0, right: 0, backgroundColor: 'transparent' },
+  // Transparent absolute holder so the pill floats over the scrolling list (R12.6). Rendered
+  // before the list for screen-reader order, so an explicit zIndex keeps it painted on top.
+  pillOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 2, backgroundColor: 'transparent' },
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
