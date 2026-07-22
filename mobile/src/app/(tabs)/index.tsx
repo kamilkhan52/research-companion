@@ -41,10 +41,14 @@ import {
   paperStateKey,
   sortPapers,
   SORTS,
-  type SortDirection,
   type SortKey,
   type StatusFilter,
 } from '@/lib/paperSort';
+import {
+  DEFAULT_SORT,
+  DEFAULT_SORT_DIRECTION,
+  usePaperSortPreference,
+} from '@/hooks/usePaperSortPreference';
 import {
   Button,
   Card,
@@ -88,8 +92,7 @@ export default function LibraryScreen() {
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
-  const [sort, setSort] = useState<SortKey>('added');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const { sort, sortDirection, setSort, setSortDirection } = usePaperSortPreference(activePid);
   const [expandedSort, setExpandedSort] = useState<SortKey | null>(null);
   const [sortOpen, setSortOpen] = useState(false);
   // Multi-select (R8.1 → R9.13): long-press a paper to enter; the action bar offers Move (to a
@@ -337,11 +340,13 @@ export default function LibraryScreen() {
               <Icon
                 name="sliders"
                 size={15}
-                color={sort === 'added' && sortDirection === 'asc' ? t.muted : t.mint}
+                color={sort === DEFAULT_SORT && sortDirection === DEFAULT_SORT_DIRECTION
+                  ? t.muted : t.mint}
               />
               <Text
                 variant="caption"
-                color={sort === 'added' && sortDirection === 'asc' ? t.muted : t.mint}>
+                color={sort === DEFAULT_SORT && sortDirection === DEFAULT_SORT_DIRECTION
+                  ? t.muted : t.mint}>
                 Sort
               </Text>
             </Pressable>
@@ -519,13 +524,8 @@ export default function LibraryScreen() {
             selected: sort === s.key,
             closeOnPress: !s.directions,
             onPress: () => {
-              setSort(s.key);
-              if (s.directions) {
-                setSortDirection(s.defaultDirection ?? 'asc');
-                setExpandedSort(s.key);
-              } else {
-                setExpandedSort(null);
-              }
+              setSort(s.key, s.defaultDirection ?? 'asc');
+              setExpandedSort(s.directions ? s.key : null);
             },
           };
           if (expandedSort !== s.key || !s.directions) return [primary];
