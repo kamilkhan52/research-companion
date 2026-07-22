@@ -20,6 +20,7 @@ from .. import (
     affiliations,
     agent,
     agent_harness,
+    canonical_jobs,
     chat_jobs,
     committer,
     config,
@@ -447,7 +448,7 @@ def start_paper(req: StartReq):
     if not paper:
         raise HTTPException(status_code=404, detail="Unknown paper")
     if paper.retrieved and not req.arxiv_id and not req.pdf_url:
-        affiliation_jobs.warm_async(req.slug)
+        canonical_jobs.warm_async(req.slug)
         return {"ok": True, "retrieved": True}
     try:
         res = retriever.retrieve(paper.title, req.arxiv_id, req.pdf_url)
@@ -478,7 +479,7 @@ def start_paper(req: StartReq):
         raise HTTPException(
             status_code=409,
             detail="This paper is no longer in the project (it may have just been moved).") from e
-    affiliation_jobs.warm_async(req.slug)
+    canonical_jobs.warm_async(req.slug)
     return {"ok": True, "retrieved": True}
 
 
@@ -568,7 +569,7 @@ async def start_paper_stream(req: StartReq):
             yield _sse({"type": "error", "detail": "Unknown paper"})
             return
         if paper.retrieved and not req.arxiv_id and not req.pdf_url:
-            affiliation_jobs.warm_async(req.slug)
+            canonical_jobs.warm_async(req.slug)
             yield _sse({"type": "done", "retrieved": True})
             return
         yield _sse({"type": "step", "name": "arxiv", "detail": req.arxiv_id or req.pdf_url or paper.title[:60]})
@@ -605,7 +606,7 @@ async def start_paper_stream(req: StartReq):
                 yield _sse({"type": "error", "detail":
                             "This paper is no longer in the project (it may have been moved)."})
                 return
-            affiliation_jobs.warm_async(req.slug)
+            canonical_jobs.warm_async(req.slug)
             yield _sse({"type": "done", "retrieved": True})
             return
         # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
@@ -631,7 +632,7 @@ async def start_paper_stream(req: StartReq):
                             yield _sse({"type": "error", "detail":
                                         "This paper is no longer in the project."})
                             return
-                        affiliation_jobs.warm_async(req.slug)
+                        canonical_jobs.warm_async(req.slug)
                         yield _sse({"type": "done", "retrieved": True})
                     else:
                         yield _sse({"type": "error", "detail":

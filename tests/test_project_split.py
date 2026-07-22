@@ -53,6 +53,12 @@ def _seed_source(pid):
         "key": "awq-text",
         "authorships": [{"name": "A", "affiliation": "MIT"}],
     })
+    paper_metadata.set_reference_record("awq", {
+        "slug": "awq",
+        "status": "done",
+        "references": [{"index": 1, "title": "Canonical Reference"}],
+        "content_hash": graph_store.content_hash("AWQ text"),
+    })
 
 
 def test_move_carries_work_and_removes_from_source(temp_project):
@@ -77,6 +83,9 @@ def test_move_carries_work_and_removes_from_source(temp_project):
         assert graph_store.get_paper_extraction(data, "awq")["status"] == "done"
         assert graph_store.read_retrieved_text("awq") == "AWQ retrieved body"
         assert paper_metadata.affiliation_record("awq")["authorships"][0]["affiliation"] == "MIT"
+        assert paper_metadata.reference_record("awq")["references"][0]["title"] == (
+            "Canonical Reference"
+        )
         # The cite to the STAYING paper (core) was dropped; the moving one (smooth) kept.
         awq = store.entry_details("awq")
         assert awq["cites"] == ["smooth"]
@@ -90,6 +99,8 @@ def test_move_carries_work_and_removes_from_source(temp_project):
     assert store.corpus_path("awq").exists() is False
     src_data = graph_store.load()
     assert "awq" not in src_data.get("papers", {})
+    assert paper_metadata.affiliation_record("awq") is None
+    assert paper_metadata.reference_record("awq") is None
 
 
 def test_move_leaves_source_repo_clean(temp_project):

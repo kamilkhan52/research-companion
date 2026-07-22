@@ -43,7 +43,9 @@ from . import (
     graph_store,
     llm,
     openalex,
+    paper_metadata,
     prompts,
+    reference_jobs,
     retriever,
     semantic_scholar,
     store,
@@ -1092,9 +1094,12 @@ def status(papers: list[Paper]) -> dict:
             missing_text.append(p.slug)
             continue
         full_text = store.read_full_text(p.slug) or cached_text
-        chash = graph_store.content_hash(full_text)
-        cached = graph_store.get_paper_extraction(data, p.slug)
-        if not cached or cached.get("content_hash") != chash or cached.get("status") == "error":
+        cached = paper_metadata.fresh_reference_record(p.slug, full_text, graph_data=data)
+        assembled = graph_store.get_paper_extraction(data, p.slug)
+        if cached is None or assembled != cached:
+            # A first-read extraction can be fresh before the stored Map has consumed it.
+            # Keep the existing rebuild affordance lit until assembly copies that exact record
+            # into its captured graph snapshot.
             stale.append(p.slug)
     g = data.get("graph") or {}
     # A stored graph can also be stale in the OTHER direction: a project node whose paper has
@@ -1193,10 +1198,16 @@ def retrieve_missing_graph_paper(paper: Paper, provider_record: dict | None) -> 
     )
 
 
-def _fresh_cached_extractions(
-    papers: list[Paper], data: dict
+def covered_by_fresh_extraction(
+    papers: list[Paper], data: dict | None = None,
 ) -> dict[str, dict]:
-    """Return only full-text extractions that still match the paper text available now."""
+    """Return canonical successful extractions matching the paper text available now.
+
+    Matching legacy graph records are imported on access. When ``data`` is supplied, canonical
+    records are also copied into that Map-build snapshot so assembly remains a pure function of
+    its captured inputs.
+    """
+    data = data if data is not None else graph_store.load()
     fresh: dict[str, dict] = {}
     for paper in papers:
         full_text = (
@@ -1204,14 +1215,14 @@ def _fresh_cached_extractions(
             if store.corpus_path(paper.slug).exists()
             else _graph_retrieved_text(data, paper)
         )
-        cached = graph_store.get_paper_extraction(data, paper.slug)
-        if (
-            full_text
-            and cached
-            and cached.get("status") == "done"
-            and cached.get("content_hash") == graph_store.content_hash(full_text)
-        ):
+        cached = (
+            paper_metadata.fresh_reference_record(paper.slug, full_text, graph_data=data)
+            if full_text
+            else None
+        )
+        if cached is not None:
             fresh[paper.slug] = cached
+            graph_store.set_paper_extraction(data, paper.slug, cached)
     return fresh
 
 
@@ -1387,7 +1398,7 @@ def build_graph(papers: list[Paper], force: bool = False,
     # extraction. If the remaining enrichment is interrupted, users still retain this useful,
     # explicitly incomplete snapshot and a later build resumes from the independent caches.
     provider_metadata = _provider_metadata(papers, data)
-    skeleton_extractions = _fresh_cached_extractions(papers, data)
+    skeleton_extractions = covered_by_fresh_extraction(papers, data)
     skeleton_graph, skeleton_recommendations = _persist_graph_snapshot(
         papers,
         data,
@@ -1478,23 +1489,23 @@ def build_graph(papers: list[Paper], force: bool = False,
         if text:
             retrievable.append((paper, text))
 
-    # Split cached from to-run, then fan the LLM extractions out over a small worker pool
+    # Split canonical hits from to-run, then fan missing/stale extractions over a small worker
+    # pool. A force rebuild refreshes project-wide provider/enrichment data but deliberately
+    # does not re-pay for a fresh full-text-derived canonical extraction.
     # (R7.11) — extraction dominates a fresh build's wall clock, each call is an independent
     # network-bound request, and the provider handles a few concurrent requests fine. The
-    # concurrency discipline: workers run ONLY extract_fn (with the project contextvar
-    # explicitly rebound — pool threads don't inherit it, invariant 2); every store mutation,
-    # incremental save, and progress yield stays here on the generator thread, so graph_store
-    # needs no locking and the persist-per-paper resumability contract is unchanged.
+    # concurrency discipline: workers join/start the fingerprinted reference job with the
+    # project contextvar explicitly rebound (pool threads don't inherit it, invariant 2);
+    # every graph-store mutation, incremental save, and progress yield stays here on the
+    # generator thread, so graph_store needs no locking.
     done = 0
     to_run: list[tuple[Paper, str]] = []
     for p, full_text in retrievable:
-        chash = graph_store.content_hash(full_text)
-        cached = graph_store.get_paper_extraction(data, p.slug)
-        needs_run = (force or not cached or cached.get("content_hash") != chash
-                     or cached.get("status") == "error")
-        if needs_run:
+        cached = paper_metadata.fresh_reference_record(p.slug, full_text, graph_data=data)
+        if cached is None:
             to_run.append((p, full_text))
             continue
+        graph_store.set_paper_extraction(data, p.slug, cached)
         done += 1
         yield {"type": "progress", "done": done, "total": total, "ready": ready, "slug": p.slug,
                "status": cached.get("status"), "cached": True,
@@ -1506,7 +1517,13 @@ def build_graph(papers: list[Paper], force: bool = False,
         def run_one(paper: Paper, text: str) -> dict:
             token = config.set_active_project(pid)
             try:
-                return extract_fn(paper.slug, paper.title, text, model)
+                return reference_jobs.ensure_for_text(
+                    paper.slug,
+                    paper.title,
+                    text,
+                    model=model,
+                    extract_fn=extract_fn,
+                )
             finally:
                 config.reset_active_project(token)
 

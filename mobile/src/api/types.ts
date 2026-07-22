@@ -168,6 +168,10 @@ export interface RetrievalJob {
   source?: string | null;
   analysis_job_id: string | null;
   analysis_error: string | null;
+  enrichment: {
+    status: 'running' | 'done' | 'error' | 'cancelled';
+    step: string;
+  } | null;
 }
 
 export const READING_MODE_LABELS: Record<ReadingMode, string> = {

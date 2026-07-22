@@ -99,9 +99,11 @@ def test_new_retrieval_job_is_refused_while_project_is_reserved(temp_project):
     assert retrieval_jobs.latest_for("p1") is None
 
 
-def test_retrieval_warms_figures_for_new_and_already_fetched_papers(temp_project, monkeypatch):
+def test_retrieval_starts_canonical_pass_for_new_and_already_fetched_papers(
+    temp_project, monkeypatch,
+):
     warmed: list[str] = []
-    monkeypatch.setattr(retrieval_jobs.figures, "warm_async", warmed.append)
+    monkeypatch.setattr(retrieval_jobs.canonical_jobs, "warm_async", warmed.append)
 
     _unretrieved_paper(temp_project)
     first = retrieval_jobs.start_retrieval(
@@ -115,10 +117,50 @@ def test_retrieval_warms_figures_for_new_and_already_fetched_papers(temp_project
     _settled(first.id)
 
     # The next first-read start short-circuits retrieval but still retries the best-effort
-    # figure warm, covering papers that predate the cache or whose earlier warm missed.
+    # canonical warm, covering papers that predate the cache or whose earlier warm missed.
     second = retrieval_jobs.start_retrieval("p1")
     assert second.status == "done"
     assert warmed == ["p1", "p1"]
+
+
+def test_retrieval_snapshot_piggybacks_canonical_progress(temp_project, monkeypatch):
+    _unretrieved_paper(temp_project)
+
+    class Warm:
+        id = "canonical-1"
+
+    monkeypatch.setattr(retrieval_jobs.canonical_jobs, "warm_async", lambda slug: Warm())
+
+    def canonical_snapshot(job_id):
+        # Cross-registry enrichment must happen after the retrieval snapshot releases its lock.
+        assert retrieval_jobs._registry.lock.acquire(blocking=False)
+        retrieval_jobs._registry.lock.release()
+        return {
+            "id": job_id,
+            "status": "running",
+            "step": "Reading first page… · Mapping references… · Finding figures…",
+        }
+
+    monkeypatch.setattr(
+        retrieval_jobs.canonical_jobs,
+        "snapshot",
+        canonical_snapshot,
+    )
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {
+            "full_text": "retrieved paper text",
+            "arxiv_id": None,
+            "source": "test",
+        },
+    )
+    snap = _settled(job.id)
+
+    assert snap["enrichment"] == {
+        "status": "running",
+        "step": "Reading first page… · Mapping references… · Finding figures…",
+    }
+    assert "canonical_job_id" not in snap
 
 
 def test_retrieval_renders_cover_from_downloaded_pdf(temp_project):

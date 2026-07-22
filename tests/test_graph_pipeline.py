@@ -85,7 +85,7 @@ def test_changed_paper_content_triggers_reextraction_of_only_that_paper(temp_pro
     assert calls == ["a"]  # only the changed paper re-extracted; b served from cache
 
 
-def test_force_rebuild_reextracts_every_paper(temp_project):
+def test_force_rebuild_still_reuses_canonical_paper_extractions(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="Text.")
     add_paper(temp_project, "b", "Paper B", full_text="Text.")
     papers = store.list_papers(sessions.session_states())
@@ -93,7 +93,40 @@ def test_force_rebuild_reextracts_every_paper(temp_project):
     list(graph.build_graph(papers, extract_fn=fake_extractor([])))
     calls: list[str] = []
     list(graph.build_graph(papers, force=True, extract_fn=fake_extractor(calls)))
-    assert sorted(calls) == ["a", "b"]
+    assert calls == []
+
+
+def test_map_consumes_canonical_extraction_without_reextracting(temp_project):
+    from app import paper_metadata
+
+    add_paper(temp_project, "a", "Paper A", full_text="Canonical text.")
+    paper_metadata.set_reference_record("a", {
+        "slug": "a",
+        "content_hash": graph_store.content_hash("Canonical text."),
+        "extracted_at": "2026-01-01T00:00:00+00:00",
+        "model": "test",
+        "status": "done",
+        "references": [{
+            "index": 1,
+            "title": "Canonical External Work",
+            "significant": True,
+            "significance_reason": "canonical",
+        }],
+        "error": "",
+    })
+
+    def should_not_extract(*args, **kwargs):
+        raise AssertionError("Map should consume the fresh canonical record")
+
+    papers = store.list_papers(sessions.session_states())
+    assert graph.status(papers)["stale_papers"] == ["a"]
+    events = list(graph.build_graph(papers, extract_fn=should_not_extract))
+
+    assert events[-1]["graph"]["completeness"]["analyzed_papers"] == 1
+    assert graph.status(papers)["stale_papers"] == []
+    assert graph_store.load()["papers"]["a"]["references"][0]["title"] == (
+        "Canonical External Work"
+    )
 
 
 def test_errored_extraction_is_retried_on_next_build(temp_project):
@@ -118,7 +151,8 @@ def test_interrupted_build_persists_completed_papers(temp_project):
     # save) is never reached, so this proves per-paper saves are what persisted, not the
     # final one. Since R7.11 extraction fans out over a pool, so 'b'/'c' are deliberately
     # STALLED (never completing) while 'a' finishes -- close() must persist 'a', orphan the
-    # stalled calls without blocking, and a resume re-spends only 'b' and 'c'.
+    # stalled calls without blocking. Their owning canonical jobs continue independently, so a
+    # resume joins those paid calls instead of spending on 'b'/'c' again.
     import threading
 
     add_paper(temp_project, "a", "Paper A", full_text="Text A.")
@@ -147,10 +181,11 @@ def test_interrupted_build_persists_completed_papers(temp_project):
     assert reloaded["graph"]["stage"] == "skeleton"
     assert reloaded["graph"]["completeness"]["analyzed_papers"] == 0
 
-    # Resuming should pick up right where it left off: 'a' is cached, 'b' and 'c' still run.
+    # Resuming joins the still-running canonical jobs and consumes their results.
     resume_calls: list[str] = []
     list(graph.build_graph(papers, extract_fn=fake_extractor(resume_calls)))
-    assert sorted(resume_calls) == ["b", "c"]
+    assert resume_calls == []
+    assert sorted(calls) == ["a", "b", "c"]
 
 
 def test_status_reports_stale_and_missing_text(temp_project):

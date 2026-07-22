@@ -1,6 +1,8 @@
 # Canonical per-paper pass — design (R12.9, subsumes R12.11/D06)
 
-**Status:** design only, no code. Written for a fresh implementing agent (GPT-5.6-sol).
+**Status:** P1 + P2 implemented on `r12-9-canonical-pass`; P4 included. P3 live D06/R12.11
+acceptance remains intentionally deferred for Kamil and real project data.
+
 **This plan is a starting point, not a spec to execute verbatim.** It encodes the current
 architecture accurately (file/line references were true at authoring) and a recommended shape,
 but the implementing agent is expected to **revise it** where the code has moved or a cleaner
@@ -50,8 +52,10 @@ Most of the hard machinery **already exists and is already deterministic**:
 - `paper_metadata.py` already exists precisely to hold "small derived per-paper metadata that
   becomes available outside a full Map build," guarded and fingerprinted, explicitly so "a later
   Map build reuses the same fingerprinted record instead of paying for the extraction again."
-- `graph.covered_by_fresh_extraction` (graph.py:1085) already answers "which papers have a fresh
-  cached extraction" without calling the LLM.
+- The branch did not in fact contain the named public `graph.covered_by_fresh_extraction` helper;
+  it contained private `_fresh_cached_extractions`, reading only `reference-graph.json`. The
+  implementation promotes it to the public helper and makes it consume canonical records (with
+  matching legacy records imported on access).
 
 So the expensive work is **already cacheable and already reused** — it's just **triggered at the
 wrong time** (Map build) for one of the passes, and **scattered across two caches**. R12.9 is
@@ -69,17 +73,19 @@ Concretely:
 
 1. **Define one canonical per-paper record** keyed by slug and fingerprinted by full-text
    `content_hash`. It aggregates what today lives in `paper-metadata.json` (affiliations) and the
-   reference-graph `extractions` (bibliography + contexts + significance), plus figure/cover
-   availability pointers. Recommended home: **extend `paper_metadata.py`** (it already owns the
-   fingerprinted, guarded, atomic-write cache and the "reuse across Map build" contract) rather
-   than inventing a new file. Bump its `_VERSION` and add an `extractions`/`references` section
+   reference-graph `extractions` (bibliography + contexts + significance). Figure/cover state
+   stays in its existing cache rather than duplicating readiness pointers. The implemented home
+   is **extended `paper_metadata.py`** (it already owns the fingerprinted, guarded, atomic-write
+   cache and the "reuse across Map build" contract) rather than inventing a new file. Bump its
+   `_VERSION` and add an `extractions`/`references` section
    alongside `affiliations`. Keep it **gitignored working state** (like the reference graph and
    covers) — it is recomputable from committed full text, so it is not part of invariant-4 record.
 
-2. **One coordinator on first full-text availability.** Today `retrieval_jobs._persist` fires
-   `figures.warm_async(slug)` + `affiliation_jobs.warm_async(slug)` (retrieval_jobs.py:263-264;
-   also 80-81 on the streaming path). Add the reference extraction to that same warm fan-out (a
-   `graph_extract_jobs.warm_async(slug)` or fold into a single `canonical_pass` coordinator).
+2. **One coordinator on first full-text availability.** `canonical_jobs.warm_async` is the thin
+   coordinator; it fans out `figures.warm_async`, `affiliation_jobs.warm_async`, and
+   `reference_jobs.warm_async`. `reference_jobs` is the fingerprint-owning paid job and is also
+   the join point for Map builds, preventing a first-read/Map race from buying the same
+   extraction twice.
    The pass must also fire for papers whose full text arrives by other routes (PDF upload, manual
    fetch) — audit every `store.write_full_text` caller, not just `retrieval_jobs`.
 
@@ -87,19 +93,25 @@ Concretely:
    first read, `graph_jobs` becomes: ensure every project paper has a fresh canonical extraction
    (trigger the pass for any that are stale/missing — this is the only place that still might do
    LLM work, for papers added before this feature), then run the existing pure construction +
-   provider enrichment. `covered_by_fresh_extraction` already tells it what's missing.
+   provider enrichment. The promoted `covered_by_fresh_extraction` helper tells it what's
+   missing.
 
-4. **D06/R12.11 falls out for free** once each paper's references+contexts are extracted at its
-   own first read: by the time a *later* paper is opened, the *earlier* cited papers already have
-   edges, and the later citing papers get their contexts at *their* first read. `project_citers_for`
-   then returns populated `contexts` without requiring a manual full Map build first. **Verify
-   this against a live repro** — see "R12.11 acceptance" below.
+4. **D06/R12.11's paid-data blocker falls away** once each paper's references+contexts are
+   extracted at its own first read. The implementation deliberately does not rewrite the stored
+   graph from a warm worker (that would reintroduce its graph-build race); it keeps the existing
+   Map rebuild affordance lit until pure assembly consumes the new record. Whether the opening
+   should additionally assemble project-only incoming edges on demand, rather than wait for that
+   Map refresh, remains part of the explicitly deferred live P3 acceptance. **Verify this against
+   a live repro** — see "R12.11 acceptance" below.
 
 5. **Concise progress steps during first read.** The pass is several sub-jobs; surface a short,
    truthful, template-driven step line ("Reading first page… · Mapping references… · Finding
    figures…"), reusing the existing job-snapshot polling (invariant 1). Do **not** invent a new
    progress protocol — piggyback on the retrieval/opening job the client already polls. Keep the
-   phrasing template-driven per the D02 secondary-polish note (no fabricated specifics).
+   phrasing template-driven per the D02 secondary-polish note (no fabricated specifics). The
+   coordinator's template-driven aggregate `step` is nested as `enrichment` in the existing
+   retrieval snapshot. Mobile keeps polling that same retrieval job while enrichment is active;
+   no endpoint or progress transport was added.
 
 ## Invariants this must respect (CLAUDE.md)
 
@@ -128,6 +140,9 @@ Concretely:
 - Concurrency: a first-read pass and a Map build can run together. The Map build must treat
   missing/stale canonical records as "extract now," and a canonical pass completing mid-build
   must not corrupt the build's snapshot — build off a captured set, like graph jobs already do.
+- A fresh first-read record can precede Map assembly. `graph.status` therefore compares the
+  canonical record with the exact extraction copied into the stored Map cache and keeps the
+  existing rebuild affordance lit until the Map has consumed it.
 
 ## Migration / backfill
 
@@ -136,6 +151,13 @@ Papers added before this ships have affiliations in `paper-metadata.json` and re
 with no canonical references section as stale and trigger the pass; if a reference-graph
 extraction already exists for it, **import it into the canonical record** rather than re-paying
 for the LLM call (its `content_hash` tells you if it still matches the current full text).
+
+Implemented schema: `paper-metadata.json` version 2 keeps the existing `affiliations` map and
+adds a `references` map whose values reuse the `PaperExtraction` shape verbatim. Loading version
+1 preserves affiliation records; the next canonical write atomically upgrades the file. A
+matching successful legacy graph extraction is imported lazily. Both pending and terminal
+reference writes use `content_hash` as the expected-key CAS, so an older result cannot replace a
+newer paper fingerprint.
 
 ## R12.11 acceptance (do this with live data, not a unit test)
 
@@ -165,31 +187,37 @@ So the acceptance test is a live repro, which is why it was flagged "needs Kamil
 
 ## Open questions for the implementing agent
 
-1. **One coordinator job vs. independent warm jobs?** A single `canonical_pass` job that owns the
-   step-progress line is cleaner for the "concise progress" UX, but independent jobs
-   (`figures`/`affiliations`/`references`) parallelize and already exist. Recommendation: keep the
-   independent jobs, add a thin coordinator that *reports aggregate progress* by polling their
-   snapshots — but confirm the progress UX reads well before committing to it.
-2. **Should first-read reference extraction run for every paper, or lazily on first Map/open?**
-   Eager (at retrieval) makes D06 "just work" but spends tokens on papers that may never be
-   Mapped. Lazy-but-early (on first *open* of the discussion) is cheaper and still beats
-   Map-build timing. Recommendation: trigger on first full-text availability *of a paper that
-   gets opened for reading*, not merely added — but measure token cost with Kamil's usage in mind
-   ([[round12-queue]] I1 notes agentic cost is only partly trackable).
-3. **Schema:** exact shape of the unified record — reuse the reference-graph `extractions` entry
-   shape verbatim (so import is a copy) or normalize? Recommend reuse to minimize translation.
-4. Where does figure/cover *availability* belong — in the canonical record as pointers, or left
-   in their own caches with the record only referencing slugs? (Leaning: leave the binaries in
-   `.state/figures`/`.state/covers`, record only readiness flags.)
+1. **Resolved — thin coordinator over independent jobs.** `canonical_jobs` owns the aggregate
+   step while figures, affiliations, and references remain independent, parallel registered
+   jobs. This preserves their existing cache ownership and project-lifecycle accounting.
+2. **Resolved — eager on real full-text arrival / first read.** This spends reference-extraction
+   tokens for every paper whose full text is fetched for reading, which is the coverage D06
+   requires; merely adding a metadata-only reading-list entry still spends nothing. Every
+   production `store.write_full_text` retrieval/upload branch now starts the coordinator outside
+   the pure store module; already-retrieved first reads retry it. The placeholder write used
+   internally by notes is not a full-text arrival and intentionally does not trigger paid work.
+   Graph-only retrieval text is handled inside the already-backgrounded Map build through the
+   same canonical reference job.
+3. **Resolved — reuse the extraction shape verbatim.** This makes migration and Map consumption
+   copies rather than translations.
+4. **Resolved — leave figure/cover state in their existing caches.** Binary/manifests remain in
+   `.state/figures` and `.state/covers`; the aggregate job snapshot reports transient progress,
+   so the canonical JSON does not duplicate readiness flags that can drift.
 
 ## Suggested phasing
 
-- **P1:** Unified canonical record in `paper_metadata.py` (schema + fingerprint + reference
-  section + backfill import from reference-graph). No behavior change yet — Map build writes both.
-- **P2:** Move reference extraction to first-read warm fan-out; Map build switches to
-  consume-or-extract-if-missing. Add aggregate progress steps.
-- **P3:** Live D06/R12.11 acceptance with Kamil; fix whichever matching/context link is thin.
-- **P4:** Retire the now-redundant second affiliation pass; single source of truth confirmed.
+- **P1 — implemented:** Unified canonical record in `paper_metadata.py` (schema + fingerprint +
+  reference section + matching legacy backfill). Map builds copy canonical results into their
+  captured/persisted graph snapshot.
+- **P2 — implemented:** Reference extraction runs in the first-read fan-out; Map builds consume
+  canonical records and join/start extraction only for missing/stale papers. Force rebuilds no
+  longer re-pay for fresh full-text-derived extraction. Aggregate progress rides the retrieval
+  job snapshot.
+- **P3 — deferred:** Live D06/R12.11 acceptance with Kamil; fix whichever matching/context link
+  is thin only after the real-data repro identifies it.
+- **P4 — implemented:** A fresh canonical affiliation result is authoritative even during a
+  force Map refresh, retiring the divergent second affiliation pass while retaining the graph's
+  provider-first application/cache shape.
 
 Related: [[round12-queue]] (I2, R12.9, R12.11/D06), `docs/round12-queue.md`,
 `docs/canonical-title-identity-design.md` (R12.13 — a *different* "canonical title" concern, do

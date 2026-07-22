@@ -2061,9 +2061,13 @@ export function ComposeFirst({
     };
   }, [pid, slug]);
 
-  // A reattached running job keeps polling even though the request that started it is gone.
+  // Keep polling the same retrieval snapshot while either retrieval or its first-read
+  // enrichment fan-out is active; no second progress protocol is needed.
   useEffect(() => {
-    if (retrievalJob?.status !== 'running') return;
+    if (
+      retrievalJob?.status !== 'running' &&
+      retrievalJob?.enrichment?.status !== 'running'
+    ) return;
     let active = true;
     const timer = setInterval(() => {
       void api.getRetrievalJob(pid, retrievalJob.id).then(
@@ -2077,7 +2081,12 @@ export function ComposeFirst({
       active = false;
       clearInterval(timer);
     };
-  }, [pid, retrievalJob?.id, retrievalJob?.status]);
+  }, [
+    pid,
+    retrievalJob?.enrichment?.status,
+    retrievalJob?.id,
+    retrievalJob?.status,
+  ]);
 
   useEffect(() => {
     if (!retrievalJob?.retrieved) return;
@@ -2093,6 +2102,7 @@ export function ComposeFirst({
     return () => clearTimeout(timer);
   }, [
     retrievalJob?.detail,
+    retrievalJob?.enrichment?.step,
     retrievalJob?.items?.length,
     retrievalJob?.phase,
     retrievalJob?.status,
@@ -2407,6 +2417,12 @@ export function ComposeFirst({
 
           {retrievalJob?.items?.length ? (
             <AgentTrail trail={retrievalJob.items} />
+          ) : null}
+
+          {retrievalJob?.enrichment?.status === 'running' ? (
+            <Text variant="caption" color={t.muted}>
+              {retrievalJob.enrichment.step}
+            </Text>
           ) : null}
 
           {retrieveError ? (

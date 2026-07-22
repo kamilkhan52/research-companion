@@ -17,7 +17,15 @@ def _offline_citations(monkeypatch):
     touch the network. Stub only the fetch step — annotate_nodes still runs for real, applying
     whatever counts a test seeded into the cache. Tests of the fetch itself call _fetch_missing
     directly with a fake client (bypassing this stub)."""
-    from app import affiliation_jobs, affiliations, citations, figures, graph, semantic_scholar
+    from app import (
+        affiliation_jobs,
+        affiliations,
+        canonical_jobs,
+        citations,
+        figures,
+        graph,
+        semantic_scholar,
+    )
     monkeypatch.setattr(citations, "_fetch_missing", lambda nodes, cache, client, sleep: None)
     monkeypatch.setattr(semantic_scholar, "api_key", lambda: "")
     # Figure-manifest enrichment (R.10): stub only its two network functions — the rest of
@@ -29,6 +37,7 @@ def _offline_citations(monkeypatch):
     monkeypatch.setattr(figures, "_fetch_image", lambda url: None)
     monkeypatch.setattr(figures, "warm_async", lambda slug: None)
     monkeypatch.setattr(affiliation_jobs, "warm_async", lambda slug: None)
+    monkeypatch.setattr(canonical_jobs, "warm_async", lambda slug: None)
     # Same treatment for the LLM affiliation fallback (R6.4): builds never call an LLM in
     # tests. Tests of the extraction itself call _extract_missing directly with a fake
     # completion function (bypassing this stub); _apply_cached still runs for real.
