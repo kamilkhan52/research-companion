@@ -203,7 +203,8 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
     Provider-first: a node whose OpenAlex authorships carry ANY affiliation is skipped — the
     provider record wins and no tokens are spent. Cache entries are keyed to the node's
     versionless arXiv id (falling back to the slug) so an identity correction invalidates
-    them, mirroring openalex.annotate_project_authors. `force=True` re-extracts everything.
+    them, mirroring openalex.annotate_project_authors. `force=True` re-extracts graph-only cache
+    entries, but a fresh canonical first-read record remains authoritative (P4).
     `persist` (when given) is called after each successful cache write, so a paid extraction
     survives a mid-pass restart instead of being billed again next build. The first timeout
     aborts the pass — a stalled provider must not cost the deadline once per paper — and a
@@ -217,12 +218,13 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
             continue
         key = _cache_key(node)
         prefetched = paper_metadata.affiliation_record(node["slug"])
-        if (
+        prefetched_fresh = (
             key is not None
             and prefetched
             and prefetched.get("status") == "done"
             and prefetched.get("key") == key
-        ):
+        )
+        if prefetched_fresh:
             cache[node["id"]] = {
                 "status": "done",
                 "key": key,
@@ -240,6 +242,10 @@ def _extract_missing(nodes: list[dict], openalex_cache: dict, cache: dict, *,
         if key is None:
             if hit is not None:
                 cache.pop(node["id"], None)  # no text = no identity — never keep a record
+            continue
+        if prefetched_fresh:
+            # The canonical first-read result is authoritative even on a force Map refresh;
+            # force still refreshes providers/layout, but never buys a divergent second pass.
             continue
         if not force and hit and hit.get("key") == key:
             continue

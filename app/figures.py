@@ -593,7 +593,7 @@ class WarmJob(Job):
 _warm_registry: JobRegistry[WarmJob] = JobRegistry("figure-warm", max_finished=5)
 
 
-def warm_async(slug: str) -> None:
+def warm_async(slug: str) -> WarmJob | None:
     """Background cache warm, called on the retrieval job thread right after the paper's
     text persists — so figures are usually ready before the first turn ever mentions one.
     Runs as its own registered job so it never delays the retrieval job's `done` (or the
@@ -606,11 +606,12 @@ def warm_async(slug: str) -> None:
             log.info("figure warm stalled for %s: %s", job.slug, str(e)[:120])
 
     try:
-        _warm_registry.start_or_join(
+        return _warm_registry.start_or_join(
             f"warm:{slug}", lambda: WarmJob(id=new_id(), slug=slug), work)
     except RuntimeError as e:
         # Project is being deleted/split — no warm for it.
         log.info("figure warm skipped for %s: %s", slug, str(e)[:120])
+        return None
 
 
 # --- graph-build enrichment pass -------------------------------------------------------------

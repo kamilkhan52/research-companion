@@ -89,9 +89,10 @@ def test_uncovered_paper_is_extracted_cached_and_fills_missing_authors(temp_proj
     real_extract_missing([n], {}, cache, complete=complete)
     assert len(complete.calls) == 1
 
-    # Force re-extracts.
+    # A force Map refresh still trusts the canonical first-read result (P4): providers/layout
+    # may refresh, but a second divergent affiliation pass is never purchased.
     real_extract_missing([n], {}, cache, complete=complete, force=True)
-    assert len(complete.calls) == 2
+    assert len(complete.calls) == 1
 
 
 def test_identity_correction_drops_the_stale_record(temp_project):

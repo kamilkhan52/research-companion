@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import affiliation_jobs, config, cover_jobs, figures, retrieval_agent, retriever, store
+from . import canonical_jobs, config, cover_jobs, retrieval_agent, retriever, store
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -36,6 +36,18 @@ class RetrievalJob(Job):
     # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
     analysis_job_id: str | None = None
     analysis_error: str | None = None
+    canonical_job_id: str | None = None
+
+    def to_dict(self) -> dict:
+        data = super().to_dict()
+        data.pop("canonical_job_id", None)
+        child = (
+            canonical_jobs.snapshot(self.canonical_job_id) if self.canonical_job_id else None
+        )
+        data["enrichment"] = (
+            {"status": child["status"], "step": child["step"]} if child else None
+        )
+        return data
 
 
 _registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
@@ -74,11 +86,10 @@ def start_retrieval(
         raise RetrievalError("Unknown paper")
 
     if paper.retrieved and not arxiv_id and not pdf_url:
-        # A paper may predate figure warming, or its earlier best-effort warm may have missed.
-        # Starting a first read is another safe opportunity to prefetch the manifest/assets.
+        # A paper may predate canonical warming, or its earlier best-effort warm may have missed.
+        # Starting a first read is another safe opportunity to prefetch derived paper context.
         # This remains a registered background job and never delays the request or analysis.
-        figures.warm_async(slug)
-        affiliation_jobs.warm_async(slug)
+        canonical_job = canonical_jobs.warm_async(slug)
         job = _registry.put(
             slug,
             RetrievalJob(
@@ -86,6 +97,9 @@ def start_retrieval(
                 finished_at=now_iso(),
             ),
         )
+        if canonical_job is not None:
+            with _registry.lock:
+                job.canonical_job_id = canonical_job.id
         # Terminal short-circuit never runs a worker, so the analysis chain (if requested)
         # kicks here on the caller's thread — the project is already bound to it.
         if after_retrieved is not None:
@@ -117,7 +131,8 @@ def start_retrieval(
                 job.source = result.get("source") or None
             _persist(slug, paper.title, result["full_text"], result.get("arxiv_id"),
                      result.get("source"), match_score=result.get("score"),
-                     pdf_bytes=result.get("pdf_bytes"), authoritative_id=arxiv_id)
+                     pdf_bytes=result.get("pdf_bytes"), authoritative_id=arxiv_id,
+                     job=job)
             # An id the user explicitly supplied corrects any machine-resolved one on the
             # entry (a wrong title-search match must not outlive the correction). Only when
             # the result IS that id: a failed explicit download falls back to title search,
@@ -209,7 +224,7 @@ async def _consume_hunt(
                 job.source = event.get("source") or None
             _persist(
                 job.slug, title, event["full_text"], None, event.get("source"),
-                pdf_bytes=event.get("pdf_bytes"),
+                pdf_bytes=event.get("pdf_bytes"), job=job,
             )
             with _registry.lock:
                 job.phase = "done"
@@ -230,6 +245,7 @@ def _persist(
     *,
     pdf_bytes: bytes | None = None,
     authoritative_id: str | None = None,
+    job: RetrievalJob | None = None,
 ) -> None:
     """Persist a background retrieval under the same relocation guard as synchronous writes."""
     try:
@@ -257,11 +273,12 @@ def _persist(
         raise RetrievalError(
             "This project is being moved or split — wait, then fetch the paper again.",
         ) from exc
-    # Warm the paper's figure manifest (R.10) the moment its text lands — fire-and-forget on
-    # a daemon thread, so it never delays the job's `done` or the chained auto-analysis.
-    # Best-effort: the graph build's enrichment pass backfills anything this misses.
-    figures.warm_async(slug)
-    affiliation_jobs.warm_async(slug)
+    # Fan out the independent first-read enrichments without delaying retrieval completion or
+    # its chained analysis. The coordinator's concise step is exposed through this job snapshot.
+    canonical_job = canonical_jobs.warm_async(slug)
+    if job is not None and canonical_job is not None:
+        with _registry.lock:
+            job.canonical_job_id = canonical_job.id
 
 
 def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:
@@ -292,6 +309,7 @@ def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:
             None,
             f"upload:{filename}",
             pdf_bytes=data,
+            job=job,
         )
         with _registry.lock:
             job.phase = "done"

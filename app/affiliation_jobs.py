@@ -185,10 +185,10 @@ def reconcile_pending(slugs: list[str]) -> None:
         )
 
 
-def warm_async(slug: str) -> None:
+def warm_async(slug: str) -> AffiliationJob | None:
     """Best-effort fire-and-forget entry point used by every full-text persistence path."""
     try:
-        start(slug)
+        return start(slug)
     except RuntimeError:
         # Project relocation/deletion temporarily rejects new jobs. A later first-read or Map
         # build retries the same fingerprinted enrichment.

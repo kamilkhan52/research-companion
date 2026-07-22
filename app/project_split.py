@@ -7,9 +7,10 @@ are separate `notes_jobs`-shaped background jobs layered on top.
 
 What travels per selected slug (see docs/project-forking-design.md for the full table):
 reading-list block (verbatim, dangling cites dropped), corpus file incl. committed Notes,
-session transcript + retry branches, and the per-paper graph caches (extraction record,
-retrieved text, cover, provider record, retrieval record, first-page affiliations) — the caches are copied EITHER
-way because re-extraction is a paid call. Session history now follows the same rule: Copy
+session transcript + retry branches, and the per-paper graph/canonical caches (extraction record,
+retrieved text, cover, provider record, retrieval record, first-page affiliations, canonical
+references) — the caches are copied either way because re-extraction is a paid call. Session
+history now follows the same rule: Copy
 duplicates it into an independent destination history; Move duplicates it and then removes
 the source. With `remove_from_source` the source loses the papers through the same
 committed-removal posture as the by-hand removal endpoint.
@@ -92,6 +93,7 @@ def _gather_source(slugs: list[str]) -> dict:
             "provider": graph_store.get_provider_paper(data, "semantic_scholar", slug),
             "retrieval": graph_store.get_retrieval(data, slug),
             "paper_affiliations": paper_metadata.affiliation_record(slug),
+            "paper_references": paper_metadata.reference_record(slug),
         }
     return bundle
 
@@ -144,6 +146,8 @@ def _write_new_project(new_pid: str, bundle: dict, keep: set[str]) -> None:
             graph_store.set_retrieval(data, slug, b["retrieval"])
         if b["paper_affiliations"] is not None:
             paper_metadata.set_affiliation_record(slug, b["paper_affiliations"])
+        if b["paper_references"] is not None:
+            paper_metadata.set_reference_record(slug, b["paper_references"])
     graph_store.save(data)
 
 
@@ -177,6 +181,7 @@ def _remove_from_source(source_pid: str, slugs: list[str]) -> list[str]:
             p.unlink(missing_ok=True)
         sessions.remove_thread_storage(slug)
         sessions.drop_session(slug)
+        paper_metadata.remove_records(slug)
         data.get("papers", {}).pop(slug, None)
         data.get("providers", {}).get("semantic_scholar", {}).get("papers", {}).pop(slug, None)
         data.get("retrievals", {}).pop(slug, None)
@@ -211,6 +216,8 @@ def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
         data = graph_store.load()
         provider_papers = ((data.get("providers") or {}).get("semantic_scholar") or {}).get(
             "papers", {})
+        affiliation_records = paper_metadata.affiliation_records()
+        reference_records = paper_metadata.reference_records()
         graph_nodes = {n.get("slug") for n in (data.get("graph") or {}).get("nodes") or []
                        if n.get("kind") == "project" and n.get("slug")}
         for slug in slugs:
@@ -222,6 +229,8 @@ def _dest_occupied_slugs(dest_pid: str, slugs: list[str]) -> set[str]:
                     or slug in (data.get("papers") or {})
                     or slug in provider_papers
                     or slug in (data.get("retrievals") or {})
+                    or slug in affiliation_records
+                    or slug in reference_records
                     or slug in graph_nodes):
                 occupied.add(slug)
         return occupied
@@ -276,6 +285,7 @@ def _restore_dest(dest_pid: str, slugs: list[str], snap: dict) -> None:
             # it, or the destination keeps a phantom session for a paper it no longer has (a
             # later re-add would look resumable with no transcript).
             sessions.drop_session(slug)
+            paper_metadata.remove_records(slug)
         except Exception:
             log.warning("could not remove moved-in file(s) for %s from %s", slug, dest_pid,
                         exc_info=True)
