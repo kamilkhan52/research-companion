@@ -164,15 +164,20 @@ export const space = {
 
 /** Subtle lift for rounded surfaces that float over other content — the discussion
  * composer, the mini player, the project pill (R12.6). Their wrappers stay fully
- * transparent (no full-width strip behind the rounded shape); this shadow is what
- * separates the card from whatever scrolls beneath it. Shadow on iOS, elevation on
- * Android; on the Black theme it simply disappears, which is fine. */
+ * transparent (no full-width strip behind the rounded shape).
+ *
+ * iOS-only shadow, deliberately NO Android `elevation`: on Android skins (OnePlus/Samsung)
+ * elevation draws an OPAQUE rectangular backing under the card that does not clip to the
+ * border radius — the exact "solid rectangle behind the rounded shape" this item is about.
+ * On Android the rounded shape floats cleanly with its 1px border for separation (the
+ * original ask was "make the background disappear so the rounded shape floats; a subtle
+ * shadow is optional"). A rectangle-free Android shadow would need a shadow-image approach
+ * (e.g. react-native-shadow-2), tracked separately. */
 export const floatShadow = {
   shadowColor: '#000',
   shadowOpacity: 0.16,
   shadowRadius: 12,
   shadowOffset: { width: 0, height: 6 },
-  elevation: 5,
 } as const;
 
 /** Map a paper/session state to an accent color + short label for chips.
