@@ -131,8 +131,17 @@ def test_explicit_figure_request_adds_availability_layer(monkeypatch):
 def test_implicit_figure_discussion_has_no_availability_layer(monkeypatch):
     assert agent.explicit_figure_display_request("Let's discuss the important figures.") is False
     assert agent.explicit_figure_display_request("Explain the data in Figure 3.") is False
+    # Discussion questions about a visual are not display requests (sol review, PR #201).
+    assert agent.explicit_figure_display_request("What does Figure 3 show?") is False
+    assert agent.explicit_figure_display_request(
+        "Why did the authors include this chart?"
+    ) is False
+    # Negation must never read as a request.
+    assert agent.explicit_figure_display_request("Do not show any figures.") is False
     assert agent.explicit_figure_display_request("Show me Figure 3.") is True
     assert agent.explicit_figure_display_request("Can I see the figures?") is True
+    assert agent.explicit_figure_display_request("Please include the figures.") is True
+    assert agent.explicit_figure_display_request("Can you show the figures here?") is True
     assert agent.explicit_figure_display_request(
         "What figures are the most important and can you show me here?"
     ) is True

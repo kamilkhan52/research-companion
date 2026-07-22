@@ -260,9 +260,12 @@ def _fetch_html_impl(requested_id: str) -> tuple[str, str | None, str | None]:
                     html_text = resp.text
                     # arXiv sometimes redirects an unavailable /html page to the paper's
                     # ordinary /abs landing page (200 text/html), and some native renderings
-                    # contain no image-backed figures even though ar5iv does. Neither is a
-                    # usable figure source, so continue to the fallback renderer.
-                    if not parse_figures(html_text):
+                    # carry no fetchable raster figures (none at all, or only SVG/off-host
+                    # sources the derivation would drop) even though ar5iv has them. Neither
+                    # is a usable figure source: accepting one would cache a "done" manifest
+                    # with zero entries and shadow ar5iv for good, so continue to the
+                    # fallback renderer instead.
+                    if not _usable_figure_sources(url, parse_figures(html_text)):
                         break
                     return "ok", url, html_text
             except httpx.TimeoutException as e:
@@ -433,6 +436,21 @@ def _image_urls(page_url: str, raw_src: str) -> list[str]:
         else [directory_relative, document_relative]
     )
     return list(dict.fromkeys(candidates))
+
+
+def _usable_figure_sources(page_url: str, parsed: list[dict]) -> bool:
+    """Whether any figure the derivation would actually keep offers a fetchable image:
+    within the derivation's figure cap, on an allowed host, and not SVG. Mirrors the
+    per-figure drop rules in `_derive_locked` so "this page has figures" and "this page
+    can yield assets" cannot disagree."""
+    for fig in parsed[:MAX_FIGURES]:
+        for candidate in _image_urls(page_url, str(fig.get("src") or "")):
+            if not _host_allowed(candidate):
+                continue
+            if urlparse(candidate).path.lower().endswith(".svg"):
+                continue
+            return True
+    return False
 
 
 # One derivation per slug at a time: the retrieval warm and a graph build's enrichment can

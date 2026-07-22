@@ -105,6 +105,42 @@ def test_html_fetch_falls_back_when_native_page_has_no_image_figures(monkeypatch
     assert (status, final_url, html) == ("ok", fallback, HTML)
 
 
+def test_html_fetch_falls_back_when_native_figures_are_all_unfetchable(monkeypatch):
+    """A native page whose figures would ALL be dropped by derivation (SVG-only here) must
+    not shadow ar5iv: accepting it caches a 'done' manifest with zero entries for good."""
+    native = "https://arxiv.org/html/2401.00001v1"
+    fallback = "https://ar5iv.labs.arxiv.org/html/2401.00001v1"
+    svg_only = """<figure id="S1.F1">
+      <img src="2401.00001v1/x1.svg">
+      <figcaption>Figure 1: Vector-only diagram.</figcaption>
+    </figure>"""
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __init__(self, text):
+            self.text = text
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response(svg_only if url == native else HTML)
+
+    monkeypatch.setattr(figures, "_open_client", Client)
+    monkeypatch.setattr(figures, "_resolves_public", lambda url: True)
+    status, final_url, html = figures._fetch_html_impl("2401.00001v1")
+    assert calls == [native, fallback]
+    assert (status, final_url, html) == ("ok", fallback, HTML)
+
+
 # --- derivation + cache ----------------------------------------------------------------------
 
 def test_derive_writes_manifest_and_assets(temp_project):

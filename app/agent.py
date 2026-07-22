@@ -32,14 +32,30 @@ _SECTION_RE = re.compile(
 
 _VISUAL_NOUN = r"(?:figures?|images?|plots?|charts?|diagrams?|visuals?)"
 _DISPLAY_ACTION = r"(?:show|display|include|embed|render|insert)"
+# An imperative display verb only counts at the start of the message/sentence/clause or right
+# after a politeness/conjunction word. That is what separates a request directed at the
+# assistant ("Include the figures…") from discussion of the paper ("Why did the authors
+# include this chart?", "What does Figure 3 show?") and from negation ("Do not show any
+# figures" — "not" is not an anchor word).
+_IMPERATIVE_ANCHOR = r"(?:^|[.!?;:]\s+|\b(?:please|and|also|then|now|kindly|just)\s+)"
 _EXPLICIT_FIGURE_DISPLAY_RE = re.compile(
-    rf"(?:\b{_DISPLAY_ACTION}\b.{{0,100}}\b{_VISUAL_NOUN}\b"
-    rf"|\b{_VISUAL_NOUN}\b.{{0,100}}\b(?:shown?|displayed|included|embedded|rendered|inserted)\b"
+    # "Show me Figure 3." / "Include the figures in your response."
+    rf"(?:{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}\s+(?:me\s+|us\s+)?"
+    rf"(?:\w+\s+){{0,3}}?{_VISUAL_NOUN}\b"
+    # "Can you show the figures…"
+    rf"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?{_DISPLAY_ACTION}\b"
+    rf".{{0,80}}?\b{_VISUAL_NOUN}\b"
+    # "What figures matter … can you show me here?"
     rf"|\b{_VISUAL_NOUN}\b.{{0,120}}\b(?:can|could|will|would)\s+you\s+"
-    rf"{_DISPLAY_ACTION}\b"
-    rf"|\b{_VISUAL_NOUN}\b.{{0,120}}\b{_DISPLAY_ACTION}\s+(?:them|it)\b"
-    rf"|\b(?:can|could|may|let)\b.{{0,40}}\b(?:see|view)\b.{{0,60}}\b{_VISUAL_NOUN}\b)",
-    re.I | re.S,
+    rf"(?:please\s+)?{_DISPLAY_ACTION}\b"
+    # "…the figures. Include them here."
+    rf"|\b{_VISUAL_NOUN}\b.{{0,160}}{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}"
+    rf"\s+(?:them|it)\b"
+    # "Can I see the figures?" / "I'd like to see the plots." / "Let me see the figures."
+    rf"|\b(?:can|could|may)\s+(?:i|we)\s+(?:please\s+)?(?:see|view)\b.{{0,80}}?\b{_VISUAL_NOUN}\b"
+    rf"|\b(?:let\s+(?:me|us)|i(?:'d|\s+would)?\s+(?:like|want|love)|we(?:'d|\s+would)?\s+"
+    rf"(?:like|want|love))\s+(?:to\s+)?(?:see|view)\b.{{0,80}}?\b{_VISUAL_NOUN}\b)",
+    re.I | re.S | re.M,
 )
 
 
