@@ -59,6 +59,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
     const determinate = stage === 'synthesizing' && total > 0;
     return (
       <View style={wrapStyle}>
+        <View style={styles.cardShadow}>
         <Pressable onPress={openPlayer} style={styles.card} accessibilityLabel="Open player">
           <View style={styles.row}>
             <View style={styles.artBadge}>
@@ -90,6 +91,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
             />
           </View>
         </Pressable>
+        </View>
       </View>
     );
   }
@@ -101,6 +103,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
 
   return (
     <View style={wrapStyle}>
+      <View style={styles.cardShadow}>
       <Pressable onPress={openPlayer} style={styles.card} accessibilityLabel="Open player">
         <View style={styles.row}>
           <Pressable
@@ -155,6 +158,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
           />
         </View>
       </Pressable>
+      </View>
     </View>
   );
 }
@@ -163,13 +167,20 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   // Explicitly transparent: the mini player must never paint a full-width strip behind its
   // rounded card when content sits beneath it (R12.6) — the card floats on its shadow.
   wrap: { paddingHorizontal: space.md, paddingTop: space.sm, backgroundColor: 'transparent' },
+  // The shadow lives on this UNCLIPPED wrapper: `overflow: 'hidden'` on the card clips the
+  // very iOS layer that would draw the shadow (the standard RN wrapper pattern). It carries
+  // the same radius + an opaque background so the shadow path matches the card exactly.
+  cardShadow: {
+    borderRadius: radius.lg,
+    backgroundColor: t.elevated,
+    ...floatShadow,
+  },
   card: {
     backgroundColor: t.elevated,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line2,
     overflow: 'hidden',
-    ...floatShadow,
   },
   row: {
     flexDirection: 'row',
