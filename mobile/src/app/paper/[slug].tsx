@@ -96,6 +96,7 @@ import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
+import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
@@ -185,13 +186,51 @@ export default function DiscussionScreen() {
     setExternalRef({ href, label });
   }, [showPaperActions]);
 
-  const [activeThread, setActiveThread] = useState(
-    typeof thread === 'string' && thread ? thread : 'main',
-  );
+  const explicitThread = typeof thread === 'string' && thread ? thread : null;
+  const [activeThread, setActiveThread] = useState(explicitThread ?? 'main');
+  // Set once the thread for this screen visit is decided by the route or the user; a stored
+  // last-opened thread restore must never override either.
+  const threadChosenRef = useRef(false);
   useEffect(() => {
-    setActiveThread(typeof thread === 'string' && thread ? thread : 'main');
-  }, [slug, thread]);
+    threadChosenRef.current = !!explicitThread;
+    setActiveThread(explicitThread ?? 'main');
+    if (!pid || !slug) return;
+    if (explicitThread) {
+      // An explicit navigation IS an open: remember it for the next plain resume.
+      saveLastThread(pid, slug, explicitThread);
+      return;
+    }
+    // Plain resume: return to the thread last open on this paper (usage note R12.2).
+    let active = true;
+    void loadLastThread(pid, slug).then((stored) => {
+      if (!active || !stored || stored === 'main' || threadChosenRef.current) return;
+      setActiveThread(stored);
+    });
+    return () => {
+      active = false;
+    };
+  }, [slug, explicitThread, pid]);
+  // The user's own pick (thread sheet, new thread) both wins over any pending restore and
+  // becomes the remembered thread.
+  const selectThread = useCallback(
+    (threadId: string) => {
+      threadChosenRef.current = true;
+      setActiveThread(threadId);
+      if (pid && slug) saveLastThread(pid, slug, threadId);
+    },
+    [pid, slug],
+  );
   const session = useSession(pid, slug ?? null, activeThread);
+  // A remembered thread can go stale (paper moved, project state rebuilt): fall back to main
+  // instead of wedging the screen on a 404, and forget the stale id.
+  useEffect(() => {
+    const message = session.error ? String((session.error as Error).message ?? '') : '';
+    if (activeThread !== 'main' && message.includes('Unknown discussion thread')) {
+      threadChosenRef.current = false;
+      setActiveThread('main');
+      if (pid && slug) clearLastThread(pid, slug);
+    }
+  }, [session.error, activeThread, pid, slug]);
   const settings = useSettings();
   const favoriteModels = useFavoriteModels();
   // The model for the *next* new response in this discussion only (Gemini/ChatGPT-style
@@ -365,7 +404,7 @@ export default function DiscussionScreen() {
     if (!pid || !slug || stream.streaming) return;
     try {
       const result = await api.createDiscussionThread(pid, slug);
-      setActiveThread(result.thread.id);
+      selectThread(result.thread.id);
       await qc.invalidateQueries({ queryKey: ['project', pid, 'session', slug] });
     } catch (e) {
       Alert.alert('Could not start a new thread', (e as Error).message ?? 'Request failed.');
@@ -480,7 +519,7 @@ export default function DiscussionScreen() {
         threads={session.data?.threads ?? []}
         selected={activeThread}
         disabled={stream.streaming}
-        onPick={setActiveThread}
+        onPick={selectThread}
         onCreate={() => void createThread()}
       />
 
