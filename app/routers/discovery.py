@@ -30,9 +30,44 @@ def start_discovery(pid: str, req: DiscoverReq):
     return {"job": discovery_jobs.snapshot(pid)}
 
 
+def _without_hidden(result: dict | None) -> dict | None:
+    """A copy of the persisted result with hidden suggestions removed (R12.3). The stored
+    file keeps every suggestion, so unhiding never needs a re-run."""
+    if not result or not isinstance(result.get("suggestions"), list):
+        return result
+    return {**result, "suggestions": discovery.filter_hidden(result["suggestions"])}
+
+
 @project_router.get("/discover")
 def get_discovery(pid: str):
     """Live job snapshot (poll every ~1.5s while running) plus the last persisted result, so
     the screen shows previous suggestions on re-entry."""
-    return {"job": discovery_jobs.snapshot(pid), "result": discovery.load_result(),
+    return {"job": discovery_jobs.snapshot(pid),
+            "result": _without_hidden(discovery.load_result()),
+            "hidden": discovery.load_hidden(),
             "goals": (projects._read_meta(pid) or {}).get("goals") or ""}
+
+
+class HideReq(BaseModel):
+    candidate: dict
+
+
+class UnhideReq(BaseModel):
+    keys: list[str]
+
+
+@project_router.post("/discover/hide")
+def hide_suggestion(pid: str, req: HideReq):
+    """Hide one recommended paper from future recommendation surfaces (R12.3). The client
+    sends the suggestion dict it rendered; identity is derived server-side."""
+    try:
+        entry = discovery.hide_candidate(req.candidate)
+    except discovery.DiscoveryError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"hidden": entry}
+
+
+@project_router.post("/discover/unhide")
+def unhide_suggestion(pid: str, req: UnhideReq):
+    """Undo a hide by any of its identity keys."""
+    return {"removed": discovery.unhide(req.keys)}

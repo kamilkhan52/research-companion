@@ -9,7 +9,8 @@
 // on the paper's Discussion screen.
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import {
   Linking,
   Pressable,
@@ -20,8 +21,9 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
-import { useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
-import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
+import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
+import { keys, useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
+import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
@@ -190,7 +192,7 @@ export default function DiscoverScreen() {
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
                   <SuggestionCard
-                    key={s.candidate_id}
+                    key={`${pid}:${s.candidate_id}`}
                     pid={pid!}
                     suggestion={s}
                     rank={i + 1}
@@ -309,7 +311,80 @@ function SuggestionCard({
   const { isInProject } = useProjectMembership(pid);
   const inLibrary = added || isInProject({ arxivId: s.arxiv_id, title: s.title });
   const [showAbstract, setShowAbstract] = useState(false);
+  // Hide (R12.3): the server filters this paper from future recommendation responses; the
+  // card flips into a compact undo row rather than vanishing, so a mis-tap is recoverable.
+  // The cached Discover list is deliberately NOT invalidated while the undo row shows, but
+  // the Map's recommendations query is — a mounted Graph tab must not keep serving the
+  // hidden paper from its cache. The card is keyed by pid+candidate at the call site, and
+  // an identity ref guards in-flight responses against representing a different project.
+  const qc = useQueryClient();
+  const [hiddenEntry, setHiddenEntry] = useState<HiddenRecommendation | null>(null);
+  const [hideBusy, setHideBusy] = useState(false);
+  const [hideError, setHideError] = useState<string | null>(null);
+  const cardIdentity = `${pid}:${s.candidate_id}`;
+  const identityRef = useRef(cardIdentity);
+  identityRef.current = cardIdentity;
   const paperUrl = fullPaperUrl(s);
+
+  async function handleHide() {
+    if (hideBusy) return;
+    const identity = cardIdentity;
+    const requestPid = pid;
+    setHideBusy(true);
+    setHideError(null);
+    try {
+      const { hidden } = await hideSuggestion(requestPid, s);
+      void qc.invalidateQueries({ queryKey: keys.graph(requestPid) });
+      if (identityRef.current !== identity) return;
+      setHiddenEntry(hidden);
+    } catch (e) {
+      if (identityRef.current !== identity) return;
+      setHideError((e as Error).message ?? 'Could not hide this paper.');
+    } finally {
+      if (identityRef.current === identity) setHideBusy(false);
+    }
+  }
+
+  async function handleUndoHide() {
+    if (hideBusy || !hiddenEntry) return;
+    const identity = cardIdentity;
+    const requestPid = pid;
+    setHideBusy(true);
+    try {
+      await unhideSuggestion(requestPid, hiddenEntry.keys);
+      void qc.invalidateQueries({ queryKey: keys.graph(requestPid) });
+      void qc.invalidateQueries({ queryKey: keys.discovery(requestPid) });
+      if (identityRef.current !== identity) return;
+      setHiddenEntry(null);
+    } catch (e) {
+      if (identityRef.current !== identity) return;
+      setHideError((e as Error).message ?? 'Could not restore this paper.');
+    } finally {
+      if (identityRef.current === identity) setHideBusy(false);
+    }
+  }
+
+  if (hiddenEntry) {
+    return (
+      <Card style={styles.suggestionCard}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <Icon name="eye-off" size={14} color={t.muted} />
+          <Text variant="caption" color={t.muted} style={{ flex: 1 }} numberOfLines={2}>
+            “{s.title}” won’t be recommended again.
+          </Text>
+          <Pressable
+            onPress={() => void handleUndoHide()}
+            style={styles.actionBtn}
+            accessibilityLabel={`Undo hiding ${s.title}`}>
+            <Text variant="caption" color={t.mint}>Undo</Text>
+          </Pressable>
+        </View>
+        {hideError ? (
+          <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>{hideError}</Text>
+        ) : null}
+      </Card>
+    );
+  }
 
   const authors = s.authors.length > 2 ? `${s.authors[0]} et al.` : s.authors.join(', ');
   const meta = [
@@ -382,6 +457,16 @@ function SuggestionCard({
             accessibilityLabel={`Open full paper for ${s.title}`}>
             <Icon name="external-link" size={13} color={t.muted} />
             <Text variant="caption" color={t.muted}>Full paper</Text>
+          </Pressable>
+        ) : null}
+        {!inLibrary ? (
+          <Pressable
+            onPress={() => void handleHide()}
+            disabled={hideBusy}
+            style={styles.actionBtn}
+            accessibilityLabel={`Hide ${s.title} from recommendations`}>
+            <Icon name="eye-off" size={13} color={t.muted} />
+            <Text variant="caption" color={t.muted}>Hide</Text>
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }} />

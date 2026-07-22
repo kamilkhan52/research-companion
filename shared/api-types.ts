@@ -579,6 +579,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/session/{slug}/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Thread */
+        post: operations["create_thread_api_projects__pid__session__slug__threads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/start": {
         parameters: {
             query?: never;
@@ -1095,6 +1112,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/preview/jobs/{job_id}/played": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Job Played
+         * @description Acknowledge that this project's audio layer accepted the cue for playback.
+         */
+        post: operations["preview_job_played_api_projects__pid__preview_jobs__job_id__played_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/continue": {
         parameters: {
             query?: never;
@@ -1535,6 +1572,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/discover/hide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hide Suggestion
+         * @description Hide one recommended paper from future recommendation surfaces (R12.3). The client
+         *     sends the suggestion dict it rendered; identity is derived server-side.
+         */
+        post: operations["hide_suggestion_api_projects__pid__discover_hide_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/discover/unhide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unhide Suggestion
+         * @description Undo a hide by any of its identity keys.
+         */
+        post: operations["unhide_suggestion_api_projects__pid__discover_unhide_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/graph": {
         parameters: {
             query?: never;
@@ -1750,6 +1828,11 @@ export interface components {
         ApproveReq: {
             /** Slug */
             slug: string;
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Notes Block */
             notes_block?: string | null;
             /** Synthesis */
@@ -1779,6 +1862,11 @@ export interface components {
             assistant_index: number;
             /** Branch */
             branch: number;
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
         };
         /** ChatStartReq */
         ChatStartReq: {
@@ -1788,6 +1876,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -1796,6 +1889,11 @@ export interface components {
             prompt?: string | null;
             /** Mode */
             mode?: ("balanced" | "background" | "technical" | "detailed") | null;
+        };
+        /** CreateThreadReq */
+        CreateThreadReq: {
+            /** Title */
+            title?: string | null;
         };
         /** DiscoverReq */
         DiscoverReq: {
@@ -1810,6 +1908,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -1843,6 +1946,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -1865,6 +1973,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HideReq */
+        HideReq: {
+            /** Candidate */
+            candidate: {
+                [key: string]: unknown;
+            };
+        };
         /** MetaPatchReq */
         MetaPatchReq: {
             /** Name */
@@ -1881,6 +1996,11 @@ export interface components {
              * @enum {string}
              */
             mode: "balanced" | "background" | "technical" | "detailed";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
         };
         /** MoveReq */
         MoveReq: {
@@ -2000,6 +2120,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -2020,6 +2145,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -2057,6 +2187,11 @@ export interface components {
              * @enum {string}
              */
             delivery_mode: "reading" | "listening";
+            /**
+             * Thread Id
+             * @default main
+             */
+            thread_id: string;
             /** Model */
             model?: string | null;
             /** Slug */
@@ -2127,6 +2262,11 @@ export interface components {
             arxiv_id?: string | null;
             /** Pdf Url */
             pdf_url?: string | null;
+        };
+        /** UnhideReq */
+        UnhideReq: {
+            /** Keys */
+            keys: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -3030,7 +3170,9 @@ export interface operations {
     };
     get_session_api_projects__pid__session__slug__get: {
         parameters: {
-            query?: never;
+            query?: {
+                thread_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -3062,7 +3204,9 @@ export interface operations {
     };
     opening_draft_api_projects__pid__opening_draft__slug__get: {
         parameters: {
-            query?: never;
+            query?: {
+                thread_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -3071,6 +3215,42 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_thread_api_projects__pid__session__slug__threads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateThreadReq"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -3890,7 +4070,9 @@ export interface operations {
     };
     chat_job_active_api_projects__pid__chat_jobs_active__slug__get: {
         parameters: {
-            query?: never;
+            query?: {
+                thread_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -3985,6 +4167,38 @@ export interface operations {
         };
     };
     preview_job_status_api_projects__pid__preview_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_job_played_api_projects__pid__preview_jobs__job_id__played_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -4589,7 +4803,9 @@ export interface operations {
     };
     get_review_api_projects__pid__review__slug__get: {
         parameters: {
-            query?: never;
+            query?: {
+                thread_id?: string;
+            };
             header?: never;
             path: {
                 slug: string;
@@ -4767,6 +4983,76 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["DiscoverReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hide_suggestion_api_projects__pid__discover_hide_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HideReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unhide_suggestion_api_projects__pid__discover_unhide_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UnhideReq"];
             };
         };
         responses: {

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,6 +105,121 @@ def load_result() -> dict | None:
 
 def save_result(result: dict) -> None:
     atomic_write_text(_result_path(), json.dumps(result, indent=2, ensure_ascii=False))
+
+
+# ---------- hidden recommendations (R12.3) ----------
+# A reader can hide a recommended paper (already read, known under another project, simply not
+# interesting) so it stops surfacing. Hidden entries are per-project, persisted under .state/,
+# and keyed by the suggestion's deterministic identities (arXiv id, DOI, S2 paper id,
+# normalized title) so the same work re-found through a different provider stays hidden.
+#
+# Matching semantics (sol review, PR #206): a strong identifier match (arxiv/doi/s2) always
+# hides; the normalized title is only a FALLBACK — it never bridges two works that carry
+# conflicting strong identifiers of the same kind, and degenerate normalizations ("C++" →
+# "c") are ignored entirely, so hiding one paper can never hide a different one that merely
+# shares a flattened title.
+
+_STRONG_PREFIXES = ("arxiv:", "doi:", "s2:")
+_TITLE_KEY_MIN_CHARS = 4
+
+# hide/unhide are read-modify-write over one JSON file; atomic_write_text prevents torn
+# files but not lost updates, so the whole transaction serializes per project.
+_hidden_locks: dict[str, threading.Lock] = {}
+_hidden_locks_guard = threading.Lock()
+
+
+def _hidden_lock() -> threading.Lock:
+    pid = config.active_project_id() or "__default__"
+    with _hidden_locks_guard:
+        return _hidden_locks.setdefault(pid, threading.Lock())
+
+
+def _hidden_path() -> Path:
+    return config.state_dir() / "discovery-hidden.json"
+
+
+def _usable_title_keys(keys: set[str]) -> set[str]:
+    return {
+        k for k in keys
+        if k.startswith("title:") and len(k) - len("title:") >= _TITLE_KEY_MIN_CHARS
+    }
+
+
+def _hidden_match(entry_keys: list[str] | None, candidate_keys: list[str]) -> bool:
+    """Whether a hidden entry covers a candidate. Strong-id match wins outright; a title
+    match only counts when no same-kind strong ids conflict between the two."""
+    entry = set(entry_keys or [])
+    cand = set(candidate_keys)
+    entry_strong = {k for k in entry if k.startswith(_STRONG_PREFIXES)}
+    cand_strong = {k for k in cand if k.startswith(_STRONG_PREFIXES)}
+    if entry_strong & cand_strong:
+        return True
+    for prefix in _STRONG_PREFIXES:
+        entry_kind = {k for k in entry_strong if k.startswith(prefix)}
+        cand_kind = {k for k in cand_strong if k.startswith(prefix)}
+        if entry_kind and cand_kind and not (entry_kind & cand_kind):
+            return False  # both sides carry this identifier and they disagree
+    return bool(_usable_title_keys(entry) & _usable_title_keys(cand))
+
+
+def load_hidden() -> list[dict]:
+    """[{keys, title, hidden_at}] — title retained so a future manage/unhide UI can label
+    entries without re-resolving them."""
+    try:
+        data = json.loads(_hidden_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+
+def _save_hidden(entries: list[dict]) -> None:
+    atomic_write_text(_hidden_path(), json.dumps(entries, indent=2, ensure_ascii=False))
+
+
+def hide_candidate(candidate: dict) -> dict:
+    """Persist the candidate as hidden and return its entry. Idempotent: re-hiding a work
+    already covered by a matching identity returns the existing entry."""
+    keys = _identity_keys(candidate)
+    if not keys:
+        raise DiscoveryError("This paper has no usable identity to hide it by.")
+    with _hidden_lock():
+        entries = load_hidden()
+        for entry in entries:
+            if _hidden_match(entry.get("keys"), keys):
+                return entry
+        entry = {
+            "keys": keys,
+            "title": str(candidate.get("title") or "").strip()[:300],
+            "hidden_at": datetime.now(UTC).isoformat(),
+        }
+        _save_hidden([*entries, entry])
+        return entry
+
+
+def unhide(keys: list[str]) -> bool:
+    """Remove every hidden entry matching an identity in `keys` (the undo path)."""
+    with _hidden_lock():
+        entries = load_hidden()
+        kept = [e for e in entries if not _hidden_match(e.get("keys"), keys)]
+        if len(kept) == len(entries):
+            return False
+        _save_hidden(kept)
+        return True
+
+
+def filter_hidden(items: list | None) -> list:
+    """Drop entries the reader has hidden; safe on any provider's dict shape (identity keys
+    fall back to the normalized title). Non-dict entries pass through untouched."""
+    items = items or []
+    hidden = load_hidden()
+    if not hidden:
+        return items
+    entry_keys = [e.get("keys") for e in hidden]
+    return [
+        item for item in items
+        if not isinstance(item, dict)
+        or not any(_hidden_match(keys, _identity_keys(item)) for keys in entry_keys)
+    ]
 
 
 # ---------- LLM plumbing ----------

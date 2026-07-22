@@ -744,8 +744,17 @@ export interface DiscoveryJob {
 export interface DiscoveryResponse {
   job: DiscoveryJob | null;
   result: DiscoveryResult | null;
+  /** Papers the reader hid from recommendations (R12.3); already excluded from `result`. */
+  hidden?: HiddenRecommendation[];
   /** The project's saved goals (project.json), for prefilling the field. */
   goals: string;
+}
+
+/** One hidden recommendation entry (app/discovery.py load_hidden). */
+export interface HiddenRecommendation {
+  keys: string[];
+  title: string;
+  hidden_at: string;
 }
 
 /** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running

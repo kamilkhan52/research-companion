@@ -10,6 +10,7 @@ import type {
   ChatJob,
   DiscoveryJob,
   DiscoveryResponse,
+  HiddenRecommendation,
   DiscussionThreadSummary,
   FavoriteModel,
   FigureManifest,
@@ -379,6 +380,13 @@ export const startDiscovery = (pid: string, goals: string) =>
   apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
 /** Live job snapshot + the last persisted result + saved goals. Cheap; safe every ~1.5s. */
 export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)}/discover`);
+/** Hide one recommended paper from every recommendation surface (R12.3). Send the rendered
+ *  suggestion; the server derives all its identities (arXiv/DOI/S2/title). */
+export const hideSuggestion = (pid: string, candidate: object) =>
+  apiPost<{ hidden: HiddenRecommendation }>(`${P(pid)}/discover/hide`, { candidate });
+/** Undo a hide by any of its identity keys. */
+export const unhideSuggestion = (pid: string, keys: string[]) =>
+  apiPost<{ removed: boolean }>(`${P(pid)}/discover/unhide`, { keys });
 
 // ---------- reference graph ----------
 

@@ -8,7 +8,16 @@ from __future__ import annotations
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from .. import author_profiles, graph, graph_jobs, graph_store, lab_research, sessions, store
+from .. import (
+    author_profiles,
+    discovery,
+    graph,
+    graph_jobs,
+    graph_store,
+    lab_research,
+    sessions,
+    store,
+)
 from . import make_project_router
 
 project_router = make_project_router()
@@ -31,7 +40,8 @@ def get_graph(pid: str):
         # Membership is re-derived from the live reading list on every read, so papers
         # added/removed since the last build color correctly without a rebuild (U.19).
         "graph": graph.overlay_membership(data.get("graph"), papers),
-        "recommendations": data.get("recommendations") or [],
+        # Papers the reader hid from recommendations stay hidden here too (R12.3).
+        "recommendations": discovery.filter_hidden(data.get("recommendations")),
         "status": graph.status(papers),
         "build": job.to_dict() if job else None,
     }
@@ -40,7 +50,7 @@ def get_graph(pid: str):
 @project_router.get("/graph/recommendations")
 def get_graph_recommendations(pid: str):
     data = graph_store.load()
-    return {"recommendations": data.get("recommendations") or []}
+    return {"recommendations": discovery.filter_hidden(data.get("recommendations"))}
 
 
 @project_router.get("/graph/authors")
