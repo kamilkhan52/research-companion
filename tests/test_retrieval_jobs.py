@@ -130,14 +130,21 @@ def test_retrieval_snapshot_piggybacks_canonical_progress(temp_project, monkeypa
         id = "canonical-1"
 
     monkeypatch.setattr(retrieval_jobs.canonical_jobs, "warm_async", lambda slug: Warm())
-    monkeypatch.setattr(
-        retrieval_jobs.canonical_jobs,
-        "snapshot",
-        lambda job_id: {
+
+    def canonical_snapshot(job_id):
+        # Cross-registry enrichment must happen after the retrieval snapshot releases its lock.
+        assert retrieval_jobs._registry.lock.acquire(blocking=False)
+        retrieval_jobs._registry.lock.release()
+        return {
             "id": job_id,
             "status": "running",
             "step": "Reading first page… · Mapping references… · Finding figures…",
-        },
+        }
+
+    monkeypatch.setattr(
+        retrieval_jobs.canonical_jobs,
+        "snapshot",
+        canonical_snapshot,
     )
     job = retrieval_jobs.start_retrieval(
         "p1",
@@ -153,6 +160,7 @@ def test_retrieval_snapshot_piggybacks_canonical_progress(temp_project, monkeypa
         "status": "running",
         "step": "Reading first page… · Mapping references… · Finding figures…",
     }
+    assert "canonical_job_id" not in snap
 
 
 def test_retrieval_renders_cover_from_downloaded_pdf(temp_project):

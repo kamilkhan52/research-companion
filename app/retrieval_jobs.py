@@ -38,24 +38,22 @@ class RetrievalJob(Job):
     analysis_error: str | None = None
     canonical_job_id: str | None = None
 
-    def to_dict(self) -> dict:
-        data = super().to_dict()
-        data.pop("canonical_job_id", None)
-        child = (
-            canonical_jobs.snapshot(self.canonical_job_id) if self.canonical_job_id else None
-        )
-        data["enrichment"] = (
-            {"status": child["status"], "step": child["step"]} if child else None
-        )
-        return data
-
 
 _registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
 _jobs = _registry.jobs
 
 
 def snapshot(job_id: str) -> dict | None:
-    return _registry.snapshot(job_id)
+    data = _registry.snapshot(job_id)
+    if data is None:
+        return None
+    canonical_job_id = data.pop("canonical_job_id", None)
+    # Merge cross-registry progress only after the retrieval snapshot releases its lock.
+    child = canonical_jobs.snapshot(canonical_job_id) if canonical_job_id else None
+    data["enrichment"] = (
+        {"status": child["status"], "step": child["step"]} if child else None
+    )
+    return data
 
 
 def latest_for(slug: str) -> RetrievalJob | None:
