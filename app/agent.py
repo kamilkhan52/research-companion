@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 
-from . import assembler, config, llm, prompts, sessions
+from . import assembler, config, figures, llm, prompts, sessions
 from .models import REVIEW_SLUG, ProposedCommit, Turn
 
 SECTIONS = ["CANONICAL", "STATE", "COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"]
@@ -30,16 +30,94 @@ MATH_MARKDOWN_CONTRACT = (
 _SECTION_RE = re.compile(
     r"^#{1,6}\s*(" + "|".join(SECTIONS) + r")\s*#{0,6}\s*$", re.M)
 
+_VISUAL_NOUN = r"(?:figures?|images?|plots?|charts?|diagrams?|visuals?)"
+_DISPLAY_ACTION = r"(?:show|display|include|embed|render|insert)"
+# An imperative display verb only counts at the start of the message/sentence/clause or right
+# after a politeness/conjunction word. That is what separates a request directed at the
+# assistant ("Include the figures…") from discussion of the paper ("Why did the authors
+# include this chart?", "What does Figure 3 show?") and from negation ("Do not show any
+# figures" — "not" is not an anchor word).
+_IMPERATIVE_ANCHOR = r"(?:^|[.!?;:]\s+|\b(?:please|and|also|then|now|kindly|just)\s+)"
+# The words allowed between a request verb and the visual noun: plain modifiers only.
+# Negations ("show no figures") and interrogative complements ("show how Figure 3 supports
+# the claim", "see whether the plots agree") must not bridge the gap — those are not
+# requests to display images.
+_REQUEST_FILLER = (
+    r"(?:(?!(?:no|not|never|none|how|why|what|when|where|whether|if)\b)\w+\s+){0,3}?"
+)
+_EXPLICIT_FIGURE_DISPLAY_RE = re.compile(
+    # "Show me Figure 3." / "Include the figures in your response."
+    rf"(?:{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}\s+(?:me\s+|us\s+)?"
+    rf"{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
+    # "Can you show the figures…"
+    rf"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?{_DISPLAY_ACTION}\s+"
+    rf"(?:me\s+|us\s+)?{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
+    # "What figures matter … can you show me here?"
+    rf"|\b{_VISUAL_NOUN}\b.{{0,120}}\b(?:can|could|will|would)\s+you\s+"
+    rf"(?:please\s+)?{_DISPLAY_ACTION}\b"
+    # "…the figures. Include them here."
+    rf"|\b{_VISUAL_NOUN}\b.{{0,160}}{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}"
+    rf"\s+(?:them|it)\b"
+    # "Can I see the figures?" / "I'd like to see the plots." / "Let me see the figures."
+    rf"|\b(?:can|could|may)\s+(?:i|we)\s+(?:please\s+)?(?:see|view)\s+"
+    rf"{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
+    rf"|\b(?:let\s+(?:me|us)|i(?:'d|\s+would)?\s+(?:like|want|love)|we(?:'d|\s+would)?\s+"
+    rf"(?:like|want|love))\s+(?:to\s+)?(?:see|view)\s+{_REQUEST_FILLER}{_VISUAL_NOUN}\b)",
+    re.I | re.S | re.M,
+)
 
-def _system_for(slug: str) -> str:
+
+def explicit_figure_display_request(text: str) -> bool:
+    """Whether the user asked for visual assets to be shown, not merely discussed."""
+    return bool(_EXPLICIT_FIGURE_DISPLAY_RE.search(text or ""))
+
+
+def _latest_user_text(history: list[dict]) -> str:
+    for message in reversed(history):
+        if message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _explicit_figure_request_layer(slug: str, user_text: str) -> str:
+    if not explicit_figure_display_request(user_text):
+        return ""
+    manifest = figures.manifest_for(slug)
+    available = sorted({
+        int(figure["number"])
+        for figure in (manifest or {}).get("figures", [])
+        if figure.get("number") is not None
+    })
+    if available:
+        labels = ", ".join(f"Figure {number}" for number in available)
+        return (
+            "\n\n=== EXPLICIT FIGURE-DISPLAY REQUEST ===\n"
+            "The user explicitly asked to see/show/include figure images. Begin CANONICAL with "
+            "a direct availability statement. The reader can see inline cards for ONLY these "
+            f"labels: {labels}. Say that requested listed figures are available below; if the "
+            "user requested an unlisted figure, say that image is unavailable and describe it "
+            "in words. Then give the same self-contained explanation required for every figure."
+        )
+    return (
+        "\n\n=== EXPLICIT FIGURE-DISPLAY REQUEST ===\n"
+        "The user explicitly asked to see/show/include figure images, but no figure cards are "
+        "available for this paper. Begin CANONICAL with a direct statement such as: “Figures "
+        "are not available for this paper in the app, so I’ll describe their data and meaning.” "
+        "Then provide the requested self-contained prose explanation."
+    )
+
+
+def _system_for(slug: str, latest_user_text: str = "") -> str:
     """The system prompt + assembled context for a turn (review chat vs paper chat)."""
     access = prompts.get("self_contained_research")
     if slug == REVIEW_SLUG:
-        return (prompts.get("review_system") + "\n\n" + MATH_MARKDOWN_CONTRACT + "\n\n" + access
-                + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug))
-    return (prompts.get("analysis_system") + _mode_layer(slug) + "\n\n"
-            + MATH_MARKDOWN_CONTRACT + "\n\n" + access
-            + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug))
+        base = (prompts.get("review_system") + "\n\n" + MATH_MARKDOWN_CONTRACT + "\n\n"
+                + access + "\n\n=== REVIEW CONTEXT ===\n\n" + assembler.build_context(slug))
+    else:
+        base = (prompts.get("analysis_system") + _mode_layer(slug) + "\n\n"
+                + MATH_MARKDOWN_CONTRACT + "\n\n" + access
+                + "\n\n=== READING CONTEXT ===\n\n" + assembler.build_context(slug))
+    return base + _explicit_figure_request_layer(slug, latest_user_text)
 
 
 def _mode_layer(slug: str) -> str:
@@ -123,7 +201,10 @@ def run_turn(slug: str, history: list[dict], model: str | None = None) -> Turn:
     model gets a large output budget because reasoning models spend tokens before the answer.
     `model` is a one-shot override for this call only; None falls back to the account default
     (see llm._build_body)."""
-    messages = [{"role": "system", "content": _system_for(slug)}] + history
+    messages = [{
+        "role": "system",
+        "content": _system_for(slug, _latest_user_text(history)),
+    }] + history
     return _parse(
         _complete(messages, model=model, max_tokens=16000),
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -236,7 +317,10 @@ def stream_messages(messages: list[dict], max_tokens: int = 16000, operation: st
 
 def stream_tokens(slug: str, history: list[dict], model: str | None = None):
     """Yield raw content pieces of the analysis response as they arrive."""
-    messages = [{"role": "system", "content": _system_for(slug)}] + history
+    messages = [{
+        "role": "system",
+        "content": _system_for(slug, _latest_user_text(history)),
+    }] + history
     yield from stream_messages(messages, max_tokens=16000, operation="analysis", model=model)
 
 

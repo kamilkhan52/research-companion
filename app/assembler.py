@@ -155,10 +155,14 @@ def build_context(slug: str) -> str:
     ]
     if manifest and manifest.get("status") == "done" and available:
         block = [
-            "# Prefetched figure cards available for this paper",
-            "(These exact printed labels have cached images in the app. To render a card inline, "
-            "write `Figure N` naturally in the paragraph where it matters; do not emit markdown "
-            "image syntax. Use only grounded, genuinely relevant figures.)",
+            "# Figure-card visibility in this discussion",
+            "(The reader can see inline image cards for ONLY the exact printed labels listed "
+            "below. In ordinary discussion, write `Figure N` naturally in the explanatory "
+            "paragraph so its card appears immediately afterward, without a meta announcement. "
+            "If the user explicitly asks to show/include/see figures, state plainly that requested "
+            "listed figures are available below. Still describe their relevant content and "
+            "conclusion in words. Do not emit markdown image syntax or imply that any unlisted "
+            "figure is visible.)",
         ]
         for figure in available:
             caption = " ".join(str(figure.get("caption") or "").split())
@@ -169,6 +173,16 @@ def build_context(slug: str) -> str:
                 line += f": {caption}"
             block.append(line)
         parts.append("\n".join(block))
+    else:
+        parts.append(
+            "# Figure-card visibility in this discussion\n"
+            "(No paper figure images are available to the reader in this discussion. You may "
+            "still explain a figure from the paper text or caption. In ordinary discussion, just "
+            "describe its data, structure, and conclusion completely in words without announcing "
+            "the missing image. If the user explicitly asks to show/include/see figures, state "
+            "plainly that figures are not available for this paper, then provide the prose "
+            "description. Never imply that the reader can see an unavailable image.)"
+        )
 
     return "\n\n---\n\n".join(parts)
 

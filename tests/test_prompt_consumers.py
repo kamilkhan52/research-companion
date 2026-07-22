@@ -12,7 +12,11 @@ def test_agent_harness_resolves_both_tool_guidance_prompts(monkeypatch):
         return object()
 
     monkeypatch.setattr(agent_harness, "Agent", fake_agent)
-    monkeypatch.setattr(agent_harness.agent_mod, "_system_for", lambda slug: "analysis system")
+    monkeypatch.setattr(
+        agent_harness.agent_mod,
+        "_system_for",
+        lambda slug, latest_user_text="": "analysis system",
+    )
     monkeypatch.setattr(
         agent_harness.prompts,
         "get",
@@ -99,6 +103,66 @@ def test_analysis_and_narration_compose_self_contained_guidance(monkeypatch):
     assert captured["messages"][0]["content"] == (
         "narration instructions\n\ndescribe every referenced item in place"
     )
+
+
+def test_explicit_figure_request_adds_availability_layer(monkeypatch):
+    values = {
+        "analysis_system": "analysis instructions",
+        "self_contained_research": "self-contained",
+    }
+    monkeypatch.setattr(agent.prompts, "get", values.__getitem__)
+    monkeypatch.setattr(agent.assembler, "build_context", lambda slug: "paper context")
+    monkeypatch.setattr(agent.sessions, "get_reading_mode", lambda slug: "balanced")
+
+    monkeypatch.setattr(agent.figures, "manifest_for", lambda slug: None)
+    unavailable = agent._system_for("paper", "Please show me the important figures.")
+    assert "EXPLICIT FIGURE-DISPLAY REQUEST" in unavailable
+    assert "Figures are not available for this paper" in unavailable
+
+    monkeypatch.setattr(agent.figures, "manifest_for", lambda slug: {
+        "status": "done",
+        "figures": [{"number": 2}, {"number": 4}, {"number": None}],
+    })
+    available = agent._system_for("paper", "Include the figures in your response.")
+    assert "ONLY these labels: Figure 2, Figure 4" in available
+    assert "available below" in available
+
+
+def test_implicit_figure_discussion_has_no_availability_layer(monkeypatch):
+    assert agent.explicit_figure_display_request("Let's discuss the important figures.") is False
+    assert agent.explicit_figure_display_request("Explain the data in Figure 3.") is False
+    # Discussion questions about a visual are not display requests (sol review, PR #201).
+    assert agent.explicit_figure_display_request("What does Figure 3 show?") is False
+    assert agent.explicit_figure_display_request(
+        "Why did the authors include this chart?"
+    ) is False
+    # Negation must never read as a request.
+    assert agent.explicit_figure_display_request("Do not show any figures.") is False
+    assert agent.explicit_figure_display_request("Please show no figures.") is False
+    assert agent.explicit_figure_display_request("Can you show no figures this time?") is False
+    # An interrogative complement is a question about the figure, not a display request.
+    assert agent.explicit_figure_display_request(
+        "Can you show how Figure 3 supports the claim?"
+    ) is False
+    assert agent.explicit_figure_display_request(
+        "Can I see why the plots disagree?"
+    ) is False
+    assert agent.explicit_figure_display_request("Show me Figure 3.") is True
+    assert agent.explicit_figure_display_request("Can I see the figures?") is True
+    assert agent.explicit_figure_display_request("Please include the figures.") is True
+    assert agent.explicit_figure_display_request("Can you show the figures here?") is True
+    assert agent.explicit_figure_display_request(
+        "What figures are the most important and can you show me here?"
+    ) is True
+    assert agent.explicit_figure_display_request(
+        "Let's review all the figures. Include them here."
+    ) is True
+
+    monkeypatch.setattr(agent.prompts, "get", lambda key: key)
+    monkeypatch.setattr(agent.assembler, "build_context", lambda slug: "paper context")
+    monkeypatch.setattr(agent.sessions, "get_reading_mode", lambda slug: "balanced")
+    system = agent._system_for("paper", "Let's discuss the important figures.")
+    assert "EXPLICIT FIGURE-DISPLAY REQUEST" not in system
 
 
 def test_prompts_instruct_linking_web_found_papers():

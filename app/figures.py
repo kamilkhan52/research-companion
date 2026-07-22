@@ -216,13 +216,17 @@ def _open_client() -> httpx.Client:
                         headers={"User-Agent": "research-companion-figures/1.0"})
 
 
-def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
+def _fetch_html_impl(requested_id: str,
+                     skip: frozenset[str] | set[str] = frozenset(),
+                     ) -> tuple[str, str | None, str | None]:
     """("ok", final_url, html_text) for the paper's HTML rendering; ("none", None, None)
     when the hosts definitively have none (cacheable miss); ("error", None, None) on fast
     transport errors (nothing cached — retried next build). Raises StallError on a timeout.
     Tries arXiv's native HTML first (newer papers), then ar5iv (older corpus). The id is
     passed VERSION-BEARING when known: the versionless URL serves the latest revision,
-    whose figures could disagree with the (pinned-version) corpus text being discussed."""
+    whose figures could disagree with the (pinned-version) corpus text being discussed.
+    `skip` lists final page URLs the caller already tried and found unusable (every listed
+    image failed to download), so derivation can move on to the next renderer."""
     candidates = (
         f"https://arxiv.org/html/{requested_id}",
         f"https://ar5iv.labs.arxiv.org/html/{requested_id}",
@@ -257,13 +261,29 @@ def _fetch_html(requested_id: str) -> tuple[str, str | None, str | None]:
                     ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
                     if ctype != "text/html":
                         break
-                    return "ok", url, resp.text
+                    html_text = resp.text
+                    # arXiv sometimes redirects an unavailable /html page to the paper's
+                    # ordinary /abs landing page (200 text/html), and some native renderings
+                    # carry no fetchable raster figures (none at all, or only SVG/off-host
+                    # sources the derivation would drop) even though ar5iv has them. Neither
+                    # is a usable figure source: accepting one would cache a "done" manifest
+                    # with zero entries and shadow ar5iv for good, so continue to the
+                    # fallback renderer instead.
+                    if url in skip or not _usable_figure_sources(url, parse_figures(html_text)):
+                        break
+                    return "ok", url, html_text
             except httpx.TimeoutException as e:
                 raise StallError(str(e)[:120]) from e
             except httpx.HTTPError as e:
                 transient = True
                 log.info("figure HTML fetch failed for %s: %s", requested_id, str(e)[:120])
     return ("error" if transient else "none"), None, None
+
+
+def _fetch_html(requested_id: str,
+                skip: frozenset[str] | set[str] = frozenset(),
+                ) -> tuple[str, str | None, str | None]:
+    return _fetch_html_impl(requested_id, skip)
 
 
 def _fetch_image(url: str) -> tuple[bytes, str] | None:
@@ -400,6 +420,45 @@ def _page_base(url: str) -> str:
     return url if last.endswith((".html", ".htm")) else url + "/"
 
 
+def _image_urls(page_url: str, raw_src: str) -> list[str]:
+    """Resolve figure image paths emitted by both arXiv HTML renderers.
+
+    ar5iv commonly emits page-directory-relative paths such as ``assets/x1.png``. Native
+    arXiv HTML now commonly emits document-relative paths prefixed with the paper id, such
+    as ``2401.00001v1/x1.png``. Treating the latter as page-directory-relative duplicates
+    the id (``.../2401.00001v1/2401.00001v1/x1.png``) and silently drops every figure.
+
+    Prefer the document-relative interpretation when the raw path starts with the final
+    page segment, then retain the other interpretation as a tolerant fallback. Absolute
+    paths/URLs collapse to one candidate.
+    """
+    directory_relative = urljoin(_page_base(page_url), raw_src)
+    document_relative = urljoin(page_url, raw_src)
+    page_segment = urlparse(page_url).path.rstrip("/").rsplit("/", 1)[-1]
+    raw_path = urlparse(raw_src).path.lstrip("/")
+    candidates = (
+        [document_relative, directory_relative]
+        if page_segment and raw_path.startswith(page_segment + "/")
+        else [directory_relative, document_relative]
+    )
+    return list(dict.fromkeys(candidates))
+
+
+def _usable_figure_sources(page_url: str, parsed: list[dict]) -> bool:
+    """Whether any figure the derivation would actually keep offers a fetchable image:
+    within the derivation's figure cap, on an allowed host, and not SVG. Mirrors the
+    per-figure drop rules in `_derive_locked` so "this page has figures" and "this page
+    can yield assets" cannot disagree."""
+    for fig in parsed[:MAX_FIGURES]:
+        for candidate in _image_urls(page_url, str(fig.get("src") or "")):
+            if not _host_allowed(candidate):
+                continue
+            if urlparse(candidate).path.lower().endswith(".svg"):
+                continue
+            return True
+    return False
+
+
 # One derivation per slug at a time: the retrieval warm and a graph build's enrichment can
 # overlap for the same paper, and interleaved asset rebuilds would corrupt each other.
 _slug_locks: dict[str, threading.Lock] = {}
@@ -436,72 +495,91 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
     # A version advance (v1 → v2: revised figures) is a cache miss — but NOT a _drop: the
     # old assets stay live until the replacement lands atomically below.
     if existing is not None and not force and existing.get("requested_id") == aid:
-        if existing.get("status") == "done":
+        # A "done" manifest with zero figures is a LEGACY artifact: earlier code cached one
+        # when native image paths were misresolved or every download failed. The current
+        # pipeline records those outcomes as a cool-down "none" instead, so an empty "done"
+        # can only be stale — fall through and re-derive rather than trusting it forever.
+        if existing.get("status") == "done" and existing.get("figures"):
             return existing
-        if time.time() - float(existing.get("fetched_ts") or 0) < NONE_RETRY_S:
+        if (existing.get("status") != "done"
+                and time.time() - float(existing.get("fetched_ts") or 0) < NONE_RETRY_S):
             return existing  # recent "no HTML" result — don't re-poll arXiv every build
     fetch_html = fetch_html or _fetch_html
     fetch_image = fetch_image or _fetch_image
 
-    status, final_url, html_text = fetch_html(aid or base)
-    if status == "error":
-        # Transient failure (transport error, 429/5xx) — nothing cached, retried later.
-        return existing
-    if status != "ok":
-        manifest = {"version": 1, "arxiv_id": base, "requested_id": aid, "source": None,
-                    "status": "none", "fetched_at": _now_iso(), "fetched_ts": time.time(),
-                    "figures": []}
-        return manifest if _write_manifest(slug, manifest) else existing
+    # A page can pass the parse-time usability check and still yield nothing at download
+    # time (dead links, non-image types, oversized files). Caching that as a "done" manifest
+    # with zero entries would shadow the other renderer for good, so an exhausted page joins
+    # `tried` and the fetch moves to the next source. The candidate list is finite, so this
+    # settles in at most a few rounds.
+    tried: set[str] = set()
+    while True:
+        status, final_url, html_text = fetch_html(aid or base, tried)
+        if status == "error":
+            # Transient failure (transport error, 429/5xx) — nothing cached, retried later.
+            return existing
+        if status != "ok":
+            manifest = {"version": 1, "arxiv_id": base, "requested_id": aid, "source": None,
+                        "status": "none", "fetched_at": _now_iso(),
+                        "fetched_ts": time.time(), "figures": []}
+            return manifest if _write_manifest(slug, manifest) else existing
 
-    parsed = parse_figures(html_text)
-    # Build into a staging dir and swap only on success: a stall mid-download must leave
-    # the previous assets (and the manifest pointing at them) fully intact.
-    staging = figures_dir() / f".{slug}.staging"
-    shutil.rmtree(staging, ignore_errors=True)
-    entries: list[dict] = []
-    base_url = _page_base(final_url)
-    try:
-        for index, fig in enumerate(parsed[:MAX_FIGURES]):
-            src = urljoin(base_url, fig["src"])
-            if not _host_allowed(src):  # data: URIs and off-allowlist hosts drop here
-                continue
-            if urlparse(src).path.lower().endswith(".svg"):
-                continue
-            image = fetch_image(src)  # StallError propagates → staging discarded
-            if image is None:
-                continue
-            payload, ext = image
-            stem = _SAFE_ASSET_CHARS.sub("-", fig["id"]) or "fig"
-            asset = f"{index + 1:02d}-{stem}{ext}"
-            if not _project_alive():
-                return existing  # racing a deletion — stop, write nothing more
-            staging.mkdir(parents=True, exist_ok=True)
-            atomic_write_bytes(staging / asset, payload)
-            entries.append({
-                "id": fig["id"] or f"fig-{index + 1}",
-                "number": _figure_number(fig),
-                "caption": fig["caption"],
-                "alt": fig["alt"],
-                "src": src,
-                "asset": asset,
-                "width": fig.get("width"),
-                "height": fig.get("height"),
-            })
-        if not _project_alive():
-            return existing
-        shutil.rmtree(asset_dir(slug), ignore_errors=True)
-        if entries:
-            staging.rename(asset_dir(slug))
-        manifest = {"version": 1, "arxiv_id": base, "requested_id": aid,
-                    "source": final_url, "status": "done", "fetched_at": _now_iso(),
-                    "fetched_ts": time.time(), "figures": entries}
-        if not _write_manifest(slug, manifest):
-            shutil.rmtree(asset_dir(slug), ignore_errors=True)
-            return existing
-        log.info("figure manifest for %s: %d figures from %s", slug, len(entries), final_url)
-        return manifest
-    finally:
+        parsed = parse_figures(html_text)
+        # Build into a staging dir and swap only on success: a stall mid-download must leave
+        # the previous assets (and the manifest pointing at them) fully intact.
+        staging = figures_dir() / f".{slug}.staging"
         shutil.rmtree(staging, ignore_errors=True)
+        entries: list[dict] = []
+        try:
+            for index, fig in enumerate(parsed[:MAX_FIGURES]):
+                src = None
+                image = None
+                for candidate in _image_urls(final_url, fig["src"]):
+                    if not _host_allowed(candidate):
+                        continue  # data: URIs and off-allowlist hosts drop here
+                    if urlparse(candidate).path.lower().endswith(".svg"):
+                        continue
+                    image = fetch_image(candidate)  # StallError propagates → staging discarded
+                    if image is not None:
+                        src = candidate
+                        break
+                if image is None:
+                    continue
+                payload, ext = image
+                stem = _SAFE_ASSET_CHARS.sub("-", fig["id"]) or "fig"
+                asset = f"{index + 1:02d}-{stem}{ext}"
+                if not _project_alive():
+                    return existing  # racing a deletion — stop, write nothing more
+                staging.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(staging / asset, payload)
+                entries.append({
+                    "id": fig["id"] or f"fig-{index + 1}",
+                    "number": _figure_number(fig),
+                    "caption": fig["caption"],
+                    "alt": fig["alt"],
+                    "src": src,
+                    "asset": asset,
+                    "width": fig.get("width"),
+                    "height": fig.get("height"),
+                })
+            if not _project_alive():
+                return existing
+            if not entries:
+                tried.add(final_url)
+                continue  # every listed image failed to download — try the next renderer
+            shutil.rmtree(asset_dir(slug), ignore_errors=True)
+            staging.rename(asset_dir(slug))
+            manifest = {"version": 1, "arxiv_id": base, "requested_id": aid,
+                        "source": final_url, "status": "done", "fetched_at": _now_iso(),
+                        "fetched_ts": time.time(), "figures": entries}
+            if not _write_manifest(slug, manifest):
+                shutil.rmtree(asset_dir(slug), ignore_errors=True)
+                return existing
+            log.info("figure manifest for %s: %d figures from %s",
+                     slug, len(entries), final_url)
+            return manifest
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 @dataclass

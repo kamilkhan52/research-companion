@@ -3,6 +3,8 @@ SSRF posture on image URLs, and the never-fails enrichment pass. Network functio
 injected fakes (the conftest stubs the real ones); the suite stays network-free."""
 from __future__ import annotations
 
+import json
+
 from app import figures, store
 
 from tests.conftest import add_paper
@@ -29,11 +31,13 @@ HTML = """<html><body>
 
 
 def fake_html(html=HTML, final=FINAL_URL, status=None):
-    def fetch(base_id):
+    def fetch(base_id, skip=frozenset()):
         fetch.calls.append(base_id)
         if status is not None:
             return status, None, None
-        return ("none", None, None) if html is None else ("ok", final, html)
+        if html is None or final in skip:
+            return "none", None, None
+        return "ok", final, html
     fetch.calls = []
     return fetch
 
@@ -75,6 +79,72 @@ def test_figure_number_falls_back_to_the_element_id():
     assert figures._figure_number({"caption": "", "id": "S4.T2"}) is None
 
 
+def test_html_fetch_falls_back_when_native_page_has_no_image_figures(monkeypatch):
+    native = "https://arxiv.org/html/2401.00001v1"
+    fallback = "https://ar5iv.labs.arxiv.org/html/2401.00001v1"
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __init__(self, text):
+            self.text = text
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response("<html>abstract only</html>" if url == native else HTML)
+
+    monkeypatch.setattr(figures, "_open_client", Client)
+    monkeypatch.setattr(figures, "_resolves_public", lambda url: True)
+    status, final_url, html = figures._fetch_html_impl("2401.00001v1")
+    assert calls == [native, fallback]
+    assert (status, final_url, html) == ("ok", fallback, HTML)
+
+
+def test_html_fetch_falls_back_when_native_figures_are_all_unfetchable(monkeypatch):
+    """A native page whose figures would ALL be dropped by derivation (SVG-only here) must
+    not shadow ar5iv: accepting it caches a 'done' manifest with zero entries for good."""
+    native = "https://arxiv.org/html/2401.00001v1"
+    fallback = "https://ar5iv.labs.arxiv.org/html/2401.00001v1"
+    svg_only = """<figure id="S1.F1">
+      <img src="2401.00001v1/x1.svg">
+      <figcaption>Figure 1: Vector-only diagram.</figcaption>
+    </figure>"""
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html"}
+
+        def __init__(self, text):
+            self.text = text
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response(svg_only if url == native else HTML)
+
+    monkeypatch.setattr(figures, "_open_client", Client)
+    monkeypatch.setattr(figures, "_resolves_public", lambda url: True)
+    status, final_url, html = figures._fetch_html_impl("2401.00001v1")
+    assert calls == [native, fallback]
+    assert (status, final_url, html) == ("ok", fallback, HTML)
+
+
 # --- derivation + cache ----------------------------------------------------------------------
 
 def test_derive_writes_manifest_and_assets(temp_project):
@@ -96,6 +166,40 @@ def test_derive_writes_manifest_and_assets(temp_project):
     again = figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
     assert again["fetched_ts"] == manifest["fetched_ts"]
     assert len(html.calls) == 1
+
+
+def test_all_image_downloads_failing_tries_next_source_never_empty_done(temp_project):
+    """Every listed image failing at download time (dead links, bad types, oversized) must
+    not cache a 'done' manifest with zero entries — the next renderer is tried, and full
+    exhaustion is a cool-down 'none' miss (sol review round 2, PR #201)."""
+    slug = paper()
+    html = fake_html()
+
+    def no_image(url):
+        no_image.calls.append(url)
+        return None
+    no_image.calls = []
+
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=no_image)
+    assert manifest["status"] == "none"
+    assert manifest["figures"] == []
+    assert len(html.calls) == 2  # the first page was exhausted, the fallback then skipped it
+    assert no_image.calls  # downloads were genuinely attempted
+
+
+def test_native_arxiv_id_prefixed_image_path_does_not_duplicate_id(temp_project):
+    slug = paper()
+    html = """<figure id="S2.F1">
+      <img src="2401.00001v1/Figures/model.png">
+      <figcaption>Figure 1: Native arXiv path.</figcaption>
+    </figure>"""
+    image = fake_image()
+    manifest = figures.derive_for_slug(
+        slug, fetch_html=fake_html(html=html), fetch_image=image
+    )
+    expected = "https://arxiv.org/html/2401.00001v1/Figures/model.png"
+    assert image.calls == [expected]
+    assert manifest["figures"][0]["src"] == expected
 
 
 def test_paper_without_arxiv_identity_keeps_no_manifest(temp_project):
@@ -359,7 +463,7 @@ def test_writes_refuse_a_deleting_project(temp_project):
 def test_stalled_fetch_does_not_cache_a_miss(temp_project):
     slug = paper()
 
-    def stalling(base_id):
+    def stalling(base_id, skip=frozenset()):
         raise figures.StallError("read timeout")
 
     try:
@@ -367,3 +471,29 @@ def test_stalled_fetch_does_not_cache_a_miss(temp_project):
     except figures.StallError:
         pass
     assert figures.read_manifest(slug) is None
+
+
+def test_legacy_empty_done_manifest_is_rederived(temp_project):
+    """Older code cached status='done' with zero figures when native image paths were
+    misresolved or every download failed; the current pipeline records those as 'none'
+    with a cool-down instead. A legacy empty 'done' must be treated as a miss (sol round
+    3, PR #201) — otherwise live papers keep showing no figures forever."""
+    slug = paper()
+    figures.figures_dir().mkdir(parents=True, exist_ok=True)
+    figures.manifest_path(slug).write_text(json.dumps({
+        "version": 1, "arxiv_id": "2401.00001", "requested_id": "2401.00001v2",
+        "source": "https://arxiv.org/html/2401.00001v2", "status": "done",
+        "fetched_at": "2026-01-01T00:00:00+00:00", "fetched_ts": 1.0, "figures": [],
+    }), encoding="utf-8")
+
+    html = fake_html()
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
+    assert html.calls  # the stale empty cache did not short-circuit derivation
+    assert manifest["status"] == "done"
+    assert manifest["figures"]
+
+    # A non-empty 'done' for the same requested id still short-circuits.
+    html2 = fake_html()
+    again = figures.derive_for_slug(slug, fetch_html=html2, fetch_image=fake_image())
+    assert html2.calls == []
+    assert again["figures"] == manifest["figures"]
