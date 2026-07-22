@@ -29,11 +29,13 @@ HTML = """<html><body>
 
 
 def fake_html(html=HTML, final=FINAL_URL, status=None):
-    def fetch(base_id):
+    def fetch(base_id, skip=frozenset()):
         fetch.calls.append(base_id)
         if status is not None:
             return status, None, None
-        return ("none", None, None) if html is None else ("ok", final, html)
+        if html is None or final in skip:
+            return "none", None, None
+        return "ok", final, html
     fetch.calls = []
     return fetch
 
@@ -162,6 +164,25 @@ def test_derive_writes_manifest_and_assets(temp_project):
     again = figures.derive_for_slug(slug, fetch_html=html, fetch_image=image)
     assert again["fetched_ts"] == manifest["fetched_ts"]
     assert len(html.calls) == 1
+
+
+def test_all_image_downloads_failing_tries_next_source_never_empty_done(temp_project):
+    """Every listed image failing at download time (dead links, bad types, oversized) must
+    not cache a 'done' manifest with zero entries — the next renderer is tried, and full
+    exhaustion is a cool-down 'none' miss (sol review round 2, PR #201)."""
+    slug = paper()
+    html = fake_html()
+
+    def no_image(url):
+        no_image.calls.append(url)
+        return None
+    no_image.calls = []
+
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=no_image)
+    assert manifest["status"] == "none"
+    assert manifest["figures"] == []
+    assert len(html.calls) == 2  # the first page was exhausted, the fallback then skipped it
+    assert no_image.calls  # downloads were genuinely attempted
 
 
 def test_native_arxiv_id_prefixed_image_path_does_not_duplicate_id(temp_project):
@@ -440,7 +461,7 @@ def test_writes_refuse_a_deleting_project(temp_project):
 def test_stalled_fetch_does_not_cache_a_miss(temp_project):
     slug = paper()
 
-    def stalling(base_id):
+    def stalling(base_id, skip=frozenset()):
         raise figures.StallError("read timeout")
 
     try:

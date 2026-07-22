@@ -138,6 +138,15 @@ def test_implicit_figure_discussion_has_no_availability_layer(monkeypatch):
     ) is False
     # Negation must never read as a request.
     assert agent.explicit_figure_display_request("Do not show any figures.") is False
+    assert agent.explicit_figure_display_request("Please show no figures.") is False
+    assert agent.explicit_figure_display_request("Can you show no figures this time?") is False
+    # An interrogative complement is a question about the figure, not a display request.
+    assert agent.explicit_figure_display_request(
+        "Can you show how Figure 3 supports the claim?"
+    ) is False
+    assert agent.explicit_figure_display_request(
+        "Can I see why the plots disagree?"
+    ) is False
     assert agent.explicit_figure_display_request("Show me Figure 3.") is True
     assert agent.explicit_figure_display_request("Can I see the figures?") is True
     assert agent.explicit_figure_display_request("Please include the figures.") is True

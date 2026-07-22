@@ -38,13 +38,20 @@ _DISPLAY_ACTION = r"(?:show|display|include|embed|render|insert)"
 # include this chart?", "What does Figure 3 show?") and from negation ("Do not show any
 # figures" — "not" is not an anchor word).
 _IMPERATIVE_ANCHOR = r"(?:^|[.!?;:]\s+|\b(?:please|and|also|then|now|kindly|just)\s+)"
+# The words allowed between a request verb and the visual noun: plain modifiers only.
+# Negations ("show no figures") and interrogative complements ("show how Figure 3 supports
+# the claim", "see whether the plots agree") must not bridge the gap — those are not
+# requests to display images.
+_REQUEST_FILLER = (
+    r"(?:(?!(?:no|not|never|none|how|why|what|when|where|whether|if)\b)\w+\s+){0,3}?"
+)
 _EXPLICIT_FIGURE_DISPLAY_RE = re.compile(
     # "Show me Figure 3." / "Include the figures in your response."
     rf"(?:{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}\s+(?:me\s+|us\s+)?"
-    rf"(?:\w+\s+){{0,3}}?{_VISUAL_NOUN}\b"
+    rf"{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
     # "Can you show the figures…"
-    rf"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?{_DISPLAY_ACTION}\b"
-    rf".{{0,80}}?\b{_VISUAL_NOUN}\b"
+    rf"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?{_DISPLAY_ACTION}\s+"
+    rf"(?:me\s+|us\s+)?{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
     # "What figures matter … can you show me here?"
     rf"|\b{_VISUAL_NOUN}\b.{{0,120}}\b(?:can|could|will|would)\s+you\s+"
     rf"(?:please\s+)?{_DISPLAY_ACTION}\b"
@@ -52,9 +59,10 @@ _EXPLICIT_FIGURE_DISPLAY_RE = re.compile(
     rf"|\b{_VISUAL_NOUN}\b.{{0,160}}{_IMPERATIVE_ANCHOR}(?:please\s+)?{_DISPLAY_ACTION}"
     rf"\s+(?:them|it)\b"
     # "Can I see the figures?" / "I'd like to see the plots." / "Let me see the figures."
-    rf"|\b(?:can|could|may)\s+(?:i|we)\s+(?:please\s+)?(?:see|view)\b.{{0,80}}?\b{_VISUAL_NOUN}\b"
+    rf"|\b(?:can|could|may)\s+(?:i|we)\s+(?:please\s+)?(?:see|view)\s+"
+    rf"{_REQUEST_FILLER}{_VISUAL_NOUN}\b"
     rf"|\b(?:let\s+(?:me|us)|i(?:'d|\s+would)?\s+(?:like|want|love)|we(?:'d|\s+would)?\s+"
-    rf"(?:like|want|love))\s+(?:to\s+)?(?:see|view)\b.{{0,80}}?\b{_VISUAL_NOUN}\b)",
+    rf"(?:like|want|love))\s+(?:to\s+)?(?:see|view)\s+{_REQUEST_FILLER}{_VISUAL_NOUN}\b)",
     re.I | re.S | re.M,
 )
 
