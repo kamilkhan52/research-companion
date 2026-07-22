@@ -115,7 +115,7 @@ import {
   useThemeMode,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { floatShadow, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 // The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
 // row of `flexDirection: 'row'`, so a plain width override on the child bubble can't stretch
@@ -2940,6 +2940,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: 24,
+    // Floats over the message list on its shadow — the toolbar strip behind it stays
+    // transparent (R12.6).
+    ...floatShadow,
     paddingLeft: tight ? space.sm : space.md,
     paddingRight: 6,   // the send button sits close to the right edge, inside the card
     paddingVertical: 6,
