@@ -64,6 +64,8 @@ export function ProjectSwitcher({
 
   function handleClose() {
     setManaging(null);
+    setCreating(false);
+    setCreateError(null);
     onClose();
   }
 
@@ -83,6 +85,49 @@ export function ProjectSwitcher({
           onBack={() => setManaging(null)}
           onDone={handleClose}
         />
+      ) : creating ? (
+        // A dedicated panel, not a form under the list (D08): with several projects the
+        // bottom-of-list input ended up hidden under the keyboard and the sheet never
+        // scrolled to reveal it. Replacing the list keeps the input at the sheet's top —
+        // always visible regardless of project count, same pattern as Rename (which works).
+        <View style={{ gap: space.sm }}>
+          <Text variant="title" style={{ marginBottom: space.md }}>
+            New project
+          </Text>
+          <BottomSheetTextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Project name"
+            placeholderTextColor={t.muted}
+            style={styles.input}
+            autoFocus
+            returnKeyType="done"
+            onSubmitEditing={handleCreate}
+          />
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <Button
+              title="Cancel"
+              variant="ghost"
+              onPress={() => {
+                setCreating(false);
+                setCreateError(null);
+              }}
+              style={{ flex: 1 }}
+            />
+            <Button
+              title="Create"
+              onPress={handleCreate}
+              loading={createProject.isPending}
+              disabled={!name.trim()}
+              style={{ flex: 1 }}
+            />
+          </View>
+          {createError ? (
+            <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+              {createError}
+            </Text>
+          ) : null}
+        </View>
       ) : (
         <>
           <Text variant="title" style={{ marginBottom: space.md }}>
@@ -121,42 +166,7 @@ export function ProjectSwitcher({
           )}
 
           <View style={{ marginTop: space.lg }}>
-            {creating ? (
-              <View style={{ gap: space.sm }}>
-                <BottomSheetTextInput
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="Project name"
-                  placeholderTextColor={t.muted}
-                  style={styles.input}
-                  autoFocus
-                  returnKeyType="done"
-                  onSubmitEditing={handleCreate}
-                />
-                <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Button
-                    title="Cancel"
-                    variant="ghost"
-                    onPress={() => setCreating(false)}
-                    style={{ flex: 1 }}
-                  />
-                  <Button
-                    title="Create"
-                    onPress={handleCreate}
-                    loading={createProject.isPending}
-                    disabled={!name.trim()}
-                    style={{ flex: 1 }}
-                  />
-                </View>
-              </View>
-            ) : (
-              <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
-            )}
-            {createError ? (
-              <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-                {createError}
-              </Text>
-            ) : null}
+            <Button title="+ New project" variant="ghost" onPress={() => setCreating(true)} />
           </View>
         </>
       )}
