@@ -193,9 +193,20 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
     if (!building || !pid) return;
     let cancelled = false;
     const tick = async () => {
+      // Captured BEFORE the request: a poll that merely RESOLVES after the start POST
+      // settles may still have READ the server before the job was registered.
+      const beganWhileStarting = startingRef.current;
       try {
         const { build } = await getGraphBuildStatus(pid);
-        if (!cancelled) applyJob(build);
+        if (cancelled) return;
+        // While the start POST is in flight (at request or response time), the server may
+        // not know the new job yet — or may still report the PREVIOUS settled build.
+        // Applying such a snapshot flipped `building` back off (the D17 first-tap
+        // flash-revert) and could fire a spurious completion toast. A RUNNING snapshot is
+        // always safe to apply: builds are deduped per project, so a running job during a
+        // start can only be the one being started (or the one the POST will dedup onto).
+        if ((beganWhileStarting || startingRef.current) && build?.status !== 'running') return;
+        applyJob(build);
       } catch {
         // transient network error — keep polling; the next tick may succeed
       }
@@ -227,13 +238,29 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         applyJob(build);
       } catch (e) {
         if (generation !== startGenerationRef.current) return;
+        // The POST response can be lost while the job started fine server-side (the tunnel
+        // kills long requests). Reconcile with the registry before declaring failure, so a
+        // real running build is never left untracked.
+        try {
+          const { build } = await getGraphBuildStatus(requestPid);
+          if (generation !== startGenerationRef.current) return;
+          if (build?.status === 'running') {
+            applyJob(build);
+            return;
+          }
+        } catch {
+          // status unreachable too — fall through to the error
+        }
         setError((e as Error).message ?? 'Graph build failed.');
         setBuilding(false);
+        // If the job actually ran to completion before the lost POST settled, the refetch
+        // still surfaces the new graph.
+        qc.invalidateQueries({ queryKey: keys.graph(requestPid) });
       } finally {
         if (generation === startGenerationRef.current) startingRef.current = false;
       }
     },
-    [pid, building, applyJob],
+    [pid, building, applyJob, qc],
   );
 
   const resume = useCallback(
