@@ -80,6 +80,10 @@ export function useStreamingTurn(
   // fast double-tap before React re-renders with the disabled button — can't both slip past
   // the check; state only updates on the next render, a ref updates immediately.
   const busyRef = useRef(false);
+  // Bumped whenever the conversation (pid/slug/thread) changes. An async resume()/run()
+  // captures it on entry and re-checks before attaching a watcher, so a lookup started for
+  // the previous conversation can never bind its job to the new one.
+  const conversationEpochRef = useRef(0);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
@@ -187,6 +191,7 @@ export function useStreamingTurn(
       setPreviewParentJobId(null);
       setPendingUser(optimisticUser ?? null);
       setStreaming(true);
+      const epoch = conversationEpochRef.current;
       const handoffEpoch = currentHandoffEligibilityEpoch();
       try {
         const payload = body && typeof body === 'object' && !Array.isArray(body)
@@ -206,6 +211,7 @@ export function useStreamingTurn(
           // Acceptance is already authoritative server-side. A local storage cleanup failure
           // must not detach the client from the running job; reconciliation can retry later.
         }
+        if (epoch !== conversationEpochRef.current) return;
         await watch(job);
       } catch (e) {
         setPreviewParentJobId(null);
@@ -219,6 +225,7 @@ export function useStreamingTurn(
             await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
             await qc.invalidateQueries({ queryKey: keys.opening(pid, slug, threadId) });
             const { job: active } = await getActiveChatJob(pid, slug, threadId);
+            if (epoch !== conversationEpochRef.current) return;
             if (active) {
               recoveredActiveJob = true;
               setError(null);
@@ -239,9 +246,14 @@ export function useStreamingTurn(
   const resume = useCallback(async () => {
     if (!pid || !slug || busyRef.current) return;
     busyRef.current = true;
+    const epoch = conversationEpochRef.current;
     const handoffEpoch = currentHandoffEligibilityEpoch();
     try {
       const { job } = await getActiveChatJob(pid, slug, threadId);
+      // The conversation may have switched while the lookup was in flight (e.g. the
+      // last-opened-thread restore landing right after mount): this lookup belongs to the
+      // OLD thread, and watch() would re-establish its job on the new one.
+      if (epoch !== conversationEpochRef.current) return;
       if (!job || !aliveRef.current) {
         setPreviewParentJobId(null);
         return;
@@ -252,6 +264,7 @@ export function useStreamingTurn(
       // The message that started this turn is already recorded server-side; refresh the
       // transcript so it shows while we reattach to the live turn.
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
+      if (epoch !== conversationEpochRef.current) return;
       await watch(job);
     } catch {
       setPreviewParentJobId(null);
@@ -262,7 +275,10 @@ export function useStreamingTurn(
   }, [deliveryMode, pid, slug, qc, threadId, watch]);
 
   // Switching conversations must never keep painting or polling the previous thread's job.
+  // The epoch bump also invalidates any in-flight resume()/run() recovery lookup that was
+  // started for the previous conversation (it re-checks before attaching a watcher).
   useEffect(() => {
+    conversationEpochRef.current += 1;
     watchRef.current = null;
     busyRef.current = false;
     setStreaming(false);

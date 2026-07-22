@@ -209,3 +209,42 @@ test('an independent thread qualifies the turn body and cache without changing m
   await unmountAsync();
   client.clear();
 });
+
+// R12.2 follow-up (sol P1): a resume() started for one thread must never attach its job to
+// a different thread — the last-opened-thread restore switches the conversation right after
+// mount, while the main-thread active-job lookup can still be in flight.
+test('a thread switch mid-resume never attaches the old thread’s job', async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: PropsWithChildren) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  );
+
+  let resolveLookup: (value: { job: ChatJob | null }) => void = () => undefined;
+  jest.mocked(api.getActiveChatJob).mockReturnValue(
+    new Promise((resolve) => {
+      resolveLookup = resolve;
+    }),
+  );
+  const poll = jest.mocked(api.getChatJob);
+  poll.mockClear();
+
+  const hook = await renderHookAsync(
+    ({ threadId }: { threadId: string }) =>
+      useStreamingTurn('proj', 'paper', 'reading', undefined, threadId),
+    { initialProps: { threadId: 'main' }, wrapper },
+  );
+  act(() => {
+    void hook.result.current.resume();
+  });
+
+  // The last-opened-thread restore lands while the main lookup is still in flight.
+  await act(async () => hook.rerenderAsync({ threadId: 'thread-b' }));
+  // Now main's lookup resolves with an active job — it belongs to the old conversation.
+  await act(async () => {
+    resolveLookup({ job: baseJob });
+  });
+
+  expect(hook.result.current.streaming).toBe(false); // must not adopt main's job
+  expect(poll).not.toHaveBeenCalled(); // and must not start polling it
+  await hook.unmountAsync();
+});
