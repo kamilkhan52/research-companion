@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterable
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
@@ -33,10 +33,13 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import UsageLimits
 
 from . import agent as agent_mod
-from . import config, prompts, research_tools, sessions
+from . import config, logging_config, prompts, research_tools, sessions, usage
 from .models import Turn
+
+log = logging_config.get("agent_harness")
 
 # ON by default (R12.8): the tool loop IS the product's turn path — without it no discussion
 # turn can search the web or re-read the paper, and models either narrate a search they
@@ -48,6 +51,36 @@ def _flag_enabled(raw: str | None) -> bool:
 
 
 AGENTIC_ENABLED = _flag_enabled(os.environ.get("RC_AGENTIC"))
+
+# Hard cap on model requests per turn (each tool round is one request), so a model that keeps
+# calling tools without ever answering cannot loop up unbounded spend. Pydantic AI's own
+# default is 50; a research turn that needs more than this many tool rounds is misbehaving.
+# The final answer-writing request counts too, so this comfortably allows several tool rounds.
+AGENT_REQUEST_LIMIT = 12
+_USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
+
+
+def _record_run_usage(run_usage, model: Model | None, operation: str) -> None:
+    """Best-effort token accounting for an agentic run (R12.8 / sol review): the Pydantic AI
+    path bypasses llm.py's ledger, so meter it here. OpenRouter's dollar cost is not surfaced
+    through Pydantic AI, so only token counts are recorded (cost stays 0 for this operation) —
+    strictly better than the previous silent gap, and the request cap bounds the exposure.
+    Never raises: accounting must not fail a turn."""
+    try:
+        if not run_usage:
+            return
+        model_name = getattr(model, "model_name", None) or config.load_settings().get("model")
+        prompt = int(getattr(run_usage, "input_tokens", 0) or 0)
+        completion = int(getattr(run_usage, "output_tokens", 0) or 0)
+        if not prompt and not completion:
+            return
+        usage.record(operation, model_name, {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        })
+    except Exception as e:  # noqa: BLE001 — accounting is best-effort
+        log.debug("agentic usage accounting skipped: %s", str(e)[:120])
 
 # ---- web-tool wrappers: drop the injectable `client` kwarg so it isn't exposed in the schema.
 #      Their names become the tool names the model (and the mobile activity trail) see. ----
@@ -127,20 +160,34 @@ def _to_message_history(history: list[dict]) -> list:
 
 def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None) -> Turn:
     """Run one agentic turn and parse the result into a Turn (same protocol as agent.run_turn).
-    The latest user message is the prompt; everything before it is prior context."""
+    The latest user message is the prompt; everything before it is prior context. A model that
+    cannot use tools (schema rejection, malformed tool calls) FALLS BACK to the proven
+    single-shot analyst rather than failing the turn — the default flip (R12.8) must never
+    regress a working single-shot model just because it can't tool-call (sol review)."""
     if history and history[-1]["role"] == "user":
         prompt, prior = history[-1]["content"], history[:-1]
     else:
         prompt, prior = "", history
     ag = build_agent(slug, model=model, latest_user_text=prompt)
     try:
-        result = ag.run_sync(prompt, message_history=_to_message_history(prior))
-    except Exception as e:  # normalize framework/provider errors into the app's error type
-        raise agent_mod.AgentError(f"Agentic turn failed: {str(e)[:300]}") from e
+        result = ag.run_sync(prompt, message_history=_to_message_history(prior),
+                             usage_limits=_USAGE_LIMITS)
+    except Exception as e:  # tool-incompatible / provider error → single-shot fallback
+        log.warning("agentic turn failed for %s (%s); falling back to single-shot",
+                    slug, str(e)[:200])
+        # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
+        return agent_mod.run_turn(slug, history, model=_model_id(model))
+    _record_run_usage(getattr(result, "usage", None), ag.model, "analysis")
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
     )
+
+
+def _model_id(model: Model | None) -> str | None:
+    """The model-id string for the single-shot fallback path — None lets it use the account
+    default (the same behaviour as an un-overridden agentic turn)."""
+    return getattr(model, "model_name", None)
 
 
 def _tool_detail(args) -> str:
@@ -176,16 +223,19 @@ async def stream_agentic_events(slug: str, history: list[dict],
 
 
 async def stream_agent_events(ag: Agent, prompt: str,
-                              prior: list[dict] | None = None) -> AsyncIterator[dict]:
+                              prior: list[dict] | None = None,
+                              operation: str = "analysis") -> AsyncIterator[dict]:
     """Generic event stream for ANY of this module's agents (analyst turn, notes editor):
     the same {'text'|'tool'|'final'} events, decoupled from session history assembly, plus a
     {'type': 'segment'} boundary at the start of each model request after the first. Text
     before a boundary is the model's pre-tool commentary ("Let me search for…"), NOT the
     answer — consumers demote it to the activity trail and restart answer accumulation, so the
-    displayed/recorded answer comes only from the run's final request (R6.8)."""
+    displayed/recorded answer comes only from the run's final request (R6.8). The turn is
+    capped at AGENT_REQUEST_LIMIT model requests and its token usage is metered (R12.8)."""
     first_request = True
     try:
-        async with ag.iter(prompt, message_history=_to_message_history(prior or [])) as run:
+        async with ag.iter(prompt, message_history=_to_message_history(prior or []),
+                           usage_limits=_USAGE_LIMITS) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
                     if not first_request:
@@ -205,8 +255,37 @@ async def stream_agent_events(ag: Agent, prompt: str,
                             if isinstance(event, FunctionToolCallEvent):
                                 yield {"type": "tool", "name": event.part.tool_name,
                                        "detail": _tool_detail(event.part.args)}
+            _record_run_usage(getattr(run, "usage", None), ag.model, operation)
         yield {"type": "final", "text": run.result.output if run.result else ""}
     except agent_mod.AgentError:
         raise
     except Exception as e:  # normalize framework/provider errors
         raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e
+
+
+async def stream_with_single_shot_fallback(
+    agentic: Callable[[], AsyncIterator[dict]],
+    single_shot: Callable[[], Iterable[dict]],
+) -> AsyncIterator[dict]:
+    """Yield the agentic event stream; if it fails BEFORE delivering a final answer, reset the
+    consumer and fall back to the single-shot generator (R12.8 / sol review). A model that
+    can't tool-call — provider tool-schema rejection, malformed native tool calls — therefore
+    degrades to the proven single-shot analyst instead of failing the turn. Both factories are
+    zero-arg callables so the single-shot generation isn't constructed unless it's needed.
+
+    The `segment` emitted before the fallback demotes any partial pre-answer text the agentic
+    attempt streamed (the consumer's existing R6.8 boundary handling), so the recorded answer
+    is the single-shot output alone — never a doubled/spliced response."""
+    produced_final = False
+    try:
+        async for ev in agentic():
+            if ev.get("type") == "final":
+                produced_final = True
+            yield ev
+    except agent_mod.AgentError as e:
+        if produced_final:
+            raise  # the answer already landed; a later error has nothing to recover
+        log.warning("agentic stream failed (%s); falling back to single-shot", str(e)[:200])
+        yield {"type": "segment"}  # demote any partial commentary/text already shown
+        for ev in single_shot():
+            yield ev

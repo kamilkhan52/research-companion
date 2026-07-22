@@ -130,3 +130,111 @@ def test_streaming_marks_segment_boundaries_between_model_requests(temp_project)
     post = "".join(e["text"] for e in events[boundary:] if e["type"] == "text")
     assert pre == "Let me read the paper first."
     assert agent.canonical_prefix(post) == "The answer."
+
+
+# ---- R12.8 hardening: caps, usage metering, single-shot fallback -----------------------------
+
+def test_turn_request_limit_is_capped():
+    # A looping model can't run unbounded — the per-turn request cap is enforced.
+    assert agent_harness._USAGE_LIMITS.request_limit == agent_harness.AGENT_REQUEST_LIMIT
+    assert agent_harness.AGENT_REQUEST_LIMIT <= 20
+
+
+def test_agentic_turn_falls_back_to_single_shot_on_tool_failure(temp_project, monkeypatch):
+    # A model that can't tool-call (raises) must degrade to the single-shot analyst, not fail.
+    add_paper(temp_project, "a", "Paper A", full_text="text")
+
+    def exploding_model(messages, info):
+        raise RuntimeError("provider rejected the tool schema")
+
+    called = {}
+
+    def fake_single_shot(slug, history, model=None):
+        called["slug"] = slug
+        return agent.Turn(role="assistant", canonical="single-shot answer",
+                          state_signal="in_discussion")
+
+    monkeypatch.setattr(agent, "run_turn", fake_single_shot)
+    history = [{"role": "user", "content": "What does paper a say?"}]
+    turn = agent_harness.run_turn_agentic("a", history, model=FunctionModel(exploding_model))
+
+    assert called["slug"] == "a"
+    assert turn.canonical == "single-shot answer"
+
+
+def test_looping_model_hits_the_request_cap_then_falls_back(temp_project, monkeypatch):
+    add_paper(temp_project, "a", "Paper A", full_text="The alpha method improves throughput.")
+
+    # Never answers — always asks to read the paper again. The request cap must stop it.
+    def looping_model(messages, info):
+        return ModelResponse(parts=[ToolCallPart(tool_name="read_paper_text", args={"slug": "a"})])
+
+    fell_back = {}
+    monkeypatch.setattr(agent, "run_turn", lambda slug, history, model=None: fell_back.setdefault(
+        "hit", agent.Turn(role="assistant", canonical="fallback", state_signal="in_discussion")))
+
+    turn = agent_harness.run_turn_agentic("a", [{"role": "user", "content": "go"}],
+                                          model=FunctionModel(looping_model))
+    assert turn.canonical == "fallback"  # cap tripped → fallback, not an unbounded loop
+
+
+def test_agentic_turn_records_token_usage(temp_project, monkeypatch):
+    add_paper(temp_project, "a", "Paper A", full_text="text")
+    recorded = []
+    monkeypatch.setattr(agent_harness.usage, "record",
+                        lambda op, model, u: recorded.append((op, u)))
+
+    def model_fn(messages, info):
+        return ModelResponse(parts=[TextPart(content=_CANON)])
+
+    agent_harness.run_turn_agentic("a", [{"role": "user", "content": "q"}],
+                                   model=FunctionModel(model_fn))
+    assert recorded and recorded[0][0] == "analysis"
+    assert recorded[0][1]["total_tokens"] > 0
+
+
+def test_stream_fallback_resets_and_delegates_to_single_shot():
+    async def failing_agentic():
+        yield {"type": "text", "text": "Let me search…"}  # partial pre-answer text
+        raise agent_harness.agent_mod.AgentError("tool schema rejected")
+
+    def single_shot():
+        yield {"type": "text", "text": "the real answer"}
+        yield {"type": "final", "text": "the real answer"}
+
+    async def _collect():
+        return [ev async for ev in agent_harness.stream_with_single_shot_fallback(
+            failing_agentic, single_shot)]
+
+    events = asyncio.run(_collect())
+    kinds = [e["type"] for e in events]
+    assert "segment" in kinds  # consumer told to demote the partial agentic text
+    assert kinds.index("segment") < kinds.index("final")
+    final = next(e for e in events if e["type"] == "final")
+    assert final["text"] == "the real answer"
+
+
+def test_stream_fallback_does_not_fire_after_a_final():
+    # A failure AFTER the answer landed has nothing to recover — it must propagate.
+    async def agentic_then_error():
+        yield {"type": "text", "text": "answer"}
+        yield {"type": "final", "text": "answer"}
+        raise agent_harness.agent_mod.AgentError("late error")
+
+    def single_shot():  # must never run
+        raise AssertionError("single-shot must not run once a final was produced")
+        yield  # pragma: no cover
+
+    async def _collect():
+        out = []
+        try:
+            async for ev in agent_harness.stream_with_single_shot_fallback(
+                    agentic_then_error, single_shot):
+                out.append(ev)
+        except agent_harness.agent_mod.AgentError:
+            out.append({"type": "raised"})
+        return out
+
+    events = asyncio.run(_collect())
+    assert events[-1]["type"] == "raised"
+    assert any(e["type"] == "final" for e in events)

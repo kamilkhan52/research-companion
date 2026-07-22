@@ -326,21 +326,28 @@ def _tool_activity(name: str) -> tuple[str, str | None]:
     return labels.get(name, ("Gathering evidence…", None))
 
 
+def _single_shot_events(slug: str, history: list, model: str | None = None):
+    """The single-shot token stream wrapped in the runner's event shape — the non-agentic
+    path, and the fallback when an agentic turn can't tool-call."""
+    pieces: list[str] = []
+    for piece in agent.stream_tokens(slug, history, model=model):
+        pieces.append(piece)
+        yield {"type": "text", "text": piece}
+    yield {"type": "final", "text": "".join(pieces)}
+
+
 def _default_events(slug: str, history: list, model: str | None = None):
     """The production runner: the agentic tool loop when enabled, else the single-shot token
     stream wrapped in the same event shape. `model` is a one-shot override for this turn only
-    (see routers.session.DeliveryReq.model); None uses the account default."""
+    (see routers.session.DeliveryReq.model); None uses the account default. When agentic, a
+    tool-incompatible model falls back to the single-shot path rather than failing (R12.8)."""
     if agent_harness.AGENTIC_ENABLED:
-        return agent_harness.stream_agentic_events(slug, history,
-                                                    model=agent_harness.model_override(model))
-
-    def _single_shot():
-        pieces: list[str] = []
-        for piece in agent.stream_tokens(slug, history, model=model):
-            pieces.append(piece)
-            yield {"type": "text", "text": piece}
-        yield {"type": "final", "text": "".join(pieces)}
-    return _single_shot()
+        return agent_harness.stream_with_single_shot_fallback(
+            lambda: agent_harness.stream_agentic_events(
+                slug, history, model=agent_harness.model_override(model)),
+            lambda: _single_shot_events(slug, history, model),
+        )
+    return _single_shot_events(slug, history, model)
 
 
 async def _consume_async(job: ChatJob, events: AsyncIterator[dict]) -> str:

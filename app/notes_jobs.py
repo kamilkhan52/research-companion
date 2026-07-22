@@ -452,22 +452,30 @@ def _edit_prompt(target: str, current: str, instruction: str) -> str:
     )
 
 
+def _single_shot_notes_events(prompt: str):
+    """Single-shot notes edit in the runner's event shape — the non-agentic path, and the
+    fallback when the tool-using notes editor can't tool-call."""
+    system = prompts.get("notes_editor") + "\n\n" + agent.MATH_MARKDOWN_CONTRACT
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": prompt}]
+    pieces: list[str] = []
+    for piece in agent.stream_messages(messages, max_tokens=16000, operation="notes"):
+        pieces.append(piece)
+        yield {"type": "text", "text": piece}
+    yield {"type": "final", "text": "".join(pieces)}
+
+
 def _default_events(target: str, prompt: str):
     """Production runner: the tool-using notes editor when the agentic path is enabled, else a
-    single-shot completion with the same editor prompt (no tools)."""
+    single-shot completion with the same editor prompt (no tools). A tool-incompatible model
+    falls back to the single-shot editor rather than failing the edit (R12.8)."""
     if agent_harness.AGENTIC_ENABLED:
-        return agent_harness.stream_agent_events(agent_harness.build_notes_editor(), prompt)
-
-    def _single_shot():
-        system = prompts.get("notes_editor") + "\n\n" + agent.MATH_MARKDOWN_CONTRACT
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": prompt}]
-        pieces: list[str] = []
-        for piece in agent.stream_messages(messages, max_tokens=16000, operation="notes"):
-            pieces.append(piece)
-            yield {"type": "text", "text": piece}
-        yield {"type": "final", "text": "".join(pieces)}
-    return _single_shot()
+        return agent_harness.stream_with_single_shot_fallback(
+            lambda: agent_harness.stream_agent_events(
+                agent_harness.build_notes_editor(), prompt, operation="notes"),
+            lambda: _single_shot_notes_events(prompt),
+        )
+    return _single_shot_notes_events(prompt)
 
 
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n(.*)\n```\s*$", re.S)
