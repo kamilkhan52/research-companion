@@ -35,6 +35,7 @@ import { TabHeader } from '@/components/TopBar';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { SplitProjectSheet } from '@/components/SplitProjectSheet';
 import { useActiveProject } from '@/store/project';
+import { loadLastThread } from '@/lib/lastThread';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import {
   filterBucket,
@@ -224,17 +225,30 @@ export default function LibraryScreen() {
   // two round-trips; the normal queries still refresh stale data in the background. (The hero's
   // cover is already warmed by the visible ContinueCard's PaperCover.) This intentionally
   // prefetches only the single hero, not every paper row.
+  //
+  // Thread-aware (D39 + R12.2): the paper screen resumes on the LAST-OPENED thread, so the
+  // prefetch must warm that same thread's cache keys — warming only 'main' left a non-main
+  // resume spinning on a cache miss (the ~1s "not snappy" the tester saw). We resolve the
+  // stored thread first, then warm it.
   useEffect(() => {
     if (!continueSession) return;
     const { project_id: projectId, slug } = continueSession;
-    void queryClient.prefetchQuery({
-      queryKey: keys.session(projectId, slug),
-      queryFn: () => getSession(projectId, slug),
+    let cancelled = false;
+    void loadLastThread(projectId, slug).then((stored) => {
+      if (cancelled) return;
+      const threadId = stored || 'main';
+      void queryClient.prefetchQuery({
+        queryKey: keys.session(projectId, slug, threadId),
+        queryFn: () => getSession(projectId, slug, threadId),
+      });
+      void queryClient.prefetchQuery({
+        queryKey: keys.opening(projectId, slug, threadId),
+        queryFn: () => getOpeningDraft(projectId, slug, threadId),
+      });
     });
-    void queryClient.prefetchQuery({
-      queryKey: keys.opening(projectId, slug),
-      queryFn: () => getOpeningDraft(projectId, slug),
-    });
+    return () => {
+      cancelled = true;
+    };
   }, [continueSession?.project_id, continueSession?.slug, queryClient]);
 
   const openRecentSession = (session: RecentSession) => {
