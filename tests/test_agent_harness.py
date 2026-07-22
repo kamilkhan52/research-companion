@@ -243,3 +243,37 @@ def test_stream_fallback_does_not_fire_after_a_final():
     events = asyncio.run(_collect())
     assert events[-1]["type"] == "raised"
     assert any(e["type"] == "final" for e in events)
+
+
+def test_billed_run_without_token_counts_records_a_pending_marker(temp_project, monkeypatch):
+    # A run that made a request but never received token counts (e.g. a stream cancelled
+    # before the terminal usage chunk) must not vanish from accounting (sol review round 3).
+    class _Usage:
+        input_tokens = 0
+        output_tokens = 0
+        requests = 1
+
+    pending = []
+    recorded = []
+    monkeypatch.setattr(agent_harness.usage, "record", lambda *a: recorded.append(a))
+    monkeypatch.setattr(agent_harness.usage, "record_pending",
+                        lambda op, model, gid: pending.append((op, model, gid)))
+
+    agent_harness._record_run_usage(_Usage(), None, "analysis")
+    assert recorded == []
+    assert pending and pending[0][0] == "analysis" and pending[0][2] is None
+
+
+def test_zero_request_run_records_nothing(temp_project, monkeypatch):
+    # A run that never issued a request (nothing billed) records neither an aggregate nor a
+    # pending marker.
+    class _Usage:
+        input_tokens = 0
+        output_tokens = 0
+        requests = 0
+
+    calls = []
+    monkeypatch.setattr(agent_harness.usage, "record", lambda *a: calls.append("record"))
+    monkeypatch.setattr(agent_harness.usage, "record_pending", lambda *a: calls.append("pending"))
+    agent_harness._record_run_usage(_Usage(), None, "analysis")
+    assert calls == []

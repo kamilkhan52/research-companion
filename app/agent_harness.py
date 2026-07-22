@@ -72,13 +72,18 @@ def _record_run_usage(run_usage, model: Model | None, operation: str) -> None:
         model_name = getattr(model, "model_name", None) or config.load_settings().get("model")
         prompt = int(getattr(run_usage, "input_tokens", 0) or 0)
         completion = int(getattr(run_usage, "output_tokens", 0) or 0)
-        if not prompt and not completion:
-            return
-        usage.record(operation, model_name, {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion,
-            "total_tokens": prompt + completion,
-        })
+        if prompt or completion:
+            usage.record(operation, model_name, {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            })
+        elif int(getattr(run_usage, "requests", 0) or 0) > 0:
+            # A request was billed upstream but token counts never arrived — e.g. a stream
+            # cancelled before the terminal usage chunk (sol review). Record a pending marker
+            # (no generation id to reconcile by) so the billed run isn't invisible and totals
+            # flag as estimated, rather than dropping it.
+            usage.record_pending(operation, model_name, None)
     except Exception as e:  # noqa: BLE001 — accounting is best-effort
         log.debug("agentic usage accounting skipped: %s", str(e)[:120])
 
