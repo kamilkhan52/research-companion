@@ -92,6 +92,7 @@ import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { TopBar } from '@/components/TopBar';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
+import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
@@ -1138,7 +1139,16 @@ function DiscussionThread({
   const [sentenceCommentText, setSentenceCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [reviewOpen, setReviewOpen] = useState(false);
+  // Auto-open the Notes review when a proposal becomes ready (D03): Finish reading — and a
+  // later Request changes — resolve into notes_drafted with a fresh proposal; without this the
+  // reader was told notes were written but had to hunt for "Review & commit" (or leave and
+  // reopen) to see them. See useReviewAutoOpen for the arming/disarming rules.
+  const [reviewOpen, setReviewOpen] = useReviewAutoOpen({
+    streaming: stream.streaming,
+    state,
+    editing: !!editing,
+    conversationKey: threadId,
+  });
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
