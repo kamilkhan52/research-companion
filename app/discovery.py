@@ -106,6 +106,72 @@ def save_result(result: dict) -> None:
     atomic_write_text(_result_path(), json.dumps(result, indent=2, ensure_ascii=False))
 
 
+# ---------- hidden recommendations (R12.3) ----------
+# A reader can hide a recommended paper (already read, known under another project, simply not
+# interesting) so it stops surfacing. Hidden entries are per-project, persisted under .state/,
+# and keyed by EVERY deterministic identity of the suggestion (arXiv id, DOI, S2 paper id,
+# normalized title) so the same work re-found through a different provider stays hidden.
+
+def _hidden_path() -> Path:
+    return config.state_dir() / "discovery-hidden.json"
+
+
+def load_hidden() -> list[dict]:
+    """[{keys, title, hidden_at}] — title retained so a future manage/unhide UI can label
+    entries without re-resolving them."""
+    try:
+        data = json.loads(_hidden_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+
+def _save_hidden(entries: list[dict]) -> None:
+    atomic_write_text(_hidden_path(), json.dumps(entries, indent=2, ensure_ascii=False))
+
+
+def hide_candidate(candidate: dict) -> dict:
+    """Persist the candidate as hidden and return its entry. Idempotent: re-hiding a work
+    already covered by an overlapping identity returns the existing entry."""
+    keys = _identity_keys(candidate)
+    if not keys:
+        raise DiscoveryError("This paper has no usable identity to hide it by.")
+    entries = load_hidden()
+    for entry in entries:
+        if set(entry.get("keys") or []) & set(keys):
+            return entry
+    entry = {
+        "keys": keys,
+        "title": str(candidate.get("title") or "").strip()[:300],
+        "hidden_at": datetime.now(UTC).isoformat(),
+    }
+    _save_hidden([*entries, entry])
+    return entry
+
+
+def unhide(keys: list[str]) -> bool:
+    """Remove every hidden entry sharing an identity with `keys` (the undo path)."""
+    entries = load_hidden()
+    kept = [e for e in entries if not (set(e.get("keys") or []) & set(keys))]
+    if len(kept) == len(entries):
+        return False
+    _save_hidden(kept)
+    return True
+
+
+def filter_hidden(items: list | None) -> list:
+    """Drop entries the reader has hidden; safe on any provider's dict shape (identity keys
+    fall back to the normalized title). Non-dict entries pass through untouched."""
+    items = items or []
+    hidden = {k for e in load_hidden() for k in e.get("keys") or []}
+    if not hidden:
+        return items
+    return [
+        item for item in items
+        if not isinstance(item, dict) or not (set(_identity_keys(item)) & hidden)
+    ]
+
+
 # ---------- LLM plumbing ----------
 
 def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:

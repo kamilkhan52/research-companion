@@ -398,3 +398,50 @@ def test_fixed_quality_fixture_recovers_and_ranks_conference_landmark():
     assert "OSDI" in scoring_inputs[0]
     assert "MIT CSAIL" in scoring_inputs[0]
     assert result["suggestions"][0]["arxiv_id"] is None
+
+
+# ---------- hidden recommendations (R12.3) ----------
+
+def test_hide_candidate_persists_and_filters_by_any_identity(temp_project):
+    entry = discovery.hide_candidate(
+        {"arxiv_id": "2401.11111v2", "title": "Hidden Paper", "doi": "10.1/abc"})
+    assert "arxiv:2401.11111" in entry["keys"]  # versionless
+    assert "title:hidden paper" in entry["keys"]
+
+    # The same work re-found through another provider (title only) stays hidden; an
+    # unrelated paper passes through.
+    kept = discovery.filter_hidden([
+        {"title": "  Hidden PAPER! "},
+        {"arxiv_id": "2402.22222", "title": "Different Paper"},
+    ])
+    assert [c["title"] for c in kept] == ["Different Paper"]
+
+    # Idempotent: re-hiding via an overlapping identity returns the existing entry.
+    assert discovery.hide_candidate({"title": "hidden paper"})["hidden_at"] == entry["hidden_at"]
+    assert len(discovery.load_hidden()) == 1
+
+
+def test_unhide_restores_by_any_key(temp_project):
+    entry = discovery.hide_candidate({"arxiv_id": "2401.33333", "title": "Mistap"})
+    assert discovery.filter_hidden([{"title": "Mistap"}]) == []
+    assert discovery.unhide([entry["keys"][0]]) is True
+    assert discovery.unhide([entry["keys"][0]]) is False  # already gone
+    assert discovery.filter_hidden([{"title": "Mistap"}]) == [{"title": "Mistap"}]
+
+
+def test_hide_candidate_without_identity_raises(temp_project):
+    with pytest.raises(DiscoveryError):
+        discovery.hide_candidate({"abstract": "no title, no ids"})
+
+
+def test_hidden_is_scoped_per_project(temp_project):
+    discovery.hide_candidate({"title": "Project Scoped"})
+    assert discovery.filter_hidden([{"title": "Project Scoped"}]) == []
+    # The entry lives under this project's .state, so other projects are unaffected.
+    assert (Path(config.state_dir()) / "discovery-hidden.json").exists()
+
+
+def test_hidden_survives_corrupt_file(temp_project):
+    (Path(config.state_dir()) / "discovery-hidden.json").write_text("not json", encoding="utf-8")
+    assert discovery.load_hidden() == []
+    assert discovery.filter_hidden([{"title": "A"}]) == [{"title": "A"}]

@@ -20,8 +20,9 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
+import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
-import type { DiscoveryJob, PaperSuggestion } from '@/api/types';
+import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
@@ -309,7 +310,62 @@ function SuggestionCard({
   const { isInProject } = useProjectMembership(pid);
   const inLibrary = added || isInProject({ arxivId: s.arxiv_id, title: s.title });
   const [showAbstract, setShowAbstract] = useState(false);
+  // Hide (R12.3): the server filters this paper from future recommendation responses; the
+  // card flips into a compact undo row rather than vanishing, so a mis-tap is recoverable.
+  // The cached list is deliberately NOT invalidated while the undo row shows.
+  const [hiddenEntry, setHiddenEntry] = useState<HiddenRecommendation | null>(null);
+  const [hideBusy, setHideBusy] = useState(false);
+  const [hideError, setHideError] = useState<string | null>(null);
   const paperUrl = fullPaperUrl(s);
+
+  async function handleHide() {
+    if (hideBusy) return;
+    setHideBusy(true);
+    setHideError(null);
+    try {
+      const { hidden } = await hideSuggestion(pid, s);
+      setHiddenEntry(hidden);
+    } catch (e) {
+      setHideError((e as Error).message ?? 'Could not hide this paper.');
+    } finally {
+      setHideBusy(false);
+    }
+  }
+
+  async function handleUndoHide() {
+    if (hideBusy || !hiddenEntry) return;
+    setHideBusy(true);
+    try {
+      await unhideSuggestion(pid, hiddenEntry.keys);
+      setHiddenEntry(null);
+    } catch (e) {
+      setHideError((e as Error).message ?? 'Could not restore this paper.');
+    } finally {
+      setHideBusy(false);
+    }
+  }
+
+  if (hiddenEntry) {
+    return (
+      <Card style={styles.suggestionCard}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <Icon name="eye-off" size={14} color={t.muted} />
+          <Text variant="caption" color={t.muted} style={{ flex: 1 }} numberOfLines={2}>
+            “{s.title}” won’t be recommended again.
+          </Text>
+          <Pressable
+            onPress={() => void handleUndoHide()}
+            style={styles.actionBtn}
+            accessibilityLabel={`Undo hiding ${s.title}`}>
+            <Text variant="caption" color={t.mint}>Undo</Text>
+          </Pressable>
+        </View>
+        {hideError ? (
+          <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>{hideError}</Text>
+        ) : null}
+      </Card>
+    );
+  }
 
   const authors = s.authors.length > 2 ? `${s.authors[0]} et al.` : s.authors.join(', ');
   const meta = [
@@ -382,6 +438,16 @@ function SuggestionCard({
             accessibilityLabel={`Open full paper for ${s.title}`}>
             <Icon name="external-link" size={13} color={t.muted} />
             <Text variant="caption" color={t.muted}>Full paper</Text>
+          </Pressable>
+        ) : null}
+        {!inLibrary ? (
+          <Pressable
+            onPress={() => void handleHide()}
+            disabled={hideBusy}
+            style={styles.actionBtn}
+            accessibilityLabel={`Hide ${s.title} from recommendations`}>
+            <Icon name="eye-off" size={13} color={t.muted} />
+            <Text variant="caption" color={t.muted}>Hide</Text>
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }} />
