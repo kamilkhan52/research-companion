@@ -195,7 +195,11 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
     const tick = async () => {
       try {
         const { build } = await getGraphBuildStatus(pid);
-        if (!cancelled) applyJob(build);
+        // While the start POST is still in flight, the server may not know the job yet (or
+        // may still be reporting the PREVIOUS settled build). Applying that snapshot flipped
+        // `building` back off — the D17 first-tap flash-revert. The POST response is the
+        // authoritative first snapshot; polling takes over on the next interval.
+        if (!cancelled && !startingRef.current) applyJob(build);
       } catch {
         // transient network error — keep polling; the next tick may succeed
       }

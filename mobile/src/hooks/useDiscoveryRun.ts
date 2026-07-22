@@ -59,7 +59,11 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     const tick = async () => {
       try {
         const { job: snap } = await getDiscovery(pid);
-        if (!cancelled) applyJob(snap);
+        // Same first-tap guard as useGraphBuild (D17/D18): while the start POST is in
+        // flight, the server may not know the new job yet (or still report the previous
+        // settled run) — applying that snapshot flipped `running` off and flashed the
+        // search view back to idle. The POST response is the authoritative first snapshot.
+        if (!cancelled && !startingRef.current) applyJob(snap);
       } catch {
         // transient network error — keep polling; the next tick may succeed
       }
