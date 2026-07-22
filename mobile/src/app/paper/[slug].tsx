@@ -245,7 +245,16 @@ export default function DiscussionScreen() {
   }, [slug, activeThread]);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
+  // Bumped when a turn settles WITH a fresh Notes proposal — the authoritative signal the
+  // review auto-open (D03) keys on. The thread component owns the review sheet.
+  const [reviewReadyNonce, setReviewReadyNonce] = useState(0);
   const handleTurnDone = useCallback(async (job: ChatJob) => {
+    // Detect a freshly drafted proposal FIRST, before any delivery-mode early return or the
+    // audio-error throw below, so a Finish/Request-changes turn always arms the auto-open —
+    // in reading mode too, and even if the subsequent audio handoff fails.
+    if (job.turn?.proposed_commit && job.state === 'notes_drafted') {
+      setReviewReadyNonce((n) => n + 1);
+    }
     if (!listeningMode || job.delivery_mode !== 'listening') return;
     if (!(await isHandoffEligible(job.id))) return;
     if (job.audio_error) throw new Error(job.audio_error);
@@ -358,11 +367,8 @@ export default function DiscussionScreen() {
     };
   }, [hasSession, pid, session.data?.paper.title, slug]);
 
-  // Bumped to arm the Notes review auto-open (D03); the thread component owns the sheet.
-  const [finishArmNonce, setFinishArmNonce] = useState(0);
   async function finishReadingFromMenu() {
     if (!paths || !slug) return;
-    setFinishArmNonce((n) => n + 1);
     await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
   }
 
@@ -573,7 +579,7 @@ export default function DiscussionScreen() {
           readingMode={readingMode}
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
-          finishArmNonce={finishArmNonce}
+          reviewReadyNonce={reviewReadyNonce}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -1085,7 +1091,7 @@ function DiscussionThread({
   onContinue,
   headerHeight,
   onMutated,
-  finishArmNonce,
+  reviewReadyNonce,
 }: {
   pid: string;
   slug: string;
@@ -1103,8 +1109,8 @@ function DiscussionThread({
   onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
-  /** Bumped by the parent when Finish reading is invoked, to arm the review auto-open (D03). */
-  finishArmNonce: number;
+  /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
+  reviewReadyNonce: number;
 }) {
   const theme = useTheme();
   const { themeName } = useThemeMode();
@@ -1148,28 +1154,14 @@ function DiscussionThread({
   const [actionError, setActionError] = useState<string | null>(null);
   // Auto-open the Notes review when a proposal becomes ready (D03): Finish reading — and a
   // later Request changes — draft a fresh proposal; without this the reader was told notes were
-  // written but had to hunt for "Review & commit" (or leave and reopen) to see them. The open
-  // is armed by those operations (armForReview) and keyed on a genuinely new proposal identity
-  // — see useReviewAutoOpen for why inferring from the streaming flag was wrong.
-  const proposalKey = useMemo(() => {
-    let latest: number | null = null;
-    for (const entry of transcript) {
-      if (entry.role === 'assistant' && entry.proposed_commit) latest = entry.assistant_index;
-    }
-    return latest;
-  }, [transcript]);
-  const { reviewOpen, setReviewOpen, armForReview } = useReviewAutoOpen({
-    streaming: stream.streaming,
-    streamError: !!stream.error,
-    proposalKey,
+  // written but had to hunt for "Review & commit" (or leave and reopen) to see them. The parent
+  // bumps reviewReadyNonce from the turn-completion handler exactly when a settled turn carries
+  // a fresh proposal — the authoritative signal (see useReviewAutoOpen).
+  const [reviewOpen, setReviewOpen] = useReviewAutoOpen({
+    readyNonce: reviewReadyNonce,
+    editing: !!editing,
     conversationKey: threadId,
   });
-  // Finish reading is triggered in the parent screen (the kebab menu), which bumps this nonce;
-  // Request changes arms directly below. Both feed the same arming path.
-  useEffect(() => {
-    if (finishArmNonce > 0) armForReview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finishArmNonce]);
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
@@ -1472,7 +1464,6 @@ function DiscussionThread({
     const t = textDraft.value.trim();
     if (!t) return;
     setActionError(null);
-    armForReview();  // a successful revision re-opens the review with the new proposal (D03)
     await textDraft.markSubmitted(acceptedDrafts.length);
     await stream.run(
       paths.requestChanges,
