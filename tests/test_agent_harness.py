@@ -53,9 +53,15 @@ def test_agentic_turn_without_tools_still_parses(temp_project):
     assert "alpha method improves throughput" in turn.canonical
 
 
-def test_agentic_is_off_by_default():
-    # Safety: the new path must not activate unless explicitly enabled.
-    assert agent_harness.AGENTIC_ENABLED is False
+def test_agentic_is_on_by_default_with_an_explicit_off_switch():
+    # R12.8: the tool loop is the product's turn path — without it no turn can search or
+    # re-read the paper (the live web-search incident). RC_AGENTIC=0 restores single-shot.
+    assert agent_harness.AGENTIC_ENABLED is True
+    assert agent_harness._flag_enabled(None) is True
+    assert agent_harness._flag_enabled("1") is True
+    assert agent_harness._flag_enabled("0") is False
+    assert agent_harness._flag_enabled("false") is False
+    assert agent_harness._flag_enabled("no") is False
 
 
 def test_streaming_emits_tool_then_text_then_final(temp_project):

@@ -1,7 +1,7 @@
 """Agentic analyst turn, built on Pydantic AI (the tool-use loop, validation, and retries we'd
 otherwise hand-roll — see docs/ handoff for why we didn't build our own or bolt on the TS Pi
-harness). This is ADDITIVE and feature-flagged (RC_AGENTIC): the existing single-shot turn in
-app/agent.py is untouched and remains the default until this path is validated live.
+harness). This is the DEFAULT turn path (RC_AGENTIC=0 opts out): the single-shot turn in
+app/agent.py is untouched and remains available as the explicit opt-out.
 
 Design choice: we keep the proven text output protocol (### CANONICAL ### / ### STATE ### / …,
 parsed by agent._parse) rather than switching to structured JSON output. Pydantic AI is used
@@ -38,8 +38,16 @@ from . import agent as agent_mod
 from . import config, prompts, research_tools, sessions
 from .models import Turn
 
-# Off by default; set RC_AGENTIC=1 to route turns through the tool-using agent.
-AGENTIC_ENABLED = os.environ.get("RC_AGENTIC", "").strip().lower() not in ("", "0", "false", "no")
+# ON by default (R12.8): the tool loop IS the product's turn path — without it no discussion
+# turn can search the web or re-read the paper, and models either narrate a search they
+# cannot run or truthfully report having no tools (the live incident behind this default:
+# the deployment simply never set RC_AGENTIC). Set RC_AGENTIC=0 to restore the plain
+# single-shot analyst.
+def _flag_enabled(raw: str | None) -> bool:
+    return (raw or "").strip().lower() not in ("0", "false", "no")
+
+
+AGENTIC_ENABLED = _flag_enabled(os.environ.get("RC_AGENTIC"))
 
 # ---- web-tool wrappers: drop the injectable `client` kwarg so it isn't exposed in the schema.
 #      Their names become the tool names the model (and the mobile activity trail) see. ----
