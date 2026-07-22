@@ -65,7 +65,7 @@ import {
   useThemedStyles,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
+import { floatShadow, fonts, radius, space, stateMetaFor, type ThemePalette } from '@/theme/tokens';
 
 // The base URL the cover backfill has already succeeded for (module-level so it survives Library
 // remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
@@ -864,6 +864,8 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: t.line,
+    // Floats over whatever sits beneath it on its shadow (R12.6).
+    ...floatShadow,
   },
   list: {
     padding: tight ? space.md : space.lg,

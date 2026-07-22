@@ -24,7 +24,7 @@ import { Marquee } from '@/ui/Marquee';
 import { prepLabel } from '@/components/NarrationTranscript';
 import { Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { floatShadow, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 function fmt(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -160,13 +160,16 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
 }
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
-  wrap: { paddingHorizontal: space.md, paddingTop: space.sm },
+  // Explicitly transparent: the mini player must never paint a full-width strip behind its
+  // rounded card when content sits beneath it (R12.6) — the card floats on its shadow.
+  wrap: { paddingHorizontal: space.md, paddingTop: space.sm, backgroundColor: 'transparent' },
   card: {
     backgroundColor: t.elevated,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line2,
     overflow: 'hidden',
+    ...floatShadow,
   },
   row: {
     flexDirection: 'row',

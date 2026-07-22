@@ -162,6 +162,19 @@ export const space = {
   xxl: 32,
 } as const;
 
+/** Subtle lift for rounded surfaces that float over other content — the discussion
+ * composer, the mini player, the project pill (R12.6). Their wrappers stay fully
+ * transparent (no full-width strip behind the rounded shape); this shadow is what
+ * separates the card from whatever scrolls beneath it. Shadow on iOS, elevation on
+ * Android; on the Black theme it simply disappears, which is fine. */
+export const floatShadow = {
+  shadowColor: '#000',
+  shadowOpacity: 0.16,
+  shadowRadius: 12,
+  shadowOffset: { width: 0, height: 6 },
+  elevation: 5,
+} as const;
+
 /** Map a paper/session state to an accent color + short label for chips.
  * The holistic rule (R7.4): mint = completed, amber = ongoing/in-flight, violet = the
  * distinct notes-drafted stage, muted = not started — so a reading list separates finished
