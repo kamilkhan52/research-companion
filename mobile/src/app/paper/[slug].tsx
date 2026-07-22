@@ -92,6 +92,7 @@ import { GeneratingBar } from '@/components/NarrationTranscript';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { TopBar } from '@/components/TopBar';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
+import { useReviewAutoOpen } from '@/hooks/useReviewAutoOpen';
 import { useSmoothText } from '@/hooks/useSmoothText';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
@@ -244,7 +245,16 @@ export default function DiscussionScreen() {
   }, [slug, activeThread]);
   const audio = useAudio();
   const { listeningMode, setListeningMode } = useListeningMode();
+  // Bumped when a turn settles WITH a fresh Notes proposal — the authoritative signal the
+  // review auto-open (D03) keys on. The thread component owns the review sheet.
+  const [reviewReadyNonce, setReviewReadyNonce] = useState(0);
   const handleTurnDone = useCallback(async (job: ChatJob) => {
+    // Detect a freshly drafted proposal FIRST, before any delivery-mode early return or the
+    // audio-error throw below, so a Finish/Request-changes turn always arms the auto-open —
+    // in reading mode too, and even if the subsequent audio handoff fails.
+    if (job.turn?.proposed_commit && job.state === 'notes_drafted') {
+      setReviewReadyNonce((n) => n + 1);
+    }
     if (!listeningMode || job.delivery_mode !== 'listening') return;
     if (!(await isHandoffEligible(job.id))) return;
     if (job.audio_error) throw new Error(job.audio_error);
@@ -569,6 +579,7 @@ export default function DiscussionScreen() {
           readingMode={readingMode}
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
+          reviewReadyNonce={reviewReadyNonce}
           onMutated={() => {
             qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
@@ -1080,6 +1091,7 @@ function DiscussionThread({
   onContinue,
   headerHeight,
   onMutated,
+  reviewReadyNonce,
 }: {
   pid: string;
   slug: string;
@@ -1097,6 +1109,8 @@ function DiscussionThread({
   onContinue: () => void;
   headerHeight: number;
   onMutated: () => void;
+  /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
+  reviewReadyNonce: number;
 }) {
   const theme = useTheme();
   const { themeName } = useThemeMode();
@@ -1138,7 +1152,16 @@ function DiscussionThread({
   const [sentenceCommentText, setSentenceCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [reviewOpen, setReviewOpen] = useState(false);
+  // Auto-open the Notes review when a proposal becomes ready (D03): Finish reading — and a
+  // later Request changes — draft a fresh proposal; without this the reader was told notes were
+  // written but had to hunt for "Review & commit" (or leave and reopen) to see them. The parent
+  // bumps reviewReadyNonce from the turn-completion handler exactly when a settled turn carries
+  // a fresh proposal — the authoritative signal (see useReviewAutoOpen).
+  const [reviewOpen, setReviewOpen] = useReviewAutoOpen({
+    readyNonce: reviewReadyNonce,
+    editing: !!editing,
+    conversationKey: threadId,
+  });
 
   // The durable queue changes keys with the thread. Clear its ephemeral sentence picker and
   // editor at the same boundary so a selection from the previous discussion cannot linger.
