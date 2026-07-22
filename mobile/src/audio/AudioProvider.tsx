@@ -13,6 +13,12 @@ import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-tr
 import { apiUrl, authHeaders } from '@/api/client';
 import * as api from '@/api/endpoints';
 import type { AudioJob } from '@/api/types';
+import { messageAudioId, parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
+import {
+  nextQueuedResponseIndex,
+  nextTranscriptResponse,
+  shouldAutoAdvance,
+} from '@/audio/playlist';
 import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
@@ -71,6 +77,11 @@ interface AudioContextValue {
   /** Last preparation failure per message id; cleared when that message is retried. */
   errorById: Record<string, string>;
   playbackStartedAtById: Record<string, string>;
+  /** Session-only opt-in. It is intentionally reset when this provider remounts. */
+  playlistAutoplay: boolean;
+  setPlaylistAutoplay: (enabled: boolean) => void;
+  /** Advance to, or prepare, the next existing response in the active track's thread. */
+  playNextResponse: () => Promise<boolean>;
 }
 
 const POLL_MS = 1000;
@@ -123,6 +134,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const [narrationById, setNarrationById] = useState<Record<string, string>>({});
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [playbackStartedAtById, setPlaybackStartedAtById] = useState<Record<string, string>>({});
+  const [playlistAutoplay, setPlaylistAutoplayState] = useState(false);
+  const playlistAutoplayRef = useRef(false);
+  const playlistAdvanceRef = useRef<Promise<boolean> | null>(null);
   const prepRef = useRef<PrepState | null>(null);
   prepRef.current = prep;
   // When cancel arrives before the server job id is known (startAudioJob still in flight),
@@ -161,6 +175,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   const playerTail = useRef<Promise<void>>(Promise.resolve());
   const automaticPrepIdRef = useRef<string | null>(null);
   const queuedHandoffs = useRef(new Set<string>());
+  const queuedPreparationCounts = useRef(new Map<string, number>());
   // The initiating project, for billing the narration LLM spend (audio itself is app-global).
   // Held in a ref so playText keeps a stable identity as the active project changes.
   const { activePid } = useActiveProject();
@@ -170,11 +185,18 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   // stitched track (duration visible, lock/background-proof, whole-response rewind);
   // 'progressive' plays segments as they land (starts sooner). Captured per preparation
   // via this ref so flipping the setting mid-prep can't mix the two paths.
-  const { playbackMode, playbackRate } = useListeningMode();
+  const { listeningMode, playbackMode, playbackRate } = useListeningMode();
+  const listeningModeRef = useRef(listeningMode);
+  listeningModeRef.current = listeningMode;
   const playbackModeRef = useRef(playbackMode);
   playbackModeRef.current = playbackMode;
   const playbackRateRef = useRef(playbackRate);
   playbackRateRef.current = playbackRate;
+
+  const setPlaylistAutoplay = useCallback((enabled: boolean) => {
+    playlistAutoplayRef.current = enabled;
+    setPlaylistAutoplayState(enabled);
+  }, []);
 
   // R6.6 — apply the persisted speed live when the user changes it; harmless no-op when the
   // player isn't set up yet (the track-change hook below covers every track load, including
@@ -525,19 +547,41 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const enqueueJob = useCallback((request: PlayRequest, audioJobId: string,
                                   billingProject: string | null,
-                                  chatJobId?: string | null) => {
-    const handoffKey = `${request.id}|${chatJobId ?? audioJobId}|${audioJobId}`;
+                                  chatJobId?: string | null,
+                                  persistHandoff = true,
+                                  playWhenReady = false) => {
+    const handoffIdentity = `${request.id}|${chatJobId ?? audioJobId}|${audioJobId}`;
+    const handoffKey = persistHandoff ? handoffIdentity : `playlist|${handoffIdentity}`;
     if (queuedHandoffs.current.has(handoffKey)) return;
+    // A live handoff already polling this exact response wins over transcript fallback. It will
+    // append through this same path, and a second playlist poll would only duplicate the track.
+    if (!persistHandoff && queuedPreparationCounts.current.has(request.id)) return;
     queuedHandoffs.current.add(handoffKey);
+    queuedPreparationCounts.current.set(
+      request.id,
+      (queuedPreparationCounts.current.get(request.id) ?? 0) + 1,
+    );
+    const releasePreparation = () => {
+      const remaining = (queuedPreparationCounts.current.get(request.id) ?? 1) - 1;
+      if (remaining > 0) queuedPreparationCounts.current.set(request.id, remaining);
+      else queuedPreparationCounts.current.delete(request.id);
+    };
     const queueGen = queueGeneration.current;
 
     queueTail.current = queueTail.current.then(async () => {
-      if (queueGeneration.current !== queueGen) return;
-      if ((await handledHandoffs()).includes(handoffKey)) {
+      if (queueGeneration.current !== queueGen) {
+        releasePreparation();
+        return;
+      }
+      if (persistHandoff && (await handledHandoffs()).includes(handoffKey)) {
+        releasePreparation();
         if (chatJobId) await consumeEligibleHandoff(chatJobId);
         return;
       }
-      if (queueGeneration.current !== queueGen) return;
+      if (queueGeneration.current !== queueGen) {
+        releasePreparation();
+        return;
+      }
       const live = () => queueGeneration.current === queueGen;
       automaticPrepIdRef.current = request.id;
       setErrorById((errors) => {
@@ -577,6 +621,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
               })
               .filter((index) => index >= 0);
             if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
+            const firstAddedIndex = queue.length - staleIndexes.length;
             const existingTrack = await TrackPlayer.getActiveTrack();
             for (const segment of fresh) {
               await TrackPlayer.add({
@@ -595,7 +640,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             }
             if (!progressiveStarted && live()) {
               const { state } = await TrackPlayer.getPlaybackState();
-              if (!existingTrack || state === State.None || state === State.Stopped
+              if (playWhenReady) await TrackPlayer.skip(firstAddedIndex);
+              if (playWhenReady || !existingTrack || state === State.None || state === State.Stopped
                   || state === State.Ended) {
                 setCurrentId(request.id);
                 setCurrentTitle(request.title);
@@ -665,7 +711,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         }
 
         if (addedSegments > 0) {
-          await markHandoffHandled(handoffKey);
+          if (persistHandoff) await markHandoffHandled(handoffKey);
           if (chatJobId) await consumeEligibleHandoff(chatJobId);
           setPrep(null);
           return;
@@ -690,6 +736,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
             })
             .filter((index) => index >= 0);
           if (staleIndexes.length) await TrackPlayer.remove(staleIndexes);
+          const addedIndex = queue.length - staleIndexes.length;
           const existingTrack = await TrackPlayer.getActiveTrack();
           await TrackPlayer.add({
             id: request.id,
@@ -703,7 +750,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           });
           if (!live()) return;
           const { state } = await TrackPlayer.getPlaybackState();
-          if (!existingTrack || state === State.None || state === State.Stopped
+          if (playWhenReady) await TrackPlayer.skip(addedIndex);
+          if (playWhenReady || !existingTrack || state === State.None || state === State.Stopped
               || state === State.Ended) {
             setCurrentId(request.id);
             setCurrentTitle(request.title);
@@ -717,7 +765,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         playerTail.current = playerTask;
         await playerTask;
         if (!live() || !added) return;
-        await markHandoffHandled(handoffKey);
+        if (persistHandoff) await markHandoffHandled(handoffKey);
         if (chatJobId) await consumeEligibleHandoff(chatJobId);
         setPrep(null);
       } catch (e) {
@@ -731,9 +779,107 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         setPrep(null);
       } finally {
         automaticPrepIdRef.current = null;
+        releasePreparation();
+        if (!persistHandoff) queuedHandoffs.current.delete(handoffKey);
       }
     });
   }, [applyJob, cancelServerJob]);
+
+  const playNextResponse = useCallback((automatic = false, activeIndexHint?: number) => {
+    if (!listeningModeRef.current
+        || (automatic && !shouldAutoAdvance(playlistAutoplayRef.current, true))) {
+      return Promise.resolve(false);
+    }
+    if (playlistAdvanceRef.current) return playlistAdvanceRef.current;
+
+    const advance = async (): Promise<boolean> => {
+      try {
+        await setupPlayer();
+        const [queue, reportedIndex, activeTrack] = await Promise.all([
+          TrackPlayer.getQueue(),
+          TrackPlayer.getActiveTrackIndex(),
+          TrackPlayer.getActiveTrack(),
+        ]);
+        const activeIndex = reportedIndex ?? activeIndexHint;
+        const queuedIndex = nextQueuedResponseIndex(queue, activeIndex);
+        if (queuedIndex != null) {
+          await TrackPlayer.skip(queuedIndex);
+          await TrackPlayer.play();
+          return true;
+        }
+
+        const currentTrack = activeTrack ?? (activeIndex == null ? undefined : queue[activeIndex]);
+        const currentSlotId = currentTrack?.slotId ?? currentTrack?.id;
+        const identity = parseMessageAudioId(currentSlotId == null ? '' : String(currentSlotId));
+        if (!identity) return false;
+
+        const address = sessionAddressFromAudioSlug(identity.slug);
+        const session = await api.getSession(identity.project, address.slug, address.threadId);
+        const next = nextTranscriptResponse(session.transcript, identity.assistantIndex);
+        if (!next) return false;
+
+        // A live handoff may have landed while the transcript request was in flight. Prefer that
+        // already-queued work and never synthesize a duplicate playlist copy.
+        const [freshQueue, freshActiveIndex, freshActiveTrack] = await Promise.all([
+          TrackPlayer.getQueue(),
+          TrackPlayer.getActiveTrackIndex(),
+          TrackPlayer.getActiveTrack(),
+        ]);
+        const resolvedFreshIndex = freshActiveIndex ?? activeIndexHint;
+        const resolvedFreshTrack = freshActiveTrack
+          ?? (resolvedFreshIndex == null ? undefined : freshQueue[resolvedFreshIndex]);
+        const freshSlotId = resolvedFreshTrack?.slotId ?? resolvedFreshTrack?.id;
+        if (freshSlotId != null && String(freshSlotId) !== String(currentSlotId)) return true;
+        const freshNextIndex = nextQueuedResponseIndex(
+          freshQueue,
+          resolvedFreshIndex,
+        );
+        if (freshNextIndex != null) {
+          await TrackPlayer.skip(freshNextIndex);
+          await TrackPlayer.play();
+          return true;
+        }
+
+        const nextId = messageAudioId(
+          identity.project,
+          identity.slug,
+          next.assistant_index,
+          next.canonical,
+        );
+        if (queuedPreparationCounts.current.has(nextId)) return true;
+
+        let audioJobId = next.audio_error ? null : next.audio_job_id;
+        if (!audioJobId) {
+          audioJobId = (await api.startAudioJob(next.canonical, identity.project)).job.id;
+        }
+        enqueueJob(
+          {
+            id: nextId,
+            title: session.paper.title ?? 'Narration',
+            text: next.canonical,
+          },
+          audioJobId,
+          identity.project,
+          null,
+          false,
+          !automatic,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const task = advance().finally(() => {
+      if (playlistAdvanceRef.current === task) playlistAdvanceRef.current = null;
+    });
+    playlistAdvanceRef.current = task;
+    return task;
+  }, [enqueueJob]);
+
+  useTrackPlayerEvents([Event.PlaybackQueueEnded], (event) => {
+    void playNextResponse(true, event.track);
+  });
 
   const dismiss = useCallback(async () => {
     cancelPrep();
@@ -760,6 +906,9 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         narrationById,
         errorById,
         playbackStartedAtById,
+        playlistAutoplay,
+        setPlaylistAutoplay,
+        playNextResponse: () => playNextResponse(false),
       }}>
       {children}
     </AudioContext.Provider>

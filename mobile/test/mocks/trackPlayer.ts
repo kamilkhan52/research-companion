@@ -69,6 +69,7 @@ export const trackPlayerMock = {
   seekBy: jest.fn(async () => undefined),
   setRate: jest.fn(async () => undefined),
   getRate: jest.fn(async () => 1),
+  skip: jest.fn(async () => undefined),
   skipToNext: jest.fn(async () => undefined),
   skipToPrevious: jest.fn(async () => undefined),
   getProgress: jest.fn(async () => ({ position: 0, duration: 0, buffered: 0 })),
