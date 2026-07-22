@@ -1152,6 +1152,9 @@ function DiscussionThread({
   const [sentenceCommentText, setSentenceCommentText] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The composer floats over the message list (Gemini/ChatGPT pattern): measured here so the
+  // inverted list gets an equal bottom inset and content scrolls clear of the pill (R12.6).
+  const [composerHeight, setComposerHeight] = useState(0);
   // Auto-open the Notes review when a proposal becomes ready (D03): Finish reading — and a
   // later Request changes — draft a fresh proposal; without this the reader was told notes were
   // written but had to hunt for "Review & commit" (or leave and reopen) to see them. The parent
@@ -1783,7 +1786,9 @@ function DiscussionThread({
     // no full-width strip/separator shows), and the elevated rounded surface + border live on
     // the primary row that already holds [composer | send].
     return (
-      <View>
+      <View
+        style={styles.composerOverlay}
+        onLayout={(e) => setComposerHeight(e.nativeEvent.layout.height)}>
         <SentenceCommentComposer
           active={annotatingAssistant !== null}
           comments={sentenceComments}
@@ -1830,13 +1835,16 @@ function DiscussionThread({
 
   const renderChatFooter = useCallback(() => {
     if (!stream.error) return null;
+    // The chat footer renders below the message list at the physical bottom, where the composer
+    // now floats absolutely (R12.6). Lift it above the composer by its measured height so the
+    // error text + Dismiss button aren't hidden behind the pill.
     return (
-      <Card style={styles.errorCard}>
+      <Card style={[styles.errorCard, { marginBottom: composerHeight + space.md }]}>
         <Text variant="body" color={theme.danger}>{stream.error}</Text>
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
-  }, [stream.clearError, stream.error, styles, theme]);
+  }, [stream.clearError, stream.error, styles, theme, composerHeight]);
 
   const placeholder = editing
     ? 'Edit your message…'
@@ -1869,6 +1877,10 @@ function DiscussionThread({
       // the app's circular icon-button idiom.
       scrollToBottomComponent={() => <Icon name="chevron-down" size={18} color={theme.mint} />}
       scrollToBottomContentStyle={styles.scrollToBottomBtn}
+      // The button is positioned absolutely against the list's bottom (library default 30px up).
+      // The composer now floats there (R12.6), so lift the button above the measured composer so
+      // it isn't hidden behind the pill.
+      scrollToBottomStyle={{ bottom: composerHeight + space.sm }}
       isDayAnimationEnabled={false}
       renderDay={() => null}
       renderTime={() => null}
@@ -1881,6 +1893,10 @@ function DiscussionThread({
       messagesContainerStyle={styles.messagesContainer}
       listProps={{
         keyboardShouldPersistTaps: 'handled',
+        // The composer floats over the list, so pad the inverted list's visual bottom by the
+        // composer's measured height — the newest message scrolls up clear of the pill instead
+        // of sitting permanently under it (R12.6). Inverted list ⇒ paddingTop is visual-bottom.
+        contentContainerStyle: { paddingTop: composerHeight },
         // The inverted list has no explicit auto-scroll effect (see the library's own
         // MessagesContainer source) — it relies on staying at scroll offset 0 while the
         // streaming message (index 0) grows. Without this, RN's default FlatList still
@@ -2949,6 +2965,17 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   // The container is transparent with side margins, so its edge never reads as a separator
   // line across the chat; the elevated rounded surface lives on `composerCard` (the primary
   // row), which holds the input + send button together.
+  // The composer floats over the scrolling list (Gemini/ChatGPT): its container is fully
+  // transparent so message content shows behind/around the rounded pill, hidden only where it
+  // sits under the pill itself. The list gets a matching bottom inset (composerHeight) so the
+  // newest message can scroll clear of it (R12.6).
+  composerOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'transparent',
+  },
   toolbar: {
     borderTopWidth: 0,
     backgroundColor: 'transparent',
@@ -2963,6 +2990,8 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: 24,
+    // Clip the fill to the rounded border so it can't bleed past the corners on Android (R12.6).
+    overflow: 'hidden',
     // Floats over the message list on its shadow — the toolbar strip behind it stays
     // transparent (R12.6).
     ...floatShadow,

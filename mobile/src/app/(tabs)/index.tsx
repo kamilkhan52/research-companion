@@ -92,6 +92,9 @@ export default function LibraryScreen() {
   const projects = projectsQuery.data;
   const recentQuery = useRecentSessions();
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // The project pill floats over the list (like the composer): measured so the scroll content
+  // gets a matching top inset and papers scroll clear behind it (R12.6).
+  const [pillHeight, setPillHeight] = useState(0);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const { sort, sortDirection, setSort, setSortDirection } = usePaperSortPreference(activePid);
   const [expandedSort, setExpandedSort] = useState<SortKey | null>(null);
@@ -288,16 +291,21 @@ export default function LibraryScreen() {
     <Screen edges={['top']}>
       {header}
 
-      {/* Counts live in the progress card right below; the pill stays single-line once a
-          project is selected and only hints when there is nothing selected yet. */}
-      <ProjectPill
-        name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
-        subtitle={activeProject ? undefined : 'Tap to choose or create'}
-        onPress={() => setSwitcherOpen(true)}
-      />
-
+      <View style={{ flex: 1 }}>
+      {/* The pill floats over the list — papers scroll behind/around it, hidden only under the
+          rounded card itself (R12.6). Rendered BEFORE the ScrollView so screen readers reach it
+          first (it's visually at the top); an explicit zIndex keeps it painted above the list. */}
+      <View
+        style={styles.pillOverlay}
+        onLayout={(e) => setPillHeight(e.nativeEvent.layout.height)}>
+        <ProjectPill
+          name={activeProject?.name ?? (activePid ? activePid : 'Select a project')}
+          subtitle={activeProject ? undefined : 'Tap to choose or create'}
+          onPress={() => setSwitcherOpen(true)}
+        />
+      </View>
       <ScrollView
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, { paddingTop: pillHeight + space.sm }]}
         refreshControl={
           <RefreshControl
             refreshing={stateQuery.isFetching || recentQuery.isFetching}
@@ -421,6 +429,7 @@ export default function LibraryScreen() {
           </View>
         )}
       </ScrollView>
+      </View>
 
       {selectMode ? (
         <View style={styles.selectBar}>
@@ -866,6 +875,9 @@ function EmptyProjectHub({
 const makeStyles = (t: ThemePalette, density: DensityMode) => {
   const tight = density === 'tight';
   return StyleSheet.create({
+  // Transparent absolute holder so the pill floats over the scrolling list (R12.6). Rendered
+  // before the list for screen-reader order, so an explicit zIndex keeps it painted on top.
+  pillOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 2, backgroundColor: 'transparent' },
   projectPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -878,7 +890,8 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: t.line,
-    // Floats over whatever sits beneath it on its shadow (R12.6).
+    // Clip the fill to the rounded border so it can't bleed past the corners on Android (R12.6).
+    overflow: 'hidden',
     ...floatShadow,
   },
   list: {

@@ -29,7 +29,7 @@ Update the Status column as items land.
 | R12.3 | **Hide** action on recommended papers so Discover recommendations stay relevant | usage notes | queued |
 | R12.4 | Default sort = **Last Interacted, most recent first**; persist per-project sort (D10 note) | usage notes + D10 | queued |
 | R12.5 | Marquee/hero title: first appearance must start at the rolling left position — no mid-screen start or snap | usage notes | queued |
-| R12.6 | Floating rounded surfaces (composer, mini player, project selector, …) must not reveal a rectangular backdrop over underlying content; transparent + subtle shadow | usage notes | queued |
+| R12.6 | Floating rounded surfaces (composer, mini player, project selector, …) must not reveal a rectangular backdrop over underlying content; transparent + subtle shadow | usage notes | **done** — composer & project pill float as absolute overlays over the scrolling list (measured onLayout inset so content scrolls behind); mini-player is now a plain full-width bar; device-confirmed (PR follow-up to #207) |
 | R12.7 | Responses as playlist tracks: easy play-next when the current response ends + optional autoplay | usage notes | queued |
 | R12.8 | Make the agentic tool loop the default turn path (retire the silent `RC_AGENTIC` footgun), keep an explicit off switch, and surface tool calls in the chat UI | I1 | queued |
 | R12.9 | Single full-paper pass: one canonical per-paper record (affiliations, figures, citations/related works, covers) produced on first full-text analysis and reused by Map build — never divergent per-surface passes; concise progress steps shown during first read | I2 + usage notes | queued |
