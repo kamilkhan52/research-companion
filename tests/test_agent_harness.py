@@ -245,35 +245,54 @@ def test_stream_fallback_does_not_fire_after_a_final():
     assert any(e["type"] == "final" for e in events)
 
 
+def _usage_obj(input_tokens=0, output_tokens=0, requests=0):
+    return type("U", (), {"input_tokens": input_tokens,
+                          "output_tokens": output_tokens, "requests": requests})()
+
+
+def _capture_usage(monkeypatch):
+    recorded, pending = [], []
+    monkeypatch.setattr(agent_harness.usage, "record",
+                        lambda op, model, u: recorded.append(u))
+    monkeypatch.setattr(agent_harness.usage, "record_pending",
+                        lambda op, model, gid: pending.append((op, gid)))
+    return recorded, pending
+
+
 def test_billed_run_without_token_counts_records_a_pending_marker(temp_project, monkeypatch):
     # A run that made a request but never received token counts (e.g. a stream cancelled
     # before the terminal usage chunk) must not vanish from accounting (sol review round 3).
-    class _Usage:
-        input_tokens = 0
-        output_tokens = 0
-        requests = 1
-
-    pending = []
-    recorded = []
-    monkeypatch.setattr(agent_harness.usage, "record", lambda *a: recorded.append(a))
-    monkeypatch.setattr(agent_harness.usage, "record_pending",
-                        lambda op, model, gid: pending.append((op, model, gid)))
-
-    agent_harness._record_run_usage(_Usage(), None, "analysis")
+    recorded, pending = _capture_usage(monkeypatch)
+    agent_harness._record_run_usage(_usage_obj(requests=1), None, "analysis", complete=False)
     assert recorded == []
-    assert pending and pending[0][0] == "analysis" and pending[0][2] is None
+    assert pending and pending[0] == ("analysis", None)
+
+
+def test_incomplete_run_records_partial_tokens_and_a_pending_marker(temp_project, monkeypatch):
+    # The mixed case (sol review round 4): earlier tool rounds contributed real tokens, then a
+    # later request was cancelled before its usage chunk. BOTH the known tokens and a pending
+    # marker must be recorded — the marker independent of the tokens — so totals read estimated.
+    recorded, pending = _capture_usage(monkeypatch)
+    agent_harness._record_run_usage(
+        _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis",
+        complete=False)
+    assert recorded and recorded[0]["total_tokens"] == 140
+    assert pending == [("analysis", None)]
+
+
+def test_complete_run_records_tokens_without_a_pending_marker(temp_project, monkeypatch):
+    # A clean completion (or a cap trip, complete=True) has authoritative usage — no marker.
+    recorded, pending = _capture_usage(monkeypatch)
+    agent_harness._record_run_usage(
+        _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis",
+        complete=True)
+    assert recorded and recorded[0]["total_tokens"] == 140
+    assert pending == []
 
 
 def test_zero_request_run_records_nothing(temp_project, monkeypatch):
     # A run that never issued a request (nothing billed) records neither an aggregate nor a
-    # pending marker.
-    class _Usage:
-        input_tokens = 0
-        output_tokens = 0
-        requests = 0
-
-    calls = []
-    monkeypatch.setattr(agent_harness.usage, "record", lambda *a: calls.append("record"))
-    monkeypatch.setattr(agent_harness.usage, "record_pending", lambda *a: calls.append("pending"))
-    agent_harness._record_run_usage(_Usage(), None, "analysis")
-    assert calls == []
+    # pending marker, complete or not.
+    recorded, pending = _capture_usage(monkeypatch)
+    agent_harness._record_run_usage(_usage_obj(requests=0), None, "analysis", complete=False)
+    assert recorded == [] and pending == []
