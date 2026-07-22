@@ -3,6 +3,8 @@ SSRF posture on image URLs, and the never-fails enrichment pass. Network functio
 injected fakes (the conftest stubs the real ones); the suite stays network-free."""
 from __future__ import annotations
 
+import json
+
 from app import figures, store
 
 from tests.conftest import add_paper
@@ -469,3 +471,29 @@ def test_stalled_fetch_does_not_cache_a_miss(temp_project):
     except figures.StallError:
         pass
     assert figures.read_manifest(slug) is None
+
+
+def test_legacy_empty_done_manifest_is_rederived(temp_project):
+    """Older code cached status='done' with zero figures when native image paths were
+    misresolved or every download failed; the current pipeline records those as 'none'
+    with a cool-down instead. A legacy empty 'done' must be treated as a miss (sol round
+    3, PR #201) — otherwise live papers keep showing no figures forever."""
+    slug = paper()
+    figures.figures_dir().mkdir(parents=True, exist_ok=True)
+    figures.manifest_path(slug).write_text(json.dumps({
+        "version": 1, "arxiv_id": "2401.00001", "requested_id": "2401.00001v2",
+        "source": "https://arxiv.org/html/2401.00001v2", "status": "done",
+        "fetched_at": "2026-01-01T00:00:00+00:00", "fetched_ts": 1.0, "figures": [],
+    }), encoding="utf-8")
+
+    html = fake_html()
+    manifest = figures.derive_for_slug(slug, fetch_html=html, fetch_image=fake_image())
+    assert html.calls  # the stale empty cache did not short-circuit derivation
+    assert manifest["status"] == "done"
+    assert manifest["figures"]
+
+    # A non-empty 'done' for the same requested id still short-circuits.
+    html2 = fake_html()
+    again = figures.derive_for_slug(slug, fetch_html=html2, fetch_image=fake_image())
+    assert html2.calls == []
+    assert again["figures"] == manifest["figures"]

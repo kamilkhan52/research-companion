@@ -495,9 +495,14 @@ def _derive_locked(slug: str, *, force: bool, fetch_html, fetch_image) -> dict |
     # A version advance (v1 → v2: revised figures) is a cache miss — but NOT a _drop: the
     # old assets stay live until the replacement lands atomically below.
     if existing is not None and not force and existing.get("requested_id") == aid:
-        if existing.get("status") == "done":
+        # A "done" manifest with zero figures is a LEGACY artifact: earlier code cached one
+        # when native image paths were misresolved or every download failed. The current
+        # pipeline records those outcomes as a cool-down "none" instead, so an empty "done"
+        # can only be stale — fall through and re-derive rather than trusting it forever.
+        if existing.get("status") == "done" and existing.get("figures"):
             return existing
-        if time.time() - float(existing.get("fetched_ts") or 0) < NONE_RETRY_S:
+        if (existing.get("status") != "done"
+                and time.time() - float(existing.get("fetched_ts") or 0) < NONE_RETRY_S):
             return existing  # recent "no HTML" result — don't re-poll arXiv every build
     fetch_html = fetch_html or _fetch_html
     fetch_image = fetch_image or _fetch_image
