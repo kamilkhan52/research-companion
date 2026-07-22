@@ -52,6 +52,7 @@ const doneJob: RetrievalJob = {
   source: 'https://arxiv.org/abs/2401.00001',
   analysis_job_id: null,
   analysis_error: null,
+  enrichment: null,
 };
 
 test('explicit Fetch updates durable source status without starting the discussion', async () => {
@@ -88,6 +89,38 @@ test('explicit Fetch updates durable source status without starting the discussi
   expect(await screen.findByText('Full text ready')).toBeTruthy();
   expect(screen.getByText('The Canonical Title')).toBeTruthy();
   expect(stream.run).not.toHaveBeenCalled();
+});
+
+test('first-read enrichment uses the existing retrieval status surface', async () => {
+  const warmingJob: RetrievalJob = {
+    ...doneJob,
+    enrichment: {
+      status: 'running',
+      step: 'Reading first page… · Mapping references… · Finding figures…',
+    },
+  };
+  jest.mocked(api.getLatestRetrievalJob).mockResolvedValueOnce({ job: warmingJob });
+  jest.mocked(api.getRetrievalJob).mockResolvedValue({ job: warmingJob });
+  const stream = { streaming: false, items: [], run: jest.fn(), stop: jest.fn() };
+
+  await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        sessionState={null}
+        selectedModel={null}
+        retrieved={false}
+      />,
+    ),
+  );
+
+  expect(await screen.findByText(
+    'Reading first page… · Mapping references… · Finding figures…',
+  )).toBeTruthy();
 });
 
 test('Start reading automatically fetches before it starts the opening turn', async () => {
