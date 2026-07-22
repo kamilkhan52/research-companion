@@ -38,14 +38,22 @@ export function Marquee({
 }) {
   const offset = useRef(new Animated.Value(0)).current;
   const [containerWidth, setContainerWidth] = useState(0);
-  const [textWidth, setTextWidth] = useState(0);
+  // The measurement is keyed to the text it belongs to: when the text changes (a loading
+  // placeholder giving way to the real title, or a track switch), the stale width must not
+  // position the new text — that painted the first frames at the OLD text's anchor (often
+  // center) and then visibly snapped to the rolling start once the new onLayout arrived.
+  const [measured, setMeasured] = useState<{ text: string; width: number } | null>(null);
   // Resolve the line height up front so the absolutely-positioned text (which leaves layout
   // flow to escape the container's width constraint) still reserves vertical space.
   const flat = StyleSheet.flatten(textStyle) ?? {};
   const lineHeight = flat.lineHeight ?? (typeof flat.fontSize === 'number' ? flat.fontSize * 1.4 : 20);
 
+  const textWidth = measured?.text === text ? measured.width : 0;
+  // Painted only once BOTH the container and the current text are measured, so the first
+  // visible frame already sits at its final anchor — no mid-screen start, no snap.
+  const ready = containerWidth > 0 && measured?.text === text;
   const distance = Math.max(0, textWidth - containerWidth);
-  const overflows = containerWidth > 0 && distance > 1;
+  const overflows = ready && distance > 1;
 
   useEffect(() => {
     offset.setValue(0);
@@ -77,25 +85,31 @@ export function Marquee({
       {/* The text lays out inside an absolutely-positioned strip with an explicit width far
           wider than any container, so its onLayout reports the intrinsic single-line width
           (see MEASURE_WIDTH). The container's overflow:'hidden' does the visual clipping and
-          the strip carries the glide transform. Static centered text keeps the same anchor and
-          just offsets by the slack, so no re-layout jump when overflow flips. */}
+          the strip carries the glide transform. The strip stays transparent until the current
+          text's own measurement lands (`ready`), so the first painted frame is already at the
+          left rolling start (overflow) or the true center (fitting) — never a stale anchor.
+          Keying the Text by its content forces a fresh mount per text, guaranteeing onLayout
+          re-fires even when the new text happens to measure identically. */}
       <Animated.View
+        testID="marquee-strip"
         style={{
           position: 'absolute',
           top: 0,
           width: MEASURE_WIDTH,
           flexDirection: 'row',
           justifyContent: 'flex-start',
-          left: align === 'center' && !overflows && textWidth > 0
+          opacity: ready ? 1 : 0,
+          left: align === 'center' && !overflows && ready
             ? Math.max(0, (containerWidth - textWidth) / 2)
             : 0,
           transform: [{ translateX: offset }],
         }}
       >
         <Text
+          key={text}
           numberOfLines={1}
           style={textStyle}
-          onLayout={(e) => setTextWidth(e.nativeEvent.layout.width)}
+          onLayout={(e) => setMeasured({ text, width: e.nativeEvent.layout.width })}
         >
           {text}
         </Text>
