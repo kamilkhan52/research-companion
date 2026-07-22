@@ -172,10 +172,15 @@ def test_looping_model_hits_the_request_cap_then_falls_back(temp_project, monkey
     fell_back = {}
     monkeypatch.setattr(agent, "run_turn", lambda slug, history, model=None: fell_back.setdefault(
         "hit", agent.Turn(role="assistant", canonical="fallback", state_signal="in_discussion")))
+    recorded = []
+    monkeypatch.setattr(agent_harness.usage, "record",
+                        lambda op, model, u: recorded.append(u))
 
     turn = agent_harness.run_turn_agentic("a", [{"role": "user", "content": "go"}],
                                           model=FunctionModel(looping_model))
     assert turn.canonical == "fallback"  # cap tripped → fallback, not an unbounded loop
+    # The requests it DID make before the cap are metered even though the run failed.
+    assert recorded and recorded[0]["total_tokens"] > 0
 
 
 def test_agentic_turn_records_token_usage(temp_project, monkeypatch):

@@ -33,7 +33,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from . import agent as agent_mod
 from . import config, logging_config, prompts, research_tools, sessions, usage
@@ -169,15 +169,20 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
     else:
         prompt, prior = "", history
     ag = build_agent(slug, model=model, latest_user_text=prompt)
+    # A shared accumulator recorded in `finally`, so a turn that trips the request cap or fails
+    # mid-loop still meters the requests it DID make (sol review — otherwise a 12-request
+    # runaway records zero agentic usage). The single-shot fallback meters itself via llm.py.
+    run_usage = RunUsage()
     try:
         result = ag.run_sync(prompt, message_history=_to_message_history(prior),
-                             usage_limits=_USAGE_LIMITS)
+                             usage_limits=_USAGE_LIMITS, usage=run_usage)
     except Exception as e:  # tool-incompatible / provider error → single-shot fallback
         log.warning("agentic turn failed for %s (%s); falling back to single-shot",
                     slug, str(e)[:200])
         # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
         return agent_mod.run_turn(slug, history, model=_model_id(model))
-    _record_run_usage(getattr(result, "usage", None), ag.model, "analysis")
+    finally:
+        _record_run_usage(run_usage, ag.model, "analysis")
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -233,9 +238,12 @@ async def stream_agent_events(ag: Agent, prompt: str,
     displayed/recorded answer comes only from the run's final request (R6.8). The turn is
     capped at AGENT_REQUEST_LIMIT model requests and its token usage is metered (R12.8)."""
     first_request = True
+    # Recorded in `finally` so a capped/cancelled/failed stream still meters what it consumed
+    # (sol review). The accumulator is filled in-place as requests happen.
+    run_usage = RunUsage()
     try:
         async with ag.iter(prompt, message_history=_to_message_history(prior or []),
-                           usage_limits=_USAGE_LIMITS) as run:
+                           usage_limits=_USAGE_LIMITS, usage=run_usage) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
                     if not first_request:
@@ -255,12 +263,13 @@ async def stream_agent_events(ag: Agent, prompt: str,
                             if isinstance(event, FunctionToolCallEvent):
                                 yield {"type": "tool", "name": event.part.tool_name,
                                        "detail": _tool_detail(event.part.args)}
-            _record_run_usage(getattr(run, "usage", None), ag.model, operation)
         yield {"type": "final", "text": run.result.output if run.result else ""}
     except agent_mod.AgentError:
         raise
     except Exception as e:  # normalize framework/provider errors
         raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e
+    finally:
+        _record_run_usage(run_usage, ag.model, operation)
 
 
 async def stream_with_single_shot_fallback(
