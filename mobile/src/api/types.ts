@@ -51,6 +51,8 @@ export interface Paper {
   source_url?: string;
   /** Publication year — explicit `<!-- year -->` comment or derived from the arXiv id. */
   year?: number | null;
+  /** The reader resolved the source-title suggestion (accepted it or explicitly kept theirs). */
+  title_confirmed?: boolean;
   /** Two most common current institutional affiliations, provider-first when available. */
   affiliations?: string[];
   /** Retrieval-triggered first-page enrichment lifecycle. */

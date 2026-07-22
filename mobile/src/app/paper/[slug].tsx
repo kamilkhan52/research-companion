@@ -20,7 +20,7 @@ import {
   type LeftRightStyle,
   type MessageTextProps,
 } from '@kesha-antonov/react-native-chat';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
@@ -49,8 +49,11 @@ import type {
   ChatJob,
   DiscussionThreadSummary,
   FavoriteModel,
+  Paper,
   ReadingMode,
   RetrievalJob,
+  Session,
+  SessionState,
   StartStreamEvent,
   StreamItem,
   TranscriptEntry,
@@ -143,6 +146,41 @@ const USER_ROW: ViewStyle = {
 const ROW_STYLES_PROP = {
   containerStyle: { left: FULL_WIDTH_ROW, right: USER_ROW } as LeftRightStyle<ViewStyle>,
 };
+
+/** A durable discussion state is sufficient to render the existing thread even before its
+ * transcript refetch settles. In particular, never send an in-flight/empty first turn back to
+ * ComposeFirst merely because its title was updated while the session cache refreshed. */
+export function hasStartedDiscussion(
+  state: SessionState,
+  transcriptLength: number,
+  threadId: string,
+): boolean {
+  return transcriptLength > 0
+    || threadId !== 'main'
+    || state === 'in_discussion'
+    || state === 'notes_drafted'
+    || state === 'committed';
+}
+
+/** Merge a confirmed title response into the session the reader is actually viewing before
+ * refetching it. The transcript/state/thread id stay intact; the old path invalidated a
+ * main-shaped query prefix without applying the response to the active snapshot first. */
+export async function applyPaperUpdateToActiveSession(
+  qc: QueryClient,
+  pid: string,
+  slug: string,
+  activeThread: string,
+  paper: Paper,
+): Promise<void> {
+  const sessionKey = keys.session(pid, slug, activeThread);
+  qc.setQueryData<Session>(sessionKey, (current) => (
+    current ? { ...current, paper: { ...current.paper, ...paper } } : current
+  ));
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: sessionKey, exact: true }),
+    qc.invalidateQueries({ queryKey: keys.projectState(pid) }),
+  ]);
+}
 // MessageText's own container has a built-in inset (marginVertical: 5, marginHorizontal: 10)
 // we don't want stacking with our own padding on user-message text (see userText style).
 const ZERO_INSET: ViewStyle = { marginVertical: 0, marginHorizontal: 0 };
@@ -294,7 +332,7 @@ export default function DiscussionScreen() {
 
   const state = session.data?.state ?? null;
   const transcript = session.data?.transcript ?? [];
-  const hasSession = !!state && (transcript.length > 0 || activeThread !== 'main');
+  const hasSession = hasStartedDiscussion(state, transcript.length, activeThread);
   const paths = pid ? turnJobPaths(pid) : null;
   useListeningHandoffRecovery({
     enabled: listeningMode,
@@ -347,16 +385,15 @@ export default function DiscussionScreen() {
   // Auto-analysis can fetch and open the first discussion while this screen is elsewhere.
   // On re-entry, surface the resolver's canonical title even though ComposeFirst is skipped.
   useEffect(() => {
-    if (!hasSession || !pid || !slug) return;
+    if (!hasSession || !pid || !slug || session.data?.paper.title_confirmed) {
+      setSuggestedTitle(null);
+      return;
+    }
     let active = true;
     void api.getLatestRetrievalJob(pid, slug).then(
       ({ job }) => {
         const found = job?.retrieved ? job.matched_title?.trim() : null;
-        if (
-          active &&
-          found &&
-          comparableTitle(found) !== comparableTitle(session.data?.paper.title ?? '')
-        ) {
+        if (active && shouldSuggestCanonicalTitle(session.data?.paper ?? null, found)) {
           setSuggestedTitle(found);
         }
       },
@@ -365,7 +402,7 @@ export default function DiscussionScreen() {
     return () => {
       active = false;
     };
-  }, [hasSession, pid, session.data?.paper.title, slug]);
+  }, [hasSession, pid, session.data?.paper, slug]);
 
   async function finishReadingFromMenu() {
     if (!paths || !slug) return;
@@ -500,11 +537,10 @@ export default function DiscussionScreen() {
         slug={slug ?? null}
         title={session.data?.paper.title ?? ''}
         onClose={() => setRenameOpen(false)}
-        onRenamed={() => {
+        onRenamed={(paper) => {
           setRenameOpen(false);
           if (pid && slug) {
-            void qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
-            void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+            void applyPaperUpdateToActiveSession(qc, pid, slug, activeThread, paper);
           }
         }}
       />
@@ -515,11 +551,10 @@ export default function DiscussionScreen() {
         currentTitle={session.data?.paper.title ?? ''}
         suggestedTitle={suggestedTitle ?? ''}
         onClose={() => setSuggestedTitle(null)}
-        onUpdated={() => {
+        onUpdated={(paper) => {
           setSuggestedTitle(null);
           if (pid && slug) {
-            void qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
-            void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+            void applyPaperUpdateToActiveSession(qc, pid, slug, activeThread, paper);
           }
         }}
       />
@@ -561,6 +596,7 @@ export default function DiscussionScreen() {
           modelLabel={selectedModelLabel}
           onPickModel={() => setModelPickerOpen(true)}
           retrieved={!!session.data?.paper.retrieved}
+          titleConfirmed={!!session.data?.paper.title_confirmed}
         />
       ) : (
         <DiscussionThread
@@ -604,7 +640,7 @@ const STATE_LABEL: Record<string, string> = {
 // The single overflow trigger for every discussion-level action that isn't the composer
 // itself: navigation into related works / graph / notes, then the quieter mode toggles —
 // grouped per Figma `08c · Actions menu`.
-function OverflowMenu({
+export function OverflowMenu({
   listeningMode,
   onToggleListening,
   hasNotes,
@@ -778,7 +814,7 @@ export function RenamePaperSheet({
   slug: string | null;
   title: string;
   onClose: () => void;
-  onRenamed: () => void;
+  onRenamed: (paper: Paper) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -793,14 +829,21 @@ export function RenamePaperSheet({
     }
   }, [title, visible]);
 
+  // Echo native edits byte-for-byte. Transforming here makes a controlled RN TextInput replace
+  // its value and re-anchor the selection during a mid-string edit.
+  const onDraftChange = useCallback((raw: string) => setDraft(raw), []);
+
   async function save() {
-    const next = draft.trim();
-    if (!pid || !slug || !next || next === title.trim() || saving) return;
+    const next = normalizeTitleForSubmit(draft);
+    if (!pid || !slug || !next || next === normalizeTitleForSubmit(title) || saving) return;
     setSaving(true);
     setError(null);
     try {
-      await api.updatePaper(pid, slug, next);
-      onRenamed();
+      // Keep the TextInput state and submitted value verbatim. The backend owns title
+      // normalization; echoing each onChangeText value exactly is what keeps RN's mid-string
+      // selection stable on device.
+      const { paper } = await api.updatePaper(pid, slug, draft);
+      onRenamed(paper);
     } catch (e) {
       setError((e as Error).message ?? 'Could not rename the paper.');
     } finally {
@@ -816,7 +859,7 @@ export function RenamePaperSheet({
       </Text>
       <BottomSheetTextInput
         value={draft}
-        onChangeText={setDraft}
+        onChangeText={onDraftChange}
         placeholder="Paper title"
         placeholderTextColor={t.muted}
         style={styles.renameInput}
@@ -835,7 +878,10 @@ export function RenamePaperSheet({
           title="Save name"
           onPress={() => void save()}
           loading={saving}
-          disabled={!draft.trim() || draft.trim() === title.trim()}
+          disabled={
+            !normalizeTitleForSubmit(draft)
+            || normalizeTitleForSubmit(draft) === normalizeTitleForSubmit(title)
+          }
           style={{ flex: 1 }}
         />
       </View>
@@ -858,7 +904,7 @@ export function CanonicalTitleSheet({
   currentTitle: string;
   suggestedTitle: string;
   onClose: () => void;
-  onUpdated: () => void;
+  onUpdated: (paper: Paper) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -869,13 +915,18 @@ export function CanonicalTitleSheet({
     if (visible) setError(null);
   }, [visible]);
 
-  async function update() {
-    if (!pid || !slug || !suggestedTitle.trim() || saving) return;
+  async function saveDecision(useSuggestedTitle: boolean) {
+    if (!pid || !slug || (useSuggestedTitle && !suggestedTitle.trim()) || saving) return;
     setSaving(true);
     setError(null);
     try {
-      await api.updatePaper(pid, slug, suggestedTitle.trim());
-      onUpdated();
+      const { paper } = await api.updatePaper(
+        pid,
+        slug,
+        useSuggestedTitle ? suggestedTitle : undefined,
+        true,
+      );
+      onUpdated(paper);
     } catch (e) {
       setError((e as Error).message ?? 'Could not update the paper title.');
     } finally {
@@ -904,10 +955,16 @@ export function CanonicalTitleSheet({
         </Text>
       ) : null}
       <View style={styles.sheetActions}>
-        <Button title="Keep current" variant="ghost" onPress={onClose} style={{ flex: 1 }} />
+        <Button
+          title="Keep mine"
+          variant="ghost"
+          onPress={() => void saveDecision(false)}
+          disabled={saving}
+          style={{ flex: 1 }}
+        />
         <Button
           title="Update title"
-          onPress={() => void update()}
+          onPress={() => void saveDecision(true)}
           loading={saving}
           style={{ flex: 1 }}
         />
@@ -1957,8 +2014,19 @@ function parseSource(s: string): { arxiv_id?: string; pdf_url?: string } {
 const RETRIEVAL_POLL_MS = 1500;
 const RETRIEVAL_WAIT_MS = 25 * 60 * 1000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export const normalizeTitleForSubmit = (value: string) => value.replace(/\s+/g, ' ').trim();
 const comparableTitle = (value: string) =>
   value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+export function shouldSuggestCanonicalTitle(
+  paper: Pick<Paper, 'title' | 'title_confirmed'> | null,
+  found: string | null | undefined,
+): found is string {
+  return !!paper
+    && !paper.title_confirmed
+    && !!found
+    && comparableTitle(found) !== comparableTitle(paper.title);
+}
 
 export function ComposeFirst({
   pid,
@@ -1970,6 +2038,7 @@ export function ComposeFirst({
   sessionState,
   selectedModel,
   retrieved,
+  titleConfirmed = false,
   modelLabel = 'Project default',
   onPickModel = () => undefined,
 }: {
@@ -1982,6 +2051,7 @@ export function ComposeFirst({
   sessionState: string | null;
   selectedModel: string | null;
   retrieved: boolean;
+  titleConfirmed?: boolean;
   modelLabel?: string;
   onPickModel?: () => void;
 }) {
@@ -2006,7 +2076,7 @@ export function ComposeFirst({
   const [uploadedReady, setUploadedReady] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [retrievalJob, setRetrievalJob] = useState<RetrievalJob | null>(null);
-  const [dismissedMatchedTitle, setDismissedMatchedTitle] = useState<string | null>(null);
+  const [titleDecisionConfirmed, setTitleDecisionConfirmed] = useState(titleConfirmed);
   const [updatingTitle, setUpdatingTitle] = useState(false);
   const manualSource = sourceDraft.value;
   const setManualSource = sourceDraft.setValue;
@@ -2032,8 +2102,12 @@ export function ComposeFirst({
   const shouldOfferTitle =
     isRetrieved &&
     !!matchedTitle &&
-    comparableTitle(matchedTitle) !== comparableTitle(title) &&
-    dismissedMatchedTitle !== matchedTitle;
+    !titleDecisionConfirmed &&
+    comparableTitle(matchedTitle) !== comparableTitle(title);
+
+  useEffect(() => {
+    if (titleConfirmed) setTitleDecisionConfirmed(true);
+  }, [titleConfirmed]);
 
   useEffect(() => {
     if (initialSource && sourceDraft.ready && !sourceDraft.hasDraft) {
@@ -2254,11 +2328,28 @@ export function ComposeFirst({
     setUpdatingTitle(true);
     setLocalError(null);
     try {
-      await api.updatePaper(pid, slug, matchedTitle);
+      await api.updatePaper(pid, slug, matchedTitle, true);
+      setTitleDecisionConfirmed(true);
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     } catch (e) {
       setLocalError((e as Error).message ?? 'Could not update the paper title.');
+    } finally {
+      setUpdatingTitle(false);
+    }
+  }
+
+  async function keepMatchedTitle() {
+    if (!matchedTitle || updatingTitle) return;
+    setUpdatingTitle(true);
+    setLocalError(null);
+    try {
+      await api.updatePaper(pid, slug, undefined, true);
+      setTitleDecisionConfirmed(true);
+      await qc.invalidateQueries({ queryKey: keys.session(pid, slug) });
+      await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+    } catch (e) {
+      setLocalError((e as Error).message ?? 'Could not keep the current paper title.');
     } finally {
       setUpdatingTitle(false);
     }
@@ -2507,9 +2598,10 @@ export function ComposeFirst({
             </Text>
             <View style={styles.sourceActions}>
               <Button
-                title="Keep current"
+                title="Keep mine"
                 variant="ghost"
-                onPress={() => setDismissedMatchedTitle(matchedTitle)}
+                onPress={() => void keepMatchedTitle()}
+                disabled={updatingTitle}
                 style={{ flex: 1 }}
               />
               <Button

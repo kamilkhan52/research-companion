@@ -41,7 +41,8 @@ class MetaPatchReq(BaseModel):
 
 
 class PaperPatchReq(BaseModel):
-    title: str
+    title: str | None = None
+    title_confirmed: bool = False
 
 
 @router.get("/api/projects")
@@ -146,11 +147,14 @@ def remove_paper(pid: str, slug: str):
 
 @project_router.patch("/papers/{slug}")
 def update_paper(pid: str, slug: str, req: PaperPatchReq):
-    """Apply a human-confirmed paper-title edit without changing the stable paper slug.
+    """Apply a human-confirmed title edit and/or source-title decision.
 
-    The client Save action is the approval boundary. Commit only the reading-list entry and
-    this paper's corpus heading; unrelated dirty session/project work must not ride along.
+    The client action is the approval boundary. Commit only the reading-list entry and, when
+    renamed, this paper's corpus heading; unrelated dirty session/project work must not ride
+    along. The stable slug, session paths, and active discussion identity never change.
     """
+    if req.title is None and not req.title_confirmed:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
     paper = store.get_paper(slug)
     if paper is None:
         raise HTTPException(status_code=404, detail=f"Unknown paper: {slug}")
@@ -167,16 +171,25 @@ def update_paper(pid: str, slug: str, req: PaperPatchReq):
             # writers cannot race a rollback into restoring stale pre-relocation bytes.
             reading_before = reading_list.read_bytes()
             corpus_before = corpus.read_bytes() if corpus.exists() else None
-            changed = ["reading-list.md"]
-            if corpus_before is not None:
-                changed.append(str(corpus.relative_to(config.project_dir())))
-            if not store.rename_entry(slug, req.title):
+            renamed, confirmed = store.update_entry_title(
+                slug, req.title, confirm=req.title_confirmed,
+            )
+            if not renamed and not confirmed:
                 current = store.get_paper(slug, sessions.session_states())
                 return {"paper": current.to_dict() if current else {"slug": slug}}
+            changed = ["reading-list.md"]
+            if renamed and corpus_before is not None:
+                changed.append(str(corpus.relative_to(config.project_dir())))
             committer._git("add", "--", *changed)
             try:
+                if renamed and req.title_confirmed:
+                    message = f"Confirm paper title as {store.title_for(slug)}"
+                elif renamed:
+                    message = f"Rename paper to {store.title_for(slug)}"
+                else:
+                    message = f"Keep paper title {paper.title}"
                 committer._git(
-                    "commit", "-q", "-m", f"Rename paper to {req.title.strip()}", "--", *changed,
+                    "commit", "-q", "-m", message, "--", *changed,
                 )
             except CommitError as e:
                 if "nothing to commit" not in str(e):
@@ -201,7 +214,7 @@ def update_paper(pid: str, slug: str, req: PaperPatchReq):
                 pass
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=500, detail="Could not rename the paper.") from e
+        raise HTTPException(status_code=500, detail="Could not update the paper title.") from e
     updated = store.get_paper(slug, sessions.session_states())
     return {"paper": updated.to_dict() if updated else {"slug": slug}}
 

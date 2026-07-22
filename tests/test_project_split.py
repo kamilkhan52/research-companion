@@ -146,6 +146,21 @@ def test_copy_leaves_source_intact_and_copies_session_history(temp_project):
         config.reset_active_project(tok)
 
 
+def test_split_copies_confirmed_title_decision_with_entry_block(temp_project):
+    _seed_source(temp_project)
+    assert store.confirm_entry_title("awq") is True
+
+    res = project_split.split_project(
+        temp_project, "Confirmed Titles", ["awq"], remove_from_source=False,
+    )
+    tok = _bind(res["new_pid"])
+    try:
+        assert store.get_paper("awq").title_confirmed is True
+        assert "<!-- title-confirmed -->" in store.entry_details("awq")["block"]
+    finally:
+        config.reset_active_project(tok)
+
+
 def test_unknown_slug_is_rejected_before_any_write(temp_project):
     _seed_source(temp_project)
     before = {p["id"] for p in projects.list_projects()}
@@ -439,6 +454,21 @@ def test_move_to_existing_appends_and_removes_from_source(temp_project):
     finally:
         config.reset_active_project(tok)
     assert {p.slug for p in store.list_papers()} == {"core"}  # source lost the moved papers
+
+
+def test_move_to_existing_carries_confirmed_title_decision(temp_project):
+    _seed_source(temp_project)
+    assert store.confirm_entry_title("awq") is True
+    dest = _make_dest()
+
+    project_split.move_to_existing(temp_project, dest, ["awq"], remove_from_source=True)
+
+    tok = _bind(dest)
+    try:
+        assert store.get_paper("awq").title_confirmed is True
+        assert "<!-- title-confirmed -->" in store.entry_details("awq")["block"]
+    finally:
+        config.reset_active_project(tok)
 
 
 def test_move_to_existing_keeps_a_cite_to_a_destination_paper(temp_project):

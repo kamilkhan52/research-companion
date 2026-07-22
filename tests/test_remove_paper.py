@@ -38,6 +38,7 @@ def test_remove_entry_unknown_slug_is_false(temp_project):
 def test_rename_entry_preserves_slug_metadata_and_notes(temp_project):
     add_paper(temp_project, "stable-slug", "Rough Ttle")
     store.annotate_entry("stable-slug", arxiv_id="2401.00001")
+    assert store.confirm_entry_title("stable-slug") is True
     store.append_notes_block("stable-slug", "Rough Ttle", "## Notes\n\nKeep this.")
 
     assert store.rename_entry("stable-slug", "The Canonical Title") is True
@@ -46,8 +47,21 @@ def test_rename_entry_preserves_slug_metadata_and_notes(temp_project):
     assert paper.slug == "stable-slug"
     assert paper.title == "The Canonical Title"
     assert paper.arxiv_id == "2401.00001"
+    assert paper.title_confirmed is True
+    assert store.entry_details("stable-slug")["title_confirmed"] is True
+    assert "<!-- title-confirmed -->" in store.entry_details("stable-slug")["block"]
     assert "Keep this." in store.read_notes("stable-slug")
     assert store.corpus_path("stable-slug").read_text().startswith("# The Canonical Title\n")
+
+
+def test_confirm_entry_title_round_trips_once(temp_project):
+    add_paper(temp_project, "a", "Paper A")
+
+    assert store.get_paper("a").title_confirmed is False
+    assert store.confirm_entry_title("a") is True
+    assert store.confirm_entry_title("a") is False
+    assert store.get_paper("a").title_confirmed is True
+    assert store._reading_list().read_text().count("<!-- title-confirmed -->") == 1
 
 
 def test_update_paper_route_commits_only_the_confirmed_paper_files(temp_project):
@@ -71,6 +85,58 @@ def test_update_paper_route_commits_only_the_confirmed_paper_files(temp_project)
         ["git", "status", "--porcelain"], cwd=str(config.project_dir()),
         capture_output=True, text=True,
     ).stdout
+
+
+def test_update_paper_route_commits_keep_title_decision_without_corpus(temp_project):
+    add_paper(temp_project, "a", "My Deliberate Title")
+    corpus_before = store.corpus_path("a").read_bytes()
+
+    result = update_paper(temp_project, "a", PaperPatchReq(title_confirmed=True))
+
+    assert result["paper"]["title"] == "My Deliberate Title"
+    assert result["paper"]["title_confirmed"] is True
+    assert store.corpus_path("a").read_bytes() == corpus_before
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=str(config.project_dir()), capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert committed == ["reading-list.md"]
+    assert "Keep paper title My Deliberate Title" in _git_log(config.project_dir())
+
+
+def test_update_paper_route_renames_and_confirms_in_one_commit(temp_project):
+    add_paper(temp_project, "a", "Rough Title")
+
+    result = update_paper(
+        temp_project,
+        "a",
+        PaperPatchReq(title="Canonical Title", title_confirmed=True),
+    )
+
+    assert result["paper"]["title"] == "Canonical Title"
+    assert result["paper"]["title_confirmed"] is True
+    assert "Confirm paper title as Canonical Title" in _git_log(config.project_dir())
+
+
+def test_update_paper_route_rolls_back_title_marker_on_commit_failure(temp_project, monkeypatch):
+    from app import committer
+
+    add_paper(temp_project, "a", "My Title")
+    reading_before = store._reading_list().read_bytes()
+    real_git = committer._git
+
+    def fail_commit(*args):
+        if args[:1] == ("commit",):
+            raise committer.CommitError("index locked")
+        return real_git(*args)
+
+    monkeypatch.setattr(committer, "_git", fail_commit)
+    with pytest.raises(HTTPException) as exc:
+        update_paper(temp_project, "a", PaperPatchReq(title_confirmed=True))
+
+    assert exc.value.status_code == 500
+    assert store._reading_list().read_bytes() == reading_before
+    assert store.get_paper("a").title_confirmed is False
 
 
 def test_remove_entry_takes_the_whole_block(temp_project):
