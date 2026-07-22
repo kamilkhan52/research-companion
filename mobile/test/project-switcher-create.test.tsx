@@ -3,7 +3,7 @@
 // the input sits at the sheet's top regardless of project count.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
 import * as api from '@/api/endpoints';
@@ -48,4 +48,23 @@ test('creating replaces the list with a top-anchored panel and cancel restores i
   await fireEventAsync.press(screen.getByText('Cancel'));
   await waitFor(() => expect(screen.getByText('Project 4')).toBeTruthy());
   expect(screen.queryByPlaceholderText('Project name')).toBeNull();
+});
+
+test('a discarded name does not prefill the next New Project open', async () => {
+  jest.mocked(api.listProjects).mockResolvedValue({ projects });
+
+  await renderAsync(
+    wrap(
+      <ProjectSwitcher visible activePid="p0" onSelect={() => {}} onClose={() => {}} />,
+    ),
+  );
+  await waitFor(() => expect(screen.getByText('Project 4')).toBeTruthy());
+
+  await fireEventAsync.press(screen.getByText('+ New project'));
+  fireEvent.changeText(screen.getByPlaceholderText('Project name'), 'Discarded name');
+  await fireEventAsync.press(screen.getByText('Cancel'));
+
+  await waitFor(() => expect(screen.getByText('+ New project')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('+ New project'));
+  expect(screen.getByPlaceholderText('Project name').props.value).toBe('');
 });

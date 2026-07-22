@@ -62,10 +62,15 @@ export function ProjectSwitcher({
     }
   }
 
-  function handleClose() {
-    setManaging(null);
+  function exitCreate() {
     setCreating(false);
     setCreateError(null);
+    setName('');  // a discarded name must not prefill (and risk creating) on the next open
+  }
+
+  function handleClose() {
+    setManaging(null);
+    exitCreate();
     onClose();
   }
 
@@ -108,10 +113,7 @@ export function ProjectSwitcher({
             <Button
               title="Cancel"
               variant="ghost"
-              onPress={() => {
-                setCreating(false);
-                setCreateError(null);
-              }}
+              onPress={exitCreate}
               style={{ flex: 1 }}
             />
             <Button
