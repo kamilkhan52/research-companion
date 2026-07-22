@@ -259,40 +259,29 @@ def _capture_usage(monkeypatch):
     return recorded, pending
 
 
-def test_billed_run_without_token_counts_records_a_pending_marker(temp_project, monkeypatch):
-    # A run that made a request but never received token counts (e.g. a stream cancelled
-    # before the terminal usage chunk) must not vanish from accounting (sol review round 3).
-    recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(_usage_obj(requests=1), None, "analysis", complete=False)
-    assert recorded == []
-    assert pending and pending[0] == ("analysis", None)
-
-
-def test_incomplete_run_records_partial_tokens_and_a_pending_marker(temp_project, monkeypatch):
-    # The mixed case (sol review round 4): earlier tool rounds contributed real tokens, then a
-    # later request was cancelled before its usage chunk. BOTH the known tokens and a pending
-    # marker must be recorded — the marker independent of the tokens — so totals read estimated.
+def test_billed_run_flags_estimated_because_cost_is_unavailable(temp_project, monkeypatch):
+    # OpenRouter's dollar cost is not surfaced through Pydantic AI, so ANY billed agentic run
+    # records its exact tokens AND a pending (cost-unknown) marker — so totals read estimated
+    # rather than implying an exact $0 (sol review rounds 3-5).
     recorded, pending = _capture_usage(monkeypatch)
     agent_harness._record_run_usage(
-        _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis",
-        complete=False)
+        _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis")
     assert recorded and recorded[0]["total_tokens"] == 140
     assert pending == [("analysis", None)]
 
 
-def test_complete_run_records_tokens_without_a_pending_marker(temp_project, monkeypatch):
-    # A clean completion (or a cap trip, complete=True) has authoritative usage — no marker.
+def test_billed_run_without_token_counts_still_records_a_pending_marker(temp_project, monkeypatch):
+    # A billed request whose token counts never arrived (interrupted mid-request) records no
+    # token aggregate but still a pending marker, so it isn't invisible.
     recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(
-        _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis",
-        complete=True)
-    assert recorded and recorded[0]["total_tokens"] == 140
-    assert pending == []
+    agent_harness._record_run_usage(_usage_obj(requests=1), None, "analysis")
+    assert recorded == []
+    assert pending == [("analysis", None)]
 
 
 def test_zero_request_run_records_nothing(temp_project, monkeypatch):
     # A run that never issued a request (nothing billed) records neither an aggregate nor a
-    # pending marker, complete or not.
+    # pending marker.
     recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(_usage_obj(requests=0), None, "analysis", complete=False)
+    agent_harness._record_run_usage(_usage_obj(requests=0), None, "analysis")
     assert recorded == [] and pending == []

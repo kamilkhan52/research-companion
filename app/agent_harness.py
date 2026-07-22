@@ -20,7 +20,6 @@ import os
 from collections.abc import AsyncIterator, Callable, Iterable
 
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     ModelRequest,
@@ -61,20 +60,23 @@ AGENT_REQUEST_LIMIT = 12
 _USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
 
 
-def _record_run_usage(run_usage, model: Model | None, operation: str,
-                      *, complete: bool) -> None:
-    """Best-effort token accounting for an agentic run (R12.8 / sol review): the Pydantic AI
-    path bypasses llm.py's ledger, so meter it here. OpenRouter's dollar cost is not surfaced
-    through Pydantic AI, so only token counts are recorded (cost stays 0 for this operation) —
-    strictly better than the previous silent gap, and the request cap bounds the exposure.
+def _record_run_usage(run_usage, model: Model | None, operation: str) -> None:
+    """Best-effort accounting for an agentic run (R12.8 / sol review). The Pydantic AI path
+    bypasses llm.py's ledger, so meter it here — but with a hard limitation: Pydantic AI's
+    usage mapping drops OpenRouter's dollar `cost` (see models/openai._map_usage), so this path
+    can NEVER learn a turn's real cost, only its token counts.
 
-    `complete` says the run reached its natural end (or tripped the request cap), so its token
-    aggregate is authoritative. When it did NOT — a stream cancelled mid-request, a provider
-    error part-way — a request may have been billed upstream without its terminal usage chunk,
-    so the token totals can silently undercount. Known tokens are recorded EITHER way; an
-    incomplete run ALSO gets a pending marker so totals read 'estimated' rather than falsely
-    exact. These are independent: a multi-request run can have real tokens from finished rounds
-    AND an unaccounted cancelled round. Never raises: accounting must not fail a turn."""
+    So: record the token counts (exact), and whenever the run actually issued a billed request,
+    ALSO record a pending marker — cost-unknown — so `usage.summary()` flags totals as
+    estimated instead of reporting the cost as an exact $0 it isn't. This is not about clean vs
+    interrupted completion (a clean multi-round run's cost is just as unknown); it is that cost
+    is structurally unavailable on this path.
+
+    Residual limitation, documented rather than papered over: a request that fails upstream
+    before Pydantic AI increments `RunUsage.requests` is invisible here and records nothing. A
+    faithful fix (OpenRouter generation-cost lookup by id, or request-lifecycle hooks) is a
+    deliberate follow-up, not a token/marker workaround. Never raises: accounting must not fail
+    a turn."""
     try:
         if not run_usage:
             return
@@ -88,10 +90,9 @@ def _record_run_usage(run_usage, model: Model | None, operation: str,
                 "completion_tokens": completion,
                 "total_tokens": prompt + completion,
             })
-        if requests > 0 and not complete:
-            # A billed request may lack its usage chunk (interrupted mid-request). Flag totals
-            # estimated with a pending marker (no generation id to reconcile by), independent of
-            # whatever tokens the finished rounds already contributed above.
+        if requests > 0:
+            # A billed request happened but its dollar cost is unknowable on this path — flag
+            # totals estimated (no generation id to reconcile by) rather than implying $0.
             usage.record_pending(operation, model_name, None)
     except Exception as e:  # noqa: BLE001 — accounting is best-effort
         log.debug("agentic usage accounting skipped: %s", str(e)[:120])
@@ -187,21 +188,18 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
     # mid-loop still meters the requests it DID make (sol review — otherwise a 12-request
     # runaway records zero agentic usage). The single-shot fallback meters itself via llm.py.
     run_usage = RunUsage()
-    complete = False
     try:
         result = ag.run_sync(prompt, message_history=_to_message_history(prior),
                              usage_limits=_USAGE_LIMITS, usage=run_usage)
-        complete = True
     except Exception as e:  # tool-incompatible / provider error → single-shot fallback
-        # A cap trip stops BEFORE sending the next request, so every request that was sent
-        # reported usage: its aggregate is authoritative (no pending marker needed).
-        complete = isinstance(e, UsageLimitExceeded)
         log.warning("agentic turn failed for %s (%s); falling back to single-shot",
                     slug, str(e)[:200])
         # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
         return agent_mod.run_turn(slug, history, model=_model_id(model))
     finally:
-        _record_run_usage(run_usage, ag.model, "analysis", complete=complete)
+        # Meters whatever requests happened, on success or fallback (the single-shot fallback
+        # additionally meters itself, with real cost, through llm.py).
+        _record_run_usage(run_usage, ag.model, "analysis")
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -258,11 +256,8 @@ async def stream_agent_events(ag: Agent, prompt: str,
     capped at AGENT_REQUEST_LIMIT model requests and its token usage is metered (R12.8)."""
     first_request = True
     # Recorded in `finally` so a capped/cancelled/failed stream still meters what it consumed
-    # (sol review). The accumulator is filled in-place as requests happen; `complete` gates the
-    # pending-marker so a clean run (or a cap trip, whose sent requests all reported usage)
-    # isn't flagged estimated, while a mid-request cancellation is.
+    # (sol review). The accumulator is filled in-place as requests happen.
     run_usage = RunUsage()
-    complete = False
     try:
         async with ag.iter(prompt, message_history=_to_message_history(prior or []),
                            usage_limits=_USAGE_LIMITS, usage=run_usage) as run:
@@ -285,17 +280,13 @@ async def stream_agent_events(ag: Agent, prompt: str,
                             if isinstance(event, FunctionToolCallEvent):
                                 yield {"type": "tool", "name": event.part.tool_name,
                                        "detail": _tool_detail(event.part.args)}
-        complete = True
         yield {"type": "final", "text": run.result.output if run.result else ""}
     except agent_mod.AgentError:
         raise
-    except UsageLimitExceeded as e:  # cap trip: sent requests all reported usage → authoritative
-        complete = True
-        raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e
     except Exception as e:  # normalize framework/provider errors
         raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e
     finally:
-        _record_run_usage(run_usage, ag.model, operation, complete=complete)
+        _record_run_usage(run_usage, ag.model, operation)
 
 
 async def stream_with_single_shot_fallback(
