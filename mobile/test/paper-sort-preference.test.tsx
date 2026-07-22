@@ -77,17 +77,25 @@ test('an unknown or corrupt stored value falls back to the default', async () =>
 });
 
 test('a selection made while a stale load is in flight wins', async () => {
-  await AsyncStorage.setItem(
-    'rc.paperSort.v1:project-a',
-    JSON.stringify({ key: 'pubdate', direction: 'asc' }),
-  );
+  // Keep the storage read genuinely pending (the default mock resolves immediately, which
+  // would let the restore land BEFORE the selection and pass even without the version guard).
+  let resolveLoad: (value: string | null) => void = () => undefined;
+  const pending = new Promise<string | null>((resolve) => {
+    resolveLoad = resolve;
+  });
+  const getItem = jest
+    .spyOn(AsyncStorage, 'getItem')
+    .mockReturnValueOnce(pending as Promise<string | null>);
+
   const hook = await renderHookAsync(() => usePaperSortPreference('project-a'));
-  // Select immediately, before the async load resolves.
   act(() => hook.result.current.setSort('name', 'desc'));
-  await waitFor(async () => {
-    expect(await AsyncStorage.getItem('rc.paperSort.v1:project-a')).toContain('name');
+  // The stale stored value arrives AFTER the user's selection — it must be discarded.
+  await act(async () => {
+    resolveLoad(JSON.stringify({ key: 'pubdate', direction: 'asc' }));
+    await pending;
   });
   expect(hook.result.current.sort).toBe('name');
   expect(hook.result.current.sortDirection).toBe('desc');
+  getItem.mockRestore();
   await hook.unmountAsync();
 });
