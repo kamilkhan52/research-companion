@@ -30,6 +30,18 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   const [error, setError] = useState<string | null>(null);
   // Guards a start against a fast double-tap in the same tick (before `running` re-renders).
   const startingRef = useRef(false);
+  // This hook stays mounted across project switches (tab screens persist). A pending start
+  // from project A must never block the first tap in project B or apply A's late response
+  // to B's UI — same protection as useGraphBuild.
+  const startGenerationRef = useRef(0);
+
+  useEffect(() => {
+    startGenerationRef.current += 1;
+    startingRef.current = false;
+    setRunning(false);
+    setJob(null);
+    setError(null);
+  }, [pid]);
 
   const applyJob = useCallback(
     (next: DiscoveryJob | null | undefined) => {
@@ -57,13 +69,19 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     if (!running || !pid) return;
     let cancelled = false;
     const tick = async () => {
+      // Captured BEFORE the request — a poll can READ the server pre-registration and
+      // resolve only after the start POST settles (see useGraphBuild).
+      const beganWhileStarting = startingRef.current;
       try {
         const { job: snap } = await getDiscovery(pid);
+        if (cancelled) return;
         // Same first-tap guard as useGraphBuild (D17/D18): while the start POST is in
         // flight, the server may not know the new job yet (or still report the previous
         // settled run) — applying that snapshot flipped `running` off and flashed the
-        // search view back to idle. The POST response is the authoritative first snapshot.
-        if (!cancelled && !startingRef.current) applyJob(snap);
+        // search view back to idle. A RUNNING snapshot is always safe (runs are deduped
+        // per project); null/settled snapshots wait until the start settles.
+        if ((beganWhileStarting || startingRef.current) && snap?.status !== 'running') return;
+        applyJob(snap);
       } catch {
         // transient network error — keep polling; the next tick may succeed
       }
@@ -79,25 +97,41 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   const run = useCallback(
     async (goals: string) => {
       if (!pid || startingRef.current || running || !goals.trim()) return false;
+      const requestPid = pid;
+      const generation = ++startGenerationRef.current;
       startingRef.current = true;
       setError(null);
       setJob(null);
       setRunning(true); // optimistic: disables the button immediately; applyJob corrects it
       try {
-        const { job: started } = await startDiscovery(pid, goals.trim());
+        const { job: started } = await startDiscovery(requestPid, goals.trim());
+        if (generation !== startGenerationRef.current) return false;
         applyJob(started);
         // Persist the goals into the cached response so a remount prefills the new text.
-        qc.setQueryData<DiscoveryResponse>(keys.discovery(pid), (old) =>
+        qc.setQueryData<DiscoveryResponse>(keys.discovery(requestPid), (old) =>
           old ? { ...old, goals: goals.trim() } : old,
         );
         return true;
       } catch (e) {
+        if (generation !== startGenerationRef.current) return false;
+        // The POST response can be lost while the run started fine server-side —
+        // reconcile with the registry before declaring failure (see useGraphBuild).
+        try {
+          const { job: snap } = await getDiscovery(requestPid);
+          if (generation !== startGenerationRef.current) return false;
+          if (snap?.status === 'running') {
+            applyJob(snap);
+            return true;
+          }
+        } catch {
+          // status unreachable too — fall through to the error
+        }
         setError((e as Error).message ?? 'Discovery failed.');
         setRunning(false);
-        await qc.invalidateQueries({ queryKey: keys.discovery(pid) });
+        await qc.invalidateQueries({ queryKey: keys.discovery(requestPid) });
         return false;
       } finally {
-        startingRef.current = false;
+        if (generation === startGenerationRef.current) startingRef.current = false;
       }
     },
     [pid, running, applyJob, qc],
