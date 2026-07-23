@@ -156,6 +156,9 @@ CATALOGUE = [
     {"id": "anthropic/claude-opus-4.1", "name": "Opus 4.1", "created": 200},
     {"id": "anthropic/claude-opus-4-fast", "name": "Opus Fast", "created": 300},
     {"id": "deepseek/deepseek-v4-pro", "name": "DS V4", "created": 150},
+    {"id": "x-ai/grok-4.3", "name": "Grok 4.3", "created": 400},
+    {"id": "x-ai/grok-4.5", "name": "Grok 4.5", "created": 500},
+    {"id": "x-ai/grok-build-0.1", "name": "Grok Build", "created": 600},
 ]
 
 
@@ -195,6 +198,11 @@ def test_newest_matching_picks_latest_and_respects_exclusions(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: FakeResp(200, {"data": CATALOGUE}))
     best = llm.newest_matching(["anthropic/", "claude-opus"], ["fast"])
     assert best["id"] == "anthropic/claude-opus-4.1"  # newest non-fast opus
+
+
+def test_newest_matching_skips_newer_specialized_model():
+    best = llm.newest_matching(["x-ai/", "grok"], ["build"], models=CATALOGUE)
+    assert best["id"] == "x-ai/grok-4.5"
 
 
 def test_newest_matching_returns_none_when_no_match():
