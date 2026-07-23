@@ -2,12 +2,59 @@
 dot-dir skip that keeps trashed projects invisible."""
 import pytest
 from app import config, jobs, projects
+from app.routers import catalogue as catalogue_router
 
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def favorite_catalogue():
+    """Small offline catalogue with newer specialized decoys for family-filter coverage."""
+    return [
+        {"id": "x-ai/grok-4.3", "created": 100},
+        {"id": "x-ai/grok-4.5", "created": 200},
+        {"id": "x-ai/grok-build-0.1", "created": 300},
+        {"id": "moonshotai/kimi-k2.6", "created": 100},
+        {"id": "moonshotai/kimi-k3", "created": 200},
+        {"id": "moonshotai/kimi-k2.7-code", "created": 300},
+        {"id": "openai/gpt-5.6-sol", "created": 200},
+        {"id": "openai/gpt-5.6-sol-pro", "created": 300},
+        {"id": "openai/gpt-5.6-terra", "created": 200},
+        {"id": "openai/gpt-5.6-terra-pro", "created": 300},
+        {"id": "openai/gpt-5.6-luna", "created": 200},
+        {"id": "openai/gpt-5.6-luna-pro", "created": 300},
+        {"id": "qwen/qwen3.6-max-preview", "created": 100},
+        {"id": "qwen/qwen3.7-max", "created": 200},
+        {"id": "qwen/qwen3-max-thinking", "created": 300},
+        {"id": "google/gemini-3.5-flash", "created": 100},
+        {"id": "google/gemini-3.6-flash", "created": 200},
+        {"id": "google/gemini-3.5-flash-lite", "created": 300},
+        {"id": "google/gemini-3.1-flash-image", "created": 400},
+        {"id": "google/gemini-3.1-pro-preview", "created": 200},
+        {"id": "google/gemini-3.1-pro-preview-customtools", "created": 300},
+    ]
+
+
+def test_favorite_model_families_resolve_current_chat_variants(monkeypatch, favorite_catalogue):
+    monkeypatch.setattr(catalogue_router.llm, "catalogue", lambda: favorite_catalogue)
+
+    resolved = {model["label"]: model["id"]
+                for model in catalogue_router.favorite_models()["models"]}
+
+    assert resolved == {
+        "GPT 5.6 Sol": "openai/gpt-5.6-sol",
+        "GPT 5.6 Terra": "openai/gpt-5.6-terra",
+        "GPT 5.6 Luna": "openai/gpt-5.6-luna",
+        "Gemini Pro": "google/gemini-3.1-pro-preview",
+        "Gemini Flash": "google/gemini-3.6-flash",
+        "Grok": "x-ai/grok-4.5",
+        "Qwen Max": "qwen/qwen3.7-max",
+        "Kimi K3": "moonshotai/kimi-k3",
+    }
 
 
 def test_favorite_sorts_first_and_round_trips(root):
