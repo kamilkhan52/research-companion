@@ -200,11 +200,18 @@ the only switch, and it reverts.
 **Done when.** Staging and production both reachable over HTTPS on a real domain, restart-safe,
 volume-backed, secrets out of the repo, prod provably refusing dev bypasses, API-36 answer recorded.
 
-**Human actions.** H1 (Actions billing) ✅ and H2 (Fly account) ✅ are done. Remaining: add a
-payment method to Fly (persistent volumes are not in the free allowance), and **H4 — create the
-production and staging Supabase projects**, pulled forward from M2 because prod now refuses to boot
-without Supabase auth configured. No domain purchase needed: `research-companion.fly.dev` ships
-with TLS (H2b defers a custom domain to M10).
+**Human actions.** H1 (Actions billing) ✅ and H2 (Fly account) ✅ are done. **All four of these
+block the deploy:**
+- add a payment method to Fly (persistent volumes are not in the free allowance);
+- **H4** — create the production and staging Supabase projects, pulled forward from M2 because prod
+  now refuses to boot without Supabase auth configured;
+- **H20** — set the OpenRouter key credit limit and the OpenAI Admin API spend limit in *enforcing*
+  mode, before the instance is internet-reachable;
+- **H21** — provide your Supabase user UUID for the temporary allowlist, without which the first
+  stranger to sign up owns the pre-tenancy instance.
+
+No domain purchase needed: `research-companion.fly.dev` ships with TLS (H2b defers a custom domain
+to M10).
 
 ---
 
@@ -360,11 +367,12 @@ TTS cost is exactly computable before dispatch:
 - Only the older character-priced models (`tts-1`, `tts-1-hd`) give exact pre-dispatch cost.
 
 Two workable designs, and this is a product decision (see H22): **(a)** pin production TTS to a
-character-priced model and keep exact per-dispatch accounting, at some cost in voice quality; or
-**(b)** keep `gpt-4o-mini-tts` and reserve a **conservative upper bound** derived from the
-character count, settling at the bound. (b) deliberately over-counts, which is safe for a ceiling
-but imprecise as a billing ledger. Recommendation: (b), since audio quality is a headline feature —
-revisit if the over-count proves material at M10.
+character-priced model, where the pre-dispatch figure *is* the exact cost, at some loss of voice
+quality; or **(b)** keep `gpt-4o-mini-tts`, reserve a **conservative upper bound** derived from the
+character count, and **settle to the usage reported in the SSE terminal event** — the bound is
+retained only for attempts that die before reporting. Recommendation: **(b)**, which is now the
+better option on *both* axes: better voice, and better real accounting, since only
+`gpt-4o-mini-tts` reports usage at all.
 
 **Two things make the *reservation unit* wrong if taken naively, and both must be handled:**
 
@@ -417,8 +425,11 @@ the hosted backend. Two tester accounts cannot see each other's data. Report act
 **Done when.** ≥12 testers are opted in and the 14-day continuous clock is running.
 
 **Human actions.** Finish Play account verification, H8 (create the app, accept agreements), H11
-(approve privacy policy + terms), H13 (Data safety declarations), H16 (recruit 12+ testers — the
-pacing item; start recruiting during M2 so they're ready the day this lands).
+(approve privacy policy + terms), H13 (Data safety declarations), **H20** (provider spend limits —
+already required at M1, and doubly so once 12 external testers can spend), **H22** (choose the
+production TTS model, which sets how the per-user budget is computed), H16 (recruit 12+ testers —
+the pacing item; start recruiting during M2 so they're ready the day this lands), and H21 extended
+with the testers' UUIDs if the allowlist is still the gate.
 
 ---
 
