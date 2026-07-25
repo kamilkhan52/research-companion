@@ -54,6 +54,37 @@ def test_prompt_writes_refused_for_non_operators(user):
         assert exc.value.status_code == 403
 
 
+@pytest.mark.parametrize("user", [None, {}, {"user_id": "stranger"}])
+def test_settings_writes_refused_for_non_operators(user):
+    """P0-2. Sharper than the prompt hole: these are the INSTANCE's provider keys and model
+    choice. A non-operator could previously swap the model every turn bills against, or overwrite
+    the OpenRouter key and take the app offline for everyone."""
+    with pytest.raises(HTTPException) as exc:
+        settings_router.write_settings(
+            settings_router.SettingsReq(model="anthropic/claude-opus-4.6"), _Request(user))
+    assert exc.value.status_code == 403
+
+
+def test_settings_reads_stay_open(monkeypatch):
+    """Reading is deliberately NOT gated — keys come back as 6-char hints, never in full — and the
+    clients need it to render Settings at all. Gating it would break the app for everyone."""
+    out = settings_router.read_settings()
+    assert "key_hint" in out
+    assert "openrouter_api_key" not in out
+
+
+def test_settings_writes_allowed_for_the_operator(monkeypatch):
+    monkeypatch.setenv("RC_OPERATOR_USERS", "op-uuid")
+    seen = {}
+    monkeypatch.setattr(settings_router.config, "save_settings",
+                        lambda payload: seen.update(payload) or {"model": payload.get("model")})
+    out = settings_router.write_settings(
+        settings_router.SettingsReq(model="deepseek/deepseek-v4-flash"),
+        _Request({"user_id": "op-uuid"}))
+    assert seen.get("model") == "deepseek/deepseek-v4-flash"
+    assert out["model"] == "deepseek/deepseek-v4-flash"
+
+
 def test_prompt_writes_allowed_for_the_operator(monkeypatch, tmp_path):
     """The gate must let the operator through, or the refusal tests above would be satisfied by a
     route that refuses everyone."""

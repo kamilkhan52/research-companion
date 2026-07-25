@@ -69,21 +69,27 @@ production app + secrets. Data migration and client cutover are deliberately *ou
 
 **Waiting on Kamil (updated 2026-07-25):**
 
-1. **`RC_OPERATOR_USERS` on staging.** H6 is decided and implemented, but until this is set nobody
-   — including Kamil — can edit prompts, because the gate fails closed:
+1. **`RC_OPERATOR_USERS` on staging.** H6 is implemented and fails closed, so until this is set
+   nobody — including Kamil — can edit prompts or settings:
    `flyctl secrets set RC_OPERATOR_USERS=b8f19707-4b13-4cbb-834a-93cd6d06f489 -a research-companion-staging`
-2. **A monthly spend ceiling** to size M3's per-user caps against. The OpenRouter key limit and
-   OpenAI prepaid credits protect the *account*; they do nothing about one user burning the shared
-   pool.
-3. **Testers — deliberately deferred.** Kamil's call (2026-07-25): recruit only once there is a
-   testable app. **Schedule consequence, stated plainly:** Play's 12-testers / 14-continuous-days
-   clock therefore starts *after* M2.5 ships rather than running in parallel with M2, so it is now
-   strictly additive to the timeline rather than hidden inside it. Nothing about that is wrong —
-   handing testers a broken build wastes the clock too — but it means launch is M2.5 + 14 days at
-   the earliest, and the 14 days cannot be compressed.
+2. **A monthly spend ceiling** to size M3's per-user caps against.
+3. **Confirm `tts-1` over `tts-1-hd` for the paid tier.** H22 chose `-hd` before the cost analysis
+   existed; `tts-1` halves the single largest variable cost for a difference that is near-inaudible
+   on phone speakers. `-hd` stands until Kamil says otherwise.
+4. **Supabase Pro ($25/mo)** before testers: the free tier **pauses a project after 1 week idle**
+   and caps at 2 projects, which this account is already at.
 
-**Done since the last revision:** OpenRouter key deployed to staging; Google OAuth consent screen
-published (H16's first half); H6 decided and implemented; H22 decided (`tts-1-hd`).
+**Decided/closed since the last revision:** OpenRouter key on staging; OAuth consent screen
+published; H6 (operator gating, #222/#223 — closes P0-2 and P0-3); H22 (`tts-1-hd`); testers
+deliberately deferred until the app is testable, which makes Play's 12-testers/14-continuous-days
+clock strictly additive after M2.5 rather than parallel with M2.
+
+**Pricing is now analysed, not assumed** — see `20-pricing-analysis.md`. Free = 15 turns on
+DeepSeek V4 Flash with `BrowserTTS` (~$0.14/user-month worst case); Basic $10 = 60 turns + 45 min
+of `tts-1` (74% gross margin after Play's 15%, break-even ~5 paying users). The four findings that
+reshape M3 are recorded as **P0-16, P0-17, P1-12, P1-13, P1-14** in the audit: audio is unmetered
+and is the biggest cost line, nothing pins the model server-side, provider routing is unpinned at
+~2.45x list, `listening_preview` burns 17.3 calls per turn, and the audio cache never evicts.
 
 
 ---

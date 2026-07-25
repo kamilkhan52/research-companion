@@ -55,7 +55,13 @@ def read_settings():
 
 
 @router.post("/api/settings")
-def write_settings(req: SettingsReq):
+def write_settings(req: SettingsReq, request: Request):
+    # Same gate as the prompt routes, and for a sharper reason: these are the INSTANCE's provider
+    # keys and model choice, not the caller's. Any authenticated user could previously swap the
+    # model every turn runs on, or overwrite the OpenRouter key and take the app offline for
+    # everyone (P0-2). There is one key and one model selection on this deployment — per-user
+    # settings arrive with ownership in M2, and this gate is what holds the line until then.
+    _require_operator(request)
     merged = config.save_settings(req.model_dump())
     return {
         "has_key": bool(merged.get("openrouter_api_key")), "model": merged.get("model"),
@@ -74,11 +80,16 @@ def write_settings(req: SettingsReq):
 def _require_operator(request: Request) -> None:
     """Gate a route that changes configuration for EVERY user of the instance.
 
-    The system prompts drive every analysis turn, so a user who can rewrite them can redirect
-    other people's reading — and on a shared instance that is also a prompt-injection primitive
-    (P0-3). Product decision 2026-07-25: prompt editing is the operator's, not the user's. The
-    per-session *starting prompt* a reader can edit is a different thing entirely and is
-    unaffected — it travels on the turn (`ChatStartReq.prompt`) and never touches the registry.
+    Two routes need this, for the same reason: the system prompts drive every analysis turn, and
+    the settings hold the instance's shared provider keys and model choice. A user who can write
+    either one changes the app for everybody else — steering other people's reading (P0-3), or
+    swapping the model every turn bills against (P0-2). Product decision 2026-07-25: both belong to
+    the operator.
+
+    Two things are deliberately NOT gated. Reading settings is fine: keys come back as 6-char
+    hints, never in full. And the per-session *starting prompt* a reader edits before a discussion
+    travels on the turn (`ChatStartReq.prompt`) and never touches the registry, so it stays an
+    ordinary user feature.
     """
     if not auth.is_operator(getattr(request.state, "user", None)):
         raise HTTPException(
