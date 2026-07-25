@@ -41,6 +41,18 @@ def _mock_client(handler):
     return factory
 
 
+def _resp(status: int, body: bytes = b"", **headers: str) -> httpx.Response:
+    """A mock response whose body is a real stream.
+
+    Built with `stream=` rather than `content=` on purpose: a Response constructed with `content=`
+    is already marked stream-consumed, so `iter_raw()` raises StreamConsumed on it — an artifact of
+    the constructor, not of the code under test (a network response always streams). Since
+    safe_fetch counts WIRE bytes, the tests have to exercise the real streaming path.
+    """
+    return httpx.Response(status, stream=httpx.ByteStream(body),
+                          headers={k.replace("_", "-"): v for k, v in headers.items()})
+
+
 # ---------------- destination validation ----------------
 
 @pytest.mark.parametrize("ip", [
@@ -72,6 +84,27 @@ def test_refuses_carrier_grade_nat(fake_dns):
 
 def test_allows_a_public_address():
     safe_fetch.assert_public_url("https://arxiv.org/pdf/2201.11705")   # must not raise
+
+
+def test_validates_the_host_httpx_will_actually_connect_to(monkeypatch):
+    """IDNA normalization must not let validation and connection disagree.
+
+    `urlparse` hands back `faß.attacker.example`; `socket.getaddrinfo` maps that through the old
+    `idna` codec to `fass.attacker.example`, while httpx/httpcore apply IDNA 2008 and connect to
+    `xn--fa-hia.attacker.example`. Those are DIFFERENT names, so whoever controls the parent zone
+    could point the checked one at a public address and the connected one at loopback — a full
+    bypass needing no DNS rebinding. The guard therefore resolves httpx's own `raw_host`.
+    """
+    resolved: list[str] = []
+
+    def getaddrinfo(host, port, *a, **k):
+        resolved.append(host)
+        return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", getaddrinfo)
+    safe_fetch.assert_public_url("http://faß.attacker.example/x")
+    assert resolved == ["xn--fa-hia.attacker.example"], (
+        "validated a different hostname than httpx would connect to")
 
 
 @pytest.mark.parametrize("url", [
@@ -114,8 +147,8 @@ def test_checks_every_resolved_address(monkeypatch):
 def test_follows_redirects_and_returns_final_url(monkeypatch):
     def handler(request):
         if request.url.path == "/start":
-            return httpx.Response(302, headers={"location": "https://example.com/final"})
-        return httpx.Response(200, content=b"body", headers={"content-type": "text/plain"})
+            return _resp(302, location="https://example.com/final")
+        return _resp(200, b"body", content_type="text/plain")
 
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
     r = safe_fetch.fetch("https://example.com/start", max_bytes=1000)
@@ -129,7 +162,7 @@ def test_redirect_to_private_address_is_refused(fake_dns, monkeypatch):
     fake_dns["metadata.evil"] = "169.254.169.254"
 
     def handler(request):
-        return httpx.Response(302, headers={"location": "http://metadata.evil/latest/meta-data/"})
+        return _resp(302, location="http://metadata.evil/latest/meta-data/")
 
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
     with pytest.raises(safe_fetch.UnsafeURLError, match="non-public"):
@@ -142,8 +175,8 @@ def test_relative_redirect_is_resolved_against_the_current_hop(monkeypatch):
     def handler(request):
         seen.append(str(request.url))
         if request.url.path == "/a/start":
-            return httpx.Response(302, headers={"location": "../b/final"})
-        return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
+            return _resp(302, location="../b/final")
+        return _resp(200, b"ok", content_type="text/plain")
 
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
     r = safe_fetch.fetch("https://example.com/a/start", max_bytes=1000)
@@ -153,7 +186,7 @@ def test_relative_redirect_is_resolved_against_the_current_hop(monkeypatch):
 
 def test_redirect_loop_is_bounded(monkeypatch):
     def handler(request):
-        return httpx.Response(302, headers={"location": "https://example.com/loop"})
+        return _resp(302, location="https://example.com/loop")
 
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
     with pytest.raises(safe_fetch.UnsafeURLError, match="redirects"):
@@ -162,7 +195,7 @@ def test_redirect_loop_is_bounded(monkeypatch):
 
 def test_redirect_without_location_is_refused(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client",
-                        _mock_client(lambda request: httpx.Response(302)))
+                        _mock_client(lambda request: _resp(302)))
     with pytest.raises(safe_fetch.UnsafeURLError, match="Location"):
         safe_fetch.fetch("https://example.com/x", max_bytes=1000)
 
@@ -171,8 +204,7 @@ def test_redirect_without_location_is_refused(monkeypatch):
 
 def test_rejects_oversized_declared_length(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: httpx.Response(200, content=b"x" * 10,
-                                       headers={"content-length": "999999"})))
+        lambda request: _resp(200, b"x" * 10, content_length="999999")))
     with pytest.raises(safe_fetch.FetchTooLargeError, match="declares"):
         safe_fetch.fetch("https://example.com/big", max_bytes=100)
 
@@ -180,34 +212,79 @@ def test_rejects_oversized_declared_length(monkeypatch):
 def test_rejects_body_that_exceeds_ceiling_despite_lying_header(monkeypatch):
     """A hostile server can simply omit or understate Content-Length, so the ceiling has to be
     enforced against bytes actually read — that is the check that prevents the OOM."""
-    def handler(request):
-        return httpx.Response(200, stream=httpx.ByteStream(b"x" * 5000))
-
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    monkeypatch.setattr(safe_fetch.httpx, "Client",
+                        _mock_client(lambda request: _resp(200, b"x" * 5000)))
     with pytest.raises(safe_fetch.FetchTooLargeError, match="exceeds"):
         safe_fetch.fetch("https://example.com/lying", max_bytes=100)
 
 
-def test_rejects_a_decompression_bomb(monkeypatch):
-    """A ~48KB gzip payload that expands to 50MB. The ceiling has to be enforced on DECOMPRESSED
-    bytes to catch this, which is why the loop counts `iter_bytes()` (decoded) rather than
-    `iter_raw()` (wire bytes) — counting the wire would let this through on both the
-    Content-Length check and the streaming check."""
-    bomb = gzip.compress(b"x" * 50_000_000)
-    assert len(bomb) < 100_000                    # the trap: tiny on the wire
+@pytest.mark.parametrize("layers,encoding", [(1, "gzip"), (2, "gzip, gzip")])
+def test_rejects_a_decompression_bomb_without_allocating_it(monkeypatch, layers, encoding):
+    """A tiny wire payload that expands to 200MB, singly and doubly gzipped.
 
-    def handler(request):
-        return httpx.Response(200, content=bomb,
-                              headers={"content-encoding": "gzip", "content-type": "text/plain"})
+    Asserting that an exception is raised is NOT enough, and the first version of this test made
+    exactly that mistake: it passed while 200MB had already been allocated. `iter_bytes()`
+    decompresses each wire chunk *in full* before yielding it, so a size check on the yielded chunk
+    runs after the damage. Measured on httpx 0.28.1: a 485-byte `gzip, gzip` body produced one
+    200,000,000-byte chunk. So this test asserts the allocation bound — no single chunk handed to
+    the ceiling may exceed it — which only holds if the ceiling counts wire bytes.
+    """
+    payload = b"x" * 200_000_000
+    for _ in range(layers):
+        payload = gzip.compress(payload)
+    assert len(payload) < 250_000                 # the trap: tiny on the wire
 
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    largest = {"chunk": 0}
+    real_iter_raw = httpx.Response.iter_raw
+
+    def spy(self, *a, **k):
+        for chunk in real_iter_raw(self, *a, **k):
+            largest["chunk"] = max(largest["chunk"], len(chunk))
+            yield chunk
+
+    monkeypatch.setattr(httpx.Response, "iter_raw", spy)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, payload, content_encoding=encoding,
+                              content_type="text/plain")))
     with pytest.raises(safe_fetch.FetchTooLargeError):
         safe_fetch.fetch("https://example.com/bomb", max_bytes=1_000_000)
+    assert largest["chunk"] <= 250_000, (
+        "the ceiling saw a decompressed chunk — it must count wire bytes, or a bomb is allocated "
+        "in full before the check runs")
+
+
+def test_decodes_a_legitimate_gzip_body(monkeypatch):
+    """The bomb defence must not break ordinary compression: a server that ignores our
+    `Accept-Encoding: identity` and gzips anyway still has to produce correct bytes."""
+    body = b"hello " * 100
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, gzip.compress(body), content_encoding="gzip",
+                              content_type="text/plain")))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == body
+
+
+def test_requests_identity_encoding(monkeypatch):
+    """Belt to _decode_body's braces: not offering compression means a well-behaved server never
+    gets to pick an expansion ratio in the first place."""
+    seen = {}
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: (seen.update(request.headers), _resp(200, b"x"))[1]))
+    safe_fetch.fetch("https://example.com/x", max_bytes=100)
+    assert seen["accept-encoding"] == "identity"
+
+
+def test_refuses_an_unsupported_content_encoding(monkeypatch):
+    """We asked for identity, so an exotic encoding means the server ignored us. Refuse rather than
+    reach for a decoder whose expansion we cannot bound."""
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, b"\x00\x01", content_encoding="br")))
+    with pytest.raises(safe_fetch.FetchTooLargeError, match="unsupported"):
+        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
 
 
 def test_accepts_a_body_at_the_ceiling(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: httpx.Response(200, content=b"x" * 100)))
+        lambda request: _resp(200, b"x" * 100)))
     assert safe_fetch.fetch("https://example.com/x", max_bytes=100).content == b"x" * 100
 
 
@@ -215,16 +292,15 @@ def test_accepts_a_body_at_the_ceiling(monkeypatch):
 
 def test_http_error_status_raises(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client",
-                        _mock_client(lambda request: httpx.Response(404)))
+                        _mock_client(lambda request: _resp(404)))
     with pytest.raises(httpx.HTTPStatusError):
         safe_fetch.fetch("https://example.com/missing", max_bytes=100)
 
 
 def test_text_decodes_with_declared_charset(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: httpx.Response(
-            200, content="héllo".encode("latin-1"),
-            headers={"content-type": "text/html; charset=latin-1"})))
+        lambda request: _resp(200, "héllo".encode("latin-1"),
+                              content_type="text/html; charset=latin-1")))
     assert safe_fetch.fetch("https://example.com/x", max_bytes=100).text == "héllo"
 
 
@@ -232,6 +308,6 @@ def test_text_survives_a_bogus_charset(monkeypatch):
     """Content-Type is attacker-controlled; an unknown charset must not raise LookupError out of
     a fetch the caller only wanted text from."""
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: httpx.Response(200, content=b"hello",
-                                       headers={"content-type": "text/html; charset=not-a-codec"})))
+        lambda request: _resp(200, b"hello",
+                              content_type="text/html; charset=not-a-codec")))
     assert safe_fetch.fetch("https://example.com/x", max_bytes=100).text == "hello"

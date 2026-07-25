@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from difflib import SequenceMatcher
+from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -176,11 +177,29 @@ def search_arxiv_raw(query: str, max_results: int = 25, sort_by: str = "relevanc
     return results
 
 
+def _is_arxiv_host(url: str) -> bool:
+    """Whether `url`'s HOST is arxiv.org (or a subdomain).
+
+    Matched against the parsed hostname, never as a substring of the whole URL: `url` can be a
+    client-supplied `pdf_url`, and `"arxiv.org" in url` is true of
+    `http://169.254.169.254/latest/meta-data/#arxiv.org` and of any URL with `?ref=arxiv.org`.
+    That substring test used to select the unguarded arXiv branch below, which re-opened the whole
+    of P0-14 for anyone who appended a fragment.
+    """
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    return host == "arxiv.org" or host.endswith(".arxiv.org")
+
+
 def _fetch(url: str) -> bytes:
     # arXiv PDF downloads share the same throttling as the query API, so route them through the
-    # paced/retrying getter. That path is safe without the URL guard because the url is one WE
-    # built from an arXiv id, not one a caller supplied.
-    if "arxiv.org" in url:
+    # paced/retrying getter. Still validated first: routing on the hostname means an attacker
+    # cannot steer an arbitrary address into this branch, but it does NOT stop DNS games against
+    # arxiv.org itself, and this branch has no byte ceiling of its own.
+    if _is_arxiv_host(url):
+        try:
+            safe_fetch.assert_public_url(url)
+        except safe_fetch.UnsafeURLError as e:
+            raise RetrievalError(f"Refusing to download {url}: {e}") from e
         return _arxiv_get(url, timeout=60).content
     # Everything else may be a client-supplied `pdf_url` (session/start), so it goes through the
     # guarded fetcher: public destinations only, every redirect hop re-checked, hard byte ceiling.
