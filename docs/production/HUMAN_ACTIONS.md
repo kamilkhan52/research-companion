@@ -105,8 +105,9 @@ exposes a working backend to the internet.
   caps, and requests keep being processed past the threshold (verified 2026-07-25; an earlier
   version of this file wrongly said it fails closed). Set the alert anyway, but the nearest real
   stop is a small **prepaid balance with auto-recharge disabled** — confirm that behavior before
-  relying on it. The actual TTS ceiling is enforced in-app by M2.5, since TTS cost is deterministic
-  per character.
+  relying on it. The actual TTS ceiling is enforced in-app by M2.5, as a per-user daily budget —
+  see H22, since the default model is token-priced rather than character-priced and the per-request
+  figure is a conservative estimate rather than an exact cost.
 
 **Why not an agent:** provider account billing settings.
 **Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
@@ -120,6 +121,10 @@ character-priced and therefore exactly costable in advance.
 - **Keep `gpt-4o-mini-tts` (recommended)** — better voice, and audio is a headline feature. Quota
   reserves a conservative upper bound from character count, so the ledger over-counts slightly.
 - **Pin `tts-1`** — exact per-character accounting, lower voice quality.
+
+Either way the accounting is exact only *per dispatch*, not per narration: the synthesis path
+retries up to 3× per segment and retries even on read timeouts, where the audio may already have
+been produced and billed. M2.5 handles that by reserving per attempt.
 
 **Report back:** the choice, so M2.5 sizes the per-user TTS budget accordingly.
 

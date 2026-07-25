@@ -98,7 +98,7 @@ gets updated as each lands.
 | M1 | Hosting, environments, and secrets | — | L | queued |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
-| M3 | Metering, quotas, and abuse controls | M2 | L | queued |
+| M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
 | M5 | Subscription-backed access | M3, M4 | M | queued |
 | M6 | Durability — job persistence and backups | M1, M3 | M | queued |
@@ -143,11 +143,18 @@ allowlisted JWT gets 403, not 200.
 caller-supplied `pdf_url` and buffers the whole body, with no IP validation and no byte cap — so an
 authenticated user can reach the host's internal network and metadata endpoints, or OOM the single
 worker (a full outage, invariant 6). On a home Mac mini behind Tailscale this was low-stakes; on a
-cloud host it is not. The fix is small because the pieces already exist: apply
-`research_tools._assert_public_url` to the initial URL **and to every redirect hop**, stream the
-download with a byte ceiling instead of `.content`, and reuse the 40 MB limit the upload path
-already enforces. M1's allowlist limits exposure to trusted users until M2.5, but this is cheap
-enough that it should not wait.
+cloud host it is not.
+
+**Do not simply reuse `_assert_public_url` — it does not close this.** `docs/improvements.md` §7.6
+already documents the gap: the helper resolves the host with `getaddrinfo`, checks those IPs, and
+then httpx **re-resolves** for the actual connection, leaving a DNS-rebinding window where an
+attacker-controlled hostname resolves publicly during validation and privately during the fetch.
+Validating every redirect hop does not close it either. M1 must **pin the validated address** (a
+custom transport that connects to the checked IP) or verify the connected peer before the response
+is read. Stream the download with a byte ceiling instead of `.content`, reusing the 40 MB limit the
+upload path already enforces. M1's allowlist limits exposure to trusted users until M2.5, but this
+is cheap enough that it should not wait — and closing it here also closes the same rebinding gap
+for the agent's `web_fetch`, which has carried it as documented accepted risk.
 
 Secrets move to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
 `app.json` `extra.apiBaseUrl` with staging/production variants. Early spike: verify Expo SDK 56's
@@ -165,9 +172,10 @@ work inside the container (identity is already pinned, so this should be clean).
 intact. A prod-mode boot with `RC_DEV=1` and `RC_AUTH_TOKEN` set refuses to enable either, **and a
 prod-mode boot with no Supabase config fails to start at all**, **and a valid JWT for a
 non-allowlisted user is rejected with 403** — assert all three in `tests/`. **P0-14: a `pdf_url`
-pointing at a private address is refused, a redirect *into* a private address is refused, and a
-response exceeding the byte ceiling is aborted mid-stream rather than buffered.** Existing suite
-green in-container.
+pointing at a private address is refused; a redirect *into* a private address is refused; a
+hostname that resolves public-then-private across the two lookups is refused (the rebinding case —
+fake the resolver so the second answer differs from the first); and a response exceeding the byte
+ceiling is aborted mid-stream rather than buffered.** Existing suite green in-container.
 
 **Manual.** Deploy staging, run the device checklist against it from the phone over the public
 origin. Restart the service mid-job and confirm the failure mode is understood (it will lose the
@@ -336,11 +344,28 @@ TTS cost is exactly computable before dispatch:
 - Only the older character-priced models (`tts-1`, `tts-1-hd`) give exact pre-dispatch cost.
 
 Two workable designs, and this is a product decision (see H22): **(a)** pin production TTS to a
-character-priced model and keep exact accounting, at some cost in voice quality; or **(b)** keep
-`gpt-4o-mini-tts` and reserve a **conservative upper bound** derived from the character count
-(speech duration is bounded by a minimum speaking rate), settling at the bound. (b) deliberately
-over-counts, which is safe for a ceiling but imprecise as a billing ledger. Recommendation: (b),
-since audio quality is a headline feature — revisit if the over-count proves material at M10.
+character-priced model and keep exact per-dispatch accounting, at some cost in voice quality; or
+**(b)** keep `gpt-4o-mini-tts` and reserve a **conservative upper bound** derived from the
+character count, settling at the bound. (b) deliberately over-counts, which is safe for a ceiling
+but imprecise as a billing ledger. Recommendation: (b), since audio quality is a headline feature —
+revisit if the over-count proves material at M10.
+
+**Two things make the *reservation unit* wrong if taken naively, and both must be handled:**
+
+1. **Retries multiply the billable dispatches.** `tts.py:101-116` retries up to `_TRIES` (3) times
+   per segment, and `except httpx.HTTPError: continue` retries on **any** network error — including
+   a read timeout where OpenAI may already have synthesized and billed the audio. 500/502/504 are
+   likewise ambiguous. So one logical narration can cost up to 3 × (number of segments) dispatches.
+   Reserve **per attempt**, not per logical operation — or make the retry unambiguous (no retry
+   after a read timeout) and accept the reliability cost. Reserving per logical operation would
+   silently under-reserve by up to 3×.
+2. **The upper bound is an engineering estimate, not a provider guarantee.** OpenAI documents no
+   per-request cap on output audio tokens or duration, and the `speed` parameter is not a billing
+   bound. What *is* hard is the input cap (OpenAI 4096 chars; we split at `MAX_TTS_CHARS` = 3800),
+   which bounds plausible audio duration in practice. So derive the bound from segment length with
+   an explicit, documented safety factor, and **validate it against observed spend at M10** rather
+   than presenting it as guaranteed. This is acceptable because the *daily per-user budget* is the
+   actual ceiling — the per-request bound only has to never under-estimate.
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
 per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
