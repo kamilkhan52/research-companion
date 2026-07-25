@@ -8,6 +8,9 @@ happened to raise the error they asserted.
 from __future__ import annotations
 
 import gzip
+import socket
+import threading
+import time
 import tracemalloc
 
 import httpx
@@ -136,6 +139,63 @@ def test_total_deadline_stops_a_slow_drip_server(monkeypatch):
     assert now["t"] - started <= 12, (
         f"server was allowed {now['t'] - started}s against a 10s deadline — the deadline is not "
         "being checked per socket read")
+
+
+def test_deadline_survives_a_server_that_drips_headers(monkeypatch):
+    """The one test here that uses a REAL socket, because it has to.
+
+    httpx loops on reads while parsing response headers and resets its read timeout on each one, so
+    a server sending a header line every fraction of a second never returns control to fetch() —
+    no amount of `_check_deadline` sprinkled through the loop can see it. Reproduced before fixing:
+    a 2-second read timeout still hung past two minutes. A MockTransport cannot express this,
+    because it hands back a response object without ever doing socket reads.
+
+    The listener is on loopback, which assert_public_url refuses by design, so validation is
+    stubbed for this test only — the destination check is covered thoroughly elsewhere.
+
+    Note the failure mode if the watchdog is removed: this test HANGS rather than failing, because
+    that is precisely the bug (measured: still running after five minutes). A hanging test is an
+    unpleasant signal, but a silent pass would be worse.
+    """
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        try:
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\n")
+            while not stop.is_set():       # headers that never end
+                conn.sendall(b"X-Pad: y\r\n")
+                time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    try:
+        started = time.monotonic()
+        with pytest.raises(safe_fetch.FetchTimeoutError):
+            safe_fetch.fetch(f"http://127.0.0.1:{port}/", max_bytes=1_000_000,
+                             timeout=3, deadline=2)
+        elapsed = time.monotonic() - started
+        # deadline + one `timeout`: the watchdog closes the client, and the read already in flight
+        # ends at its own timeout. That is the real guarantee — not `deadline`, and not unbounded.
+        assert elapsed < 2 + 3 + 4, f"took {elapsed:.1f}s against deadline=2 timeout=3"
+    finally:
+        stop.set()
+        server.close()
+        thread.join(timeout=2)
 
 
 def test_deadline_does_not_fire_on_a_normal_fetch(monkeypatch):

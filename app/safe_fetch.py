@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -209,18 +210,31 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     caller here is a background job in a single-worker process — enough of them and nothing else
     runs. Raises `FetchTimeoutError` when the deadline passes.
 
-    The deadline is checked BETWEEN operations, not inside them, so a call can overshoot by up to
-    one `timeout` (the read already in flight cannot be interrupted from here). Bounding that
-    exactly would mean a socket-level deadline; `deadline + timeout` is the honest guarantee.
-    Note also that a caller which retries — `retriever._arxiv_get_bytes` does, up to 3 times —
-    spends up to that much per attempt.
+    Enforcement is a watchdog thread that closes the client when the deadline passes, plus checks
+    between operations. The checks alone are NOT enough: httpx loops on reads internally while
+    parsing response headers and while waiting for chunk framing or EOF, resetting its read timeout
+    on each one, so a server dripping header bytes never returns control to this function at all.
+    Measured against a local socket that emits a header line every 50ms: without the watchdog the
+    call was still running after five minutes; with it, `deadline=2, timeout=3` ends at 5.0s.
+
+    So the guarantee is `deadline + timeout`, not `deadline` — the watchdog tears down the client,
+    and the read already in flight then ends at its own timeout. A caller that retries
+    (`retriever._arxiv_get_bytes`, up to 3 times) spends up to that per attempt.
     """
     ends_at = time.monotonic() + deadline
     current = url
     # Ask for no content coding. Combined with the refusal below this is the whole bomb defence:
     # we never expand anything, so there is no ratio for a server to choose.
     sent = {"Accept-Encoding": "identity", **(headers or {})}
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+    client = httpx.Client(timeout=timeout, follow_redirects=False)
+    # The watchdog is the real enforcement. `_check_deadline` only runs where this function has
+    # control, and httpx does not return control while it is looping on reads for headers or
+    # framing — so without this, a slow-drip server pins the thread no matter how many checks are
+    # sprinkled through the loop. Closing the client tears down the connection under the read.
+    watchdog = threading.Timer(max(0.0, ends_at - time.monotonic()), client.close)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
         for _ in range(MAX_REDIRECTS + 1):
             _check_deadline(ends_at, current)
             assert_public_url(current)
@@ -271,4 +285,15 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                     buf += chunk
                 return FetchResult(url=current, status_code=r.status_code,
                                    headers=r.headers, content=bytes(buf))
+
+    except (httpx.HTTPError, RuntimeError) as e:
+        # A read torn down by the watchdog surfaces as a transport error (or a closed-pool
+        # RuntimeError). Past the deadline, that is a timeout and must be reported as one rather
+        # than as a spurious network failure.
+        if time.monotonic() >= ends_at:
+            raise FetchTimeoutError(f"fetch of {current} exceeded its total deadline") from e
+        raise
+    finally:
+        watchdog.cancel()
+        client.close()
     raise UnsafeURLError(f"more than {MAX_REDIRECTS} redirects starting at {url}")
