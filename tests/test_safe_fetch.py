@@ -342,6 +342,32 @@ def test_requests_identity_encoding(monkeypatch):
     assert seen["accept-encoding"] == "identity"
 
 
+def test_refuses_a_long_content_encoding_chain(monkeypatch):
+    """The response picks the number of layers, and each one is a full decompression pass of up to
+    max_bytes — so the byte ceiling alone does not bound the CPU. `gzip` repeated as far as the
+    header limit allows would buy work proportional to the layer count with every individual layer
+    staying inside the limit. Rejected before any decoding happens."""
+    body = b"x" * 10
+    encoding = ", ".join(["gzip"] * (safe_fetch.MAX_ENCODING_LAYERS + 1))
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding=encoding)))
+    with pytest.raises(safe_fetch.UnsupportedResponseError, match="layers"):
+        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
+
+
+def test_allows_a_chain_at_the_limit(monkeypatch):
+    """The cap must not break a legitimately stacked body — otherwise the test above would pass
+    against a function that rejected everything."""
+    body = b"real content"
+    payload = body
+    for _ in range(safe_fetch.MAX_ENCODING_LAYERS):
+        payload = gzip.compress(payload)
+    encoding = ", ".join(["gzip"] * safe_fetch.MAX_ENCODING_LAYERS)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, payload, content_encoding=encoding)))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == body
+
+
 def test_refuses_an_unsupported_content_encoding(monkeypatch):
     """We asked for identity, so an exotic encoding means the server ignored us. Refuse rather than
     reach for a decoder whose expansion we cannot bound."""

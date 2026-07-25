@@ -52,6 +52,10 @@ log = get("safe_fetch")
 # abs -> pdf -> CDN chain is the longest legitimate one we see and fits well inside it.
 MAX_REDIRECTS = 5
 
+# How many stacked Content-Encoding layers we will undo. A real response has one; the limit exists
+# because each layer is a decompression pass the response gets to demand for free (see _decode_body).
+MAX_ENCODING_LAYERS = 3
+
 
 class SafeFetchError(Exception):
     """Base for every refusal from this module, so a call site can translate all of them into its
@@ -172,9 +176,19 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
     On memory: an *identity* response (the normal case, since that is what we ask for) returns
     here untouched, so peak stays at one copy of the body. A compressed one costs more — the wire
     bytes plus the accumulating output plus the final `bytes()` copy, so roughly 3x `max_bytes`
-    transiently. Bounded and predictable is the requirement; minimal is not.
+    transiently, and nearer 4x while a second stacked layer is being undone. Bounded and
+    predictable is the requirement; minimal is not.
     """
     encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
+    # The RESPONSE chooses how many layers to declare, and each one costs a full decompression pass
+    # of up to max_bytes. The byte ceiling does not bound that: `gzip, gzip, gzip, ...` repeated as
+    # far as the header limit allows buys CPU proportional to the number of layers while every
+    # individual layer stays inside the limit. Real responses use one; two exists in the wild only
+    # by accident.
+    if len(encodings) > MAX_ENCODING_LAYERS:
+        raise UnsupportedResponseError(
+            f"{url} declared {len(encodings)} Content-Encoding layers "
+            f"(limit {MAX_ENCODING_LAYERS})")
     for enc in reversed(encodings):
         if enc == "identity":
             continue
