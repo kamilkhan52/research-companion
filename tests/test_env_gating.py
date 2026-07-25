@@ -140,6 +140,20 @@ def test_refuses_dev_mode(monkeypatch, env):
         auth.assert_environment_safe(env)
 
 
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE", " on "])
+def test_refuses_every_spelling_of_dev_mode(monkeypatch, value):
+    """The refusal must cover exactly the values dev_mode() would accept. If the two drifted apart,
+    a staging process could boot while still reporting dev affordances to clients — both sides go
+    through config.env_truthy so that cannot happen, and this test holds them together."""
+    monkeypatch.setenv("RC_ENV", "staging")
+    monkeypatch.setenv("RC_ALLOWED_USERS", "u1")
+    monkeypatch.setenv("RC_DEV", value)
+    _supabase(monkeypatch)
+    assert config.env_truthy("RC_DEV") is True
+    with pytest.raises(auth.ConfigurationError, match="RC_DEV"):
+        auth.assert_environment_safe("staging")
+
+
 @pytest.mark.parametrize("env", ["staging", "prod"])
 def test_refuses_empty_allowlist(monkeypatch, env):
     """Sign-up is self-service, so no allowlist means the first stranger to register gets the

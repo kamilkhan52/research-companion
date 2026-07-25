@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-from .config import _TRUTHY, KNOWN_ENVIRONMENTS
+from .config import KNOWN_ENVIRONMENTS, env_truthy
 
 SUPABASE_URL = os.environ.get("RC_SUPABASE_URL", "").rstrip("/")
 # Publishable (safe to expose to clients); needed by supabase-js to start the auth flow.
@@ -107,7 +107,7 @@ def assert_environment_safe(env: str) -> None:
             "convenience; leaving it configured means a later removal of RC_SUPABASE_URL would "
             "silently downgrade this instance to one shared password."
         )
-    if os.environ.get("RC_DEV", "").strip().lower() in _TRUTHY:
+    if env_truthy("RC_DEV"):
         raise ConfigurationError(
             f"RC_DEV must not be enabled when RC_ENV={env}. It exposes operator-only affordances "
             "(in-app prompt editing, force rebuild) to every user of the instance."

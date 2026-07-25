@@ -110,6 +110,14 @@ KNOWN_ENVIRONMENTS = ("dev", "staging", "prod")
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
+def env_truthy(name: str) -> bool:
+    """Whether env var `name` is set to a truthy value. The one place the truthiness rule lives —
+    `auth.assert_environment_safe` must reject exactly the values `dev_mode()` would accept, and
+    two copies of the rule would eventually disagree (a process refusing `RC_DEV=on` while
+    `dev_mode()` honours it, or worse, the reverse)."""
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
 def env_name() -> str:
     """`RC_ENV` normalized: dev | staging | prod. Read live. **No default** — unset returns "".
 
@@ -143,7 +151,7 @@ def dev_mode() -> bool:
     """
     if not is_dev_env():
         return False
-    return os.environ.get("RC_DEV", "").strip().lower() in _TRUTHY
+    return env_truthy("RC_DEV")
 
 # Author for the commits the app makes into a project's git store (committer.commit,
 # notes_jobs.save, projects.create_project). The store shells out to `git commit`, which needs
