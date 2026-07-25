@@ -89,15 +89,18 @@ recorded as P2-4 in the audit.
    "Sizing M3 against the $200 ceiling" below.
 3. **TTS model: `tts-1`** (H22 revised). Halves the single largest variable cost. `tts-1-hd` stays
    selectable.
-4. **Supabase Pro: NOT needed yet — my earlier claim was wrong.** I had written that the account was
-   "already at" the 2-project cap; I never verified that, and Kamil has one project
-   (`aumedoefxacycwfrlcml`). Verified against Supabase's pricing page 2026-07-25: Free allows **2
-   active projects**, pauses a project after **1 week of inactivity**, and includes **no automatic
-   backups**; Pro is **$25/mo** with 7-day backups. So Free covers staging + production for M1–M2.5.
-   Production will not pause (an app with users is not inactive); staging will pause between
-   sessions and needs an unpause click. **Pro becomes right at M6**, whose gate is exactly "automated
-   backups and a tested restore" — and note the content record lives in **git**, not Postgres, so
-   what Pro protects here is the ownership/index tables, not the papers or notes.
+4. **Supabase: two Free projects, $0 — Pro not needed yet.** ✅ A separate staging project
+   (`iqsiabkdbczvgyccswcy`) was created 2026-07-25, so production (`aumedoefxacycwfrlcml`) no longer
+   doubles as staging. This closes a compromise that had rested on my own unverified claim that the
+   account was at the 2-project cap; it was not. Free allows **2 active projects**, pauses one after
+   **1 week of inactivity**, and has **no automatic backups**; Pro is **$25/mo**. **Pro becomes right
+   at M6**, whose gate is exactly "automated backups and a tested restore" — and the content record
+   lives in **git**, not Postgres, so what Pro protects is the ownership/index tables, not the papers
+   or notes. Staging's JWKS was verified to return an ES256 key before anything pointed at it.
+
+   **Consequence to sequence carefully:** Supabase user ids are per project, so repointing staging
+   invalidates `RC_ALLOWED_USERS` / `RC_OPERATOR_USERS`. See H4 for the four-step bootstrap; the
+   middleware now logs the rejected id so `flyctl logs` answers it without the dashboard.
 
 **Fly payment method: added.** ✅ The production app + volume is unblocked.
 

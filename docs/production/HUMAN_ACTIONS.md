@@ -83,7 +83,7 @@ carries a compliance slice, because closed tracks require a Data safety form and
 
 ---
 
-### H4 — Supabase project · 🟡 `prod done; staging project outstanding` (2026-07-25)
+### H4 — Supabase projects · ✅ `done — separate prod and staging` (2026-07-25)
 *Moved forward from M2 by Sol's review:* production refuses to boot unless
 `auth.mode() == "supabase"`, because `auth.mode()` otherwise falls back to `open` and a deploy that
 forgets one env var would serve the entire API unauthenticated (audit P0-12).
@@ -92,22 +92,45 @@ Project `aumedoefxacycwfrlcml` is live. **Asymmetric JWT signing verified** — 
 returns an ES256 key, so `app/auth.py`'s local verification will work. Email provider enabled;
 Google provider in progress (see H5).
 
-**The one-project compromise is no longer necessary — take the second free project.** This was
-accepted on 2026-07-25 as "one project serves both staging and production", breaking the standing
-rule that production data must never be casual test data. It was accepted partly on my own
-unverified claim that the account was already at Supabase's project cap. **That claim was wrong.**
-Verified against Supabase pricing 2026-07-25: the Free plan allows **2 active projects**, and this
-organization has one. So the correct move is to create a **second free project for staging** rather
-than carry the compromise into M2.5.
+**Two projects, on the Free plan, at $0 — the one-project compromise is gone.**
 
-Cost of doing so: $0. Cost of not doing so: the moment 12 external testers create real accounts,
-production auth is shared with whatever staging is doing.
+| | Project ref | Purpose |
+|---|---|---|
+| Production | `aumedoefxacycwfrlcml` | the real instance |
+| Staging | `iqsiabkdbczvgyccswcy` ("Research Companion Staging") | created 2026-07-25 |
 
-The only Free-plan caveat is that a project **pauses after 1 week of inactivity** — which will
+This corrects an earlier decision that accepted one project serving both, which rested on my own
+unverified claim that the account was already at Supabase's project cap. **It was not.** Free allows
+**2 active projects**; both slots are now used, correctly.
+
+**Asymmetric JWT signing verified on the staging project too** — its JWKS endpoint returns an ES256
+key, which is what `app/auth.py` verifies against. That is the one thing that could have silently
+failed, so it was checked before anything was pointed at it.
+
+Free-plan caveats, both acceptable: a project **pauses after 1 week of inactivity**, which will
 happen to staging between work sessions and needs an unpause click, and will not happen to a
-production project with users on it. Automatic backups are Pro-only ($25/mo), which is an **M6**
-concern, not a today concern: M6's gate is "automated backups and a tested restore", and the content
-record lives in git, so what Pro would protect here is the ownership/index tables.
+production project with users on it; and there are **no automatic backups**, which is the real
+reason to buy Pro ($25/mo) and belongs at the **M6** gate ("automated backups and a tested
+restore"), not now. Note what Pro would protect: the ownership/index tables. The content record
+ lives in git.
+
+**Switching an instance to a different Supabase project invalidates its allowlist.** Supabase user
+ids are **per project**, so the UUID in `RC_ALLOWED_USERS` / `RC_OPERATOR_USERS` — issued by the
+production project — means nothing to the staging project. Pointing staging at
+`iqsiabkdbczvgyccswcy` therefore locks *everyone* out, operator included, and the 403 deliberately
+does not name the account, so there is no way to read the new id off the response.
+
+The bootstrap, in order:
+
+1. Point staging at the new project (`RC_SUPABASE_URL`, `RC_SUPABASE_ANON_KEY`).
+2. Sign in to staging through the web client. Supabase creates the account; the app answers **403**.
+3. Read the new UUID. Either the Supabase dashboard (Authentication → Users) or
+   `flyctl logs -a research-companion-staging`, which since 2026-07-25 prints
+   `auth: rejected non-allowlisted user id=<uuid>` — added precisely so this step needs no dashboard.
+4. Set both allowlists to that id.
+
+Google OAuth (H5) must also be configured on the staging project separately — provider settings do
+not carry across projects either.
 
 Publishable key received 2026-07-25 and set as a Fly secret (`RC_SUPABASE_ANON_KEY`) — it is
 publishable by design and is served to clients via `/api/auth/config`, so it lives in deploy
