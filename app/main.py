@@ -87,7 +87,11 @@ async def authenticate(request: Request, call_next):
             # locks everyone out, including the operator, with no way to read the new id off the
             # 403. `fly logs` is then the shortest path back in. The same line answers "why can't
             # my tester sign in" once there are testers.
-            _log.warning("auth: rejected non-allowlisted user id=%s", rejected)
+            should_log, suppressed = auth.note_rejection(str(rejected))
+            if should_log:
+                _log.warning(
+                    "auth: rejected non-allowlisted user id=%s%s", rejected,
+                    f" ({suppressed} similar suppressed since the last line)" if suppressed else "")
             return JSONResponse(
                 {"detail": "This account is not authorized for this instance."}, status_code=403)
         except AuthError:

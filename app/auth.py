@@ -13,6 +13,9 @@ URL and anon key, so nothing client-specific is hardcoded.
 from __future__ import annotations
 
 import os
+import threading
+import time
+from collections import OrderedDict
 
 from .config import KNOWN_ENVIRONMENTS, env_truthy
 
@@ -85,6 +88,71 @@ def is_operator(user: dict | None) -> bool:
     if config.is_dev_env():
         return True
     return bool(user) and user.get("user_id") in operator_users()
+
+
+# --- rejection logging: bounded on purpose ------------------------------------------------------
+# The middleware logs the id of a valid-but-not-allowlisted user so the operator can repair the
+# allowlist (see the call site in `main.py`). Supabase sign-up is SELF-SERVICE, so a stranger can
+# obtain a valid token and then drive that log line with every request they make — flooding the
+# operator's logs, burying the real signal the line exists to provide, and writing to stderr from
+# the single worker on the request path. So the line is bounded in both dimensions a flood can
+# grow in: how often one subject may log, and how many lines may be written at all per window.
+_REJECT_WINDOW = 600.0        # seconds
+_REJECT_MAX_LINES = 20        # across ALL subjects per window — bounds id-rotation too
+_REJECT_MAX_TRACKED = 256     # bound the dedup map itself; it is attacker-grown otherwise
+
+_reject_lock = threading.Lock()
+_reject_seen: OrderedDict[str, float] = OrderedDict()
+_reject_window_start = 0.0
+_reject_window_lines = 0
+_reject_suppressed = 0
+
+
+def note_rejection(user_id: str, *, now: float | None = None) -> tuple[bool, int]:
+    """Decide whether to log this rejection. Returns `(log_it, suppressed_since_last_line)`.
+
+    One line per subject per window, and at most `_REJECT_MAX_LINES` lines per window overall. The
+    suppressed count rides along on the next line that *is* emitted, so a flood is still visible as
+    a number without being visible as volume. Safe under the single-worker assumption (invariant 6)
+    plus the lock; the state is deliberately in-process and lossy across restarts, because it is a
+    log-noise control and not a security control.
+    """
+    global _reject_window_start, _reject_window_lines, _reject_suppressed
+    now = time.monotonic() if now is None else now
+    with _reject_lock:
+        if now - _reject_window_start >= _REJECT_WINDOW:
+            _reject_window_start = now
+            _reject_window_lines = 0
+            # Drop entries that can no longer suppress anything, so the map tracks live abusers
+            # rather than growing forever.
+            for uid in [u for u, seen in _reject_seen.items() if now - seen >= _REJECT_WINDOW]:
+                del _reject_seen[uid]
+
+        last = _reject_seen.get(user_id)
+        if last is not None and now - last < _REJECT_WINDOW:
+            _reject_suppressed += 1
+            return False, 0
+        if _reject_window_lines >= _REJECT_MAX_LINES:
+            _reject_suppressed += 1
+            return False, 0
+
+        _reject_seen[user_id] = now
+        _reject_seen.move_to_end(user_id)
+        while len(_reject_seen) > _REJECT_MAX_TRACKED:
+            _reject_seen.popitem(last=False)
+        _reject_window_lines += 1
+        suppressed, _reject_suppressed = _reject_suppressed, 0
+        return True, suppressed
+
+
+def _reset_rejection_state() -> None:
+    """Test hook — the counters are module-global and would leak between tests."""
+    global _reject_window_start, _reject_window_lines, _reject_suppressed
+    with _reject_lock:
+        _reject_seen.clear()
+        _reject_window_start = 0.0
+        _reject_window_lines = 0
+        _reject_suppressed = 0
 
 
 def assert_environment_safe(env: str) -> None:

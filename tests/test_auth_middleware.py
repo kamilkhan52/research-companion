@@ -6,8 +6,18 @@ design. These tests need the app object, so they need the suite's normal `RC_ENV
 """
 from __future__ import annotations
 
+import pytest
 from app import auth
 from starlette.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rejection_counters():
+    """The dedup/rate-limit state is module-global and would otherwise leak between tests — the
+    second test to reject the same id would find it already suppressed."""
+    auth._reset_rejection_state()
+    yield
+    auth._reset_rejection_state()
 
 
 def _reject(_token):
@@ -67,3 +77,38 @@ def test_the_health_probe_stays_open_so_clients_can_bootstrap(monkeypatch):
 
     assert TestClient(app).get("/api/health").status_code == 200
     assert TestClient(app).get("/api/auth/config").status_code == 200
+
+
+def test_a_flood_of_rejections_cannot_flood_the_log():
+    """Supabase sign-up is self-service, so a stranger can hold a valid non-allowlisted token and
+    drive this log line with every request. One line per subject per window, so the operator's
+    signal survives the flood — and the suppressed count rides on the next emitted line, so the
+    flood is still *visible*, just not *voluminous*."""
+    logged = [auth.note_rejection("abuser")[0] for _ in range(500)]
+    assert logged.count(True) == 1
+
+    # The next distinct subject still gets through — suppression is per subject, not a global mute.
+    should_log, suppressed = auth.note_rejection("someone-else")
+    assert should_log
+    assert suppressed == 499
+
+
+def test_rotating_user_ids_cannot_evade_the_bound():
+    """Per-subject dedup alone would let an attacker who creates many accounts log once per id. The
+    per-window ceiling is what actually bounds it."""
+    emitted = sum(auth.note_rejection(f"id-{n}")[0] for n in range(5_000))
+    assert emitted == auth._REJECT_MAX_LINES
+
+
+def test_the_dedup_map_cannot_grow_without_bound():
+    """The map is attacker-grown, so it is the flood vector if left unbounded."""
+    for n in range(5_000):
+        auth.note_rejection(f"id-{n}")
+    assert len(auth._reject_seen) <= auth._REJECT_MAX_TRACKED
+
+
+def test_a_subject_can_log_again_in_the_next_window():
+    """Suppression must expire, or a persistent problem goes permanently quiet after one line."""
+    assert auth.note_rejection("someone", now=1000.0)[0] is True
+    assert auth.note_rejection("someone", now=1000.0 + auth._REJECT_WINDOW - 1)[0] is False
+    assert auth.note_rejection("someone", now=1000.0 + auth._REJECT_WINDOW + 1)[0] is True

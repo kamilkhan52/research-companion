@@ -120,17 +120,25 @@ production project — means nothing to the staging project. Pointing staging at
 `iqsiabkdbczvgyccswcy` therefore locks *everyone* out, operator included, and the 403 deliberately
 does not name the account, so there is no way to read the new id off the response.
 
-The bootstrap, in order:
+The bootstrap, in order. **Step 1 is not optional** — without it step 3 silently produces nothing,
+because the sign-in never completes, no protected request is ever made, and so no id is ever logged:
 
-1. Point staging at the new project (`RC_SUPABASE_URL`, `RC_SUPABASE_ANON_KEY`).
-2. Sign in to staging through the web client. Supabase creates the account; the app answers **403**.
-3. Read the new UUID. Either the Supabase dashboard (Authentication → Users) or
-   `flyctl logs -a research-companion-staging`, which since 2026-07-25 prints
-   `auth: rejected non-allowlisted user id=<uuid>` — added precisely so this step needs no dashboard.
-4. Set both allowlists to that id.
-
-Google OAuth (H5) must also be configured on the staging project separately — provider settings do
-not carry across projects either.
+1. **Configure the staging project's auth URLs first.** `web/src/components/AuthGate.tsx` sends
+   `redirectTo` / `emailRedirectTo` = `window.location.origin`, and Supabase only honours a redirect
+   that is in the project's allowlist. A brand-new project has neither the Site URL nor the redirect
+   entry for this app. In the staging project → Authentication → URL Configuration, set **Site URL**
+   and add to **Redirect URLs** the staging origin (`https://research-companion-staging.fly.dev`).
+2. Point staging at the new project: `RC_SUPABASE_URL`, `RC_SUPABASE_ANON_KEY`.
+3. Sign in through the web client with the **magic link** (Google needs step 5 first). Supabase
+   creates the account; the app then answers **403** on the first protected request.
+4. Read the new UUID from `flyctl logs -a research-companion-staging` — since 2026-07-25 it prints
+   `auth: rejected non-allowlisted user id=<uuid>`, added precisely so this needs no dashboard.
+   (Supabase dashboard → Authentication → Users also has it.) Set both `RC_ALLOWED_USERS` and
+   `RC_OPERATOR_USERS` to that id.
+5. **Google OAuth is separate work (H5) and does not carry across projects.** The staging project
+   needs its own provider configuration, and the Google Cloud Web client needs
+   `https://iqsiabkdbczvgyccswcy.supabase.co/auth/v1/callback` as an authorized redirect URI plus
+   the staging origin as an authorized JavaScript origin. Until then, magic link is the way in.
 
 Publishable key received 2026-07-25 and set as a Fly secret (`RC_SUPABASE_ANON_KEY`) — it is
 publishable by design and is served to clients via `/api/auth/config`, so it lives in deploy
