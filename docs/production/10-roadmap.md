@@ -295,15 +295,32 @@ problem, months before M9 depends on it.
 **What testers get.** A multi-tenant, free, no-paywall, no-quota build. That is fine and expected:
 Google requires that a closed test *ran*, not that the tested build was final.
 
-**Tester cost control must be automatic, not a kill switch.** M3's per-user reservations do not
-exist yet, and a manual switch is not a ceiling — twelve engaged testers running Opus-class
-analyses over full papers plus TTS can spend real money faster than anyone notices, and this
-milestone still has no authoritative internal cost for the agentic path. So M2.5 requires
-**provider-enforced budgets**: a hard credit/spend limit on the OpenRouter key and an OpenAI
-project budget, both set below a number you are willing to lose outright. Those fail closed at the
-provider without any code. Add cheap in-app caps alongside — per-user concurrent-job limit and a
-requests-per-hour limit — and test that the configured maximum genuinely cannot be exceeded.
-Treat the provider budget as the real backstop and the app-side caps as courtesy.
+**Tester cost control must be automatic, and only one provider gives you a real ceiling.** M3's
+per-user reservations do not exist yet, and a manual kill switch is not a ceiling — twelve engaged
+testers running Opus-class analyses over full papers plus TTS can spend faster than anyone notices,
+and this milestone still has no authoritative internal cost for the agentic path.
+
+Verified 2026-07-25, and this corrects an earlier draft of this plan:
+
+- **OpenRouter — genuinely hard.** A per-key credit limit is enforced *before* the request reaches
+  the upstream provider, so an exhausted key costs nothing further
+  ([API credit & rate limits](https://openrouter.ai/docs/api_reference/limits)). One caveat: the
+  check is per request, so a burst of simultaneous requests can overshoot slightly. Set the limit
+  below a number you would accept losing outright.
+- **OpenAI — there is no hard ceiling.** "Project budgets" are a **soft alert threshold**: OpenAI
+  removed hard budget caps, and requests continue to be processed after the limit is crossed. An
+  earlier draft of this plan claimed they fail closed; that was wrong, and relying on it would have
+  left TTS spend unbounded. The nearest real stop is a **prepaid credit balance with auto-recharge
+  disabled** — verify that behavior before trusting it.
+
+So the load-bearing control for TTS is one **we** enforce, which is both sufficient and easy here:
+**TTS cost is deterministic** — a known price per input character for a known model — so the app
+can compute a request's exact cost *before* dispatching it and refuse when a per-user daily
+character budget is exhausted. We hold the only key, so an in-app ceiling is a real ceiling. Ship
+that in M2.5 as a simplified precursor of M3's reservations, together with per-user concurrent-job
+and requests-per-hour caps, and **retire or authenticate `POST /api/speak`** (P0-13) — it accepts
+arbitrary-length text and fans it into many paid calls, which is the single worst exposure here.
+Test that the configured maximum genuinely cannot be exceeded.
 
 **Risks.** Any later native-module addition (RevenueCat, M4) means a new build for testers — fine,
 and it does not reset the 14-day opt-in clock as long as testers stay opted in. Data safety answers
@@ -368,8 +385,20 @@ leaves an orphan that would permanently consume a customer's quota — and blind
 on boot would instead under-count real spend that already happened upstream. Specify: durable
 reservation ids, explicit states (reserved → settled/released/expired), a lease with expiry,
 linkage to the job and to any generation ids issued under it, and an **idempotent startup
-reconciliation** that resolves each orphan by querying the provider for what was actually spent
-before releasing the remainder. M6 consumes these same records when it marks interrupted jobs.
+reconciliation**. M6 consumes these same records when it marks interrupted jobs.
+
+**Settlement is provider-specific — one strategy does not cover both.**
+
+- *OpenRouter (LLM):* each call has a generation id, so an orphan can be resolved authoritatively
+  by querying generation stats. This is the path the pending/`reconcile` machinery was designed for.
+- *OpenAI (TTS):* there is **no per-request identifier to reconcile against** — the usage API
+  reports aggregated time buckets grouped by project/key/model, so under concurrency a crashed
+  synthesis cannot be matched to one reservation. Do not specify provider reconciliation here.
+  Instead exploit the fact that **TTS pricing is deterministic**: the exact cost is a function of
+  the input characters and model, known *before* dispatch. Record the computed cost with the
+  dispatch, and on crash settle conservatively to what was dispatched. That is honest (it can only
+  over-count a request that failed upstream, never under-count), needs no provider call, and is the
+  same number the pre-spend cap already computed.
 
 An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
@@ -509,16 +538,21 @@ policy, terms, Data safety inventory, in-app AI-content report action, and the a
 workflow all moved into **M2.5**, because a closed testing track requires them. What remains here
 is the operator-facing and lower-urgency remainder.
 
-**Scope.** Privacy policy and terms, publicly hosted and linked in-app. Support contact. Data
-inventory (source → storage → purpose → retention → sharing → deletion path) derived from actual
-code, feeding truthful Data Safety answers. **Account deletion**: in-app path, a public web request
-URL usable after uninstall, and the real backend workflow (Postgres rows, git repos, audio cache,
-usage events — with documented justification for anything retained). **In-app report action for
-offensive AI-generated content** (Play policy for generative AI), with a backend path and an
-operator review queue. AI-limitations disclaimer with appropriate UX framing — the product presents
-model analysis of scientific papers and must not frame it as authoritative. Preserve source
-citations and links. Audit arXiv, Semantic Scholar, and OpenAlex terms for commercial storage and
-redistribution of full text and figures (P1-7).
+**Scope — only what M2.5 did *not* already ship.** The privacy policy, terms, data inventory,
+Data safety answers, account-deletion workflow, and in-app AI-content report action are **M2.5
+deliverables** (a closed track requires them) and are deliberately *not* repeated here. What
+remains:
+
+- **Support contact** surfaced in-app and in the store listing.
+- **Operator review queue** for the content reports M2.5 begins collecting — M2.5 ships the report
+  path and somewhere for reports to land; M7 ships the workflow for acting on them.
+- **AI-limitations disclaimer** with appropriate UX framing: the product presents model analysis of
+  scientific papers and must not frame it as authoritative. Preserve source citations and links.
+- **Paper-source terms audit** (P1-7): arXiv, Semantic Scholar, and OpenAlex, for commercial
+  storage and redistribution of full text and figures.
+- **Extending the M2.5 inventory and Data safety answers** to cover everything added since — M3's
+  usage events and M5's billing data both change what is collected, and a mismatch between the form
+  and the policy is a common rejection cause.
 
 **Files/services.** New `app/routers/compliance.py`; migrations; both clients (settings/legal
 screens, report action); new `docs/production/02-security-and-privacy.md`; hosted policy pages.

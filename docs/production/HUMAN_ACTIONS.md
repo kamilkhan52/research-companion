@@ -94,14 +94,22 @@ Email and Google providers. `README.md` already documents this setup.
 **Report back:** both project URLs and anon (publishable) keys. The anon key is publishable and
 safe to share; **never** paste a service-role key into chat, a commit, or a doc.
 
-### H20 — Set provider-enforced spend budgets · `todo` — **blocks M1 deploy and M2.5**
-Set a hard credit/spend limit on the **OpenRouter** key and a project budget on the **OpenAI**
-account, both below a number you would accept losing outright. These fail closed at the provider
-with no code, and they are the only real ceiling until M3's per-user reservations exist. Do this
-*before* the instance is publicly reachable, not before the closed test — M1 already exposes a
-working backend.
+### H20 — Set provider spend limits · `todo` — **blocks M1 deploy and M2.5**
+Do this *before* the instance is publicly reachable, not before the closed test — M1 already
+exposes a working backend to the internet.
+
+- **OpenRouter:** set a per-key credit limit. This is a genuine hard stop — requests are rejected
+  before reaching the upstream provider once it's exhausted. Set it below a number you'd accept
+  losing outright.
+- **OpenAI:** be aware that a "project budget" is **only an alert** — OpenAI removed hard budget
+  caps, and requests keep being processed past the threshold (verified 2026-07-25; an earlier
+  version of this file wrongly said it fails closed). Set the alert anyway, but the nearest real
+  stop is a small **prepaid balance with auto-recharge disabled** — confirm that behavior before
+  relying on it. The actual TTS ceiling is enforced in-app by M2.5, since TTS cost is deterministic
+  per character.
+
 **Why not an agent:** provider account billing settings.
-**Report back:** the limits you set, so M2.5's app-side caps can be sized under them.
+**Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
 
 ### H21 — Provide your Supabase user UUID for the allowlist · `todo` — blocks M1
 M1 ships a temporary allowlist because Supabase sign-in is self-service: without it, the first
@@ -161,9 +169,12 @@ permissions needed.
 form and a published privacy policy — only *internal* testing is exempt, and internal testing does
 not satisfy the 12-tester rule. So these gate the tester clock.
 
-### H11 — Approve privacy policy and terms of service · `todo`
-An agent can draft both from the M7 data inventory. Publishing them is a legal statement about your
-product and must be your decision. Consider review if the subscription terms are non-trivial.
+### H11 — Approve privacy policy and terms of service · `todo` — blocks M2.5
+An agent drafts both from the data inventory, which is an **M2.5 deliverable** (not M7 — M7 depends
+on M2.5, so sourcing the policy from M7 would deadlock). Publishing them is a legal statement about
+your product and must be your decision. Consider review if the subscription terms are non-trivial.
+Expect to revise once at M3 (usage events) and once at M5 (billing data), since Data safety answers
+must keep matching the policy.
 **Report back:** approved text and the public URLs.
 
 ### H12 — Support contact · `todo`
