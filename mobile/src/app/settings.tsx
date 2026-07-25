@@ -4,7 +4,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -18,7 +18,6 @@ import {
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
 import {
-  useDevMode,
   useFavoriteModels,
   usePrompts,
   useResetPrompt,
@@ -47,6 +46,17 @@ import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useToast } from '@/ui/Toast';
 import type { ThemeMode } from '@/theme/tokens';
 
+/** Whether the shared, instance-wide controls on this screen are writable by this user.
+ *
+ *  Deliberately a context with a `true` default rather than a prop threaded through twenty call
+ *  sites: a control I forget to pass it to would otherwise stay editable and 403 on save, which is
+ *  precisely the failure this whole change exists to remove. `Field` and `ModelChips` read it
+ *  unconditionally — every one of them edits shared state — so forgetting one is impossible.
+ *  `Toggle` is the only mixed case: some toggles (playback mode, theme, density, the map filter)
+ *  are DEVICE-local and must keep working for readers, so those opt out with `local`. Opting out
+ *  is the visible, deliberate act; the safe behaviour is what you get by default. */
+const SharedWritableContext = createContext(true);
+
 export default function SettingsScreen() {
   const router = useRouter();
   const t = useTheme();
@@ -60,7 +70,11 @@ export default function SettingsScreen() {
   const favorites = useFavoriteModels();
   const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
-  const devMode = useDevMode();
+  // Everything under /api/settings and /api/prompts is INSTANCE-wide: one key, one model, one
+  // voice, one set of prompts, shared by every user. Only the named operator may write them
+  // (RC_OPERATOR_USERS); the server 403s everyone else. Default true so a backend older than the
+  // gate — which accepts the write from anyone — is not shown a read-only form it would honour.
+  const isOperator = settings.data?.is_operator ?? true;
   const savePrompt = useSavePrompt(activePid);
   const resetPrompt = useResetPrompt(activePid);
 
@@ -195,7 +209,19 @@ export default function SettingsScreen() {
               Couldn't reach the server. Check the URL and that the backend is running.
             </Text>
           ) : (
-            <>
+            // Scoped to the shared settings only — the server URL above it belongs to this device
+            // and stays editable for everyone, including a reader who cannot change the instance.
+            <SharedWritableContext.Provider value={isOperator}>
+              {!isOperator ? (
+                <Card style={{ marginBottom: space.lg }}>
+                  <Text variant="heading">Shared settings are read-only</Text>
+                  <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+                    The keys, models, voice, and prompts below are one shared configuration for
+                    everyone on this server, so only its operator can change them. Playback, theme,
+                    layout, the map filter, and the server URL are yours and still work.
+                  </Text>
+                </Card>
+              ) : null}
               {/* Models & analysis */}
               <Section title="Models & analysis">
                 <Label text="OpenRouter API key" hint={settings.data?.has_key ? `set (${settings.data.key_hint})` : 'not set'} />
@@ -250,8 +276,8 @@ export default function SettingsScreen() {
                   hint="applies immediately, stored on this device"
                 />
                 <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Toggle label="Full track" active={playbackMode === 'full'} onPress={() => setPlaybackMode('full')} />
-                  <Toggle label="Progressive" active={playbackMode === 'progressive'} onPress={() => setPlaybackMode('progressive')} />
+                  <Toggle label="Full track" local active={playbackMode === 'full'} onPress={() => setPlaybackMode('full')} />
+                  <Toggle label="Progressive" local active={playbackMode === 'progressive'} onPress={() => setPlaybackMode('progressive')} />
                 </View>
                 <Text variant="caption" style={{ marginBottom: space.md, marginTop: space.xs }}>
                   {playbackMode === 'full'
@@ -297,6 +323,7 @@ export default function SettingsScreen() {
                       key={mode}
                       label={label}
                       active={themeMode === mode}
+                      local
                       onPress={() => handleThemeMode(mode)}
                     />
                   ))}
@@ -320,6 +347,7 @@ export default function SettingsScreen() {
                       key={mode}
                       label={label}
                       active={density === mode}
+                      local
                       onPress={() => handleDensity(mode)}
                     />
                   ))}
@@ -355,8 +383,8 @@ export default function SettingsScreen() {
                 </Text>
                 <Label text="'All' filter" hint="applies immediately, stored on this device" />
                 <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Toggle label="Hidden" active={!allowAllFilter} onPress={() => setAllowAllFilter(false)} />
-                  <Toggle label="Shown" active={allowAllFilter} onPress={() => setAllowAllFilter(true)} />
+                  <Toggle label="Hidden" local active={!allowAllFilter} onPress={() => setAllowAllFilter(false)} />
+                  <Toggle label="Shown" local active={allowAllFilter} onPress={() => setAllowAllFilter(true)} />
                 </View>
                 <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   The reference graph defaults to a "Significant" filter, paginated 20 papers at a
@@ -400,31 +428,38 @@ export default function SettingsScreen() {
               {/* Usage / cost for the active project — near the end, below configuration. */}
               <UsageSection />
 
-              <Section title="Developer · Prompts">
+              <Section title="Prompts">
                 <PromptStatusPanel
                   prompts={prompts.data}
                   loading={prompts.isLoading}
                   error={prompts.isError}
                   refreshing={prompts.isFetching}
                   onRefresh={() => { void prompts.refetch(); }}
-                  editable={devMode}
+                  // Was `devMode` (RC_DEV), which staging and prod REFUSE TO BOOT with — so the
+                  // named operator could not edit a prompt on either, the exact environments the
+                  // operator role exists for. The server's own gate is RC_OPERATOR_USERS; match it.
+                  editable={isOperator}
                   onSave={(key, value) => savePrompt.mutateAsync({ key, value })}
                   onReset={(key) => resetPrompt.mutateAsync({ key })}
                 />
               </Section>
 
-              <Button
-                title="Save settings"
-                onPress={handleSaveSettings}
-                loading={saveSettings.isPending}
-                style={{ marginTop: space.sm }}
-              />
-              {saveSettings.isError ? (
-                <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-                  {(saveSettings.error as Error).message}
-                </Text>
+              {isOperator ? (
+                <>
+                  <Button
+                    title="Save settings"
+                    onPress={handleSaveSettings}
+                    loading={saveSettings.isPending}
+                    style={{ marginTop: space.sm }}
+                  />
+                  {saveSettings.isError ? (
+                    <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+                      {(saveSettings.error as Error).message}
+                    </Text>
+                  ) : null}
+                </>
               ) : null}
-            </>
+            </SharedWritableContext.Provider>
           )}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -542,27 +577,46 @@ function Label({ text, hint }: { text: string; hint?: string }) {
   );
 }
 
+/** A text input for a SHARED setting. Read-only whenever this user is not the operator — every
+ *  Field on this screen edits instance-wide configuration, so there is no opt-out. */
 function Field(props: React.ComponentProps<typeof TextInput>) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const writable = useContext(SharedWritableContext);
   return (
     <TextInput
       {...props}
+      editable={writable && props.editable !== false}
       placeholderTextColor={t.muted}
-      style={[styles.input, props.style]}
+      style={[styles.input, !writable && styles.inputReadOnly, props.style]}
     />
   );
 }
 
-function Toggle({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+/** `local` marks a toggle that writes DEVICE state (AsyncStorage) rather than instance settings —
+ *  playback mode, theme, density, the map filter. Those stay usable by every reader. Anything
+ *  without it is treated as shared and goes inert for non-operators. */
+function Toggle({
+  label,
+  active,
+  onPress,
+  local = false,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+  local?: boolean;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const writable = useContext(SharedWritableContext) || local;
   return (
     <Pressable
-      onPress={onPress}
+      onPress={writable ? onPress : undefined}
+      disabled={!writable}
       accessibilityRole="radio"
-      accessibilityState={{ checked: active }}
-      style={[styles.toggle, active && styles.toggleActive]}>
+      accessibilityState={{ checked: active, disabled: !writable }}
+      style={[styles.toggle, active && styles.toggleActive, !writable && styles.controlReadOnly]}>
       <Text variant="heading" color={active ? t.mintInk : t.text}>
         {label}
       </Text>
@@ -581,18 +635,22 @@ function ModelChips({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const writable = useContext(SharedWritableContext);
   if (models.length === 0) return null;
   return (
-    <View style={styles.chips}>
+    // Still rendered when read-only: which model the instance is on is worth seeing even when you
+    // cannot change it. Only the picking goes away.
+    <View style={[styles.chips, !writable && styles.controlReadOnly]}>
       {models.map((m) => {
         const active = m.id === selected;
         return (
           <Pressable
             key={m.id}
-            onPress={() => onPick(m.id)}
+            onPress={writable ? () => onPick(m.id) : undefined}
+            disabled={!writable}
             hitSlop={6}
             accessibilityRole="radio"
-            accessibilityState={{ checked: active }}
+            accessibilityState={{ checked: active, disabled: !writable }}
             style={[styles.modelChip, active && styles.modelChipActive]}>
             <Text variant="caption" color={active ? t.mint : t.muted}>
               {m.label}
@@ -629,6 +687,11 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     fontFamily: fonts.body,
     fontSize: tight ? 14 : 15,
   },
+  // Read-only shared controls: dimmed and flattened so they read as "displayed" rather than
+  // "broken". The value stays legible — knowing which model the instance runs on is useful even
+  // when you cannot change it.
+  inputReadOnly: { backgroundColor: t.bg, color: t.muted },
+  controlReadOnly: { opacity: 0.55 },
   toggle: {
     flex: 1,
     height: 44,

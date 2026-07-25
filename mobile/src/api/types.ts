@@ -246,6 +246,14 @@ export interface Settings {
   semantic_scholar_key_hint: string;
   /** Which prior per-paper Notes go into each paper turn's context. */
   prior_notes_scope: 'related' | 'all';
+  /** Whether THIS caller may write these settings (`RC_OPERATOR_USERS`). Everything above is
+   *  instance-wide — one OpenRouter key, one model, one voice for every user — so a reader who
+   *  edits it changes the app for everybody. The server refuses with 403; this flag exists so the
+   *  UI can show the shared controls read-only instead of letting a reader type into a form that
+   *  cannot be submitted. Optional because a backend older than the gate won't send it — and there
+   *  the correct default is `true`, since such a server accepts the write from anyone. The flag is
+   *  a UI-honesty signal, never the security boundary; the server decides. */
+  is_operator?: boolean;
 }
 
 /** One effective workflow prompt and its live filesystem validation status (GET /api/prompts). */

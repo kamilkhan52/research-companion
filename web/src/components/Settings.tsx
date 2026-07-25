@@ -9,6 +9,11 @@ interface SettingsData {
   speech_provider: string; has_openai_key: boolean; openai_key_hint: string;
   tts_voice: string; tts_model: string; prior_notes_scope?: 'related' | 'all'; preview_model?: string;
   voices?: string[]; has_parallel_key?: boolean; parallel_key_hint?: string; has_firecrawl_key?: boolean; firecrawl_key_hint?: string;
+  /** Whether THIS caller may write these settings. Everything else here is instance-wide — one
+   *  key, one model, one voice for every user — so only the operator (RC_OPERATOR_USERS) may
+   *  change it; the server 403s anyone else. Optional, and defaulted to `true` below, because a
+   *  backend older than the gate omits it and does accept the write. */
+  is_operator?: boolean;
 }
 interface Props { onClose: () => void; }
 
@@ -54,6 +59,9 @@ export function Settings({ onClose }: Props) {
     return () => { cancelled = true; };
   }, [retry]);
 
+  // The shared block is instance-wide configuration; only the operator may write it.
+  const canEditShared = data?.is_operator ?? true;
+
   async function save() {
     setSaving(true); setMessage('');
     const patch: Record<string, string> = {
@@ -68,6 +76,11 @@ export function Settings({ onClose }: Props) {
     // survive the shared-settings POST being refused. A reader who is not the operator gets a 403
     // below, and before this ordering that silently discarded their autoplay choice too.
     localStorage.setItem('rc_autoplay', autoplay ? '1' : '0');
+    if (!canEditShared) {
+      // Autoplay is the only thing on this form a reader owns, and it is already saved. Posting
+      // the rest would buy a guaranteed 403 and report the whole save as failed.
+      setMessage('Autoplay saved.'); setSaving(false); return;
+    }
     try {
       await apiPost('/api/settings', patch);
       setOpenrouterKey(''); setOpenaiKey(''); setParallelKey(''); setFirecrawlKey(''); setMessage('Saved.');
@@ -79,21 +92,25 @@ export function Settings({ onClose }: Props) {
     <section className="settings-modal" aria-label="Settings" role="dialog" aria-modal="true">
       <div className="settings-head"><h2>Settings</h2><button className="icon-btn" onClick={onClose} aria-label="Close">✕</button></div>
       {loading ? <div className="lc-loading"><span className="spinner" /> Loading…</div> : loadError ? <div className="settings-body"><p className="build-progress-error">{loadError}</p><button className="btn primary" onClick={() => setRetry((value) => value + 1)}>Retry</button></div> : <div className="settings-body">
-        <label className="field"><span>OpenRouter API key</span><input type="password" value={openrouterKey} onChange={(event) => setOpenrouterKey(event.target.value)} placeholder="sk-or-…" /><small className="muted">{data?.has_key ? `key set: ${data.key_hint}` : 'no key set'}</small></label>
+        {!canEditShared && <p className="settings-readonly-note">
+          The keys, models, and voice below are one shared configuration for everyone on this
+          server, so only its operator can change them. Autoplay is yours and still saves.
+        </p>}
+        <label className="field"><span>OpenRouter API key</span><input type="password" value={openrouterKey} onChange={(event) => setOpenrouterKey(event.target.value)} placeholder="sk-or-…" disabled={!canEditShared} /><small className="muted">{data?.has_key ? `key set: ${data.key_hint}` : 'no key set'}</small></label>
         <datalist id="settings-models">{favorites.map((favorite) => <option key={favorite.id} value={favorite.id}>{favorite.label}</option>)}</datalist>
-        <label className="field"><span>Analysis model</span><input list="settings-models" value={model} onChange={(event) => setModel(event.target.value)} /></label>
-        <label className="field"><span>Narration model</span><input list="settings-models" value={narrationModel} onChange={(event) => setNarrationModel(event.target.value)} /></label>
-        <label className="field"><span>Listening cue model</span><input list="settings-models" value={previewModel} onChange={(event) => setPreviewModel(event.target.value)} placeholder="Uses narration model when blank" /></label>
+        <label className="field"><span>Analysis model</span><input list="settings-models" value={model} onChange={(event) => setModel(event.target.value)} disabled={!canEditShared} /></label>
+        <label className="field"><span>Narration model</span><input list="settings-models" value={narrationModel} onChange={(event) => setNarrationModel(event.target.value)} disabled={!canEditShared} /></label>
+        <label className="field"><span>Listening cue model</span><input list="settings-models" value={previewModel} onChange={(event) => setPreviewModel(event.target.value)} placeholder="Uses narration model when blank" disabled={!canEditShared} /></label>
         <hr className="settings-hr" />
-        <label className="field"><span>Speech provider</span><select value={speechProvider} onChange={(event) => setSpeechProvider(event.target.value)}><option value="openai">OpenAI — premium</option><option value="browser">Browser built-in — free</option></select></label>
-        {speechProvider === 'openai' && <><label className="field"><span>OpenAI API key (speech only)</span><input type="password" value={openaiKey} onChange={(event) => setOpenaiKey(event.target.value)} placeholder="sk-…" /><small className="muted">{data?.has_openai_key ? `key set: ${data.openai_key_hint}` : 'no key set'}</small></label><div className="settings-row"><label className="field"><span>Voice</span><select value={voice} onChange={(event) => setVoice(event.target.value)}>{(data?.voices?.length ? data.voices : ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).map((name) => <option key={name} value={name}>{name}</option>)}</select></label><label className="field"><span>TTS model</span><select value={ttsModel} onChange={(event) => setTtsModel(event.target.value)}>{['gpt-4o-mini-tts', 'tts-1-hd', 'tts-1'].map((name) => <option key={name} value={name}>{name}</option>)}</select></label></div></>}
+        <label className="field"><span>Speech provider</span><select value={speechProvider} onChange={(event) => setSpeechProvider(event.target.value)} disabled={!canEditShared}><option value="openai">OpenAI — premium</option><option value="browser">Browser built-in — free</option></select></label>
+        {speechProvider === 'openai' && <><label className="field"><span>OpenAI API key (speech only)</span><input type="password" value={openaiKey} onChange={(event) => setOpenaiKey(event.target.value)} placeholder="sk-…" disabled={!canEditShared} /><small className="muted">{data?.has_openai_key ? `key set: ${data.openai_key_hint}` : 'no key set'}</small></label><div className="settings-row"><label className="field"><span>Voice</span><select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={!canEditShared}>{(data?.voices?.length ? data.voices : ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).map((name) => <option key={name} value={name}>{name}</option>)}</select></label><label className="field"><span>TTS model</span><select value={ttsModel} onChange={(event) => setTtsModel(event.target.value)} disabled={!canEditShared}>{['gpt-4o-mini-tts', 'tts-1-hd', 'tts-1'].map((name) => <option key={name} value={name}>{name}</option>)}</select></label></div></>}
         <label className="field check"><input type="checkbox" checked={autoplay} onChange={(event) => setAutoplay(event.target.checked)} /> Autoplay narration after each reply</label>
         <hr className="settings-hr" />
-        <label className="field"><span>Parallel API key (web search)</span><input type="password" value={parallelKey} onChange={(event) => setParallelKey(event.target.value)} placeholder="optional — leave blank to keep current" /><small className="muted">{data?.has_parallel_key ? `key set: ${data.parallel_key_hint}` : 'no key set'}</small></label>
-        <label className="field"><span>Firecrawl API key (web fetch)</span><input type="password" value={firecrawlKey} onChange={(event) => setFirecrawlKey(event.target.value)} placeholder="optional — leave blank to keep current" /><small className="muted">{data?.has_firecrawl_key ? `key set: ${data.firecrawl_key_hint}` : 'no key set'}</small></label>
-        <label className="field"><span>Prior notes scope</span><select value={priorNotesScope} onChange={(event) => setPriorNotesScope(event.target.value as 'related' | 'all')}><option value="related">Related papers only</option><option value="all">All read papers</option></select></label>
+        <label className="field"><span>Parallel API key (web search)</span><input type="password" value={parallelKey} onChange={(event) => setParallelKey(event.target.value)} placeholder="optional — leave blank to keep current" disabled={!canEditShared} /><small className="muted">{data?.has_parallel_key ? `key set: ${data.parallel_key_hint}` : 'no key set'}</small></label>
+        <label className="field"><span>Firecrawl API key (web fetch)</span><input type="password" value={firecrawlKey} onChange={(event) => setFirecrawlKey(event.target.value)} placeholder="optional — leave blank to keep current" disabled={!canEditShared} /><small className="muted">{data?.has_firecrawl_key ? `key set: ${data.firecrawl_key_hint}` : 'no key set'}</small></label>
+        <label className="field"><span>Prior notes scope</span><select value={priorNotesScope} onChange={(event) => setPriorNotesScope(event.target.value as 'related' | 'all')} disabled={!canEditShared}><option value="related">Related papers only</option><option value="all">All read papers</option></select></label>
         {prompts.length > 0 && <div className="prompts-status"><h4 className="settings-subhead">Prompt status</h4>{prompts.map((prompt) => <div className="prompts-row" key={prompt.key}><span>{prompt.label}</span><span className={`badge ${prompt.valid ? 'badge-green' : 'badge-amber'}`}>{prompt.valid ? 'valid' : 'INVALID'}</span></div>)}</div>}
-        {message && <p className="settings-message">{message}</p>}<button className="btn primary" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {message && <p className="settings-message">{message}</p>}<button className="btn primary" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : canEditShared ? 'Save' : 'Save autoplay'}</button>
       </div>}
     </section>
   </div>;

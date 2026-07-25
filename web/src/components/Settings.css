@@ -13,6 +13,9 @@
 .check { flex-direction: row; align-items: center; gap: 9px; color: var(--text); font-size: 14px; cursor: pointer; }
 .check input { width: 18px; height: 18px; accent-color: var(--cyan); }
 .settings-message { text-align: center; color: var(--cyan); font-size: 13px; }
+/* Shown to a non-operator above the shared block, whose controls are disabled. */
+.settings-readonly-note { margin: 0 0 4px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.45; }
+.settings-body input:disabled, .settings-body select:disabled { opacity: 0.55; cursor: not-allowed; }
 .prompts-status { margin-bottom: 16px; }
 .prompts-row { padding: 4px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .now-playing { position: fixed; z-index: 40; bottom: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--space-sm); padding: 10px max(16px, env(safe-area-inset-left)); background: var(--panel); border-top: 1px solid var(--line); }
