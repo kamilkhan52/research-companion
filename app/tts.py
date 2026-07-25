@@ -91,7 +91,7 @@ def openai_speech(text: str) -> bytes:
     key = s.get("openai_api_key")
     if not key:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
-    model = s.get("tts_model") or "tts-1-hd"
+    model = s.get("tts_model") or "tts-1"
     voice = s.get("tts_voice") or "alloy"
     body = {"model": model, "voice": voice, "input": normalize_for_speech(text),
             "response_format": "mp3"}

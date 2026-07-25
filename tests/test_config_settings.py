@@ -2,6 +2,8 @@
 only touches the keys it names (no clobbering unrelated keys)."""
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from app import config, preview_jobs
 from app.routers import settings as settings_routes
@@ -119,3 +121,45 @@ def test_prompt_overrides_survive_a_settings_save(settings_file):
     config.set_prompt_override("analysis_system", "custom prompt")
     config.save_settings({"model": "m"})  # writes the same file
     assert config.get_prompt_override("analysis_system") == "custom prompt"
+
+
+def test_default_tts_model_is_the_cheaper_tts_1(monkeypatch):
+    """The code's fallback must be `tts-1`, not `tts-1-hd` (H22, revised 2026-07-25).
+
+    Audio is the largest variable cost in the app and `-hd` is exactly twice the price for the same
+    accounting model, so the old default doubled the biggest line item. Pinned in a test because the
+    difference is invisible in normal use — nothing fails, the bill just doubles.
+
+    `load_dotenv` is stubbed out for the reload on purpose. A developer's `.env` may pin
+    `RC_TTS_MODEL` (Kamil's does), and `config` calls `load_dotenv()` at import, so deleting the
+    variable and reloading would simply read it straight back out of `.env` and assert against the
+    developer's machine instead of against the code.
+    """
+    import dotenv
+
+    monkeypatch.delenv("RC_TTS_MODEL", raising=False)
+    # Patch the SOURCE module, not `config.load_dotenv`: reload re-executes
+    # `from dotenv import load_dotenv`, which would rebind straight past a module-attribute stub.
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
+    try:
+        importlib.reload(config)
+        assert config._ENV_DEFAULTS["tts_model"] == "tts-1"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_clearing_a_stored_tts_model_falls_back_to_the_default(tmp_path, monkeypatch):
+    """`tts-1-hd` stays selectable, so a deliberate choice must outrank the default — which is also
+    why changing the default does NOT change an instance that already stored one. `""` is the way
+    back: it clears the override so the instance follows the default from then on.
+
+    Asserts against `_ENV_DEFAULTS` rather than the literal `"tts-1"`, so this tests the *precedence
+    rule* and not whatever `RC_TTS_MODEL` happens to be on the machine running it.
+    """
+    monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
+    config.save_settings({"tts_model": "tts-1-hd"})
+    assert config.load_settings()["tts_model"] == "tts-1-hd"
+
+    config.save_settings({"tts_model": ""})
+    assert config.load_settings()["tts_model"] == config._ENV_DEFAULTS["tts_model"]

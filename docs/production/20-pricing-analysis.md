@@ -15,12 +15,23 @@ Every external price in this document was fetched live on 2026-07-25 — see §7
 
 Before the tables, three measured facts that matter more than the tier design:
 
-1. **Audio, not the LLM, is the expensive part.** At the current default (`tts-1-hd`, uncapped
-   narration length) one analysis turn with audio costs **$0.53**, of which **$0.42 (79%) is
-   text-to-speech**. The measured mean narration is 10,702 characters ≈ 11 minutes of speech ≈
-   **$0.32 of `tts-1-hd` per turn**. Across the measured period the app synthesized ~2.4 M
-   characters — **~$72 of TTS against $30.85 of LLM**. TTS is not on the ledger at all
-   (`app/tts.py` has zero references to `usage`), so that $72 is invisible spend.
+1. **Audio, not the LLM, is the expensive part.** Measured at the then-default `tts-1-hd`
+   ($30.00/1M characters, uncapped narration length), one analysis turn with audio cost **$0.53**,
+   of which **$0.42 (79%) was text-to-speech**. The measured mean narration is 10,702 characters ≈
+   11 minutes of speech. Across the measured period the app synthesized ~2.4 M characters —
+   **~$72 of TTS against $30.85 of LLM**. TTS is not on the ledger at all (`app/tts.py` has zero
+   references to `usage`), so that spend is invisible.
+
+   > **Revised 2026-07-25: the default is now `tts-1` at $15.00/1M (H22).** This changes *this
+   > finding only*. The historical figures above were measured at the then-default `tts-1-hd`, so
+   > going forward the same usage costs half: **~$36 rather than ~$72**, and **$0.16/turn of speech
+   > rather than $0.32**, making a turn with audio ~$0.27 of which ~65% is still TTS. Audio remains
+   > the largest single line item, which is the point of the finding.
+   >
+   > **The tier tables below are unaffected** — §2 already prices the paid allowance at `tts-1`
+   > ($0.65 for 45 min = 43.8 K chars × $15/1M), so the $2.22 variable cost and 74% margin stand as
+   > printed. The `tts-1-hd` figure appears below only in §6's sensitivity note about an *uncapped*
+   > user, and that note is now about a model no longer used by default. Do not halve the tables.
 
 2. **We are paying ~2.45× DeepSeek list price for no reason.** `app/llm.py` sends no OpenRouter
    `provider` routing preference, so requests fan out across 18 endpoints for
