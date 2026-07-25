@@ -30,8 +30,11 @@ data — say so and I'll re-cut the order.
 **Calendar dependency, confirmed 2026-07-25:** the Play account is Personal and created 2026-07,
 so Google's closed-testing requirement **applies** — 12 testers opted in for 14 continuous days,
 then production-access review of up to 7 days. That ~3-week clock cannot start until a working
-build is on a closed track, so **M1.5 exists purely to start it early** and let it run in the
-background during M2–M8. Recruiting testers (H16) is the pacing item; start it the day M1.5 lands.
+build is on a closed track, so **M2.5 exists to start it as early as is legal and safe** and let it
+run in the background during M3–M8. It sits after tenancy (M2) and carries a compliance slice,
+because closed tracks require a Data safety form and privacy policy and because 12 external testers
+must not share one untenanted backend — see M2.5 for the verification. Recruiting testers (H16) is
+the pacing item; start recruiting *during* M2 so they are ready the day M2.5 lands.
 
 ---
 
@@ -44,19 +47,42 @@ gets updated as each lands.
    no network calls; that now also means no database calls. Tenancy and metering live in new
    modules (`app/db.py`, `app/tenancy.py`, `app/metering.py`) called from routers and dependencies,
    never from `store.py` / `sessions.py` / `committer.py`.
-2. **The active *user* is a contextvar, exactly like the active project.** Invariant 2's trap
-   (background threads don't inherit contextvars) applies identically to user attribution. Extend
-   `jobs.JobRegistry` to capture and rebind *both* — so feature code cannot forget, the same way it
-   already cannot forget the project.
-3. **Isolate on the filesystem *and* in the database.** Namespace the projects root per user
-   (`PROJECTS_ROOT/<user_uuid>/<pid>`) *and* check ownership in Postgres. Defense in depth: the DB
-   check is the kind of thing a new route forgets, and the path shape then makes the mistake
-   unexploitable. This extends the `_safe_pid` trust boundary to two segments — treat that function
-   as security-critical and review it accordingly.
-4. **Entitlement and quota checks are server-side and precede spend.** The client is never the
-   authority. Every job-creating route passes through one guard before an LLM call is made.
-5. **Single uvicorn worker still holds** (invariant 6). Postgres does not change this — job state
-   is still in-memory until M6. Do not add `--workers N`.
+2. **The scope key is the composite `(user_uuid, pid)` — everywhere, not just a contextvar.**
+   A user contextvar alone is not enough, because today's in-memory keys are `pid`-only: job
+   ownership and dedup (`jobs.py:142`), the deleting/busy tombstone sets and the per-project RW
+   locks (`config.py:157`), and the paper-identity locks. Two users will both plausibly have a
+   project called `default`, so pid-only keys let one join, poll, or cancel the other's job — and
+   let one user's split/delete tombstone block the other's — even though their files sit in
+   separate directories. Define one canonical composite scope and use it for job keys, locks,
+   tombstones, caches, and path resolution alike. Isolation tests must deliberately give both
+   users the *same* pid and slug and run jobs concurrently.
+3. **Carry that scope into *every* worker, not just `JobRegistry`.** Extending the registry is
+   necessary but insufficient: several paid paths spawn their own threads and executors and
+   manually rebind only the project — `graph.py:257` (extraction executor), `graph.py:1515`
+   (reference fan-out), `affiliations.py:157` (deadline worker). Each would drop the user and
+   misattribute spend. Introduce one captured-execution-scope helper carrying both user and
+   project, and migrate every `Thread`, `ThreadPoolExecutor.submit`, and orphan-worker site.
+   Test attribution *through* a real nested graph/affiliation worker, not just through the registry.
+4. **Isolate on the filesystem *and* with mandatory owner-filtered queries.** Namespace the
+   projects root per user (`PROJECTS_ROOT/<user_uuid>/<pid>`) *and* scope every query by owner.
+   This extends the `_safe_pid` trust boundary to two segments — treat it as security-critical.
+   **Do not count RLS as a backend safety net:** the backend connects with a Supabase service
+   credential, which *bypasses* RLS, so RLS cannot catch a route that forgets its owner predicate.
+   Enable RLS anyway — it protects direct Data API access — but backend isolation rests entirely
+   on owner-filtered queries plus filesystem namespacing. If a genuine second layer is wanted, use
+   the user's JWT (a non-bypass role) for user-scoped operations.
+5. **Quota enforcement is a pre-spend *reservation*, not post-hoc metering.** Best-effort
+   accounting after the fact cannot enforce a ceiling — concurrent jobs all pass a
+   historical-total check before any of their records land, and metering is explicitly forbidden
+   from failing a turn. These are separate mechanisms: **enforcement** atomically reserves a
+   pessimistic maximum cost (including in-flight reservations) in Postgres before job admission
+   and settles to actual cost afterward, failing *closed* for paid work if the quota store is
+   unavailable; **analytics** stays best-effort and never fails a turn. Entitlement checks are
+   server-side and precede spend; the client is never the authority.
+6. **Single uvicorn worker still holds** (invariant 6). Postgres does not change this — job state
+   is still in-memory until M6. Do not add `--workers N`. Note this interacts with rule 5: an
+   in-process reservation table would be lost on restart, which is why reservations live in
+   Postgres rather than memory.
 
 ---
 
@@ -65,8 +91,8 @@ gets updated as each lands.
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
 | M1 | Hosting, environments, and secrets | — | L | queued |
-| M1.5 | First closed-track build — starts the 14-day tester clock | M1 | S | queued |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
+| M2.5 | Closed-track compliance minimum + first build — starts the 14-day tester clock | M1, M2 | M | queued |
 | M3 | Metering, quotas, and abuse controls | M2 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
 | M5 | Subscription-backed access | M3, M4 | M | queued |
@@ -91,8 +117,15 @@ also the last cheap moment to introduce environment separation.
 **Scope.** Dockerfile for the FastAPI app (including the `web/dist` static mount). Persistent
 volume for `PROJECTS_ROOT` and `.app-state/`. Deploy config for staging + production. Domain, TLS,
 process supervision and restart policy. Environment-aware config (`RC_ENV` ∈ dev|staging|prod) that
-makes `RC_DEV` and `RC_AUTH_TOKEN` **impossible** to enable in prod, not merely unset. Secrets move
-to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
+makes `RC_DEV` and `RC_AUTH_TOKEN` **impossible** to enable in prod, not merely unset.
+
+**Critically (P0-12): prod must refuse to start unless `auth.mode() == "supabase"`.** Forbidding
+the dev switches is not sufficient — `auth.mode()` returns `open` when *no* auth env is set, so the
+dangerous state is missing config, not present config, and a deploy that forgets one variable
+serves the whole API to the internet with no error. Fail loudly at startup instead. This pulls H4
+(create the Supabase projects) forward from M2 into M1's prerequisites.
+
+Secrets move to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
 `app.json` `extra.apiBaseUrl` with staging/production variants. Early spike: verify Expo SDK 56's
 Android `targetSdkVersion` against the API 36 requirement (cheap now, expensive to discover at M9).
 
@@ -105,8 +138,9 @@ dev so the loop in `CLAUDE.md` survives. PyMuPDF/pypdf need correct base-image w
 work inside the container (identity is already pinned, so this should be clean).
 
 **Tests.** Container builds and serves `/api/health`. Volume survives a restart with projects
-intact. A prod-mode boot with `RC_DEV=1` and `RC_AUTH_TOKEN` set refuses to enable either — assert
-this in `tests/`. Existing suite green in-container.
+intact. A prod-mode boot with `RC_DEV=1` and `RC_AUTH_TOKEN` set refuses to enable either, **and a
+prod-mode boot with no Supabase config fails to start at all** — assert both in `tests/`. Existing
+suite green in-container.
 
 **Manual.** Deploy staging, run the device checklist against it from the phone over the public
 origin. Restart the service mid-job and confirm the failure mode is understood (it will lose the
@@ -118,55 +152,11 @@ the only switch, and it reverts.
 **Done when.** Staging and production both reachable over HTTPS on a real domain, restart-safe,
 volume-backed, secrets out of the repo, prod provably refusing dev bypasses, API-36 answer recorded.
 
-**Human actions.** Buy/point a domain; create the hosting account; provision the volume; fix
-GitHub Actions billing (P1-5) so CI gates this work.
-
----
-
-### M1.5 — First closed-track build (starts the 14-day tester clock)
-
-**Objective.** Get a signed AAB onto a Play closed testing track as early as possible — not
-because the app is ready, but because the tester clock is the longest calendar dependency in the
-plan and it runs in the background while M2–M8 proceed.
-
-**Rationale.** H3 is now answered and the requirement **applies**: personal account created
-2026-07, so ≥12 testers opted in for 14 *continuous* days, then production-access review of up to
-7 days. That's ~3 weeks minimum, and it cannot begin until testers can install a build that
-actually works — which needs M1's public origin. Deferring this to M9 (as the original sequence
-did, and as the external brief implied) would append three idle weeks to the end of the project
-for no reason.
-
-This is deliberately *not* full release automation. It is the smallest slice that starts the clock.
-
-**Scope.** One production-profile EAS build (`.aab`) pointed at the M1 staging or production
-origin. Play app created and the closed testing track configured. Upload, pass closed-track
-review, invite testers. Confirm `targetSdkVersion` satisfies API 36 here — this is the cheap
-moment to discover an Expo SDK 56 problem, months before M9 depends on it.
-
-**What testers get.** The app roughly as it is today: single-tenant, free, no paywall, no quotas.
-That is fine and expected — Google's requirement is that a closed test *ran*, not that the tested
-build was the final product. Testers will share one backend and see each other's projects until
-M2 lands, so recruit people who are fine being a shared-instance beta, and don't invite strangers
-until tenancy exists.
-
-**Risks.** Closed-track builds still pass Play review, so the P0-8 legal surfaces (privacy policy,
-in-app AI content report) may be required earlier than M7 schedules them — if review objects,
-pull the minimum privacy-policy and report-action slice forward rather than delaying the clock.
-Any later native-module addition (RevenueCat, M4) means a new build for testers, which is fine and
-does not reset the 14-day opt-in clock as long as testers stay opted in.
-
-**Files/services.** `mobile/app.json` (`extra.apiBaseUrl` → M1 origin), `mobile/eas.json`; Play
-Console configuration.
-
-**Tests.** Build installs on a clean device from the closed track and completes a real turn
-against the hosted backend — the smoke test that matters.
-
-**Rollback.** None needed; a closed track is invisible to the public and can be halted.
-
-**Done when.** ≥12 testers are opted in and the 14-day continuous clock is running.
-
-**Human actions.** H2 (hosting), finish Play account verification, H8 (create the app, accept
-agreements), H16 (recruit 12+ testers — start immediately, this is the pacing item).
+**Human actions.** H1 (Actions billing) ✅ and H2 (Fly account) ✅ are done. Remaining: add a
+payment method to Fly (persistent volumes are not in the free allowance), and **H4 — create the
+production and staging Supabase projects**, pulled forward from M2 because prod now refuses to boot
+without Supabase auth configured. No domain purchase needed: `research-companion.fly.dev` ships
+with TLS (H2b defers a custom domain to M10).
 
 ---
 
@@ -191,6 +181,17 @@ restricted to an operator role, closing P0-2/P0-3) and **per-user preferences** 
 `prior_notes_scope`). Authorize job endpoints by owner (P1-2). Backfill: adopt existing local
 projects under your own user id.
 
+**Audio needs an explicit redesign, not just an ownership check.** Audio jobs are deliberately
+registered under the `None` project scope so identical narration requested from anywhere shares one
+job (`audio_jobs.py:89`), cancellation therefore cancels *every* caller joined to that content, and
+finished mp3s are served from an app-global content-hash route (`routers/audio.py:89`). None of
+that acquires an owner just because a user contextvar exists, and M7 could not later delete one
+user's audio. Pick one: scope jobs and cache references per user, or keep immutable
+content-addressed blobs behind per-user ACL/reference rows with subscriber-aware cancellation (so
+one subscriber leaving doesn't kill another's synthesis). The second preserves the cache-sharing
+win and is the recommendation. Polling, media access, billing attribution, and deletion each need
+tests.
+
 **Files/services.** New `app/db.py`, `app/tenancy.py`, `supabase/migrations/`; `app/projects.py`,
 `app/config.py`, `app/jobs.py`, `app/routers/settings.py`, `app/routers/projects_api.py`,
 `app/routers/audio.py`, `app/main.py`; both clients' settings screens.
@@ -200,9 +201,13 @@ boundary. The contextvar rebind is the invariant that "silently reads/writes the
 files" when wrong — now with a user dimension. Mitigate with heavy tests before behavior changes.
 
 **Tests.** Cross-user isolation: user A cannot read, write, list, split, delete, or job-poll user B's
-project — one test per route family. Path traversal via either segment. Non-operator cannot POST
-settings or prompts. Contextvar correctness inside job threads for both project and user. Migration
-applies cleanly to an empty and a populated database.
+project — one test per route family. **Give both users the identical pid (`default`) and the same
+paper slug, and run their jobs concurrently** — this is the case pid-only keys get wrong (rule 2),
+so a test that gives them different pids proves nothing. Path traversal via either segment.
+Non-operator cannot POST settings or prompts. Scope correctness for both project *and* user inside
+job threads **and inside the nested graph/affiliation workers** (rule 3). Audio: one user cannot
+poll, cancel, or fetch another's narration, and cancellation by one subscriber does not kill
+another's. Migration applies cleanly to an empty and a populated database.
 
 **Manual.** Two accounts on staging; confirm complete invisibility in both directions.
 
@@ -212,9 +217,73 @@ forward-only, so keep a database snapshot before applying.
 **Done when.** Every `/api/*` route is owner-scoped, operator-only settings are enforced, isolation
 tests pass, and existing projects are adopted under your user with no data loss.
 
-**Human actions.** Create the production and staging Supabase projects; enable asymmetric JWT
-signing; configure Google OAuth credentials (already documented in `README.md`); decide how the
+**Human actions.** H4 (the Supabase projects) now lands in M1, since prod cannot boot without it —
+what remains here is configuring Google OAuth credentials (already documented in `README.md`) and
+deciding how the
 operator role is assigned.
+
+---
+
+### M2.5 — Closed-track compliance minimum + first build (starts the 14-day tester clock)
+
+**Objective.** Get a signed AAB onto a Play **closed** testing track as early as it can legally and
+safely go there, because the tester clock is the longest calendar dependency in the plan and
+should run in the background while M3–M8 proceed.
+
+**Rationale, and why this is no longer "M1.5".** The first draft put this immediately after
+hosting. Sol's review (PR #217) established that was wrong on two counts, both verified:
+
+1. **Closed tracks are not exempt from compliance.** Only *internal* testing is exempt from the
+   Data safety form — and internal testing does **not** satisfy the 12-tester requirement, which
+   specifically requires a closed test. So a truthful Data safety declaration, a published privacy
+   policy, and (for generative AI) an in-app content-report action are all prerequisites of the
+   upload, not things to fix "if review objects."
+   Verified 2026-07-25: [Data safety](https://support.google.com/googleplay/android-developer/answer/10787469)
+   ("All developers that have an app published on Google Play must complete the Data safety form,
+   including apps on closed, open, or production testing tracks"),
+   [AI-generated content policy](https://support.google.com/googleplay/android-developer/answer/13985936).
+2. **Shipping single-tenant to external testers is not acceptable.** The original text waved this
+   through as "recruit people who are fine being a shared-instance beta." But 12 testers sharing
+   one backend would see each other's reading projects and notes — and a Data safety form
+   declaring that is either a disclosure of a privacy defect or a false statement. Tenancy (M2) is
+   a hard prerequisite, not a nicety.
+
+So this milestone now depends on M1 **and** M2, and carries the compliance slice itself.
+
+**Scope, part 1 — compliance minimum.** The subset of M7 that the upload requires: a data
+inventory derived from actual code, truthful Data safety answers, a published privacy policy and
+terms at public URLs, in-app links to both, and a working in-app report action for offensive
+AI-generated content with somewhere for reports to land. Everything else in M7 (account deletion
+workflow, the operator review queue, the paper-source terms audit) stays in M7.
+
+**Scope, part 2 — the build.** One production-profile EAS build (`.aab`) pointed at the M1
+production origin. Play app created, closed track configured, upload, pass review, invite testers.
+Confirm `targetSdkVersion` satisfies API 36 here — the cheap moment to discover an Expo SDK 56
+problem, months before M9 depends on it.
+
+**What testers get.** A multi-tenant, free, no-paywall, no-quota build. That is fine and expected:
+Google requires that a closed test *ran*, not that the tested build was final. Without M3, spend
+is unbounded — so gate the closed test behind an instance-wide budget kill switch and an
+allowlist, and treat that as this milestone's cost control until M3 lands.
+
+**Risks.** Any later native-module addition (RevenueCat, M4) means a new build for testers — fine,
+and it does not reset the 14-day opt-in clock as long as testers stay opted in. Data safety answers
+must be revised whenever data handling changes (M3 usage events, M5 billing), and a mismatch
+between the form and the privacy policy is a common rejection cause.
+
+**Files/services.** `mobile/app.json` (`extra.apiBaseUrl` → M1 origin), `mobile/eas.json`; new
+compliance routes/screens; hosted policy pages; Play Console configuration.
+
+**Tests.** Build installs from the closed track on a clean device and completes a real turn against
+the hosted backend. Two tester accounts cannot see each other's data. Report action persists.
+
+**Rollback.** A closed track is invisible to the public and can be halted at any time.
+
+**Done when.** ≥12 testers are opted in and the 14-day continuous clock is running.
+
+**Human actions.** Finish Play account verification, H8 (create the app, accept agreements), H11
+(approve privacy policy + terms), H13 (Data safety declarations), H16 (recruit 12+ testers — the
+pacing item; start recruiting during M2 so they're ready the day this lands).
 
 ---
 
@@ -226,13 +295,23 @@ operator role is assigned.
 TTS plus graph builds — dollars per paper. A subscription without hard caps is an open-ended
 liability, and a compromised or looping account is a denial-of-wallet event.
 
-**Scope.** **First, fix agentic cost attribution (P0-5)** — either surface OpenRouter's
-`usage.cost` through the Pydantic AI path, or poll OpenRouter's generation-stats endpoint through
-the `reconcile` hook `app/usage.py:194` already provides. Nothing else in this milestone is
-trustworthy until turns are priced. Then: append-only `usage_events` (user, project, operation,
-model, tokens, nano-USD cost, timestamp, generation id) written alongside the existing aggregate.
-Per-user rate limits (requests/minute, concurrent jobs). Daily and monthly quotas by tier. A hard
-per-user spend ceiling that refuses new jobs and an instance-wide kill switch. Soft warnings at 80%.
+**Scope.** **First, fix agentic cost attribution (P0-5).** Note the existing `reconcile` hook
+(`usage.py:194`) is *not* usable as-is, contrary to the first draft of this plan: the agentic path
+writes a single aggregate pending marker with `generation_id=None` for a run of up to 12 provider
+requests (`agent_harness.py:96`), and `reconcile()` returns early on a falsy id (`usage.py:203`).
+There is nothing to reconcile *against*. So the fix is one of: capture every agentic request's
+generation id at the transport layer and emit one pending event per generation (then
+generation-stats polling can resolve each), or route the agentic path through a client that
+preserves OpenRouter's authoritative `cost`. Nothing else in this milestone is trustworthy until
+turns are priced.
+
+Then: append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost,
+timestamp, generation id) written alongside the existing aggregate. Per-user rate limits
+(requests/minute, concurrent jobs). Daily and monthly quotas by tier. **Pre-spend reservations per
+architectural rule 5** — atomically reserve a pessimistic maximum against the user's remaining
+budget before admitting a job, settle to actual cost when it finishes, release on failure; a
+reservation that cannot be taken (or a quota store that is unreachable) refuses the job rather
+than letting it through. An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
 Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
 tool-call budget already in place, plus an egress review of what `web_fetch` can reach.
@@ -242,13 +321,17 @@ tool-call budget already in place, plus an egress review of what `web_fetch` can
 job-creating routers; new `docs/production/04-ai-costs-quotas-and-abuse.md`.
 
 **Risks.** A quota bug that blocks legitimate paid users is worse than a mild overspend — fail
-toward a logged soft-warning on ambiguity, but never on the hard ceiling. Metering must stay
-best-effort and never fail a turn (the existing `usage.py` discipline).
+toward a logged soft-warning on ambiguity, but never on the hard ceiling. Keep the two mechanisms
+distinct (rule 5): **analytics** recording stays best-effort and never fails a turn, preserving the
+existing `usage.py` discipline; **reservations** are authoritative and fail closed. Conflating them
+is what makes a ceiling unenforceable.
 
 **Tests.** Cost recorded for both agentic and single-shot paths, with no `estimated` flag on the
 default path. Quota exhaustion returns a clean, actionable error. Rate limiter under concurrency.
-Hard ceiling refuses job creation. Cache eviction respects the bound. Per-user attribution correct
-inside job threads.
+**Concurrent job admission cannot collectively exceed the ceiling** — the race the reservation
+design exists to close, so test it with simultaneous admissions, not sequential ones. Quota store
+unavailable ⇒ paid work refused. Cache eviction respects the bound. Per-user attribution correct
+inside job threads *and* inside nested graph/affiliation workers (rule 3).
 
 **Manual.** Drive a real account to its quota on staging and confirm the client message is honest
 and the spend stops.
@@ -410,8 +493,8 @@ time. Play service account for EAS Submit. EAS Workflows for CI → build → su
 EAS Update policy with runtime versioning and a rollback procedure — deliberately conservative, no
 auto-submit on every merge to `main`.
 
-**Risks.** CI billing (P1-5) must be resolved first. Native module additions from M4 mean dev-client
-rebuilds — plan a device pass.
+**Risks.** Native module additions from M4 mean dev-client rebuilds — plan a device pass. (CI
+billing, formerly a prerequisite here, was resolved as H1 on 2026-07-24.)
 
 **Done when.** `main` → internal track is one documented command, and rollback is documented and
 drilled.
@@ -431,7 +514,7 @@ PDF failure, content report, account deletion, upgrade, OTA rollback). Evaluate 
 number of mission-critical mobile flows. Store assets: name, descriptions, screenshots, feature
 graphic, icon, content rating, target audience, ads declaration, reviewer credentials. The closed-testing
 requirement **applies** (confirmed 2026-07-25) — by this point the 14-day clock should long since
-have been satisfied via M1.5, so what remains here is applying for production access and its ≤7-day
+have been satisfied via M2.5, so what remains here is applying for production access and its ≤7-day
 review. Rollback drill. Revise M3 quota limits against real observed cost.
 
 **Done when.** No known P0 remains and every launch-ready criterion is met.

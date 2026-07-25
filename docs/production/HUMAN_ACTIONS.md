@@ -72,23 +72,31 @@ Continuous means uninterrupted — a tester who drops out and rejoins resets the
 requirement was 20 testers before December 2024; it is 12 now.
 
 **Real cost: ~3 weeks minimum** from "12 real testers opted in" to production access, and that
-clock cannot start until there is a working build on a Play closed track — which needs H2
-(testers must be able to reach the backend) plus a signed AAB upload. See M1.5 in the roadmap:
-that slice is pulled forward specifically to start this clock early.
+clock cannot start until there is a working build on a Play closed track. See **M2.5** in the
+roadmap: that slice starts this clock as early as is legal and safe. It sits after tenancy (M2) and
+carries a compliance slice, because closed tracks require a Data safety form and privacy policy
+(only *internal* testing is exempt, and internal doesn't satisfy the 12-tester rule), and because
+12 external testers must not share one untenanted backend.
 
 **Remaining human actions:** finish account verification; recruit 12 testers (see H16).
 
 ---
 
-## Blocking M2 (identity and tenancy)
-
-### H4 — Create production and staging Supabase projects · `todo`
+### H4 — Create production and staging Supabase projects · `todo` — **now blocks M1**
+*Moved forward from M2 by Sol's review:* production will refuse to boot unless
+`auth.mode() == "supabase"`, because `auth.mode()` otherwise falls back to `open` and a deploy that
+forgets one env var would serve the entire API unauthenticated (audit P0-12). So the Supabase
+projects must exist before M1 can deploy, not before M2.
 Two projects (never share one across environments — production customer data must not be casual
 test data). Enable **asymmetric JWT signing keys** so the JWKS endpoint is live, and enable the
 Email and Google providers. `README.md` already documents this setup.
 **Why not an agent:** account creation.
 **Report back:** both project URLs and anon (publishable) keys. The anon key is publishable and
 safe to share; **never** paste a service-role key into chat, a commit, or a doc.
+
+---
+
+## Blocking M2 (identity and tenancy)
 
 ### H5 — Google OAuth credentials · `todo`
 Create a Web OAuth client with redirect URI `https://<ref>.supabase.co/auth/v1/callback`, and add
@@ -132,7 +140,11 @@ permissions needed.
 
 ---
 
-## Blocking M7 (compliance)
+## Blocking M2.5 (closed-track compliance) and M7
+
+**H11 and H13 are needed at M2.5, not M7.** A closed testing track requires a completed Data safety
+form and a published privacy policy — only *internal* testing is exempt, and internal testing does
+not satisfy the 12-tester rule. So these gate the tester clock.
 
 ### H11 — Approve privacy policy and terms of service · `todo`
 An agent can draft both from the M7 data inventory. Publishing them is a legal statement about your
@@ -175,7 +187,7 @@ communities exist but read Google's policy on them before relying on one.
 
 This is the longest calendar dependency in the whole plan and it does **not** need a
 finished product — only a build good enough that testers can install and open it. Start it as
-soon as M1.5 puts an AAB on the closed track.
+soon as M2.5 puts an AAB on the closed track.
 
 **Report back:** tester count, the date the closed test opened, and any drop-outs.
 
