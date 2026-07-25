@@ -31,6 +31,11 @@ fi
 HOST="${RC_HOST:-0.0.0.0}"
 PORT="${RC_PORT:-8000}"
 
+# The app refuses to start without an explicit RC_ENV — unset is treated as unsafe rather than
+# defaulting to dev, so that a deployed container which lost its environment fails closed instead
+# of booting with authentication disabled. Local runs are dev unless told otherwise.
+export RC_ENV="${RC_ENV:-dev}"
+
 # Opt-in dev auto-reload. Default off (production/tunnel deployment stays a single long-lived
 # process). RC_RELOAD=1 restarts the worker when files under app/ change so new routes don't 405
 # on a stale server. The watch is scoped to --reload-dir app on purpose: uvicorn's reloader

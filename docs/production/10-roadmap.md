@@ -11,6 +11,44 @@ before execution.
 
 ---
 
+## Current position (updated 2026-07-25)
+
+**In M1.** Plan merged (#217). M1 is being delivered as three PRs.
+
+| PR | Scope | Status |
+|---|---|---|
+| #218 | Dockerfile, `.dockerignore`, `fly.toml`, `fly.staging.toml`, staging deploy | ✅ merged to `main` |
+| #219 | `RC_ENV` gating, auth hard-fail, user allowlist | open; Sol round 1 applied (`04bc9c6`), round 2 blocked on an OpenAI/codex 503 outage |
+| PR 3 | Hardened outbound-fetch helper (P0-14) | not started |
+
+**Live:** `research-companion-staging.fly.dev` — `RC_ENV=staging`, Supabase auth enforcing,
+allowlist = Kamil's UUID only, **no provider API keys** (so nothing can spend). Volume `rc_data_staging`
+(3 GB, `dfw`) mounted at `/data`; `/api/health` returns `dev:false`; `/api/projects` 401 unauthenticated.
+
+**Production Fly app `research-companion` exists but has never been deployed** and has no volume.
+
+**Not yet started in M1:** the API-36 spike (verify Expo SDK 56's `targetSdkVersion`), and the
+production app + secrets. Data migration and client cutover are deliberately *out* of M1 — see M1's
+"Rollback" section for why they are gated on M2 and M6.
+
+**Operational notes for whoever picks this up:**
+- `flyctl` is installed and authenticated on the dev Mac. Deploy with
+  `flyctl deploy -c fly.staging.toml --remote-only --yes` — the local Docker daemon is not running,
+  so builds must be remote.
+- Sol reviews: `codex exec --sandbox read-only - < <instructions>.md`, **run from the repo root**
+  (codex refuses elsewhere). `codex exec review --base main` cannot take a custom prompt, so the
+  instructions tell it to diff against `main` itself.
+- A deploy stops the machine and kills in-flight jobs — check for active jobs first.
+
+**Waiting on Kamil (none are blocking PR 3):**
+- Whether to put provider API keys on staging. The allowlist now makes it safe; it spends real money.
+- **H22** — production TTS model (`gpt-4o-mini-tts` recommended).
+- **H6** — how the operator role is assigned (blocks M2).
+- **H16** — recruit 12+ testers, and publish/extend the Google OAuth consent screen, which is in
+  Testing mode and currently limited to 3 accounts.
+
+---
+
 ## Locked decisions
 
 Settled 2026-07-24 with the product owner. These are the assumptions the whole sequence rests on;
@@ -95,7 +133,7 @@ gets updated as each lands.
 
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
-| M1 | Hosting, environments, and secrets | — | L | queued |
+| M1 | Hosting, environments, and secrets | — | L | **in progress** (#218 merged, #219 open, PR 3 pending) |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | queued |

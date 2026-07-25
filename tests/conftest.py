@@ -5,10 +5,22 @@ is always driven through an injected fake in tests (see graph.build_graph's extr
 """
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
-from app import config, projects
+
+# The app requires an explicit RC_ENV — unset is treated as unsafe rather than defaulting to dev,
+# so that a container which lost its environment fails closed instead of booting unauthenticated.
+# Set it before importing app modules so anything reading it at import time sees a dev process:
+# tests/test_system.py and tests/test_web_serve.py import app.main, which calls
+# assert_environment_safe() at import and would refuse to start otherwise.
+# Overwritten rather than setdefault, deliberately — an RC_ENV exported in the developer's shell
+# would otherwise make the suite refuse to import app.main, and hermetic beats configurable here
+# (the gating tests pass the environment explicitly, so nothing needs the ambient value).
+os.environ["RC_ENV"] = "dev"
+
+from app import config, projects  # noqa: E402 — must follow the RC_ENV default above
 
 
 @pytest.fixture(autouse=True)

@@ -103,12 +103,55 @@ OPENAI_BASE = "https://api.openai.com/v1"
 APP_TITLE = os.environ.get("RC_APP_TITLE", "Research Reading Companion")
 
 
+# Which deployment this process is. Everything exposure-related keys off this rather than off
+# individual feature flags, because the dangerous configuration is *absence* of config, not
+# presence: a deploy that simply forgets a variable must not silently land in the permissive state.
+KNOWN_ENVIRONMENTS = ("dev", "staging", "prod")
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def env_truthy(name: str) -> bool:
+    """Whether env var `name` is set to a truthy value. The one place the truthiness rule lives —
+    `auth.assert_environment_safe` must reject exactly the values `dev_mode()` would accept, and
+    two copies of the rule would eventually disagree (a process refusing `RC_DEV=on` while
+    `dev_mode()` honours it, or worse, the reverse)."""
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+def env_name() -> str:
+    """`RC_ENV` normalized: dev | staging | prod. Read live. **No default** — unset returns "".
+
+    Deliberately not defaulting to "dev": this module's whole premise is that the dangerous
+    configuration is *absence*, and defaulting an unset RC_ENV to dev would short-circuit every
+    guard below it. A container that lost its env would then boot fully open — exactly the failure
+    the rest of this design exists to prevent. So unset behaves like any other unrecognized value:
+    `is_dev_env()` is False (guards stay on) and `auth.assert_environment_safe()` refuses to boot.
+    `run.sh` and `tests/conftest.py` set `RC_ENV=dev` explicitly, and the Dockerfile defaults the
+    image to `prod` so a container can never accidentally be dev.
+    """
+    return os.environ.get("RC_ENV", "").strip().lower()
+
+
+def is_dev_env() -> bool:
+    """True only for the exact string `dev`. Unset or unrecognized counts as non-dev, so an
+    unparseable — or absent — environment fails safe."""
+    return env_name() == "dev"
+
+
 def dev_mode() -> bool:
     """Whether this instance runs in developer mode (RC_DEV truthy). Gates power-user
     affordances the client should only expose to the operator — force-rebuild-from-scratch,
     in-app prompt editing — not production readers. Read live so a restart with the env set
-    flips it without code changes."""
-    return os.environ.get("RC_DEV", "").strip().lower() in {"1", "true", "yes", "on"}
+    flips it without code changes.
+
+    Outside a dev environment this is ALWAYS False, whatever `RC_DEV` says. Startup validation
+    additionally refuses to boot a staging/prod process that sets it (see
+    `auth.assert_environment_safe`), so this is defence in depth rather than the only guard: if a
+    future caller reaches `dev_mode()` before validation runs, it still gets the safe answer.
+    """
+    if not is_dev_env():
+        return False
+    return env_truthy("RC_DEV")
 
 # Author for the commits the app makes into a project's git store (committer.commit,
 # notes_jobs.save, projects.create_project). The store shells out to `git commit`, which needs
