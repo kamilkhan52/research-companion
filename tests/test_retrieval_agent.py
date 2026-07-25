@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 from app import retrieval_agent, retriever
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -20,15 +21,14 @@ def _collect(title, model):
 
 
 def test_hunt_success_streams_tools_and_returns_text(monkeypatch):
-    # fetch_pdf's network + extraction stubbed: any URL yields a valid "PDF".
-    class FakeResp:
-        status_code = 200
-        content = b"%PDF-1.4 fake"
-    monkeypatch.setattr(retrieval_agent.httpx, "Client",
-                        lambda **kw: type("C", (), {"get": lambda self, u, **k: FakeResp(),
-                                                    "__enter__": lambda self: self,
-                                                    "__exit__": lambda self, *a: None})())
-    monkeypatch.setattr(retrieval_agent.research_tools, "_assert_public_url", lambda url: None)
+    # fetch_pdf's network + extraction stubbed: any URL yields a valid "PDF". The download now goes
+    # through safe_fetch (destination checks, redirect re-validation, byte ceiling), which is
+    # covered on its own in tests/test_safe_fetch.py — here it is faked wholesale so this test
+    # stays about the agent loop.
+    monkeypatch.setattr(retrieval_agent.safe_fetch, "fetch",
+                        lambda url, **kw: retrieval_agent.safe_fetch.FetchResult(
+                            url=url, status_code=200, headers=httpx.Headers({}),
+                            content=b"%PDF-1.4 fake"))
     monkeypatch.setattr(retriever, "extract_pdf_bytes", lambda data: "The paper text. " * 50)
 
     calls = {"n": 0}

@@ -18,8 +18,16 @@ before execution.
 | PR | Scope | Status |
 |---|---|---|
 | #218 | Dockerfile, `.dockerignore`, `fly.toml`, `fly.staging.toml`, staging deploy | ✅ merged to `main` |
-| #219 | `RC_ENV` gating, auth hard-fail, user allowlist | open; Sol round 1 applied (`04bc9c6`), round 2 blocked on an OpenAI/codex 503 outage |
-| PR 3 | Hardened outbound-fetch helper (P0-14) | not started |
+| #219 | `RC_ENV` gating, auth hard-fail, user allowlist | ✅ merged to `main` (`9cace9f`) |
+| PR 3 | Hardened outbound-fetch helper — `app/safe_fetch.py` (P0-14) | open |
+
+**Review note on #219:** it had one Sol round (applied as `04bc9c6`) plus a self-review pass, not
+two Sol rounds — codex was in a provider-wide 503 outage (`biscuit_baker_service_me_circuit_open`)
+and the loop's fallback reviewers run as subagents, which are not spawned unprompted. The
+self-review found three real issues (duplicated `RC_DEV` truthiness rule between
+`auth.assert_environment_safe` and `config.dev_mode`, a stale "Default dev" claim in
+`.env.example`, and a `setdefault` in `conftest.py` that let a developer's shell break the suite).
+If codex recovers, re-running a round against `main` costs nothing.
 
 **Live:** `research-companion-staging.fly.dev` — `RC_ENV=staging`, Supabase auth enforcing,
 allowlist = Kamil's UUID only, **no provider API keys** (so nothing can spend). Volume `rc_data_staging`

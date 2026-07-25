@@ -20,17 +20,15 @@ not configured), which raise ToolError so the failure is explicit.
 from __future__ import annotations
 
 import html
-import ipaddress
 import json
 import os
 import re
-import socket
 import uuid
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import config, graph_store, sessions, store
+from . import config, graph_store, safe_fetch, sessions, store
 
 # Caps: keep tool output bounded so a single call can't blow the model's context or stall a turn.
 MAX_PAPER_TEXT_CHARS = 16_000
@@ -343,51 +341,46 @@ def _ddg_search(objective: str, queries: list[str], *, client: httpx.Client | No
             client.close()
 
 
-# ---- provider: direct fetch (keyless fallback for web_fetch), with an SSRF guard ----
+# ---- provider: direct fetch (keyless fallback for web_fetch) ----
 
-def _assert_public_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ToolError(f"only http(s) allowed (got '{parsed.scheme}')")
-    host = parsed.hostname
-    if not host:
-        raise ToolError("url has no host")
-    try:
-        infos = socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as e:
-        raise ToolError(f"could not resolve {host}") from e
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
-            raise ToolError(f"refusing non-public address {ip}")
+# Only ~6000 characters of each page survive into the tool result, but the whole body had to be
+# read to get them. Cap the download at a size that comfortably contains any article-sized page.
+_DIRECT_FETCH_MAX_BYTES = 5_000_000
 
 
-def _direct_fetch(urls: list[str], objective: str, *, client: httpx.Client | None = None) -> str:
-    own = client is None
-    client = client or httpx.Client(timeout=WEB_TIMEOUT_S, follow_redirects=True)
-    try:
-        chunks = []
-        for url in urls[:3]:
-            _assert_public_url(url)
-            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                chunks.append(f"# {url}\n\n(fetch failed: HTTP {resp.status_code})")
-                continue
-            if "text/html" not in resp.headers.get("content-type", "") and \
-                    "text/plain" not in resp.headers.get("content-type", ""):
-                chunks.append(f"# {url}\n\n(non-text content)")
-                continue
-            body = resp.text
-            text = _TAGS_RE.sub(" ", re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", body))
-            text = html.unescape(re.sub(r"[ \t]+", " ", text)).strip()
-            chunks.append(f"# {url}\n\n{text[:6000]}")
-        return "\n\n---\n\n".join(chunks) if chunks else "No content fetched."
-    except httpx.HTTPError as e:
-        raise ToolError(f"fetch failed: {e}") from e
-    finally:
-        if own:
-            client.close()
+def _direct_fetch(urls: list[str], objective: str) -> str:
+    """Fetch up to three URLs and reduce each to plain text for the model.
+
+    The URL guard used to live here as `_assert_public_url`; it now lives in `safe_fetch`, which
+    also re-validates redirects and bounds the body. That matters more here than anywhere else:
+    these URLs come from an LLM acting on untrusted search results, so both the destination and
+    the size are attacker-influenced.
+    """
+    chunks = []
+    for url in urls[:3]:
+        try:
+            resp = safe_fetch.fetch(url, max_bytes=_DIRECT_FETCH_MAX_BYTES,
+                                    timeout=WEB_TIMEOUT_S,
+                                    headers={"User-Agent": "Mozilla/5.0"})
+        except safe_fetch.UnsafeURLError as e:
+            chunks.append(f"# {url}\n\n(refused: {e})")
+            continue
+        except safe_fetch.FetchTooLargeError as e:
+            chunks.append(f"# {url}\n\n(too large: {e})")
+            continue
+        except httpx.HTTPStatusError as e:
+            chunks.append(f"# {url}\n\n(fetch failed: HTTP {e.response.status_code})")
+            continue
+        except httpx.HTTPError as e:
+            raise ToolError(f"fetch failed: {e}") from e
+        if "text/html" not in resp.content_type and "text/plain" not in resp.content_type:
+            chunks.append(f"# {url}\n\n(non-text content)")
+            continue
+        body = resp.text
+        text = _TAGS_RE.sub(" ", re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", body))
+        text = html.unescape(re.sub(r"[ \t]+", " ", text)).strip()
+        chunks.append(f"# {url}\n\n{text[:6000]}")
+    return "\n\n---\n\n".join(chunks) if chunks else "No content fetched."
 
 
 # ---- orchestrators: try providers in order, fall through on failure ----

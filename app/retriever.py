@@ -13,7 +13,13 @@ import feedparser
 import httpx
 from pypdf import PdfReader
 
+from . import safe_fetch
+
 ARXIV_API = "https://export.arxiv.org/api/query"
+# A paper PDF ceiling shared with the cover renderer and the agentic hunt. Comfortably above any
+# real paper (the largest arXiv PDFs are single-digit MB) while keeping one hostile URL from
+# exhausting memory in the single worker.
+MAX_PDF_BYTES = 40_000_000
 _UA = {"User-Agent": "ResearchReadingCompanion/0.1 (+local)"}
 _ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?")
 
@@ -172,13 +178,18 @@ def search_arxiv_raw(query: str, max_results: int = 25, sort_by: str = "relevanc
 
 def _fetch(url: str) -> bytes:
     # arXiv PDF downloads share the same throttling as the query API, so route them through the
-    # paced/retrying getter; other hosts get a plain fetch.
+    # paced/retrying getter. That path is safe without the URL guard because the url is one WE
+    # built from an arXiv id, not one a caller supplied.
     if "arxiv.org" in url:
         return _arxiv_get(url, timeout=60).content
+    # Everything else may be a client-supplied `pdf_url` (session/start), so it goes through the
+    # guarded fetcher: public destinations only, every redirect hop re-checked, hard byte ceiling.
     try:
-        r = httpx.get(url, headers=_UA, timeout=60, follow_redirects=True)
-        r.raise_for_status()
-        return r.content
+        return safe_fetch.fetch(url, max_bytes=MAX_PDF_BYTES, timeout=60, headers=_UA).content
+    except safe_fetch.UnsafeURLError as e:
+        raise RetrievalError(f"Refusing to download {url}: {e}") from e
+    except safe_fetch.FetchTooLargeError as e:
+        raise RetrievalError(f"Download too large: {e}") from e
     except httpx.HTTPError as e:
         raise RetrievalError(f"Download failed for {url}: {e}") from e
 

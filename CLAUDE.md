@@ -87,6 +87,14 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   empty-response diagnostics, `LLMError`) + a TTL-cached model `catalogue()`. Every raw LLM
   call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
   `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
+- `safe_fetch.py` — the guarded path for fetching a URL the app did **not** choose itself
+  (client-supplied `pdf_url`, an LLM-proposed candidate, a stored `source_url`). Public
+  destinations only (`is_global`, which unlike an enumeration of private ranges also covers
+  `100.64.0.0/10` — the Tailscale range), every redirect hop re-validated, and a required
+  `max_bytes` ceiling enforced against bytes actually read. `retriever._fetch`,
+  `cover_jobs._download_pdf`, `retrieval_agent.fetch_pdf` and `research_tools._direct_fetch` all
+  go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
+  fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
 - `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
