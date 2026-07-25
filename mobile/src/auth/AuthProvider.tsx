@@ -301,10 +301,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     setError(null);
-    await client.current?.auth.signOut();
-    // Not left to onAuthStateChange alone: if the client was never built (auth disabled, or an
-    // unreachable server) there is no listener to fire, and a token could survive a sign-out.
+    let failure: string | null = null;
+    try {
+      await client.current?.auth.signOut();
+    } catch (caught) {
+      // `secureSessionStore.removeItem` now throws when it cannot purge the stored session, which
+      // is the right call — a silent failure there is a sign-out that un-does itself on the next
+      // launch. But it must not abort the rest of THIS sign-out: letting it propagate would skip
+      // `adoptSession` below, leaving the app looking signed in with a live API token.
+      failure = caught instanceof Error ? caught.message : 'Could not fully sign out.';
+    }
+    // Unconditional, and not left to onAuthStateChange: if the client was never built (auth
+    // disabled, or an unreachable server) there is no listener to fire at all.
     await adoptSession(null);
+    if (failure) {
+      // Surfaced rather than swallowed. The user is signed out here, but a credential may still be
+      // on the device, and that is worth them knowing on a shared or lost phone.
+      setError(`${failure} Signed out on this device; clear the app's data if it was shared.`);
+    }
   }, [adoptSession]);
 
   const value = useMemo<AuthState>(

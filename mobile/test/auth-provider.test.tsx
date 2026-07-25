@@ -272,3 +272,26 @@ test('a magic link that lands before the auth config does is not dropped', async
   releaseConfig!(SUPABASE_CONFIG);
   await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('parked-code'));
 });
+
+
+test('a failure to purge stored credentials still signs the user out locally', async () => {
+  // secureSessionStore.removeItem throws when it cannot clear the session — correct, because a
+  // silent failure there is a sign-out that reverses on the next launch. But it must not abort the
+  // rest of sign-out: propagating would skip token clearing and leave the app looking signed in
+  // with a live API token, which is the worse of the two failures.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: { access_token: 'a-jwt', user: { email: 'r@example.com' } } },
+  });
+  mockAuth.signOut.mockRejectedValueOnce(new Error('Could not fully clear the stored session'));
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  await waitFor(() => getByText('signed-in'));
+
+  await auth!.signOut();
+  await waitFor(() => getByText('signed-out'));
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
+  expect(auth!.error).toMatch(/clear the app/i);
+});
