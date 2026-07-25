@@ -127,9 +127,13 @@ class FetchResult:
             return self.content.decode("utf-8", errors="replace")
 
 
-def _check_deadline(ends_at: float, url: str) -> None:
-    if time.monotonic() >= ends_at:
+def _check_deadline(ends_at: float, url: str) -> float:
+    """Seconds left, or raise `FetchTimeoutError`. Returning the remainder lets callers hand it to
+    httpx as a per-operation timeout, so work started near the deadline cannot outlive it."""
+    remaining = ends_at - time.monotonic()
+    if remaining <= 0:
         raise FetchTimeoutError(f"fetch of {url} exceeded its total deadline")
+    return remaining
 
 
 def normalized_host(url: str) -> str:
@@ -236,9 +240,17 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     watchdog.start()
     try:
         for _ in range(MAX_REDIRECTS + 1):
-            _check_deadline(ends_at, current)
+            remaining = _check_deadline(ends_at, current)
             assert_public_url(current)
-            with client.stream("GET", current, headers=sent) as r:
+            # Per-hop timeout, shrunk to what is left. Without this the watchdog has a hole: it
+            # calls close() once, and a connection still inside httpcore's _connect() at that
+            # moment is dropped from the pool without being closed, so the request proceeds and
+            # every later close() is a no-op on an already-closed client. A redirect chain can eat
+            # the whole deadline and open its last connection in that instant. Handing the hop a
+            # read timeout of whatever remains means such a hop cannot outlive the budget: the
+            # closer the start is to the deadline, the less patience each read gets.
+            with client.stream("GET", current, headers=sent,
+                               timeout=min(timeout, remaining)) as r:
                 if r.is_redirect:
                     location = r.headers.get("location")
                     if not location:
@@ -283,6 +295,13 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                         raise FetchTooLargeError(
                             f"{current} exceeds the {max_bytes}-byte limit")
                     buf += chunk
+                # A close-delimited response (no Content-Length, no chunked framing) ends at EOF,
+                # which h11 accepts as a complete message — so the loop can simply stop yielding
+                # instead of raising. Without this check that returns SUCCESS with whatever arrived
+                # before the deadline: silent truncation, the failure this module has already
+                # shipped twice. The mid-body test cannot catch it because Content-Length makes an
+                # incomplete body raise on its own.
+                _check_deadline(ends_at, current)
                 return FetchResult(url=current, status_code=r.status_code,
                                    headers=r.headers, content=bytes(buf))
 
