@@ -167,7 +167,13 @@ def assert_public_url(url: str) -> None:
     publishing both a public A record and a private AAAA record must be refused, because the
     client, not us, picks which one it connects to.
     """
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as e:
+        # urlparse raises on malformed authorities — an unmatched IPv6 bracket, for instance. That
+        # ValueError is not a SafeFetchError, so it escaped every caller's except clauses and
+        # surfaced as a 500 or an unhandled background-job crash instead of a refusal.
+        raise UnsafeURLError(f"could not parse {url}: {e}") from e
     if parsed.scheme not in ("http", "https"):
         raise UnsafeURLError(f"only http(s) URLs may be fetched (got {parsed.scheme!r})")
     if not parsed.hostname:
@@ -240,8 +246,19 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     watchdog.start()
     try:
         for _ in range(MAX_REDIRECTS + 1):
-            remaining = _check_deadline(ends_at, current)
+            _check_deadline(ends_at, current)
             assert_public_url(current)
+            # Recomputed AFTER validation, not before: assert_public_url calls getaddrinfo, which
+            # blocks and which the watchdog cannot interrupt (it closes the HTTP client, and no
+            # HTTP is in flight yet). Passing the pre-resolution figure to client.stream would hand
+            # a hop that spent its whole budget in DNS a full-length read timeout anyway,
+            # reopening the connect-time race the per-hop timeout exists to close.
+            #
+            # Resolution itself stays outside the interruptible budget — socket.getaddrinfo takes
+            # no timeout and bounding it means a thread that outlives the call. It is bounded by
+            # the system resolver instead, so the true worst case is the deadline plus up to
+            # MAX_REDIRECTS resolver timeouts. Stated rather than silently assumed.
+            remaining = _check_deadline(ends_at, current)
             # Per-hop timeout, shrunk to what is left. Without this the watchdog has a hole: it
             # calls close() once, and a connection still inside httpcore's _connect() at that
             # moment is dropped from the pool without being closed, so the request proceeds and
@@ -258,7 +275,14 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                     # Resolve a relative Location against the hop we actually made, then loop so
                     # the new destination goes through assert_public_url like any other URL. This
                     # re-validation is the entire reason the chain is walked by hand.
-                    nxt = str(httpx.URL(current).join(location))
+                    try:
+                        nxt = str(httpx.URL(current).join(location))
+                    except (httpx.InvalidURL, ValueError) as e:
+                        # A malformed Location. httpx.InvalidURL is NOT an httpx.HTTPError, so
+                        # this escaped the callers too — an attacker-chosen redirect target could
+                        # crash a job rather than be refused.
+                        raise UnsafeURLError(
+                            f"redirect from {current} has an unusable Location: {e}") from e
                     log.debug("redirect %s -> %s", current, nxt)
                     current = nxt
                     continue

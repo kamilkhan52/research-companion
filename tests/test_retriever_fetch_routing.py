@@ -128,3 +128,21 @@ def test_fetch_translates_every_refusal_to_retrieval_error(monkeypatch, exc):
     monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
     with pytest.raises(retriever.RetrievalError):
         retriever._fetch("https://example.com/paper.pdf")
+
+
+def test_malformed_redirect_becomes_a_retrieval_error(monkeypatch):
+    """The property that actually matters for a malformed redirect target: whatever safe_fetch
+    raises, the caller turns it into its own error type rather than letting it reach the job runner
+    as an unhandled crash."""
+    real_client = httpx.Client
+
+    def client_factory(**kw):
+        return real_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(302, headers={"location": "http://[fe80::1/x"},
+                                           stream=httpx.ByteStream(b""))), **kw)
+
+    monkeypatch.setattr(safe_fetch.httpx, "Client", client_factory)
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", port))])
+    with pytest.raises(retriever.RetrievalError):
+        retriever._fetch("https://example.com/paper.pdf")

@@ -134,6 +134,72 @@ def test_refuses_non_http_schemes(url):
         safe_fetch.assert_public_url(url)
 
 
+@pytest.mark.parametrize("url", ["http://[fe80::1/x", "http://[::1/", "http://[/"])
+def test_malformed_url_is_refused_not_crashed(url):
+    """urlparse raises ValueError on a broken authority (an unmatched IPv6 bracket). That is not a
+    SafeFetchError, so it escaped every caller's except clauses — a client-supplied pdf_url could
+    produce a 500 or an unhandled background-job crash instead of a refusal."""
+    with pytest.raises(safe_fetch.UnsafeURLError):
+        safe_fetch.assert_public_url(url)
+
+
+def test_malformed_redirect_location_does_not_escape_untranslated(monkeypatch):
+    """A malformed, attacker-chosen Location must not leave this module as an exception the callers
+    do not handle.
+
+    In practice httpx rejects it first with RemoteProtocolError, which IS an httpx.HTTPError and so
+    is already caught everywhere; the join is wrapped anyway, because httpx.InvalidURL is NOT an
+    HTTPError and reaching the join by some other route would escape. This asserts the property
+    that matters — one of the two handled families — rather than a specific internal type, which is
+    what the first version of this test got wrong.
+    """
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(302, location="http://[fe80::1/x")))
+    with pytest.raises((safe_fetch.SafeFetchError, httpx.HTTPError)):
+        safe_fetch.fetch("https://example.com/start", max_bytes=1000)
+
+
+def test_per_hop_timeout_is_computed_after_dns(monkeypatch):
+    """The budget handed to httpx must reflect time spent in DNS, not the figure from before it.
+
+    assert_public_url blocks in getaddrinfo, which the watchdog cannot interrupt because no HTTP is
+    in flight yet. A hop that spent most of its budget resolving would otherwise still receive a
+    full-length read timeout, reopening the connect-time race the per-hop timeout exists to close.
+
+    Asserting the TIMEOUT VALUE, not the outcome: the first version of this test asserted that a
+    slow resolve raises FetchTimeoutError, which it does either way — the post-loop deadline check
+    catches it — so it passed with the recompute moved back before the DNS call and proved nothing.
+    """
+    now = {"t": 1000.0}
+    monkeypatch.setattr(safe_fetch.time, "monotonic", lambda: now["t"])
+    monkeypatch.setattr(safe_fetch, "assert_public_url",
+                        lambda url: now.__setitem__("t", now["t"] + 6.0))   # DNS eats 6 of 10
+
+    seen = {}
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        client = real_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=httpx.ByteStream(b"ok"))), **kwargs)
+        original = client.stream
+
+        def recording_stream(method, url, **kw):
+            seen["timeout"] = kw.get("timeout")
+            return original(method, url, **kw)
+
+        client.stream = recording_stream
+        return client
+
+    monkeypatch.setattr(safe_fetch.httpx, "Client", factory)
+    try:
+        safe_fetch.fetch("https://example.com/x", max_bytes=1000, timeout=60, deadline=10)
+    except safe_fetch.FetchTimeoutError:
+        pass                      # the post-loop check may also fire; the timeout is the point
+    assert seen["timeout"] is not None
+    assert seen["timeout"] <= 4.0 + 0.01, (
+        f"hop got {seen['timeout']}s after DNS consumed 6s of a 10s budget — computed pre-DNS")
+
+
 def test_refuses_url_without_host():
     with pytest.raises(safe_fetch.UnsafeURLError):
         safe_fetch.assert_public_url("http:///nohost")
