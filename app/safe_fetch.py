@@ -19,8 +19,18 @@ Four call sites downloaded a caller-supplied URL, and the single guard that exis
     down every in-flight background job, not just the offending request.
 
 Hence: resolve, validate every resolved address, walk redirects **manually** re-validating each
-hop, and stream the body under a hard ceiling — counting WIRE bytes and decoding separately, since
-`iter_bytes()` expands a compressed chunk in full before any size check could run.
+hop, and stream the body under a hard ceiling counting WIRE bytes.
+
+**We do not decompress.** The request asks for `Accept-Encoding: identity` and a response that
+carries any content coding anyway is refused unread. This started as a bounded decoder, and that
+decoder produced four of the seven defects found reviewing this module — a decompression bomb that
+allocated before the check, silent truncation of multi-member and of truncated streams, an
+unbounded encoding chain, an unbounded member count, and a suffix copy per member. Each fix was
+correct and revealed one more axis. Refusing the response instead deletes the whole class: there is
+no expansion ratio, no member loop, and no decode budget to get wrong. Per RFC 9110 §12.5.3 a
+server should not apply a coding the client did not accept, and the bodies here are PDFs (already
+compressed) and HTML pages; the only loss is a deliberately force-compressing server, on a fallback
+path that already has two providers ahead of it.
 
 **Known residual — DNS rebinding.** We validate the addresses `getaddrinfo` returns, then httpx
 resolves the name again to open the connection. A hostile resolver with a 0-TTL record can answer
@@ -39,7 +49,6 @@ from __future__ import annotations
 import ipaddress
 import socket
 import time
-import zlib
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -53,21 +62,9 @@ log = get("safe_fetch")
 # abs -> pdf -> CDN chain is the longest legitimate one we see and fits well inside it.
 MAX_REDIRECTS = 5
 
-# How many stacked Content-Encoding layers we will undo. A real response has one; the limit exists
-# because each layer is a decompression pass the response gets to demand for free (see _decode_body).
-MAX_ENCODING_LAYERS = 3
 
-# How many concatenated members one compressed body may contain. Bounds the member loop in
-# _inflate, which is quadratic in this count (see its docstring). Real bodies have exactly one.
-MAX_COMPRESSION_MEMBERS = 16
 
-# Block size for feeding the decompressor. Bounds how much `unused_data` can copy at a member
-# boundary (see _inflate); unrelated to the network read size.
-_INFLATE_BLOCK_BYTES = 64 * 1024
 
-# Read the body in fixed blocks instead of taking whatever fragments the transport produces, so a
-# server cannot control our allocation pattern by fragmenting its response (see fetch).
-_READ_CHUNK_BYTES = 64 * 1024
 
 # Wall-clock ceiling for one fetch, redirects and body included. Generous next to a real paper
 # download, and the only thing standing between a slow-drip server and a permanently pinned job
@@ -191,117 +188,6 @@ def assert_public_url(url: str) -> None:
             raise UnsafeURLError(f"refusing to fetch non-public address {ip} (host {host})")
 
 
-def _decode_body(raw: bytes | bytearray, content_encoding: str, *, max_bytes: int,
-                 url: str) -> bytes:
-    """Undo `Content-Encoding` under a hard output bound.
-
-    Decoding is done here rather than by httpx so that expansion is bounded: `zlib`'s
-    `decompress(data, max_length)` stops producing output at the limit, so a bomb costs
-    `max_bytes`, not however far it wanted to expand. Encodings are listed in the order they were
-    applied, so they are undone in reverse. Anything other than gzip/deflate/identity is refused —
-    we send `Accept-Encoding: identity`, so a different encoding means the server ignored us, and
-    guessing at an unbounded decoder is exactly what this function exists to avoid.
-
-    On memory, measured rather than reasoned about (this docstring has claimed 2x and then 3x
-    while the code actually peaked near 4.4x, so the numbers below come from tracemalloc against an
-    incompressible body — a compressible one hides the wire buffer's cost entirely):
-
-      * identity — one immutable copy at return, on top of the live wire buffer.
-      * one compressed layer — ~3.4x `max_bytes`: the wire buffer, the accumulating output, and
-        the final immutable copy, all alive at once.
-
-    Going below that needs a streaming decoder that consumes the wire buffer as it goes; the wire
-    has to stay whole here because the member loop rescans it. Bounded and *known* is the
-    requirement.
-    """
-    encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
-    # The RESPONSE chooses how many layers to declare, and each one costs a full decompression pass
-    # of up to max_bytes. The byte ceiling does not bound that: `gzip, gzip, gzip, ...` repeated as
-    # far as the header limit allows buys CPU proportional to the number of layers while every
-    # individual layer stays inside the limit. Real responses use one; two exists in the wild only
-    # by accident.
-    if len(encodings) > MAX_ENCODING_LAYERS:
-        raise UnsupportedResponseError(
-            f"{url} declared {len(encodings)} Content-Encoding layers "
-            f"(limit {MAX_ENCODING_LAYERS})")
-    for enc in reversed(encodings):
-        if enc == "identity":
-            continue
-        if enc not in ("gzip", "x-gzip", "deflate"):
-            raise UnsupportedResponseError(
-                f"{url} used unsupported Content-Encoding {enc!r} (we requested identity)")
-        # 16+MAX_WBITS: gzip framing. For deflate, accept both the zlib-wrapped form and the raw
-        # form some servers send.
-        wbits_options = (16 + zlib.MAX_WBITS,) if enc in ("gzip", "x-gzip") \
-            else (zlib.MAX_WBITS, -zlib.MAX_WBITS)
-        for i, wbits in enumerate(wbits_options):
-            try:
-                raw = _inflate(raw, wbits, max_bytes=max_bytes, url=url)
-                break
-            except zlib.error:
-                if i == len(wbits_options) - 1:
-                    raise UnsupportedResponseError(
-                        f"{url} sent malformed {enc} content") from None
-    # One immutable copy, made once at the end rather than after every layer.
-    return bytes(raw)
-
-
-def _inflate(data: bytes | bytearray, wbits: int, *, max_bytes: int,
-             url: str) -> bytearray:
-    """Inflate `data`, never producing more than `max_bytes`, handling MULTI-MEMBER streams.
-
-    The member loop is not a nicety: `zlib.decompressobj` stops at the end of the first member and
-    leaves the rest in `unused_data`, so a single decompress call on a legitimate concatenated gzip
-    body (which RFC 1952 allows, and `cat a.gz b.gz` produces) returns only the first member's
-    bytes. Silently truncating a paper mid-download is worse than failing.
-
-    Input is fed in fixed blocks over a `memoryview`, which is what keeps the loop cheap. Handing
-    the whole remaining body to `decompress()` and then taking the rest back out of
-    `obj.unused_data` makes CPython materialize a fresh copy of that remainder on every member —
-    near a full `max_bytes` for the first one, and O(n^2) copying overall. Feeding blocks means
-    `unused_data` never holds more than one block, and the member count is capped on top of that,
-    since an empty gzip member is ~20 bytes and costs nothing against the output budget.
-
-    Returns the accumulator itself, so the caller makes the single immutable copy once rather than
-    once per encoding layer.
-    """
-    out = bytearray()
-    view = memoryview(data)
-    total = len(view)
-    pos = 0
-    members = 0
-    while pos < total:
-        members += 1
-        if members > MAX_COMPRESSION_MEMBERS:
-            raise UnsupportedResponseError(
-                f"{url} contains more than {MAX_COMPRESSION_MEMBERS} compression members")
-        obj = zlib.decompressobj(wbits)
-        while pos < total and not obj.eof:
-            block = view[pos:pos + _INFLATE_BLOCK_BYTES]
-            # Budget the whole output, not each member or block, so many small pieces cannot add
-            # up past the ceiling.
-            chunk = obj.decompress(block, max_bytes + 1 - len(out))
-            out += chunk
-            del chunk                  # drop it before the next block allocates another
-            if len(out) > max_bytes or obj.unconsumed_tail:
-                raise FetchTooLargeError(f"{url} decompresses past the {max_bytes}-byte limit")
-            # unused_data is empty until the member ends, and then holds only the tail of THIS
-            # block — bounded by the block size, not by the body size.
-            consumed = len(block) - len(obj.unused_data)
-            if consumed <= 0:
-                break                  # no forward progress; fall through to the eof check
-            pos += consumed
-        if not obj.eof:
-            # The member ended without its terminator — a truncated body. zlib does NOT raise
-            # here, it just stops, so accepting this would hand back a silently truncated paper
-            # as a successful fetch (measured: 17 bytes of a 2000-byte body). Raise zlib.error
-            # rather than a SafeFetchError so the caller's wbits fallback still gets its turn: an
-            # "incomplete" result is also what a raw-deflate body looks like when read as
-            # zlib-wrapped.
-            raise zlib.error(f"incomplete compressed stream ({len(out)} bytes decoded)")
-    return out
-
-
 def fetch(url: str, *, max_bytes: int, timeout: float = 60,
           deadline: float = MAX_TOTAL_SECONDS,
           headers: dict[str, str] | None = None) -> FetchResult:
@@ -322,12 +208,17 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     exceeding either the timeout or the byte ceiling. That pins the calling thread, and every
     caller here is a background job in a single-worker process — enough of them and nothing else
     runs. Raises `FetchTimeoutError` when the deadline passes.
+
+    The deadline is checked BETWEEN operations, not inside them, so a call can overshoot by up to
+    one `timeout` (the read already in flight cannot be interrupted from here). Bounding that
+    exactly would mean a socket-level deadline; `deadline + timeout` is the honest guarantee.
+    Note also that a caller which retries — `retriever._arxiv_get_bytes` does, up to 3 times —
+    spends up to that much per attempt.
     """
     ends_at = time.monotonic() + deadline
     current = url
-    # Ask for no compression: a decompression bomb is only a threat if the server gets to choose
-    # the expansion ratio. Callers may still override it, and a server may ignore it, so
-    # _decode_body remains the actual guarantee — this just avoids the situation.
+    # Ask for no content coding. Combined with the refusal below this is the whole bomb defence:
+    # we never expand anything, so there is no ratio for a server to choose.
     sent = {"Accept-Encoding": "identity", **(headers or {})}
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
@@ -345,26 +236,32 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                     log.debug("redirect %s -> %s", current, nxt)
                     current = nxt
                     continue
+                # Checked here as well as per-hop, so a response that arrives after the deadline is
+                # reported as a timeout rather than as whatever status or size problem it also has.
+                _check_deadline(ends_at, current)
                 r.raise_for_status()
+                encoding = r.headers.get("content-encoding", "").strip()
+                if encoding and encoding.lower() != "identity":
+                    # Refused BEFORE the body is read: we asked for identity, so this response is
+                    # either misconfigured or deliberately forcing compression, and decoding it
+                    # safely turned out to need four separate bounds (ratio, chain length, member
+                    # count, per-member copy) — see the module docstring.
+                    raise UnsupportedResponseError(
+                        f"{current} returned Content-Encoding {encoding!r} after we asked for "
+                        "identity; this client does not decompress")
                 declared = r.headers.get("content-length")
                 if declared and declared.isdigit() and int(declared) > max_bytes:
                     raise FetchTooLargeError(
                         f"{current} declares {declared} bytes, over the {max_bytes}-byte limit")
-                # iter_raw, NOT iter_bytes: iter_bytes decompresses each wire chunk in full before
-                # yielding it, so the size check would run only AFTER the allocation. Measured: a
-                # 485-byte body with `Content-Encoding: gzip, gzip` yields ONE 200,000,000-byte
-                # chunk — the ceiling raises afterwards, having already allocated 200 MB, which in
-                # a single-worker process (invariant 6) is the outage this ceiling exists to
-                # prevent. Counting wire bytes bounds what the socket can hand us; decoding is done
-                # separately, under its own bound.
-                # Accumulate into ONE bytearray rather than a list of chunks, and read in fixed
-                # blocks. Keeping each fragment as its own `bytes` made memory depend on how the
-                # server chose to fragment the body, not on its size: a permitted 40MB delivered as
-                # 1-byte chunks is ~40M objects at ~33 bytes of overhead each — over a gigabyte,
-                # while `total` reads a compliant 40MB. The byte ceiling has to bound retained
-                # memory, not just the byte count.
+                # iter_raw, NOT iter_bytes: iter_bytes would decode a compressed chunk in full
+                # before yielding, so a size check on it runs after the allocation. And no
+                # chunk_size: httpx buffers to that size before yielding, which would let a
+                # slow-drip server go minutes between deadline checks (measured: 4 checks instead
+                # of 200,000 for a 200KB body of one-byte fragments). Retention is bounded by
+                # appending into ONE bytearray rather than keeping each fragment as its own bytes,
+                # which is what chunk_size was mistakenly added for.
                 buf = bytearray()
-                for chunk in r.iter_raw(chunk_size=_READ_CHUNK_BYTES):
+                for chunk in r.iter_raw():
                     _check_deadline(ends_at, current)
                     if len(buf) + len(chunk) > max_bytes:
                         # Abandon the stream the moment the cap is crossed, so a lying (or absent)
@@ -372,11 +269,6 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                         raise FetchTooLargeError(
                             f"{current} exceeds the {max_bytes}-byte limit")
                     buf += chunk
-                encoding = r.headers.get("content-encoding", "")
-                # Hand the bytearray over directly and drop our reference: passing bytes(buf) while
-                # still holding buf kept an extra full-size copy alive for the whole decode.
-                body = _decode_body(buf, encoding, max_bytes=max_bytes, url=current)
-                del buf
                 return FetchResult(url=current, status_code=r.status_code,
-                                   headers=r.headers, content=body)
+                                   headers=r.headers, content=bytes(buf))
     raise UnsafeURLError(f"more than {MAX_REDIRECTS} redirects starting at {url}")

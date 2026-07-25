@@ -90,8 +90,12 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `safe_fetch.py` — the guarded path for fetching a URL the app did **not** choose itself
   (client-supplied `pdf_url`, an LLM-proposed candidate, a stored `source_url`). Public
   destinations only (`is_global`, which unlike an enumeration of private ranges also covers
-  `100.64.0.0/10` — the Tailscale range), every redirect hop re-validated, and a required
-  `max_bytes` ceiling enforced against bytes actually read. `retriever._fetch`,
+  `100.64.0.0/10` — the Tailscale range), every redirect hop re-validated, a required `max_bytes`
+  ceiling enforced against WIRE bytes actually read, and a total wall-clock deadline (httpx's
+  timeout is per-operation and a slow-drip server never trips it). It **does not decompress**:
+  requests are sent `Accept-Encoding: identity` and any content coding is refused unread — a
+  bounded decoder needed four separate limits and still kept yielding defects, so the class is
+  deleted rather than bounded. `retriever._fetch`,
   `cover_jobs._download_pdf`, `retrieval_agent.fetch_pdf` and `research_tools._direct_fetch` all
   go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
   fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)

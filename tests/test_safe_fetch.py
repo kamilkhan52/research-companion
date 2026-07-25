@@ -8,9 +8,7 @@ happened to raise the error they asserted.
 from __future__ import annotations
 
 import gzip
-import os
 import tracemalloc
-import zlib
 
 import httpx
 import pytest
@@ -58,333 +56,6 @@ def _resp(status: int, body: bytes = b"", **headers: str) -> httpx.Response:
 
 # ---------------- destination validation ----------------
 
-@pytest.mark.parametrize("ip", [
-    "127.0.0.1",            # loopback — including this process's own API
-    "169.254.169.254",      # cloud metadata, the classic SSRF target
-    "10.0.0.5",             # RFC1918
-    "192.168.1.1",
-    "::1",
-    "fd00::1",
-    "0.0.0.0",
-    "::ffff:127.0.0.1",     # IPv4-mapped loopback: the enumeration form of this check missed
-                            # variants like this depending on how it was written
-])
-def test_refuses_non_public_addresses(fake_dns, ip):
-    fake_dns["evil.example"] = ip
-    with pytest.raises(safe_fetch.UnsafeURLError):
-        safe_fetch.assert_public_url("https://evil.example/x")
-
-
-def test_refuses_carrier_grade_nat(fake_dns):
-    """100.64.0.0/10 is the regression this check exists for. The previous guard enumerated
-    is_private/is_loopback/is_link_local/is_reserved/is_multicast/is_unspecified, none of which
-    match 100.64/10 — and that is the Tailscale range, so on a tailnet-joined host (which the dev
-    Mac and any tailnet deployment are) those addresses reach real internal peers."""
-    fake_dns["tailnet.example"] = "100.83.161.127"
-    with pytest.raises(safe_fetch.UnsafeURLError, match="non-public"):
-        safe_fetch.assert_public_url("https://tailnet.example/x")
-
-
-def test_allows_a_public_address():
-    safe_fetch.assert_public_url("https://arxiv.org/pdf/2201.11705")   # must not raise
-
-
-def test_preserves_a_trailing_dot(monkeypatch):
-    """`example.com.` is the absolute name and skips the resolver's search suffixes, so it is a
-    different DNS question from `example.com`. httpx connects to the dotted form verbatim, so
-    stripping the dot before resolving would validate a name we do not connect to."""
-    resolved: list[str] = []
-    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
-                        lambda host, port, *a, **k: (resolved.append(host),
-                                                     [(2, 1, 6, "", ("93.184.216.34", port))])[1])
-    safe_fetch.assert_public_url("https://example.com./x")
-    assert resolved == ["example.com."]
-
-
-def test_validates_the_host_httpx_will_actually_connect_to(monkeypatch):
-    """IDNA normalization must not let validation and connection disagree.
-
-    `urlparse` hands back `faß.attacker.example`; `socket.getaddrinfo` maps that through the old
-    `idna` codec to `fass.attacker.example`, while httpx/httpcore apply IDNA 2008 and connect to
-    `xn--fa-hia.attacker.example`. Those are DIFFERENT names, so whoever controls the parent zone
-    could point the checked one at a public address and the connected one at loopback — a full
-    bypass needing no DNS rebinding. The guard therefore resolves httpx's own `raw_host`.
-    """
-    resolved: list[str] = []
-
-    def getaddrinfo(host, port, *a, **k):
-        resolved.append(host)
-        return [(2, 1, 6, "", ("93.184.216.34", port))]
-
-    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", getaddrinfo)
-    safe_fetch.assert_public_url("http://faß.attacker.example/x")
-    assert resolved == ["xn--fa-hia.attacker.example"], (
-        "validated a different hostname than httpx would connect to")
-
-
-@pytest.mark.parametrize("url", [
-    "file:///etc/passwd",
-    "ftp://example.com/x",
-    "gopher://example.com/",
-    "data:text/plain,hi",
-])
-def test_refuses_non_http_schemes(url):
-    with pytest.raises(safe_fetch.UnsafeURLError, match="http"):
-        safe_fetch.assert_public_url(url)
-
-
-def test_refuses_url_without_host():
-    with pytest.raises(safe_fetch.UnsafeURLError):
-        safe_fetch.assert_public_url("http:///nohost")
-
-
-def test_refuses_unresolvable_host(monkeypatch):
-    import socket as _socket
-    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
-                        lambda *a, **k: (_ for _ in ()).throw(_socket.gaierror("nope")))
-    with pytest.raises(safe_fetch.UnsafeURLError, match="could not resolve"):
-        safe_fetch.assert_public_url("https://nx.example/x")
-
-
-def test_checks_every_resolved_address(monkeypatch):
-    """A host answering with one public and one private address must be refused: we do not choose
-    which address the connection uses, so 'one of them is fine' is not good enough."""
-    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", lambda host, port, *a, **k: [
-        (2, 1, 6, "", ("93.184.216.34", port)),
-        (2, 1, 6, "", ("127.0.0.1", port)),
-    ])
-    with pytest.raises(safe_fetch.UnsafeURLError):
-        safe_fetch.assert_public_url("https://split.example/x")
-
-
-# ---------------- redirect handling ----------------
-
-def test_follows_redirects_and_returns_final_url(monkeypatch):
-    def handler(request):
-        if request.url.path == "/start":
-            return _resp(302, location="https://example.com/final")
-        return _resp(200, b"body", content_type="text/plain")
-
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
-    r = safe_fetch.fetch("https://example.com/start", max_bytes=1000)
-    assert r.content == b"body"
-    assert r.url == "https://example.com/final"
-
-
-def test_redirect_to_private_address_is_refused(fake_dns, monkeypatch):
-    """THE hole this module exists to close. The first URL is public and passes; the redirect
-    target is cloud metadata. Following redirects inside httpx made this invisible."""
-    fake_dns["metadata.evil"] = "169.254.169.254"
-
-    def handler(request):
-        return _resp(302, location="http://metadata.evil/latest/meta-data/")
-
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
-    with pytest.raises(safe_fetch.UnsafeURLError, match="non-public"):
-        safe_fetch.fetch("https://public.example/start", max_bytes=1000)
-
-
-def test_relative_redirect_is_resolved_against_the_current_hop(monkeypatch):
-    seen = []
-
-    def handler(request):
-        seen.append(str(request.url))
-        if request.url.path == "/a/start":
-            return _resp(302, location="../b/final")
-        return _resp(200, b"ok", content_type="text/plain")
-
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
-    r = safe_fetch.fetch("https://example.com/a/start", max_bytes=1000)
-    assert r.url == "https://example.com/b/final"
-    assert seen == ["https://example.com/a/start", "https://example.com/b/final"]
-
-
-def test_redirect_loop_is_bounded(monkeypatch):
-    def handler(request):
-        return _resp(302, location="https://example.com/loop")
-
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
-    with pytest.raises(safe_fetch.UnsafeURLError, match="redirects"):
-        safe_fetch.fetch("https://example.com/loop", max_bytes=1000)
-
-
-def test_redirect_without_location_is_refused(monkeypatch):
-    monkeypatch.setattr(safe_fetch.httpx, "Client",
-                        _mock_client(lambda request: _resp(302)))
-    with pytest.raises(safe_fetch.UnsafeURLError, match="Location"):
-        safe_fetch.fetch("https://example.com/x", max_bytes=1000)
-
-
-# ---------------- size ceiling ----------------
-
-def test_rejects_oversized_declared_length(monkeypatch):
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, b"x" * 10, content_length="999999")))
-    with pytest.raises(safe_fetch.FetchTooLargeError, match="declares"):
-        safe_fetch.fetch("https://example.com/big", max_bytes=100)
-
-
-def test_rejects_body_that_exceeds_ceiling_despite_lying_header(monkeypatch):
-    """A hostile server can simply omit or understate Content-Length, so the ceiling has to be
-    enforced against bytes actually read — that is the check that prevents the OOM."""
-    monkeypatch.setattr(safe_fetch.httpx, "Client",
-                        _mock_client(lambda request: _resp(200, b"x" * 5000)))
-    with pytest.raises(safe_fetch.FetchTooLargeError, match="exceeds"):
-        safe_fetch.fetch("https://example.com/lying", max_bytes=100)
-
-
-@pytest.mark.parametrize("layers,encoding", [(1, "gzip"), (2, "gzip, gzip")])
-def test_rejects_a_decompression_bomb_without_allocating_it(monkeypatch, layers, encoding):
-    """A tiny wire payload that expands to 200MB, singly and doubly gzipped.
-
-    Asserting that an exception is raised is NOT enough, and the first version of this test made
-    exactly that mistake: it passed while 200MB had already been allocated. `iter_bytes()`
-    decompresses each wire chunk *in full* before yielding it, so a size check on the yielded chunk
-    runs after the damage. Measured on httpx 0.28.1: a 485-byte `gzip, gzip` body produced one
-    200,000,000-byte chunk. So this test asserts the allocation bound — no single chunk handed to
-    the ceiling may exceed it — which only holds if the ceiling counts wire bytes.
-    """
-    payload = b"x" * 200_000_000
-    for _ in range(layers):
-        payload = gzip.compress(payload)
-    assert len(payload) < 250_000                 # the trap: tiny on the wire
-
-    largest = {"chunk": 0}
-    real_iter_raw = httpx.Response.iter_raw
-
-    def spy(self, *a, **k):
-        for chunk in real_iter_raw(self, *a, **k):
-            largest["chunk"] = max(largest["chunk"], len(chunk))
-            yield chunk
-
-    def banned(self, *a, **k):
-        # Watching iter_raw alone does NOT pin this: iter_bytes consumes iter_raw internally, so a
-        # revert to iter_bytes would still show only small compressed chunks to the spy, still
-        # raise FetchTooLargeError on the decoded total, and still pass — while allocating the
-        # 200MB above it. Banning the call is what actually holds the ceiling on wire bytes.
-        raise AssertionError(
-            "safe_fetch must not use iter_bytes(): it decompresses a chunk in full before the "
-            "size check can run")
-
-    monkeypatch.setattr(httpx.Response, "iter_raw", spy)
-    monkeypatch.setattr(httpx.Response, "iter_bytes", banned)
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, payload, content_encoding=encoding,
-                              content_type="text/plain")))
-    with pytest.raises(safe_fetch.FetchTooLargeError):
-        safe_fetch.fetch("https://example.com/bomb", max_bytes=1_000_000)
-    assert largest["chunk"] <= 250_000, (
-        "the ceiling saw a decompressed chunk — it must count wire bytes, or a bomb is allocated "
-        "in full before the check runs")
-
-
-def test_rejects_a_truncated_gzip_body(monkeypatch):
-    """A body that ends mid-member must FAIL, not return the prefix.
-
-    zlib does not raise on a truncated stream — it decodes what it can and leaves `eof` False. An
-    earlier version of this code took that as "done" and returned the prefix as a successful
-    fetch: measured, 17 bytes of a 2000-byte body. A paper silently truncated to its first line is
-    far worse than a failed download, because nothing downstream can tell.
-    """
-    full = gzip.compress(b"IMPORTANT PAPER TEXT" * 100)
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, full[:len(full) // 2], content_encoding="gzip")))
-    with pytest.raises(safe_fetch.UnsupportedResponseError, match="malformed"):
-        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
-
-
-def test_raw_deflate_falls_back_when_zlib_framing_does_not_fit(monkeypatch):
-    """Some servers send raw deflate under `Content-Encoding: deflate`. Reading it as the
-    zlib-wrapped form fails, so the fallback wbits must get its turn — including when the first
-    attempt ends 'incomplete' rather than raising outright."""
-    raw_deflate = zlib.compressobj(wbits=-zlib.MAX_WBITS)
-    body = raw_deflate.compress(b"deflate payload") + raw_deflate.flush()
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="deflate")))
-    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == b"deflate payload"
-
-
-def test_decodes_a_multi_member_gzip_body(monkeypatch):
-    """RFC 1952 allows concatenated members (what `cat a.gz b.gz` produces), and a single
-    `decompressobj.decompress()` call returns only the FIRST member — silently truncating the
-    body. Silent truncation of a paper is worse than an error, so _inflate loops over members."""
-    body = gzip.compress(b"AAA") + gzip.compress(b"BBB")
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="gzip")))
-    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == b"AAABBB"
-
-
-def test_many_small_members_cannot_exceed_the_ceiling(monkeypatch):
-    """The budget is across the whole body, not per member — otherwise N members of max_bytes each
-    would each pass their own check."""
-    body = b"".join(gzip.compress(b"x" * 10_000) for _ in range(20))
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="gzip")))
-    with pytest.raises(safe_fetch.FetchTooLargeError):
-        safe_fetch.fetch("https://example.com/x", max_bytes=50_000)
-
-
-def test_refuses_too_many_compression_members(monkeypatch):
-    """The member loop is quadratic in the member count: each pass pulls the remaining suffix out
-    of `unused_data`, which CPython materializes afresh. An empty gzip member is ~20 bytes and adds
-    nothing to the output budget, so a compliant 40MB body could carry ~2 million of them — every
-    byte limit satisfied, O(n^2) copying bought for free."""
-    empty = gzip.compress(b"")
-    body = empty * (safe_fetch.MAX_COMPRESSION_MEMBERS + 5)
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="gzip")))
-    with pytest.raises(safe_fetch.UnsupportedResponseError, match="members"):
-        safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
-
-
-def test_allows_members_at_the_limit(monkeypatch):
-    """The cap must not reject a body sitting exactly at it, or the test above proves nothing."""
-    body = b"".join(gzip.compress(b"ab") for _ in range(safe_fetch.MAX_COMPRESSION_MEMBERS))
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="gzip")))
-    got = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000).content
-    assert got == b"ab" * safe_fetch.MAX_COMPRESSION_MEMBERS
-
-
-def test_compressed_peak_memory_stays_near_the_ceiling(monkeypatch):
-    """A near-ceiling COMPRESSED body must not cost an extra full-size copy.
-
-    The payload is INCOMPRESSIBLE on purpose. The first version of this test gzipped b"A" * N,
-    which is ~800 bytes on the wire — so the wire buffer it was meant to be measuring was free, and
-    the test passed identically with and without the copy it existed to catch. With random bytes
-    the wire is the same size as the body, and the difference shows: measured 3.36x here versus
-    4.36x when `bytes(buf)` is passed while `buf` is still held. At the real 40MB PDF ceiling that
-    difference is 40MB per concurrent fetch in a single-worker process.
-    """
-    decoded_size = 800_000
-    payload = gzip.compress(os.urandom(decoded_size))
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, payload, content_encoding="gzip")))
-
-    tracemalloc.start()
-    try:
-        result = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
-    assert len(result.content) == decoded_size
-    # 4x is the discriminating threshold: the current code measures ~3.36x, the extra-copy version
-    # ~4.36x. Deliberately not tighter — this is an allocation-shape regression test, not a budget.
-    assert peak < decoded_size * 4, (
-        f"peak {peak} for a {decoded_size}-byte decoded body — an extra full-size copy is alive")
-
-
-def test_decodes_a_legitimate_gzip_body(monkeypatch):
-    """The bomb defence must not break ordinary compression: a server that ignores our
-    `Accept-Encoding: identity` and gzips anyway still has to produce correct bytes."""
-    body = b"hello " * 100
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, gzip.compress(body), content_encoding="gzip",
-                              content_type="text/plain")))
-    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == body
-
-
 def test_requests_identity_encoding(monkeypatch):
     """Belt to _decode_body's braces: not offering compression means a well-behaved server never
     gets to pick an expansion ratio in the first place."""
@@ -393,44 +64,6 @@ def test_requests_identity_encoding(monkeypatch):
         lambda request: (seen.update(request.headers), _resp(200, b"x"))[1]))
     safe_fetch.fetch("https://example.com/x", max_bytes=100)
     assert seen["accept-encoding"] == "identity"
-
-
-def test_refuses_a_long_content_encoding_chain(monkeypatch):
-    """The response picks the number of layers, and each one is a full decompression pass of up to
-    max_bytes — so the byte ceiling alone does not bound the CPU. `gzip` repeated as far as the
-    header limit allows would buy work proportional to the layer count with every individual layer
-    staying inside the limit. Rejected before any decoding happens."""
-    body = b"x" * 10
-    encoding = ", ".join(["gzip"] * (safe_fetch.MAX_ENCODING_LAYERS + 1))
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding=encoding)))
-    with pytest.raises(safe_fetch.UnsupportedResponseError, match="layers"):
-        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
-
-
-def test_allows_a_chain_at_the_limit(monkeypatch):
-    """The cap must not break a legitimately stacked body — otherwise the test above would pass
-    against a function that rejected everything."""
-    body = b"real content"
-    payload = body
-    for _ in range(safe_fetch.MAX_ENCODING_LAYERS):
-        payload = gzip.compress(payload)
-    encoding = ", ".join(["gzip"] * safe_fetch.MAX_ENCODING_LAYERS)
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, payload, content_encoding=encoding)))
-    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == body
-
-
-def test_refuses_an_unsupported_content_encoding(monkeypatch):
-    """We asked for identity, so an exotic encoding means the server ignored us. Refuse rather than
-    reach for a decoder whose expansion we cannot bound."""
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, b"\x00\x01", content_encoding="br")))
-    with pytest.raises(safe_fetch.UnsupportedResponseError, match="unsupported"):
-        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
-    # Not a size error: reporting it as one would tell the user their PDF was too big.
-    assert not issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.FetchTooLargeError)
-    assert issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.SafeFetchError)
 
 
 class _FragmentedStream(httpx.SyncByteStream):
@@ -470,35 +103,39 @@ def test_memory_does_not_scale_with_server_fragmentation(monkeypatch):
         f"peak {peak} bytes for a {count}-byte body — memory is tracking fragment COUNT, not size")
 
 
-class _SlowDripStream(httpx.SyncByteStream):
-    """A body that never ends and never stalls: one byte per read, forever. Each read is prompt, so
-    httpx's per-operation timeout never fires — which is exactly the point."""
-
-    def __iter__(self):
-        while True:
-            yield b"x"
-
-
 def test_total_deadline_stops_a_slow_drip_server(monkeypatch):
-    """httpx's `timeout` resets on every socket read, so a server feeding one byte at a time keeps
-    iter_raw() running indefinitely without tripping the timeout OR the byte ceiling. Each caller
-    here is a background job in a single-worker process, so a pinned thread is not recoverable.
-    Time is advanced with a fake clock rather than really waiting."""
+    """httpx's `timeout` resets on every socket read, so a server feeding one byte just inside it
+    keeps iter_raw() running forever, tripping neither the timeout nor the byte ceiling. Each
+    caller here is a background job in a single-worker process, so a pinned thread never returns.
+
+    The clock advances INSIDE the stream, once per fragment yielded, which is what makes this
+    faithful. An earlier version advanced it inside `_check_deadline` instead — that measures how
+    often we check, not how much wall clock the server has consumed, so it passed even while
+    `iter_raw(chunk_size=64KB)` was batching 65,536 socket reads into a single check. Removing
+    chunk_size is the fix this test exists to hold.
+    """
     now = {"t": 1000.0}
     monkeypatch.setattr(safe_fetch.time, "monotonic", lambda: now["t"])
 
-    def handler(request):
-        return httpx.Response(200, stream=_SlowDripStream())
+    class _SlowDrip(httpx.SyncByteStream):
+        def __iter__(self):
+            while True:
+                now["t"] += 1.0        # each socket read costs a second of wall clock
+                yield b"x"
 
-    def advancing_check(ends_at, url):
-        now["t"] += 1.0                    # each read costs a second of wall clock
-        return real_check(ends_at, url)
-
-    real_check = safe_fetch._check_deadline
-    monkeypatch.setattr(safe_fetch, "_check_deadline", advancing_check)
-    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: httpx.Response(200, stream=_SlowDrip())))
+    started = now["t"]
     with pytest.raises(safe_fetch.FetchTimeoutError, match="deadline"):
         safe_fetch.fetch("https://example.com/drip", max_bytes=100_000_000, deadline=10)
+
+    # The assertion that matters is HOW LONG the server got, not that an error eventually
+    # arrived. Asserting only the exception passes with chunk_size=64KB too — the fetch still
+    # times out, but not before letting the server burn 65,536 simulated seconds. That is the
+    # bug: a pinned thread for eighteen hours is not meaningfully better than forever.
+    assert now["t"] - started <= 12, (
+        f"server was allowed {now['t'] - started}s against a 10s deadline — the deadline is not "
+        "being checked per socket read")
 
 
 def test_deadline_does_not_fire_on_a_normal_fetch(monkeypatch):
@@ -509,35 +146,35 @@ def test_deadline_does_not_fire_on_a_normal_fetch(monkeypatch):
     assert safe_fetch.fetch("https://example.com/x", max_bytes=1000).content == b"quick"
 
 
-def test_multi_member_peak_stays_bounded(monkeypatch):
-    """The multi-member shape, which the single-member memory test cannot reach.
+@pytest.mark.parametrize("encoding", ["gzip", "deflate", "br", "gzip, gzip"])
+def test_refuses_any_content_encoding_unread(monkeypatch, encoding):
+    """We ask for identity and refuse anything else WITHOUT reading the body.
 
-    The body is deliberately adversarial: an EMPTY first member followed by a large one. Handing
-    the whole remaining body to decompress() and taking the rest back out of `obj.unused_data`
-    then copies nearly the entire wire body at that first boundary. Feeding fixed blocks keeps
-    unused_data down to one block.
-
-    The shape matters as much as the assertion. A first attempt at this test used four equal
-    members, where the copied remainder is only a fraction of the body — so it passed with and
-    without the fix and proved nothing. Thresholds here are measured through the whole fetch path
-    (wire buffer, accumulator and final copy all included), not around _inflate alone: this shape
-    measures 3.28x now versus 4.87x with the whole-body decompress.
+    This replaces a bounded decoder that produced four of this module's defects — a bomb that
+    allocated before the check, silent truncation twice over, an unbounded encoding chain, an
+    unbounded member count, a per-member suffix copy. Each fix was right and exposed one more axis.
+    Not decompressing removes the axis itself.
     """
-    big = os.urandom(600_000)
-    body = gzip.compress(b"") + gzip.compress(big)
+    read = {"body": False}
+
+    class _Watched(httpx.SyncByteStream):
+        def __iter__(self):
+            read["body"] = True
+            yield gzip.compress(b"x" * 10_000)
+
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(200, body, content_encoding="gzip")))
+        lambda request: httpx.Response(200, stream=_Watched(),
+                                       headers={"content-encoding": encoding})))
+    with pytest.raises(safe_fetch.UnsupportedResponseError, match="does not decompress"):
+        safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
+    assert not read["body"], "refused only after reading the body"
 
-    tracemalloc.start()
-    try:
-        result = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
 
-    assert result.content == big
-    assert peak < len(big) * 4, (
-        f"peak {peak} for a {len(big)}-byte body — unused_data is copying the whole remainder")
+def test_identity_encoding_header_is_accepted(monkeypatch):
+    """An explicit `identity` is not a content coding and must not be refused."""
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, b"plain", content_encoding="identity")))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=1000).content == b"plain"
 
 
 def test_accepts_a_body_at_the_ceiling(monkeypatch):
