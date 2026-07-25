@@ -7,6 +7,8 @@ happened to raise the error they asserted.
 """
 from __future__ import annotations
 
+import gzip
+
 import httpx
 import pytest
 from app import safe_fetch
@@ -184,6 +186,23 @@ def test_rejects_body_that_exceeds_ceiling_despite_lying_header(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
     with pytest.raises(safe_fetch.FetchTooLargeError, match="exceeds"):
         safe_fetch.fetch("https://example.com/lying", max_bytes=100)
+
+
+def test_rejects_a_decompression_bomb(monkeypatch):
+    """A ~48KB gzip payload that expands to 50MB. The ceiling has to be enforced on DECOMPRESSED
+    bytes to catch this, which is why the loop counts `iter_bytes()` (decoded) rather than
+    `iter_raw()` (wire bytes) — counting the wire would let this through on both the
+    Content-Length check and the streaming check."""
+    bomb = gzip.compress(b"x" * 50_000_000)
+    assert len(bomb) < 100_000                    # the trap: tiny on the wire
+
+    def handler(request):
+        return httpx.Response(200, content=bomb,
+                              headers={"content-encoding": "gzip", "content-type": "text/plain"})
+
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    with pytest.raises(safe_fetch.FetchTooLargeError):
+        safe_fetch.fetch("https://example.com/bomb", max_bytes=1_000_000)
 
 
 def test_accepts_a_body_at_the_ceiling(monkeypatch):
