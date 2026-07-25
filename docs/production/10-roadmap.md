@@ -13,7 +13,7 @@ before execution.
 
 ## Current position (updated 2026-07-25)
 
-**In M1.** Plan merged (#217). M1 is being delivered as three PRs.
+**In M1.** Plan merged (#217). All three M1 PRs are merged; what remains of M1 is the API-36 spike and the production Fly app + secrets.
 
 | PR | Scope | Status |
 |---|---|---|
