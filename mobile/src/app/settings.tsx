@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
+import { useAuth } from '@/auth/AuthProvider';
 import {
   useFavoriteModels,
   usePrompts,
@@ -100,6 +101,7 @@ export default function SettingsScreen() {
     setDensity,
   } = useThemeMode();
   const { toast } = useToast();
+  const { status: authStatus, email: authEmail, signOut } = useAuth();
   function handleThemeMode(mode: ThemeMode) {
     if (mode === themeMode) return;
     setThemeMode(mode);
@@ -192,6 +194,15 @@ export default function SettingsScreen() {
               style={{ marginTop: space.sm }}
             />
           </Section>
+
+          {authStatus === 'signed-in' ? (
+            <Section title="Account">
+              <Text variant="body" color={t.muted} style={{ marginBottom: space.md }}>
+                {authEmail ? `Signed in as ${authEmail}.` : 'Signed in.'}
+              </Text>
+              <Button title="Sign out" onPress={() => { void signOut(); }} />
+            </Section>
+          ) : null}
 
           {!hasBaseUrl() ? (
             <>

@@ -10,6 +10,7 @@ import type { ReactTestInstance } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/settings';
 import * as queries from '@/api/queries';
+import { AuthProvider } from '@/auth/AuthProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
@@ -56,6 +57,8 @@ const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTi
 function renderScreen() {
   return renderAsync(
     <QueryClientProvider client={client}>
+      {/* Settings shows a sign-out control, so the screen now needs the auth context. */}
+      <AuthProvider>
       <ThemeProvider>
         <ToastProvider>
           <ProjectProvider>
@@ -67,6 +70,7 @@ function renderScreen() {
           </ProjectProvider>
         </ToastProvider>
       </ThemeProvider>
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }

@@ -41,6 +41,8 @@ import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
+import { AuthProvider } from '@/auth/AuthProvider';
+import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
@@ -165,6 +167,7 @@ export default function RootLayout() {
         <ToastProvider>
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
+            <AuthProvider>
             <ProjectProvider>
               <ListeningProvider>
                 <GraphSettingsProvider>
@@ -177,13 +180,18 @@ export default function RootLayout() {
                     still paints confirmations above portalled sheets. */}
                 <BottomSheetModalProvider>
                 <PaperEntityProvider>
-                <ThemedShell />
+                {/* Gate as deep as possible: everything above supplies theme/toast/query that
+                    the sign-in screen itself needs, and everything below assumes a usable API. */}
+                <AuthGate>
+                  <ThemedShell />
+                </AuthGate>
                 </PaperEntityProvider>
                 </BottomSheetModalProvider>
                 </AudioProvider>
                 </GraphSettingsProvider>
               </ListeningProvider>
             </ProjectProvider>
+            </AuthProvider>
           </QueryClientProvider>
         </KeyboardProvider>
         </ToastProvider>
