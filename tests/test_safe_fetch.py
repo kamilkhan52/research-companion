@@ -82,6 +82,10 @@ def _resp(status: int, body: bytes = b"", **headers: str) -> httpx.Response:
     "64:ff9b::a9fe:a9fe",       # NAT64 wrapping 169.254.169.254 (cloud metadata)
     "64:ff9b::a00:1",           # NAT64 wrapping 10.0.0.1
     "2002:7f00:1::1",           # 6to4 wrapping 127.0.0.1
+    # Reserved IPv6. `is_global` reports these as public too — the third category lost when the
+    # per-range enumeration was swapped out for is_global rather than combined with it.
+    "4000::1",
+    "200::1",
 ])
 def test_refuses_non_public_addresses(fake_dns, ip):
     fake_dns["evil.example"] = ip
@@ -246,6 +250,50 @@ def test_checks_every_resolved_address(monkeypatch):
     ])
     with pytest.raises(safe_fetch.UnsafeURLError):
         safe_fetch.assert_public_url("https://split.example/x")
+
+
+def test_guard_is_at_least_as_strict_as_the_enumeration_it_replaced():
+    """The property, rather than another individual range.
+
+    Swapping the old per-range enumeration for `is_global` traded one set of gaps for another, and
+    the replacements were found one at a time across three review rounds: multicast, then
+    NAT64-wrapped IPv4, then reserved IPv6. Each was fixed and each time the guard looked complete.
+    So assert the invariant instead: nothing the old enumeration refused may be accepted now.
+
+    Sampled rather than exhaustive — the point is that a future edit narrowing `_is_public` fails
+    here regardless of WHICH range it loses, which is what enumerating cases cannot give.
+    """
+    import ipaddress
+    import random
+
+    def old_enumeration_allows(addr):
+        return not (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+                    or addr.is_multicast or addr.is_unspecified)
+
+    rng = random.Random(20260725)                      # fixed seed: reproducible failures
+    sample = [ipaddress.IPv4Address(f"{octet}.0.0.1") for octet in range(256)]
+    sample += [ipaddress.IPv6Address((high << 120) | 1) for high in range(256)]
+    sample += [ipaddress.IPv4Address(rng.getrandbits(32)) for _ in range(20_000)]
+    sample += [ipaddress.IPv6Address(rng.getrandbits(128)) for _ in range(20_000)]
+
+    # One deliberate exception: the old enumeration refused the NAT64/6to4 wrapper prefixes
+    # wholesale because the prefixes are reserved. The current guard is more precise — it judges
+    # the IPv4 address inside — so a wrapper around a PUBLIC address is now allowed on purpose.
+    # Wrappers around private addresses are still refused, which the parametrized cases above pin.
+    leaked = [str(a) for a in sample
+              if not old_enumeration_allows(a)
+              and not safe_fetch._embedded_ipv4(a)
+              and safe_fetch._is_public(a)]
+    assert not leaked, f"accepted addresses the previous guard refused: {sorted(set(leaked))[:10]}"
+
+
+def test_public_internet_is_still_reachable():
+    """The other half: requiring BOTH tests must not block ordinary destinations, or the invariant
+    above would be satisfied by a function that refuses everything."""
+    import ipaddress
+    for addr in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111",
+                 "2001:4860:4860::8888"]:
+        assert safe_fetch._is_public(ipaddress.ip_address(addr)), addr
 
 
 # ---------------- redirect handling ----------------

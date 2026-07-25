@@ -131,6 +131,32 @@ class FetchResult:
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 
 
+def _is_public(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether `addr` is a public internet destination — the UNION of two tests, deliberately.
+
+    `is_global` alone is not enough: it reports multicast (224.0.0.1, ff02::1) and reserved IPv6
+    (4000::/3, 200::/7) as public. The old per-range enumeration alone was not enough either: it
+    missed 100.64.0.0/10, the carrier-grade-NAT block Tailscale uses. This module replaced the
+    enumeration WITH is_global and so traded one set of gaps for another — three separate review
+    findings, each a different range, each fixed one at a time.
+
+    Requiring both ends that. Anything either test calls non-public is refused, so the guard can
+    only ever be tightened by a stdlib change, never loosened, and no future range has to be
+    rediscovered by whoever reads this next.
+    """
+    embedded = _embedded_ipv4(addr)
+    if embedded:
+        # A wrapper is judged by what it WRAPS. The wrapper prefixes are themselves reserved
+        # (64:ff9b::/96, 2002::/16), so testing the outer address would refuse NAT64 wholesale —
+        # including the legitimate case of a v6-only network reaching the v4 internet. The
+        # destination that matters is the address a gateway will deliver to.
+        return all(_is_public(inner) for inner in embedded)
+    if not addr.is_global:
+        return False
+    return not (addr.is_multicast or addr.is_reserved or addr.is_private
+                or addr.is_loopback or addr.is_link_local or addr.is_unspecified)
+
+
 def _embedded_ipv4(addr: ipaddress.IPv4Address | ipaddress.IPv6Address
                    ) -> list[ipaddress.IPv4Address]:
     """Any IPv4 addresses reachable *through* an IPv6 address.
@@ -223,10 +249,10 @@ def assert_public_url(url: str) -> None:
         # both report is_global True. The enumeration this replaced did check is_multicast, so
         # dropping it made the guard narrower on that one axis while the docstring claimed the
         # opposite. No practical TCP target, but "public destinations only" should mean it.
-        for candidate in (ip, *_embedded_ipv4(ip)):
-            if not candidate.is_global or candidate.is_multicast:
-                raise UnsafeURLError(
-                    f"refusing to fetch non-public address {candidate} (host {host})")
+        if not _is_public(ip):
+            inner = ", ".join(str(v) for v in _embedded_ipv4(ip))
+            detail = f"{ip} (wrapping {inner})" if inner else str(ip)
+            raise UnsafeURLError(f"refusing to fetch non-public address {detail} (host {host})")
 
 
 def fetch(url: str, *, max_bytes: int, timeout: float = 60,
