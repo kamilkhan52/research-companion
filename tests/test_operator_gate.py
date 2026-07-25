@@ -68,7 +68,7 @@ def test_settings_writes_refused_for_non_operators(user):
 def test_settings_reads_stay_open(monkeypatch):
     """Reading is deliberately NOT gated — keys come back as 6-char hints, never in full — and the
     clients need it to render Settings at all. Gating it would break the app for everyone."""
-    out = settings_router.read_settings()
+    out = settings_router.read_settings(_Request())
     assert "key_hint" in out
     assert "openrouter_api_key" not in out
 
@@ -83,6 +83,29 @@ def test_settings_writes_allowed_for_the_operator(monkeypatch):
         _Request({"user_id": "op-uuid"}))
     assert seen.get("model") == "deepseek/deepseek-v4-flash"
     assert out["model"] == "deepseek/deepseek-v4-flash"
+
+
+def test_reset_allowed_for_the_operator(monkeypatch):
+    """Paired with the refusal test for the SAME route. Without this the suite passes even if
+    reset lets the operator past the gate and then refuses the operation anyway — the refusal test
+    alone cannot tell "gated correctly" from "broken for everyone"."""
+    monkeypatch.setenv("RC_OPERATOR_USERS", "op-uuid")
+    calls = {}
+    monkeypatch.setattr(settings_router.prompts, "reset", lambda key: calls.update(key=key))
+    monkeypatch.setattr(settings_router.prompts, "get", lambda key: "default text")
+    monkeypatch.setattr(settings_router.prompts, "is_overridden", lambda key: False)
+    out = settings_router.reset_prompt(
+        settings_router.PromptReq(key="reading_method"), _Request({"user_id": "op-uuid"}))
+    assert calls == {"key": "reading_method"}
+    assert out["is_overridden"] is False
+
+
+def test_read_settings_reports_operator_status(monkeypatch):
+    """Clients need to know BEFORE they render an editable form. Without this they show controls to
+    every reader and only discover the restriction on submit."""
+    monkeypatch.setenv("RC_OPERATOR_USERS", "op-uuid")
+    assert settings_router.read_settings(_Request({"user_id": "op-uuid"}))["is_operator"] is True
+    assert settings_router.read_settings(_Request({"user_id": "reader"}))["is_operator"] is False
 
 
 def test_prompt_writes_allowed_for_the_operator(monkeypatch, tmp_path):

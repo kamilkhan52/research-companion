@@ -41,7 +41,7 @@ export function Settings({ onClose }: Props) {
       if (cancelled) return;
       setData(settings); setModel(settings.model || ''); setNarrationModel(settings.narration_model || '');
       setPreviewModel(settings.preview_model || ''); setSpeechProvider(settings.speech_provider || 'openai'); setVoice(settings.tts_voice || 'alloy');
-      setTtsModel(settings.tts_model || 'gpt-4o-mini-tts');
+      setTtsModel(settings.tts_model || 'tts-1-hd');
       setPriorNotesScope(settings.prior_notes_scope || 'related');
       setAutoplay(localStorage.getItem('rc_autoplay') === '1');
     }).catch((caught) => { if (!cancelled) setLoadError(caught instanceof Error ? caught.message : 'Failed to load settings');
@@ -64,9 +64,12 @@ export function Settings({ onClose }: Props) {
     if (openaiKey) patch.openai_api_key = openaiKey;
     if (parallelKey) patch.parallel_api_key = parallelKey;
     if (firecrawlKey) patch.firecrawl_api_key = firecrawlKey;
+    // Device-local preference first: it belongs to this browser, not to the instance, so it must
+    // survive the shared-settings POST being refused. A reader who is not the operator gets a 403
+    // below, and before this ordering that silently discarded their autoplay choice too.
+    localStorage.setItem('rc_autoplay', autoplay ? '1' : '0');
     try {
       await apiPost('/api/settings', patch);
-      localStorage.setItem('rc_autoplay', autoplay ? '1' : '0');
       setOpenrouterKey(''); setOpenaiKey(''); setParallelKey(''); setFirecrawlKey(''); setMessage('Saved.');
     } catch (caught) { setMessage(caught instanceof Error ? caught.message : 'Save failed');
     } finally { setSaving(false); }

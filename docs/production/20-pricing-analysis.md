@@ -426,7 +426,7 @@ These are prerequisites, not nice-to-haves. In priority order:
    enforced and neither tier can ship.
 
 8. **Nothing enforces a model.** Both tiers are defined as DeepSeek-only, but the model is a
-   user-editable setting (`app/routers/catalogue.py` `FAVORITE_FAMILIES`, Settings UI). A tier
+   user-editable setting (`app/routers/catalogue.py` `FAVORITE_FAMILIES`, per-turn model override (`DeliveryReq.model`)). A tier
    must pin the allowed model server-side; today a Basic user could select `claude-opus-4.6`
    (ledger: $0.44 for a single call) and burn a month's revenue in twenty turns.
 

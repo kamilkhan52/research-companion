@@ -212,9 +212,12 @@ Unaffected, deliberately: the per-session **starting prompt** a reader edits bef
 That travels on the turn (`ChatStartReq.prompt`) and never touches the prompt registry, so it stays
 a normal user feature.
 
-**Still open, same shape:** `POST /api/settings` (P0-2) accepts writes from any authenticated user
-and rewrites the shared provider keys and model choice for everyone. The gate is now one line to
-apply — it was left alone only because the decision was about prompts. Worth doing before testers.
+**`POST /api/settings` is gated the same way** (P0-2, closed 2026-07-25). So the operator role now
+covers BOTH the system prompts and the instance's shared provider keys and model choice — more
+authority than "prompt editing" implies, which is why the role is named operator rather than
+prompt-editor. Reading settings stays open to everyone (keys return as 6-char hints), and
+`GET /api/settings` reports `is_operator` so clients can render shared controls read-only instead
+of failing on submit.
 
 ### H7 — RevenueCat account and project · `todo`
 Create the account and project, connect the Play app.

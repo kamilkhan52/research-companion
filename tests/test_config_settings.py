@@ -44,7 +44,7 @@ def test_settings_api_preserves_dynamic_preview_fallback_and_clears_override(
 ):
     monkeypatch.setitem(config._ENV_DEFAULTS, "preview_model", "")
     monkeypatch.setitem(config._ENV_DEFAULTS, "narration_model", "narration/default")
-    assert settings_routes.read_settings()["preview_model"] == ""
+    assert settings_routes.read_settings(_OperatorRequest())["preview_model"] == ""
 
     first = settings_routes.write_settings(
         settings_routes.SettingsReq(narration_model="narration/one"), _OperatorRequest()
@@ -101,7 +101,7 @@ def test_semantic_scholar_key_roundtrips_and_api_only_returns_a_hint(settings_fi
     assert written["has_semantic_scholar_key"] is True
     assert config.load_settings()["semantic_scholar_api_key"] == "s2-private-value"
 
-    public = settings_routes.read_settings()
+    public = settings_routes.read_settings(_OperatorRequest())
     assert public["has_semantic_scholar_key"] is True
     assert public["semantic_scholar_key_hint"] == "s2-pri…"
     assert "s2-private-value" not in public.values()
