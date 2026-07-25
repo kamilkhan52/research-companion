@@ -122,8 +122,11 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   drops the in-memory job registries and kills any in-flight background job (invariants 1/6), so
   don't save mid-job when you care about the result. Leave it **off** for the tunnel deployment.
 - **Second instance for verification** (don't disturb the live server): `.env` pins `RC_PORT`
-  and `run.sh` exports `.env` last, so bypass it — `.venv/bin/uvicorn app.main:app --host
-  127.0.0.1 --port 8901`.
+  and `run.sh` exports `.env` last, so bypass it — `RC_ENV=dev .venv/bin/uvicorn app.main:app
+  --host 127.0.0.1 --port 8901`. **`RC_ENV` is now required** and bypassing `run.sh` bypasses the
+  default it sets, so a bare `uvicorn` invocation refuses to start. That is deliberate: an unset
+  `RC_ENV` used to mean "dev", which would let a deployed container that lost its environment boot
+  with authentication disabled. See "Environments" below.
 - **Tests:** `.venv/bin/python -m pytest -q`. The suite is network-free (extraction/citations
   are injected fakes; see `tests/conftest.py`) — keep it that way.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
@@ -165,6 +168,35 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `tailscale serve` can upgrade this to a real https URL. The Metro `exp://` tunnel is still
   per-session, so a device test = restart `./run.sh`, start the Metro tunnel, reload — the
   backend URL takes care of itself on-tailnet.
+
+## Environments and deployment (M1 onward)
+
+`RC_ENV` ∈ `dev | staging | prod` and is **required** — unset is refused at startup rather than
+defaulting to `dev`. The whole gating design assumes the dangerous configuration is *absence*, not
+a wrong value: `auth.mode()` falls back to `open` when no auth variable is set, and an unset
+allowlist would mean "everyone", so forgetting one variable must fail closed. `run.sh` and
+`tests/conftest.py` set `RC_ENV=dev`; the Dockerfile defaults the image to `prod` so a container
+can never accidentally be dev.
+
+In `staging`/`prod`, `app.auth.assert_environment_safe()` (called from `main` at import) refuses to
+start unless: auth mode is Supabase, `RC_SUPABASE_ANON_KEY` is set (URL alone reports "supabase"
+but leaves clients unable to sign in), `RC_AUTH_TOKEN` is unset, `RC_DEV` is off, and
+`RC_ALLOWED_USERS` lists at least one user. The allowlist is the interim gate until per-user
+ownership lands — Supabase sign-up is self-service, so authentication alone does not restrict who
+reaches this single-tenant instance. A valid user who is not allowlisted gets **403**, not 401.
+
+**Deployment** is Fly.io: `fly.toml` (production, app `research-companion`) and `fly.staging.toml`
+(`research-companion-staging`), one machine each with a persistent volume at `/data` holding
+`projects/` and `.app-state/`. Deploy with `flyctl deploy -c fly.staging.toml --remote-only --yes`
+(remote builder — the local Docker daemon is usually not running). Secrets via `flyctl secrets set`,
+never in the repo.
+
+Two Fly settings are correctness, not tuning: `auto_stop_machines = "off"` with
+`min_machines_running = 1` (Fly's default stops idle machines, which would kill background jobs —
+invariant 1), and exactly one machine (invariant 6). **A deploy still stops the machine**, so
+in-flight jobs die: until the drain hook lands with M6, check for active jobs before deploying.
+
+The full production plan is `docs/production/` — `10-roadmap.md` is the live ledger.
 
 ## Conventions
 
