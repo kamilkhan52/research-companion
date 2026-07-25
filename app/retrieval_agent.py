@@ -19,7 +19,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
 
-from . import agent_harness, prompts, research_tools, retriever
+from . import agent_harness, prompts, research_tools, retriever, safe_fetch
 
 HUNT_MAX_PDF_BYTES = 40_000_000
 
@@ -31,18 +31,23 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
     def fetch_pdf(url: str) -> str:
         """Download a candidate URL and try to extract paper text from it as a PDF. Returns
         'SUCCESS ...' when the paper text was extracted (then stop), else a failure reason."""
+        # The url here comes from an LLM acting on untrusted web-search results, so it is exactly
+        # the "URL the app did not choose" case safe_fetch exists for. Every failure is returned as
+        # a string rather than raised: the model reads it and tries the next candidate.
         try:
-            research_tools._assert_public_url(url)
-        except research_tools.ToolError as e:
+            data = safe_fetch.fetch(
+                url, max_bytes=HUNT_MAX_PDF_BYTES, timeout=60,
+                headers={"User-Agent": "Mozilla/5.0"}).content
+        except safe_fetch.UnsafeURLError as e:
             return f"Refused: {e}"
-        try:
-            with httpx.Client(timeout=60, follow_redirects=True) as client:
-                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        except safe_fetch.FetchTooLargeError as e:
+            return f"Download failed: {e}"
+        except safe_fetch.SafeFetchError as e:
+            return f"Download refused: {e}"
+        except httpx.HTTPStatusError as e:
+            return f"Download failed: HTTP {e.response.status_code}"
         except httpx.HTTPError as e:
             return f"Download failed: {str(e)[:120]}"
-        if resp.status_code != 200:
-            return f"Download failed: HTTP {resp.status_code}"
-        data = resp.content[:HUNT_MAX_PDF_BYTES]
         if not data.startswith(b"%PDF"):
             return "Not a PDF (wrong content — find a direct PDF link)"
         try:

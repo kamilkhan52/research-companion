@@ -18,8 +18,35 @@ before execution.
 | PR | Scope | Status |
 |---|---|---|
 | #218 | Dockerfile, `.dockerignore`, `fly.toml`, `fly.staging.toml`, staging deploy | ✅ merged to `main` |
-| #219 | `RC_ENV` gating, auth hard-fail, user allowlist | open; Sol round 1 applied (`04bc9c6`), round 2 blocked on an OpenAI/codex 503 outage |
-| PR 3 | Hardened outbound-fetch helper (P0-14) | not started |
+| #219 | `RC_ENV` gating, auth hard-fail, user allowlist | ✅ merged to `main` (`9cace9f`) |
+| PR 3 | Hardened outbound-fetch helper — `app/safe_fetch.py` (P0-14) | open; 13 Sol rounds, 25 defects fixed |
+
+**PR 3 is worth reading the commit history of.** Twenty-five defects across thirteen review rounds,
+and essentially all of them were in the fix rather than in the code it replaced. Three patterns, all
+worth carrying into M2:
+
+1. *Fixing a class of bug one layer down from where it was fixed.* Unvalidated redirects were closed
+   in `safe_fetch`, then reintroduced in a hand-rolled arXiv streamer. Silent truncation was closed
+   for multi-member gzip, then reappeared for truncated streams and again for close-delimited EOF.
+   The lesson that stuck: route through the one guarded path instead of writing a second one.
+2. *Tests that pass for the wrong reason.* A decompression-bomb test passed while 200MB was
+   allocated; a memory test gzipped compressible data so the buffer it measured was free; a deadline
+   test asserted an error that fired either way. Each looked green. The habit that caught them is
+   reverting the fix and requiring the test to go red — and verifying the revert actually applied.
+3. *Absence is invisible to a green suite.* A regex cleanup silently deleted 27 tests, including
+   every SSRF regression test, and the suite stayed green for two commits under a section header
+   with nothing beneath it. Bulk edits to tests now get a before/after count.
+
+The decoder that caused most of this was ultimately **deleted** rather than bounded a fifth time:
+the client sends `Accept-Encoding: identity` and refuses any content coding unread.
+
+**Review note on #219:** it had one Sol round (applied as `04bc9c6`) plus a self-review pass, not
+two Sol rounds — codex was in a provider-wide 503 outage (`biscuit_baker_service_me_circuit_open`)
+and the loop's fallback reviewers run as subagents, which are not spawned unprompted. The
+self-review found three real issues (duplicated `RC_DEV` truthiness rule between
+`auth.assert_environment_safe` and `config.dev_mode`, a stale "Default dev" claim in
+`.env.example`, and a `setdefault` in `conftest.py` that let a developer's shell break the suite).
+If codex recovers, re-running a round against `main` costs nothing.
 
 **Live:** `research-companion-staging.fly.dev` — `RC_ENV=staging`, Supabase auth enforcing,
 allowlist = Kamil's UUID only, **no provider API keys** (so nothing can spend). Volume `rc_data_staging`

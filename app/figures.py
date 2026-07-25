@@ -201,8 +201,12 @@ def _resolves_public(url: str) -> bool | None:
             ip = ipaddress.ip_address(raw)
         except ValueError:
             return False
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                or ip.is_multicast or ip.is_unspecified):
+        # `is_global` rather than an enumeration of private ranges: the enumerated form (which
+        # this was) misses 100.64.0.0/10, the carrier-grade-NAT block that Tailscale uses, so a
+        # tailnet peer would read as public. Not reachable here — _host_allowed already pins the
+        # host to arxiv/ar5iv — but the same test lives in app/safe_fetch.py and the two must not
+        # disagree, or the next person copies whichever they find first.
+        if not ip.is_global:
             return False
     return True
 

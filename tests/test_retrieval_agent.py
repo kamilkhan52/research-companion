@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 
-from app import retrieval_agent, retriever
+import httpx
+import pytest
+from app import retrieval_agent, retriever, safe_fetch
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -20,15 +22,14 @@ def _collect(title, model):
 
 
 def test_hunt_success_streams_tools_and_returns_text(monkeypatch):
-    # fetch_pdf's network + extraction stubbed: any URL yields a valid "PDF".
-    class FakeResp:
-        status_code = 200
-        content = b"%PDF-1.4 fake"
-    monkeypatch.setattr(retrieval_agent.httpx, "Client",
-                        lambda **kw: type("C", (), {"get": lambda self, u, **k: FakeResp(),
-                                                    "__enter__": lambda self: self,
-                                                    "__exit__": lambda self, *a: None})())
-    monkeypatch.setattr(retrieval_agent.research_tools, "_assert_public_url", lambda url: None)
+    # fetch_pdf's network + extraction stubbed: any URL yields a valid "PDF". The download now goes
+    # through safe_fetch (destination checks, redirect re-validation, byte ceiling), which is
+    # covered on its own in tests/test_safe_fetch.py — here it is faked wholesale so this test
+    # stays about the agent loop.
+    monkeypatch.setattr(retrieval_agent.safe_fetch, "fetch",
+                        lambda url, **kw: retrieval_agent.safe_fetch.FetchResult(
+                            url=url, status_code=200, headers=httpx.Headers({}),
+                            content=b"%PDF-1.4 fake"))
     monkeypatch.setattr(retriever, "extract_pdf_bytes", lambda data: "The paper text. " * 50)
 
     calls = {"n": 0}
@@ -59,3 +60,36 @@ def test_hunt_failure_reports_not_ok():
     result = events[-1]
     assert result["type"] == "result" and result["ok"] is False
     assert "FAILED" in result["summary"]
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (safe_fetch.UnsafeURLError("non-public address"), "Refused"),
+    (safe_fetch.FetchTooLargeError("over the limit"), "Download failed"),
+    (safe_fetch.FetchTimeoutError("deadline"), "Download refused"),
+    (safe_fetch.UnsupportedResponseError("content-encoding"), "Download refused"),
+    (httpx.ConnectError("boom"), "Download failed"),
+])
+def test_fetch_pdf_returns_failures_as_text_not_exceptions(monkeypatch, exc, expected):
+    """fetch_pdf must hand the model a string for every failure, never raise.
+
+    The tool runs inside a Pydantic AI loop: a returned string lets the model try the next
+    candidate, while an exception aborts the whole hunt. The generic `except SafeFetchError` clause
+    covers the two refusal types added after this call site was written, so without a per-type
+    assertion the suite would stay green if it were dropped.
+    """
+    holder: dict = {}
+    # An injected model, so no OpenRouter model is constructed. Without it build_hunt_agent calls
+    # agent_harness._openrouter_model(), which needs a real API key — the test then passes on a
+    # machine that has one configured and fails in CI, which is exactly what happened.
+    stub_model = FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(content="x")]))
+    agent = retrieval_agent.build_hunt_agent("Some Paper", holder, model=stub_model)
+    fetch_pdf = next(t for t in agent._function_toolset.tools.values()
+                     if t.name == "fetch_pdf").function
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(retrieval_agent.safe_fetch, "fetch", boom)
+    result = fetch_pdf("https://example.com/paper.pdf")
+    assert expected in result
+    assert not holder

@@ -87,6 +87,18 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   empty-response diagnostics, `LLMError`) + a TTL-cached model `catalogue()`. Every raw LLM
   call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
   `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
+- `safe_fetch.py` — the guarded path for fetching a URL the app did **not** choose itself
+  (client-supplied `pdf_url`, an LLM-proposed candidate, a stored `source_url`). Public
+  destinations only (`is_global`, which unlike an enumeration of private ranges also covers
+  `100.64.0.0/10` — the Tailscale range), every redirect hop re-validated, a required `max_bytes`
+  ceiling enforced against WIRE bytes actually read, and a total wall-clock deadline (httpx's
+  timeout is per-operation and a slow-drip server never trips it). It **does not decompress**:
+  requests are sent `Accept-Encoding: identity` and any content coding is refused unread — a
+  bounded decoder needed four separate limits and still kept yielding defects, so the class is
+  deleted rather than bounded. `retriever._fetch`,
+  `cover_jobs._download_pdf`, `retrieval_agent.fetch_pdf` and `research_tools._direct_fetch` all
+  go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
+  fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
 - `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
@@ -127,8 +139,12 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   default it sets, so a bare `uvicorn` invocation refuses to start. That is deliberate: an unset
   `RC_ENV` used to mean "dev", which would let a deployed container that lost its environment boot
   with authentication disabled. See "Environments" below.
-- **Tests:** `.venv/bin/python -m pytest -q`. The suite is network-free (extraction/citations
-  are injected fakes; see `tests/conftest.py`) — keep it that way.
+- **Tests:** `.venv/bin/python -m pytest -q`. The suite makes no EXTERNAL network calls
+  (extraction/citations are injected fakes; see `tests/conftest.py`) — keep it that way. Not
+  socket-free, though: two tests in `tests/test_safe_fetch.py` bind a loopback listener on purpose,
+  because a slow-drip server is the one failure an `httpx.MockTransport` cannot express (it returns
+  a response object without ever doing a socket read). Reach for that only when the behaviour under
+  test *is* the transport.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects

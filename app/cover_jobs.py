@@ -22,7 +22,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import httpx
 
-from . import config, logging_config, projects, store
+from . import config, logging_config, projects, safe_fetch, store
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id
 
@@ -80,27 +80,23 @@ def _pdf_url_for(slug: str) -> str | None:
 
 
 def _download_pdf(url: str) -> bytes:
-    """Stream a PDF with a hard byte ceiling. A cover is fetched once and cached, but this runs in
-    the single shared process, so an oversized/malicious source must not be able to exhaust memory:
-    reject an over-limit Content-Length up front and stop the stream the moment it crosses the cap.
-    Raises CoverError on any transport error or when the limit is exceeded."""
+    """Stream a PDF through the guarded fetcher. The byte ceiling was always here (this runs in the
+    single shared process, so an oversized source must not exhaust memory); what safe_fetch adds is
+    the destination check — the cover url can derive from a stored `source_url`, which originally
+    came from a client, and redirects were previously followed without any validation at all.
+    Raises CoverError on a refused destination, an over-limit body, or any transport error."""
     headers = {"User-Agent": "research-companion/1.0 (paper cover render)"}
     try:
-        with httpx.stream("GET", url, headers=headers, timeout=60, follow_redirects=True) as r:
-            r.raise_for_status()
-            declared = r.headers.get("content-length")
-            if declared and declared.isdigit() and int(declared) > COVER_MAX_PDF_BYTES:
-                raise CoverError(f"PDF too large ({declared} bytes)")
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in r.iter_bytes():
-                total += len(chunk)
-                if total > COVER_MAX_PDF_BYTES:
-                    raise CoverError(f"PDF exceeds {COVER_MAX_PDF_BYTES}-byte cover limit")
-                chunks.append(chunk)
+        return safe_fetch.fetch(
+            url, max_bytes=COVER_MAX_PDF_BYTES, timeout=60, headers=headers).content
+    except safe_fetch.UnsafeURLError as e:
+        raise CoverError(f"Refusing to download {url}: {e}") from e
+    except safe_fetch.FetchTooLargeError as e:
+        raise CoverError(f"PDF too large: {e}") from e
+    except safe_fetch.SafeFetchError as e:
+        raise CoverError(f"Download refused for {url}: {e}") from e
     except httpx.HTTPError as e:
         raise CoverError(f"Download failed for {url}: {e}") from e
-    return b"".join(chunks)
 
 
 def _render_first_page(pdf: bytes) -> bytes:

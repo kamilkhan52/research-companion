@@ -1,14 +1,21 @@
 """Cover rendering: first-page rasterization (incl. resource-limit clamps), PDF-source
-resolution, the byte-capped download, and the cached/pending/unavailable status logic. Network-
-free — the end-to-end render feeds a fitz-generated PDF through a monkeypatched _download_pdf, and
-the download tests fake httpx.stream, so the suite never touches the network."""
+resolution, the guarded download, and the cached/pending/unavailable status logic. Network-free —
+the end-to-end render feeds a fitz-generated PDF through a monkeypatched _download_pdf, and the
+download tests fake safe_fetch.fetch.
+
+The byte ceiling itself is no longer tested here: the download goes through app/safe_fetch.py, so
+the limit and the destination checks are covered in tests/test_safe_fetch.py against a mock
+transport. What remains here is that _download_pdf wires that helper up correctly and translates
+its failures into CoverError. (The tests this replaced faked httpx.stream and, for the success
+case, actually reached example.com — they passed on the resulting 404 rather than on the code.)"""
 from __future__ import annotations
 
 import struct
 
 import fitz
+import httpx
 import pytest
-from app import cover_jobs, store
+from app import cover_jobs, safe_fetch, store
 
 
 def _make_pdf(text: str = "Hello cover") -> bytes:
@@ -18,26 +25,6 @@ def _make_pdf(text: str = "Hello cover") -> bytes:
     data = doc.tobytes()
     doc.close()
     return data
-
-
-class _FakeStream:
-    """Minimal stand-in for httpx.stream()'s context manager."""
-
-    def __init__(self, chunks: list[bytes], headers: dict | None = None):
-        self._chunks = chunks
-        self.headers = headers or {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_a):
-        return False
-
-    def raise_for_status(self):
-        return None
-
-    def iter_bytes(self):
-        yield from self._chunks
 
 
 def test_render_first_page_produces_sized_png():
@@ -59,23 +46,38 @@ def test_render_clamps_extreme_aspect_ratio():
     assert width * height <= cover_jobs.COVER_MAX_PIXELS
 
 
-def test_download_pdf_returns_joined_body(monkeypatch):
-    monkeypatch.setattr(cover_jobs.httpx, "stream", lambda *a, **k: _FakeStream([b"%PDF-", b"data"]))
+def test_download_pdf_returns_body_and_passes_the_ceiling(monkeypatch):
+    seen = {}
+
+    def fake_fetch(url, *, max_bytes, timeout=60, headers=None):
+        seen.update(url=url, max_bytes=max_bytes)
+        return safe_fetch.FetchResult(url=url, status_code=200,
+                                      headers=httpx.Headers({}), content=b"%PDF-data")
+
+    monkeypatch.setattr(cover_jobs.safe_fetch, "fetch", fake_fetch)
     assert cover_jobs._download_pdf("https://example.com/x.pdf") == b"%PDF-data"
+    # The ceiling must actually be handed to the fetcher — a helper that enforces a limit is no
+    # use if the caller forgets to pass one.
+    assert seen["max_bytes"] == cover_jobs.COVER_MAX_PDF_BYTES
 
 
-def test_download_pdf_rejects_oversized_stream(monkeypatch):
-    monkeypatch.setattr(cover_jobs, "COVER_MAX_PDF_BYTES", 100)
-    monkeypatch.setattr(cover_jobs.httpx, "stream",
-                        lambda *a, **k: _FakeStream([b"x" * 60, b"y" * 60]))
-    with pytest.raises(cover_jobs.CoverError):
-        cover_jobs._download_pdf("https://example.com/big.pdf")
+@pytest.mark.parametrize("exc", [
+    safe_fetch.UnsafeURLError("refusing to fetch non-public address 127.0.0.1"),
+    safe_fetch.FetchTooLargeError("over the limit"),
+    # The two refusal types added later. They are caught by the `except SafeFetchError` clause
+    # rather than by name, so without them here the suite would stay green if that clause were
+    # dropped and they escaped the layer untranslated.
+    safe_fetch.FetchTimeoutError("deadline"),
+    safe_fetch.UnsupportedResponseError("content-encoding"),
+    httpx.ConnectError("boom"),
+])
+def test_download_pdf_translates_failures_to_cover_error(monkeypatch, exc):
+    """Each layer raises its own exception type (see CLAUDE.md conventions) — a safe_fetch error
+    escaping as-is would reach the job runner untranslated and lose the cover-specific message."""
+    def boom(*a, **k):
+        raise exc
 
-
-def test_download_pdf_rejects_declared_length(monkeypatch):
-    monkeypatch.setattr(cover_jobs, "COVER_MAX_PDF_BYTES", 100)
-    monkeypatch.setattr(cover_jobs.httpx, "stream",
-                        lambda *a, **k: _FakeStream([b"x"], headers={"content-length": "999"}))
+    monkeypatch.setattr(cover_jobs.safe_fetch, "fetch", boom)
     with pytest.raises(cover_jobs.CoverError):
         cover_jobs._download_pdf("https://example.com/big.pdf")
 
