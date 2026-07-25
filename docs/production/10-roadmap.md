@@ -19,9 +19,16 @@ before execution.
 |---|---|---|
 | #218 | Dockerfile, `.dockerignore`, `fly.toml`, `fly.staging.toml`, staging deploy | ✅ merged to `main` |
 | #219 | `RC_ENV` gating, auth hard-fail, user allowlist | ✅ merged to `main` (`9cace9f`) |
-| PR 3 | Hardened outbound-fetch helper — `app/safe_fetch.py` (P0-14) | open; 13 Sol rounds, 25 defects fixed |
+| #220 | Hardened outbound-fetch helper — `app/safe_fetch.py` (P0-14) | ✅ merged to `main` (`8e2d5d1`); 16 Sol rounds, 31 defects fixed |
+| #222 | Operator role — instance-wide settings + prompts restricted to `RC_OPERATOR_USERS` (P0-2, P0-3) | ✅ merged to `main` (`a291edd`); 2 Sol rounds |
+| #223 | Client half of the operator role — both clients key off `is_operator` (P1-15) | ✅ merged to `main` (`07b7f23`); Sol clean first round |
+| #224 | API-36 spike — already 36, no change (P2-4) | ✅ merged to `main` (`a18cd6f`); Sol verified the chain |
 
-**PR 3 is worth reading the commit history of.** Twenty-five defects across thirteen review rounds,
+**M1 is code-complete. Everything left in it needs Kamil** — see `HUMAN_ACTIONS.md`. Nothing further
+can be built on this milestone without a payment method on Fly, a named operator id, and the
+Supabase projects.
+
+**#220 is worth reading the commit history of.** Thirty-one defects across sixteen review rounds,
 and essentially all of them were in the fix rather than in the code it replaced. Three patterns, all
 worth carrying into M2:
 
