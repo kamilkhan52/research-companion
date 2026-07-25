@@ -8,6 +8,7 @@ happened to raise the error they asserted.
 from __future__ import annotations
 
 import gzip
+import tracemalloc
 import zlib
 
 import httpx
@@ -378,6 +379,43 @@ def test_refuses_an_unsupported_content_encoding(monkeypatch):
     # Not a size error: reporting it as one would tell the user their PDF was too big.
     assert not issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.FetchTooLargeError)
     assert issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.SafeFetchError)
+
+
+class _FragmentedStream(httpx.SyncByteStream):
+    """A body delivered as many tiny fragments — what a hostile (or merely pathological) server
+    can do. httpx.ByteStream emits the whole body as ONE fragment, so it cannot exercise this."""
+
+    def __init__(self, fragment: bytes, count: int):
+        self._fragment, self._count = fragment, count
+
+    def __iter__(self):
+        for _ in range(self._count):
+            yield self._fragment
+
+
+def test_memory_does_not_scale_with_server_fragmentation(monkeypatch):
+    """Retained memory must depend on the body's SIZE, not on how the server chose to chop it up.
+
+    Holding each fragment as its own `bytes` made a permitted body cost `objects x ~33 bytes` of
+    overhead: 200,000 one-byte fragments is a 200KB body costing ~8MB. Scaled to the real 40MB
+    ceiling that is over a gigabyte, and an OOM in the single worker takes every in-flight job with
+    it (invariant 6). Measured with tracemalloc so the test fails if the accumulator regresses to a
+    per-fragment list.
+    """
+    count = 200_000
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: httpx.Response(200, stream=_FragmentedStream(b"x", count))))
+
+    tracemalloc.start()
+    try:
+        result = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.content == b"x" * count
+    assert peak < 2_000_000, (
+        f"peak {peak} bytes for a {count}-byte body — memory is tracking fragment COUNT, not size")
 
 
 def test_accepts_a_body_at_the_ceiling(monkeypatch):

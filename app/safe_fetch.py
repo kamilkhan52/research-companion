@@ -56,6 +56,10 @@ MAX_REDIRECTS = 5
 # because each layer is a decompression pass the response gets to demand for free (see _decode_body).
 MAX_ENCODING_LAYERS = 3
 
+# Read the body in fixed blocks instead of taking whatever fragments the transport produces, so a
+# server cannot control our allocation pattern by fragmenting its response (see fetch).
+_READ_CHUNK_BYTES = 64 * 1024
+
 
 class SafeFetchError(Exception):
     """Base for every refusal from this module, so a call site can translate all of them into its
@@ -288,21 +292,23 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                 # a single-worker process (invariant 6) is the outage this ceiling exists to
                 # prevent. Counting wire bytes bounds what the socket can hand us; decoding is done
                 # separately, under its own bound.
-                chunks: list[bytes] = []
-                total = 0
-                for chunk in r.iter_raw():
-                    total += len(chunk)
-                    if total > max_bytes:
+                # Accumulate into ONE bytearray rather than a list of chunks, and read in fixed
+                # blocks. Keeping each fragment as its own `bytes` made memory depend on how the
+                # server chose to fragment the body, not on its size: a permitted 40MB delivered as
+                # 1-byte chunks is ~40M objects at ~33 bytes of overhead each — over a gigabyte,
+                # while `total` reads a compliant 40MB. The byte ceiling has to bound retained
+                # memory, not just the byte count.
+                buf = bytearray()
+                for chunk in r.iter_raw(chunk_size=_READ_CHUNK_BYTES):
+                    if len(buf) + len(chunk) > max_bytes:
                         # Abandon the stream the moment the cap is crossed, so a lying (or absent)
                         # Content-Length cannot get more than the ceiling into memory.
                         raise FetchTooLargeError(
                             f"{current} exceeds the {max_bytes}-byte limit")
-                    chunks.append(chunk)
-                wire = b"".join(chunks)
-                chunks.clear()         # the joined copy is the only one needed from here
-                body = _decode_body(wire, r.headers.get("content-encoding", ""),
+                    buf += chunk
+                body = _decode_body(bytes(buf), r.headers.get("content-encoding", ""),
                                     max_bytes=max_bytes, url=current)
-                del wire
+                del buf
                 return FetchResult(url=current, status_code=r.status_code,
                                    headers=r.headers, content=body)
     raise UnsafeURLError(f"more than {MAX_REDIRECTS} redirects starting at {url}")
