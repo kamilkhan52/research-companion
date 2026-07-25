@@ -211,3 +211,4 @@ def test_check_admits_anyone_when_no_allowlist(monkeypatch):
     _supabase(monkeypatch)
     monkeypatch.setattr(auth, "verify", lambda _t: {"sub": "anyone", "email": "a@b.c"})
     assert auth.check("any-token")["user_id"] == "anyone"
+

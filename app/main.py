@@ -32,6 +32,7 @@ from .routers import (
 )
 
 logging_config.configure()  # install the rc.* log handler before any job/LLM/commit runs
+_log = logging_config.get("auth")
 
 # Refuse to start a staging/prod process that is configured permissively — BEFORE the app object
 # exists, so a misconfigured deploy crashes on boot instead of serving. Every check inside guards
@@ -75,9 +76,22 @@ async def authenticate(request: Request, call_next):
         token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else request.query_params.get("token", "")
         try:
             request.state.user = auth.check(token)
-        except auth.NotAllowlisted:
+        except auth.NotAllowlisted as rejected:
             # Valid credentials, wrong person. 403 rather than 401 on purpose: 401 tells the client
             # to sign in, which would loop an allowlisted-out user through login forever.
+            #
+            # The id goes to the LOG, never to the response. The response stays deliberately
+            # incurious — it must not confirm to a stranger which account they just proved they
+            # hold. But the operator needs it: Supabase user ids are PER PROJECT, so pointing an
+            # instance at a different Supabase project invalidates every id in RC_ALLOWED_USERS and
+            # locks everyone out, including the operator, with no way to read the new id off the
+            # 403. `fly logs` is then the shortest path back in. The same line answers "why can't
+            # my tester sign in" once there are testers.
+            should_log, suppressed = auth.note_rejection(str(rejected))
+            if should_log:
+                _log.warning(
+                    "auth: rejected non-allowlisted user id=%s%s", rejected,
+                    f" ({suppressed} similar suppressed since the last line)" if suppressed else "")
             return JSONResponse(
                 {"detail": "This account is not authorized for this instance."}, status_code=403)
         except AuthError:
