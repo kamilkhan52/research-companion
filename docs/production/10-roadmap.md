@@ -57,8 +57,10 @@ allowlist = Kamil's UUID only, **no provider API keys** (so nothing can spend). 
 **API-36 spike: done 2026-07-25 — nothing to change.** Expo SDK 56 / RN 0.85.3 already resolves
 `targetSdkVersion` to **36** (via RN's `gradle/libs.versions.toml`, not the plugin's 35 fallback),
 so the Play requirement effective 2026-08-31 is met with no `expo-build-properties` override. Left
-unpinned on purpose — the requirement is a floor, and a pin would hold the app at 36 when a later
-Expo SDK raises it. Full chain recorded as P2-4 in the audit.
+unpinned on purpose — the requirement is a floor ("36 or higher"), and a pin would hold the app at
+36 when a later Expo SDK raises it. Reproducibility does not depend on the pin: `package-lock.json`
+already fixes RN at 0.85.3, so the catalog that supplies the 36 is itself locked. Full chain
+recorded as P2-4 in the audit.
 
 **Not yet started in M1:** the production app + secrets. Data migration and client cutover are deliberately *out* of M1 — see M1's
 "Rollback" section for why they are gated on M2 and M6.
