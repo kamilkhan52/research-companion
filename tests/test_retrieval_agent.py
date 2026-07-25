@@ -78,7 +78,11 @@ def test_fetch_pdf_returns_failures_as_text_not_exceptions(monkeypatch, exc, exp
     assertion the suite would stay green if it were dropped.
     """
     holder: dict = {}
-    agent = retrieval_agent.build_hunt_agent("Some Paper", holder)
+    # An injected model, so no OpenRouter model is constructed. Without it build_hunt_agent calls
+    # agent_harness._openrouter_model(), which needs a real API key — the test then passes on a
+    # machine that has one configured and fails in CI, which is exactly what happened.
+    stub_model = FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(content="x")]))
+    agent = retrieval_agent.build_hunt_agent("Some Paper", holder, model=stub_model)
     fetch_pdf = next(t for t in agent._function_toolset.tools.values()
                      if t.name == "fetch_pdf").function
 
