@@ -81,22 +81,67 @@ recorded as P2-4 in the audit.
   instructions tell it to diff against `main` itself.
 - A deploy stops the machine and kills in-flight jobs — check for active jobs first.
 
-**Waiting on Kamil (updated 2026-07-25):**
+**Answered by Kamil 2026-07-25 (all four):**
 
-1. **`RC_OPERATOR_USERS` on staging.** H6 is implemented and fails closed, so until this is set
-   nobody — including Kamil — can edit prompts or settings:
-   `flyctl secrets set RC_OPERATOR_USERS=b8f19707-4b13-4cbb-834a-93cd6d06f489 -a research-companion-staging`
-2. **A monthly spend ceiling** to size M3's per-user caps against.
-3. **Confirm `tts-1` over `tts-1-hd` for the paid tier.** H22 chose `-hd` before the cost analysis
-   existed; `tts-1` halves the single largest variable cost for a difference that is near-inaudible
-   on phone speakers. `-hd` stands until Kamil says otherwise.
-4. **Supabase Pro ($25/mo)** before testers: the free tier **pauses a project after 1 week idle**
-   and caps at 2 projects, which this account is already at.
+1. **`RC_OPERATOR_USERS` is set on staging.** ✅ Prompt and settings editing now work for the named
+   operator and 403 for everyone else.
+2. **Monthly spend ceiling: $200.** This is the number M3's per-user caps get sized against — see
+   "Sizing M3 against the $200 ceiling" below.
+3. **TTS model: `tts-1`** (H22 revised). Halves the single largest variable cost. `tts-1-hd` stays
+   selectable.
+4. **Supabase Pro: NOT needed yet — my earlier claim was wrong.** I had written that the account was
+   "already at" the 2-project cap; I never verified that, and Kamil has one project
+   (`aumedoefxacycwfrlcml`). Verified against Supabase's pricing page 2026-07-25: Free allows **2
+   active projects**, pauses a project after **1 week of inactivity**, and includes **no automatic
+   backups**; Pro is **$25/mo** with 7-day backups. So Free covers staging + production for M1–M2.5.
+   Production will not pause (an app with users is not inactive); staging will pause between
+   sessions and needs an unpause click. **Pro becomes right at M6**, whose gate is exactly "automated
+   backups and a tested restore" — and note the content record lives in **git**, not Postgres, so
+   what Pro protects here is the ownership/index tables, not the papers or notes.
+
+**Fly payment method: added.** ✅ The production app + volume is unblocked.
+
+#### Sizing M3 against the $200 ceiling
+
+$200/month is the total spend ceiling (Kamil, 2026-07-25). Fixed cost is **$25.86** (Fly prod
+$14.24 + 20 GB volume $3.00, staging $7.12 + volume $1.50, Supabase Free $0), leaving **$174/month
+of variable budget**. Against `20-pricing-analysis.md`'s unit costs — $0.14/free-user-month,
+$2.22/Basic-user-month, $8.40 net revenue per Basic after Play's 15%:
+
+| Mix | Users the ceiling supports | Variable spend | Revenue there |
+|---|---|---:|---:|
+| All free | 1,243 free users | $174.02 | $0 |
+| 10:1 free\:paid | 48 paying + 480 free | $173.76 | $403 |
+| 20:1 free\:paid | 34 paying + 680 free | $170.68 | $286 |
+| All paid | 78 Basic subscribers | $173.16 | $655 |
+
+Counts are floored to whole users and the spend column is computed from those same counts, so
+every row actually fits under $174.14. (Rounding the 20:1 row *up* to 34.7 → 35 paying and 693.8 →
+694 free would put it at $174.86 — over the ceiling, which is exactly the kind of quiet overshoot a
+capacity table should not print.) Revenue is the floored subscriber count × $8.40.
+
+**The ceiling is not the binding constraint at any realistic launch scale**, and in every mixed
+scenario revenue passes $200 well before spend does. The closed test costs
+**$1.68/month of variable spend** (12 testers × $0.14) on top of fixed — i.e. the whole M2.5 tester
+phase runs at roughly $28/month.
+
+Two things follow for M3, and they are the actual work:
+
+1. **$200 must be enforced at the provider, not just in-app.** The in-app per-user cap stops one
+   user burning everyone's budget; it does nothing if a bug loops. Set the OpenRouter credit limit
+   and the OpenAI spend limit to sum to $200 in *enforcing* mode (H20). That is the only layer that
+   holds when our own accounting is the thing that broke.
+2. **The per-user cap is sized from the mix, not from $200.** $174 ÷ the free allowance is 1,240
+   users; the cap that matters is the one making a *single* user's worst case bounded — which
+   `20-pricing-analysis.md` §6 identifies as premium TTS minutes, the only line with no natural
+   ceiling. Enforce minutes server-side before synthesis, since `tts-1`'s character pricing makes
+   the cost of a dispatch exactly knowable before making it.
 
 **Decided/closed since the last revision:** OpenRouter key on staging; OAuth consent screen
-published; H6 (operator gating, #222/#223 — closes P0-2 and P0-3); H22 (`tts-1-hd`); testers
-deliberately deferred until the app is testable, which makes Play's 12-testers/14-continuous-days
-clock strictly additive after M2.5 rather than parallel with M2.
+published; H6 (operator gating, #222/#223 — closes P0-2 and P0-3); H22 (revised to `tts-1`); the
+API-36 spike (#224, already 36); testers deliberately deferred until the app is testable, which
+makes Play's 12-testers/14-continuous-days clock strictly additive after M2.5 rather than parallel
+with M2.
 
 **Pricing is now analysed, not assumed** — see `20-pricing-analysis.md`. Free = 15 turns on
 DeepSeek V4 Flash with `BrowserTTS` (~$0.14/user-month worst case); Basic $10 = 60 turns + 45 min
@@ -479,12 +524,15 @@ Verified 2026-07-25, and this corrects an earlier draft of this plan:
 So the load-bearing control for TTS is one **we** enforce. We hold the only key, so an in-app
 ceiling is a real ceiling.
 
-**The model is decided (H22, 2026-07-25): `tts-1-hd`.** That settles the accounting design, and it
-is the SIMPLER of the two this plan previously weighed:
+**The model is decided (H22, 2026-07-25, revised same day): `tts-1`.** That settles the accounting
+design, and it is the SIMPLER of the two this plan previously weighed. The `-hd` variant was chosen
+first and then dropped once the cost analysis showed audio dominates: same accounting, half the
+price.
 
-- `tts-1-hd` is priced **$30.00 per 1M characters** (`tts-1` is $15.00), verified against OpenAI's
+- `tts-1` is priced **$15.00 per 1M characters** (`tts-1-hd` is $30.00), verified against OpenAI's
   live pricing on 2026-07-25. Character pricing means **the cost of a dispatch is exactly known
-  before making it**, from the length of the text we are about to send.
+  before making it**, from the length of the text we are about to send — and it is why switching
+  between the two is a pure price change with no accounting rework.
 - It returns raw mp3 and supports **no usage payload and no SSE**. Nothing settles afterward, and
   nothing needs to: there is no provider figure to reconcile against, because our own computation
   *is* the figure.
@@ -508,8 +556,11 @@ design and still bite:
 alternative, `gpt-4o-mini-tts`, is priced on input text tokens **plus generated audio tokens**,
 which are not knowable before the call. It would have needed a conservative reservation up front
 settled against the usage in its SSE terminal event. Choosing a character-priced model deletes that
-whole path. Note also that OpenAI's deprecation list names the `gpt-4o-mini-tts-2025-03-20`
-snapshot, not the model family — a search summary claiming the family is deprecated is wrong.)*
+whole path. On its deprecation status, OpenAI's model page and its all-models catalog disagree —
+the former marks only the `-2025-03-20` snapshot, the latter labels the whole family Deprecated —
+so an earlier claim here that "a search summary saying the family is deprecated is wrong" was
+overconfident and is withdrawn. Immaterial now: we are on `tts-1`, which the same catalog shows
+with no deprecation label.)*
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
 per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
@@ -589,7 +640,7 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
 
 - *OpenRouter (LLM):* each call has a generation id, so an orphan can be resolved authoritatively
   by querying generation stats. This is the path the pending/`reconcile` machinery was designed for.
-- *OpenAI (TTS):* **nothing to reconcile, by construction.** With `tts-1-hd` (H22) the price is
+- *OpenAI (TTS):* **nothing to reconcile, by construction.** With `tts-1` (H22) the price is
   `characters_sent × rate`, so the ledger computes the exact figure at dispatch and no provider
   number is ever needed. Do not build reconciliation for audio. The one ambiguity is a dispatch
   that may or may not have been billed — a read timeout where OpenAI synthesized anyway — and the

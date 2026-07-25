@@ -83,7 +83,7 @@ carries a compliance slice, because closed tracks require a Data safety form and
 
 ---
 
-### H4 — Supabase project · ✅ `done (single project)` (2026-07-25)
+### H4 — Supabase project · 🟡 `prod done; staging project outstanding` (2026-07-25)
 *Moved forward from M2 by Sol's review:* production refuses to boot unless
 `auth.mode() == "supabase"`, because `auth.mode()` otherwise falls back to `open` and a deploy that
 forgets one env var would serve the entire API unauthenticated (audit P0-12).
@@ -92,12 +92,22 @@ Project `aumedoefxacycwfrlcml` is live. **Asymmetric JWT signing verified** — 
 returns an ES256 key, so `app/auth.py`'s local verification will work. Email provider enabled;
 Google provider in progress (see H5).
 
-**Accepted compromise, decided 2026-07-25: one project serves both staging and production.** The
-standing rule is that production data must never be casual test data, and this breaks it. Tolerable
-only while the sole user is Kamil and the allowlist (H21) keeps the instance closed. **Revisit
-before M2.5** — the moment 12 external testers create real accounts, staging must be separated, or
-staging testing has to move to a throwaway project. Recorded here so it isn't forgotten rather than
-silently accepted.
+**The one-project compromise is no longer necessary — take the second free project.** This was
+accepted on 2026-07-25 as "one project serves both staging and production", breaking the standing
+rule that production data must never be casual test data. It was accepted partly on my own
+unverified claim that the account was already at Supabase's project cap. **That claim was wrong.**
+Verified against Supabase pricing 2026-07-25: the Free plan allows **2 active projects**, and this
+organization has one. So the correct move is to create a **second free project for staging** rather
+than carry the compromise into M2.5.
+
+Cost of doing so: $0. Cost of not doing so: the moment 12 external testers create real accounts,
+production auth is shared with whatever staging is doing.
+
+The only Free-plan caveat is that a project **pauses after 1 week of inactivity** — which will
+happen to staging between work sessions and needs an unpause click, and will not happen to a
+production project with users on it. Automatic backups are Pro-only ($25/mo), which is an **M6**
+concern, not a today concern: M6's gate is "automated backups and a tested restore", and the content
+record lives in git, so what Pro would protect here is the ownership/index tables.
 
 Publishable key received 2026-07-25 and set as a Fly secret (`RC_SUPABASE_ANON_KEY`) — it is
 publishable by design and is served to clients via `/api/auth/config`, so it lives in deploy
@@ -133,19 +143,42 @@ exposes a working backend to the internet.
 **Why not an agent:** provider account billing settings.
 **Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
 
-### H22 — Decide the production TTS model · `DONE 2026-07-25`
-**Decision: `tts-1-hd`.** Kamil chose the higher-quality model over `gpt-4o-mini-tts`. Applied as
-the default in `config.py` (`RC_TTS_MODEL` still overrides).
+### H22 — Decide the production TTS model · `DONE 2026-07-25, REVISED same day`
+**Decision: `tts-1`.** Kamil first chose `tts-1-hd` over `gpt-4o-mini-tts`, then revised to `tts-1`
+once the cost analysis existed — `-hd` is **$30.00 / 1M characters against `tts-1`'s $15.00**, and
+audio is the dominant cost in this app (finding 1 of `20-pricing-analysis.md`), so the default was
+halving the largest line item. Applied as the default in `config.py` and `tts.py` (`RC_TTS_MODEL`
+still overrides, and `tts-1-hd` remains selectable in Settings for anyone who wants it).
+
+**This halves *unmetered* audio spend, not the tier economics.** `20-pricing-analysis.md` §2 already
+priced the paid allowance at `tts-1` ($0.65 for 45 min), so the $2.22 variable cost and 74% margin
+are unchanged. What changes is today's uncapped default behaviour: the measured ~2.4M characters go
+from ~$72 to **~$36** and the per-turn audio figure from $0.32 to **$0.16**, moving audio from 79%
+of a turn's cost to ~65% — still the largest single line, which is why the M3 hard cap still
+matters. LLM figures untouched.
+
+**A stored setting outranks a default.** `config.load_settings()` layers `.app-state/settings.json`
+over the env defaults, so any instance that already has `tts_model` saved keeps its old value —
+changing this default does *not* change a running instance. The fix is to POST `tts_model: ""`,
+which clears the override so the instance follows the default from then on, rather than pinning
+`"tts-1"` and having to repeat this the next time the default moves.
 
 Verified against OpenAI's live docs on 2026-07-25 rather than from memory:
-- `tts-1-hd` is **available, not deprecated**, and priced **$30.00 / 1M characters** (`tts-1` is
-  $15.00). Character pricing means cost is **exactly computable before synthesis**, which is
-  strictly better for the M3 quota work than the token-priced alternative.
-- The `gpt-4o-mini-tts` *snapshot* `-2025-03-20` is deprecated (shutdown 2027-01-20), superseded by
-  `-2025-12-15`. The floating `gpt-4o-mini-tts` alias is NOT deprecated — a search result claiming
-  the model was deprecated conflated the snapshot with the family. Worth knowing if we revisit.
+- Both `tts-1` ($15.00 / 1M characters) and `tts-1-hd` ($30.00) are **available, not deprecated**.
+  Character pricing means cost is **exactly computable before synthesis**, which is strictly better
+  for the M3 quota work than the token-priced alternative — and that property is what made the
+  later switch from `-hd` to `tts-1` a pure price change with no accounting rework.
+- **`gpt-4o-mini-tts` deprecation — OpenAI's own two pages disagree, so do not state this
+  confidently either way.** The model page shows the *snapshot* `-2025-03-20` as `Deprecated` with
+  `-2025-12-15` as current, which is what an earlier version of this note asserted. But the
+  all-models catalog labels the **family** "GPT-4o mini TTS — Deprecated". Re-checked 2026-07-25;
+  both readings are live. The earlier note went further and claimed a search summary saying "the
+  family is deprecated" was simply wrong — that claim is not supportable, and it is removed.
+  Consequence: none today. We are on `tts-1`, and the same catalog shows **`tts-1` and `tts-1-hd`
+  carrying no deprecation label**. It matters only if we ever revisit `gpt-4o-mini-tts`, at which
+  point the family's status must be settled first.
 
-**Consequence to carry into M3:** `tts-1-hd` returns raw mp3 with no usage payload and no SSE, so
+**Consequence to carry into M3:** the `tts-1` family returns raw mp3 with no usage payload and no SSE, so
 audio spend is *computed* from the character count we sent, never reported back. That is fine
 because character pricing is deterministic — but it means `usage.py` must bill audio from input
 length rather than waiting for a provider figure, and the `pending`/reconcile path that

@@ -15,12 +15,32 @@ Every external price in this document was fetched live on 2026-07-25 — see §7
 
 Before the tables, three measured facts that matter more than the tier design:
 
-1. **Audio, not the LLM, is the expensive part.** At the current default (`tts-1-hd`, uncapped
-   narration length) one analysis turn with audio costs **$0.53**, of which **$0.42 (79%) is
-   text-to-speech**. The measured mean narration is 10,702 characters ≈ 11 minutes of speech ≈
-   **$0.32 of `tts-1-hd` per turn**. Across the measured period the app synthesized ~2.4 M
-   characters — **~$72 of TTS against $30.85 of LLM**. TTS is not on the ledger at all
-   (`app/tts.py` has zero references to `usage`), so that $72 is invisible spend.
+1. **Audio, not the LLM, is the expensive part.** Measured at the then-default `tts-1-hd`
+   ($30.00/1M characters, uncapped narration length), one analysis turn with audio cost **$0.53**,
+   of which **$0.42 (79%) was text-to-speech**. The measured mean narration is 10,702 characters ≈
+   11 minutes of speech. Across the measured period the app synthesized ~2.4 M characters —
+   **~$72 of TTS against $30.85 of LLM**. TTS is not on the ledger at all (`app/tts.py` has zero
+   references to `usage`), so that spend is invisible.
+
+   > **Revised 2026-07-25: the default is now `tts-1` at $15.00/1M (H22).** This changes *this
+   > finding only*. The figures above were measured at the then-default `tts-1-hd`, so the same
+   > usage now costs half. Halving the **TTS component only** — the LLM part of a turn is $0.53 −
+   > $0.42 = **$0.11** and does not move:
+   >
+   > | | at `tts-1-hd` | at `tts-1` |
+   > |---|---:|---:|
+   > | TTS per turn | $0.42 | **$0.21** |
+   > | ↳ of which, mean narration | $0.32 | **$0.16** |
+   > | Total per turn with audio | $0.53 | **$0.32** |
+   > | TTS share of a turn | 79% | **66%** |
+   > | Measured period (~2.4 M chars) | ~$72 | **~$36** |
+   >
+   > Audio remains the largest single line item, which is the point of the finding.
+   >
+   > **The tier tables below are unaffected** — §2 already prices the paid allowance at `tts-1`
+   > ($0.65 for 45 min = 43.8 K chars × $15/1M), so the $2.22 variable cost and 74% margin stand as
+   > printed. The `tts-1-hd` figure appears below only in §6's sensitivity note about an *uncapped*
+   > user, and that note is now about a model no longer used by default. Do not halve the tables.
 
 2. **We are paying ~2.45× DeepSeek list price for no reason.** `app/llm.py` sends no OpenRouter
    `provider` routing preference, so requests fan out across 18 endpoints for
@@ -119,8 +139,8 @@ Measured constant: **970 characters per minute of speech** (largest narration, 3
 
 | | per 1M chars | per minute | per narration (10,702 chars) |
 |---|---:|---:|---:|
-| `tts-1-hd` (**current default**) | $30.00 | **$0.0291** | **$0.3211** |
-| `tts-1` | $15.00 | **$0.01455** | **$0.1605** |
+| `tts-1` (**current default**, H22 revised 2026-07-25) | $15.00 | **$0.01455** | **$0.1605** |
+| `tts-1-hd` (the previous default; still selectable) | $30.00 | **$0.0291** | **$0.3211** |
 | `BrowserTTS` | $0 | $0 | $0 |
 
 ### 2d. Unmetered variable costs (not in any ledger)
@@ -143,9 +163,9 @@ turns, so 4 is deliberately on the expensive side of observed behaviour.
 
 | Configuration | Per paper |
 |---|---:|
-| **Today**: V4 Pro unpinned, `tts-1-hd`, 17 cues/turn, uncapped narration | **$2.99** |
+| **As measured** (pre-H22 baseline): V4 Pro unpinned, `tts-1-hd`, 17 cues/turn, uncapped narration | **$2.99** |
 | V4 Pro pinned, `tts-1-hd` | $2.28 |
-| V4 Pro pinned, `tts-1` | $1.44 |
+| V4 Pro pinned, `tts-1` **(the default since 2026-07-25)** | $1.44 |
 | **Recommended stack**, premium audio | **$0.34** |
 | **Recommended stack**, device voice (Free) | **$0.12** |
 
@@ -292,10 +312,11 @@ The honest assessment, since this is a listening-first product:
 every additional free premium minute is $0.0146, and at 1,000 free users each free minute costs
 $15/month.
 
-**For paid tiers: switch the default from `tts-1-hd` to `tts-1`.** `tts-1-hd` is 2× the price for
-a difference that is close to inaudible through phone speakers and earbuds, which is how this
-content is consumed. That single change halves the largest variable cost in the business.
-Keep `tts-1-hd` as an option on a future Pro tier. `gpt-4o-mini-tts` is already in the UI picker
+**For paid tiers: switch the default from `tts-1-hd` to `tts-1`.** ✅ **Done 2026-07-25** (H22
+revised; `app/config.py`, `app/tts.py`). `tts-1-hd` is 2× the price for a difference that is close
+to inaudible through phone speakers and earbuds, which is how this content is consumed. That single
+change halves the largest variable cost in the business. `tts-1-hd` stays selectable and is the
+natural option on a future Pro tier. `gpt-4o-mini-tts` is already in the UI picker
 (`web/src/components/Settings.tsx`) but is token-priced rather than character-priced and I could
 not verify its rate — see §7.
 
@@ -378,12 +399,21 @@ nobody made; it is just however long the model wrote. A 6,000-char cap (~6 minut
 | 20 | Firecrawl (fallback search/fetch) | not checked | — | ❌ **UNVERIFIED** |
 | 21 | Effective DeepSeek rate we actually pay | $1.064/M in, $2.128/M out | derived from our own ledgers (least-squares over 7 projects, $20.18 of V4 Pro spend) | ✅ derived, not quoted |
 
-**Supabase caveat worth a decision:** the Free plan is stated as 50,000 MAU, which is far beyond
-anything we need for a JWT-only integration — but Free projects are **paused after one week of
-inactivity**, and the plan allows only **2 active projects** (we already have prod + staging, so
-we are at the cap). A paused auth issuer is a total outage. Either accept the risk with a
-heartbeat, or budget **$25/mo for Pro**, which moves break-even from 9 to 16 paying users. I
-recommend Pro at launch; it is 3 paying customers.
+**Supabase — corrected 2026-07-25.** An earlier version of this paragraph said we "already have
+prod + staging, so we are at the cap" and recommended Pro at launch. **That was wrong and was never
+checked.** There is **one** project (`aumedoefxacycwfrlcml`), the Free plan allows **2 active
+projects**, and the second slot is free — so staging should simply take it rather than sharing
+production's auth issuer.
+
+What remains true: the Free plan's 50,000 MAU is far beyond a JWT-only integration's needs, and
+Free projects are **paused after one week of inactivity**. A paused auth issuer is a total outage,
+but that risk applies to *staging*, which is idle by nature; a production project with users on it
+is not inactive. Free also has **no automatic backups** — which is the real reason to buy Pro
+($25/mo), and it belongs at the **M6** gate ("automated backups and a tested restore"), not at
+launch. Note what Pro would protect: the ownership/index tables. The content record lives in git.
+
+Fixed cost in this document therefore stays at **$25.86 with Supabase at $0**, and break-even stays
+at 9 paying users rather than 16.
 
 ---
 
