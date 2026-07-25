@@ -1,0 +1,65 @@
+# Fly.io — PRODUCTION. Staging lives in fly.staging.toml; the two differ only in app name,
+# volume name, and RC_ENV.
+#
+# Deploy:  flyctl deploy -c fly.toml
+# Secrets: flyctl secrets set -a research-companion KEY=value   (never put secrets in this file)
+
+app = "research-companion"
+primary_region = "dfw"          # nearest Fly region to Colorado; there is no Denver region
+
+[build]
+
+[env]
+  RC_ENV = "prod"
+  RC_HOST = "0.0.0.0"
+  RC_PORT = "8080"
+  # State lives on the mounted volume, NOT in the image (see Dockerfile / .dockerignore).
+  RC_PROJECTS_ROOT = "/data/projects"
+  RC_APP_STATE_DIR = "/data/.app-state"
+  RC_APP_TITLE = "Paradigm"
+
+# The git-backed project stores and the app-state/audio cache. 20 GB: current real-world usage is
+# ~3.2 GB, but the narration cache is unbounded until M3 adds eviction, so headroom is cheaper
+# than an emergency resize.
+[[mounts]]
+  source = "rc_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+  # BOTH of these are load-bearing, not tuning (CLAUDE.md invariant 1).
+  #
+  # Fly's default behaviour is to stop an idle machine and restart it on the next request. This
+  # app runs minutes-long BACKGROUND JOBS (chat turns, audio prep, graph builds) whose results are
+  # persisted only when the job finishes, and whose registries are in-memory. An autostop during
+  # an idle-looking window would kill in-flight paid work exactly the way a redeploy does — the
+  # failure mode the whole job+poll architecture exists to avoid. A polling client is also not
+  # "traffic" in the sense Fly's scale-to-zero assumes.
+  #
+  # So: never stop, always keep one machine up. ONE machine, because job state and file writes are
+  # in-process (invariant 6) — a second machine would serve a second, divergent copy of the store.
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"        # auth-exempt in app/main.py, so this works with auth enabled
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 2048
+  # PDF rasterization (PyMuPDF cover rendering) and parallel graph extraction are the memory
+  # spikes. With one worker an OOM is a full outage, so a little swap buys a slow request instead
+  # of a dead machine.
+  swap_size_mb = 512

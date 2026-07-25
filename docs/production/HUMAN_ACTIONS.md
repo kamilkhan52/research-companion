@@ -31,8 +31,9 @@ rejects a FIFO for stdin, so a remote login is driven by a small PTY helper — 
 Kamil opens on his phone, and the returned one-time code is written into the process. Credentials
 now live in `~/.fly/`; no token needs to pass through chat again.
 
-**Still needed before M1 can deploy:** a payment method on the Fly account — persistent volumes
-(which hold `projects/` and `.app-state/`) are not available on the free allowance.
+Payment method added 2026-07-25, so volumes are available. Staging app
+`research-companion-staging` created with a 3 GB volume (`rc_data_staging`) in `dfw` — the nearest
+Fly region to Colorado; there is no Denver region.
 
 The plan assumes a container with a persistent volume; Fly was chosen because volumes are
 first-class and the `*.fly.dev` subdomain ships with TLS.
@@ -98,10 +99,16 @@ before M2.5** — the moment 12 external testers create real accounts, staging m
 staging testing has to move to a throwaway project. Recorded here so it isn't forgotten rather than
 silently accepted.
 
-**Still needed:** the anon (publishable) key for the client config — safe to share. **Never** paste
-a service-role key into chat, a commit, or a doc.
+Publishable key received 2026-07-25 and set as a Fly secret (`RC_SUPABASE_ANON_KEY`) — it is
+publishable by design and is served to clients via `/api/auth/config`, so it lives in deploy
+secrets rather than in this repo. The **service-role / secret key was never requested and must
+never leave the server side** — it bypasses RLS entirely.
 
-### H20 — Set provider spend limits · `todo` — **blocks M1 deploy and M2.5**
+### H20 — Set provider spend limits · ✅ `done` (2026-07-25)
+OpenRouter per-key credit limit set. OpenAI **auto-recharge confirmed OFF**, so the prepaid balance
+is a genuine hard stop — which matters because the dashboard budget alone would not have been one.
+Both providers now fail closed. Re-verify the OpenAI Admin API enforcing limit if you also set one.
+
 Do this *before* the instance is publicly reachable, not before the closed test — M1 already
 exposes a working backend to the internet.
 
@@ -159,10 +166,18 @@ when M2's ownership enforcement lands.
 
 ## Blocking M2 (identity and tenancy)
 
-### H5 — Google OAuth credentials · `in progress`
-Create a **Web application** OAuth client — *not* Android. Android client types have **no client
-secret**, which is what Supabase's Google provider requires, so an Android client cannot satisfy
-this step.
+### H5 — Google OAuth credentials · ✅ `done` (2026-07-25)
+Web client created and wired into Supabase's Google provider; 3 accounts added as OAuth test users.
+
+**Carried forward to H16:** adding test users means the Google consent screen is in **Testing**
+mode, which restricts sign-in to those specific accounts. Before M2.5 needs 12+ testers, either add
+every tester as a Google test user (limit 100) or publish the consent screen. Publishing does not
+require Google verification for basic email/profile scopes, but it is a step that is easy to hit at
+the worst possible moment.
+
+Original guidance, kept because it is the part people get wrong: create a **Web application** OAuth
+client — *not* Android. Android client types have **no client secret**, which is what Supabase's
+Google provider requires, so an Android client cannot satisfy this step.
 
 - **Authorized redirect URI:** `https://aumedoefxacycwfrlcml.supabase.co/auth/v1/callback`
 - **Authorized JavaScript origins:** `http://localhost:5173` (Vite dev) and
@@ -265,6 +280,10 @@ communities exist but read Google's policy on them before relying on one.
 This is the longest calendar dependency in the whole plan and it does **not** need a
 finished product — only a build good enough that testers can install and open it. Start it as
 soon as M2.5 puts an AAB on the closed track.
+
+**Prerequisite carried from H5:** the Google OAuth consent screen is in Testing mode, which
+limits sign-in to explicitly listed accounts. Either add every tester as a Google test user (limit
+100) or publish the consent screen before opening the closed test.
 
 **Report back:** tester count, the date the closed test opened, and any drop-outs.
 

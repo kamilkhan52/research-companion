@@ -1,0 +1,52 @@
+# Fly.io — STAGING. Mirrors fly.toml; differs only in app name, volume name, and RC_ENV.
+#
+# Deploy: flyctl deploy -c fly.staging.toml
+#
+# Note (M1, temporary): staging deliberately has NO provider API keys set. Until PR 2 lands the
+# user allowlist, Supabase sign-up is self-service, so a stranger could in principle create an
+# account here. With no OpenRouter/OpenAI key configured there is nothing to spend, which bounds
+# that window to "someone could make an empty project on a throwaway box". Do not set provider
+# keys on staging until the allowlist is enforced.
+
+app = "research-companion-staging"
+primary_region = "dfw"
+
+[build]
+
+[env]
+  RC_ENV = "staging"
+  RC_HOST = "0.0.0.0"
+  RC_PORT = "8080"
+  RC_PROJECTS_ROOT = "/data/projects"
+  RC_APP_STATE_DIR = "/data/.app-state"
+  RC_APP_TITLE = "Paradigm (staging)"
+
+[[mounts]]
+  source = "rc_data_staging"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Same reasoning as production — see fly.toml. Staging runs the same job machinery, so an
+  # autostop mid-job would produce exactly the failure we are here to rehearse against.
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 1024
+  swap_size_mb = 512
