@@ -166,3 +166,43 @@ def test_arxiv_path_translates_every_refusal(monkeypatch, exc):
     monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
     with pytest.raises(retriever.RetrievalError):
         retriever._fetch("https://arxiv.org/pdf/2201.11705")
+
+
+def test_arxiv_retries_a_429_then_succeeds(monkeypatch):
+    """arXiv throttles hard, so a 429 must be retried rather than surfaced. Untested until now:
+    deleting the retry branch left the suite green while turning a routine throttle into a failed
+    paper retrieval."""
+    calls = {"n": 0}
+
+    def fetch(url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.HTTPStatusError(
+                "429", request=httpx.Request("GET", url),
+                response=httpx.Response(429, headers={"retry-after": "0"},
+                                        request=httpx.Request("GET", url)))
+        return safe_fetch.FetchResult(url=url, status_code=200,
+                                      headers=httpx.Headers({}), content=b"%PDF-ok")
+
+    monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
+    monkeypatch.setattr(retriever.time, "sleep", lambda s: None)
+    monkeypatch.setattr(safe_fetch, "fetch", fetch)
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    assert retriever._fetch("https://arxiv.org/pdf/2201.11705") == b"%PDF-ok"
+    assert calls["n"] == 2, "the 429 was not retried"
+
+
+def test_arxiv_gives_up_after_repeated_throttling(monkeypatch):
+    """And the retry must terminate: exhausting the attempts is a RetrievalError carrying the
+    guidance the UI shows, not an infinite loop."""
+    def always_429(url, **kw):
+        raise httpx.HTTPStatusError(
+            "429", request=httpx.Request("GET", url),
+            response=httpx.Response(429, request=httpx.Request("GET", url)))
+
+    monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
+    monkeypatch.setattr(retriever.time, "sleep", lambda s: None)
+    monkeypatch.setattr(safe_fetch, "fetch", always_429)
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    with pytest.raises(retriever.RetrievalError, match="rate-limiting"):
+        retriever._fetch("https://arxiv.org/pdf/2201.11705")

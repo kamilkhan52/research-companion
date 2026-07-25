@@ -12,8 +12,9 @@ Four call sites downloaded a caller-supplied URL, and the single guard that exis
   * **Carrier-grade NAT was allowed.** The check enumerated `is_private/is_loopback/...`, which
     misses `100.64.0.0/10` — precisely the Tailscale range. On a tailnet-joined host (the dev Mac
     is `100.83.161.127`) those are reachable internal peers. `is_global` is the question worth
-    asking: it covers every enumerated case plus CGNAT, `192.0.0.0/24`, and the IPv4-mapped IPv6
-    spellings of all of them.
+    asking: it covers the enumerated cases plus CGNAT, `192.0.0.0/24`, and the IPv4-mapped IPv6
+    spellings of all of them — except multicast, which `is_global` reports as public, so that one
+    stays an explicit check alongside it.
   * **Nothing bounded the response.** `resp.content[:N]` truncates only *after* the whole body is
     in memory, so one oversized URL is an OOM — and with a single worker (invariant 6) that takes
     down every in-flight background job, not just the offending request.
@@ -192,7 +193,11 @@ def assert_public_url(url: str) -> None:
         raise UnsafeURLError(f"could not resolve {host}")
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global:
+        # `is_global` is the main test, but it does NOT exclude multicast — 224.0.0.1 and ff02::1
+        # both report is_global True. The enumeration this replaced did check is_multicast, so
+        # dropping it made the guard narrower on that one axis while the docstring claimed the
+        # opposite. No practical TCP target, but "public destinations only" should mean it.
+        if not ip.is_global or ip.is_multicast:
             raise UnsafeURLError(f"refusing to fetch non-public address {ip} (host {host})")
 
 
@@ -213,9 +218,10 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     `timeout` is httpx's PER-OPERATION budget; `deadline` (default `MAX_TOTAL_SECONDS`) bounds the
     whole call. Both are needed: httpx resets its read timeout on every socket read, so a server
     that dribbles one byte just inside the timeout keeps `iter_raw()` going forever without
-    exceeding either the timeout or the byte ceiling. That pins the calling thread, and every
-    caller here is a background job in a single-worker process — enough of them and nothing else
-    runs. Raises `FetchTimeoutError` when the deadline passes.
+    exceeding either the timeout or the byte ceiling. That pins the calling thread — usually a
+    background job, though the legacy `/start` and `/start_stream` routes still reach retrieval
+    synchronously, where it pins a request instead. Either way, in a single-worker process enough
+    of them and nothing else runs. Raises `FetchTimeoutError` when the deadline passes.
 
     Enforcement is a watchdog thread that closes the client when the deadline passes, plus checks
     between operations. The checks alone are NOT enough: httpx loops on reads internally while

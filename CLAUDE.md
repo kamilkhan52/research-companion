@@ -139,8 +139,12 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   default it sets, so a bare `uvicorn` invocation refuses to start. That is deliberate: an unset
   `RC_ENV` used to mean "dev", which would let a deployed container that lost its environment boot
   with authentication disabled. See "Environments" below.
-- **Tests:** `.venv/bin/python -m pytest -q`. The suite is network-free (extraction/citations
-  are injected fakes; see `tests/conftest.py`) — keep it that way.
+- **Tests:** `.venv/bin/python -m pytest -q`. The suite makes no EXTERNAL network calls
+  (extraction/citations are injected fakes; see `tests/conftest.py`) — keep it that way. Not
+  socket-free, though: two tests in `tests/test_safe_fetch.py` bind a loopback listener on purpose,
+  because a slow-drip server is the one failure an `httpx.MockTransport` cannot express (it returns
+  a response object without ever doing a socket read). Reach for that only when the behaviour under
+  test *is* the transport.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects

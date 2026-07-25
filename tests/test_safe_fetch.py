@@ -69,6 +69,11 @@ def _resp(status: int, body: bytes = b"", **headers: str) -> httpx.Response:
     "0.0.0.0",
     "::ffff:127.0.0.1",     # IPv4-mapped loopback: the enumeration form of this check missed
                             # variants like this depending on how it was written
+    # Multicast: `is_global` reports these as PUBLIC, so replacing the old enumeration with it
+    # alone quietly dropped a category the previous guard had covered.
+    "224.0.0.1",
+    "239.255.255.250",
+    "ff02::1",
 ])
 def test_refuses_non_public_addresses(fake_dns, ip):
     fake_dns["evil.example"] = ip

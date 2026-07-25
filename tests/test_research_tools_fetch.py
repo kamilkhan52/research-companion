@@ -63,3 +63,23 @@ def test_non_text_content_is_skipped(monkeypatch):
         url=url, status_code=200, headers=httpx.Headers({"content-type": "application/pdf"}),
         content=b"%PDF-1.4"))
     assert "non-text" in research_tools._direct_fetch(["https://a.example/x.pdf"], "obj")
+
+
+def test_http_status_error_is_per_url_not_a_tool_error(monkeypatch):
+    """A 404 on one URL must be reported against that URL and the others still fetched. Raising
+    ToolError instead would abandon the whole call AND make _run_chain fall through to the next
+    provider, which is wrong: the fetch worked, the page just was not there."""
+    def fetch(url, **kw):
+        if "missing" in url:
+            raise httpx.HTTPStatusError(
+                "404", request=httpx.Request("GET", url),
+                response=httpx.Response(404, request=httpx.Request("GET", url)))
+        return safe_fetch.FetchResult(
+            url=url, status_code=200,
+            headers=httpx.Headers({"content-type": "text/html"}),
+            content=b"<html>good</html>")
+
+    monkeypatch.setattr(research_tools.safe_fetch, "fetch", fetch)
+    out = research_tools._direct_fetch(["https://a.example/missing", "https://b.example/ok"], "obj")
+    assert "404" in out
+    assert "good" in out
