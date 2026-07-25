@@ -400,7 +400,7 @@ _ENV_DEFAULTS = {
     # speech (audio) — OpenRouter has no TTS, so OpenAI uses its own key
     "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
     "speech_provider": os.environ.get("RC_SPEECH_PROVIDER", "openai"),  # openai | browser
-    "tts_model": os.environ.get("RC_TTS_MODEL", "gpt-4o-mini-tts"),
+    "tts_model": os.environ.get("RC_TTS_MODEL", "tts-1-hd"),
     "tts_voice": os.environ.get("RC_TTS_VOICE", "alloy"),
     # web search/fetch for the agent's research tools — a provider chain (Firecrawl -> Parallel
     # -> keyless DuckDuckGo). Keys optional; also read from env at call time (see research_tools).

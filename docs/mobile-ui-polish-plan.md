@@ -1,6 +1,6 @@
 # Mobile UI polish plan — post-revamp rounds
 
-Follow-up to `docs/mobile-ui-revamp-plan.md` (the Figma revamp, merged as PRs #39–#44),
+Follow-up to the Figma revamp (merged as PRs #39–#44; its plan doc was removed once complete),
 driven by on-device reviews. **Round 1** (Phases A–E, PRs #45–#49) is merged; **Round 2**
 (Phases F–K below, from the 2026-07-09 review) is next. Same working agreement as that
 plan: a **driver**

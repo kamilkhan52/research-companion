@@ -152,10 +152,11 @@ Labs, chat navigation, "Paradigm" icon) are queued as the next planned round.
 | R8.2 | Project split — phase 1 (deterministic): `POST /api/projects/{pid}/split` moves/copies selected papers + their work (reading-list block w/ dangling cites dropped, corpus+Notes, transcripts+branches, per-paper graph caches) into a new project; jobs-sweep guard + slug validation + batched commits both sides; Library long-press multi-select → Split sheet (name, goals, move/copy) | [#147](https://github.com/kamilkhan52/research-companion/pull/147) | Complete — AI working-notes passes (phases 2–3) follow |
 | R8.3 | Split/move AI working-notes passes: destination synthesis + optional source cleanup from departed committed Notes; background jobs, project context rebind, recoverable proposals, base-revision conflict gate, explicit apply/discard; controls only when selected papers have Notes | [#168](https://github.com/kamilkhan52/research-companion/pull/168) | Complete |
 
-## Round-9 device-pass queue (2026-07-17) — see docs/round9-device-pass-queue.md
+## Round-9 device-pass queue (2026-07-17) — shipped; detail doc removed 2026-07-25
 
 Kamil's notes from using the shipped Round-7 + split build. Full detail in
-`docs/round9-device-pass-queue.md`; summary rows below (IDs R9.1–R9.15).
+the summary rows below (IDs R9.1–R9.15); the per-item queue doc was deleted once the round
+closed, since this table is the durable record.
 
 | Item | Change | Type | Status |
 |------|--------|------|--------|
@@ -174,7 +175,7 @@ Kamil's notes from using the shipped Round-7 + split build. Full detail in
 | R9.2 | Select text → comment on spans → queue comments → attach quotes+comments to next response | feature | Design [#167](https://github.com/kamilkhan52/research-companion/pull/167) (`docs/text-comments-design.md`) — sentence-granularity approved 2026-07-18; phased implementation queued |
 | R9.4 | Default theme = System | confirmed | Already the default; no-op |
 
-## Round-10 device-pass queue (2026-07-18) — see docs/round10-device-pass-queue.md
+## Round-10 device-pass queue (2026-07-18) — shipped; detail doc removed 2026-07-25
 
 | Item | Change | PR | Status |
 |------|--------|----|--------|

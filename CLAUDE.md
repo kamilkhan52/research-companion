@@ -119,7 +119,11 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
   invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
   function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
-- `tts.py` — OpenAI TTS behind a swappable interface. `auth.py` — Supabase/token/open auth.
+- `tts.py` — OpenAI TTS behind a swappable interface. Default model `tts-1-hd` (H22, chosen
+  2026-07-25): character-priced at $30/1M, so audio cost is exactly computable *before* synthesis —
+  which is what M3's quota needs. It returns raw mp3 with no usage payload, so audio spend is
+  computed from input length, never reported back. `gpt-4o-mini-tts` stays selectable and is the
+  only model that takes the `tts_instructions` steerability prompt. `auth.py` — Supabase/token/open auth.
 
 ## Dev workflow
 
