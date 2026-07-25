@@ -101,13 +101,20 @@ exposes a working backend to the internet.
 - **OpenRouter:** set a per-key credit limit. This is a genuine hard stop — requests are rejected
   before reaching the upstream provider once it's exhausted. Set it below a number you'd accept
   losing outright.
-- **OpenAI:** be aware that a "project budget" is **only an alert** — OpenAI removed hard budget
-  caps, and requests keep being processed past the threshold (verified 2026-07-25; an earlier
-  version of this file wrongly said it fails closed). Set the alert anyway, but the nearest real
-  stop is a small **prepaid balance with auto-recharge disabled** — confirm that behavior before
-  relying on it. The actual TTS ceiling is enforced in-app by M2.5, as a per-user daily budget —
-  see H22, since the default model is token-priced rather than character-priced and the per-request
-  figure is a conservative estimate rather than an exact cost.
+- **OpenAI:** two different things share the name "spend limit", and only one of them stops
+  anything.
+  - The **dashboard project/org monthly budget is a soft alert** — requests keep being processed
+    past the threshold. Set it, but do not treat it as protection. (An earlier version of this
+    file called it a hard cap; that was wrong.)
+  - The **Admin API spend-limit resource supports an *enforcing* mode**, where requests fail once
+    the limit is reached. This is the strongest provider-side control available — set it, and then
+    **verify it actually blocks** with a deliberate small-limit test, since the dashboard and API
+    surfaces have differed and community reports of limits "not being respected" exist.
+  - **Prepaid balance with auto-recharge disabled** remains a belt-and-braces backstop, though it
+    is org-wide and cutoff can lag.
+
+  Regardless, the per-user TTS ceiling is enforced in-app by M2.5 (see H22) — provider limits
+  protect *you* from total runaway; only the in-app budget stops one user burning everyone's.
 
 **Why not an agent:** provider account billing settings.
 **Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
@@ -118,9 +125,15 @@ text tokens **plus generated audio tokens**, so its exact cost is not knowable b
 (and `/audio/speech` returns raw mp3 with no usage payload). The older `tts-1` / `tts-1-hd` are
 character-priced and therefore exactly costable in advance.
 
-- **Keep `gpt-4o-mini-tts` (recommended)** — better voice, and audio is a headline feature. Quota
-  reserves a conservative upper bound from character count, so the ledger over-counts slightly.
-- **Pin `tts-1`** — exact per-character accounting, lower voice quality.
+- **Keep `gpt-4o-mini-tts` (recommended)** — better voice, audio is a headline feature, **and it
+  is the only one of the two that can report actual token usage** (via `stream_format: "sse"`), so
+  successful synthesis settles to real cost. Quota reserves a conservative bound up front; only
+  attempts that die before reporting stay at the estimate.
+- **Pin `tts-1`** — cost is exactly computable per character in advance, but there is no usage
+  reporting and no SSE support, and the voice is noticeably worse.
+
+The accounting argument now favours the *same* option as the quality argument, which is why the
+recommendation is firm.
 
 Either way the accounting is exact only *per dispatch*, not per narration: the synthesis path
 retries up to 3× per segment and retries even on read timeouts, where the audio may already have

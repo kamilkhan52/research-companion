@@ -153,8 +153,21 @@ Validating every redirect hop does not close it either. M1 must **pin the valida
 custom transport that connects to the checked IP) or verify the connected peer before the response
 is read. Stream the download with a byte ceiling instead of `.content`, reusing the 40 MB limit the
 upload path already enforces. M1's allowlist limits exposure to trusted users until M2.5, but this
-is cheap enough that it should not wait — and closing it here also closes the same rebinding gap
-for the agent's `web_fetch`, which has carried it as documented accepted risk.
+is cheap enough that it should not wait.
+
+**Fix every outbound-fetch path in M1, not just this one.** Deferring the sweep to M3 would leave
+holes open through M1 and the entire M2.5 closed test. There are four, each broken differently:
+
+| Path | Address validation | Memory ceiling |
+|---|---|---|
+| `retriever._fetch` (`retriever.py:173`) | none | none — buffers `.content` |
+| `retrieval_agent.fetch_pdf` (`retrieval_agent.py:31`) | validates, then httpx re-resolves (rebinding) | none — buffers `.content` in full, *then* slices to `HUNT_MAX_PDF_BYTES` |
+| `cover_jobs._download_pdf` (`cover_jobs.py:82`) | none, and follows redirects | correct already — streams with a cap |
+| `research_tools._direct_fetch` | rebinding gap (§7.6) | n/a |
+
+So the work is: one pinned-address, redirect-validating, streaming-with-ceiling fetch helper, and
+every one of these four migrated onto it. `cover_jobs` already shows the right streaming shape to
+generalize from.
 
 Secrets move to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
 `app.json` `extra.apiBaseUrl` with staging/production variants. Early spike: verify Expo SDK 56's
@@ -359,13 +372,24 @@ revisit if the over-count proves material at M10.
    Reserve **per attempt**, not per logical operation — or make the retry unambiguous (no retry
    after a read timeout) and accept the reliability cost. Reserving per logical operation would
    silently under-reserve by up to 3×.
-2. **The upper bound is an engineering estimate, not a provider guarantee.** OpenAI documents no
-   per-request cap on output audio tokens or duration, and the `speed` parameter is not a billing
-   bound. What *is* hard is the input cap (OpenAI 4096 chars; we split at `MAX_TTS_CHARS` = 3800),
-   which bounds plausible audio duration in practice. So derive the bound from segment length with
-   an explicit, documented safety factor, and **validate it against observed spend at M10** rather
-   than presenting it as guaranteed. This is acceptable because the *daily per-user budget* is the
-   actual ceiling — the per-request bound only has to never under-estimate.
+2. **The upper bound is an engineering estimate, not a provider guarantee — but it only has to
+   cover the failure case.** OpenAI documents no per-request cap on output audio tokens or
+   duration, and `speed` is not a billing bound. What *is* hard is the input cap (OpenAI 4096
+   chars; we split at `MAX_TTS_CHARS` = 3800), which bounds plausible audio duration in practice.
+   So derive the bound from segment length with an explicit, documented safety factor and validate
+   it against observed spend at M10.
+
+   Crucially, **a successful attempt need not stay at the estimate.** `gpt-4o-mini-tts` supports
+   `stream_format: "sse"`, whose terminal event reports input/output token usage — so reserve the
+   conservative bound, then **settle to the observed usage** when the attempt completes, keeping
+   the bound only for attempts that time out or die before their usage event. That makes the
+   ledger accurate for the normal path and conservative only where it must be. (Confirm the exact
+   event name and payload shape against the current speech API reference when implementing — this
+   comes from Sol's reading of the official docs and was not independently verified here.)
+
+   Note this **inverts the H22 tradeoff**: SSE usage reporting is available on `gpt-4o-mini-tts`
+   and *not* on `tts-1`/`tts-1-hd`. So the token-priced model gives better real accounting than the
+   character-priced one, which strengthens the recommendation to keep `gpt-4o-mini-tts`.
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
 per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
@@ -446,11 +470,12 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
 - *OpenAI (TTS):* there is **no per-request identifier to reconcile against** — the usage API
   reports aggregated time buckets grouped by project/key/model, so under concurrency a crashed
   synthesis cannot be matched to one reservation. Do not specify provider reconciliation here.
-  Settle instead from the reservation itself, using whichever design M2.5 chose: with a
-  character-priced model the reserved figure *is* the exact cost; with `gpt-4o-mini-tts` it is a
-  deliberate **upper bound**, so settling at it over-counts a crashed request rather than
-  under-counting it. Either way the ledger errs toward charging us, never toward silently losing
-  spend — which is the property that matters for a ceiling. Do not describe this as exact.
+  A *successful* attempt is not affected — with `gpt-4o-mini-tts` it settles to the usage reported
+  in the SSE terminal event (see M2.5). The unresolvable case is narrower than earlier drafts of
+  this plan claimed: only an attempt that **crashed or timed out before its usage event** cannot be
+  priced from the provider. Settle those from the reservation's conservative bound, which
+  over-counts a crashed request rather than under-counting it. The ledger therefore errs toward
+  charging us, never toward silently losing spend — the property that matters for a ceiling.
 
 An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
