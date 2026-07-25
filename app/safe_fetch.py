@@ -53,12 +53,23 @@ log = get("safe_fetch")
 MAX_REDIRECTS = 5
 
 
-class UnsafeURLError(Exception):
+class SafeFetchError(Exception):
+    """Base for every refusal from this module, so a call site can translate all of them into its
+    own domain error with one `except` while still special-casing the ones it wants to."""
+
+
+class UnsafeURLError(SafeFetchError):
     """The URL — or something it redirected to — is not a public internet destination."""
 
 
-class FetchTooLargeError(Exception):
+class FetchTooLargeError(SafeFetchError):
     """The response exceeded the caller's byte ceiling."""
+
+
+class UnsupportedResponseError(SafeFetchError):
+    """The response cannot be handled safely — e.g. a Content-Encoding whose expansion we have no
+    way to bound. Distinct from FetchTooLargeError: nothing was oversized, we simply will not
+    guess. Reporting it as a size error would tell the caller (and the user) the wrong thing."""
 
 
 @dataclass(frozen=True)
@@ -149,7 +160,7 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
         if enc == "identity":
             continue
         if enc not in ("gzip", "x-gzip", "deflate"):
-            raise FetchTooLargeError(
+            raise UnsupportedResponseError(
                 f"{url} used unsupported Content-Encoding {enc!r} (we requested identity)")
         # 16+MAX_WBITS: gzip framing. For deflate, accept both the zlib-wrapped form and the raw
         # form some servers send.
@@ -157,17 +168,39 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
             else (zlib.MAX_WBITS, -zlib.MAX_WBITS)
         for i, wbits in enumerate(wbits_options):
             try:
-                obj = zlib.decompressobj(wbits)
-                out = obj.decompress(raw, max_bytes + 1)
-                if len(out) > max_bytes or obj.unconsumed_tail:
-                    raise FetchTooLargeError(
-                        f"{url} decompresses past the {max_bytes}-byte limit")
-                raw = out
+                raw = _inflate(raw, wbits, max_bytes=max_bytes, url=url)
                 break
             except zlib.error:
                 if i == len(wbits_options) - 1:
-                    raise FetchTooLargeError(f"{url} sent malformed {enc} content") from None
+                    raise UnsupportedResponseError(
+                        f"{url} sent malformed {enc} content") from None
     return raw
+
+
+def _inflate(data: bytes, wbits: int, *, max_bytes: int, url: str) -> bytes:
+    """Inflate `data`, never producing more than `max_bytes`, handling MULTI-MEMBER streams.
+
+    The member loop is not a nicety: `zlib.decompressobj` stops at the end of the first member and
+    leaves the rest in `unused_data`, so a single decompress call on a legitimate concatenated gzip
+    body (which RFC 1952 allows, and `cat a.gz b.gz` produces) returns only the first member's
+    bytes. Silently truncating a paper mid-download is worse than failing.
+    """
+    out = bytearray()
+    remaining = data
+    while remaining:
+        obj = zlib.decompressobj(wbits)
+        # Budget the whole output, not each member, so many small members cannot add up past it.
+        chunk = obj.decompress(remaining, max_bytes + 1 - len(out))
+        out += chunk
+        if len(out) > max_bytes or obj.unconsumed_tail:
+            raise FetchTooLargeError(f"{url} decompresses past the {max_bytes}-byte limit")
+        if not obj.eof:
+            break                      # stream ended mid-member; take what decoded cleanly
+        nxt = obj.unused_data
+        if len(nxt) >= len(remaining):
+            break                      # no forward progress — refuse to spin
+        remaining = nxt
+    return bytes(out)
 
 
 def fetch(url: str, *, max_bytes: int, timeout: float = 60,

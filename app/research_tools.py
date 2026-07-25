@@ -368,6 +368,9 @@ def _direct_fetch(urls: list[str], objective: str) -> str:
         except safe_fetch.FetchTooLargeError as e:
             chunks.append(f"# {url}\n\n(too large: {e})")
             continue
+        except safe_fetch.SafeFetchError as e:
+            chunks.append(f"# {url}\n\n(refused: {e})")
+            continue
         except httpx.HTTPStatusError as e:
             chunks.append(f"# {url}\n\n(fetch failed: HTTP {e.response.status_code})")
             continue

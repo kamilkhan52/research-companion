@@ -209,6 +209,9 @@ def _fetch(url: str) -> bytes:
         raise RetrievalError(f"Refusing to download {url}: {e}") from e
     except safe_fetch.FetchTooLargeError as e:
         raise RetrievalError(f"Download too large: {e}") from e
+    except safe_fetch.SafeFetchError as e:
+        # Base class last: a new refusal type must never escape this layer untranslated.
+        raise RetrievalError(f"Download refused for {url}: {e}") from e
     except httpx.HTTPError as e:
         raise RetrievalError(f"Download failed for {url}: {e}") from e
 

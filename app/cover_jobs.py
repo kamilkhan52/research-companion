@@ -93,6 +93,8 @@ def _download_pdf(url: str) -> bytes:
         raise CoverError(f"Refusing to download {url}: {e}") from e
     except safe_fetch.FetchTooLargeError as e:
         raise CoverError(f"PDF too large: {e}") from e
+    except safe_fetch.SafeFetchError as e:
+        raise CoverError(f"Download refused for {url}: {e}") from e
     except httpx.HTTPError as e:
         raise CoverError(f"Download failed for {url}: {e}") from e
 

@@ -42,6 +42,8 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
             return f"Refused: {e}"
         except safe_fetch.FetchTooLargeError as e:
             return f"Download failed: {e}"
+        except safe_fetch.SafeFetchError as e:
+            return f"Download refused: {e}"
         except httpx.HTTPStatusError as e:
             return f"Download failed: HTTP {e.response.status_code}"
         except httpx.HTTPError as e:

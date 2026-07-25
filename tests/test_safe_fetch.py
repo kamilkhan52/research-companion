@@ -253,6 +253,26 @@ def test_rejects_a_decompression_bomb_without_allocating_it(monkeypatch, layers,
         "in full before the check runs")
 
 
+def test_decodes_a_multi_member_gzip_body(monkeypatch):
+    """RFC 1952 allows concatenated members (what `cat a.gz b.gz` produces), and a single
+    `decompressobj.decompress()` call returns only the FIRST member — silently truncating the
+    body. Silent truncation of a paper is worse than an error, so _inflate loops over members."""
+    body = gzip.compress(b"AAA") + gzip.compress(b"BBB")
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="gzip")))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == b"AAABBB"
+
+
+def test_many_small_members_cannot_exceed_the_ceiling(monkeypatch):
+    """The budget is across the whole body, not per member — otherwise N members of max_bytes each
+    would each pass their own check."""
+    body = b"".join(gzip.compress(b"x" * 10_000) for _ in range(20))
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="gzip")))
+    with pytest.raises(safe_fetch.FetchTooLargeError):
+        safe_fetch.fetch("https://example.com/x", max_bytes=50_000)
+
+
 def test_decodes_a_legitimate_gzip_body(monkeypatch):
     """The bomb defence must not break ordinary compression: a server that ignores our
     `Accept-Encoding: identity` and gzips anyway still has to produce correct bytes."""
@@ -278,8 +298,11 @@ def test_refuses_an_unsupported_content_encoding(monkeypatch):
     reach for a decoder whose expansion we cannot bound."""
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
         lambda request: _resp(200, b"\x00\x01", content_encoding="br")))
-    with pytest.raises(safe_fetch.FetchTooLargeError, match="unsupported"):
+    with pytest.raises(safe_fetch.UnsupportedResponseError, match="unsupported"):
         safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
+    # Not a size error: reporting it as one would tell the user their PDF was too big.
+    assert not issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.FetchTooLargeError)
+    assert issubclass(safe_fetch.UnsupportedResponseError, safe_fetch.SafeFetchError)
 
 
 def test_accepts_a_body_at_the_ceiling(monkeypatch):
