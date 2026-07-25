@@ -82,17 +82,24 @@ carries a compliance slice, because closed tracks require a Data safety form and
 
 ---
 
-### H4 — Create production and staging Supabase projects · `todo` — **now blocks M1**
-*Moved forward from M2 by Sol's review:* production will refuse to boot unless
+### H4 — Supabase project · ✅ `done (single project)` (2026-07-25)
+*Moved forward from M2 by Sol's review:* production refuses to boot unless
 `auth.mode() == "supabase"`, because `auth.mode()` otherwise falls back to `open` and a deploy that
-forgets one env var would serve the entire API unauthenticated (audit P0-12). So the Supabase
-projects must exist before M1 can deploy, not before M2.
-Two projects (never share one across environments — production customer data must not be casual
-test data). Enable **asymmetric JWT signing keys** so the JWKS endpoint is live, and enable the
-Email and Google providers. `README.md` already documents this setup.
-**Why not an agent:** account creation.
-**Report back:** both project URLs and anon (publishable) keys. The anon key is publishable and
-safe to share; **never** paste a service-role key into chat, a commit, or a doc.
+forgets one env var would serve the entire API unauthenticated (audit P0-12).
+
+Project `aumedoefxacycwfrlcml` is live. **Asymmetric JWT signing verified** — the JWKS endpoint
+returns an ES256 key, so `app/auth.py`'s local verification will work. Email provider enabled;
+Google provider in progress (see H5).
+
+**Accepted compromise, decided 2026-07-25: one project serves both staging and production.** The
+standing rule is that production data must never be casual test data, and this breaks it. Tolerable
+only while the sole user is Kamil and the allowlist (H21) keeps the instance closed. **Revisit
+before M2.5** — the moment 12 external testers create real accounts, staging must be separated, or
+staging testing has to move to a throwaway project. Recorded here so it isn't forgotten rather than
+silently accepted.
+
+**Still needed:** the anon (publishable) key for the client config — safe to share. **Never** paste
+a service-role key into chat, a commit, or a doc.
 
 ### H20 — Set provider spend limits · `todo` — **blocks M1 deploy and M2.5**
 Do this *before* the instance is publicly reachable, not before the closed test — M1 already
@@ -141,20 +148,34 @@ been produced and billed. M2.5 handles that by reserving per attempt.
 
 **Report back:** the choice, so M2.5 sizes the per-user TTS budget accordingly.
 
-### H21 — Provide your Supabase user UUID for the allowlist · `todo` — blocks M1
-M1 ships a temporary allowlist because Supabase sign-in is self-service: without it, the first
-stranger who signs up gets your single-tenant instance, including the shared provider keys and
-system prompts. The allowlist is removed when M2's ownership enforcement lands.
-**Report back:** your auth UUID (not an email) once H4 exists, plus tester UUIDs before M2.5.
+### H21 — Provide your Supabase user UUID for the allowlist · ✅ `done` (2026-07-25)
+Received; it goes into `fly secrets` as `RC_ALLOWED_USERS`, not into this repo. The allowlist
+exists because Supabase sign-in is self-service — without it the first stranger who signs up gets
+the single-tenant instance, including the shared provider keys and system prompts. It is removed
+when M2's ownership enforcement lands.
+**Still needed before M2.5:** tester UUIDs, if the allowlist is still the gate at that point.
 
 ---
 
 ## Blocking M2 (identity and tenancy)
 
-### H5 — Google OAuth credentials · `todo`
-Create a Web OAuth client with redirect URI `https://<ref>.supabase.co/auth/v1/callback`, and add
-the production web origin to authorized JS origins. Put the client ID and secret into Supabase's
-Google provider.
+### H5 — Google OAuth credentials · `in progress`
+Create a **Web application** OAuth client — *not* Android. Android client types have **no client
+secret**, which is what Supabase's Google provider requires, so an Android client cannot satisfy
+this step.
+
+- **Authorized redirect URI:** `https://aumedoefxacycwfrlcml.supabase.co/auth/v1/callback`
+- **Authorized JavaScript origins:** `http://localhost:5173` (Vite dev) and
+  `https://research-companion.fly.dev` once M1 deploys.
+- Put the resulting client ID + secret into Supabase → Authentication → Providers → Google.
+
+**A separate Android OAuth client is *probably* not needed at all.** Mobile sign-in (built in M2,
+see P0-15) will use Supabase's `signInWithOAuth` through `expo-web-browser`, redirecting back via
+the app's `researchcompanion` scheme — that flow uses the Web client. An Android client is only
+required for the *native* Google ID-token flow. If one is ever created it needs package name
+`com.kamilkhan.researchcompanion` (from `mobile/app.json`, not `com.example`) and the SHA-1 from
+`eas credentials`, since EAS holds the signing keystore.
+
 **Why not an agent:** Google Cloud account ownership.
 **Report back:** confirmation only — no secrets.
 

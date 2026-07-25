@@ -236,6 +236,17 @@ restricted to an operator role, closing P0-2/P0-3) and **per-user preferences** 
 `prior_notes_scope`). Authorize job endpoints by owner (P1-2). Backfill: adopt existing local
 projects under your own user id.
 
+**Build mobile authentication — it does not exist (P0-15).** The Android app has no Supabase
+dependency, no sign-in screen, and no session handling; `setToken` has no caller, so a token can
+never be set. Scope: add `@supabase/supabase-js`, a sign-in screen (magic link + Google), session
+persistence in `expo-secure-store` (already a dependency), token refresh, sign-out, and the
+OAuth redirect via `expo-web-browser` back through the app's `researchcompanion` scheme. Mirror
+`web/src/components/AuthGate.tsx`, which already does this correctly for the web client.
+
+**Hard ordering constraint:** M1 makes production refuse to boot without Supabase auth, so the
+mobile `apiBaseUrl` cutover **cannot happen until this lands**. Until then the app keeps pointing
+at the Mac mini. This is also why M2.5 depends on M2 — testers must be able to sign in.
+
 **Audio needs an explicit redesign, not just an ownership check.** Audio jobs are deliberately
 registered under the `None` project scope so identical narration requested from anywhere shares one
 job (`audio_jobs.py:89`), cancellation therefore cancels *every* caller joined to that content, and
@@ -249,7 +260,8 @@ tests.
 
 **Files/services.** New `app/db.py`, `app/tenancy.py`, `supabase/migrations/`; `app/projects.py`,
 `app/config.py`, `app/jobs.py`, `app/routers/settings.py`, `app/routers/projects_api.py`,
-`app/routers/audio.py`, `app/main.py`; both clients' settings screens.
+`app/routers/audio.py`, `app/main.py`; both clients' settings screens; **new mobile auth module +
+sign-in screen, `mobile/package.json` (`@supabase/supabase-js`), `mobile/src/api/config.ts`.**
 
 **Risks.** Highest-risk milestone. Touching `_safe_pid` and `project_path` is touching the trust
 boundary. The contextvar rebind is the invariant that "silently reads/writes the wrong project's
