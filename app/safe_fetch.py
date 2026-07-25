@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import time
 import zlib
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -60,9 +61,18 @@ MAX_ENCODING_LAYERS = 3
 # _inflate, which is quadratic in this count (see its docstring). Real bodies have exactly one.
 MAX_COMPRESSION_MEMBERS = 16
 
+# Block size for feeding the decompressor. Bounds how much `unused_data` can copy at a member
+# boundary (see _inflate); unrelated to the network read size.
+_INFLATE_BLOCK_BYTES = 64 * 1024
+
 # Read the body in fixed blocks instead of taking whatever fragments the transport produces, so a
 # server cannot control our allocation pattern by fragmenting its response (see fetch).
 _READ_CHUNK_BYTES = 64 * 1024
+
+# Wall-clock ceiling for one fetch, redirects and body included. Generous next to a real paper
+# download, and the only thing standing between a slow-drip server and a permanently pinned job
+# thread (see fetch).
+MAX_TOTAL_SECONDS = 180.0
 
 
 class SafeFetchError(Exception):
@@ -76,6 +86,11 @@ class UnsafeURLError(SafeFetchError):
 
 class FetchTooLargeError(SafeFetchError):
     """The response exceeded the caller's byte ceiling."""
+
+
+class FetchTimeoutError(SafeFetchError):
+    """The whole fetch — redirects plus body — outlasted its deadline. Distinct from httpx's
+    per-operation timeout, which a slow-drip server never trips."""
 
 
 class UnsupportedResponseError(SafeFetchError):
@@ -112,6 +127,11 @@ class FetchResult:
             return self.content.decode(charset or "utf-8", errors="replace")
         except LookupError:                      # unknown charset name from a hostile header
             return self.content.decode("utf-8", errors="replace")
+
+
+def _check_deadline(ends_at: float, url: str) -> None:
+    if time.monotonic() >= ends_at:
+        raise FetchTimeoutError(f"fetch of {url} exceeded its total deadline")
 
 
 def normalized_host(url: str) -> str:
@@ -235,27 +255,42 @@ def _inflate(data: bytes | bytearray, wbits: int, *, max_bytes: int,
     body (which RFC 1952 allows, and `cat a.gz b.gz` produces) returns only the first member's
     bytes. Silently truncating a paper mid-download is worse than failing.
 
-    The member COUNT is capped because the loop is quadratic in it: each iteration reads the
-    remaining suffix out of `obj.unused_data`, which CPython materializes as a fresh bytes object.
-    An empty gzip member is ~20 bytes and contributes nothing to the output budget, so a compliant
-    40MB body could carry ~2 million of them and buy O(n^2) copying while every byte-based limit
-    stays satisfied. Returns a bytearray so the caller can make the single immutable copy.
+    Input is fed in fixed blocks over a `memoryview`, which is what keeps the loop cheap. Handing
+    the whole remaining body to `decompress()` and then taking the rest back out of
+    `obj.unused_data` makes CPython materialize a fresh copy of that remainder on every member —
+    near a full `max_bytes` for the first one, and O(n^2) copying overall. Feeding blocks means
+    `unused_data` never holds more than one block, and the member count is capped on top of that,
+    since an empty gzip member is ~20 bytes and costs nothing against the output budget.
+
+    Returns the accumulator itself, so the caller makes the single immutable copy once rather than
+    once per encoding layer.
     """
     out = bytearray()
-    remaining = data
+    view = memoryview(data)
+    total = len(view)
+    pos = 0
     members = 0
-    while remaining:
+    while pos < total:
         members += 1
         if members > MAX_COMPRESSION_MEMBERS:
             raise UnsupportedResponseError(
                 f"{url} contains more than {MAX_COMPRESSION_MEMBERS} compression members")
         obj = zlib.decompressobj(wbits)
-        # Budget the whole output, not each member, so many small members cannot add up past it.
-        chunk = obj.decompress(remaining, max_bytes + 1 - len(out))
-        out += chunk
-        del chunk                      # drop the copy before the next member allocates another
-        if len(out) > max_bytes or obj.unconsumed_tail:
-            raise FetchTooLargeError(f"{url} decompresses past the {max_bytes}-byte limit")
+        while pos < total and not obj.eof:
+            block = view[pos:pos + _INFLATE_BLOCK_BYTES]
+            # Budget the whole output, not each member or block, so many small pieces cannot add
+            # up past the ceiling.
+            chunk = obj.decompress(block, max_bytes + 1 - len(out))
+            out += chunk
+            del chunk                  # drop it before the next block allocates another
+            if len(out) > max_bytes or obj.unconsumed_tail:
+                raise FetchTooLargeError(f"{url} decompresses past the {max_bytes}-byte limit")
+            # unused_data is empty until the member ends, and then holds only the tail of THIS
+            # block — bounded by the block size, not by the body size.
+            consumed = len(block) - len(obj.unused_data)
+            if consumed <= 0:
+                break                  # no forward progress; fall through to the eof check
+            pos += consumed
         if not obj.eof:
             # The member ended without its terminator — a truncated body. zlib does NOT raise
             # here, it just stops, so accepting this would hand back a silently truncated paper
@@ -264,14 +299,11 @@ def _inflate(data: bytes | bytearray, wbits: int, *, max_bytes: int,
             # "incomplete" result is also what a raw-deflate body looks like when read as
             # zlib-wrapped.
             raise zlib.error(f"incomplete compressed stream ({len(out)} bytes decoded)")
-        nxt = obj.unused_data
-        if len(nxt) >= len(remaining):
-            break                      # no forward progress — refuse to spin
-        remaining = nxt
-    return bytes(out)
+    return out
 
 
 def fetch(url: str, *, max_bytes: int, timeout: float = 60,
+          deadline: float = MAX_TOTAL_SECONDS,
           headers: dict[str, str] | None = None) -> FetchResult:
     """GET `url`, re-validating every redirect hop, reading at most `max_bytes` of body.
 
@@ -283,7 +315,15 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     `max_bytes` is keyword-only with no default on purpose: every call site already had its own
     natural limit, and a shared default would be wrong for all of them. Forcing the argument makes
     a new caller choose rather than inherit a number that fits somebody else's case.
+
+    `timeout` is httpx's PER-OPERATION budget; `deadline` (default `MAX_TOTAL_SECONDS`) bounds the
+    whole call. Both are needed: httpx resets its read timeout on every socket read, so a server
+    that dribbles one byte just inside the timeout keeps `iter_raw()` going forever without
+    exceeding either the timeout or the byte ceiling. That pins the calling thread, and every
+    caller here is a background job in a single-worker process — enough of them and nothing else
+    runs. Raises `FetchTimeoutError` when the deadline passes.
     """
+    ends_at = time.monotonic() + deadline
     current = url
     # Ask for no compression: a decompression bomb is only a threat if the server gets to choose
     # the expansion ratio. Callers may still override it, and a server may ignore it, so
@@ -291,6 +331,7 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     sent = {"Accept-Encoding": "identity", **(headers or {})}
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for _ in range(MAX_REDIRECTS + 1):
+            _check_deadline(ends_at, current)
             assert_public_url(current)
             with client.stream("GET", current, headers=sent) as r:
                 if r.is_redirect:
@@ -324,6 +365,7 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                 # memory, not just the byte count.
                 buf = bytearray()
                 for chunk in r.iter_raw(chunk_size=_READ_CHUNK_BYTES):
+                    _check_deadline(ends_at, current)
                     if len(buf) + len(chunk) > max_bytes:
                         # Abandon the stream the moment the cap is crossed, so a lying (or absent)
                         # Content-Length cannot get more than the ceiling into memory.

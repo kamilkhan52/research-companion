@@ -470,6 +470,76 @@ def test_memory_does_not_scale_with_server_fragmentation(monkeypatch):
         f"peak {peak} bytes for a {count}-byte body — memory is tracking fragment COUNT, not size")
 
 
+class _SlowDripStream(httpx.SyncByteStream):
+    """A body that never ends and never stalls: one byte per read, forever. Each read is prompt, so
+    httpx's per-operation timeout never fires — which is exactly the point."""
+
+    def __iter__(self):
+        while True:
+            yield b"x"
+
+
+def test_total_deadline_stops_a_slow_drip_server(monkeypatch):
+    """httpx's `timeout` resets on every socket read, so a server feeding one byte at a time keeps
+    iter_raw() running indefinitely without tripping the timeout OR the byte ceiling. Each caller
+    here is a background job in a single-worker process, so a pinned thread is not recoverable.
+    Time is advanced with a fake clock rather than really waiting."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(safe_fetch.time, "monotonic", lambda: now["t"])
+
+    def handler(request):
+        return httpx.Response(200, stream=_SlowDripStream())
+
+    def advancing_check(ends_at, url):
+        now["t"] += 1.0                    # each read costs a second of wall clock
+        return real_check(ends_at, url)
+
+    real_check = safe_fetch._check_deadline
+    monkeypatch.setattr(safe_fetch, "_check_deadline", advancing_check)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    with pytest.raises(safe_fetch.FetchTimeoutError, match="deadline"):
+        safe_fetch.fetch("https://example.com/drip", max_bytes=100_000_000, deadline=10)
+
+
+def test_deadline_does_not_fire_on_a_normal_fetch(monkeypatch):
+    """The guard must not break ordinary downloads, or the test above would pass against a
+    function that always timed out."""
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, b"quick")))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=1000).content == b"quick"
+
+
+def test_multi_member_peak_stays_bounded(monkeypatch):
+    """The multi-member shape, which the single-member memory test cannot reach.
+
+    The body is deliberately adversarial: an EMPTY first member followed by a large one. Handing
+    the whole remaining body to decompress() and taking the rest back out of `obj.unused_data`
+    then copies nearly the entire wire body at that first boundary. Feeding fixed blocks keeps
+    unused_data down to one block.
+
+    The shape matters as much as the assertion. A first attempt at this test used four equal
+    members, where the copied remainder is only a fraction of the body — so it passed with and
+    without the fix and proved nothing. Thresholds here are measured through the whole fetch path
+    (wire buffer, accumulator and final copy all included), not around _inflate alone: this shape
+    measures 3.28x now versus 4.87x with the whole-body decompress.
+    """
+    big = os.urandom(600_000)
+    body = gzip.compress(b"") + gzip.compress(big)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="gzip")))
+
+    tracemalloc.start()
+    try:
+        result = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.content == big
+    assert peak < len(big) * 4, (
+        f"peak {peak} for a {len(big)}-byte body — unused_data is copying the whole remainder")
+
+
 def test_accepts_a_body_at_the_ceiling(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
         lambda request: _resp(200, b"x" * 100)))
