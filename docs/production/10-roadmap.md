@@ -455,55 +455,39 @@ Verified 2026-07-25, and this corrects an earlier draft of this plan:
   prepaid balance with auto-recharge disabled as belt-and-braces. See H20.
 
 So the load-bearing control for TTS is one **we** enforce. We hold the only key, so an in-app
-ceiling is a real ceiling — but note a correction to an earlier draft of this plan, which claimed
-TTS cost is exactly computable before dispatch:
+ceiling is a real ceiling.
 
-- The configured default is **`tts-1-hd`** (H22, decided 2026-07-25), priced $30.00/1M characters —
-  exactly computable before synthesis. The paragraphs below describe the *alternative* that was not
-  chosen, `gpt-4o-mini-tts`, which OpenAI prices on input
-  text tokens **plus generated output audio tokens**. Audio token count depends on synthesized
-  duration, so it is not knowable *before* the call — which is what the reservation must cover.
-  It *is* knowable afterward: the current implementation requests raw mp3 and so sees no usage,
-  but `stream_format: "sse"` emits a terminal `speech.audio.done` event carrying token usage, so a
-  completed synthesis settles to real cost (see the settlement rules below and H22).
-- Only the older character-priced models (`tts-1`, `tts-1-hd`) give exact pre-dispatch cost.
+**The model is decided (H22, 2026-07-25): `tts-1-hd`.** That settles the accounting design, and it
+is the SIMPLER of the two this plan previously weighed:
 
-Two workable designs, and this is a product decision (see H22): **(a)** pin production TTS to a
-character-priced model, where the pre-dispatch figure *is* the exact cost, at some loss of voice
-quality; or **(b)** keep `gpt-4o-mini-tts`, reserve a **conservative upper bound** derived from the
-character count, and **settle to the usage reported in the SSE terminal event** — the bound is
-retained only for attempts that die before reporting. Recommendation: **(b)**, which is now the
-better option on *both* axes: better voice, and better real accounting, since only
-`gpt-4o-mini-tts` reports usage at all.
+- `tts-1-hd` is priced **$30.00 per 1M characters** (`tts-1` is $15.00), verified against OpenAI's
+  live pricing on 2026-07-25. Character pricing means **the cost of a dispatch is exactly known
+  before making it**, from the length of the text we are about to send.
+- It returns raw mp3 and supports **no usage payload and no SSE**. Nothing settles afterward, and
+  nothing needs to: there is no provider figure to reconcile against, because our own computation
+  *is* the figure.
 
-**Two things make the *reservation unit* wrong if taken naively, and both must be handled:**
+So M3 bills audio as `characters_sent × rate`, charged **per dispatch**, and there is no
+reservation/settlement machinery for TTS at all. Two consequences that survive from the earlier
+design and still bite:
 
-1. **Retries multiply the billable dispatches.** `tts.py:101-116` retries up to `_TRIES` (3) times
-   per segment, and `except httpx.HTTPError: continue` retries on **any** network error — including
-   a read timeout where OpenAI may already have synthesized and billed the audio. 500/502/504 are
-   likewise ambiguous. So one logical narration can cost up to 3 × (number of segments) dispatches.
-   Reserve **per attempt**, not per logical operation — or make the retry unambiguous (no retry
-   after a read timeout) and accept the reliability cost. Reserving per logical operation would
-   silently under-reserve by up to 3×.
-2. **The upper bound is an engineering estimate, not a provider guarantee — but it only has to
-   cover the failure case.** OpenAI documents no per-request cap on output audio tokens or
-   duration, and `speed` is not a billing bound. What *is* hard is the input cap (OpenAI 4096
-   chars; we split at `MAX_TTS_CHARS` = 3800), which bounds plausible audio duration in practice.
-   So derive the bound from segment length with an explicit, documented safety factor and validate
-   it against observed spend at M10.
+1. **Retries multiply the billable dispatches.** `tts.py` retries up to `_TRIES` (3) per segment,
+   and `except httpx.HTTPError: continue` retries on **any** network error — including a read
+   timeout where OpenAI may already have synthesized and billed. So one logical narration can cost
+   up to 3 × (number of segments). **Charge per attempt, not per logical operation**, or make the
+   retry unambiguous (no retry after a read timeout) and accept the reliability cost. Charging per
+   logical operation would under-bill by up to 3×.
+2. **Long narrations are many dispatches.** `split_for_tts` splits at `MAX_TTS_CHARS` (3800) under
+   OpenAI's 4096 input cap, so the unit to meter is the segment, and the per-user ceiling must be
+   checked *between* segments — otherwise a single long narration blows past the cap before
+   anything looks at it.
 
-   Crucially, **a successful attempt need not stay at the estimate.** `gpt-4o-mini-tts` supports
-   `stream_format: "sse"`, whose terminal event reports input/output token usage — so reserve the
-   conservative bound, then **settle to the observed usage** when the attempt completes, keeping
-   the bound only for attempts that time out or die before their usage event. That makes the
-   ledger accurate for the normal path and conservative only where it must be. (The terminal usage
-   event is present in OpenAI's published OpenAPI specification; still confirm the exact payload
-   shape when implementing, as with anything in this plan touching money mechanics.)
-
-   Note this **inverted the H22 tradeoff** as it stood before the decision: SSE usage reporting is
-available on `gpt-4o-mini-tts`
-   and *not* on `tts-1`/`tts-1-hd`. So the token-priced model gives better real accounting than the
-   character-priced one, which strengthens the recommendation to keep `gpt-4o-mini-tts`.
+*(Historical note, kept because it explains why this section used to be complicated: the
+alternative, `gpt-4o-mini-tts`, is priced on input text tokens **plus generated audio tokens**,
+which are not knowable before the call. It would have needed a conservative reservation up front
+settled against the usage in its SSE terminal event. Choosing a character-priced model deletes that
+whole path. Note also that OpenAI's deprecation list names the `gpt-4o-mini-tts-2025-03-20`
+snapshot, not the model family — a search summary claiming the family is deprecated is wrong.)*
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
 per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
@@ -529,8 +513,7 @@ the hosted backend. Two tester accounts cannot see each other's data. Report act
 
 **Human actions.** Finish Play account verification, H8 (create the app, accept agreements), H11
 (approve privacy policy + terms), H13 (Data safety declarations), **H20** (provider spend limits —
-already required at M1, and doubly so once 12 external testers can spend), **H22** (choose the
-production TTS model, which sets how the per-user budget is computed), H16 (recruit 12+ testers —
+already required at M1, and doubly so once 12 external testers can spend), H16 (recruit 12+ testers —
 the pacing item; start recruiting during M2 so they're ready the day this lands), and H21 extended
 with the testers' UUIDs if the allowlist is still the gate.
 
@@ -584,15 +567,13 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
 
 - *OpenRouter (LLM):* each call has a generation id, so an orphan can be resolved authoritatively
   by querying generation stats. This is the path the pending/`reconcile` machinery was designed for.
-- *OpenAI (TTS):* there is **no per-request identifier to reconcile against** — the usage API
-  reports aggregated time buckets grouped by project/key/model, so under concurrency a crashed
-  synthesis cannot be matched to one reservation. Do not specify provider reconciliation here.
-  A *successful* attempt is not affected — with `gpt-4o-mini-tts` it settles to the usage reported
-  in the SSE terminal event (see M2.5). The unresolvable case is narrower than earlier drafts of
-  this plan claimed: only an attempt that **crashed or timed out before its usage event** cannot be
-  priced from the provider. Settle those from the reservation's conservative bound, which
-  over-counts a crashed request rather than under-counting it. The ledger therefore errs toward
-  charging us, never toward silently losing spend — the property that matters for a ceiling.
+- *OpenAI (TTS):* **nothing to reconcile, by construction.** With `tts-1-hd` (H22) the price is
+  `characters_sent × rate`, so the ledger computes the exact figure at dispatch and no provider
+  number is ever needed. Do not build reconciliation for audio. The one ambiguity is a dispatch
+  that may or may not have been billed — a read timeout where OpenAI synthesized anyway — and the
+  safe treatment is to charge it: over-counting a possibly-billed attempt beats silently losing
+  spend, which is the property that matters for a ceiling. (The provider usage API could not settle
+  this anyway: it reports aggregated time buckets by project/key/model, with no per-request id.)
 
 An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
