@@ -1,0 +1,35 @@
+# Keep the build context to the runtime payload. Two entries here are correctness, not size:
+#
+#  * projects/ and .app-state/ are the LIVE DATA STORES on the dev machine (git-backed reading
+#    projects, API keys in settings.json, a multi-GB audio cache). Baking them into an image would
+#    ship real keys into a registry and would shadow the mounted volume at /data. Never include.
+#  * .env holds secrets. Production config comes from `fly secrets`, never from a file in the image.
+
+.git
+.gitignore
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Live data + secrets — see above.
+projects/
+project/
+.app-state/
+.env
+
+# Not part of the server runtime.
+tests/
+mobile/
+scripts/
+docs/
+shared/
+.github/
+.claude/
+web/node_modules/
+web/src/
+web/public/
+*.md
+run.sh
+tunnel.sh

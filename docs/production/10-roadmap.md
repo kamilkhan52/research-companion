@@ -197,6 +197,18 @@ job — that's M6, just document it).
 **Rollback.** Mac mini keeps running unchanged until staging is proven; DNS/`apiBaseUrl` cutover is
 the only switch, and it reverts.
 
+**Production data migration and client cutover are explicitly NOT in M1** (established reviewing
+PR #218). Both are gated on later milestones, and pretending otherwise is how the record gets lost:
+
+- **M2** — the mobile client cannot authenticate at all (P0-15), so pointing it at an
+  auth-enforcing production would simply break it.
+- **M6** — a Fly volume is a *single unreplicated copy*, and Fly's own guidance is explicit that
+  daily volume snapshots are not a primary backup. Migrating the git-backed record onto one volume
+  with no off-host backup turns a host failure into a data-loss event. Production must not become
+  the authoritative copy until M6's automated backups **and a tested restore** exist.
+
+Until both land, the Mac mini stays authoritative and Fly is a proving ground.
+
 **Done when.** Staging and production both reachable over HTTPS on a real domain, restart-safe,
 volume-backed, secrets out of the repo, prod provably refusing dev bypasses, API-36 answer recorded.
 
@@ -617,7 +629,13 @@ hands. `docs/improvements.md` §1.4 already specifies the job-persistence approa
 `JobRegistry` (§1.1) made it a one-place fix.
 
 **Scope.** Persist job state so an interrupted job is either resumed or reported as failed rather
-than vanishing. **Reconcile against M3's reservation records rather than inventing a second
+than vanishing. **Add a graceful-shutdown drain** (found reviewing PR #218): jobs run in daemon
+threads and the app has no shutdown hook, so a `fly deploy` — or a Fly host migration, which stops
+the machine first — kills in-flight work. `auto_stop_machines = "off"` does not help; it only
+disables Fly Proxy's *idle* shutdown. The drain is a FastAPI lifespan hook that stops admitting new
+jobs on SIGTERM and waits for tracked workers within the configured `kill_timeout` (raised to the
+300s maximum in `fly.toml` so the hook has room). Until it exists the operational rule is: check
+for active jobs before deploying. **Reconcile against M3's reservation records rather than inventing a second
 lifecycle** — an interrupted job and its orphaned reservation are the same event, and resolving
 them separately is how a customer's quota gets stranded or their real spend under-counted. Use the
 reservation ids and generation linkage M3 defines. Automated backups of the volume (project git
