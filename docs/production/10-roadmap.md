@@ -108,12 +108,17 @@ $14.24 + 20 GB volume $3.00, staging $7.12 + volume $1.50, Supabase Free $0), le
 of variable budget**. Against `20-pricing-analysis.md`'s unit costs — $0.14/free-user-month,
 $2.22/Basic-user-month, $8.40 net revenue per Basic after Play's 15%:
 
-| Mix | Users the ceiling supports | Revenue at that point |
-|---|---|---:|
-| All free | ~1,240 free users | $0 |
-| 10:1 free\:paid | 48 paying + 481 free | $404 |
-| 20:1 free\:paid | 35 paying + 694 free | $291 |
-| All paid | 78 Basic subscribers | $659 |
+| Mix | Users the ceiling supports | Variable spend | Revenue there |
+|---|---|---:|---:|
+| All free | 1,243 free users | $174.02 | $0 |
+| 10:1 free\:paid | 48 paying + 480 free | $173.76 | $403 |
+| 20:1 free\:paid | 34 paying + 680 free | $170.68 | $286 |
+| All paid | 78 Basic subscribers | $173.16 | $655 |
+
+Counts are floored to whole users and the spend column is computed from those same counts, so
+every row actually fits under $174.14. (Rounding the 20:1 row *up* to 34.7 → 35 paying and 693.8 →
+694 free would put it at $174.86 — over the ceiling, which is exactly the kind of quiet overshoot a
+capacity table should not print.) Revenue is the floored subscriber count × $8.40.
 
 **The ceiling is not the binding constraint at any realistic launch scale**, and in every mixed
 scenario revenue passes $200 well before spend does. The closed test costs
@@ -551,8 +556,11 @@ design and still bite:
 alternative, `gpt-4o-mini-tts`, is priced on input text tokens **plus generated audio tokens**,
 which are not knowable before the call. It would have needed a conservative reservation up front
 settled against the usage in its SSE terminal event. Choosing a character-priced model deletes that
-whole path. Note also that OpenAI's deprecation list names the `gpt-4o-mini-tts-2025-03-20`
-snapshot, not the model family — a search summary claiming the family is deprecated is wrong.)*
+whole path. On its deprecation status, OpenAI's model page and its all-models catalog disagree —
+the former marks only the `-2025-03-20` snapshot, the latter labels the whole family Deprecated —
+so an earlier claim here that "a search summary saying the family is deprecated is wrong" was
+overconfident and is withdrawn. Immaterial now: we are on `tts-1`, which the same catalog shows
+with no deprecation label.)*
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
 per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it

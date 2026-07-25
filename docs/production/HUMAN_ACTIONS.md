@@ -83,7 +83,7 @@ carries a compliance slice, because closed tracks require a Data safety form and
 
 ---
 
-### H4 — Supabase project · ✅ `done (single project)` (2026-07-25)
+### H4 — Supabase project · 🟡 `prod done; staging project outstanding` (2026-07-25)
 *Moved forward from M2 by Sol's review:* production refuses to boot unless
 `auth.mode() == "supabase"`, because `auth.mode()` otherwise falls back to `open` and a deploy that
 forgets one env var would serve the entire API unauthenticated (audit P0-12).
@@ -168,9 +168,15 @@ Verified against OpenAI's live docs on 2026-07-25 rather than from memory:
   Character pricing means cost is **exactly computable before synthesis**, which is strictly better
   for the M3 quota work than the token-priced alternative — and that property is what made the
   later switch from `-hd` to `tts-1` a pure price change with no accounting rework.
-- The `gpt-4o-mini-tts` *snapshot* `-2025-03-20` is deprecated (shutdown 2027-01-20), superseded by
-  `-2025-12-15`. The floating `gpt-4o-mini-tts` alias is NOT deprecated — a search result claiming
-  the model was deprecated conflated the snapshot with the family. Worth knowing if we revisit.
+- **`gpt-4o-mini-tts` deprecation — OpenAI's own two pages disagree, so do not state this
+  confidently either way.** The model page shows the *snapshot* `-2025-03-20` as `Deprecated` with
+  `-2025-12-15` as current, which is what an earlier version of this note asserted. But the
+  all-models catalog labels the **family** "GPT-4o mini TTS — Deprecated". Re-checked 2026-07-25;
+  both readings are live. The earlier note went further and claimed a search summary saying "the
+  family is deprecated" was simply wrong — that claim is not supportable, and it is removed.
+  Consequence: none today. We are on `tts-1`, and the same catalog shows **`tts-1` and `tts-1-hd`
+  carrying no deprecation label**. It matters only if we ever revisit `gpt-4o-mini-tts`, at which
+  point the family's status must be settled first.
 
 **Consequence to carry into M3:** the `tts-1` family returns raw mp3 with no usage payload and no SSE, so
 audio spend is *computed* from the character count we sent, never reported back. That is fine
