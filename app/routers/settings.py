@@ -1,10 +1,10 @@
 """App-global settings + workflow-prompt editor routes."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import config, projects, prompts, tts
+from .. import auth, config, projects, prompts, tts
 from ..prompts import PromptError, PromptManagedError
 
 router = APIRouter()
@@ -71,6 +71,21 @@ def write_settings(req: SettingsReq):
     }
 
 
+def _require_operator(request: Request) -> None:
+    """Gate a route that changes configuration for EVERY user of the instance.
+
+    The system prompts drive every analysis turn, so a user who can rewrite them can redirect
+    other people's reading — and on a shared instance that is also a prompt-injection primitive
+    (P0-3). Product decision 2026-07-25: prompt editing is the operator's, not the user's. The
+    per-session *starting prompt* a reader can edit is a different thing entirely and is
+    unaffected — it travels on the turn (`ChatStartReq.prompt`) and never touches the registry.
+    """
+    if not auth.is_operator(getattr(request.state, "user", None)):
+        raise HTTPException(
+            status_code=403,
+            detail="Editing prompts is restricted to the instance operator.")
+
+
 @router.get("/api/prompts")
 def get_prompts(project: str | None = None):
     """All workflow prompts and live status, optionally scoped to one project's method file."""
@@ -85,7 +100,8 @@ def get_prompts(project: str | None = None):
 
 
 @router.post("/api/prompts")
-def save_prompt(req: PromptReq):
+def save_prompt(req: PromptReq, request: Request):
+    _require_operator(request)
     try:
         prompts.set_prompt(req.key, req.value or "")
     except PromptManagedError as e:
@@ -96,7 +112,8 @@ def save_prompt(req: PromptReq):
 
 
 @router.post("/api/prompts/reset")
-def reset_prompt(req: PromptReq):
+def reset_prompt(req: PromptReq, request: Request):
+    _require_operator(request)
     try:
         prompts.reset(req.key)
     except PromptManagedError as e:

@@ -10,6 +10,20 @@ from app.routers import settings as settings_router
 from fastapi import HTTPException
 
 
+class _FakeRequest:
+    """Minimal stand-in for the Request these routes now take. The operator gate reads
+    request.state.user; in a dev environment (which the suite is) it short-circuits to allow, so
+    these prompt-behaviour tests stay about prompt behaviour. The gate itself is tested in
+    tests/test_operator_gate.py."""
+
+    class _State:
+        user = None
+
+    state = _State()
+
+
+
+
 @pytest.fixture
 def prompt_environment(tmp_path, monkeypatch):
     prompt_dir = tmp_path / "vault" / "Prompts"
@@ -221,18 +235,20 @@ def test_prompt_inventory_reports_exact_live_status(prompt_environment):
 def test_prompt_api_rejects_vault_managed_writes_with_conflict(prompt_environment):
     req = settings_router.PromptReq(key="tts_instructions", value="ignored override")
     with pytest.raises(HTTPException) as exc_info:
-        settings_router.save_prompt(req)
+        settings_router.save_prompt(req, _FakeRequest())
     assert exc_info.value.status_code == 409
     assert str(_path(prompt_environment, "tts_instructions")) in exc_info.value.detail
 
     # The storage conflict takes precedence over content validation: every attempted API write
     # to an authoritative vault prompt has the same HTTP contract.
     with pytest.raises(HTTPException) as exc_info:
-        settings_router.save_prompt(settings_router.PromptReq(key="opening_message", value=""))
+        settings_router.save_prompt(
+            settings_router.PromptReq(key="opening_message", value=""), _FakeRequest())
     assert exc_info.value.status_code == 409
 
     with pytest.raises(HTTPException) as exc_info:
-        settings_router.reset_prompt(settings_router.PromptReq(key="tts_instructions"))
+        settings_router.reset_prompt(
+            settings_router.PromptReq(key="tts_instructions"), _FakeRequest())
     assert exc_info.value.status_code == 409
 
 
@@ -244,13 +260,14 @@ def test_project_prompt_api_is_read_only_and_never_writes_default_project(
     req = settings_router.PromptReq(key="reading_method", value="unsafe write")
 
     with pytest.raises(HTTPException) as exc_info:
-        settings_router.save_prompt(req)
+        settings_router.save_prompt(req, _FakeRequest())
     assert exc_info.value.status_code == 409
     assert "managed by project file" in exc_info.value.detail
     assert not (project_root / config.DEFAULT_PROJECT_ID / "reading-method.md").exists()
 
     with pytest.raises(HTTPException) as exc_info:
-        settings_router.reset_prompt(settings_router.PromptReq(key="reading_method"))
+        settings_router.reset_prompt(
+            settings_router.PromptReq(key="reading_method"), _FakeRequest())
     assert exc_info.value.status_code == 409
 
     status = next(item for item in prompts.listing() if item["key"] == "reading_method")
