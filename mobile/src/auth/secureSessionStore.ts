@@ -15,8 +15,42 @@
 
 import * as SecureStore from 'expo-secure-store';
 
-/** Bytes per chunk. Under SecureStore's 2048 limit with room for the key overhead. */
-const CHUNK_SIZE = 1800;
+/** BYTES per chunk, under the platform's ~2048-byte value limit with room to spare.
+ *
+ *  Bytes, not characters — the limit the native keystore applies is on the encoded value. Slicing
+ *  by `String.length` would let a session containing any multi-byte UTF-8 (an accented name, an
+ *  emoji in `user_metadata`) produce a chunk of 1800 characters and up to 7200 bytes, which the
+ *  platform rejects. That is the same "fails only for whoever happens to cross the line" failure
+ *  chunking exists to prevent. */
+const CHUNK_BYTES = 1800;
+
+/** UTF-8 length of one code point. */
+function utf8Length(codePoint: number): number {
+  if (codePoint < 0x80) return 1;
+  if (codePoint < 0x800) return 2;
+  if (codePoint < 0x10000) return 3;
+  return 4;
+}
+
+/** Split on code-point boundaries while counting BYTES, so no chunk exceeds the budget and no
+ *  surrogate pair is torn in half (which would corrupt the value on rejoin). */
+function chunkByBytes(value: string, budget: number): string[] {
+  const chunks: string[] = [];
+  let current = '';
+  let used = 0;
+  for (const character of value) {
+    const size = utf8Length(character.codePointAt(0)!);
+    if (used + size > budget && current) {
+      chunks.push(current);
+      current = '';
+      used = 0;
+    }
+    current += character;
+    used += size;
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
 
 /** Hard cap on chunks, so a corrupt or hostile count cannot spin us through unbounded reads. */
 const MAX_CHUNKS = 32;
@@ -59,15 +93,11 @@ export const secureSessionStore = {
   },
 
   async setItem(key: string, value: string): Promise<void> {
-    const chunks: string[] = [];
-    for (let i = 0; i < value.length; i += CHUNK_SIZE) {
-      chunks.push(value.slice(i, i + CHUNK_SIZE));
-    }
+    const chunks = chunkByBytes(value, CHUNK_BYTES);
     if (chunks.length > MAX_CHUNKS) {
       throw new Error(
-        `Session too large to store securely (${value.length} bytes, max ` +
-        `${MAX_CHUNKS * CHUNK_SIZE}). Refusing rather than writing a session that cannot be read ` +
-        'back.',
+        `Session too large to store securely (${chunks.length} chunks, max ${MAX_CHUNKS}). ` +
+        'Refusing rather than writing a session that cannot be read back.',
       );
     }
     // Write the chunks BEFORE the count. A crash between the two then leaves the old count with

@@ -34,9 +34,48 @@ test('a session larger than SecureStore\'s per-value limit round-trips intact', 
   await expect(secureSessionStore.getItem('sb-session')).resolves.toBe(session);
 });
 
-test('no single stored value exceeds the 2048-byte limit', async () => {
+/** What the native keystore actually measures. */
+const byteLength = (value: string) => new TextEncoder().encode(value).length;
+
+test('no single stored value exceeds the 2048-BYTE limit', async () => {
   await secureSessionStore.setItem('sb-session', session);
-  for (const [, value] of mockStore) expect(value.length).toBeLessThanOrEqual(2048);
+  for (const [, value] of mockStore) expect(byteLength(value)).toBeLessThanOrEqual(2048);
+});
+
+test('a session full of multi-byte characters still fits, and still round-trips', async () => {
+  // The limit is on BYTES, so chunking by String.length would put up to 4x the budget into one
+  // value here and the platform would reject the write — leaving a sign-in that appears to work
+  // and silently does not survive a restart, for whoever's profile happens to contain this.
+  const multibyte = JSON.stringify({
+    access_token: `header.${'a'.repeat(700)}.sig`,
+    refresh_token: 'r'.repeat(64),
+    user: {
+      email: 'reader@example.com',
+      user_metadata: { full_name: `Zoë ${'日本語'.repeat(200)} 🎧🎧🎧`.repeat(3) },
+    },
+  });
+  await secureSessionStore.setItem('sb-session', multibyte);
+  for (const [, value] of mockStore) expect(byteLength(value)).toBeLessThanOrEqual(2048);
+  await expect(secureSessionStore.getItem('sb-session')).resolves.toBe(multibyte);
+});
+
+test('no chunk begins or ends on half of a surrogate pair', async () => {
+  // Asserted on the chunk boundaries rather than on the round trip, because a round trip cannot
+  // catch this here: the mock stores JS strings, and slicing then rejoining a UTF-16 string is
+  // lossless in JS. The real store encodes each chunk to UTF-8 independently, and a lone surrogate
+  // is not encodable — it becomes U+FFFD and the session never parses again.
+  const emoji = `{"a":"x${'🎧'.repeat(2000)}"}`;  // odd-length prefix puts a naive
+  await secureSessionStore.setItem('sb-session', emoji);   // 1800-char boundary mid-pair
+  const chunks = [...mockStore.entries()]
+    .filter(([k]) => !k.endsWith('.n'))
+    .map(([, v]) => v);
+  expect(chunks.length).toBeGreaterThan(1);
+  for (const chunk of chunks) {
+    const first = chunk.charCodeAt(0);
+    const last = chunk.charCodeAt(chunk.length - 1);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);  // starts with a LOW surrogate
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);    // ends with a HIGH surrogate
+  }
 });
 
 test('a missing chunk reads as no session rather than as truncated JSON', async () => {
