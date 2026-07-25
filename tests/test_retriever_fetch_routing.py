@@ -26,6 +26,7 @@ def test_lookalike_urls_do_not_take_the_arxiv_path(url):
     "https://arxiv.org/pdf/2201.11705",
     "https://ARXIV.ORG/pdf/2201.11705",       # host comparison is case-insensitive
     "https://export.arxiv.org/api/query",     # subdomain
+    "https://arxiv.org./pdf/2201.11705",      # trailing dot: same host, absolute form
 ])
 def test_real_arxiv_urls_take_the_arxiv_path(url):
     assert retriever._is_arxiv_host(url) is True
@@ -54,4 +55,33 @@ def test_arxiv_path_still_validates_the_destination(monkeypatch):
     monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
                         lambda host, port, *a, **k: [(2, 1, 6, "", ("127.0.0.1", port))])
     with pytest.raises(retriever.RetrievalError, match="Refusing"):
+        retriever._fetch("https://arxiv.org/pdf/2201.11705")
+
+
+def test_arxiv_pdf_download_is_byte_capped(monkeypatch):
+    """The arXiv branch skips safe_fetch for pacing/retry reasons, so it must carry its own
+    ceiling: the url can be a caller-supplied pdf_url that merely lives on an arxiv.org host, and
+    an unbounded buffer there is the same OOM as anywhere else."""
+    import httpx
+
+    big = b"x" * 5000
+
+    def fake_stream(method, url, **kw):
+        class S:
+            status_code = 200
+            headers = httpx.Headers({})
+
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def raise_for_status(self): return None
+            def iter_raw(self): yield big
+
+        return S()
+
+    monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
+    monkeypatch.setattr(retriever.httpx, "stream", fake_stream)
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", port))])
+    with pytest.raises(retriever.RetrievalError, match="limit"):
+        monkeypatch.setattr(retriever, "MAX_PDF_BYTES", 1000)
         retriever._fetch("https://arxiv.org/pdf/2201.11705")

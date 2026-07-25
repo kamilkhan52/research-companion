@@ -110,12 +110,17 @@ def normalized_host(url: str) -> str:
     skips httpx's IDNA 2008 encoding, so `faß.attacker.example` reads back as itself while httpx
     connects to `xn--fa-hia.attacker.example`. Returning "" on an unparseable host lets callers
     fail closed.
+
+    The trailing dot, if any, is KEPT: httpx connects to `example.com.` verbatim, and that is a
+    different DNS question from `example.com` — the absolute form skips the resolver's search
+    suffixes, so with an unlucky search domain the two can resolve to different addresses. Callers
+    comparing against a known domain strip it themselves; the resolver must see what httpx sends.
     """
     try:
         raw = httpx.URL(url).raw_host
     except (UnicodeError, ValueError, httpx.InvalidURL):
         return ""
-    return raw.decode("ascii", errors="replace").lower().rstrip(".")
+    return raw.decode("ascii", errors="replace").lower()
 
 
 def assert_public_url(url: str) -> None:
@@ -163,6 +168,11 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
     applied, so they are undone in reverse. Anything other than gzip/deflate/identity is refused —
     we send `Accept-Encoding: identity`, so a different encoding means the server ignored us, and
     guessing at an unbounded decoder is exactly what this function exists to avoid.
+
+    On memory: an *identity* response (the normal case, since that is what we ask for) returns
+    here untouched, so peak stays at one copy of the body. A compressed one costs more — the wire
+    bytes plus the accumulating output plus the final `bytes()` copy, so roughly 3x `max_bytes`
+    transiently. Bounded and predictable is the requirement; minimal is not.
     """
     encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
     for enc in reversed(encodings):
@@ -201,10 +211,17 @@ def _inflate(data: bytes, wbits: int, *, max_bytes: int, url: str) -> bytes:
         # Budget the whole output, not each member, so many small members cannot add up past it.
         chunk = obj.decompress(remaining, max_bytes + 1 - len(out))
         out += chunk
+        del chunk                      # drop the copy before the next member allocates another
         if len(out) > max_bytes or obj.unconsumed_tail:
             raise FetchTooLargeError(f"{url} decompresses past the {max_bytes}-byte limit")
         if not obj.eof:
-            break                      # stream ended mid-member; take what decoded cleanly
+            # The member ended without its terminator — a truncated body. zlib does NOT raise
+            # here, it just stops, so accepting this would hand back a silently truncated paper
+            # as a successful fetch (measured: 17 bytes of a 2000-byte body). Raise zlib.error
+            # rather than a SafeFetchError so the caller's wbits fallback still gets its turn: an
+            # "incomplete" result is also what a raw-deflate body looks like when read as
+            # zlib-wrapped.
+            raise zlib.error(f"incomplete compressed stream ({len(out)} bytes decoded)")
         nxt = obj.unused_data
         if len(nxt) >= len(remaining):
             break                      # no forward progress — refuse to spin
@@ -267,8 +284,11 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                         raise FetchTooLargeError(
                             f"{current} exceeds the {max_bytes}-byte limit")
                     chunks.append(chunk)
-                body = _decode_body(b"".join(chunks), r.headers.get("content-encoding", ""),
+                wire = b"".join(chunks)
+                chunks.clear()         # the joined copy is the only one needed from here
+                body = _decode_body(wire, r.headers.get("content-encoding", ""),
                                     max_bytes=max_bytes, url=current)
+                del wire
                 return FetchResult(url=current, status_code=r.status_code,
                                    headers=r.headers, content=body)
     raise UnsafeURLError(f"more than {MAX_REDIRECTS} redirects starting at {url}")

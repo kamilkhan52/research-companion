@@ -36,17 +36,86 @@ class RetrievalError(Exception):
     pass
 
 
-def _arxiv_get(url: str, params: dict | None = None, timeout: float = 30) -> httpx.Response:
-    """GET against arXiv with pacing + 429/5xx retry. Raises RetrievalError when still throttled
-    after retries, with guidance the UI can show verbatim."""
+def _arxiv_pace() -> None:
+    """Block until this process may make its next arXiv request (~1 per 3s, serialized)."""
     global _last_arxiv_call
+    with _arxiv_lock:
+        wait = _ARXIV_MIN_INTERVAL_S - (time.time() - _last_arxiv_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_arxiv_call = time.time()
+
+
+def _throttle_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("retry-after")
+    try:
+        return min(float(retry_after), 30.0) if retry_after else 3.0 * (attempt + 1)
+    except ValueError:
+        return 3.0 * (attempt + 1)
+
+
+def _throttled_error(last_status) -> RetrievalError:
+    return RetrievalError(
+        f"arXiv is rate-limiting requests right now (HTTP {last_status}). "
+        "Wait a minute and try again, or paste the paper's PDF link in 'Provide a source'.")
+
+
+def _arxiv_get_bytes(url: str, *, max_bytes: int, timeout: float = 60) -> bytes:
+    """Download from arXiv with the same pacing/retry as `_arxiv_get`, but STREAMED under a byte
+    ceiling.
+
+    `_arxiv_get` buffers the whole response, which is fine for API queries (small XML) and wrong
+    for a PDF: the URL reaching this function can be a caller-supplied `pdf_url` that merely
+    happens to be on an arxiv.org host, so "we trust arXiv not to send us 4 GB" is a promise about
+    the wrong party. Same limit as every other download path.
+    """
     last_status = None
     for attempt in range(_RETRIES):
-        with _arxiv_lock:
-            wait = _ARXIV_MIN_INTERVAL_S - (time.time() - _last_arxiv_call)
-            if wait > 0:
-                time.sleep(wait)
-            _last_arxiv_call = time.time()
+        _arxiv_pace()
+        try:
+            with httpx.stream("GET", url, headers=_UA, timeout=timeout,
+                              follow_redirects=True) as r:
+                if r.status_code == 429 or r.status_code >= 500:
+                    last_status = r.status_code
+                    delay = _throttle_delay(r, attempt)
+                    r.close()
+                    time.sleep(delay)
+                    continue
+                try:
+                    r.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise RetrievalError(f"arXiv request failed: {e}") from e
+                declared = r.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > max_bytes:
+                    raise RetrievalError(
+                        f"arXiv download declares {declared} bytes, over the {max_bytes}-byte limit")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in r.iter_raw():
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise RetrievalError(
+                            f"arXiv download exceeds the {max_bytes}-byte limit")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except httpx.TimeoutException:
+            last_status = "timeout"
+            time.sleep(3.0 * (attempt + 1))
+            continue
+        except httpx.HTTPError as e:
+            raise RetrievalError(f"arXiv request failed: {e}") from e
+    raise _throttled_error(last_status)
+
+
+def _arxiv_get(url: str, params: dict | None = None, timeout: float = 30) -> httpx.Response:
+    """GET against arXiv with pacing + 429/5xx retry. Raises RetrievalError when still throttled
+    after retries, with guidance the UI can show verbatim.
+
+    Buffers the whole response, so it is for the API's small XML replies only — PDFs go through
+    `_arxiv_get_bytes`, which streams under a ceiling."""
+    last_status = None
+    for attempt in range(_RETRIES):
+        _arxiv_pace()
         try:
             r = httpx.get(url, params=params, headers=_UA, timeout=timeout, follow_redirects=True)
         except httpx.TimeoutException:
@@ -59,21 +128,14 @@ def _arxiv_get(url: str, params: dict | None = None, timeout: float = 30) -> htt
             raise RetrievalError(f"arXiv request failed: {e}") from e
         if r.status_code == 429 or r.status_code >= 500:
             last_status = r.status_code
-            retry_after = r.headers.get("retry-after")
-            try:
-                delay = min(float(retry_after), 30.0) if retry_after else 3.0 * (attempt + 1)
-            except ValueError:
-                delay = 3.0 * (attempt + 1)
-            time.sleep(delay)
+            time.sleep(_throttle_delay(r, attempt))
             continue
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
             raise RetrievalError(f"arXiv request failed: {e}") from e
         return r
-    raise RetrievalError(
-        f"arXiv is rate-limiting requests right now (HTTP {last_status}). "
-        "Wait a minute and try again, or paste the paper's PDF link in 'Provide a source'.")
+    raise _throttled_error(last_status)
 
 
 def _similar(a: str, b: str) -> float:
@@ -189,21 +251,25 @@ def _is_arxiv_host(url: str) -> bool:
     same name the guard validates and httpx connects to. An unparseable host yields "" and falls
     through to the guarded path — the safe direction, costing only arXiv's request pacing.
     """
-    host = safe_fetch.normalized_host(url)
+    # The trailing dot is stripped for THIS comparison only. normalized_host keeps it because the
+    # resolver must be asked the same question httpx asks; `arxiv.org.` and `arxiv.org` are the
+    # same host for the purpose of "should this be paced as an arXiv request".
+    host = safe_fetch.normalized_host(url).rstrip(".")
     return host == "arxiv.org" or host.endswith(".arxiv.org")
 
 
 def _fetch(url: str) -> bytes:
     # arXiv PDF downloads share the same throttling as the query API, so route them through the
-    # paced/retrying getter. Still validated first: routing on the hostname means an attacker
-    # cannot steer an arbitrary address into this branch, but it does NOT stop DNS games against
-    # arxiv.org itself, and this branch has no byte ceiling of its own.
+    # paced/retrying getter rather than safe_fetch. Still validated first, and still byte-capped:
+    # routing on the hostname stops an attacker steering an arbitrary address into this branch, but
+    # the URL here can be a caller-supplied pdf_url that merely lives on an arxiv.org host, so this
+    # path gets the same ceiling as every other download.
     if _is_arxiv_host(url):
         try:
             safe_fetch.assert_public_url(url)
         except safe_fetch.UnsafeURLError as e:
             raise RetrievalError(f"Refusing to download {url}: {e}") from e
-        return _arxiv_get(url, timeout=60).content
+        return _arxiv_get_bytes(url, max_bytes=MAX_PDF_BYTES, timeout=60)
     # Everything else may be a client-supplied `pdf_url` (session/start), so it goes through the
     # guarded fetcher: public destinations only, every redirect hop re-checked, hard byte ceiling.
     try:

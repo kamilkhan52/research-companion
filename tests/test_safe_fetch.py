@@ -8,6 +8,7 @@ happened to raise the error they asserted.
 from __future__ import annotations
 
 import gzip
+import zlib
 
 import httpx
 import pytest
@@ -84,6 +85,18 @@ def test_refuses_carrier_grade_nat(fake_dns):
 
 def test_allows_a_public_address():
     safe_fetch.assert_public_url("https://arxiv.org/pdf/2201.11705")   # must not raise
+
+
+def test_preserves_a_trailing_dot(monkeypatch):
+    """`example.com.` is the absolute name and skips the resolver's search suffixes, so it is a
+    different DNS question from `example.com`. httpx connects to the dotted form verbatim, so
+    stripping the dot before resolving would validate a name we do not connect to."""
+    resolved: list[str] = []
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: (resolved.append(host),
+                                                     [(2, 1, 6, "", ("93.184.216.34", port))])[1])
+    safe_fetch.assert_public_url("https://example.com./x")
+    assert resolved == ["example.com."]
 
 
 def test_validates_the_host_httpx_will_actually_connect_to(monkeypatch):
@@ -251,6 +264,32 @@ def test_rejects_a_decompression_bomb_without_allocating_it(monkeypatch, layers,
     assert largest["chunk"] <= 250_000, (
         "the ceiling saw a decompressed chunk — it must count wire bytes, or a bomb is allocated "
         "in full before the check runs")
+
+
+def test_rejects_a_truncated_gzip_body(monkeypatch):
+    """A body that ends mid-member must FAIL, not return the prefix.
+
+    zlib does not raise on a truncated stream — it decodes what it can and leaves `eof` False. An
+    earlier version of this code took that as "done" and returned the prefix as a successful
+    fetch: measured, 17 bytes of a 2000-byte body. A paper silently truncated to its first line is
+    far worse than a failed download, because nothing downstream can tell.
+    """
+    full = gzip.compress(b"IMPORTANT PAPER TEXT" * 100)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, full[:len(full) // 2], content_encoding="gzip")))
+    with pytest.raises(safe_fetch.UnsupportedResponseError, match="malformed"):
+        safe_fetch.fetch("https://example.com/x", max_bytes=100_000)
+
+
+def test_raw_deflate_falls_back_when_zlib_framing_does_not_fit(monkeypatch):
+    """Some servers send raw deflate under `Content-Encoding: deflate`. Reading it as the
+    zlib-wrapped form fails, so the fallback wbits must get its turn — including when the first
+    attempt ends 'incomplete' rather than raising outright."""
+    raw_deflate = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+    body = raw_deflate.compress(b"deflate payload") + raw_deflate.flush()
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="deflate")))
+    assert safe_fetch.fetch("https://example.com/x", max_bytes=100_000).content == b"deflate payload"
 
 
 def test_decodes_a_multi_member_gzip_body(monkeypatch):
