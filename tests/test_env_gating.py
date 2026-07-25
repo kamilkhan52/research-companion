@@ -20,16 +20,31 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     # auth reads these at import; monkeypatch the module attributes so tests can shape mode().
     monkeypatch.setattr(auth, "SUPABASE_URL", "", raising=False)
+    monkeypatch.setattr(auth, "SUPABASE_ANON_KEY", "", raising=False)
     monkeypatch.setattr(auth, "LEGACY_TOKEN", "", raising=False)
 
 
-def _supabase(monkeypatch):
+def _supabase(monkeypatch, *, anon_key: str = "sb_publishable_example"):
+    """A COMPLETE Supabase configuration. Both values matter: mode() keys off the URL alone, so a
+    missing anon key still reports 'supabase' while leaving clients unable to sign in."""
     monkeypatch.setattr(auth, "SUPABASE_URL", "https://example.supabase.co", raising=False)
+    monkeypatch.setattr(auth, "SUPABASE_ANON_KEY", anon_key, raising=False)
 
 
 # ---- env_name / dev_mode ----
 
-def test_env_defaults_to_dev(monkeypatch):
+def test_unset_env_does_not_default_to_dev(monkeypatch):
+    """The central design point of this module. Defaulting an unset RC_ENV to 'dev' would
+    short-circuit every guard, so a container that lost its environment would boot fully open —
+    precisely the failure the rest of this design prevents. Unset must fail closed."""
+    assert config.env_name() == ""
+    assert config.is_dev_env() is False
+    with pytest.raises(auth.ConfigurationError, match="RC_ENV is not set"):
+        auth.assert_environment_safe(config.env_name())
+
+
+def test_explicit_dev_is_dev(monkeypatch):
+    monkeypatch.setenv("RC_ENV", "dev")
     assert config.env_name() == "dev"
     assert config.is_dev_env() is True
 
@@ -50,8 +65,16 @@ def test_unrecognized_env_is_not_dev(monkeypatch):
 
 
 def test_dev_mode_honored_in_dev(monkeypatch):
+    monkeypatch.setenv("RC_ENV", "dev")
     monkeypatch.setenv("RC_DEV", "1")
     assert config.dev_mode() is True
+
+
+def test_dev_mode_off_when_env_unset(monkeypatch):
+    """RC_DEV alone is not enough — without an explicit dev environment the operator affordances
+    stay off, so a process that lost RC_ENV cannot expose prompt editing."""
+    monkeypatch.setenv("RC_DEV", "1")
+    assert config.dev_mode() is False
 
 
 @pytest.mark.parametrize("env", ["staging", "prod"])
@@ -80,6 +103,20 @@ def test_refuses_to_start_without_supabase(monkeypatch, env):
     monkeypatch.setenv("RC_ALLOWED_USERS", "u1")
     assert auth.mode() == "open"
     with pytest.raises(auth.ConfigurationError, match="requires Supabase auth"):
+        auth.assert_environment_safe(env)
+
+
+@pytest.mark.parametrize("env", ["staging", "prod"])
+def test_refuses_supabase_url_without_anon_key(monkeypatch, env):
+    """mode() keys off the URL alone, so this configuration reports 'supabase' and /api/auth/config
+    advertises it — but the clients build a Supabase client only when BOTH values are present
+    (web/src/components/AuthGate.tsx), so sign-in renders and does nothing. That locks every user
+    out of an instance that demands auth, which is worse than not enabling it."""
+    monkeypatch.setenv("RC_ENV", env)
+    monkeypatch.setenv("RC_ALLOWED_USERS", "u1")
+    _supabase(monkeypatch, anon_key="")
+    assert auth.mode() == "supabase"  # the trap: it looks configured
+    with pytest.raises(auth.ConfigurationError, match="RC_SUPABASE_ANON_KEY"):
         auth.assert_environment_safe(env)
 
 

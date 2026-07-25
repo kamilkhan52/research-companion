@@ -111,18 +111,22 @@ _TRUTHY = {"1", "true", "yes", "on"}
 
 
 def env_name() -> str:
-    """`RC_ENV` normalized: dev | staging | prod, defaulting to dev. Read live.
+    """`RC_ENV` normalized: dev | staging | prod. Read live. **No default** — unset returns "".
 
-    An unrecognized value is returned as-is rather than coerced — `is_dev_env()` then treats it as
-    NOT dev (so guards stay on), and `auth.assert_environment_safe()` refuses to boot on it. A typo
-    like `RC_ENV=production` must never quietly disable production hardening.
+    Deliberately not defaulting to "dev": this module's whole premise is that the dangerous
+    configuration is *absence*, and defaulting an unset RC_ENV to dev would short-circuit every
+    guard below it. A container that lost its env would then boot fully open — exactly the failure
+    the rest of this design exists to prevent. So unset behaves like any other unrecognized value:
+    `is_dev_env()` is False (guards stay on) and `auth.assert_environment_safe()` refuses to boot.
+    `run.sh` and `tests/conftest.py` set `RC_ENV=dev` explicitly, and the Dockerfile defaults the
+    image to `prod` so a container can never accidentally be dev.
     """
-    return os.environ.get("RC_ENV", "").strip().lower() or "dev"
+    return os.environ.get("RC_ENV", "").strip().lower()
 
 
 def is_dev_env() -> bool:
-    """True only for the exact string `dev`. Anything unrecognized counts as non-dev, so an
-    unparseable environment fails safe."""
+    """True only for the exact string `dev`. Unset or unrecognized counts as non-dev, so an
+    unparseable — or absent — environment fails safe."""
     return env_name() == "dev"
 
 

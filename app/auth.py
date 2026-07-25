@@ -67,6 +67,13 @@ def assert_environment_safe(env: str) -> None:
     allowlist would mean "everyone" — so forgetting any one of them silently produces the most
     permissive instance rather than an error. Hence: verify, don't default.
     """
+    if not env:
+        raise ConfigurationError(
+            f"RC_ENV is not set. It must be one of {KNOWN_ENVIRONMENTS}. Refusing to start rather "
+            "than assuming 'dev': a container that lost its environment would otherwise boot with "
+            "every guard disabled and serve the whole API unauthenticated. run.sh and the test "
+            "suite set RC_ENV=dev; the Dockerfile defaults to prod."
+        )
     if env not in KNOWN_ENVIRONMENTS:
         raise ConfigurationError(
             f"RC_ENV={env!r} is not one of {KNOWN_ENVIRONMENTS}. Refusing to start rather than "
@@ -81,6 +88,18 @@ def assert_environment_safe(env: str) -> None:
             "RC_SUPABASE_URL and RC_SUPABASE_ANON_KEY. (Refusing to start: with no auth variables "
             "set, mode() falls back to 'open' and this process would serve the entire API "
             "unauthenticated.)"
+        )
+    if not SUPABASE_ANON_KEY:
+        # mode() keys off the URL alone, so a missing anon key still reports "supabase" — and
+        # /api/auth/config then advertises Supabase auth with an empty key. The clients only build
+        # a Supabase client when BOTH are present (web/src/components/AuthGate.tsx), so the sign-in
+        # UI would render but do nothing: every user locked out of an instance that demands auth.
+        # Checked here rather than in mode(), because making mode() fall back to "open" on a
+        # missing key would fail OPEN — the opposite of what this function is for.
+        raise ConfigurationError(
+            f"RC_SUPABASE_ANON_KEY must be set when RC_ENV={env}. RC_SUPABASE_URL alone makes "
+            "auth.mode() report 'supabase' while leaving clients unable to construct a Supabase "
+            "client, which locks every user out instead of letting them sign in."
         )
     if LEGACY_TOKEN:
         raise ConfigurationError(

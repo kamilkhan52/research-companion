@@ -24,7 +24,12 @@ RUN apt-get update \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Fail closed: the app requires an explicit RC_ENV, and an image that defaults to the
+    # STRICTEST environment can never accidentally run as dev. fly.toml / fly.staging.toml
+    # override this per deployment; a bare `docker run` gets prod and therefore refuses to start
+    # without Supabase auth and an allowlist, which is the safe way to be wrong.
+    RC_ENV=prod
 
 WORKDIR /srv
 
