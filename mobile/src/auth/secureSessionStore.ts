@@ -91,10 +91,13 @@ async function readManifest(key: string): Promise<Manifest | null> {
 
 /** Sweep a slot exhaustively rather than up to a stored count: cleanup must not depend on the
  *  manifest, because the case it exists for is a manifest that is missing or already stale. */
-async function purgeSlot(key: string, slot: Slot): Promise<void> {
+async function purgeSlot(key: string, slot: Slot): Promise<boolean> {
+  let ok = true;
   for (let i = 0; i < MAX_CHUNKS; i += 1) {
-    await SecureStore.deleteItemAsync(chunkKey(key, slot, i)).catch(() => {});
+    // eslint-disable-next-line no-await-in-loop
+    await SecureStore.deleteItemAsync(chunkKey(key, slot, i)).catch(() => { ok = false; });
   }
+  return ok;
 }
 
 export const secureSessionStore = {
@@ -121,6 +124,10 @@ export const secureSessionStore = {
       );
     }
     const current = await readManifest(key);
+    // Note this doubles as resumable cleanup: the slot we are about to write is the inactive one,
+    // so any chunks a previously interrupted write or purge left behind are cleared here. A write
+    // happens on every token refresh, so leftovers do not survive long. The one case that outlives
+    // it — signed out and never signing in again — is handled by removeItem purging both slots.
     // Write to the slot NOT currently in use, so the readable session stays intact until the
     // manifest flips. This is the whole reason a torn write cannot produce a mixed session.
     const target: Slot = current?.slot === 'a' ? 'b' : 'a';
@@ -135,11 +142,21 @@ export const secureSessionStore = {
   },
 
   async removeItem(key: string): Promise<void> {
-    // Manifest first: an interrupted removal then reads as "no session" rather than as a live one.
+    // CHUNKS first, then the manifest — the opposite of what looks natural, and the ordering
+    // matters for sign-out. Deleting the manifest first makes reads return null immediately, but
+    // if that delete is the one that fails, the manifest AND the chunks both survive and the
+    // session comes back on the next launch: a sign-out that silently un-does itself. Removing
+    // chunks first means any interruption leaves a manifest pointing at a gap, which `getItem`
+    // already treats as no session.
+    //
+    // Both slots, exhaustively: the inactive one still holds a usable refresh token, and this is
+    // the storage we chose specifically to protect it.
+    const purged = await Promise.all([purgeSlot(key, 'a'), purgeSlot(key, 'b')]);
     await SecureStore.deleteItemAsync(manifestKey(key)).catch(() => {});
-    // Both slots, exhaustively — a stale slot still holds a usable refresh token, and this is the
-    // storage we chose specifically to protect it.
-    await purgeSlot(key, 'a');
-    await purgeSlot(key, 'b');
+    if (purged.some((ok) => !ok)) {
+      // Do not report a clean sign-out when a credential may still be on disk. The caller can
+      // decide; silence here is how "signed out" and "still holding a refresh token" diverge.
+      throw new Error('Could not fully clear the stored session from secure storage.');
+    }
   },
 };

@@ -61,8 +61,16 @@ export function getBaseUrl(): string {
 
 export async function setBaseUrl(raw: string): Promise<void> {
   baseUrl = normalizeBaseUrl(raw);
-  await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
+  // Both of these happen SYNCHRONOUSLY with the URL change, before the await below. A different
+  // server means a different Supabase project, and a token minted by the old one is both useless
+  // there and a bearer credential that server has no business receiving. Persisting first would
+  // leave a window in which `getBaseUrl()` returns the new host while `getToken()` still returns
+  // the old token — and audio polling and query timers are firing throughout that window.
+  token = null;
   notify();
+  await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
+  // Best-effort, and after the fact: the in-memory clear above is what protects the token.
+  await SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => {});
 }
 
 export function hasBaseUrl(): boolean {

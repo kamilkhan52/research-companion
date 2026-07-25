@@ -35,7 +35,7 @@ jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
 let deepLinkHandler: ((event: { url: string }) => void) | undefined;
 jest.mock('expo-linking', () => ({
   createURL: (path: string) => `researchcompanion://${path}`,
-  parse: jest.fn(() => ({ queryParams: {} })),
+  parse: jest.fn(() => ({ path: 'auth', queryParams: {} })),
   getInitialURL: jest.fn(async () => null),
   addEventListener: jest.fn((_event: string, cb: (e: { url: string }) => void) => {
     deepLinkHandler = cb;
@@ -160,7 +160,7 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
 
     // Google comes back through openAuthSessionAsync; a magic link does NOT — it is tapped in a
     // mail app and arrives here. Handling only the former left this flow doing nothing at all.
-    Linking.parse.mockReturnValue({ queryParams: { code: 'pkce-code' } });
+    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'pkce-code' } });
     deepLinkHandler!({ url: 'researchcompanion://auth?code=pkce-code' });
 
     await waitFor(() =>
@@ -169,7 +169,7 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
 
   test('a link tapped while the app is closed completes on cold start', async () => {
     Linking.getInitialURL.mockResolvedValue('researchcompanion://auth?code=cold-code');
-    Linking.parse.mockReturnValue({ queryParams: { code: 'cold-code' } });
+    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'cold-code' } });
 
     await renderProvider();
     await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('cold-code'));
@@ -179,6 +179,7 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
     // Supabase reports these as query params, not as a thrown error. Without handling them the
     // user taps a dead link, sees no change, and taps it again.
     Linking.parse.mockReturnValue({
+      path: 'auth',
       queryParams: { error: 'access_denied', error_description: 'Email link is invalid or has expired' },
     });
 
@@ -193,7 +194,7 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
   });
 
   test('an unrelated deep link is not treated as an auth callback', async () => {
-    Linking.parse.mockReturnValue({ queryParams: {} });
+    Linking.parse.mockReturnValue({ path: 'paper/attention', queryParams: {} });
     const { getByText } = await renderProvider();
     await waitFor(() => getByText('signed-out'));
 
@@ -202,4 +203,72 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
     expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
     expect(mockAuth.setSession).not.toHaveBeenCalled();
   });
+});
+
+
+describe('a deep link is not a trusted channel', () => {
+  const Linking = jest.requireMock('expo-linking');
+
+  beforeEach(() => {
+    jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+    Linking.parse.mockReturnValue({ path: 'auth', queryParams: {} });
+  });
+
+  test('tokens delivered by another app are ignored', async () => {
+    // A custom scheme is not exclusive: ANY installed app can fire
+    // researchcompanion://auth#access_token=…&refresh_token=…. Honouring it would plant the
+    // attacker's session — the victim then writes their reading notes into the attacker's account
+    // — or a non-allowlisted one, which just bricks the app.
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-out'));
+
+    deepLinkHandler!({
+      url: 'researchcompanion://auth#access_token=attacker-jwt&refresh_token=attacker-refresh',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockAuth.setSession).not.toHaveBeenCalled();
+    expect(apiConfig.setToken).not.toHaveBeenCalledWith('attacker-jwt');
+  });
+
+  test('but a PKCE code from the same channel is fine, because it needs our verifier', async () => {
+    // The guard must not be "ignore deep links" — that would break the magic link again. A code is
+    // worthless without the verifier held in our own storage, which is the point of PKCE.
+    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'legit-code' } });
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-out'));
+
+    deepLinkHandler!({ url: 'researchcompanion://auth?code=legit-code' });
+    await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('legit-code'));
+  });
+
+  test('a callback on any other route is ignored entirely', async () => {
+    Linking.parse.mockReturnValue({ path: 'paper/x', queryParams: { code: 'sneaky' } });
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-out'));
+
+    deepLinkHandler!({ url: 'researchcompanion://paper/x?code=sneaky' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+  });
+});
+
+test('a magic link that lands before the auth config does is not dropped', async () => {
+  // The cold-start race: getInitialURL almost always resolves BEFORE /api/auth/config, so the
+  // client does not exist yet. Dropping the one-shot URL there means the user taps their link,
+  // the app opens, and nothing happens — with no second chance.
+  const Linking = jest.requireMock('expo-linking');
+  Linking.getInitialURL.mockResolvedValue('researchcompanion://auth?code=parked-code');
+  Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'parked-code' } });
+
+  let releaseConfig: (value: typeof SUPABASE_CONFIG) => void;
+  jest.spyOn(endpoints, 'getAuthConfig').mockReturnValue(
+    new Promise((resolve) => { releaseConfig = resolve; }),
+  );
+
+  await renderProvider();
+  expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();  // nothing to exchange with yet
+
+  releaseConfig!(SUPABASE_CONFIG);
+  await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('parked-code'));
 });

@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
-import { getBaseUrl } from '@/api/config';
+import { getBaseUrl, setBaseUrl } from '@/api/config';
 import { useAuth } from '@/auth/AuthProvider';
 import { Button, Card, Screen, Text } from '@/ui';
 import { space, radius, fonts, type ThemePalette } from '@/theme/tokens';
@@ -49,23 +49,11 @@ function SignIn() {
     }
   }
 
-  if (status === 'unreachable') {
-    return (
-      <Screen edges={['top']}>
-        <View style={styles.center}>
-          <Card>
-            <Text variant="heading">Can't reach the server</Text>
-            <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
-              {getBaseUrl()
-                ? `No response from ${getBaseUrl()}. Check that the backend is running, or change the server URL in Settings.`
-                : 'No server URL is set yet. Add one in Settings to connect.'}
-            </Text>
-            <Button title="Try again" onPress={retry} style={{ marginTop: space.md }} />
-          </Card>
-        </View>
-      </Screen>
-    );
-  }
+  // The server URL is editable HERE, not only in Settings. The gate replaces the whole navigator,
+  // so a mistyped or stale URL would otherwise be unrecoverable: the error would tell the user to
+  // change it in Settings, and Settings would be behind the very gate they cannot get past. The
+  // only ways out would be clearing app storage or reinstalling.
+  if (status === 'unreachable') return <ServerUrlRecovery onRetry={retry} />;
 
   // A backend on the legacy shared-secret gate. Staging and prod refuse to boot in this mode, so
   // it only reaches a phone pointed at an old or oddly-configured local server — say so plainly
@@ -151,3 +139,55 @@ const makeStyles = (t: ThemePalette) =>
       fontSize: 15,
     },
   });
+
+
+/** Shown when the backend cannot be reached: the reason, plus the one setting that can fix it. */
+function ServerUrlRecovery({ onRetry }: { onRetry: () => void }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const [url, setUrl] = useState(getBaseUrl());
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await setBaseUrl(url);
+      onRetry();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Screen edges={['top']}>
+      <View style={styles.center}>
+        <Card>
+          <Text variant="heading">Can't reach the server</Text>
+          <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
+            {getBaseUrl()
+              ? `No response from ${getBaseUrl()}. Check the backend is running, or correct the address below.`
+              : 'No server address is set yet. Enter one to connect.'}
+          </Text>
+          <TextInput
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://…"
+            placeholderTextColor={t.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            style={styles.input}
+          />
+          <Button
+            title="Save & connect"
+            onPress={() => void save()}
+            loading={saving}
+            disabled={!url.trim()}
+            style={{ marginTop: space.sm }}
+          />
+          <Button title="Try again" onPress={onRetry} style={{ marginTop: space.sm }} />
+        </Card>
+      </View>
+    </Screen>
+  );
+}
