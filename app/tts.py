@@ -24,7 +24,7 @@ from . import config, prompts
 # narrations as several segments concatenated into one mp3.
 MAX_TTS_CHARS = 3800
 
-# Voices valid for gpt-4o-mini-tts / tts-1; surfaced in the UI picker.
+# Voices valid for tts-1 / tts-1-hd / gpt-4o-mini-tts; surfaced in the UI picker.
 OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx",
                  "sage", "shimmer", "verse"]
 
@@ -91,11 +91,13 @@ def openai_speech(text: str) -> bytes:
     key = s.get("openai_api_key")
     if not key:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
-    model = s.get("tts_model") or "gpt-4o-mini-tts"
+    model = s.get("tts_model") or "tts-1-hd"
     voice = s.get("tts_voice") or "alloy"
     body = {"model": model, "voice": voice, "input": normalize_for_speech(text),
             "response_format": "mp3"}
     if model == "gpt-4o-mini-tts":
+        # Steerability is a gpt-4o-mini-tts feature; the character-priced tts-1 family rejects
+        # `instructions`. Keep the send conditional on the model, not on the setting existing.
         body["instructions"] = prompts.get("tts_instructions")
     last_err = "Could not reach OpenAI's speech service. Check the connection and retry."
     for attempt in range(_TRIES):

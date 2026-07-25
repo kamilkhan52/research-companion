@@ -133,27 +133,27 @@ exposes a working backend to the internet.
 **Why not an agent:** provider account billing settings.
 **Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
 
-### H22 — Decide the production TTS model · `todo` — blocks M2.5
-A quality-vs-accounting tradeoff, so it's yours. The default `gpt-4o-mini-tts` is priced on input
-text tokens **plus generated audio tokens**, so its exact cost is not knowable before synthesis
-(and `/audio/speech` returns raw mp3 with no usage payload). The older `tts-1` / `tts-1-hd` are
-character-priced and therefore exactly costable in advance.
+### H22 — Decide the production TTS model · `DONE 2026-07-25`
+**Decision: `tts-1-hd`.** Kamil chose the higher-quality model over `gpt-4o-mini-tts`. Applied as
+the default in `config.py` (`RC_TTS_MODEL` still overrides).
 
-- **Keep `gpt-4o-mini-tts` (recommended)** — better voice, audio is a headline feature, **and it
-  is the only one of the two that can report actual token usage** (via `stream_format: "sse"`), so
-  successful synthesis settles to real cost. Quota reserves a conservative bound up front; only
-  attempts that die before reporting stay at the estimate.
-- **Pin `tts-1`** — cost is exactly computable per character in advance, but there is no usage
-  reporting and no SSE support, and the voice is noticeably worse.
+Verified against OpenAI's live docs on 2026-07-25 rather than from memory:
+- `tts-1-hd` is **available, not deprecated**, and priced **$30.00 / 1M characters** (`tts-1` is
+  $15.00). Character pricing means cost is **exactly computable before synthesis**, which is
+  strictly better for the M3 quota work than the token-priced alternative.
+- The `gpt-4o-mini-tts` *snapshot* `-2025-03-20` is deprecated (shutdown 2027-01-20), superseded by
+  `-2025-12-15`. The floating `gpt-4o-mini-tts` alias is NOT deprecated — a search result claiming
+  the model was deprecated conflated the snapshot with the family. Worth knowing if we revisit.
 
-The accounting argument now favours the *same* option as the quality argument, which is why the
-recommendation is firm.
+**Consequence to carry into M3:** `tts-1-hd` returns raw mp3 with no usage payload and no SSE, so
+audio spend is *computed* from the character count we sent, never reported back. That is fine
+because character pricing is deterministic — but it means `usage.py` must bill audio from input
+length rather than waiting for a provider figure, and the `pending`/reconcile path that
+`gpt-4o-mini-tts` would have used does not apply. Cheaper to reason about; different code path.
 
-Either way the accounting is exact only *per dispatch*, not per narration: the synthesis path
-retries up to 3× per segment and retries even on read timeouts, where the audio may already have
-been produced and billed. M2.5 handles that by reserving per attempt.
-
-**Report back:** the choice, so M2.5 sizes the per-user TTS budget accordingly.
+`app/tts.py` only sends `instructions` (the steerability prompt) when the model is
+`gpt-4o-mini-tts`, so the `tts_instructions` prompt is now unused by default. Left in place: the
+model remains selectable in Settings.
 
 ### H21 — Provide your Supabase user UUID for the allowlist · ✅ `done` (2026-07-25)
 Received; it goes into `fly secrets` as `RC_ALLOWED_USERS`, not into this repo. The allowlist

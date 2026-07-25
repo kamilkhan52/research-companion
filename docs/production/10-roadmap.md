@@ -69,7 +69,6 @@ production app + secrets. Data migration and client cutover are deliberately *ou
 
 **Waiting on Kamil (none are blocking PR 3):**
 - Whether to put provider API keys on staging. The allowlist now makes it safe; it spends real money.
-- **H22** — production TTS model (`gpt-4o-mini-tts` recommended).
 - **H6** — how the operator role is assigned (blocks M2).
 - **H16** — recruit 12+ testers, and publish/extend the Google OAuth consent screen, which is in
   Testing mode and currently limited to 3 accounts.
@@ -447,7 +446,9 @@ So the load-bearing control for TTS is one **we** enforce. We hold the only key,
 ceiling is a real ceiling — but note a correction to an earlier draft of this plan, which claimed
 TTS cost is exactly computable before dispatch:
 
-- The configured default is **`gpt-4o-mini-tts`** (`config.py:360`), which OpenAI prices on input
+- The configured default is **`tts-1-hd`** (H22, decided 2026-07-25), priced $30.00/1M characters —
+  exactly computable before synthesis. The paragraphs below describe the *alternative* that was not
+  chosen, `gpt-4o-mini-tts`, which OpenAI prices on input
   text tokens **plus generated output audio tokens**. Audio token count depends on synthesized
   duration, so it is not knowable *before* the call — which is what the reservation must cover.
   It *is* knowable afterward: the current implementation requests raw mp3 and so sees no usage,
@@ -487,7 +488,8 @@ better option on *both* axes: better voice, and better real accounting, since on
    event is present in OpenAI's published OpenAPI specification; still confirm the exact payload
    shape when implementing, as with anything in this plan touching money mechanics.)
 
-   Note this **inverts the H22 tradeoff**: SSE usage reporting is available on `gpt-4o-mini-tts`
+   Note this **inverted the H22 tradeoff** as it stood before the decision: SSE usage reporting is
+available on `gpt-4o-mini-tts`
    and *not* on `tts-1`/`tts-1-hd`. So the token-priced model gives better real accounting than the
    character-priced one, which strengthens the recommendation to keep `gpt-4o-mini-tts`.
 
