@@ -22,6 +22,9 @@ const mockAuth = {
   exchangeCodeForSession: jest.fn(async () => ({ error: null })),
   setSession: jest.fn(async () => ({ error: null })),
   signInWithOtp: jest.fn(async () => ({ error: null })),
+  signInWithOAuth: jest.fn(async () => ({
+    data: { url: 'https://project.supabase.co/auth/v1/authorize?x=1' }, error: null,
+  })),
   startAutoRefresh: jest.fn(),
   stopAutoRefresh: jest.fn(),
 };
@@ -412,4 +415,69 @@ test('two Supabase URLs that differ only in punctuation get different storage ke
     .toBe(sessionStorageKey('https://P.supabase.co'));
   // And within the alphabet secureSessionStore accepts, so nothing downstream rewrites it.
   expect(sessionStorageKey('https://p.supabase.co')).toMatch(/^[A-Za-z0-9._-]+$/);
+});
+
+
+test('the storage key needs no btoa, because React Native has none', () => {
+  // The round-5 version called btoa. TypeScript accepts it from the DOM lib and Node provides it,
+  // so the test passed — but Hermes has no btoa, so on a real device the call threw into a
+  // fallback that restored the very collision the fix was for. Deleting the global here proves the
+  // implementation does not reach for it.
+  const saved = (globalThis as { btoa?: unknown }).btoa;
+  delete (globalThis as { btoa?: unknown }).btoa;
+  try {
+    expect(sessionStorageKey('https://auth-a.example.com'))
+      .not.toBe(sessionStorageKey('https://auth.a-example.com'));
+    expect(sessionStorageKey('https://p.supabase.co')).toMatch(/^[A-Za-z0-9._-]+$/);
+  } finally {
+    (globalThis as { btoa?: unknown }).btoa = saved;
+  }
+});
+
+test('the encoder agrees with real base64url on every input length', () => {
+  // Guards the hand-rolled encoder against an off-by-one in its 1-, 2- and 3-byte tails.
+  for (const value of ['a', 'ab', 'abc', 'abcd', 'abcde', 'https://p.supabase.co']) {
+    const expected = `sb-${Buffer.from(value).toString('base64url')}-auth`;
+    expect(sessionStorageKey(value)).toBe(expected);
+  }
+});
+
+test('Google sign-in opens the browser and completes through the shared handler', async () => {
+  // This path had no coverage at all: mockAuth did not even define signInWithOAuth, so it could
+  // have become a no-op without failing anything.
+  const WebBrowser = jest.requireMock('expo-web-browser');
+  WebBrowser.openAuthSessionAsync.mockResolvedValue({
+    type: 'success', url: `${redirectUri()}?code=google-code`,
+  });
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  await waitFor(() => getByText('signed-out'));
+
+  await auth!.signInWithGoogle();
+
+  expect(mockAuth.signInWithOAuth).toHaveBeenCalledWith(expect.objectContaining({
+    provider: 'google',
+    options: expect.objectContaining({ redirectTo: redirectUri(), skipBrowserRedirect: true }),
+  }));
+  expect(WebBrowser.openAuthSessionAsync).toHaveBeenCalledWith(
+    'https://project.supabase.co/auth/v1/authorize?x=1', redirectUri());
+  await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('google-code'));
+});
+
+test('a dismissed Google sign-in is not reported as an error', async () => {
+  const WebBrowser = jest.requireMock('expo-web-browser');
+  WebBrowser.openAuthSessionAsync.mockResolvedValue({ type: 'dismiss' });
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  await waitFor(() => getByText('signed-out'));
+
+  await auth!.signInWithGoogle();
+  expect(auth!.error).toBeNull();
+  expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
 });

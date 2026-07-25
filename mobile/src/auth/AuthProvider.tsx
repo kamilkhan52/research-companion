@@ -103,20 +103,39 @@ async function consumePendingSignIn(): Promise<boolean> {
 
 /** A storage key unique per Supabase project, by construction.
  *
- *  base64url rather than the obvious `replace(/[^a-zA-Z0-9]/g, '-')`, because that substitution is
- *  NOT injective: `https://auth-a.example.com` and `https://auth.a-example.com` collapse to the
- *  same key, and two projects sharing a key means one's session can be restored under the other
- *  and its bearer token sent to the wrong backend. Only reachable today via Supabase custom
- *  domains, but being exact costs four lines. The base64url alphabet also sits inside what
- *  `secureSessionStore`'s key normaliser accepts, so nothing downstream rewrites it. */
+ *  Two reasons this is hand-rolled rather than a one-liner.
+ *
+ *  It is base64url and not `replace(/[^a-zA-Z0-9]/g, '-')`, because that substitution is NOT
+ *  injective: `https://auth-a.example.com` and `https://auth.a-example.com` collapse to the same
+ *  key, and two projects sharing a key means one's session can be restored under the other and its
+ *  bearer token sent to the wrong backend.
+ *
+ *  And it does not call `btoa`, because **React Native does not define one**. TypeScript accepts
+ *  `btoa` from the DOM lib and Node provides it, so a Jest test passes — but on Hermes the call
+ *  throws, and a `try/catch` fallback would quietly restore the non-injective behaviour on the one
+ *  runtime that matters. Encoding here removes the environment dependence entirely.
+ *
+ *  The output alphabet sits inside what `secureSessionStore`'s key normaliser accepts, so nothing
+ *  downstream rewrites the key. */
+const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
 export function sessionStorageKey(supabaseUrl: string): string {
   const normalized = supabaseUrl.trim().replace(/\/+$/, '').toLowerCase();
-  try {
-    return `sb-${btoa(normalized).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}-auth`;
-  } catch {
-    // btoa is latin1-only. A Supabase URL is ASCII, but fall back rather than throw during setup.
-    return `sb-${normalized.replace(/[^a-zA-Z0-9]/g, '-')}-auth`;
+  let out = '';
+  for (let i = 0; i < normalized.length; i += 3) {
+    // A Supabase URL is ASCII; masking keeps a stray high code point from corrupting the shift
+    // rather than throwing — a surprising-but-stable key is still safer than an exception here.
+    const a = normalized.charCodeAt(i) & 0xff;
+    const b = i + 1 < normalized.length ? normalized.charCodeAt(i + 1) & 0xff : NaN;
+    const c = i + 2 < normalized.length ? normalized.charCodeAt(i + 2) & 0xff : NaN;
+    out += BASE64URL[a >> 2];
+    out += BASE64URL[((a & 3) << 4) | (Number.isNaN(b) ? 0 : b >> 4)];
+    if (Number.isNaN(b)) break;
+    out += BASE64URL[((b & 15) << 2) | (Number.isNaN(c) ? 0 : c >> 6)];
+    if (Number.isNaN(c)) break;
+    out += BASE64URL[c & 63];
   }
+  return `sb-${out}-auth`;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

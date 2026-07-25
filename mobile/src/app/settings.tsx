@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
+import { useAudio } from '@/audio/AudioProvider';
 import { useAuth } from '@/auth/AuthProvider';
 import {
   useFavoriteModels,
@@ -102,6 +103,16 @@ export default function SettingsScreen() {
   } = useThemeMode();
   const { toast } = useToast();
   const { status: authStatus, email: authEmail, signOut } = useAuth();
+  const { dismiss: dismissAudio } = useAudio();
+
+  async function handleSignOut() {
+    // Stop the audio FIRST. TrackPlayer is a native singleton configured to keep playing after the
+    // React UI goes away, so unmounting AudioProvider behind the sign-in gate does not silence it:
+    // the previous user's narration would carry on over the sign-in screen, and on into whoever
+    // signs in next.
+    await dismissAudio().catch(() => {});
+    await signOut();
+  }
   function handleThemeMode(mode: ThemeMode) {
     if (mode === themeMode) return;
     setThemeMode(mode);
@@ -200,7 +211,7 @@ export default function SettingsScreen() {
               <Text variant="body" color={t.muted} style={{ marginBottom: space.md }}>
                 {authEmail ? `Signed in as ${authEmail}.` : 'Signed in.'}
               </Text>
-              <Button title="Sign out" onPress={() => { void signOut(); }} />
+              <Button title="Sign out" onPress={() => { void handleSignOut(); }} />
             </Section>
           ) : null}
 

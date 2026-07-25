@@ -39,6 +39,11 @@ function SignIn() {
   const { status, mode, error, signInWithGoogle, signInWithMagicLink, retry } = useAuth();
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState<'google' | 'magic' | null>(null);
+  // Available from EVERY gate state, not only `unreachable`. Settings lives behind this gate, so a
+  // user pointed at the wrong-but-reachable server — a legacy token-mode backend, say, or simply
+  // someone else's — could otherwise see a screen with no way forward and no way to Settings. The
+  // only escape would be clearing app data.
+  const [changingServer, setChangingServer] = useState(false);
 
   async function run(which: 'google' | 'magic', action: () => Promise<void>) {
     setBusy(which);
@@ -53,7 +58,9 @@ function SignIn() {
   // so a mistyped or stale URL would otherwise be unrecoverable: the error would tell the user to
   // change it in Settings, and Settings would be behind the very gate they cannot get past. The
   // only ways out would be clearing app storage or reinstalling.
-  if (status === 'unreachable') return <ServerUrlRecovery onRetry={retry} />;
+  if (status === 'unreachable' || changingServer) {
+    return <ServerUrlRecovery onRetry={retry} onCancel={changingServer ? () => setChangingServer(false) : undefined} />;
+  }
 
   // A backend on the legacy shared-secret gate. Staging and prod refuse to boot in this mode, so
   // it only reaches a phone pointed at an old or oddly-configured local server — say so plainly
@@ -69,6 +76,11 @@ function SignIn() {
               server using Supabase sign-in, or run the backend without authentication.
             </Text>
             <Button title="Check again" onPress={retry} style={{ marginTop: space.md }} />
+            <Button
+              title="Change server"
+              onPress={() => setChangingServer(true)}
+              style={{ marginTop: space.sm }}
+            />
           </Card>
         </View>
       </Screen>
@@ -118,6 +130,12 @@ function SignIn() {
               {error}
             </Text>
           ) : null}
+
+          <Button
+            title="Change server"
+            onPress={() => setChangingServer(true)}
+            style={{ marginTop: space.lg }}
+          />
         </Card>
       </View>
     </Screen>
@@ -142,7 +160,7 @@ const makeStyles = (t: ThemePalette) =>
 
 
 /** Shown when the backend cannot be reached: the reason, plus the one setting that can fix it. */
-function ServerUrlRecovery({ onRetry }: { onRetry: () => void }) {
+function ServerUrlRecovery({ onRetry, onCancel }: { onRetry: () => void; onCancel?: () => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [url, setUrl] = useState(getBaseUrl());
@@ -186,6 +204,9 @@ function ServerUrlRecovery({ onRetry }: { onRetry: () => void }) {
             style={{ marginTop: space.sm }}
           />
           <Button title="Try again" onPress={onRetry} style={{ marginTop: space.sm }} />
+          {onCancel ? (
+            <Button title="Back" onPress={onCancel} style={{ marginTop: space.sm }} />
+          ) : null}
         </Card>
       </View>
     </Screen>

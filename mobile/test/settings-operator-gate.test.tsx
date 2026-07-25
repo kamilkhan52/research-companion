@@ -18,6 +18,12 @@ import { ThemeProvider } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
 
 jest.mock('expo-router', () => ({ useRouter: () => ({ back: jest.fn(), push: jest.fn() }) }));
+// Settings stops narration before signing out, so it now consumes the audio context. Mocked
+// rather than wrapped in a real AudioProvider: that would pull in TrackPlayer and the whole
+// playback stack for a test about which settings fields are editable.
+jest.mock('@/audio/AudioProvider', () => ({
+  useAudio: () => ({ dismiss: jest.fn(async () => undefined) }),
+}));
 // The settings screen pulls in AuthProvider (for the sign-out control), which touches expo-linking.
 jest.mock('expo-linking', () => ({
   createURL: (path: string) => `researchcompanion://${path}`,
