@@ -7,6 +7,7 @@ ceiling: the entirety of P0-14, reachable by anyone who could type a fragment.
 """
 from __future__ import annotations
 
+import httpx
 import pytest
 from app import retriever, safe_fetch
 
@@ -59,29 +60,51 @@ def test_arxiv_path_still_validates_the_destination(monkeypatch):
 
 
 def test_arxiv_pdf_download_is_byte_capped(monkeypatch):
-    """The arXiv branch skips safe_fetch for pacing/retry reasons, so it must carry its own
-    ceiling: the url can be a caller-supplied pdf_url that merely lives on an arxiv.org host, and
-    an unbounded buffer there is the same OOM as anywhere else."""
-    import httpx
+    """The arXiv branch keeps its own pacing/retry rather than being folded into safe_fetch, so
+    assert it still carries the ceiling: the url can be a caller-supplied pdf_url that merely lives
+    on an arxiv.org host, and an unbounded buffer there is the same OOM as anywhere else.
 
-    big = b"x" * 5000
+    Patched at the HTTP client, not at safe_fetch.fetch — patching the helper would prove only that
+    the test can stub a function. This version failed loudly when the transfer moved from a
+    hand-rolled stream to safe_fetch (it had stubbed retriever.httpx.stream, which was no longer
+    called, so the call went to the real network), which is the behaviour you want from it.
+    """
+    real_client = httpx.Client
 
-    def fake_stream(method, url, **kw):
-        class S:
-            status_code = 200
-            headers = httpx.Headers({})
-
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def raise_for_status(self): return None
-            def iter_raw(self): yield big
-
-        return S()
+    def client_factory(**kw):
+        return real_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=httpx.ByteStream(b"x" * 5000))), **kw)
 
     monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
-    monkeypatch.setattr(retriever.httpx, "stream", fake_stream)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", client_factory)
     monkeypatch.setattr(safe_fetch.socket, "getaddrinfo",
                         lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", port))])
-    with pytest.raises(retriever.RetrievalError, match="limit"):
-        monkeypatch.setattr(retriever, "MAX_PDF_BYTES", 1000)
+    monkeypatch.setattr(retriever, "MAX_PDF_BYTES", 1000)
+    with pytest.raises(retriever.RetrievalError, match="too large"):
+        retriever._fetch("https://arxiv.org/pdf/2201.11705")
+
+
+def test_arxiv_redirect_to_a_private_address_is_refused(monkeypatch):
+    """arxiv.org/pdf/<id> really does redirect, and an earlier version of _arxiv_get_bytes followed
+    redirects inside httpx — so the TARGET was never validated. Going through safe_fetch means each
+    hop is checked."""
+    real_client = httpx.Client
+
+    def handler(request):
+        if request.url.host == "arxiv.org":
+            return httpx.Response(302, headers={"location": "http://internal.example/secret"},
+                                  stream=httpx.ByteStream(b""))
+        return httpx.Response(200, stream=httpx.ByteStream(b"%PDF-secret"))
+
+    def client_factory(**kw):
+        return real_client(transport=httpx.MockTransport(handler), **kw)
+
+    def getaddrinfo(host, port, *a, **k):
+        ip = "127.0.0.1" if host == "internal.example" else "93.184.216.34"
+        return [(2, 1, 6, "", (ip, port))]
+
+    monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", client_factory)
+    monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", getaddrinfo)
+    with pytest.raises(retriever.RetrievalError, match="Refusing"):
         retriever._fetch("https://arxiv.org/pdf/2201.11705")

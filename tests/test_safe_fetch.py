@@ -255,7 +255,17 @@ def test_rejects_a_decompression_bomb_without_allocating_it(monkeypatch, layers,
             largest["chunk"] = max(largest["chunk"], len(chunk))
             yield chunk
 
+    def banned(self, *a, **k):
+        # Watching iter_raw alone does NOT pin this: iter_bytes consumes iter_raw internally, so a
+        # revert to iter_bytes would still show only small compressed chunks to the spy, still
+        # raise FetchTooLargeError on the decoded total, and still pass — while allocating the
+        # 200MB above it. Banning the call is what actually holds the ceiling on wire bytes.
+        raise AssertionError(
+            "safe_fetch must not use iter_bytes(): it decompresses a chunk in full before the "
+            "size check can run")
+
     monkeypatch.setattr(httpx.Response, "iter_raw", spy)
+    monkeypatch.setattr(httpx.Response, "iter_bytes", banned)
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
         lambda request: _resp(200, payload, content_encoding=encoding,
                               content_type="text/plain")))

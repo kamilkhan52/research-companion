@@ -68,40 +68,39 @@ def _arxiv_get_bytes(url: str, *, max_bytes: int, timeout: float = 60) -> bytes:
     for a PDF: the URL reaching this function can be a caller-supplied `pdf_url` that merely
     happens to be on an arxiv.org host, so "we trust arXiv not to send us 4 GB" is a promise about
     the wrong party. Same limit as every other download path.
+
+    The transfer itself is `safe_fetch.fetch`, not a hand-rolled stream. An earlier version of this
+    function streamed with `follow_redirects=True`, which reopened two holes at once: httpx reads a
+    redirect response body in full before following it (even in streaming mode), and the redirect
+    TARGET never saw `assert_public_url`. `arxiv.org/pdf/<id>` does redirect, so that was the live
+    path, not a hypothetical. What belongs here is the arXiv-specific part — pacing and 429/5xx
+    retry — and nothing else.
     """
     last_status = None
     for attempt in range(_RETRIES):
         _arxiv_pace()
         try:
-            with httpx.stream("GET", url, headers=_UA, timeout=timeout,
-                              follow_redirects=True) as r:
-                if r.status_code == 429 or r.status_code >= 500:
-                    last_status = r.status_code
-                    delay = _throttle_delay(r, attempt)
-                    r.close()
-                    time.sleep(delay)
-                    continue
-                try:
-                    r.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    raise RetrievalError(f"arXiv request failed: {e}") from e
-                declared = r.headers.get("content-length")
-                if declared and declared.isdigit() and int(declared) > max_bytes:
-                    raise RetrievalError(
-                        f"arXiv download declares {declared} bytes, over the {max_bytes}-byte limit")
-                chunks: list[bytes] = []
-                total = 0
-                for chunk in r.iter_raw():
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise RetrievalError(
-                            f"arXiv download exceeds the {max_bytes}-byte limit")
-                    chunks.append(chunk)
-                return b"".join(chunks)
+            return safe_fetch.fetch(url, max_bytes=max_bytes, timeout=timeout,
+                                    headers=_UA).content
+        except httpx.HTTPStatusError as e:
+            # Retryable throttling/outage, or a real failure. Ordered before HTTPError below,
+            # which it subclasses.
+            if e.response.status_code == 429 or e.response.status_code >= 500:
+                last_status = e.response.status_code
+                time.sleep(_throttle_delay(e.response, attempt))
+                continue
+            raise RetrievalError(f"arXiv request failed: {e}") from e
         except httpx.TimeoutException:
+            # arXiv often stalls a throttled connection rather than answering 429.
             last_status = "timeout"
             time.sleep(3.0 * (attempt + 1))
             continue
+        except safe_fetch.UnsafeURLError as e:
+            raise RetrievalError(f"Refusing to download {url}: {e}") from e
+        except safe_fetch.FetchTooLargeError as e:
+            raise RetrievalError(f"arXiv download too large: {e}") from e
+        except safe_fetch.SafeFetchError as e:
+            raise RetrievalError(f"arXiv download refused: {e}") from e
         except httpx.HTTPError as e:
             raise RetrievalError(f"arXiv request failed: {e}") from e
     raise _throttled_error(last_status)
