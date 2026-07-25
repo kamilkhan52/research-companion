@@ -198,6 +198,54 @@ def test_deadline_survives_a_server_that_drips_headers(monkeypatch):
         thread.join(timeout=2)
 
 
+def test_watchdog_teardown_mid_body_is_not_silent_truncation(monkeypatch):
+    """A deadline that fires while the BODY is streaming must raise, never return what arrived.
+
+    This module has shipped silent truncation twice (multi-member gzip, and a stream ending
+    mid-member), both times returning a short body as a successful fetch. The watchdog introduces a
+    third opportunity for it: if closing the client made `iter_raw()` simply stop yielding rather
+    than raise, the partial body would be returned as SUCCESS and nothing downstream could tell a
+    truncated paper from a short one.
+    """
+    body_len = 100_000
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        try:
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % body_len)
+            sent = 0
+            while not stop.is_set() and sent < body_len:
+                conn.sendall(b"A" * 100)   # dribble the body, never finishing it
+                sent += 100
+                time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    try:
+        with pytest.raises(safe_fetch.FetchTimeoutError):
+            safe_fetch.fetch(f"http://127.0.0.1:{port}/", max_bytes=1_000_000,
+                             timeout=3, deadline=2)
+    finally:
+        stop.set()
+        server.close()
+        thread.join(timeout=2)
+
+
 def test_deadline_does_not_fire_on_a_normal_fetch(monkeypatch):
     """The guard must not break ordinary downloads, or the test above would pass against a
     function that always timed out."""
