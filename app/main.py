@@ -33,6 +33,12 @@ from .routers import (
 
 logging_config.configure()  # install the rc.* log handler before any job/LLM/commit runs
 
+# Refuse to start a staging/prod process that is configured permissively — BEFORE the app object
+# exists, so a misconfigured deploy crashes on boot instead of serving. Every check inside guards
+# against an omitted variable rather than a wrong one, because omission is what silently produces
+# the permissive state (auth.mode() falls back to "open"; an unset allowlist means "everyone").
+auth.assert_environment_safe(config.env_name())
+
 app = FastAPI(title=config.APP_TITLE)
 
 # ---------- exposure hardening: CORS + user auth (Supabase) ----------
@@ -58,7 +64,10 @@ async def authenticate(request: Request, call_next):
     """Gate /api/* per app.auth.mode(). Token arrives as `Authorization: Bearer <t>` (fetch/
     native) or `?token=<t>` (so <audio>/download/SSE tags work). OPTIONS, the exempt routes,
     and non-/api routes (static SPA shell) are always allowed. The verified user (if any) is
-    stashed on request.state.user for handlers/future per-user data."""
+    stashed on request.state.user for handlers/future per-user data.
+
+    Two distinct denials: 401 for bad/missing credentials, 403 for a valid user who is not on this
+    instance's allowlist (see auth.allowed_users)."""
     request.state.user = None
     if auth.enabled() and request.method != "OPTIONS" \
             and request.url.path.startswith("/api/") and request.url.path not in _AUTH_EXEMPT:
@@ -66,6 +75,11 @@ async def authenticate(request: Request, call_next):
         token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else request.query_params.get("token", "")
         try:
             request.state.user = auth.check(token)
+        except auth.NotAllowlisted:
+            # Valid credentials, wrong person. 403 rather than 401 on purpose: 401 tells the client
+            # to sign in, which would loop an allowlisted-out user through login forever.
+            return JSONResponse(
+                {"detail": "This account is not authorized for this instance."}, status_code=403)
         except AuthError:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     return await call_next(request)

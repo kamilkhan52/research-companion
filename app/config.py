@@ -103,12 +103,43 @@ OPENAI_BASE = "https://api.openai.com/v1"
 APP_TITLE = os.environ.get("RC_APP_TITLE", "Research Reading Companion")
 
 
+# Which deployment this process is. Everything exposure-related keys off this rather than off
+# individual feature flags, because the dangerous configuration is *absence* of config, not
+# presence: a deploy that simply forgets a variable must not silently land in the permissive state.
+KNOWN_ENVIRONMENTS = ("dev", "staging", "prod")
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def env_name() -> str:
+    """`RC_ENV` normalized: dev | staging | prod, defaulting to dev. Read live.
+
+    An unrecognized value is returned as-is rather than coerced — `is_dev_env()` then treats it as
+    NOT dev (so guards stay on), and `auth.assert_environment_safe()` refuses to boot on it. A typo
+    like `RC_ENV=production` must never quietly disable production hardening.
+    """
+    return os.environ.get("RC_ENV", "").strip().lower() or "dev"
+
+
+def is_dev_env() -> bool:
+    """True only for the exact string `dev`. Anything unrecognized counts as non-dev, so an
+    unparseable environment fails safe."""
+    return env_name() == "dev"
+
+
 def dev_mode() -> bool:
     """Whether this instance runs in developer mode (RC_DEV truthy). Gates power-user
     affordances the client should only expose to the operator — force-rebuild-from-scratch,
     in-app prompt editing — not production readers. Read live so a restart with the env set
-    flips it without code changes."""
-    return os.environ.get("RC_DEV", "").strip().lower() in {"1", "true", "yes", "on"}
+    flips it without code changes.
+
+    Outside a dev environment this is ALWAYS False, whatever `RC_DEV` says. Startup validation
+    additionally refuses to boot a staging/prod process that sets it (see
+    `auth.assert_environment_safe`), so this is defence in depth rather than the only guard: if a
+    future caller reaches `dev_mode()` before validation runs, it still gets the safe answer.
+    """
+    if not is_dev_env():
+        return False
+    return os.environ.get("RC_DEV", "").strip().lower() in _TRUTHY
 
 # Author for the commits the app makes into a project's git store (committer.commit,
 # notes_jobs.save, projects.create_project). The store shells out to `git commit`, which needs
