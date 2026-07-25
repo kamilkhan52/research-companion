@@ -27,6 +27,12 @@ revisiting one invalidates the milestones downstream of it.
 resequenced if you'd rather get a free closed-beta into Play first and monetize against real usage
 data — say so and I'll re-cut the order.
 
+**Calendar dependency, confirmed 2026-07-25:** the Play account is Personal and created 2026-07,
+so Google's closed-testing requirement **applies** — 12 testers opted in for 14 continuous days,
+then production-access review of up to 7 days. That ~3-week clock cannot start until a working
+build is on a closed track, so **M1.5 exists purely to start it early** and let it run in the
+background during M2–M8. Recruiting testers (H16) is the pacing item; start it the day M1.5 lands.
+
 ---
 
 ## Architectural rules for this work
@@ -59,6 +65,7 @@ gets updated as each lands.
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
 | M1 | Hosting, environments, and secrets | — | L | queued |
+| M1.5 | First closed-track build — starts the 14-day tester clock | M1 | S | queued |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
 | M3 | Metering, quotas, and abuse controls | M2 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
@@ -113,6 +120,53 @@ volume-backed, secrets out of the repo, prod provably refusing dev bypasses, API
 
 **Human actions.** Buy/point a domain; create the hosting account; provision the volume; fix
 GitHub Actions billing (P1-5) so CI gates this work.
+
+---
+
+### M1.5 — First closed-track build (starts the 14-day tester clock)
+
+**Objective.** Get a signed AAB onto a Play closed testing track as early as possible — not
+because the app is ready, but because the tester clock is the longest calendar dependency in the
+plan and it runs in the background while M2–M8 proceed.
+
+**Rationale.** H3 is now answered and the requirement **applies**: personal account created
+2026-07, so ≥12 testers opted in for 14 *continuous* days, then production-access review of up to
+7 days. That's ~3 weeks minimum, and it cannot begin until testers can install a build that
+actually works — which needs M1's public origin. Deferring this to M9 (as the original sequence
+did, and as the external brief implied) would append three idle weeks to the end of the project
+for no reason.
+
+This is deliberately *not* full release automation. It is the smallest slice that starts the clock.
+
+**Scope.** One production-profile EAS build (`.aab`) pointed at the M1 staging or production
+origin. Play app created and the closed testing track configured. Upload, pass closed-track
+review, invite testers. Confirm `targetSdkVersion` satisfies API 36 here — this is the cheap
+moment to discover an Expo SDK 56 problem, months before M9 depends on it.
+
+**What testers get.** The app roughly as it is today: single-tenant, free, no paywall, no quotas.
+That is fine and expected — Google's requirement is that a closed test *ran*, not that the tested
+build was the final product. Testers will share one backend and see each other's projects until
+M2 lands, so recruit people who are fine being a shared-instance beta, and don't invite strangers
+until tenancy exists.
+
+**Risks.** Closed-track builds still pass Play review, so the P0-8 legal surfaces (privacy policy,
+in-app AI content report) may be required earlier than M7 schedules them — if review objects,
+pull the minimum privacy-policy and report-action slice forward rather than delaying the clock.
+Any later native-module addition (RevenueCat, M4) means a new build for testers, which is fine and
+does not reset the 14-day opt-in clock as long as testers stay opted in.
+
+**Files/services.** `mobile/app.json` (`extra.apiBaseUrl` → M1 origin), `mobile/eas.json`; Play
+Console configuration.
+
+**Tests.** Build installs on a clean device from the closed track and completes a real turn
+against the hosted backend — the smoke test that matters.
+
+**Rollback.** None needed; a closed track is invisible to the public and can be halted.
+
+**Done when.** ≥12 testers are opted in and the 14-day continuous clock is running.
+
+**Human actions.** H2 (hosting), finish Play account verification, H8 (create the app, accept
+agreements), H16 (recruit 12+ testers — start immediately, this is the pacing item).
 
 ---
 
@@ -375,11 +429,10 @@ listing; generate and authorize the service account credential.
 exhaustion, purchase/cancel/expire/restore, webhook duplication and reordering, provider timeout,
 PDF failure, content report, account deletion, upgrade, OTA rollback). Evaluate Maestro for a small
 number of mission-critical mobile flows. Store assets: name, descriptions, screenshots, feature
-graphic, icon, content rating, target audience, ads declaration, reviewer credentials. **Determine
-whether the closed-testing requirement applies** to your Play account — Google's rule for
-qualifying new personal accounts is 12 testers opted in for 14 continuous days, which is a
-four-week calendar dependency if it applies, so establish this at M1, not here. Rollback drill.
-Revise M3 quota limits against real observed cost.
+graphic, icon, content rating, target audience, ads declaration, reviewer credentials. The closed-testing
+requirement **applies** (confirmed 2026-07-25) — by this point the 14-day clock should long since
+have been satisfied via M1.5, so what remains here is applying for production access and its ≤7-day
+review. Rollback drill. Revise M3 quota limits against real observed cost.
 
 **Done when.** No known P0 remains and every launch-ready criterion is met.
 

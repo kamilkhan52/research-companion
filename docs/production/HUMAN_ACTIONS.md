@@ -14,30 +14,57 @@ every agent session.
 
 ## Blocking now (M1)
 
-### H1 — Fix GitHub Actions billing · `todo`
-All CI jobs have failed at the account billing gate since 2026-07-22 (~3s, 0 steps). Until this is
-fixed there is no automated gate on any of the work below, and every "tests pass" claim is a local
-claim only.
-**Why not an agent:** account billing.
-**Blocks:** M1 (and quality-gates everything after).
-**Report back:** confirmation that a workflow run reaches a real step.
+### H1 — Fix GitHub Actions billing · ✅ `done` (2026-07-24)
+Actions spending limit was $0; raised to $10. Re-run on PR #217 went fully green (backend 47s,
+web 50s, mobile 6m49s). CI is a usable merge gate again.
+*Note: the mobile job burns ~7 min/run, which is most of the spend against that cap — re-check
+the limit if reds reappear with the ~3s/0-steps signature.*
 
-### H2 — Domain + hosting account · `todo`
-Register or point a domain for the production API and web client, and create the hosting account
-(Fly.io / Railway / Hetzner — the plan assumes a container with a persistent volume).
+### H2 — Hosting account · `todo` — **no domain needed yet**
+Create the hosting account. The plan assumes a container with a persistent volume; **Fly.io** is
+the recommendation (persistent volumes are first-class, and its free `*.fly.dev` subdomain comes
+with automatic TLS). Railway works too.
+
+**You do not need to buy a domain to start.** The host's own subdomain
+(`paradigm.fly.dev` or similar) is a real HTTPS origin and is sufficient for Supabase redirect
+URLs, the Play-required privacy-policy and account-deletion URLs, Play reviewer access, and the
+entire closed test. A custom domain is an M10 polish item, not an M1 blocker — see H2b.
+
+**Do not use the university domain (`colostate.edu`).** University IT policy almost universally
+prohibits commercial use of institutional domains, the product would be tied to an affiliation you
+may not keep, and a paid subscription app on a `.edu` host invites a policy problem with your
+institution rather than solving a hosting one.
+
 **Why not an agent:** payment, account ownership.
-**Blocks:** M1, and transitively Supabase redirect URLs, the Play account-deletion URL, and Play
-reviewer access.
-**Report back:** the domain, the chosen platform, and how deploy credentials should be provided.
+**Blocks:** M1, and transitively M2's auth redirect URLs, M7's public deletion URL, and H3's
+tester clock.
+**Report back:** the platform, the app subdomain it assigns, and how deploy credentials should be
+provided (a scoped deploy token in an EAS/CI secret, never the repo).
 
-### H3 — Determine the Play developer account's situation · `todo`
-Establish whether the account is personal or organizational and when it was created, then check
-whether Google's closed-testing requirement applies (current rule for qualifying new personal
-accounts: **12 testers opted in for 14 continuous days**).
-**Why not an agent:** account-owner information.
-**Blocks:** M10 — but must be answered at **M1**, because if it applies it adds a four-week
-calendar dependency that has to run in parallel with development, not after it.
-**Report back:** account type, creation date, and whether the requirement applies.
+### H2b — Custom domain · `todo` — deferred to M10
+Buy before public launch, not now. **Cloudflare Registrar** sells at wholesale cost with no
+markup and free DNS; Namecheap is the usual alternative. Budget ~$10–15/year for a `.com`.
+A domain is just a name you rent annually and point at your host with a DNS record; Fly and
+Railway both issue the TLS certificate automatically once you add it. The app is named Paradigm,
+so name availability needs a search when we get there.
+**Report back:** the domain, once purchased.
+
+### H3 — Play developer account situation · ✅ `answered` — **the tester requirement applies**
+Account created 2026-07, type **Personal**, currently pending verification.
+
+Verified against Google's current policy (checked 2026-07-25,
+[support.google.com/googleplay/android-developer/answer/14151465](https://support.google.com/googleplay/android-developer/answer/14151465)):
+personal accounts created after **2023-11-13** must run a closed test with **≥12 testers opted in
+for the last 14 continuous days**, then apply for production access (review typically ≤7 days).
+Continuous means uninterrupted — a tester who drops out and rejoins resets their clock. The
+requirement was 20 testers before December 2024; it is 12 now.
+
+**Real cost: ~3 weeks minimum** from "12 real testers opted in" to production access, and that
+clock cannot start until there is a working build on a Play closed track — which needs H2
+(testers must be able to reach the backend) plus a signed AAB upload. See M1.5 in the roadmap:
+that slice is pulled forward specifically to start this clock early.
+
+**Remaining human actions:** finish account verification; recruit 12 testers (see H16).
 
 ---
 
@@ -128,9 +155,17 @@ real cost-per-paper numbers to base them on — expect to set them provisionally
 
 ## Blocking M10/M11 (launch)
 
-### H16 — Recruit closed-test testers · `todo` / `n/a`
-Only if H3 says the requirement applies. 12 testers, 14 continuous days.
-**Report back:** tester list and the date the closed test opened.
+### H16 — Recruit closed-test testers · `todo` — **required, confirmed by H3**
+12 testers opted in for 14 **continuous** days. Each needs a real Google account that opts into
+the closed track and keeps it — dropping out and rejoining resets that tester's clock, so recruit
+14–15 for margin. Lab mates, friends, and cohort peers are the usual source; tester-swap
+communities exist but read Google's policy on them before relying on one.
+
+This is the longest calendar dependency in the whole plan and it does **not** need a
+finished product — only a build good enough that testers can install and open it. Start it as
+soon as M1.5 puts an AAB on the closed track.
+
+**Report back:** tester count, the date the closed test opened, and any drop-outs.
 
 ### H17 — Store listing copy and assets · `todo`
 Descriptions, screenshots, feature graphic, content rating questionnaire, target-audience
