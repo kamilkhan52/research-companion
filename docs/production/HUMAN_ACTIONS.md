@@ -20,10 +20,22 @@ web 50s, mobile 6m49s). CI is a usable merge gate again.
 *Note: the mobile job burns ~7 min/run, which is most of the spend against that cap — re-check
 the limit if reds reappear with the ~3s/0-steps signature.*
 
-### H2 — Hosting account · `todo` — **no domain needed yet**
-Create the hosting account. The plan assumes a container with a persistent volume; **Fly.io** is
-the recommendation (persistent volumes are first-class, and its free `*.fly.dev` subdomain comes
-with automatic TLS). Railway works too.
+### H2 — Hosting account · ✅ `done` (2026-07-25)
+Fly.io account created; `flyctl` installed via Homebrew and authenticated on the dev Mac as
+`kaamilkhaan52@gmail.com`. Org: `personal`. App `research-companion` exists (status `pending`,
+never deployed), so the production origin will be **`research-companion.fly.dev`** with automatic
+TLS unless we rename it.
+
+*Auth note for future sessions:* `flyctl auth login` refuses to run without a TTY and `script`
+rejects a FIFO for stdin, so a remote login is driven by a small PTY helper — flyctl prints a URL
+Kamil opens on his phone, and the returned one-time code is written into the process. Credentials
+now live in `~/.fly/`; no token needs to pass through chat again.
+
+**Still needed before M1 can deploy:** a payment method on the Fly account — persistent volumes
+(which hold `projects/` and `.app-state/`) are not available on the free allowance.
+
+The plan assumes a container with a persistent volume; Fly was chosen because volumes are
+first-class and the `*.fly.dev` subdomain ships with TLS.
 
 **You do not need to buy a domain to start.** The host's own subdomain
 (`paradigm.fly.dev` or similar) is a real HTTPS origin and is sufficient for Supabase redirect
