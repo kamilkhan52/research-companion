@@ -56,6 +56,10 @@ MAX_REDIRECTS = 5
 # because each layer is a decompression pass the response gets to demand for free (see _decode_body).
 MAX_ENCODING_LAYERS = 3
 
+# How many concatenated members one compressed body may contain. Bounds the member loop in
+# _inflate, which is quadratic in this count (see its docstring). Real bodies have exactly one.
+MAX_COMPRESSION_MEMBERS = 16
+
 # Read the body in fixed blocks instead of taking whatever fragments the transport produces, so a
 # server cannot control our allocation pattern by fragmenting its response (see fetch).
 _READ_CHUNK_BYTES = 64 * 1024
@@ -167,7 +171,8 @@ def assert_public_url(url: str) -> None:
             raise UnsafeURLError(f"refusing to fetch non-public address {ip} (host {host})")
 
 
-def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str) -> bytes:
+def _decode_body(raw: bytes | bytearray, content_encoding: str, *, max_bytes: int,
+                 url: str) -> bytes:
     """Undo `Content-Encoding` under a hard output bound.
 
     Decoding is done here rather than by httpx so that expansion is bounded: `zlib`'s
@@ -177,11 +182,17 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
     we send `Accept-Encoding: identity`, so a different encoding means the server ignored us, and
     guessing at an unbounded decoder is exactly what this function exists to avoid.
 
-    On memory: an *identity* response (the normal case, since that is what we ask for) returns
-    here untouched, so peak stays at one copy of the body. A compressed one costs more — the wire
-    bytes plus the accumulating output plus the final `bytes()` copy, so roughly 3x `max_bytes`
-    transiently, and nearer 4x while a second stacked layer is being undone. Bounded and
-    predictable is the requirement; minimal is not.
+    On memory, measured rather than reasoned about (this docstring has claimed 2x and then 3x
+    while the code actually peaked near 4.4x, so the numbers below come from tracemalloc against an
+    incompressible body — a compressible one hides the wire buffer's cost entirely):
+
+      * identity — one immutable copy at return, on top of the live wire buffer.
+      * one compressed layer — ~3.4x `max_bytes`: the wire buffer, the accumulating output, and
+        the final immutable copy, all alive at once.
+
+    Going below that needs a streaming decoder that consumes the wire buffer as it goes; the wire
+    has to stay whole here because the member loop rescans it. Bounded and *known* is the
+    requirement.
     """
     encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
     # The RESPONSE chooses how many layers to declare, and each one costs a full decompression pass
@@ -211,20 +222,33 @@ def _decode_body(raw: bytes, content_encoding: str, *, max_bytes: int, url: str)
                 if i == len(wbits_options) - 1:
                     raise UnsupportedResponseError(
                         f"{url} sent malformed {enc} content") from None
-    return raw
+    # One immutable copy, made once at the end rather than after every layer.
+    return bytes(raw)
 
 
-def _inflate(data: bytes, wbits: int, *, max_bytes: int, url: str) -> bytes:
+def _inflate(data: bytes | bytearray, wbits: int, *, max_bytes: int,
+             url: str) -> bytearray:
     """Inflate `data`, never producing more than `max_bytes`, handling MULTI-MEMBER streams.
 
     The member loop is not a nicety: `zlib.decompressobj` stops at the end of the first member and
     leaves the rest in `unused_data`, so a single decompress call on a legitimate concatenated gzip
     body (which RFC 1952 allows, and `cat a.gz b.gz` produces) returns only the first member's
     bytes. Silently truncating a paper mid-download is worse than failing.
+
+    The member COUNT is capped because the loop is quadratic in it: each iteration reads the
+    remaining suffix out of `obj.unused_data`, which CPython materializes as a fresh bytes object.
+    An empty gzip member is ~20 bytes and contributes nothing to the output budget, so a compliant
+    40MB body could carry ~2 million of them and buy O(n^2) copying while every byte-based limit
+    stays satisfied. Returns a bytearray so the caller can make the single immutable copy.
     """
     out = bytearray()
     remaining = data
+    members = 0
     while remaining:
+        members += 1
+        if members > MAX_COMPRESSION_MEMBERS:
+            raise UnsupportedResponseError(
+                f"{url} contains more than {MAX_COMPRESSION_MEMBERS} compression members")
         obj = zlib.decompressobj(wbits)
         # Budget the whole output, not each member, so many small members cannot add up past it.
         chunk = obj.decompress(remaining, max_bytes + 1 - len(out))
@@ -306,8 +330,10 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                         raise FetchTooLargeError(
                             f"{current} exceeds the {max_bytes}-byte limit")
                     buf += chunk
-                body = _decode_body(bytes(buf), r.headers.get("content-encoding", ""),
-                                    max_bytes=max_bytes, url=current)
+                encoding = r.headers.get("content-encoding", "")
+                # Hand the bytearray over directly and drop our reference: passing bytes(buf) while
+                # still holding buf kept an extra full-size copy alive for the whole decode.
+                body = _decode_body(buf, encoding, max_bytes=max_bytes, url=current)
                 del buf
                 return FetchResult(url=current, status_code=r.status_code,
                                    headers=r.headers, content=body)

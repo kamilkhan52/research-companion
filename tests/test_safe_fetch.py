@@ -8,6 +8,7 @@ happened to raise the error they asserted.
 from __future__ import annotations
 
 import gzip
+import os
 import tracemalloc
 import zlib
 
@@ -321,6 +322,57 @@ def test_many_small_members_cannot_exceed_the_ceiling(monkeypatch):
         lambda request: _resp(200, body, content_encoding="gzip")))
     with pytest.raises(safe_fetch.FetchTooLargeError):
         safe_fetch.fetch("https://example.com/x", max_bytes=50_000)
+
+
+def test_refuses_too_many_compression_members(monkeypatch):
+    """The member loop is quadratic in the member count: each pass pulls the remaining suffix out
+    of `unused_data`, which CPython materializes afresh. An empty gzip member is ~20 bytes and adds
+    nothing to the output budget, so a compliant 40MB body could carry ~2 million of them — every
+    byte limit satisfied, O(n^2) copying bought for free."""
+    empty = gzip.compress(b"")
+    body = empty * (safe_fetch.MAX_COMPRESSION_MEMBERS + 5)
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="gzip")))
+    with pytest.raises(safe_fetch.UnsupportedResponseError, match="members"):
+        safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
+
+
+def test_allows_members_at_the_limit(monkeypatch):
+    """The cap must not reject a body sitting exactly at it, or the test above proves nothing."""
+    body = b"".join(gzip.compress(b"ab") for _ in range(safe_fetch.MAX_COMPRESSION_MEMBERS))
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, body, content_encoding="gzip")))
+    got = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000).content
+    assert got == b"ab" * safe_fetch.MAX_COMPRESSION_MEMBERS
+
+
+def test_compressed_peak_memory_stays_near_the_ceiling(monkeypatch):
+    """A near-ceiling COMPRESSED body must not cost an extra full-size copy.
+
+    The payload is INCOMPRESSIBLE on purpose. The first version of this test gzipped b"A" * N,
+    which is ~800 bytes on the wire — so the wire buffer it was meant to be measuring was free, and
+    the test passed identically with and without the copy it existed to catch. With random bytes
+    the wire is the same size as the body, and the difference shows: measured 3.36x here versus
+    4.36x when `bytes(buf)` is passed while `buf` is still held. At the real 40MB PDF ceiling that
+    difference is 40MB per concurrent fetch in a single-worker process.
+    """
+    decoded_size = 800_000
+    payload = gzip.compress(os.urandom(decoded_size))
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(200, payload, content_encoding="gzip")))
+
+    tracemalloc.start()
+    try:
+        result = safe_fetch.fetch("https://example.com/x", max_bytes=1_000_000)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(result.content) == decoded_size
+    # 4x is the discriminating threshold: the current code measures ~3.36x, the extra-copy version
+    # ~4.36x. Deliberately not tighter — this is an allocation-shape regression test, not a budget.
+    assert peak < decoded_size * 4, (
+        f"peak {peak} for a {decoded_size}-byte decoded body — an extra full-size copy is alive")
 
 
 def test_decodes_a_legitimate_gzip_body(monkeypatch):
