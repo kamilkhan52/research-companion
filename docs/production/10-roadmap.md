@@ -139,6 +139,16 @@ with auth "on" would therefore hand the instance to the first stranger who signs
 middleware, and keep it until M2's ownership enforcement replaces it. Test that a valid-but-not-
 allowlisted JWT gets 403, not 200.
 
+**Close P0-14 before the service is internet-reachable.** `retriever._fetch` follows redirects to a
+caller-supplied `pdf_url` and buffers the whole body, with no IP validation and no byte cap — so an
+authenticated user can reach the host's internal network and metadata endpoints, or OOM the single
+worker (a full outage, invariant 6). On a home Mac mini behind Tailscale this was low-stakes; on a
+cloud host it is not. The fix is small because the pieces already exist: apply
+`research_tools._assert_public_url` to the initial URL **and to every redirect hop**, stream the
+download with a byte ceiling instead of `.content`, and reuse the 40 MB limit the upload path
+already enforces. M1's allowlist limits exposure to trusted users until M2.5, but this is cheap
+enough that it should not wait.
+
 Secrets move to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
 `app.json` `extra.apiBaseUrl` with staging/production variants. Early spike: verify Expo SDK 56's
 Android `targetSdkVersion` against the API 36 requirement (cheap now, expensive to discover at M9).
@@ -154,8 +164,10 @@ work inside the container (identity is already pinned, so this should be clean).
 **Tests.** Container builds and serves `/api/health`. Volume survives a restart with projects
 intact. A prod-mode boot with `RC_DEV=1` and `RC_AUTH_TOKEN` set refuses to enable either, **and a
 prod-mode boot with no Supabase config fails to start at all**, **and a valid JWT for a
-non-allowlisted user is rejected with 403** — assert all three in `tests/`. Existing suite green
-in-container.
+non-allowlisted user is rejected with 403** — assert all three in `tests/`. **P0-14: a `pdf_url`
+pointing at a private address is refused, a redirect *into* a private address is refused, and a
+response exceeding the byte ceiling is aborted mid-stream rather than buffered.** Existing suite
+green in-container.
 
 **Manual.** Deploy staging, run the device checklist against it from the phone over the public
 origin. Restart the service mid-job and confirm the failure mode is understood (it will lose the
@@ -313,14 +325,29 @@ Verified 2026-07-25, and this corrects an earlier draft of this plan:
   left TTS spend unbounded. The nearest real stop is a **prepaid credit balance with auto-recharge
   disabled** — verify that behavior before trusting it.
 
-So the load-bearing control for TTS is one **we** enforce, which is both sufficient and easy here:
-**TTS cost is deterministic** — a known price per input character for a known model — so the app
-can compute a request's exact cost *before* dispatching it and refuse when a per-user daily
-character budget is exhausted. We hold the only key, so an in-app ceiling is a real ceiling. Ship
-that in M2.5 as a simplified precursor of M3's reservations, together with per-user concurrent-job
-and requests-per-hour caps, and **retire or authenticate `POST /api/speak`** (P0-13) — it accepts
-arbitrary-length text and fans it into many paid calls, which is the single worst exposure here.
-Test that the configured maximum genuinely cannot be exceeded.
+So the load-bearing control for TTS is one **we** enforce. We hold the only key, so an in-app
+ceiling is a real ceiling — but note a correction to an earlier draft of this plan, which claimed
+TTS cost is exactly computable before dispatch:
+
+- The configured default is **`gpt-4o-mini-tts`** (`config.py:360`), which OpenAI prices on input
+  text tokens **plus generated output audio tokens**. Audio token count depends on synthesized
+  duration and is not knowable before the call — and `/audio/speech` returns raw mp3 bytes with no
+  usage payload, so it isn't knowable exactly afterward either.
+- Only the older character-priced models (`tts-1`, `tts-1-hd`) give exact pre-dispatch cost.
+
+Two workable designs, and this is a product decision (see H22): **(a)** pin production TTS to a
+character-priced model and keep exact accounting, at some cost in voice quality; or **(b)** keep
+`gpt-4o-mini-tts` and reserve a **conservative upper bound** derived from the character count
+(speech duration is bounded by a minimum speaking rate), settling at the bound. (b) deliberately
+over-counts, which is safe for a ceiling but imprecise as a billing ledger. Recommendation: (b),
+since audio quality is a headline feature — revisit if the over-count proves material at M10.
+
+Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
+per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
+through the same per-user TTS budget** (P0-13). Note that "authenticate it" is not the fix —
+every `/api/*` route is already behind the auth middleware; the gap is that it accepts
+arbitrary-length text and fans it into many paid calls with no budget gate at all. Test that the
+configured maximum genuinely cannot be exceeded.
 
 **Risks.** Any later native-module addition (RevenueCat, M4) means a new build for testers — fine,
 and it does not reset the 14-day opt-in clock as long as testers stay opted in. Data safety answers
@@ -394,16 +421,19 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
 - *OpenAI (TTS):* there is **no per-request identifier to reconcile against** — the usage API
   reports aggregated time buckets grouped by project/key/model, so under concurrency a crashed
   synthesis cannot be matched to one reservation. Do not specify provider reconciliation here.
-  Instead exploit the fact that **TTS pricing is deterministic**: the exact cost is a function of
-  the input characters and model, known *before* dispatch. Record the computed cost with the
-  dispatch, and on crash settle conservatively to what was dispatched. That is honest (it can only
-  over-count a request that failed upstream, never under-count), needs no provider call, and is the
-  same number the pre-spend cap already computed.
+  Settle instead from the reservation itself, using whichever design M2.5 chose: with a
+  character-priced model the reserved figure *is* the exact cost; with `gpt-4o-mini-tts` it is a
+  deliberate **upper bound**, so settling at it over-counts a crashed request rather than
+  under-counting it. Either way the ledger errs toward charging us, never toward silently losing
+  spend — which is the property that matters for a ceiling. Do not describe this as exact.
 
 An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
 Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
-tool-call budget already in place, plus an egress review of what `web_fetch` can reach.
+tool-call budget already in place, plus an egress review covering **every** outbound-fetch path,
+not just `web_fetch` — the retrieval path was the one missing its guard entirely (P0-14, closed in
+M1), so the review's job is to confirm no third path exists rather than to re-check the one that
+was already guarded.
 
 **Files/services.** New `app/metering.py`, `app/quotas.py`; `app/usage.py`, `app/llm.py`,
 `app/agent_harness.py`, `app/jobs.py`, `app/audio_jobs.py`, `app/research_tools.py`; all

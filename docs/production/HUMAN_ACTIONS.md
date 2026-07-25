@@ -111,6 +111,18 @@ exposes a working backend to the internet.
 **Why not an agent:** provider account billing settings.
 **Report back:** the limits you set, so M2.5's in-app caps can be sized under them.
 
+### H22 — Decide the production TTS model · `todo` — blocks M2.5
+A quality-vs-accounting tradeoff, so it's yours. The default `gpt-4o-mini-tts` is priced on input
+text tokens **plus generated audio tokens**, so its exact cost is not knowable before synthesis
+(and `/audio/speech` returns raw mp3 with no usage payload). The older `tts-1` / `tts-1-hd` are
+character-priced and therefore exactly costable in advance.
+
+- **Keep `gpt-4o-mini-tts` (recommended)** — better voice, and audio is a headline feature. Quota
+  reserves a conservative upper bound from character count, so the ledger over-counts slightly.
+- **Pin `tts-1`** — exact per-character accounting, lower voice quality.
+
+**Report back:** the choice, so M2.5 sizes the per-user TTS budget accordingly.
+
 ### H21 — Provide your Supabase user UUID for the allowlist · `todo` — blocks M1
 M1 ships a temporary allowlist because Supabase sign-in is self-service: without it, the first
 stranger who signs up gets your single-tenant instance, including the shared provider keys and
