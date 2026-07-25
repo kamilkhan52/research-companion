@@ -3,6 +3,7 @@
 // synchronously from module state, so a session change that does not reach `setToken` produces
 // silent 401s — most cruelly an hour after sign-in, when the first refresh lands.
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderAsync, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
@@ -78,12 +79,14 @@ function Probe() {
   return <Text>{status}</Text>;
 }
 
+/** AuthProvider clears the query cache on a server switch, so it needs a client above it. */
+function withQuery(children: React.ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
 async function renderProvider() {
-  return renderAsync(
-    <AuthProvider>
-      <Probe />
-    </AuthProvider>,
-  );
+  return renderAsync(withQuery(<AuthProvider><Probe /></AuthProvider>));
 }
 
 beforeEach(() => {
@@ -137,11 +140,7 @@ test('signing out clears the token, not just the UI state', async () => {
     auth = useAuth();
     return <Text>{auth.status}</Text>;
   }
-  const { getByText } = await renderAsync(
-    <AuthProvider>
-      <Capture />
-    </AuthProvider>,
-  );
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-in'));
 
   await auth!.signOut();
@@ -207,7 +206,7 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
 
     let auth: ReturnType<typeof useAuth> | undefined;
     function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
-    const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+    const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
     await waitFor(() => getByText('signed-out'));
 
     deepLinkHandler!({
@@ -309,7 +308,7 @@ test('a failure to purge stored credentials still signs the user out locally', a
 
   let auth: ReturnType<typeof useAuth> | undefined;
   function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
-  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-in'));
 
   await auth!.signOut();
@@ -434,12 +433,26 @@ test('the storage key needs no btoa, because React Native has none', () => {
   }
 });
 
-test('the encoder agrees with real base64url on every input length', () => {
-  // Guards the hand-rolled encoder against an off-by-one in its 1-, 2- and 3-byte tails.
-  for (const value of ['a', 'ab', 'abc', 'abcd', 'abcde', 'https://p.supabase.co']) {
-    const expected = `sb-${Buffer.from(value).toString('base64url')}-auth`;
+test('the encoder agrees with real base64url, including on non-ASCII', () => {
+  // Guards the tails (1-, 2- and 3-byte remainders) AND the UTF-8 encoding. The ASCII-only version
+  // of this test was the fifth in this PR to pass against a broken implementation: it could not
+  // see that masking a code point to a byte is lossy.
+  for (const value of ['a', 'ab', 'abc', 'abcd', 'abcde', 'https://p.supabase.co', 'ā', '日本語', '🎧']) {
+    const expected = `sb-${Buffer.from(value, 'utf8').toString('base64url')}-auth`;
     expect(sessionStorageKey(value)).toBe(expected);
   }
+});
+
+test('code points sharing a low byte do not share a key', () => {
+  // `& 0xff` collapses U+0101 and U+0201 to the same byte, so two distinct projects would share a
+  // session — and one's bearer token would be sent to the other's backend.
+  expect(sessionStorageKey('\u0101')).not.toBe(sessionStorageKey('\u0201'));
+});
+
+test('canonicalisation lowercases the host but not a case-sensitive path', () => {
+  expect(sessionStorageKey('https://P.supabase.co')).toBe(sessionStorageKey('https://p.supabase.co/'));
+  expect(sessionStorageKey('https://p.example.com/Proxy'))
+    .not.toBe(sessionStorageKey('https://p.example.com/proxy'));
 });
 
 test('Google sign-in opens the browser and completes through the shared handler', async () => {
@@ -453,7 +466,7 @@ test('Google sign-in opens the browser and completes through the shared handler'
 
   let auth: ReturnType<typeof useAuth> | undefined;
   function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
-  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-out'));
 
   await auth!.signInWithGoogle();
@@ -474,10 +487,31 @@ test('a dismissed Google sign-in is not reported as an error', async () => {
 
   let auth: ReturnType<typeof useAuth> | undefined;
   function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
-  const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-out'));
 
   await auth!.signInWithGoogle();
   expect(auth!.error).toBeNull();
   expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+});
+
+
+test('switching servers drops the previous server\'s cached data', async () => {
+  // Query keys carry a project id but no server identity, so without this the new server renders
+  // the OLD one's projects and settings as FRESH data — and an action can fire at server B using a
+  // pid that only exists on A. invalidateQueries is not enough: it marks data stale and keeps
+  // serving it, which is the wrong half of the behaviour.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(['projects'], [{ id: 'from-server-a' }]);
+
+  const { getByText } = await renderAsync(
+    <QueryClientProvider client={client}><AuthProvider><Probe /></AuthProvider></QueryClientProvider>,
+  );
+  await waitFor(() => getByText('signed-out'));
+
+  const notify = (apiConfig.subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
+  notify();
+
+  expect(client.getQueryData(['projects'])).toBeUndefined();
 });

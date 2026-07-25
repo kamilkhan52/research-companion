@@ -17,6 +17,9 @@ import * as WebBrowser from 'expo-web-browser';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useQueryClient } from '@tanstack/react-query';
+
 import { getAuthConfig } from '@/api/endpoints';
 import { setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
@@ -119,15 +122,45 @@ async function consumePendingSignIn(): Promise<boolean> {
  *  downstream rewrites the key. */
 const BASE64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
+/** UTF-8 bytes of a string. Written out because masking code points to a byte (`& 0xff`) is
+ *  LOSSY — `\u0101` and `\u0201` share a low byte, so two distinct URLs would produce one key. */
+function utf8Bytes(value: string): number[] {
+  const bytes: number[] = [];
+  for (const character of value) {
+    const point = character.codePointAt(0)!;
+    if (point < 0x80) bytes.push(point);
+    else if (point < 0x800) bytes.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f));
+    else if (point < 0x10000) {
+      bytes.push(0xe0 | (point >> 12), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (point >> 18), 0x80 | ((point >> 12) & 0x3f),
+        0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f),
+      );
+    }
+  }
+  return bytes;
+}
+
+/** Lowercase the parts that are case-INSENSITIVE (scheme and host) and leave the rest alone. A
+ *  blanket `toLowerCase()` merges two case-sensitive proxy paths into one key. */
+function canonicalSupabaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return trimmed;
+  }
+}
+
 export function sessionStorageKey(supabaseUrl: string): string {
-  const normalized = supabaseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  const bytes = utf8Bytes(canonicalSupabaseUrl(supabaseUrl));
   let out = '';
-  for (let i = 0; i < normalized.length; i += 3) {
-    // A Supabase URL is ASCII; masking keeps a stray high code point from corrupting the shift
-    // rather than throwing — a surprising-but-stable key is still safer than an exception here.
-    const a = normalized.charCodeAt(i) & 0xff;
-    const b = i + 1 < normalized.length ? normalized.charCodeAt(i + 1) & 0xff : NaN;
-    const c = i + 2 < normalized.length ? normalized.charCodeAt(i + 2) & 0xff : NaN;
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i];
+    const b = i + 1 < bytes.length ? bytes[i + 1] : NaN;
+    const c = i + 2 < bytes.length ? bytes[i + 2] : NaN;
     out += BASE64URL[a >> 2];
     out += BASE64URL[((a & 3) << 4) | (Number.isNaN(b) ? 0 : b >> 4)];
     if (Number.isNaN(b)) break;
@@ -144,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const queryClient = useQueryClient();
   const client = useRef<SupabaseClient | null>(null);
   /** A callback URL that arrived before the Supabase client existed (cold start). */
   const pendingUrl = useRef<string | null>(null);
@@ -277,8 +311,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     client.current?.auth.stopAutoRefresh();
     client.current = null;
     void setToken(null);
+
+    // Every cached answer belongs to the server that gave it. Query keys carry a project id but no
+    // server identity, so without this the new server renders the OLD one's projects, papers and
+    // settings — as fresh data, with no refetch to correct it — and an action can fire at server B
+    // using a pid that only exists on A. `clear()` and not `invalidateQueries()`: invalidation
+    // marks data stale but keeps serving it, which is exactly the wrong half of the behaviour here.
+    queryClient.clear();
+    // The remembered project is server-scoped for the same reason, and it is persisted, so it
+    // would otherwise survive even a restart onto the new server.
+    void AsyncStorage.removeItem('rc.activeProject');
+
     setAttempt((n) => n + 1);
-  }), []);
+  }), [queryClient]);
 
   // supabase-js refreshes on a timer, and a backgrounded RN app has its timers throttled or
   // stopped. Without this, a phone left locked overnight wakes with an expired access token and
