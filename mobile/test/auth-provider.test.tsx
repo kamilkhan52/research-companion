@@ -9,7 +9,7 @@ import { Text } from 'react-native';
 import * as apiConfig from '@/api/config';
 import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
-import { AuthProvider, redirectUri, useAuth } from '@/auth/AuthProvider';
+import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
 const mockAuth = {
@@ -368,4 +368,48 @@ test('a refresh from the retired client cannot restore the token after a server 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(apiConfig.setToken).not.toHaveBeenCalledWith('old-jwt-refreshed');
+});
+
+
+test('an adoption paused mid-await cannot flip the app to the old server', async () => {
+  // Narrower than the previous race and not covered by it: the callback passes the generation
+  // check, then PAUSES inside setToken (SecureStore), and the retirement happens while it waits.
+  // Resuming would set status 'signed-in' for the old server, mounting every API consumer against
+  // the new one before its session exists — and those 401s get cached.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+
+  let releaseSetToken: () => void;
+  const { getByText, queryByText } = await renderProvider();
+  await waitFor(() => getByText('signed-out'));
+
+  const notify = (apiConfig.subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
+  (apiConfig.setToken as jest.Mock).mockImplementationOnce(
+    () => new Promise<void>((resolve) => { releaseSetToken = resolve; }),
+  );
+
+  authStateCallback!('TOKEN_REFRESHED', {
+    access_token: 'old-jwt', user: { email: 'old@example.com' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));  // now parked inside setToken
+
+  notify();            // the server switch happens while it waits
+  releaseSetToken!();  // and only then does it resume
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // 'unknown' is correct here — the switch restarts the bootstrap. What must NOT happen is the
+  // resumed callback declaring the app signed in to the server we just left.
+  expect(queryByText('signed-in')).toBeNull();
+});
+
+test('two Supabase URLs that differ only in punctuation get different storage keys', async () => {
+  // replace(/[^a-zA-Z0-9]/g, '-') collapses these to the same key, which would let one project's
+  // session be restored under the other and its bearer token sent to the wrong backend.
+  expect(sessionStorageKey('https://auth-a.example.com'))
+    .not.toBe(sessionStorageKey('https://auth.a-example.com'));
+  // Stable across trivial variation, so a session is not orphaned by a trailing slash.
+  expect(sessionStorageKey('https://p.supabase.co/'))
+    .toBe(sessionStorageKey('https://P.supabase.co'));
+  // And within the alphabet secureSessionStore accepts, so nothing downstream rewrites it.
+  expect(sessionStorageKey('https://p.supabase.co')).toMatch(/^[A-Za-z0-9._-]+$/);
 });

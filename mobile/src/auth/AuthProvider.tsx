@@ -101,6 +101,24 @@ async function consumePendingSignIn(): Promise<boolean> {
   return Boolean(pending);
 }
 
+/** A storage key unique per Supabase project, by construction.
+ *
+ *  base64url rather than the obvious `replace(/[^a-zA-Z0-9]/g, '-')`, because that substitution is
+ *  NOT injective: `https://auth-a.example.com` and `https://auth.a-example.com` collapse to the
+ *  same key, and two projects sharing a key means one's session can be restored under the other
+ *  and its bearer token sent to the wrong backend. Only reachable today via Supabase custom
+ *  domains, but being exact costs four lines. The base64url alphabet also sits inside what
+ *  `secureSessionStore`'s key normaliser accepts, so nothing downstream rewrites it. */
+export function sessionStorageKey(supabaseUrl: string): string {
+  const normalized = supabaseUrl.trim().replace(/\/+$/, '').toLowerCase();
+  try {
+    return `sb-${btoa(normalized).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}-auth`;
+  } catch {
+    // btoa is latin1-only. A Supabase URL is ASCII, but fall back rather than throw during setup.
+    return `sb-${normalized.replace(/[^a-zA-Z0-9]/g, '-')}-auth`;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('unknown');
   const [mode, setMode] = useState<AuthConfig['mode'] | null>(null);
@@ -127,6 +145,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // lands in that window it would restore the old token on top of the clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
     await setToken(session?.access_token ?? null);
+    // Checked AGAIN after the await. `setToken` touches SecureStore, so a callback can pass the
+    // first check, pause here, and resume after the base-URL subscriber has retired its client —
+    // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
+    // new one before its session exists, which caches 401s the user has to restart to clear.
+    if (forGeneration !== undefined && forGeneration !== generation.current) return;
     setEmail(session?.user?.email ?? null);
     setStatus(session?.access_token ? 'signed-in' : 'signed-out');
   }, []);
@@ -181,11 +204,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Web-only: there is no URL fragment to read on a native launch, and leaving it on makes
           // supabase-js poke at browser globals that do not exist here.
           detectSessionInUrl: false,
-          // Scoped to the project explicitly. Supabase's default key is derived from only the
-          // FIRST DNS LABEL of the URL, so two backends are not guaranteed distinct storage —
-          // and after a server switch a restored session from the previous project would be
-          // adopted and its token sent to the new host.
-          storageKey: `sb-${config.supabase_url.replace(/[^a-zA-Z0-9]/g, '-')}-auth`,
+          // Scoped to the project explicitly. Supabase's default key derives from only the FIRST
+          // DNS LABEL of the URL, so two backends are not guaranteed distinct storage — and after
+          // a server switch a session restored from the previous project would be adopted and its
+          // token sent to the new host.
+          storageKey: sessionStorageKey(config.supabase_url),
         },
       });
       client.current = supabase;
