@@ -74,6 +74,14 @@ def _resp(status: int, body: bytes = b"", **headers: str) -> httpx.Response:
     "224.0.0.1",
     "239.255.255.250",
     "ff02::1",
+    # IPv6 forms that WRAP an IPv4 destination. A gateway delivers to the address inside, so
+    # judging only the outer one lets a "public" address mean loopback or cloud metadata.
+    # is_global answers correctly for 6to4/Teredo/mapped but NOT for NAT64, which is exactly the
+    # sort of per-form exception that should not be trusted from memory.
+    "64:ff9b::7f00:1",          # NAT64 wrapping 127.0.0.1
+    "64:ff9b::a9fe:a9fe",       # NAT64 wrapping 169.254.169.254 (cloud metadata)
+    "64:ff9b::a00:1",           # NAT64 wrapping 10.0.0.1
+    "2002:7f00:1::1",           # 6to4 wrapping 127.0.0.1
 ])
 def test_refuses_non_public_addresses(fake_dns, ip):
     fake_dns["evil.example"] = ip
@@ -93,6 +101,13 @@ def test_refuses_carrier_grade_nat(fake_dns):
 
 def test_allows_a_public_address():
     safe_fetch.assert_public_url("https://arxiv.org/pdf/2201.11705")   # must not raise
+
+
+def test_allows_nat64_wrapping_a_public_address(fake_dns):
+    """The unwrapping must judge the embedded address, not reject the prefix wholesale — NAT64 to
+    a public IPv4 is a legitimate way to reach the v4 internet from a v6-only network."""
+    fake_dns["v6only.example"] = "64:ff9b::808:808"                    # NAT64 wrapping 8.8.8.8
+    safe_fetch.assert_public_url("https://v6only.example/x")           # must not raise
 
 
 def test_preserves_a_trailing_dot(monkeypatch):

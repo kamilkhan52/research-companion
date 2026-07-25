@@ -125,6 +125,32 @@ class FetchResult:
             return self.content.decode("utf-8", errors="replace")
 
 
+# RFC 6052's well-known prefix: 64:ff9b::/96 carries an IPv4 address in its low 32 bits, and a
+# NAT64 gateway forwards to that address. `is_global` calls such an address public, so the embedded
+# IPv4 has to be judged on its own.
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _embedded_ipv4(addr: ipaddress.IPv4Address | ipaddress.IPv6Address
+                   ) -> list[ipaddress.IPv4Address]:
+    """Any IPv4 addresses reachable *through* an IPv6 address.
+
+    Several IPv6 forms are wrappers around an IPv4 destination — NAT64, 6to4, Teredo, IPv4-mapped —
+    and a gateway will deliver to the address inside. Judging only the outer address lets
+    `64:ff9b::7f00:1` read as public while it means 127.0.0.1. Python answers `is_global` correctly
+    for 6to4/Teredo/mapped, but NOT for NAT64, so all four are unwrapped here rather than trusting
+    which ones the stdlib happens to cover.
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return []
+    found = [v for v in (addr.ipv4_mapped, addr.sixtofour) if v is not None]
+    if addr.teredo:
+        found.extend(v for v in addr.teredo if v is not None)
+    if addr in _NAT64_WELL_KNOWN:
+        found.append(ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF))
+    return found
+
+
 def _check_deadline(ends_at: float, url: str) -> float:
     """Seconds left, or raise `FetchTimeoutError`. Returning the remainder lets callers hand it to
     httpx as a per-operation timeout, so work started near the deadline cannot outlive it."""
@@ -197,8 +223,10 @@ def assert_public_url(url: str) -> None:
         # both report is_global True. The enumeration this replaced did check is_multicast, so
         # dropping it made the guard narrower on that one axis while the docstring claimed the
         # opposite. No practical TCP target, but "public destinations only" should mean it.
-        if not ip.is_global or ip.is_multicast:
-            raise UnsafeURLError(f"refusing to fetch non-public address {ip} (host {host})")
+        for candidate in (ip, *_embedded_ipv4(ip)):
+            if not candidate.is_global or candidate.is_multicast:
+                raise UnsafeURLError(
+                    f"refusing to fetch non-public address {candidate} (host {host})")
 
 
 def fetch(url: str, *, max_bytes: int, timeout: float = 60,
