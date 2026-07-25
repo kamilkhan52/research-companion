@@ -13,7 +13,7 @@ before execution.
 
 ## Current position (updated 2026-07-25)
 
-**In M1.** Plan merged (#217). All three M1 PRs are merged; what remains of M1 is the API-36 spike and the production Fly app + secrets.
+**In M1.** Plan merged (#217). Five M1 PRs merged (#218–#223); the API-36 spike is done (answer: already 36, no change). What remains of M1 is the production Fly app + secrets — all of which needs Kamil.
 
 | PR | Scope | Status |
 |---|---|---|
@@ -54,8 +54,13 @@ allowlist = Kamil's UUID only, **no provider API keys** (so nothing can spend). 
 
 **Production Fly app `research-companion` exists but has never been deployed** and has no volume.
 
-**Not yet started in M1:** the API-36 spike (verify Expo SDK 56's `targetSdkVersion`), and the
-production app + secrets. Data migration and client cutover are deliberately *out* of M1 — see M1's
+**API-36 spike: done 2026-07-25 — nothing to change.** Expo SDK 56 / RN 0.85.3 already resolves
+`targetSdkVersion` to **36** (via RN's `gradle/libs.versions.toml`, not the plugin's 35 fallback),
+so the Play requirement effective 2026-08-31 is met with no `expo-build-properties` override. Left
+unpinned on purpose — the requirement is a floor, and a pin would hold the app at 36 when a later
+Expo SDK raises it. Full chain recorded as P2-4 in the audit.
+
+**Not yet started in M1:** the production app + secrets. Data migration and client cutover are deliberately *out* of M1 — see M1's
 "Rollback" section for why they are gated on M2 and M6.
 
 **Operational notes for whoever picks this up:**
@@ -436,8 +441,9 @@ stays in M7.
 
 **Scope, part 2 — the build.** One production-profile EAS build (`.aab`) pointed at the M1
 production origin. Play app created, closed track configured, upload, pass review, invite testers.
-Confirm `targetSdkVersion` satisfies API 36 here — the cheap moment to discover an Expo SDK 56
-problem, months before M9 depends on it.
+`targetSdkVersion` is **already 36** (settled in M1, P2-4), so this build should confirm rather
+than discover. Check the merged manifest in the build output anyway — that artifact is the only
+definitive proof, and this is the first time one exists.
 
 **What testers get.** A multi-tenant, free, no-paywall, no-quota build. That is fine and expected:
 Google requires that a closed test *ran*, not that the tested build was final.
@@ -784,9 +790,9 @@ active project; extend the same discipline to redaction.
 **Objective.** A reproducible, agent-operable path from commit to internal track.
 
 **Scope.** EAS production build (`.aab`), signing, version code strategy (`appVersionSource: remote`
-already set). Confirm and, if needed, raise `targetSdkVersion` to API 36 — Google requires it for
-new apps and updates from **2026-08-31**; verify against current documentation at implementation
-time. Play service account for EAS Submit. EAS Workflows for CI → build → submit to internal track.
+already set). `targetSdkVersion` already resolves to 36 (M1, P2-4) and is deliberately left unpinned, so
+the **2026-08-31** Play floor needs no action here — re-verify against current documentation at
+implementation time in case the floor has moved again. Play service account for EAS Submit. EAS Workflows for CI → build → submit to internal track.
 EAS Update policy with runtime versioning and a rollback procedure — deliberately conservative, no
 auto-submit on every merge to `main`.
 

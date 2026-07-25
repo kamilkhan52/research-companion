@@ -122,7 +122,7 @@ client. `web/` is a React + Vite SPA at rough parity.
 | P2-1 | No E2E tests for auth, purchase, or entitlement flows. |
 | P2-2 | `shared/api-types.ts` regeneration is manual (`scripts/gen-api-types.sh`). |
 | P2-3 | Web SPA availability is coupled to the API process (same mount). |
-| P2-4 | Android `targetSdkVersion` is whatever Expo SDK 56 defaults to — unverified against the API 36 requirement. Managed workflow, no `mobile/android/`. |
+| P2-4 | ~~Android `targetSdkVersion` unverified~~ — **resolved 2026-07-25, no change needed: it is already 36.** Traced the whole resolution chain rather than assuming a default. The bare template's `app/build.gradle` uses `rootProject.ext.targetSdkVersion`; `ExpoRootProjectPlugin.kt:30` sets that from a Gradle version catalog with a *fallback* of 35; `settings.gradle`'s `expoAutolinking.useExpoVersionCatalog()` resolves that catalog to React Native's own `gradle/libs.versions.toml`, which in the installed RN 0.85.3 reads `targetSdk = "36"` (`compileSdk = "36"` too). Nothing in `app.json`'s `expo-build-properties` overrides it. **Deliberately NOT pinned**: Google requires *at least* API 36 from 2026-08-31, and pinning would freeze the app at 36 when a later SDK moves higher. Caveat: this is the resolution chain read statically — the definitive artifact is an EAS build's merged manifest, which M2.5's first build produces anyway. |
 | P2-5 | No data inventory, so Data Safety answers would be guesses. |
 
 ### P3 — optional / post-launch
