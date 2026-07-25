@@ -74,7 +74,18 @@ export function getToken(): string | null {
 }
 
 export async function setToken(value: string | null): Promise<void> {
+  // In-memory first and unconditionally: this is what `client.ts` reads on every request, and it
+  // must change even if persistence fails.
   token = value;
-  if (value) await SecureStore.setItemAsync(TOKEN_KEY, value);
-  else await SecureStore.deleteItemAsync(TOKEN_KEY);
+  try {
+    if (value) await SecureStore.setItemAsync(TOKEN_KEY, value);
+    else await SecureStore.deleteItemAsync(TOKEN_KEY);
+  } catch {
+    // Best-effort. SecureStore rejects values over roughly 2048 bytes, and an access JWT with
+    // enough claims can reach that — letting it throw would propagate out of the auth provider's
+    // session adoption and fail the whole sign-in over a cache write. The session itself is
+    // persisted separately (and chunked) by `auth/secureSessionStore.ts`, so the worst case here
+    // is that a cold start has no token until Supabase restores the session, which is exactly
+    // what the auth gate waits for anyway.
+  }
 }

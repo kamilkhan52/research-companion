@@ -168,6 +168,12 @@ export default function RootLayout() {
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
+            {/* The gate sits ABOVE every API and audio consumer, not just above the screens.
+                PaperEntityProvider fetches project state and AudioProvider restores tracks with
+                auth headers on mount — below the gate they cannot fire a protected request with a
+                stale cached token while Supabase is still restoring the session, which on an
+                overnight cold start would cache a 401 or break audio restoration. */}
+            <AuthGate>
             <ProjectProvider>
               <ListeningProvider>
                 <GraphSettingsProvider>
@@ -180,17 +186,14 @@ export default function RootLayout() {
                     still paints confirmations above portalled sheets. */}
                 <BottomSheetModalProvider>
                 <PaperEntityProvider>
-                {/* Gate as deep as possible: everything above supplies theme/toast/query that
-                    the sign-in screen itself needs, and everything below assumes a usable API. */}
-                <AuthGate>
-                  <ThemedShell />
-                </AuthGate>
+                <ThemedShell />
                 </PaperEntityProvider>
                 </BottomSheetModalProvider>
                 </AudioProvider>
                 </GraphSettingsProvider>
               </ListeningProvider>
             </ProjectProvider>
+            </AuthGate>
             </AuthProvider>
           </QueryClientProvider>
         </KeyboardProvider>

@@ -18,6 +18,9 @@ const mockAuth = {
   }),
   getSession: jest.fn(async (): Promise<{ data: { session: unknown } }> => ({ data: { session: null } })),
   signOut: jest.fn(async () => ({ error: null })),
+  exchangeCodeForSession: jest.fn(async () => ({ error: null })),
+  setSession: jest.fn(async () => ({ error: null })),
+  signInWithOtp: jest.fn(async () => ({ error: null })),
   startAutoRefresh: jest.fn(),
   stopAutoRefresh: jest.fn(),
 };
@@ -29,9 +32,15 @@ jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => ({ auth: mockAuth })),
 }));
 jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
+let deepLinkHandler: ((event: { url: string }) => void) | undefined;
 jest.mock('expo-linking', () => ({
   createURL: (path: string) => `researchcompanion://${path}`,
-  parse: jest.fn(),
+  parse: jest.fn(() => ({ queryParams: {} })),
+  getInitialURL: jest.fn(async () => null),
+  addEventListener: jest.fn((_event: string, cb: (e: { url: string }) => void) => {
+    deepLinkHandler = cb;
+    return { remove: jest.fn() };
+  }),
 }));
 
 const SUPABASE_CONFIG = {
@@ -135,4 +144,62 @@ test('supabase mode without an anon key does not pretend to be signed in', async
   });
   const { getByText } = await renderProvider();
   await waitFor(() => getByText('signed-out'));
+});
+
+
+describe('the magic link, which arrives as an OS deep link rather than in-process', () => {
+  const Linking = jest.requireMock('expo-linking');
+
+  beforeEach(() => {
+    jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  });
+
+  test('a link tapped while the app runs completes the sign-in', async () => {
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-out'));
+
+    // Google comes back through openAuthSessionAsync; a magic link does NOT — it is tapped in a
+    // mail app and arrives here. Handling only the former left this flow doing nothing at all.
+    Linking.parse.mockReturnValue({ queryParams: { code: 'pkce-code' } });
+    deepLinkHandler!({ url: 'researchcompanion://auth?code=pkce-code' });
+
+    await waitFor(() =>
+      expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('pkce-code'));
+  });
+
+  test('a link tapped while the app is closed completes on cold start', async () => {
+    Linking.getInitialURL.mockResolvedValue('researchcompanion://auth?code=cold-code');
+    Linking.parse.mockReturnValue({ queryParams: { code: 'cold-code' } });
+
+    await renderProvider();
+    await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('cold-code'));
+  });
+
+  test('an expired link surfaces its reason instead of silently doing nothing', async () => {
+    // Supabase reports these as query params, not as a thrown error. Without handling them the
+    // user taps a dead link, sees no change, and taps it again.
+    Linking.parse.mockReturnValue({
+      queryParams: { error: 'access_denied', error_description: 'Email link is invalid or has expired' },
+    });
+
+    let auth: ReturnType<typeof useAuth> | undefined;
+    function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+    const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
+    await waitFor(() => getByText('signed-out'));
+
+    deepLinkHandler!({ url: 'researchcompanion://auth?error=access_denied' });
+    await waitFor(() => expect(auth!.error).toMatch(/invalid or has expired/));
+    expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+  });
+
+  test('an unrelated deep link is not treated as an auth callback', async () => {
+    Linking.parse.mockReturnValue({ queryParams: {} });
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-out'));
+
+    deepLinkHandler!({ url: 'researchcompanion://paper/attention-is-all-you-need' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+    expect(mockAuth.setSession).not.toHaveBeenCalled();
+  });
 });

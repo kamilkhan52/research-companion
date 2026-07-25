@@ -18,10 +18,20 @@ import { ThemeProvider } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
 
 jest.mock('expo-router', () => ({ useRouter: () => ({ back: jest.fn(), push: jest.fn() }) }));
+// The settings screen pulls in AuthProvider (for the sign-out control), which touches expo-linking.
+jest.mock('expo-linking', () => ({
+  createURL: (path: string) => `researchcompanion://${path}`,
+  parse: jest.fn(() => ({ queryParams: {} })),
+  getInitialURL: jest.fn(async () => null),
+  addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+}));
 jest.mock('@/api/config', () => ({
   getBaseUrl: () => 'https://example.test',
   hasBaseUrl: () => true,
   setBaseUrl: jest.fn(),
+  // AuthProvider re-bootstraps when the server URL changes, so it subscribes here.
+  subscribeBaseUrl: jest.fn(() => jest.fn()),
+  setToken: jest.fn(async () => undefined),
 }));
 
 const settings = {

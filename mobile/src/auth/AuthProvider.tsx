@@ -17,7 +17,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AppState } from 'react-native';
 
 import { getAuthConfig } from '@/api/endpoints';
-import { setToken } from '@/api/config';
+import { setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
 import { secureSessionStore } from './secureSessionStore';
@@ -113,6 +113,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           storage: secureSessionStore,
           persistSession: true,
           autoRefreshToken: true,
+          // Explicit: supabase-js still defaults to the implicit flow, which returns tokens in the
+          // URL fragment. PKCE keeps them out of the redirect URL entirely and is the right choice
+          // on a device, where that URL crosses the OS. It also gives ONE callback shape to handle
+          // for both Google and magic link — the verifier persists through `storage` above.
+          flowType: 'pkce',
           // Web-only: there is no URL fragment to read on a native launch, and leaving it on makes
           // supabase-js poke at browser globals that do not exist here.
           detectSessionInUrl: false,
@@ -138,9 +143,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       unsubscribe?.();
+      // Stop the replaced client's refresh timer explicitly: it holds the old project's session
+      // and would otherwise keep ticking against a server we have already left.
+      client.current?.auth.stopAutoRefresh();
       client.current = null;
     };
   }, [adoptSession, attempt]);
+
+  // Pointing the app at a different server means a different Supabase project, and a JWT minted
+  // by the old project is meaningless to the new one — worse, sending it there hands a bearer
+  // credential to a server that has no business seeing it. Re-bootstrap from scratch.
+  useEffect(() => subscribeBaseUrl(() => {
+    void setToken(null);
+    setAttempt((n) => n + 1);
+  }), []);
 
   // supabase-js refreshes on a timer, and a backgrounded RN app has its timers throttled or
   // stopped. Without this, a phone left locked overnight wakes with an expired access token and
@@ -152,6 +168,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     return () => subscription.remove();
   }, []);
+
+  /** Turn a callback URL into a session. Returns an error message, or null on success.
+   *
+   *  Shared because there are two ways the callback arrives and only one of them was handled
+   *  before: Google's comes back through `openAuthSessionAsync` in-process, but a **magic link is
+   *  tapped in a mail app days later** and arrives as an OS deep link — cold start or warm resume.
+   *  Parsing only the in-process result left the emailed link doing nothing at all: the app opened
+   *  on the sign-in screen, still signed out, with no indication why. */
+  const completeFromUrl = useCallback(async (url: string): Promise<string | null> => {
+    const supabase = client.current;
+    if (!supabase) return null;
+
+    const { queryParams } = Linking.parse(url);
+    const code = queryParams?.code;
+    if (typeof code === 'string') {
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+      return exchangeError?.message ?? null;
+    }
+    // Supabase surfaces auth failures (expired or already-used link) as query params, not as a
+    // thrown error. Without this the user gets a silent no-op and taps the dead link again.
+    if (typeof queryParams?.error_description === 'string') return queryParams.error_description;
+    if (typeof queryParams?.error === 'string') return String(queryParams.error);
+
+    // Implicit-flow fallback: tokens in the fragment. Kept because a project configured for the
+    // implicit flow, or a link minted before flowType was pinned to pkce, still lands here.
+    const fragment = url.split('#')[1] ?? '';
+    if (fragment) {
+      const params = new URLSearchParams(fragment);
+      const access_token = params.get('access_token');
+      const refresh_token = params.get('refresh_token');
+      if (access_token && refresh_token) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token, refresh_token,
+        });
+        return sessionError?.message ?? null;
+      }
+      const described = params.get('error_description') ?? params.get('error');
+      if (described) return described;
+    }
+    return null;  // an unrelated deep link into the app; not an auth callback
+  }, []);
+
+  // The magic link's only route home. `getInitialURL` covers a cold start (the app was not
+  // running when the link was tapped); the listener covers a warm resume.
+  useEffect(() => {
+    let cancelled = false;
+    const handle = (url: string | null) => {
+      if (cancelled || !url) return;
+      void completeFromUrl(url).then((message) => {
+        if (!cancelled && message) setError(message);
+      });
+    };
+    void Linking.getInitialURL().then(handle).catch(() => {});
+    const subscription = Linking.addEventListener('url', ({ url }) => handle(url));
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, [completeFromUrl]);
 
   const signInWithGoogle = useCallback(async () => {
     setError(null);
@@ -169,28 +244,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
     if (result.type !== 'success') return;  // user dismissed; not an error worth showing
-
-    // Native has no detectSessionInUrl, so the callback has to be turned into a session by hand.
-    // Supabase returns either a PKCE `code` (query) or tokens in the fragment, depending on the
-    // project's flow — handle both rather than betting on one.
-    const parsed = Linking.parse(result.url);
-    const code = parsed.queryParams?.code;
-    if (typeof code === 'string') {
-      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-      if (exchangeError) setError(exchangeError.message);
-      return;
-    }
-    const fragment = result.url.split('#')[1] ?? '';
-    const params = new URLSearchParams(fragment);
-    const access_token = params.get('access_token');
-    const refresh_token = params.get('refresh_token');
-    if (access_token && refresh_token) {
-      const { error: setError_ } = await supabase.auth.setSession({ access_token, refresh_token });
-      if (setError_) setError(setError_.message);
-      return;
-    }
-    setError('Signed in, but the response carried no session.');
-  }, []);
+    const message = await completeFromUrl(result.url);
+    if (message) setError(message);
+  }, [completeFromUrl]);
 
   const signInWithMagicLink = useCallback(async (address: string) => {
     setError(null);

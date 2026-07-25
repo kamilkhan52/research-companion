@@ -6,23 +6,35 @@
 // an unencrypted backup. `src/api/config.ts` already puts the access token in SecureStore for
 // exactly this reason; the refresh token deserves at least as much.
 //
-// Why the chunking: **SecureStore values are limited to 2048 bytes.** A Supabase session is a JSON
-// blob holding an access JWT, a refresh token, and the full user object with its metadata — it
-// routinely exceeds that. Android throws above the limit rather than truncating, so an unchunked
-// adapter does not fail at write time in dev with a small user record and then start failing later
-// for a user with a bigger one. It fails for whoever happens to cross the line, which is worse:
-// their sign-in appears to work and does not survive a restart.
+// Two things make this more than a thin wrapper:
+//
+// 1. **Values are limited to roughly 2048 BYTES.** A session (access JWT + refresh token + the user
+//    object with its metadata) routinely exceeds that, and the platform rejects the write rather
+//    than truncating — so an unchunked adapter fails for whoever's profile happens to cross the
+//    line, and fails quietly: their sign-in appears to work and does not survive a restart.
+//
+// 2. **A write must never be able to half-apply.** Overwriting chunks in place means a process
+//    death between the last chunk and the manifest can leave chunk 0 from the new session beside
+//    chunk 1 from the old one. Two sessions for the same user have identical JSON shape and
+//    near-identical lengths, so that mixture can still *parse* — yielding a session with a new
+//    access token and a stale refresh token, or after an account switch, a mix of two accounts.
+//    So writes alternate between two slots and the manifest is committed last: an interrupted
+//    write leaves the manifest pointing at the previous slot, which is still complete.
 
 import * as SecureStore from 'expo-secure-store';
 
 /** BYTES per chunk, under the platform's ~2048-byte value limit with room to spare.
  *
- *  Bytes, not characters — the limit the native keystore applies is on the encoded value. Slicing
- *  by `String.length` would let a session containing any multi-byte UTF-8 (an accented name, an
- *  emoji in `user_metadata`) produce a chunk of 1800 characters and up to 7200 bytes, which the
- *  platform rejects. That is the same "fails only for whoever happens to cross the line" failure
- *  chunking exists to prevent. */
+ *  Bytes, not characters — the limit applies to the encoded value. Slicing by `String.length`
+ *  would let a session containing multi-byte UTF-8 (an accented name, an emoji in `user_metadata`)
+ *  produce a chunk of 1800 characters and up to 7200 bytes. */
 const CHUNK_BYTES = 1800;
+
+/** Hard cap on chunks, so a corrupt or hostile manifest cannot spin us through unbounded reads,
+ *  and so cleanup can sweep a slot exhaustively without trusting a stored count. */
+const MAX_CHUNKS = 32;
+
+type Slot = 'a' | 'b';
 
 /** UTF-8 length of one code point. */
 function utf8Length(codePoint: number): number {
@@ -33,8 +45,9 @@ function utf8Length(codePoint: number): number {
 }
 
 /** Split on code-point boundaries while counting BYTES, so no chunk exceeds the budget and no
- *  surrogate pair is torn in half (which would corrupt the value on rejoin). */
-function chunkByBytes(value: string, budget: number): string[] {
+ *  surrogate pair is torn in half. A lone surrogate is not encodable as UTF-8: it becomes U+FFFD
+ *  and the session never parses again. */
+export function chunkByBytes(value: string, budget: number): string[] {
   const chunks: string[] = [];
   let current = '';
   let used = 0;
@@ -52,40 +65,47 @@ function chunkByBytes(value: string, budget: number): string[] {
   return chunks;
 }
 
-/** Hard cap on chunks, so a corrupt or hostile count cannot spin us through unbounded reads. */
-const MAX_CHUNKS = 32;
-
-/** SecureStore keys must be alphanumeric + ".-_"; Supabase's own keys contain none of that, but
- *  normalize anyway so a future key change cannot silently break persistence. */
+/** SecureStore keys must be alphanumeric + ".-_"; normalize so a future change to Supabase's own
+ *  key format cannot silently break persistence. */
 function safeKey(key: string): string {
   return key.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
-const countKey = (key: string) => `${safeKey(key)}.n`;
-const chunkKey = (key: string, index: number) => `${safeKey(key)}.${index}`;
+const manifestKey = (key: string) => `${safeKey(key)}.m`;
+const chunkKey = (key: string, slot: Slot, index: number) => `${safeKey(key)}.${slot}.${index}`;
 
-async function clearChunks(key: string, upTo: number): Promise<void> {
-  for (let i = 0; i < upTo; i += 1) {
-    await SecureStore.deleteItemAsync(chunkKey(key, i)).catch(() => {});
+interface Manifest { slot: Slot; n: number }
+
+async function readManifest(key: string): Promise<Manifest | null> {
+  const raw = await SecureStore.getItemAsync(manifestKey(key)).catch(() => null);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Manifest;
+    if ((parsed.slot !== 'a' && parsed.slot !== 'b') || !Number.isInteger(parsed.n)) return null;
+    if (parsed.n < 1 || parsed.n > MAX_CHUNKS) return null;
+    return parsed;
+  } catch {
+    return null;
   }
 }
 
-async function storedCount(key: string): Promise<number> {
-  const raw = await SecureStore.getItemAsync(countKey(key)).catch(() => null);
-  const n = raw ? Number.parseInt(raw, 10) : 0;
-  return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_CHUNKS) : 0;
+/** Sweep a slot exhaustively rather than up to a stored count: cleanup must not depend on the
+ *  manifest, because the case it exists for is a manifest that is missing or already stale. */
+async function purgeSlot(key: string, slot: Slot): Promise<void> {
+  for (let i = 0; i < MAX_CHUNKS; i += 1) {
+    await SecureStore.deleteItemAsync(chunkKey(key, slot, i)).catch(() => {});
+  }
 }
 
 export const secureSessionStore = {
   async getItem(key: string): Promise<string | null> {
-    const count = await storedCount(key);
-    if (!count) return null;
+    const manifest = await readManifest(key);
+    if (!manifest) return null;
     const parts: string[] = [];
-    for (let i = 0; i < count; i += 1) {
-      const part = await SecureStore.getItemAsync(chunkKey(key, i)).catch(() => null);
-      // A missing chunk means a partially-written or partially-wiped session. Returning the
-      // surviving prefix would hand supabase-js malformed JSON; treat it as no session, which
-      // sends the user through sign-in instead of into an unparseable state.
+    for (let i = 0; i < manifest.n; i += 1) {
+      const part = await SecureStore.getItemAsync(chunkKey(key, manifest.slot, i)).catch(() => null);
+      // A missing chunk means a partially-wiped slot. Returning the surviving prefix would hand
+      // supabase-js malformed JSON; treat it as no session, which sends the user through sign-in.
       if (part == null) return null;
       parts.push(part);
     }
@@ -100,25 +120,26 @@ export const secureSessionStore = {
         'Refusing rather than writing a session that cannot be read back.',
       );
     }
-    // Write the chunks BEFORE the count. A crash between the two then leaves the old count with
-    // new chunks — recoverable garbage that fails the JSON parse and sends the user to sign-in.
-    // The other order can leave a count pointing at chunks that were never written.
-    const previous = await storedCount(key);
+    const current = await readManifest(key);
+    // Write to the slot NOT currently in use, so the readable session stays intact until the
+    // manifest flips. This is the whole reason a torn write cannot produce a mixed session.
+    const target: Slot = current?.slot === 'a' ? 'b' : 'a';
+
+    await purgeSlot(key, target);  // a previous interrupted write may have left a longer tail
     for (let i = 0; i < chunks.length; i += 1) {
-      await SecureStore.setItemAsync(chunkKey(key, i), chunks[i]);
+      await SecureStore.setItemAsync(chunkKey(key, target, i), chunks[i]);
     }
-    await SecureStore.setItemAsync(countKey(key), String(chunks.length));
-    // Only now drop any tail left by a previously longer session.
-    for (let i = chunks.length; i < previous; i += 1) {
-      await SecureStore.deleteItemAsync(chunkKey(key, i)).catch(() => {});
-    }
+    // The commit point. Everything before this is invisible; everything after is cleanup.
+    await SecureStore.setItemAsync(manifestKey(key), JSON.stringify({ slot: target, n: chunks.length }));
+    if (current) await purgeSlot(key, current.slot);
   },
 
   async removeItem(key: string): Promise<void> {
-    const count = await storedCount(key);
-    // Count first: if deletion is interrupted, a stale count is harmless (getItem returns null on
-    // the first missing chunk) whereas orphaned chunks with a live count would look like a session.
-    await SecureStore.deleteItemAsync(countKey(key)).catch(() => {});
-    await clearChunks(key, Math.max(count, 1));
+    // Manifest first: an interrupted removal then reads as "no session" rather than as a live one.
+    await SecureStore.deleteItemAsync(manifestKey(key)).catch(() => {});
+    // Both slots, exhaustively — a stale slot still holds a usable refresh token, and this is the
+    // storage we chose specifically to protect it.
+    await purgeSlot(key, 'a');
+    await purgeSlot(key, 'b');
   },
 };
