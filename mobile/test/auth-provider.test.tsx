@@ -7,6 +7,7 @@ import { renderAsync, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import * as apiConfig from '@/api/config';
+import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
 import { AuthProvider, redirectUri, useAuth } from '@/auth/AuthProvider';
 
@@ -91,6 +92,7 @@ beforeEach(() => {
   authStateCallback = undefined;
   mockAuth.getSession.mockResolvedValue({ data: { session: null } });
   jest.spyOn(apiConfig, 'setToken').mockResolvedValue(undefined);
+  jest.spyOn(apiConfig, 'subscribeBaseUrl').mockImplementation(() => jest.fn());
 });
 
 test('a restored session becomes the API token before anything renders as signed in', async () => {
@@ -341,4 +343,29 @@ test('the real redirect URI is accepted — the shape Expo actually produces', a
 
   deepLinkHandler!({ url: `${redirectUri()}?code=real-shape` });
   await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('real-shape'));
+});
+
+
+test('a refresh from the retired client cannot restore the token after a server switch', async () => {
+  // The race: setAttempt only SCHEDULES the bootstrap effect, so between the URL changing and
+  // React running that effect the old client was still "current". A refresh landing in that gap
+  // put the old project's JWT back — and the new server's first request would carry it.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: { access_token: 'old-jwt', user: { email: 'r@example.com' } } },
+  });
+
+  const { getByText } = await renderProvider();
+  await waitFor(() => getByText('signed-in'));
+  const notify = (subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
+
+  notify();  // the user saved a new server URL
+
+  // The retired client refreshes anyway — it is still subscribed until React cleans up.
+  authStateCallback!('TOKEN_REFRESHED', {
+    access_token: 'old-jwt-refreshed', user: { email: 'r@example.com' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(apiConfig.setToken).not.toHaveBeenCalledWith('old-jwt-refreshed');
 });

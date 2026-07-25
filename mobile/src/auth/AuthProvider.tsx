@@ -138,8 +138,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus('unknown');
     setError(null);
 
-    const mine = generation.current + 1;
-    generation.current = mine;
+    // The subscriber above may already have bumped this; take the next one either way so a
+    // bootstrap always owns a generation no earlier callback can match.
+    generation.current += 1;
+    const mine = generation.current;
 
     void (async () => {
       let config: AuthConfig;
@@ -179,6 +181,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Web-only: there is no URL fragment to read on a native launch, and leaving it on makes
           // supabase-js poke at browser globals that do not exist here.
           detectSessionInUrl: false,
+          // Scoped to the project explicitly. Supabase's default key is derived from only the
+          // FIRST DNS LABEL of the URL, so two backends are not guaranteed distinct storage —
+          // and after a server switch a restored session from the previous project would be
+          // adopted and its token sent to the new host.
+          storageKey: `sb-${config.supabase_url.replace(/[^a-zA-Z0-9]/g, '-')}-auth`,
         },
       });
       client.current = supabase;
@@ -220,6 +227,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // by the old project is meaningless to the new one — worse, sending it there hands a bearer
   // credential to a server that has no business seeing it. Re-bootstrap from scratch.
   useEffect(() => subscribeBaseUrl(() => {
+    // Retire the old client SYNCHRONOUSLY, here — not in the bootstrap effect. `setAttempt` only
+    // *schedules* that effect, and until React runs it the old client's generation is still
+    // current, so a refresh landing in the gap passes the generation check and restores the token
+    // we just cleared. The new server's very first request could then carry the old project's JWT.
+    generation.current += 1;
+    client.current?.auth.stopAutoRefresh();
+    client.current = null;
     void setToken(null);
     setAttempt((n) => n + 1);
   }), []);
