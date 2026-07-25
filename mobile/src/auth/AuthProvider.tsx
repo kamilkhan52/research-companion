@@ -12,6 +12,7 @@
 // for this path to fail at runtime for reasons unrelated to auth.
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
 import * as Linking from 'expo-linking';
+import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
@@ -58,10 +59,46 @@ export function redirectUri(): string {
   return Linking.createURL('auth');
 }
 
-/** Whether a parsed deep link is our auth callback. `Linking.parse` strips the scheme and any
- *  leading slash inconsistently across platforms, so compare on the trimmed path. */
-export function isAuthCallbackPath(path: string | null | undefined): boolean {
-  return (path ?? '').replace(/^\/+|\/+$/g, '') === 'auth';
+/** Whether a deep link is OUR auth callback, compared structurally against `redirectUri()`.
+ *
+ *  Not a path check. `researchcompanion://auth` parses to **hostname `"auth"` and path `null`** —
+ *  the authority slot, not the path — so testing `parsed.path` rejects every genuine callback and
+ *  the whole sign-in silently does nothing. Equally, testing loosely lets
+ *  `researchcompanion://auth.evil/auth` through, and that hostname belongs to someone else.
+ *  So: same scheme, same hostname, same normalized path as the URI we actually registered. */
+export function isAuthCallback(url: string): boolean {
+  try {
+    const target = new URL(redirectUri());
+    const candidate = new URL(url);
+    const normalize = (value: string) => value.replace(/^\/+|\/+$/g, '');
+    return (
+      candidate.protocol === target.protocol &&
+      candidate.hostname === target.hostname &&
+      normalize(candidate.pathname) === normalize(target.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Persisted marker that THIS app started a sign-in and is waiting for its callback.
+ *
+ *  Persisted rather than held in memory because a magic link is tapped after the app has been
+ *  closed, so an in-memory flag would reject exactly the flow it exists to protect. It narrows the
+ *  window in which a hostile app can burn our PKCE verifier from "always" to "while the user is
+ *  mid-sign-in", without touching the redirect URL — which Supabase controls, and which cannot be
+ *  changed here without a device test to confirm extra params survive the round trip. */
+const PENDING_SIGN_IN_KEY = 'rc.auth.pending';
+
+async function markSignInPending(): Promise<void> {
+  await SecureStore.setItemAsync(PENDING_SIGN_IN_KEY, String(Date.now())).catch(() => {});
+}
+
+/** True if a sign-in was outstanding; clears it either way, so one callback consumes one attempt. */
+async function consumePendingSignIn(): Promise<boolean> {
+  const pending = await SecureStore.getItemAsync(PENDING_SIGN_IN_KEY).catch(() => null);
+  if (pending) await SecureStore.deleteItemAsync(PENDING_SIGN_IN_KEY).catch(() => {});
+  return Boolean(pending);
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -75,12 +112,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const pendingUrl = useRef<string | null>(null);
   /** Bumped when a client becomes available, so the deep-link effect can replay. */
   const [clientReady, setClientReady] = useState(0);
+  /** Bumped on every bootstrap. An auth callback captures the generation it belongs to, so a
+   *  refresh completing on a REPLACED client cannot write its token back after we cleared it —
+   *  which, on a server switch, would send the old project's JWT to the new host. */
+  const generation = useRef(0);
 
   /** The one place a session becomes an API token. Every path that changes the session — restore,
    *  sign-in, refresh, sign-out — goes through here, because `src/api/client.ts` reads the token
    *  synchronously from module state and would otherwise keep sending a stale one. An expired
    *  access token is a silent 401 an hour after sign-in, which looks like the backend breaking. */
-  const adoptSession = useCallback(async (session: Session | null) => {
+  const adoptSession = useCallback(async (session: Session | null, forGeneration?: number) => {
+    // A callback from a superseded client must not win. React runs effect cleanup asynchronously,
+    // so the old client stays subscribed for a moment after the base URL changes; if its refresh
+    // lands in that window it would restore the old token on top of the clear.
+    if (forGeneration !== undefined && forGeneration !== generation.current) return;
     await setToken(session?.access_token ?? null);
     setEmail(session?.user?.email ?? null);
     setStatus(session?.access_token ? 'signed-in' : 'signed-out');
@@ -92,6 +137,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     setStatus('unknown');
     setError(null);
+
+    const mine = generation.current + 1;
+    generation.current = mine;
 
     void (async () => {
       let config: AuthConfig;
@@ -136,18 +184,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       client.current = supabase;
 
       const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-        void adoptSession(session);
+        void adoptSession(session, mine);
       });
       unsubscribe = () => data.subscription.unsubscribe();
 
       const restored = (await supabase.auth.getSession()).data.session;
       if (cancelled) return;
-      await adoptSession(restored ?? null);
+      await adoptSession(restored ?? null, mine);
       setClientReady((n) => n + 1);
       const parked = pendingUrl.current;
       if (parked) {
         pendingUrl.current = null;
-        const message = await completeFromUrl(parked, { trusted: false });
+        const message = await completeFromUrl(parked);
         if (!cancelled && message) setError(message);
       }
     })().catch((caught) => {
@@ -189,60 +237,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /** Turn a callback URL into a session. Returns an error message, or null on nothing-to-do.
    *
-   *  Shared because the callback arrives two ways and only one was handled before: Google returns
-   *  in-process through `openAuthSessionAsync`, but a **magic link is tapped in a mail app** and
-   *  arrives as an OS deep link, cold start or warm resume.
+   *  Shared because the callback arrives two ways: Google returns in-process through
+   *  `openAuthSessionAsync`, while a **magic link is tapped in a mail app** and arrives as an OS
+   *  deep link, cold start or warm resume.
    *
-   *  `trusted` is the security boundary between them. A custom URL scheme is NOT exclusive — any
-   *  installed app can fire `researchcompanion://auth#access_token=…&refresh_token=…`. Honouring
-   *  that would let an attacker plant their own valid session (the victim then writes notes into
-   *  the attacker's account) or a non-allowlisted one (the app becomes unusable). So tokens are
-   *  accepted only from the in-process browser result we ourselves opened. From the OS listener we
-   *  accept only a PKCE `code`, which is useless without the verifier held in our own storage —
-   *  that is precisely what PKCE is for.
+   *  **Neither source is trusted, and there is no longer a `trusted` flag.** A custom URL scheme is
+   *  not exclusive — any installed app can fire `researchcompanion://auth#access_token=…`. An
+   *  earlier version accepted fragment tokens from the in-process result on the theory that we
+   *  opened that browser ourselves, but Expo's Android implementation matches the returned URL by
+   *  PREFIX, so `researchcompanion://auth.evil/auth#access_token=…` comes back as a "successful"
+   *  browser result too. Since `flowType` is pinned to `pkce`, a legitimate callback NEVER carries
+   *  fragment tokens, so the branch that adopted them is deleted rather than guarded.
    */
-  const completeFromUrl = useCallback(
-    async (url: string, { trusted }: { trusted: boolean }): Promise<string | null> => {
-      const supabase = client.current;
-      if (!supabase) return null;
+  const completeFromUrl = useCallback(async (url: string): Promise<string | null> => {
+    const supabase = client.current;
+    if (!supabase) return null;
+    if (!isAuthCallback(url)) return null;
 
-      const parsed = Linking.parse(url);
-      // Only our own callback route. Narrows the surface and stops an unrelated deep link (a
-      // future `researchcompanion://paper/...`) from being read as an auth response at all.
-      if (!isAuthCallbackPath(parsed.path)) return null;
-
-      const queryParams = parsed.queryParams ?? {};
-      const code = queryParams.code;
-      if (typeof code === 'string') {
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-        return exchangeError?.message ?? null;
-      }
-      // Supabase reports an expired or already-used link in params rather than by throwing.
-      // Safe to surface from either source: it sets no session, it only explains a failure.
-      if (typeof queryParams.error_description === 'string') return queryParams.error_description;
-      if (typeof queryParams.error === 'string') return String(queryParams.error);
-
-      const fragment = url.split('#')[1] ?? '';
-      if (!fragment) return null;
-      const params = new URLSearchParams(fragment);
-      const described = params.get('error_description') ?? params.get('error');
-      if (described) return described;
-
-      const access_token = params.get('access_token');
-      const refresh_token = params.get('refresh_token');
-      if (!access_token || !refresh_token) return null;
-      if (!trusted) {
-        // The attack. Deliberately silent to the user — there is nothing for them to do about
-        // another app's behaviour, and a scary message on a link they did not tap is worse.
-        return null;
-      }
-      const { error: sessionError } = await supabase.auth.setSession({
-        access_token, refresh_token,
-      });
-      return sessionError?.message ?? null;
-    },
-    [],
-  );
+    const { queryParams } = Linking.parse(url);
+    const code = queryParams?.code;
+    if (typeof code === 'string') {
+      // Only ever a PKCE code — and only while a sign-in this app started is outstanding. A code
+      // is worthless to an attacker without the verifier in our own storage, but presenting one
+      // still CONSUMES that verifier, which would let any installed app kill every legitimate
+      // attempt on demand. The pending flag is persisted, because a magic link is tapped after the
+      // app has closed.
+      if (!(await consumePendingSignIn())) return null;
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+      return exchangeError?.message ?? null;
+    }
+    // Supabase reports an expired or already-used link in params rather than by throwing. Safe to
+    // surface: it establishes no session, it only explains a failure the user is already seeing.
+    if (typeof queryParams?.error_description === 'string') return queryParams.error_description;
+    if (typeof queryParams?.error === 'string') return String(queryParams.error);
+    return null;
+  }, []);
 
   // The magic link's only route home, and the cold-start race with it: `getInitialURL` usually
   // resolves BEFORE `/api/auth/config` has answered, so `client.current` is still null and a
@@ -256,7 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         pendingUrl.current = url;
         return;
       }
-      void completeFromUrl(url, { trusted: false }).then((message) => {
+      void completeFromUrl(url).then((message) => {
         if (!cancelled && message) setError(message);
       });
     };
@@ -272,6 +301,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     const supabase = client.current;
     if (!supabase) return;
+    await markSignInPending();
     const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       // skipBrowserRedirect: we open the URL ourselves so the result comes back through
@@ -284,7 +314,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
     if (result.type !== 'success') return;  // user dismissed; not an error worth showing
-    const message = await completeFromUrl(result.url, { trusted: true });
+    const message = await completeFromUrl(result.url);
     if (message) setError(message);
   }, [completeFromUrl]);
 
@@ -292,6 +322,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     const supabase = client.current;
     if (!supabase || !address.trim()) return;
+    await markSignInPending();
     const { error: otpError } = await supabase.auth.signInWithOtp({
       email: address.trim(),
       options: { emailRedirectTo: redirectUri() },

@@ -8,7 +8,7 @@ import { Text } from 'react-native';
 
 import * as apiConfig from '@/api/config';
 import * as endpoints from '@/api/endpoints';
-import { AuthProvider, useAuth } from '@/auth/AuthProvider';
+import { AuthProvider, redirectUri, useAuth } from '@/auth/AuthProvider';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
 const mockAuth = {
@@ -35,12 +35,31 @@ jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
 let deepLinkHandler: ((event: { url: string }) => void) | undefined;
 jest.mock('expo-linking', () => ({
   createURL: (path: string) => `researchcompanion://${path}`,
-  parse: jest.fn(() => ({ path: 'auth', queryParams: {} })),
+  // REAL parse semantics, not a convenient shape. `researchcompanion://auth` puts "auth" in the
+  // HOSTNAME and leaves the path null — mocking `{ path: 'auth' }` (as an earlier version of this
+  // file did) describes a URL that never occurs, and hid a guard that rejected every real callback.
+  parse: jest.fn((url: string) => {
+    const parsed = new URL(url);
+    const queryParams: Record<string, string> = {};
+    parsed.searchParams.forEach((value, key) => { queryParams[key] = value; });
+    return {
+      scheme: parsed.protocol.replace(/:$/, ''),
+      hostname: parsed.hostname || null,
+      path: parsed.pathname.replace(/^\/+/, '') || null,
+      queryParams,
+    };
+  }),
   getInitialURL: jest.fn(async () => null),
   addEventListener: jest.fn((_event: string, cb: (e: { url: string }) => void) => {
     deepLinkHandler = cb;
     return { remove: jest.fn() };
   }),
+}));
+jest.mock('expo-secure-store', () => ({
+  // A sign-in is marked pending before the callback is honoured, so default to "one is pending".
+  getItemAsync: jest.fn(async () => 'pending'),
+  setItemAsync: jest.fn(async () => undefined),
+  deleteItemAsync: jest.fn(async () => undefined),
 }));
 
 const SUPABASE_CONFIG = {
@@ -65,6 +84,10 @@ async function renderProvider() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // clearAllMocks resets CALLS, not implementations — a mockResolvedValue set by one test would
+  // otherwise deliver its cold-start URL to every test after it.
+  jest.requireMock('expo-linking').getInitialURL.mockResolvedValue(null);
+  jest.requireMock('expo-secure-store').getItemAsync.mockResolvedValue('pending');
   authStateCallback = undefined;
   mockAuth.getSession.mockResolvedValue({ data: { session: null } });
   jest.spyOn(apiConfig, 'setToken').mockResolvedValue(undefined);
@@ -160,7 +183,6 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
 
     // Google comes back through openAuthSessionAsync; a magic link does NOT — it is tapped in a
     // mail app and arrives here. Handling only the former left this flow doing nothing at all.
-    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'pkce-code' } });
     deepLinkHandler!({ url: 'researchcompanion://auth?code=pkce-code' });
 
     await waitFor(() =>
@@ -169,7 +191,6 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
 
   test('a link tapped while the app is closed completes on cold start', async () => {
     Linking.getInitialURL.mockResolvedValue('researchcompanion://auth?code=cold-code');
-    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'cold-code' } });
 
     await renderProvider();
     await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('cold-code'));
@@ -178,23 +199,21 @@ describe('the magic link, which arrives as an OS deep link rather than in-proces
   test('an expired link surfaces its reason instead of silently doing nothing', async () => {
     // Supabase reports these as query params, not as a thrown error. Without handling them the
     // user taps a dead link, sees no change, and taps it again.
-    Linking.parse.mockReturnValue({
-      path: 'auth',
-      queryParams: { error: 'access_denied', error_description: 'Email link is invalid or has expired' },
-    });
 
     let auth: ReturnType<typeof useAuth> | undefined;
     function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
     const { getByText } = await renderAsync(<AuthProvider><Capture /></AuthProvider>);
     await waitFor(() => getByText('signed-out'));
 
-    deepLinkHandler!({ url: 'researchcompanion://auth?error=access_denied' });
+    deepLinkHandler!({
+      url: 'researchcompanion://auth?error=access_denied'
+        + '&error_description=Email%20link%20is%20invalid%20or%20has%20expired',
+    });
     await waitFor(() => expect(auth!.error).toMatch(/invalid or has expired/));
     expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
   });
 
   test('an unrelated deep link is not treated as an auth callback', async () => {
-    Linking.parse.mockReturnValue({ path: 'paper/attention', queryParams: {} });
     const { getByText } = await renderProvider();
     await waitFor(() => getByText('signed-out'));
 
@@ -211,7 +230,6 @@ describe('a deep link is not a trusted channel', () => {
 
   beforeEach(() => {
     jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
-    Linking.parse.mockReturnValue({ path: 'auth', queryParams: {} });
   });
 
   test('tokens delivered by another app are ignored', async () => {
@@ -234,7 +252,6 @@ describe('a deep link is not a trusted channel', () => {
   test('but a PKCE code from the same channel is fine, because it needs our verifier', async () => {
     // The guard must not be "ignore deep links" — that would break the magic link again. A code is
     // worthless without the verifier held in our own storage, which is the point of PKCE.
-    Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'legit-code' } });
     const { getByText } = await renderProvider();
     await waitFor(() => getByText('signed-out'));
 
@@ -242,12 +259,13 @@ describe('a deep link is not a trusted channel', () => {
     await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('legit-code'));
   });
 
-  test('a callback on any other route is ignored entirely', async () => {
-    Linking.parse.mockReturnValue({ path: 'paper/x', queryParams: { code: 'sneaky' } });
+  test('a lookalike host is not our callback', async () => {
+    // researchcompanion://auth.evil/auth passes a naive prefix match — which is exactly how Expo's
+    // Android openAuthSessionAsync decides a URL is "our" result — but the authority is not ours.
     const { getByText } = await renderProvider();
     await waitFor(() => getByText('signed-out'));
 
-    deepLinkHandler!({ url: 'researchcompanion://paper/x?code=sneaky' });
+    deepLinkHandler!({ url: 'researchcompanion://auth.evil/auth?code=sneaky' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
   });
@@ -259,7 +277,6 @@ test('a magic link that lands before the auth config does is not dropped', async
   // the app opens, and nothing happens — with no second chance.
   const Linking = jest.requireMock('expo-linking');
   Linking.getInitialURL.mockResolvedValue('researchcompanion://auth?code=parked-code');
-  Linking.parse.mockReturnValue({ path: 'auth', queryParams: { code: 'parked-code' } });
 
   let releaseConfig: (value: typeof SUPABASE_CONFIG) => void;
   jest.spyOn(endpoints, 'getAuthConfig').mockReturnValue(
@@ -294,4 +311,34 @@ test('a failure to purge stored credentials still signs the user out locally', a
   await waitFor(() => getByText('signed-out'));
   expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
   expect(auth!.error).toMatch(/clear the app/i);
+});
+
+
+test('a code arriving with no sign-in outstanding is ignored', async () => {
+  // A PKCE code cannot mint a session without our verifier — but presenting one CONSUMES that
+  // verifier, so any installed app could otherwise kill every legitimate sign-in on demand by
+  // firing codes at us. The gate narrows that from "always" to "while the user is mid-sign-in".
+  const SecureStore = jest.requireMock('expo-secure-store');
+  SecureStore.getItemAsync.mockResolvedValue(null);  // nothing pending
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+
+  const { getByText } = await renderProvider();
+  await waitFor(() => getByText('signed-out'));
+
+  deepLinkHandler!({ url: 'researchcompanion://auth?code=unsolicited' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+});
+
+test('the real redirect URI is accepted — the shape Expo actually produces', async () => {
+  // Regression guard for the bug this round found: `researchcompanion://auth` puts "auth" in the
+  // HOSTNAME with a null path, so a path-based check rejected every genuine callback and both
+  // sign-in methods silently did nothing. Asserted against redirectUri() itself so the test cannot
+  // drift from what the app registers.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  const { getByText } = await renderProvider();
+  await waitFor(() => getByText('signed-out'));
+
+  deepLinkHandler!({ url: `${redirectUri()}?code=real-shape` });
+  await waitFor(() => expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('real-shape'));
 });
