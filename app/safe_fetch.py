@@ -23,7 +23,7 @@ hop, and stream the body under a hard ceiling counting WIRE bytes.
 
 **We do not decompress.** The request asks for `Accept-Encoding: identity` and a response that
 carries any content coding anyway is refused unread. This started as a bounded decoder, and that
-decoder produced four of the seven defects found reviewing this module — a decompression bomb that
+decoder was where most of this module's review findings came from — a decompression bomb that
 allocated before the check, silent truncation of multi-member and of truncated streams, an
 unbounded encoding chain, an unbounded member count, and a suffix copy per member. Each fix was
 correct and revealed one more axis. Refusing the response instead deletes the whole class: there is
@@ -63,13 +63,10 @@ log = get("safe_fetch")
 # abs -> pdf -> CDN chain is the longest legitimate one we see and fits well inside it.
 MAX_REDIRECTS = 5
 
-
-
-
-
 # Wall-clock ceiling for one fetch, redirects and body included. Generous next to a real paper
-# download, and the only thing standing between a slow-drip server and a permanently pinned job
-# thread (see fetch).
+# download. Note this is the BUDGET, not the mechanism: the value alone enforces nothing, because
+# httpx does not return control while it loops on reads. The watchdog in `fetch` is what makes it
+# bite, and the effective bound is this plus one `timeout` — see that docstring.
 MAX_TOTAL_SECONDS = 180.0
 
 
@@ -303,13 +300,16 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
                 if declared and declared.isdigit() and int(declared) > max_bytes:
                     raise FetchTooLargeError(
                         f"{current} declares {declared} bytes, over the {max_bytes}-byte limit")
-                # iter_raw, NOT iter_bytes: iter_bytes would decode a compressed chunk in full
-                # before yielding, so a size check on it runs after the allocation. And no
-                # chunk_size: httpx buffers to that size before yielding, which would let a
-                # slow-drip server go minutes between deadline checks (measured: 4 checks instead
-                # of 200,000 for a 200KB body of one-byte fragments). Retention is bounded by
-                # appending into ONE bytearray rather than keeping each fragment as its own bytes,
-                # which is what chunk_size was mistakenly added for.
+                # iter_raw with NO chunk_size, deliberately on both counts.
+                #   * iter_raw, not iter_bytes: iter_bytes decodes before yielding, so a size check
+                #     on it would run after the allocation. Moot now that content codings are
+                #     refused above, but the two must not drift back together — iter_bytes would
+                #     silently reintroduce that ordering the moment decoding returned.
+                #   * no chunk_size: httpx buffers to that size before yielding, so the deadline
+                #     check below would run once per buffer instead of per socket read (measured:
+                #     4 checks instead of 200,000 for a 200KB body of one-byte fragments).
+                # Retention is bounded by appending into ONE bytearray, which is what chunk_size
+                # was mistakenly credited with.
                 buf = bytearray()
                 for chunk in r.iter_raw():
                     _check_deadline(ends_at, current)
