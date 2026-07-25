@@ -23,9 +23,11 @@ revisiting one invalidates the milestones downstream of it.
 | Commercial model | **Subscription with hard per-user budget caps.** RevenueCat + Google Play Billing; Free tier with a small included allowance; Pro monthly/annual. Caps are non-negotiable given the marginal cost profile. | Pricing is reversible; the metering architecture it requires is not wasted either way. |
 
 **Scope note (honest):** M1–M11 is several months of solo work, not weeks. The critical path to a
-*published* app is M1 → M2 → M3 → M7 → M8 → M9 → M10. M4/M5 (money) and M6 (durability) can be
-resequenced if you'd rather get a free closed-beta into Play first and monetize against real usage
-data — say so and I'll re-cut the order.
+*published* app is M1 → M2 → M2.5 → M3 → M7 → M8 → M9 → M10. M4/M5 (money) can be resequenced if
+you'd rather get a free closed beta into Play first and monetize against real usage data — say so
+and I'll re-cut the order. M6 (durability) is no longer freely movable: it now depends on M3,
+because interrupted jobs and orphaned quota reservations are the same event and must be reconciled
+against the same records.
 
 **Calendar dependency, confirmed 2026-07-25:** the Play account is Personal and created 2026-07,
 so Google's closed-testing requirement **applies** — 12 testers opted in for 14 continuous days,
@@ -78,7 +80,10 @@ gets updated as each lands.
    pessimistic maximum cost (including in-flight reservations) in Postgres before job admission
    and settles to actual cost afterward, failing *closed* for paid work if the quota store is
    unavailable; **analytics** stays best-effort and never fails a turn. Entitlement checks are
-   server-side and precede spend; the client is never the authority.
+   server-side and precede spend; the client is never the authority. Reservations are durable
+   records with leases and idempotent startup reconciliation (see M3) — an in-memory reservation
+   table would evaporate on the restarts invariant 6 makes routine. And "before spend" means
+   *every* spend path, not just LLM jobs: TTS is currently unmetered entirely (P0-13).
 6. **Single uvicorn worker still holds** (invariant 6). Postgres does not change this — job state
    is still in-memory until M6. Do not add `--workers N`. Note this interacts with rule 5: an
    in-process reservation table would be lost on restart, which is why reservations live in
@@ -92,12 +97,12 @@ gets updated as each lands.
 |---|---|---|---|---|
 | M1 | Hosting, environments, and secrets | — | L | queued |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
-| M2.5 | Closed-track compliance minimum + first build — starts the 14-day tester clock | M1, M2 | M | queued |
+| M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
 | M3 | Metering, quotas, and abuse controls | M2 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
 | M5 | Subscription-backed access | M3, M4 | M | queued |
-| M6 | Durability — job persistence and backups | M1 | M | queued |
-| M7 | Compliance, safety, and legal surfaces | M2 | L | queued |
+| M6 | Durability — job persistence and backups | M1, M3 | M | queued |
+| M7 | Remaining compliance, safety, and legal surfaces | M2, M2.5 | M | queued |
 | M8 | Observability and operator tooling | M1 | M | queued |
 | M9 | Android release automation | M1, M7 | M | queued |
 | M10 | Launch rehearsal | all | M | queued |
@@ -125,6 +130,15 @@ dangerous state is missing config, not present config, and a deploy that forgets
 serves the whole API to the internet with no error. Fail loudly at startup instead. This pulls H4
 (create the Supabase projects) forward from M2 into M1's prerequisites.
 
+**Equally critical: authentication alone is not access control here.** Supabase Email/Google
+sign-in is *self-service* — anyone can create an account — and until M2 lands, any authenticated
+user gets the whole single-tenant instance: every project, and `POST /api/settings` / `POST
+/api/prompts` over the shared provider keys and system prompts (P0-1/2/3). Deploying M1 publicly
+with auth "on" would therefore hand the instance to the first stranger who signs up. M1 must ship a
+**temporary allowlist of permitted user UUIDs** (or disable public signup) enforced in the auth
+middleware, and keep it until M2's ownership enforcement replaces it. Test that a valid-but-not-
+allowlisted JWT gets 403, not 200.
+
 Secrets move to the platform's secret store; `.env` stays dev-only. Client points at the new origin via
 `app.json` `extra.apiBaseUrl` with staging/production variants. Early spike: verify Expo SDK 56's
 Android `targetSdkVersion` against the API 36 requirement (cheap now, expensive to discover at M9).
@@ -139,8 +153,9 @@ work inside the container (identity is already pinned, so this should be clean).
 
 **Tests.** Container builds and serves `/api/health`. Volume survives a restart with projects
 intact. A prod-mode boot with `RC_DEV=1` and `RC_AUTH_TOKEN` set refuses to enable either, **and a
-prod-mode boot with no Supabase config fails to start at all** — assert both in `tests/`. Existing
-suite green in-container.
+prod-mode boot with no Supabase config fails to start at all**, **and a valid JWT for a
+non-allowlisted user is rejected with 403** — assert all three in `tests/`. Existing suite green
+in-container.
 
 **Manual.** Deploy staging, run the device checklist against it from the phone over the public
 origin. Restart the service mid-job and confirm the failure mode is understood (it will lose the
@@ -253,8 +268,24 @@ So this milestone now depends on M1 **and** M2, and carries the compliance slice
 **Scope, part 1 — compliance minimum.** The subset of M7 that the upload requires: a data
 inventory derived from actual code, truthful Data safety answers, a published privacy policy and
 terms at public URLs, in-app links to both, and a working in-app report action for offensive
-AI-generated content with somewhere for reports to land. Everything else in M7 (account deletion
-workflow, the operator review queue, the paper-source terms audit) stays in M7.
+AI-generated content with somewhere for reports to land.
+
+**Account deletion is in this set too** (round-2 correction). The app creates accounts, and
+Google's policy — "if your app enables account creation, you must provide users with an in-app
+path to delete their app accounts and associated data, *and* a web link resource where users can
+request deletion" — states no exemption for testing tracks, while the Data safety form explicitly
+asks about deletion. Declaring a deletion path that doesn't exist would make the form untruthful.
+So M2.5 ships the real workflow: revoke the Supabase Auth identity, delete the user's Postgres
+rows, remove their namespaced git content, drop their audio references, and delete their usage
+events (retaining only what is documented as legally necessary). This is tractable precisely
+because M2 has already established per-user namespacing and DB ownership — deletion becomes
+"delete the rows and remove the namespace," not an archaeology exercise.
+*Fallback if this slips:* pre-provision tester accounts and disable public signup, so the app
+arguably does not "enable account creation" — but verify that reading against current policy
+before relying on it, and note it also satisfies M1's allowlist requirement.
+
+Everything else in M7 (the operator review queue, the paper-source terms audit, support surfaces)
+stays in M7.
 
 **Scope, part 2 — the build.** One production-profile EAS build (`.aab`) pointed at the M1
 production origin. Play app created, closed track configured, upload, pass review, invite testers.
@@ -262,9 +293,17 @@ Confirm `targetSdkVersion` satisfies API 36 here — the cheap moment to discove
 problem, months before M9 depends on it.
 
 **What testers get.** A multi-tenant, free, no-paywall, no-quota build. That is fine and expected:
-Google requires that a closed test *ran*, not that the tested build was final. Without M3, spend
-is unbounded — so gate the closed test behind an instance-wide budget kill switch and an
-allowlist, and treat that as this milestone's cost control until M3 lands.
+Google requires that a closed test *ran*, not that the tested build was final.
+
+**Tester cost control must be automatic, not a kill switch.** M3's per-user reservations do not
+exist yet, and a manual switch is not a ceiling — twelve engaged testers running Opus-class
+analyses over full papers plus TTS can spend real money faster than anyone notices, and this
+milestone still has no authoritative internal cost for the agentic path. So M2.5 requires
+**provider-enforced budgets**: a hard credit/spend limit on the OpenRouter key and an OpenAI
+project budget, both set below a number you are willing to lose outright. Those fail closed at the
+provider without any code. Add cheap in-app caps alongside — per-user concurrent-job limit and a
+requests-per-hour limit — and test that the configured maximum genuinely cannot be exceeded.
+Treat the provider budget as the real backstop and the app-side caps as courtesy.
 
 **Risks.** Any later native-module addition (RevenueCat, M4) means a new build for testers — fine,
 and it does not reset the 14-day opt-in clock as long as testers stay opted in. Data safety answers
@@ -305,13 +344,34 @@ generation-stats polling can resolve each), or route the agentic path through a 
 preserves OpenRouter's authoritative `cost`. Nothing else in this milestone is trustworthy until
 turns are priced.
 
+**Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
+not cover them (P0-13).** `tts.py` never touches `usage.py`, so *all* OpenAI speech spend is
+currently unmetered; and `POST /api/speak` (`routers/audio.py:39-52`) synthesizes arbitrary
+caller-supplied text synchronously, outside the job framework entirely. `/api/narrate` and the
+plain/SSE turn-delivery paths in `routers/session.py` are likewise paid work that is not a
+`JobRegistry` job. Enumerate all of them, meter TTS as a first-class operation in the ledger, and
+put every one behind the same ownership + rate-limit + reservation guard — or retire it. The
+blocking/SSE endpoints should additionally be migrated or disabled in production, since their
+existence contradicts invariant 1.
+
 Then: append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost,
 timestamp, generation id) written alongside the existing aggregate. Per-user rate limits
 (requests/minute, concurrent jobs). Daily and monthly quotas by tier. **Pre-spend reservations per
 architectural rule 5** — atomically reserve a pessimistic maximum against the user's remaining
-budget before admitting a job, settle to actual cost when it finishes, release on failure; a
-reservation that cannot be taken (or a quota store that is unreachable) refuses the job rather
-than letting it through. An instance-wide kill switch. Soft warnings at 80%.
+budget before admitting work, settle to actual cost when it finishes, release on failure; a
+reservation that cannot be taken (or a quota store that is unreachable) refuses the work rather
+than letting it through.
+
+**Reservations need a crash lifecycle, defined here rather than assumed.** Jobs live in memory
+(invariant 6) but reservations live in Postgres, so a process death between reserve and settle
+leaves an orphan that would permanently consume a customer's quota — and blindly releasing orphans
+on boot would instead under-count real spend that already happened upstream. Specify: durable
+reservation ids, explicit states (reserved → settled/released/expired), a lease with expiry,
+linkage to the job and to any generation ids issued under it, and an **idempotent startup
+reconciliation** that resolves each orphan by querying the provider for what was actually spent
+before releasing the remainder. M6 consumes these same records when it marks interrupted jobs.
+
+An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
 Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
 tool-call budget already in place, plus an egress review of what `web_fetch` can reach.
@@ -327,11 +387,15 @@ existing `usage.py` discipline; **reservations** are authoritative and fail clos
 is what makes a ceiling unenforceable.
 
 **Tests.** Cost recorded for both agentic and single-shot paths, with no `estimated` flag on the
-default path. Quota exhaustion returns a clean, actionable error. Rate limiter under concurrency.
-**Concurrent job admission cannot collectively exceed the ceiling** — the race the reservation
-design exists to close, so test it with simultaneous admissions, not sequential ones. Quota store
-unavailable ⇒ paid work refused. Cache eviction respects the bound. Per-user attribution correct
-inside job threads *and* inside nested graph/affiliation workers (rule 3).
+default path. TTS spend appears in the ledger. **No endpoint can initiate paid work without
+passing ownership, rate-limit, and reservation checks** — enumerate them and assert it per route,
+including `/api/speak` and `/api/narrate`. Quota exhaustion returns a clean, actionable error.
+Rate limiter under concurrency. **Concurrent admission cannot collectively exceed the ceiling** —
+the race the reservation design exists to close, so test simultaneous admissions, not sequential
+ones. Quota store unavailable ⇒ paid work refused. **Kill the process immediately after admission,
+and again mid-provider-call, and assert startup reconciliation neither strands the quota nor
+under-counts the spend.** Cache eviction respects the bound. Per-user attribution correct inside
+job threads *and* inside nested graph/affiliation workers (rule 3).
 
 **Manual.** Drive a real account to its quota on staging and confirm the client message is honest
 and the spend stops.
@@ -418,24 +482,32 @@ hands. `docs/improvements.md` §1.4 already specifies the job-persistence approa
 `JobRegistry` (§1.1) made it a one-place fix.
 
 **Scope.** Persist job state so an interrupted job is either resumed or reported as failed rather
-than vanishing. Automated backups of the volume (project git repos + `.app-state/`) and Postgres,
-off-host, with a **tested restore**. Retention policy.
+than vanishing. **Reconcile against M3's reservation records rather than inventing a second
+lifecycle** — an interrupted job and its orphaned reservation are the same event, and resolving
+them separately is how a customer's quota gets stranded or their real spend under-counted. Use the
+reservation ids and generation linkage M3 defines. Automated backups of the volume (project git
+repos + `.app-state/`) and Postgres, off-host, with a **tested restore**. Retention policy.
 
 **Risks.** Resume semantics for a half-spent LLM turn are subtle — reporting an honest failure with
 the partial spend recorded is acceptable and much simpler than true resumption. Prefer that.
 
 **Tests.** Kill the process mid-job; on boot the job is `failed` with its partial usage recorded,
-never stuck `running`. Restore drill from backup into a clean environment.
+never stuck `running`, **and its reservation is settled to actual spend rather than left reserved
+or blindly released**. Restore drill from backup into a clean environment.
 
 **Done when.** A restore has actually been performed, not just configured.
 
 ---
 
-### M7 — Compliance, safety, and legal surfaces
+### M7 — Remaining compliance, safety, and legal surfaces
 
-**Objective.** Everything Google Play requires that isn't a build artifact.
+**Objective.** Everything Google Play requires that isn't a build artifact and wasn't already
+forced forward into M2.5.
 
-**Rationale.** P0-7, P0-8. Several are hard submission blockers.
+**Rationale.** P0-7, P0-8. Several are hard submission blockers. **Note the split:** the privacy
+policy, terms, Data safety inventory, in-app AI-content report action, and the account-deletion
+workflow all moved into **M2.5**, because a closed testing track requires them. What remains here
+is the operator-facing and lower-urgency remainder.
 
 **Scope.** Privacy policy and terms, publicly hosted and linked in-app. Support contact. Data
 inventory (source → storage → purpose → retention → sharing → deletion path) derived from actual

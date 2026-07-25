@@ -94,6 +94,21 @@ Email and Google providers. `README.md` already documents this setup.
 **Report back:** both project URLs and anon (publishable) keys. The anon key is publishable and
 safe to share; **never** paste a service-role key into chat, a commit, or a doc.
 
+### H20 — Set provider-enforced spend budgets · `todo` — **blocks M1 deploy and M2.5**
+Set a hard credit/spend limit on the **OpenRouter** key and a project budget on the **OpenAI**
+account, both below a number you would accept losing outright. These fail closed at the provider
+with no code, and they are the only real ceiling until M3's per-user reservations exist. Do this
+*before* the instance is publicly reachable, not before the closed test — M1 already exposes a
+working backend.
+**Why not an agent:** provider account billing settings.
+**Report back:** the limits you set, so M2.5's app-side caps can be sized under them.
+
+### H21 — Provide your Supabase user UUID for the allowlist · `todo` — blocks M1
+M1 ships a temporary allowlist because Supabase sign-in is self-service: without it, the first
+stranger who signs up gets your single-tenant instance, including the shared provider keys and
+system prompts. The allowlist is removed when M2's ownership enforcement lands.
+**Report back:** your auth UUID (not an email) once H4 exists, plus tester UUIDs before M2.5.
+
 ---
 
 ## Blocking M2 (identity and tenancy)
