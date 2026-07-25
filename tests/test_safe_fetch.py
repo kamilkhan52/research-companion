@@ -209,6 +209,35 @@ def test_redirect_loop_is_bounded(monkeypatch):
         safe_fetch.fetch("https://example.com/loop", max_bytes=1000)
 
 
+@pytest.mark.parametrize("hops,ok", [(safe_fetch.MAX_REDIRECTS, True),
+                                     (safe_fetch.MAX_REDIRECTS + 1, False)])
+def test_redirect_limit_boundary(monkeypatch, hops, ok):
+    """Both sides of MAX_REDIRECTS. The loop test only proves an infinite chain stops eventually,
+    which an off-by-one in `range(MAX_REDIRECTS + 1)` would still satisfy."""
+    def handler(request):
+        n = int(request.url.path.strip("/"))
+        if n < hops:
+            return _resp(302, location=f"https://example.com/{n + 1}")
+        return _resp(200, b"arrived")
+
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(handler))
+    if ok:
+        assert safe_fetch.fetch("https://example.com/0", max_bytes=1000).content == b"arrived"
+    else:
+        with pytest.raises(safe_fetch.UnsafeURLError, match="redirects"):
+            safe_fetch.fetch("https://example.com/0", max_bytes=1000)
+
+
+@pytest.mark.parametrize("target", ["file:///etc/passwd", "ftp://example.com/x"])
+def test_redirect_to_a_non_http_scheme_is_refused(monkeypatch, target):
+    """The scheme check must apply to redirect TARGETS, not just to the URL the caller passed.
+    Every other destination rule is re-applied per hop; this one needs the same proof."""
+    monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
+        lambda request: _resp(302, location=target)))
+    with pytest.raises(safe_fetch.UnsafeURLError):
+        safe_fetch.fetch("https://example.com/start", max_bytes=1000)
+
+
 def test_redirect_without_location_is_refused(monkeypatch):
     monkeypatch.setattr(safe_fetch.httpx, "Client",
                         _mock_client(lambda request: _resp(302)))

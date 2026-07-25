@@ -108,3 +108,23 @@ def test_arxiv_redirect_to_a_private_address_is_refused(monkeypatch):
     monkeypatch.setattr(safe_fetch.socket, "getaddrinfo", getaddrinfo)
     with pytest.raises(retriever.RetrievalError, match="Refusing"):
         retriever._fetch("https://arxiv.org/pdf/2201.11705")
+
+
+@pytest.mark.parametrize("exc", [
+    safe_fetch.UnsafeURLError("non-public"),
+    safe_fetch.FetchTooLargeError("too big"),
+    safe_fetch.FetchTimeoutError("deadline"),
+    safe_fetch.UnsupportedResponseError("content-encoding"),
+])
+def test_fetch_translates_every_refusal_to_retrieval_error(monkeypatch, exc):
+    """No safe_fetch exception may escape retriever untranslated — the routes map RetrievalError to
+    HTTP, and anything else reaches the job runner as an unhandled crash. The base-class clause
+    covers types added after these call sites were written, which is exactly what makes it worth
+    asserting per type."""
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(safe_fetch, "fetch", boom)
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    with pytest.raises(retriever.RetrievalError):
+        retriever._fetch("https://example.com/paper.pdf")

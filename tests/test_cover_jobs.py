@@ -64,6 +64,11 @@ def test_download_pdf_returns_body_and_passes_the_ceiling(monkeypatch):
 @pytest.mark.parametrize("exc", [
     safe_fetch.UnsafeURLError("refusing to fetch non-public address 127.0.0.1"),
     safe_fetch.FetchTooLargeError("over the limit"),
+    # The two refusal types added later. They are caught by the `except SafeFetchError` clause
+    # rather than by name, so without them here the suite would stay green if that clause were
+    # dropped and they escaped the layer untranslated.
+    safe_fetch.FetchTimeoutError("deadline"),
+    safe_fetch.UnsupportedResponseError("content-encoding"),
     httpx.ConnectError("boom"),
 ])
 def test_download_pdf_translates_failures_to_cover_error(monkeypatch, exc):
