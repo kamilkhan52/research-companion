@@ -32,6 +32,11 @@ FAVORITE_GLOBAL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", 
 FAVORITE_FAMILIES = [
     {"label": "Claude Opus",   "inc": ["anthropic/", "claude-opus"], "exc": ["fast"]},
     {"label": "Claude Sonnet", "inc": ["anthropic/", "claude-sonnet"], "exc": []},
+    # CAVEAT (maintenance): the three GPT families are PINNED to the "gpt-5.6" generation because
+    # OpenAI's variants are named (Sol/Terra/Luna), not "flagship/mini" — so they do NOT
+    # self-update across generations like the others. When GPT 5.7 (or the next named line) ships
+    # on OpenRouter, bump "gpt-5.6" → the new generation here (and update the labels). Every other
+    # family below is version-agnostic and tracks the newest match automatically.
     {"label": "GPT 5.6 Sol",   "inc": ["openai/", "gpt-5.6", "sol"],
      "exc": ["pro", "chat", "codex", "mini", "nano"]},
     {"label": "GPT 5.6 Terra", "inc": ["openai/", "gpt-5.6", "terra"],
