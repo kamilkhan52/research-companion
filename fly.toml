@@ -7,6 +7,18 @@
 app = "research-companion"
 primary_region = "dfw"          # nearest Fly region to Colorado; there is no Denver region
 
+# TOP-LEVEL, not inside [[vm]]. `flyctl config validate` accepts swap_size_mb nested under [[vm]]
+# and then silently ignores it — the first version of this file made that mistake and the deployed
+# machine had an empty /proc/swaps. With one worker, an OOM is a full outage that also destroys
+# every in-flight job, so verify with `fly ssh console -C "cat /proc/swaps"` after changing it.
+swap_size_mb = 512
+
+# Fly's default is 5 seconds between SIGTERM and SIGKILL — far too short to drain anything. This
+# raises it to the 300s maximum so a graceful-shutdown hook has room to exist. NOTE: the hook does
+# not exist yet (see the deploy hazard below), so today this only buys uvicorn time to finish
+# in-flight HTTP requests, not background jobs.
+kill_timeout = 300
+
 [build]
 
 [env]
@@ -43,6 +55,15 @@ primary_region = "dfw"          # nearest Fly region to Colorado; there is no De
   auto_stop_machines = "off"
   min_machines_running = 1
 
+  # ⚠️ DEPLOY HAZARD — autostop being off does NOT make jobs safe.
+  # It only prevents Fly Proxy's *idle* shutdown. A `fly deploy` still stops and replaces the
+  # machine, and a planned host migration stops it first. Jobs run in daemon threads with no
+  # shutdown hook, so the process exits and takes them with it — losing paid LLM work and
+  # potentially interrupting a git write.
+  # Until the drain hook lands with M6 (job persistence), the operational rule is:
+  #   check for active jobs before deploying, and prefer deploying when the app is idle.
+  # kill_timeout above is set to the 300s maximum so the eventual hook has room to work.
+
   [http_service.concurrency]
     type = "requests"
     hard_limit = 200
@@ -59,7 +80,5 @@ primary_region = "dfw"          # nearest Fly region to Colorado; there is no De
   cpu_kind = "shared"
   cpus = 2
   memory_mb = 2048
-  # PDF rasterization (PyMuPDF cover rendering) and parallel graph extraction are the memory
-  # spikes. With one worker an OOM is a full outage, so a little swap buys a slow request instead
-  # of a dead machine.
-  swap_size_mb = 512
+  # Memory spikes come from PyMuPDF cover rasterization and parallel graph extraction. Swap is
+  # configured at the top of this file — it is NOT a [[vm]] option (see the comment there).

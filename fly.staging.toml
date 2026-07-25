@@ -11,6 +11,10 @@
 app = "research-companion-staging"
 primary_region = "dfw"
 
+# Top-level, not [[vm]] — see fly.toml for why this distinction bit us once already.
+swap_size_mb = 512
+kill_timeout = 300
+
 [build]
 
 [env]
@@ -32,6 +36,8 @@ primary_region = "dfw"
   # autostop mid-job would produce exactly the failure we are here to rehearse against.
   auto_stop_machines = "off"
   min_machines_running = 1
+  # Same deploy hazard as production — autostop off does not protect jobs from a deploy or host
+  # migration. See fly.toml.
 
   [http_service.concurrency]
     type = "requests"
@@ -49,4 +55,3 @@ primary_region = "dfw"
   cpu_kind = "shared"
   cpus = 1
   memory_mb = 1024
-  swap_size_mb = 512
