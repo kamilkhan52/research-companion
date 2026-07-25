@@ -8,7 +8,6 @@ import re
 import threading
 import time
 from difflib import SequenceMatcher
-from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -185,8 +184,12 @@ def _is_arxiv_host(url: str) -> bool:
     `http://169.254.169.254/latest/meta-data/#arxiv.org` and of any URL with `?ref=arxiv.org`.
     That substring test used to select the unguarded arXiv branch below, which re-opened the whole
     of P0-14 for anyone who appended a fragment.
+
+    Uses `safe_fetch.normalized_host` rather than `urlparse` so this decision is made about the
+    same name the guard validates and httpx connects to. An unparseable host yields "" and falls
+    through to the guarded path — the safe direction, costing only arXiv's request pacing.
     """
-    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    host = safe_fetch.normalized_host(url)
     return host == "arxiv.org" or host.endswith(".arxiv.org")
 
 

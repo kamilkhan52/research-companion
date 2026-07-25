@@ -102,6 +102,22 @@ class FetchResult:
             return self.content.decode("utf-8", errors="replace")
 
 
+def normalized_host(url: str) -> str:
+    """The lowercased host httpx will actually put on the wire, or "" if it cannot be determined.
+
+    The single place any host decision is made, so that "is this arXiv?" and "is this public?"
+    can never be answered about two different names. `urlparse().hostname` is NOT that name: it
+    skips httpx's IDNA 2008 encoding, so `faß.attacker.example` reads back as itself while httpx
+    connects to `xn--fa-hia.attacker.example`. Returning "" on an unparseable host lets callers
+    fail closed.
+    """
+    try:
+        raw = httpx.URL(url).raw_host
+    except (UnicodeError, ValueError, httpx.InvalidURL):
+        return ""
+    return raw.decode("ascii", errors="replace").lower().rstrip(".")
+
+
 def assert_public_url(url: str) -> None:
     """Raise `UnsafeURLError` unless `url` is http(s) and every address it resolves to is a public
     internet address.
@@ -121,18 +137,11 @@ def assert_public_url(url: str) -> None:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
     except ValueError as e:                      # e.g. "http://host:notaport/"
         raise UnsafeURLError(f"invalid port in {url}") from e
-    # Resolve the host EXACTLY as httpx will encode it on the wire, not as urlparse hands it back.
-    # The two disagree on internationalized names: httpx/httpcore apply IDNA 2008, so
-    # "faß.attacker.example" goes out as "xn--fa-hia.attacker.example", while socket.getaddrinfo
-    # applies the older `idna` codec and would validate "fass.attacker.example" — a DIFFERENT name.
-    # Someone controlling the parent zone could point the name we check at a public address and the
-    # name httpx connects to at 127.0.0.1, defeating the guard outright and without needing any DNS
-    # rebinding. Taking raw_host removes the disagreement by construction.
-    try:
-        host = httpx.URL(url).raw_host.decode("ascii")
-    except (UnicodeError, ValueError, httpx.InvalidURL) as e:
-        # An unencodable host is refused rather than guessed at — fail closed.
-        raise UnsafeURLError(f"could not normalize host in {url}: {e}") from e
+    # Resolve the host EXACTLY as httpx will encode it on the wire (see normalized_host): checking
+    # a different spelling of the name than the one we connect to is a bypass, not a nicety.
+    host = normalized_host(url)
+    if not host:
+        raise UnsafeURLError(f"could not normalize the host in {url}")
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
