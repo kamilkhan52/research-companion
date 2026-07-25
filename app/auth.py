@@ -58,6 +58,35 @@ def allowed_users() -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+def operator_users() -> frozenset[str]:
+    """User ids allowed to change instance-wide configuration (`RC_OPERATOR_USERS`).
+
+    Separate from `allowed_users` on purpose: that answers "may this person use the app", this
+    answers "may this person change it for everyone". Empty means NOBODY is an operator, so the
+    privileged routes are closed until someone is named — the same fail-closed posture as the rest
+    of this module. Read live so the list changes with a secrets update.
+
+    Until per-user ownership lands (M2) this is the whole authorization model for operator
+    actions; M2 replaces the env var with a column without changing the call sites.
+    """
+    raw = os.environ.get("RC_OPERATOR_USERS", "")
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def is_operator(user: dict | None) -> bool:
+    """Whether `user` (as stashed on request.state.user) may change instance-wide configuration.
+
+    In a dev environment with auth disabled there is no user at all, and local prompt editing has
+    to keep working — so dev says yes. Every other environment requires an explicit match, and
+    `assert_environment_safe` guarantees auth is Supabase there, so `user` is a verified identity
+    rather than an empty dict.
+    """
+    from . import config
+    if config.is_dev_env():
+        return True
+    return bool(user) and user.get("user_id") in operator_users()
+
+
 def assert_environment_safe(env: str) -> None:
     """Refuse to start a non-dev process that is configured permissively. Called from `main` at
     import, so a misconfigured deploy fails loudly instead of serving unauthenticated.

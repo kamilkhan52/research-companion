@@ -7,6 +7,20 @@ from app import config, preview_jobs
 from app.routers import settings as settings_routes
 
 
+class _OperatorRequest:
+    """Stand-in for the Request write_settings now takes. The operator gate reads
+    request.state.user and short-circuits to allow in a dev environment, which the suite is — so
+    these tests stay about settings behaviour. The gate itself is tested in
+    tests/test_operator_gate.py."""
+
+    class _State:
+        user = None
+
+    state = _State()
+
+
+
+
 @pytest.fixture
 def settings_file(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
@@ -30,25 +44,26 @@ def test_settings_api_preserves_dynamic_preview_fallback_and_clears_override(
 ):
     monkeypatch.setitem(config._ENV_DEFAULTS, "preview_model", "")
     monkeypatch.setitem(config._ENV_DEFAULTS, "narration_model", "narration/default")
-    assert settings_routes.read_settings()["preview_model"] == ""
+    assert settings_routes.read_settings(_OperatorRequest())["preview_model"] == ""
 
     first = settings_routes.write_settings(
-        settings_routes.SettingsReq(narration_model="narration/one")
+        settings_routes.SettingsReq(narration_model="narration/one"), _OperatorRequest()
     )
     assert first["preview_model"] == ""
     assert preview_jobs.resolve_model(config.load_settings()) == "narration/one"
 
     explicit = settings_routes.write_settings(
-        settings_routes.SettingsReq(preview_model="preview/explicit")
+        settings_routes.SettingsReq(preview_model="preview/explicit"), _OperatorRequest()
     )
     assert explicit["preview_model"] == "preview/explicit"
 
-    cleared = settings_routes.write_settings(settings_routes.SettingsReq(preview_model=""))
+    cleared = settings_routes.write_settings(
+        settings_routes.SettingsReq(preview_model=""), _OperatorRequest())
     assert cleared["preview_model"] == ""
     assert config.load_settings()["preview_model"] == ""
 
     settings_routes.write_settings(
-        settings_routes.SettingsReq(narration_model="narration/two")
+        settings_routes.SettingsReq(narration_model="narration/two"), _OperatorRequest()
     )
     assert preview_jobs.resolve_model(config.load_settings()) == "narration/two"
 
@@ -80,12 +95,13 @@ def test_clearing_an_api_key_makes_has_key_false(settings_file, monkeypatch):
 def test_semantic_scholar_key_roundtrips_and_api_only_returns_a_hint(settings_file, monkeypatch):
     monkeypatch.setitem(config._ENV_DEFAULTS, "semantic_scholar_api_key", "")
     written = settings_routes.write_settings(
-        settings_routes.SettingsReq(semantic_scholar_api_key="s2-private-value")
+        settings_routes.SettingsReq(semantic_scholar_api_key="s2-private-value"),
+        _OperatorRequest()
     )
     assert written["has_semantic_scholar_key"] is True
     assert config.load_settings()["semantic_scholar_api_key"] == "s2-private-value"
 
-    public = settings_routes.read_settings()
+    public = settings_routes.read_settings(_OperatorRequest())
     assert public["has_semantic_scholar_key"] is True
     assert public["semantic_scholar_key_hint"] == "s2-pri…"
     assert "s2-private-value" not in public.values()

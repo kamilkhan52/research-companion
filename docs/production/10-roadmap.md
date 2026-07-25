@@ -67,22 +67,29 @@ production app + secrets. Data migration and client cutover are deliberately *ou
   instructions tell it to diff against `main` itself.
 - A deploy stops the machine and kills in-flight jobs — check for active jobs first.
 
-**Waiting on Kamil — what to do and how (nothing here blocks the API-36 spike):**
+**Waiting on Kamil (updated 2026-07-25):**
 
-1. **Provider API keys on staging.** Staging cannot run a turn or synthesize audio without one.
-   `flyctl secrets set OPENROUTER_API_KEY=... -a research-companion-staging`, run by Kamil so the
-   key never enters an agent transcript. Prefer a separate low-limit key over the main one.
-2. **H6 — operator identity.** `RC_DEV` currently grants prompt editing and force-rebuild to
-   everyone on the instance. Needs either "the operator is Supabase UUID b8f19707-4b13-4cbb-834a-93cd6d06f489"
-   (a small change now) or "operator comes from a DB column" (waits for M2's Postgres). **Blocks M2.**
-3. **H16 — testers and the OAuth consent screen.** Two things: recruit 12+ testers (Play requires 12
-   opted in for 14 *continuous* days before production promotion — the longest-lead item on the whole
-   plan, and its clock has not started), and publish the consent screen (Google Cloud Console → APIs
-   & Services → OAuth consent screen → Publish app; it is in Testing mode, currently 3 accounts).
-   **Blocks M2.5.**
-4. **An acceptable monthly spend ceiling.** The OpenRouter key limit and OpenAI prepaid credits
-   protect the *account* from runaway; they do nothing about one user burning the shared pool. M3's
-   per-user cap needs a number to size against.
+1. **`RC_OPERATOR_USERS` on staging.** H6 is implemented and fails closed, so until this is set
+   nobody — including Kamil — can edit prompts or settings:
+   `flyctl secrets set RC_OPERATOR_USERS=b8f19707-4b13-4cbb-834a-93cd6d06f489 -a research-companion-staging`
+2. **A monthly spend ceiling** to size M3's per-user caps against.
+3. **Confirm `tts-1` over `tts-1-hd` for the paid tier.** H22 chose `-hd` before the cost analysis
+   existed; `tts-1` halves the single largest variable cost for a difference that is near-inaudible
+   on phone speakers. `-hd` stands until Kamil says otherwise.
+4. **Supabase Pro ($25/mo)** before testers: the free tier **pauses a project after 1 week idle**
+   and caps at 2 projects, which this account is already at.
+
+**Decided/closed since the last revision:** OpenRouter key on staging; OAuth consent screen
+published; H6 (operator gating, #222/#223 — closes P0-2 and P0-3); H22 (`tts-1-hd`); testers
+deliberately deferred until the app is testable, which makes Play's 12-testers/14-continuous-days
+clock strictly additive after M2.5 rather than parallel with M2.
+
+**Pricing is now analysed, not assumed** — see `20-pricing-analysis.md`. Free = 15 turns on
+DeepSeek V4 Flash with `BrowserTTS` (~$0.14/user-month worst case); Basic $10 = 60 turns + 45 min
+of `tts-1` (74% gross margin after Play's 15%, break-even ~5 paying users). The four findings that
+reshape M3 are recorded as **P0-16, P0-17, P1-12, P1-13, P1-14** in the audit: audio is unmetered
+and is the biggest cost line, nothing pins the model server-side, provider routing is unpinned at
+~2.45x list, `listening_preview` burns 17.3 calls per turn, and the audio cache never evicts.
 
 
 ---

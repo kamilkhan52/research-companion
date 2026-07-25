@@ -1,10 +1,10 @@
 """App-global settings + workflow-prompt editor routes."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import config, projects, prompts, tts
+from .. import auth, config, projects, prompts, tts
 from ..prompts import PromptError, PromptManagedError
 
 router = APIRouter()
@@ -31,7 +31,7 @@ class PromptReq(BaseModel):
 
 
 @router.get("/api/settings")
-def read_settings():
+def read_settings(request: Request):
     s = config.load_settings()
     key = s.get("openrouter_api_key") or ""
     okey = s.get("openai_api_key") or ""
@@ -51,11 +51,21 @@ def read_settings():
         "has_semantic_scholar_key": bool(s2key),
         "semantic_scholar_key_hint": (s2key[:6] + "…") if s2key else "",
         "prior_notes_scope": s.get("prior_notes_scope") or "related",
+        # So a client can render shared controls read-only rather than letting a reader fill in a
+        # form that will 403 on submit. Reading settings stays open to everyone; only this flag
+        # tells them what they may change.
+        "is_operator": auth.is_operator(getattr(request.state, "user", None)),
     }
 
 
 @router.post("/api/settings")
-def write_settings(req: SettingsReq):
+def write_settings(req: SettingsReq, request: Request):
+    # Same gate as the prompt routes, and for a sharper reason: these are the INSTANCE's provider
+    # keys and model choice, not the caller's. Any authenticated user could previously swap the
+    # model every turn runs on, or overwrite the OpenRouter key and take the app offline for
+    # everyone (P0-2). There is one key and one model selection on this deployment — per-user
+    # settings arrive with ownership in M2, and this gate is what holds the line until then.
+    _require_operator(request, "shared settings")
     merged = config.save_settings(req.model_dump())
     return {
         "has_key": bool(merged.get("openrouter_api_key")), "model": merged.get("model"),
@@ -69,6 +79,26 @@ def write_settings(req: SettingsReq):
         "has_semantic_scholar_key": bool(merged.get("semantic_scholar_api_key")),
         "prior_notes_scope": merged.get("prior_notes_scope") or "related",
     }
+
+
+def _require_operator(request: Request, what: str) -> None:
+    """Gate a route that changes configuration for EVERY user of the instance.
+
+    Two routes need this, for the same reason: the system prompts drive every analysis turn, and
+    the settings hold the instance's shared provider keys and model choice. A user who can write
+    either one changes the app for everybody else — steering other people's reading (P0-3), or
+    swapping the model every turn bills against (P0-2). Product decision 2026-07-25: both belong to
+    the operator.
+
+    Two things are deliberately NOT gated. Reading settings is fine: keys come back as 6-char
+    hints, never in full. And the per-session *starting prompt* a reader edits before a discussion
+    travels on the turn (`ChatStartReq.prompt`) and never touches the registry, so it stays an
+    ordinary user feature.
+    """
+    if not auth.is_operator(getattr(request.state, "user", None)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Changing {what} is restricted to the instance operator.")
 
 
 @router.get("/api/prompts")
@@ -85,7 +115,8 @@ def get_prompts(project: str | None = None):
 
 
 @router.post("/api/prompts")
-def save_prompt(req: PromptReq):
+def save_prompt(req: PromptReq, request: Request):
+    _require_operator(request, "prompts")
     try:
         prompts.set_prompt(req.key, req.value or "")
     except PromptManagedError as e:
@@ -96,7 +127,8 @@ def save_prompt(req: PromptReq):
 
 
 @router.post("/api/prompts/reset")
-def reset_prompt(req: PromptReq):
+def reset_prompt(req: PromptReq, request: Request):
+    _require_operator(request, "prompts")
     try:
         prompts.reset(req.key)
     except PromptManagedError as e:

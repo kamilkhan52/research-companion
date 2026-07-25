@@ -194,16 +194,30 @@ required for the *native* Google ID-token flow. If one is ever created it needs 
 **Why not an agent:** Google Cloud account ownership.
 **Report back:** confirmation only — no secrets.
 
-### H6 — Decide how the operator role is assigned · `todo`
-M2 splits settings into operator-owned (API keys, system prompts) and per-user preferences. Decide
-how "operator" is granted — an allowlist of user UUIDs in config is the simplest and is the
-recommendation.
-**Why not an agent:** a security-policy decision.
-**Report back:** the mechanism, and your own auth UUID once H4 exists.
+### H6 — Operator identity · `DONE 2026-07-25`
+**Decision: prompt editing is the developer's, not the user's.** Implemented as `RC_OPERATOR_USERS`
+(comma-separated Supabase user ids) gating `POST /api/prompts` and `/api/prompts/reset`, which
+previously accepted writes from **any authenticated user** — that was P0-3, and it was live.
 
----
+Fails closed: unset means nobody is an operator, so prompt editing is disabled until someone is
+named. A dev environment short-circuits to allow, since local prompt editing has no signed-in user.
 
-## Blocking M4/M5 (money)
+**Kamil still needs to run this** for staging (and later production), or prompt editing stays off
+for everyone including him:
+```
+flyctl secrets set RC_OPERATOR_USERS=b8f19707-4b13-4cbb-834a-93cd6d06f489 -a research-companion-staging
+```
+
+Unaffected, deliberately: the per-session **starting prompt** a reader edits before a discussion.
+That travels on the turn (`ChatStartReq.prompt`) and never touches the prompt registry, so it stays
+a normal user feature.
+
+**`POST /api/settings` is gated the same way** (P0-2, closed 2026-07-25). So the operator role now
+covers BOTH the system prompts and the instance's shared provider keys and model choice — more
+authority than "prompt editing" implies, which is why the role is named operator rather than
+prompt-editor. Reading settings stays open to everyone (keys return as 6-char hints), and
+`GET /api/settings` reports `is_operator` so clients can render shared controls read-only instead
+of failing on submit.
 
 ### H7 — RevenueCat account and project · `todo`
 Create the account and project, connect the Play app.
