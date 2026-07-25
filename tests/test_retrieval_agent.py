@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 
 import httpx
-from app import retrieval_agent, retriever
+import pytest
+from app import retrieval_agent, retriever, safe_fetch
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -59,3 +60,32 @@ def test_hunt_failure_reports_not_ok():
     result = events[-1]
     assert result["type"] == "result" and result["ok"] is False
     assert "FAILED" in result["summary"]
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (safe_fetch.UnsafeURLError("non-public address"), "Refused"),
+    (safe_fetch.FetchTooLargeError("over the limit"), "Download failed"),
+    (safe_fetch.FetchTimeoutError("deadline"), "Download refused"),
+    (safe_fetch.UnsupportedResponseError("content-encoding"), "Download refused"),
+    (httpx.ConnectError("boom"), "Download failed"),
+])
+def test_fetch_pdf_returns_failures_as_text_not_exceptions(monkeypatch, exc, expected):
+    """fetch_pdf must hand the model a string for every failure, never raise.
+
+    The tool runs inside a Pydantic AI loop: a returned string lets the model try the next
+    candidate, while an exception aborts the whole hunt. The generic `except SafeFetchError` clause
+    covers the two refusal types added after this call site was written, so without a per-type
+    assertion the suite would stay green if it were dropped.
+    """
+    holder: dict = {}
+    agent = retrieval_agent.build_hunt_agent("Some Paper", holder)
+    fetch_pdf = next(t for t in agent._function_toolset.tools.values()
+                     if t.name == "fetch_pdf").function
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(retrieval_agent.safe_fetch, "fetch", boom)
+    result = fetch_pdf("https://example.com/paper.pdf")
+    assert expected in result
+    assert not holder

@@ -146,3 +146,23 @@ def test_malformed_redirect_becomes_a_retrieval_error(monkeypatch):
                         lambda host, port, *a, **k: [(2, 1, 6, "", ("93.184.216.34", port))])
     with pytest.raises(retriever.RetrievalError):
         retriever._fetch("https://example.com/paper.pdf")
+
+
+@pytest.mark.parametrize("exc", [
+    safe_fetch.UnsafeURLError("non-public"),
+    safe_fetch.FetchTooLargeError("too big"),
+    safe_fetch.FetchTimeoutError("deadline"),
+    safe_fetch.UnsupportedResponseError("content-encoding"),
+])
+def test_arxiv_path_translates_every_refusal(monkeypatch, exc):
+    """The arXiv branch has its OWN except clauses, separate from the generic path, because it
+    wraps safe_fetch in pacing and 429 retry. They were untested — removing them would let a
+    refusal escape as itself and crash the job rather than surface as a RetrievalError."""
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(retriever, "_arxiv_pace", lambda: None)
+    monkeypatch.setattr(safe_fetch, "fetch", boom)
+    monkeypatch.setattr(safe_fetch, "assert_public_url", lambda url: None)
+    with pytest.raises(retriever.RetrievalError):
+        retriever._fetch("https://arxiv.org/pdf/2201.11705")

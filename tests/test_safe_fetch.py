@@ -144,18 +144,22 @@ def test_malformed_url_is_refused_not_crashed(url):
 
 
 def test_malformed_redirect_location_does_not_escape_untranslated(monkeypatch):
-    """A malformed, attacker-chosen Location must not leave this module as an exception the callers
+    """A malformed, attacker-chosen Location must be refused, not raised as something the callers
     do not handle.
 
-    In practice httpx rejects it first with RemoteProtocolError, which IS an httpx.HTTPError and so
-    is already caught everywhere; the join is wrapped anyway, because httpx.InvalidURL is NOT an
-    HTTPError and reaching the join by some other route would escape. This asserts the property
-    that matters — one of the two handled families — rather than a specific internal type, which is
-    what the first version of this test got wrong.
+    `httpx.URL.join` is forced to raise here. Left to itself httpx rejects a bad Location earlier
+    with RemoteProtocolError — which IS an httpx.HTTPError and so already handled — meaning the
+    branch under test is never reached and the test stays green with the translation removed. That
+    is exactly what the first version of this test did: it observed the interception, wrote it into
+    its own docstring, and then asserted the weaker property anyway.
     """
+    def exploding_join(self, other):
+        raise httpx.InvalidURL("Invalid port: ':1'")
+
+    monkeypatch.setattr(httpx.URL, "join", exploding_join)
     monkeypatch.setattr(safe_fetch.httpx, "Client", _mock_client(
-        lambda request: _resp(302, location="http://[fe80::1/x")))
-    with pytest.raises((safe_fetch.SafeFetchError, httpx.HTTPError)):
+        lambda request: _resp(302, location="https://example.com/next")))
+    with pytest.raises(safe_fetch.UnsafeURLError, match="Location"):
         safe_fetch.fetch("https://example.com/start", max_bytes=1000)
 
 
