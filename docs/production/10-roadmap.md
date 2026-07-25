@@ -340,11 +340,12 @@ Verified 2026-07-25, and this corrects an earlier draft of this plan:
   ([API credit & rate limits](https://openrouter.ai/docs/api_reference/limits)). One caveat: the
   check is per request, so a burst of simultaneous requests can overshoot slightly. Set the limit
   below a number you would accept losing outright.
-- **OpenAI — there is no hard ceiling.** "Project budgets" are a **soft alert threshold**: OpenAI
-  removed hard budget caps, and requests continue to be processed after the limit is crossed. An
-  earlier draft of this plan claimed they fail closed; that was wrong, and relying on it would have
-  left TTS spend unbounded. The nearest real stop is a **prepaid credit balance with auto-recharge
-  disabled** — verify that behavior before trusting it.
+- **OpenAI — one of the two "spend limits" is hard; use that one.** The *dashboard* project/org
+  monthly budget is a **soft alert** — requests keep being processed past it. But the **Admin API
+  spend-limit resource has an enforcing mode** that returns `429 insufficient_quota` once reached
+  (subject to slight propagation overshoot), and that is the strongest provider-side control
+  available. Set it, then **verify it actually blocks** with a deliberate small-limit test. Keep a
+  prepaid balance with auto-recharge disabled as belt-and-braces. See H20.
 
 So the load-bearing control for TTS is one **we** enforce. We hold the only key, so an in-app
 ceiling is a real ceiling — but note a correction to an earlier draft of this plan, which claimed
@@ -352,8 +353,10 @@ TTS cost is exactly computable before dispatch:
 
 - The configured default is **`gpt-4o-mini-tts`** (`config.py:360`), which OpenAI prices on input
   text tokens **plus generated output audio tokens**. Audio token count depends on synthesized
-  duration and is not knowable before the call — and `/audio/speech` returns raw mp3 bytes with no
-  usage payload, so it isn't knowable exactly afterward either.
+  duration, so it is not knowable *before* the call — which is what the reservation must cover.
+  It *is* knowable afterward: the current implementation requests raw mp3 and so sees no usage,
+  but `stream_format: "sse"` emits a terminal `speech.audio.done` event carrying token usage, so a
+  completed synthesis settles to real cost (see the settlement rules below and H22).
 - Only the older character-priced models (`tts-1`, `tts-1-hd`) give exact pre-dispatch cost.
 
 Two workable designs, and this is a product decision (see H22): **(a)** pin production TTS to a
@@ -383,9 +386,9 @@ revisit if the over-count proves material at M10.
    `stream_format: "sse"`, whose terminal event reports input/output token usage — so reserve the
    conservative bound, then **settle to the observed usage** when the attempt completes, keeping
    the bound only for attempts that time out or die before their usage event. That makes the
-   ledger accurate for the normal path and conservative only where it must be. (Confirm the exact
-   event name and payload shape against the current speech API reference when implementing — this
-   comes from Sol's reading of the official docs and was not independently verified here.)
+   ledger accurate for the normal path and conservative only where it must be. (The terminal usage
+   event is present in OpenAI's published OpenAPI specification; still confirm the exact payload
+   shape when implementing, as with anything in this plan touching money mechanics.)
 
    Note this **inverts the H22 tradeoff**: SSE usage reporting is available on `gpt-4o-mini-tts`
    and *not* on `tts-1`/`tts-1-hd`. So the token-priced model gives better real accounting than the
