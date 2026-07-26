@@ -314,11 +314,58 @@ def migrate() -> list[str]:
                                  (path.name,))
                 applied.append(path.name)
                 log.info("db: applied migration %s", path.name)
+            _enforce_data_api_lockout(conn)
         finally:
             # Released explicitly rather than left to the session ending: this connection goes back
             # to the pool alive, and a session-scoped lock left held would block every later boot.
             conn.execute("select pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     return applied
+
+
+def _enforce_data_api_lockout(conn) -> None:
+    """Take every `rc_*` table off Supabase's Data API. Runs on EVERY migrate, not as a migration.
+
+    Supabase serves the `public` schema over PostgREST and its default privileges grant `anon` and
+    `authenticated` full DML on tables created there. The anon key is *published* — it ships inside
+    the mobile app by design — so without this, `rc_users` is every user's email and
+    `rc_projects.owner_id` is **writable**: set it to your own id and `tenancy.may_access` hands you
+    another person's reading list, which the backend then serves correctly, having been told the
+    truth by a table the attacker controls.
+
+    **Why this is not a migration file.** It was one, and that was wrong. `migrate()` skips any file
+    already named in `rc_schema_migrations` — and that ledger is itself in the exposed schema. So an
+    anon-key caller could insert the lockout migration's own filename before the deploy that
+    introduces it, and the one statement that would have closed the hole is the one silently
+    skipped, with startup cheerfully reporting nothing pending. A lockout that consults the ledger
+    it exists to secure is not a lockout. Applied unconditionally instead: every statement here is
+    idempotent, so re-running it each boot costs nothing and cannot be suppressed by anything an
+    attacker can write.
+
+    The table list is enumerated from the catalog rather than hard-coded, so a table added later is
+    covered without anyone remembering to add it — the same "two places to keep in sync" trap in a
+    different costume.
+
+    Two independent locks per table: RLS with no policies (Supabase's own requirement for anything
+    in an exposed schema), and the grants revoked outright. Not `force` — the backend owns these
+    tables and an owner is exempt from its own table's RLS unless forced, so forcing would lock out
+    the application instead of the attacker.
+    """
+    from psycopg import sql  # function-local, matching `conninfo` above
+
+    tables = [row[0] for row in conn.execute(
+        r"select tablename from pg_tables where schemaname = 'public' and tablename like 'rc\_%'")]
+    if not tables:
+        return
+    roles = [row[0] for row in conn.execute(
+        "select rolname from pg_roles where rolname in ('anon', 'authenticated')")]
+    with conn.transaction():
+        for table in tables:
+            conn.execute(sql.SQL("alter table {} enable row level security").format(
+                sql.Identifier(table)))
+            for role in roles:   # absent on a plain Postgres (CI, local) — then there is nothing
+                conn.execute(sql.SQL("revoke all on {} from {}").format(  # to revoke
+                    sql.Identifier(table), sql.Identifier(role)))
+    log.info("db: data-api lockout asserted on %d table(s)", len(tables))
 
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)

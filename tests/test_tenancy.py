@@ -170,6 +170,48 @@ def database(monkeypatch):
 
 
 @needs_pg
+def test_the_lockout_does_not_trust_the_ledger_it_secures(database):
+    """The sharpest version of the same finding. `migrate()` skips any file already named in
+    `rc_schema_migrations` — and that ledger is itself in the exposed schema. So when the lockout
+    was a migration FILE, an anon-key caller could insert its filename before the deploy that
+    introduced it, and the one statement that would have closed the hole was the one silently
+    skipped, with startup reporting nothing pending.
+
+    It is applied unconditionally on every migrate now, so poisoning the ledger achieves nothing.
+    """
+    with db.pool().connection() as conn:
+        conn.execute("alter table rc_projects disable row level security")
+        # Whatever an attacker can write into the ledger.
+        for name in ("0004_lock_out_the_data_api.sql", "0005_anything.sql", "9999_future.sql"):
+            conn.execute("insert into rc_schema_migrations (name) values (%s) "
+                         "on conflict do nothing", (name,))
+
+    db.migrate()
+
+    with db.pool().connection() as conn:
+        enabled = conn.execute(
+            "select relrowsecurity from pg_class where relname = 'rc_projects'").fetchone()[0]
+    assert enabled, "a poisoned migration ledger suppressed the Data API lockout"
+
+
+@needs_pg
+def test_a_table_added_later_is_locked_down_without_anyone_remembering(database):
+    """The list is enumerated from the catalog rather than hard-coded, so "every new table needs
+    RLS and revoked grants" stops being something a future migration has to remember."""
+    with db.pool().connection() as conn:
+        conn.execute("create table if not exists rc_something_new (id int primary key)")
+    try:
+        db.migrate()
+        with db.pool().connection() as conn:
+            enabled = conn.execute(
+                "select relrowsecurity from pg_class where relname = 'rc_something_new'").fetchone()
+        assert enabled and enabled[0]
+    finally:
+        with db.pool().connection() as conn:
+            conn.execute("drop table if exists rc_something_new")
+
+
+@needs_pg
 def test_every_table_is_off_the_supabase_data_api(database):
     """The anon key is published — it ships inside the mobile app — and Supabase exposes `public`
     through PostgREST with default grants to `anon`/`authenticated`. A table reachable that way is

@@ -86,19 +86,25 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `db.py` — Postgres: the pool, the `:6543` transaction-pooler refusal, and the migration runner
-  over `supabase/migrations/*.sql` (`main` applies them on boot; a failure logs rather than
-  refusing to start, because on Fly that is a crash loop). **Every new table must enable RLS and
-  revoke `anon`/`authenticated`** — Supabase serves the `public` schema over PostgREST and the anon
-  key ships inside the mobile app, so a table without it is world-writable (see
-  `0004_lock_out_the_data_api.sql`; `tests/test_tenancy.py` asserts it per table). **Ownership and index rows only** — content stays in git,
+  over `supabase/migrations/*.sql` (`main` applies them on boot, retrying in the background on
+  failure rather than refusing to start, because on Fly that is a crash loop). Every `rc_*` table is
+  taken off Supabase's Data API — RLS with no policies, plus revoked `anon`/`authenticated` grants —
+  by `_enforce_data_api_lockout`, which runs on **every** migrate and enumerates tables from the
+  catalog. Deliberately not a migration file: `migrate()` skips anything named in
+  `rc_schema_migrations`, and that ledger is itself in the exposed schema, so a lockout shipped as a
+  migration could be suppressed by an anon-key caller inserting its filename first. New tables need
+  no action; `tests/test_tenancy.py` asserts both the end state and the poisoned-ledger case. **Ownership and index rows only** — content stays in git,
   because the history *is* the record (invariant 4), and a second copy here could disagree with it.
   **Optional**: with `RC_DATABASE_URL` unset there is no pool, `enabled()` is False, and every
   caller falls back to today's single-tenant behaviour — which is what lets local dev and the test
   suite run with no server. Never log or print the URL; use `safe_target()`.
-- `tenancy.py` — who owns which project. As of M2 slice 1 it **records** ownership and enforces
-  nothing; enforcement arrives with the per-user `PROJECTS_ROOT` namespacing, deliberately in a
-  separate change so the trust boundary (`projects._safe_pid`/`project_path`) is not altered in the
-  same commit that introduces the tables it reads.
+- `tenancy.py` — who owns which project, and (since M2 slice 2a) the enforcement. `may_access` is
+  the gate: with no database it is single-tenant and everything is reachable; with one, an unowned
+  project is reachable by **nobody**, which is the correct failure but looks like data loss — hence
+  `RC_ADOPT_OWNER` for projects that predate ownership. `use_project` checks it BEFORE existence, so
+  a foreign project and an invented one answer identically. Routes that name a project somewhere
+  other than the URL path (a request body, a `?project=` query, a cross-project scan) do **not** get
+  it for free and must call it themselves — that was the source of every miss during slice 2a.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
 - `sessions.py` — per-paper session state + transcript JSONL + narration cache + retry
   branches (U.14): a retry archives the live tail under `.state/branches/` (working state,
