@@ -75,18 +75,22 @@ def test_the_connection_string_never_appears_in_what_we_print():
     assert shown == "db.abc.supabase.co:5432/postgres"
 
 
-def test_a_malformed_connection_string_never_leaks_the_password(caplog):
+@pytest.mark.parametrize("secret", [
+    "postgresql://postgres:p%zzword with space@db.abc.supabase.co:5432/postgres",
+    "postgresql://postgres:pw\uff20secret@db.abc.supabase.co:5432/postgres",  # fullwidth @
+    "postgresql://postgres:pw\uff0fsecret@db.abc.supabase.co:5432/postgres",  # fullwidth /
+])
+def test_a_malformed_connection_string_never_leaks_the_password(secret, caplog):
     """psycopg quotes the offending token verbatim — a mistyped password yields
     `invalid percent-encoded token: "p%zzword"` — and psycopg_pool logs connection failures at
     WARNING. So the parse has to happen here, where the error can be sanitized, or the secret ends
     up in the Fly logs in plaintext and rotating it is the only remedy."""
-    secret = "postgresql://postgres:p%zzword with space@db.abc.supabase.co:5432/postgres"
     with caplog.at_level("DEBUG"):
         with pytest.raises(db.DatabaseError) as excinfo:
             db.assert_usable_url(secret)
 
     rendered = f"{excinfo.value}{excinfo.value.__cause__}{excinfo.value.__context__}{caplog.text}"
-    assert "zzword" not in rendered
+    assert "zzword" not in rendered and "secret" not in rendered
     # It cannot name the database here, and should not try: libpq refuses to read this string at
     # all, so any host we printed would come from the OTHER parser's guess — which is exactly the
     # guess that prints password fragments. Naming the database is asserted where it is safe, in
@@ -185,31 +189,41 @@ def test_the_constraint_accepts_everything_the_trust_boundary_does(database):
     """The constraint must RESTATE `_safe_pid`, not tighten it.
 
     A stricter database rule creates a class of project the app can create on disk and then cannot
-    record — and since the backfill walks every existing project, one such id aborts it part-way
+    record — and because the backfill walks every existing project, one such id aborts it part-way
     with a raw constraint violation.
 
-    Generated rather than listed. The fixed list this replaced looked thorough and still missed the
-    real divergence: Python's `$` matches before a trailing newline, so `_safe_pid("project\n")`
-    was accepted while Postgres — which has no such rule — rejected it. A sample only ever tests
-    the cases you already thought of, so this drives the boundary itself and asserts the property.
+    Genuinely generated. An earlier version of this test carried the comment "generated rather than
+    listed" over a hand-written list, which is the kind of claim that stops anyone looking: the
+    listed version had already missed the real divergence (Python's `$` matches before a trailing
+    newline, so `_safe_pid("project\n")` was accepted while Postgres rejected it). This builds ids
+    combinatorially from characters chosen to straddle the boundary, so a future widening of either
+    rule is caught by construction rather than by whoever remembers to add a case.
     """
     from app import projects as projects_module
 
     tenancy.ensure_user(OWNER)
-    candidates = [
-        "llm-basics", "My_Project", "Vaccines", "x_y", "default", "3d-dram", "a",
-        "a" * 255,                      # the longest a path segment can be
-        "a" * 256, "project\n", "pro\nject", "", "-lead", "_lead", "has space",
-        "../escape", "/abs", "dot.dot", "with/slash", "tab\there", "ünicode", "a\r",
-    ]
-    for pid in candidates:
+
+    # Deliberately spans: legal chars, boundary chars, separators, whitespace, control characters,
+    # and non-ASCII — the classes where the two regex dialects can disagree.
+    alphabet = ["a", "Z", "9", "-", "_", ".", "/", " ", "\n", "\r", "\t", "", "ü", "\x00"]
+    candidates = {"", "a", "a" * 255, "a" * 256}
+    for ch in alphabet:
+        candidates |= {ch, f"a{ch}", f"{ch}a", f"a{ch}a", f"a{ch}\n", f"{ch}{ch}"}
+
+    checked = 0
+    for pid in sorted(candidates):
         try:
             projects_module._safe_pid(pid)
         except projects_module.ProjectError:
-            continue  # the boundary rejects it; the database's opinion does not matter
+            continue  # the boundary rejects it, so the database's opinion does not matter
         # The boundary accepted it, so the database MUST be able to store it.
         tenancy.record_project(pid, OWNER)
-        assert tenancy.owner_of(pid) == OWNER, f"{pid!r} passed _safe_pid but was not recorded"
+        assert tenancy.owner_of(pid) == OWNER, f"{pid!r} passed _safe_pid but could not be recorded"
+        checked += 1
+
+    # Guards the loop itself: if `_safe_pid` ever rejected everything, every `continue` would fire
+    # and this test would pass while asserting nothing at all.
+    assert checked >= 5, f"only {checked} ids reached the database — is the generator still valid?"
 
 
 @needs_pg

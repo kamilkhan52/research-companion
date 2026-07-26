@@ -78,6 +78,20 @@ def _url_params(raw: str) -> dict | None:
         return None
 
 
+def _scheme_of(raw: str) -> str:
+    """The URL scheme, or "" if it cannot be read.
+
+    `urlsplit` raises `ValueError` on NFKC-sensitive input — a password containing a fullwidth `＠`,
+    `／`, `？` or `：` — and the message embeds the WHOLE netloc, password included. Returning a
+    sentinel keeps that exception inside this function, so the caller's `DatabaseError` is raised
+    outside any `except` and never carries it as `__cause__` or `__context__`.
+    """
+    try:
+        return urlsplit(raw).scheme
+    except ValueError:
+        return ""
+
+
 def _parses_agree(raw: str) -> bool:
     """Whether both parsers see the same host, port and database.
 
@@ -152,15 +166,28 @@ def assert_usable_url(raw: str = "") -> None:
     raw = raw or url()
     if not raw:
         return
-    # Scheme FIRST, so a non-URL gets an accurate diagnosis. libpq also accepts the key=value form
-    # (`host=… port=…`) and `service=…`; `urlsplit` cannot read either, so the agreement check
-    # below refuses them — but it would report "the parsers disagree", sending the operator to hunt
-    # a password-escaping problem that does not exist. Supabase hands out URLs, so requiring one is
-    # fine; saying so plainly is the point.
-    if urlsplit(raw).scheme not in {"postgres", "postgresql"}:
+    # Ordered so each refusal names its own cause. All three end in "we will not connect", but they
+    # send the operator to three different places, and a wrong pointer costs more than no pointer.
+
+    # (a) The URL parser cannot read it at all — NFKC-sensitive characters in the password, such as
+    # a fullwidth ＠ or ／. Distinguished from a wrong scheme because the scheme here is usually
+    # perfectly good and the password is the thing to fix.
+    if _url_params(raw) is None:
+        raise DatabaseError(
+            f"RC_DATABASE_URL could not be parsed (target {safe_target(raw)}). This usually means "
+            "an unusual character in the password — percent-encode it, including full-width or "
+            "other non-ASCII forms of '@', '/', ':', '?' and '#'.")
+
+    # (b) Not a URL. libpq also accepts the key=value form (`host=… port=…`) and `service=…`, which
+    # `urlsplit` cannot read; without this they would fall through to the agreement check below and
+    # be reported as "the parsers disagree", sending the operator hunting an escaping problem that
+    # does not exist. Supabase hands out URLs, so requiring one is fine — saying so plainly is the
+    # point.
+    if _scheme_of(raw) not in {"postgres", "postgresql"}:
         raise DatabaseError(
             "RC_DATABASE_URL must be a postgres:// URL. Supabase gives you one under Settings → "
             "Database; the libpq key=value and service= forms are not supported here.")
+    # (c) Both parsers read it, but differently — so we cannot say where it points.
     if not _parses_agree(raw):
         raise DatabaseError(
             "RC_DATABASE_URL is ambiguous: the URL parser and libpq read a different host, port or "
@@ -168,8 +195,11 @@ def assert_usable_url(raw: str = "") -> None:
             "unescaped '/', '?', '#' or '@' in the password — or when a query parameter overrides "
             "the connection target. Percent-encode those characters in the password, and put the "
             "host, port and database in the URL itself rather than the query string.")
-    parts = urlsplit(raw)
-    if not parts.hostname:
+    # `_parses_agree` has already parsed this with both parsers and found them identical, so read
+    # the host from that result instead of calling `urlsplit` a third time — which is the call that
+    # can raise with the password in the message.
+    effective = _effective_params(raw) or {}
+    if not effective.get("host"):
         raise DatabaseError("RC_DATABASE_URL has no host.")
     # libpq's port, not the URL's. `_parses_agree` above has already established that the two are
     # identical — a `?port=6543` override makes them differ and is refused there, which is what
@@ -177,7 +207,7 @@ def assert_usable_url(raw: str = "") -> None:
     # decides where the connection goes, so the check cannot drift if that guarantee is ever
     # loosened. It is defensive, not load-bearing; no test distinguishes it today, and pretending
     # otherwise would misdescribe where the protection lives.
-    effective_port = (_effective_params(raw) or {}).get("port")
+    effective_port = effective.get("port")
     if str(effective_port) == str(_TRANSACTION_POOLER_PORT):
         raise DatabaseError(
             "RC_DATABASE_URL points at Supabase's transaction pooler (port 6543), which does not "
