@@ -23,6 +23,20 @@ from app.routers.projects_api import split_project as split_route
 from tests.conftest import add_paper
 
 
+class _AnonRequest:
+    """A request with no signed-in user — the single-tenant shape these tests exercise.
+
+    These routes now take `Request` so they can scope results to the caller. With no database
+    configured, `tenancy` short-circuits before ever reading `state.user`, so this stub only has to
+    exist, not carry an identity.
+    """
+
+    class state:  # noqa: N801 — mirrors Starlette's attribute name, not a class of its own
+        user = None
+
+
+
+
 def _bind(pid):
     return config.set_active_project(pid)
 
@@ -245,6 +259,7 @@ def test_split_route_starts_project_scoped_notes_proposals_after_relocation(
                 draft_destination_notes=True,
                 cleanup_source_notes=True,
             ),
+            _AnonRequest(),
         )
         dest_job_id = result["notes_jobs"]["destination"]["id"]
         source_job_id = result["notes_jobs"]["source_cleanup"]["id"]
@@ -341,7 +356,7 @@ def test_synchronous_committing_writers_refuse_while_reserved(temp_project):
     config.mark_project_busy(temp_project)
     try:
         for call in (
-            lambda: add_paper(temp_project, AddPaperReq(title="New")),
+            lambda: add_paper(temp_project, AddPaperReq(title="New"), _AnonRequest()),
             lambda: remove_paper(temp_project, "awq"),
             lambda: approve(ApproveReq(slug="awq")),
             lambda: save_notes("working-notes", NotesSaveReq(markdown="x", summary="y")),

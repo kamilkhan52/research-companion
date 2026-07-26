@@ -21,10 +21,11 @@ from .. import (
     projects,
     sessions,
     store,
+    tenancy,
 )
 from ..committer import CommitError
 from ..project_split import SplitError
-from ..projects import ProjectError
+from ..projects import OwnershipUnavailable, ProjectError
 from . import make_project_router
 
 router = APIRouter()
@@ -47,13 +48,33 @@ class PaperPatchReq(BaseModel):
 
 
 @router.get("/api/projects")
-def list_projects():
-    return {"projects": projects.list_projects()}
+def list_projects(request: Request):
+    """Only the caller's own projects, once ownership is being recorded.
+
+    Filtered here rather than inside `projects.list_projects()` so that module keeps working
+    without a user — the adoption script and the job layer both enumerate every project on disk and
+    must continue to see all of them.
+    """
+    everything = projects.list_projects()
+    allowed = set(tenancy.visible_projects(
+        [p["id"] for p in everything], getattr(request.state, "user", None)))
+    return {"projects": [p for p in everything if p["id"] in allowed]}
 
 
 @router.get("/api/recent-sessions")
-def recent_sessions(limit: int = Query(default=20, ge=1, le=100)):
-    return {"sessions": projects.recent_sessions(limit)}
+def recent_sessions(request: Request, limit: int = Query(default=20, ge=1, le=100)):
+    """Cross-project, so it enumerates every project on disk and must be filtered here.
+
+    Not path-scoped, so it never acquires `use_project` — which is exactly how it was returning
+    every user's project names, paper titles and source URLs to anyone signed in.
+    """
+    user = getattr(request.state, "user", None)
+    # Scoped inside the walk rather than filtered afterwards: `limit` applies to what the CALLER
+    # can see, so a user whose neighbour has twenty newer sessions still gets their own.
+    scope = None
+    if tenancy.enabled() and (user or {}).get("user_id"):
+        scope = set(tenancy.projects_owned_by(user["user_id"]))
+    return {"sessions": projects.recent_sessions(limit, only_pids=scope)}
 
 
 @project_router.get("/bundle")
@@ -101,30 +122,64 @@ def import_project_bundle(
     data = file.file.read(projects.MAX_BUNDLE_BYTES + 1)
     try:
         meta = projects.import_bundle(data, name)
+        # Claimed immediately: an imported project with no owner is reachable by NOBODY, so the
+        # import would appear to succeed and hand back a project its importer cannot open.
+        tenancy.claim(meta["id"], getattr(request.state, "user", None))
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return meta
 
 
 @router.post("/api/projects")
-def create_project(req: ProjectReq):
+def create_project(req: ProjectReq, request: Request):
     try:
         meta = projects.create_project(req.name, req.method)
+    except OwnershipUnavailable as e:
+        # 503, not 400: the request was fine and the server could not serve it. A retryable
+        # outage reported as a client error sends the user to edit their project name.
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # Recorded immediately, and NOT best-effort: a project whose ownership row failed to write is
+    # invisible to its own creator (an unowned project is reachable by nobody), so silently
+    # swallowing the failure would hand someone a directory they can never open again.
+    try:
+        tenancy.claim(meta["id"], getattr(request.state, "user", None))
+    except tenancy.TenancyError as e:
+        raise HTTPException(
+            status_code=500,
+            detail="The project was created but its owner could not be recorded.") from e
     return {"project": meta}
 
 
+def _require_access(pid: str, request: Request) -> None:
+    """Ownership check for the project routes that do NOT hang off `make_project_router()`.
+
+    Three of them — GET/PATCH `/meta` and DELETE — are declared on the plain app-global router
+    because they operate ON a project rather than inside one, so they never acquire the
+    `use_project` dependency that guards the other seventy-odd. Nothing about their URL shape says
+    so, which is exactly how DELETE ended up reachable for anyone: the isolation tests caught it,
+    the architecture did not.
+
+    404 with the same message as a missing project, for the same reason as `use_project`: a 403
+    would confirm the id is real, and ids are derived from project names.
+    """
+    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+
+
 @router.get("/api/projects/{pid}/meta")
-def project_meta(pid: str):
+def project_meta(pid: str, request: Request):
+    _require_access(pid, request)
     if not projects.exists(pid):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     return {"project": projects._read_meta(pid)}
 
 
 @router.patch("/api/projects/{pid}/meta")
-def update_project_meta(pid: str, req: MetaPatchReq):
+def update_project_meta(pid: str, req: MetaPatchReq, request: Request):
     """Rename and/or (un)favorite. Fields are independent so the client can PATCH just one."""
+    _require_access(pid, request)
     if req.name is None and req.favorite is None:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     try:
@@ -141,7 +196,8 @@ def update_project_meta(pid: str, req: MetaPatchReq):
 
 
 @router.delete("/api/projects/{pid}")
-def delete_project(pid: str):
+def delete_project(pid: str, request: Request):
+    _require_access(pid, request)
     try:
         projects.delete_project(pid)
     except ProjectError as e:
@@ -368,7 +424,7 @@ class SplitReq(BaseModel):
 
 
 @project_router.post("/split")
-def split_project(pid: str, req: SplitReq):
+def split_project(pid: str, req: SplitReq, request: Request):
     """Split selected papers (and the work done on them) into a new project. Deterministic
     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
     the removal endpoint above. The optional AI working-notes passes are separate jobs.
@@ -404,9 +460,14 @@ def split_project(pid: str, req: SplitReq):
                 status_code=409,
                 detail=f"A background job ({busy}) is running for this project — wait, then split.",
             )
+        user = getattr(request.state, "user", None)
+        user = getattr(request.state, "user", None)
         result = project_split.split_project(
             pid, req.name, req.slugs,
             remove_from_source=req.remove_from_source, goals=req.goals,
+            # Claimed inside the split, before any paper leaves the source — see the callback's
+            # comment there for why the ordering matters.
+            on_created=lambda new_pid: tenancy.claim(new_pid, user),
         )
         dest = result["new_pid"]
         if req.draft_destination_notes or req.cleanup_source_notes:
@@ -464,7 +525,7 @@ class MoveReq(BaseModel):
 
 
 @project_router.post("/move")
-def move_papers(pid: str, req: MoveReq):
+def move_papers(pid: str, req: MoveReq, request: Request):
     """Move selected papers (and their work) into an EXISTING project (R9.13) — the
     deterministic sibling of /split.
 
@@ -474,6 +535,12 @@ def move_papers(pid: str, req: MoveReq):
     `move_to_existing` then takes each project's exclusive write lock to drain in-flight
     synchronous writers. Distinct 409s let the client tell the user which side is busy."""
     dest = req.dest_pid
+    # The DESTINATION needs the same check as the source. `use_project` guards `pid` in the path;
+    # `dest_pid` arrives in the body and reaches none of it, so without this a user could move
+    # their papers INTO someone else's git-backed record — a write, not just a read — and the
+    # distinct busy/deleting responses would disclose that project's state on the way.
+    # Checked before every existence, busy and metadata branch so all of them answer alike.
+    _require_access(dest, request)
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,

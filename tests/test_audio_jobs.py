@@ -13,6 +13,17 @@ import pytest
 from app import audio_jobs, config, sessions, tts
 
 
+class _AnonRequest:
+    """A request with no signed-in user. `/api/audio/jobs` now takes one because the `project`
+    field in its body decides whose usage ledger the spend lands on — with no database configured
+    `tenancy` short-circuits before reading `state.user`, so this only has to exist."""
+
+    class state:  # noqa: N801 — mirrors Starlette's attribute name
+        user = None
+
+
+
+
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     """Point the app-global state (narration cache + mp3 cache) at a tmp dir and clear the
@@ -222,7 +233,7 @@ def test_route_valid_project_bills_it(temp_project, monkeypatch):
     from app import usage
     from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Hello route.", project=temp_project))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Hello route.", project=temp_project), _AnonRequest())
     _wait_until_settled(resp["job"]["id"])
     assert usage.load()["by_operation"]["narration"]["calls"] == 1
 
@@ -231,7 +242,7 @@ def test_route_missing_project_bills_unattributed(temp_project, monkeypatch):
     from app import usage
     from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="No project route.", project=None))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="No project route.", project=None), _AnonRequest())
     _wait_until_settled(resp["job"]["id"])
     assert usage.unattributed_summary()["by_operation"]["narration"]["calls"] == 1
     assert usage.load()["total"]["calls"] == 0
@@ -242,7 +253,7 @@ def test_route_invalid_project_is_rejected_400(temp_project, monkeypatch):
     from fastapi import HTTPException
     _route_env(monkeypatch)
     with pytest.raises(HTTPException) as ei:
-        audio_routes.start_audio_job(audio_routes.NarrateReq(text="x", project="../etc"))
+        audio_routes.start_audio_job(audio_routes.NarrateReq(text="x", project="../etc"), _AnonRequest())
     assert ei.value.status_code == 400  # traversal/unknown id -> client error, not silent None
 
 
@@ -250,11 +261,11 @@ def test_route_cached_result_bills_no_one(temp_project, monkeypatch):
     from app import usage
     from app.routers import audio as audio_routes
     _route_env(monkeypatch)
-    first = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=temp_project))
+    first = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=temp_project), _AnonRequest())
     _wait_until_settled(first["job"]["id"])
     audio_jobs._jobs.clear()
     before = usage.load()["by_operation"]["narration"]["calls"]
-    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=None))
+    resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="Cached route.", project=None), _AnonRequest())
     assert resp["job"]["status"] == "done"  # cache hit, no thread
     assert usage.load()["by_operation"]["narration"]["calls"] == before  # nothing re-billed
 

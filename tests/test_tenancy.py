@@ -162,13 +162,23 @@ def test_ownership_round_trips(database):
 
 
 @needs_pg
-def test_recording_never_silently_changes_an_owner(database):
-    """`on conflict do nothing`, not `do update`. A transfer should be an explicit operation that
-    says so — not a side effect of a create or a re-run of the backfill."""
+def test_recording_refuses_a_conflicting_owner_rather_than_reporting_success(database):
+    """Never a silent transfer — and never a silent NO-OP either.
+
+    `on conflict do nothing` alone reported success to the second caller while leaving the first
+    owner in place. That is the worse half: the second user believes they own a project they cannot
+    open, and the first user silently gains whatever content the second puts in it. Re-recording
+    the SAME owner stays idempotent, because the backfill re-runs.
+    """
     tenancy.ensure_user(OWNER)
     tenancy.ensure_user(OTHER)
     tenancy.record_project("shared", OWNER)
-    tenancy.record_project("shared", OTHER)
+
+    tenancy.record_project("shared", OWNER)  # idempotent
+    assert tenancy.owner_of("shared") == OWNER
+
+    with pytest.raises(tenancy.TenancyError, match="already owned"):
+        tenancy.record_project("shared", OTHER)
     assert tenancy.owner_of("shared") == OWNER
 
 
@@ -396,3 +406,23 @@ def test_a_trailing_newline_is_not_a_project_id():
 
     with pytest.raises(projects_module.ProjectError):
         projects_module._safe_pid("project\n")
+
+
+@needs_pg
+def test_release_returns_the_owner_it_just_cleared(database):
+    """`release` retires the row and must hand back who owned it, so a failed delete can restore it.
+
+    It does that with `update ... returning (select owner_id ...)`, which relies on Postgres
+    evaluating the subquery against the statement's snapshot — i.e. seeing the value BEFORE the
+    update. That is subtle and could plausibly differ across versions, and if it ever returned null
+    the compensating restore in `delete_project` would silently do nothing while looking correct.
+    """
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("doomed", OWNER)
+
+    assert tenancy.release("doomed") == OWNER
+    assert tenancy.owner_of("doomed") is None          # retired: nobody owns it
+    assert tenancy.id_is_recorded("doomed") is True    # but the id stays taken
+
+    tenancy.restore("doomed", OWNER)
+    assert tenancy.owner_of("doomed") == OWNER

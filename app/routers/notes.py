@@ -6,7 +6,7 @@ edit is a job + poll whose result is a PROPOSAL the client applies via the save 
 See CLAUDE.md invariant 4 (agent proposes, human commits)."""
 from __future__ import annotations
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
 from .. import (
@@ -18,6 +18,7 @@ from .. import (
     projects,
     sessions,
     store,
+    tenancy,
 )
 from ..committer import CommitError
 from . import make_project_router
@@ -67,6 +68,19 @@ class NotesAgentReq(BaseModel):
 def _paper_dict(slug: str) -> dict:
     p = store.get_paper(slug, sessions.session_states())
     return p.to_dict() if p else {"slug": slug}
+
+
+def _own_pids(request: Request) -> set[str] | None:
+    """The project ids the caller may see, or None for "no scoping" when ownership is not in play.
+
+    None and an empty set mean different things and the distinction matters: None is the
+    single-tenant fallback (no database, or no signed-in user) where every project is legitimately
+    the caller's, while an empty set is a signed-in user who owns nothing and must match nothing.
+    """
+    user = getattr(request.state, "user", None)
+    if not tenancy.enabled() or not (user or {}).get("user_id"):
+        return None
+    return set(tenancy.projects_owned_by(user["user_id"]))
 
 
 @project_router.get("/notes/jobs/active/{target}")
@@ -224,7 +238,7 @@ def approve(req: ApproveReq):
 
 
 @project_router.post("/papers")
-def add_paper(pid: str, req: AddPaperReq):
+def add_paper(pid: str, req: AddPaperReq, request: Request):
     """Add a new *unread* entry to this project's reading list — e.g. accepting a reference-
     graph recommendation. Metadata only: full text stays lazily retrieved (first time it's
     opened, like every other paper) and nothing is git-committed (like every other change to
@@ -238,6 +252,10 @@ def add_paper(pid: str, req: AddPaperReq):
                 title=req.title,
                 arxiv_id=req.arxiv_id,
                 exclude_pid=pid,
+                # Scoped to the caller's own projects. Unscoped, this duplicate-preflight is a
+                # search across everyone else's reading lists: submit a title, learn who else has
+                # it and what they called their project.
+                only_pids=_own_pids(request),
             )
             if elsewhere:
                 raise HTTPException(
@@ -269,7 +287,7 @@ def add_paper(pid: str, req: AddPaperReq):
 
 
 @project_router.post("/paper-matches")
-def paper_matches(pid: str, req: PaperMatchReq):
+def paper_matches(pid: str, req: PaperMatchReq, request: Request):
     """Read-only preflight for every add surface.
 
     Strong scholarly identifiers win; exact normalized title is only a conservative fallback.
@@ -287,5 +305,6 @@ def paper_matches(pid: str, req: PaperMatchReq):
             arxiv_id=req.arxiv_id,
             source_url=req.source_url,
             exclude_pid=pid,
+            only_pids=_own_pids(request),
         ),
     }

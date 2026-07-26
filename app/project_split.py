@@ -516,6 +516,7 @@ def split_project(
     *,
     remove_from_source: bool = True,
     goals: str | None = None,
+    on_created=None,
 ) -> dict:
     """Move/copy `slugs` from `source_pid` into a new project `name`. Returns
     {new_pid, name, moved, removed, departed_notes} — `departed_notes` (slug -> Notes text)
@@ -558,6 +559,17 @@ def split_project(
             # graph/retrieval job on it mid-population would read a half-written reading list
             # and race graph_store.load/save. Cleared once its commit lands.
             config.mark_project_busy(new_pid)
+            # Ownership is recorded AFTER the busy mark and BEFORE anything leaves the source.
+            #
+            # After, because the row is what makes the destination visible to its owner, and an
+            # unbusied scaffold is one a concurrent refresh can discover and start a graph or
+            # retrieval job against — racing the population about to happen below.
+            #
+            # Before, because a claim that failed once the papers had already moved would leave
+            # them in a project the caller cannot open: not lost, but unreachable, and gone from
+            # the source too. Raising here aborts while the source is still intact.
+            if on_created is not None:
+                on_created(new_pid)
             try:
                 if goals:
                     projects.update_meta(new_pid, goals=goals.strip())

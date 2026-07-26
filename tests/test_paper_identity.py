@@ -7,6 +7,20 @@ from app.routers.notes import AddPaperReq, add_paper
 from fastapi import HTTPException
 
 
+class _AnonRequest:
+    """A request with no signed-in user — the single-tenant shape these tests exercise.
+
+    These routes now take `Request` so they can scope results to the caller. With no database
+    configured, `tenancy` short-circuits before ever reading `state.user`, so this stub only has to
+    exist, not carry an identity.
+    """
+
+    class state:  # noqa: N801 — mirrors Starlette's attribute name, not a class of its own
+        user = None
+
+
+
+
 def _add_to_project(
     pid: str,
     title: str,
@@ -108,6 +122,7 @@ def test_add_route_refuses_silent_cross_project_duplicate(temp_project):
         add_paper(
             temp_project,
             AddPaperReq(title="Incomplete search text", arxiv_id="2401.00001"),
+            _AnonRequest(),
         )
 
     assert exc.value.status_code == 409

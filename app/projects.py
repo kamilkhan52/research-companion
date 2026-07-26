@@ -18,15 +18,23 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
-from . import config, jobs, logging_config, prompts, store
+from . import config, jobs, logging_config, prompts, store, tenancy
 from .fileio import atomic_write_text
 
 log = logging_config.get("projects")
 
 META = "project.json"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+class OwnershipUnavailable(Exception):
+    """The ownership store is configured but unreachable — maps to 503, not 400.
+
+    Distinct from `ProjectError` because it is not the caller's fault and it is retryable: the
+    request was well-formed and the server could not serve it.
+    """
 
 
 class ProjectError(Exception):
@@ -139,9 +147,34 @@ def _git(pid: str, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _id_is_taken(pid: str) -> bool:
+    """Whether `pid` is claimed by EITHER store.
+
+    The directory and the ownership row are two separate records of the same fact, and they can
+    disagree — a delete whose row release succeeded but whose move failed, or a historical row from
+    before this check existed. Allocating against the filesystem alone would then hand a fresh
+    project an id that still has someone else's ownership row, and `record_project` refuses the
+    conflict only AFTER the directory is visible. Consulting both means such an id is simply never
+    handed out: the stale row makes the id unusable, which costs one id and leaks nothing.
+    """
+    if exists(pid):
+        return True
+    try:
+        return tenancy.id_is_recorded(pid)
+    except Exception as e:
+        # A CONFIGURED but unreachable database is not the same as no database. With none, there is
+        # nothing to record and single-tenant behaviour is correct. With one that is down, creating
+        # anyway would produce a project with no ownership row — reachable by nobody, including the
+        # person who just made it. Failing is right; failing comprehensibly is the part worth
+        # writing, because the raw error is a 10-second PoolTimeout.
+        raise OwnershipUnavailable(
+            "Cannot create a project right now: the ownership store is unavailable, and a project "
+            "created without an owner would not be reachable by anyone.") from e
+
+
 def _unique_id(base: str) -> str:
     pid, n = base, 2
-    while exists(pid):
+    while _id_is_taken(pid):
         pid, n = f"{base}-{n}", n + 1
     return pid
 
@@ -183,8 +216,12 @@ def list_projects() -> list[dict]:
     return out
 
 
-def recent_sessions(limit: int = 20) -> list[dict]:
+def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[dict]:
     """Recent session activity across projects, newest first.
+
+    `only_pids` scopes the walk. It is applied BEFORE the limit, not after: filtering the results
+    of a global "20 newest" means a user with a busy neighbour gets a short list — or an empty one
+    — while their own sessions are simply further down a list they never saw.
 
     Session state is project-scoped, so every index read is performed with that project bound
     to the active contextvar. Only registry-derived ids reach the path boundary.
@@ -194,6 +231,8 @@ def recent_sessions(limit: int = 20) -> list[dict]:
     out = []
     for project in list_projects():
         pid = project["id"]
+        if only_pids is not None and pid not in only_pids:
+            continue
         token = config.set_active_project(pid)
         try:
             index = sessions.session_index()
@@ -557,7 +596,11 @@ def delete_project(pid: str) -> None:
     # pids), THEN sweep for jobs admitted before the tombstone, then move. Any job either
     # registered before the tombstone (the sweep sees it and refuses) or was admitted after
     # (the tombstone refuses it) — no window where a fresh worker can slip past the move.
-    config.mark_project_deleting(pid)
+    if not config.mark_project_deleting(pid):
+        # Another DELETE for this project is already running. Refusing keeps the
+        # release/move/compensate sequence below single-threaded: two callers interleaving it can
+        # leave an ownership row for a directory that is gone.
+        raise ProjectError(f"Project is already being deleted: {pid}")
     try:
         # A split or move touching this project is a synchronous mutation (not a job) that
         # relocates its files; deleting the dir under it would strand the operation mid-copy.
@@ -575,7 +618,23 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        # Release the ownership row BEFORE the directory moves, then put it back if the move
+        # fails. Trashing the directory is what frees the id for `_unique_id` to hand out again, so
+        # releasing afterwards leaves a window where the id is available while the old row still
+        # exists — the next project to take it would silently belong to the previous owner.
+        #
+        # But releasing first alone just trades that for a worse failure: if the move then fails,
+        # the project is still on disk and its owner can no longer open it. So the row is restored
+        # on failure. Neither ordering is safe by itself; the compensation is what makes it safe.
+        former_owner = tenancy.release(pid)
+        try:
+            shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        except Exception:
+            if former_owner:
+                # `restore`, not `record_project`: the row still exists as a tombstone, so an
+                # insert would conflict rather than give the project back to its owner.
+                tenancy.restore(pid, former_owner)
+            raise
         # A later project with the same name can reuse this pid. Do not let terminal in-memory
         # results/proposals from the deleted project become visible in that new project.
         jobs.forget_finished_for_project(pid)
@@ -607,7 +666,7 @@ def adopt_existing(src: Path, name: str, move: bool = True) -> str:
     return pid
 
 
-async def use_project(pid: str):
+async def use_project(pid: str, request: Request):
     """FastAPI dependency: validate the project and bind it as active for the request.
 
     MUST be async: a sync generator dependency runs its body in a worker thread, so a
@@ -615,6 +674,12 @@ async def use_project(pid: str):
     dependency this runs in the request task, so the value is captured into the context copied
     for the endpoint and for StreamingResponse iteration. The finally (reset) runs after the
     response is fully sent, keeping the project bound throughout streaming."""
+    # Ownership FIRST, before the deleting-check and the existence-check. Both of those answer
+    # differently for a real project than for an invented one — a 409 "being deleted" versus a
+    # 404 — so running them first would tell a stranger that someone else's project exists, which
+    # is what the 404-not-403 choice above exists to prevent.
+    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     if config.project_is_deleting(pid):
         raise HTTPException(status_code=409, detail=f"Project is being deleted: {pid}")
     if not exists(pid):

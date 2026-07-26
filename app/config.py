@@ -201,9 +201,20 @@ _deleting_projects: set[str] = set()
 _deleting_lock = threading.Lock()
 
 
-def mark_project_deleting(pid: str) -> None:
+def mark_project_deleting(pid: str) -> bool:
+    """Claim `pid` for deletion. True if this caller claimed it, False if a deletion is already in
+    progress.
+
+    Test-and-set, not a plain add: two concurrent DELETEs both used to enter, and then one moved
+    the directory while the other's move failed and RESTORED the ownership row it had just
+    released — leaving a row for a project that no longer exists. Only one caller may run the
+    release/move/compensate sequence.
+    """
     with _deleting_lock:
+        if pid in _deleting_projects:
+            return False
         _deleting_projects.add(pid)
+        return True
 
 
 def unmark_project_deleting(pid: str) -> None:

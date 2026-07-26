@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Import a project bundle from inside the instance — no HTTP, no user token.
 
-    python scripts/import_bundle.py <bundle-path> <project name>
-    python scripts/import_bundle.py <bundle-path> --name-b64 <base64 of the name>
+    python scripts/import_bundle.py <bundle-path> <project name> [--owner <uuid>]
+    python scripts/import_bundle.py <bundle-path> --name-b64 <base64> [--owner <uuid>]
+
+`--owner` (or RC_ADOPT_OWNER) records who the imported project belongs to. With a database
+configured it is REQUIRED: an unowned project is reachable by nobody, so importing without it
+would report success and hand back something invisible to every user.
 
 Why this exists alongside `POST /api/projects/import`: the HTTP route needs a signed-in user's
 JWT, and getting one means a browser with developer tools. Moving a project between two instances
@@ -32,7 +36,7 @@ for candidate in (Path(__file__).resolve().parent.parent, Path("/srv")):
         sys.path.insert(0, str(candidate))
         break
 
-from app import projects  # noqa: E402  — after the path insert
+from app import db, projects, tenancy  # noqa: E402  — after the path insert
 
 
 def main(argv: list[str]) -> int:
@@ -56,20 +60,61 @@ def main(argv: list[str]) -> int:
             print(f"could not decode the name: {e}", file=sys.stderr)
             return 2
     else:
-        name = " ".join(argv[2:]).strip()
+        # Stop at --owner so it is not absorbed into a positional project name.
+        rest = argv[2:]
+        if "--owner" in rest:
+            rest = rest[:rest.index("--owner")]
+        name = " ".join(rest).strip()
     if not name:
         print("the project needs a name", file=sys.stderr)
         return 2
     if not bundle.is_file():
         print(f"no such bundle: {bundle}", file=sys.stderr)
         return 1
+    owner = _owner_from(argv)
+    if tenancy.enabled():
+        # Validated BEFORE publishing, not just checked for emptiness. A nonempty but malformed
+        # owner passed the old check, the bundle was published, and `claim` then rejected the uuid —
+        # producing exactly the unreachable project this refusal exists to prevent.
+        if not owner:
+            print("this instance records ownership, so an import needs --owner <uuid> "
+                  "(or RC_ADOPT_OWNER). Without one the project would be invisible to everyone.",
+                  file=sys.stderr)
+            return 2
+        if not db.is_uuid(owner):
+            print(f"--owner must be a user id (uuid); got {owner!r}", file=sys.stderr)
+            return 2
+
     try:
         meta = projects.import_bundle(bundle.read_bytes(), name)
     except projects.ProjectError as e:
         print(f"refused: {e}", file=sys.stderr)
         return 1
+
+    if tenancy.enabled():
+        try:
+            tenancy.claim(meta["id"], {"user_id": owner})
+        except Exception as e:  # TenancyError, or the database going away mid-import
+            # The directory is already published. Say so precisely rather than "failed": the
+            # content is safe and the fix is one command, but silence here would leave a project
+            # on disk that nobody can open and no message explaining why.
+            print(f"imported as {meta['id']}, but recording the owner failed: {e}\n"
+                  f"    the project is on disk and unreachable until an owner is recorded; "
+                  f"re-run scripts/adopt_projects.py with RC_ADOPT_OWNER={owner}",
+                  file=sys.stderr)
+            return 1
+
     print(f"imported as {meta['id']} — {meta['name']}")
     return 0
+
+
+def _owner_from(argv: list[str]) -> str:
+    """`--owner <uuid>`, falling back to RC_ADOPT_OWNER."""
+    if "--owner" in argv:
+        i = argv.index("--owner")
+        if i + 1 < len(argv):
+            return argv[i + 1].strip()
+    return tenancy.adopt_owner()
 
 
 if __name__ == "__main__":

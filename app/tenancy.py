@@ -69,9 +69,17 @@ def record_project(pid: str, owner_id: str) -> None:
     if not db.is_uuid(owner_id):
         raise TenancyError("Not a valid user id.")
     with db.pool().connection() as conn:
-        conn.execute(
-            "insert into rc_projects (id, owner_id) values (%s, %s) on conflict (id) do nothing",
-            (pid, owner_id))
+        row = conn.execute(
+            "insert into rc_projects (id, owner_id) values (%s, %s) "
+            "on conflict (id) do nothing returning owner_id::text", (pid, owner_id)).fetchone()
+        if row is None:
+            # The insert did nothing, so a row already existed. Confirm it is THIS owner's, rather
+            # than reporting success: a conflict with someone else means the caller believes they
+            # own a project they cannot open, and the actual owner silently gains their content.
+            existing = conn.execute(
+                "select owner_id::text from rc_projects where id = %s", (pid,)).fetchone()
+            if existing and existing[0] != owner_id:
+                raise TenancyError(f"Project {pid!r} is already owned by someone else.")
 
 
 def owner_of(pid: str) -> str | None:
@@ -79,7 +87,9 @@ def owner_of(pid: str) -> str | None:
     if not enabled():
         return None
     with db.pool().connection() as conn:
-        row = conn.execute("select owner_id::text from rc_projects where id = %s", (pid,)).fetchone()
+        row = conn.execute(
+            "select owner_id::text from rc_projects where id = %s and deleted_at is null",
+            (pid,)).fetchone()
     return row[0] if row else None
 
 
@@ -88,7 +98,9 @@ def projects_owned_by(owner_id: str) -> set[str]:
     if not enabled() or not db.is_uuid(owner_id):
         return set()
     with db.pool().connection() as conn:
-        rows = conn.execute("select id from rc_projects where owner_id = %s", (owner_id,)).fetchall()
+        rows = conn.execute(
+            "select id from rc_projects where owner_id = %s and deleted_at is null",
+            (owner_id,)).fetchall()
     return {row[0] for row in rows}
 
 
@@ -119,3 +131,108 @@ def backfill(owner_id: str, pids: list[str]) -> dict:
     log.info("tenancy: backfill adopted %d project(s), %d already owned",
              len(adopted), len(skipped))
     return {"owner": owner_id, "adopted": adopted, "already_owned": sorted(set(skipped) | already & set(pids))}
+
+
+def may_access(pid: str, user: dict | None) -> bool:
+    """Whether `user` may reach project `pid`.
+
+    Three states, and the distinction between them is what keeps this safe to deploy:
+
+    * **No database** — ownership is not being recorded at all, so there is nothing to enforce and
+      every project is reachable, exactly as before M2. This is how `./run.sh` and the test suite
+      work, and enforcement that failed CLOSED on a missing secret would take the app down rather
+      than protect it.
+    * **No signed-in user** — the instance is running in `open` auth mode, which staging and prod
+      refuse to boot in (`auth.assert_environment_safe`). There is no identity to compare against,
+      so this is single-tenant by configuration.
+    * **A signed-in user and a database** — the project must be owned BY THEM. An unowned project is
+      reachable by nobody: a directory with no ownership row is either an import that predates
+      adoption or something dropped in by hand, and defaulting it to visible is how a migration gap
+      becomes a data leak.
+    """
+    if not enabled():
+        return True
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return True
+    return owner_of(pid) == user_id
+
+
+def visible_projects(pids: list[str], user: dict | None) -> list[str]:
+    """`pids` filtered to what `user` may see, preserving order."""
+    if not enabled():
+        return pids
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return pids
+    owned = projects_owned_by(user_id)
+    return [pid for pid in pids if pid in owned]
+
+
+def claim(pid: str, user: dict | None) -> None:
+    """Record `user` as the owner of a project they just created. Safe to call unconditionally.
+
+    Does `ensure_user` first, and that is the whole point: nothing else on the request path creates
+    an `rc_users` row. A newly allowlisted Supabase user therefore has no row at all, and
+    `record_project` alone would fail the owner foreign key AFTER the directory was already on
+    disk — leaving them a project nobody owns, which is a project nobody can open. So every path
+    that creates a project (direct, import, split) goes through here rather than calling
+    `record_project` on its own.
+    """
+    if not enabled():
+        return
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return
+    ensure_user(user_id, (user or {}).get("email"))
+    record_project(pid, user_id)
+
+
+def id_is_recorded(pid: str) -> bool:
+    """Whether this id appears in the ownership index AT ALL — live or retired.
+
+    Used for id allocation, where the question is "has this id ever been taken", not "who owns it".
+    A retired id must never be handed out again: a request that passed the ownership check for the
+    previous incarnation carries only the id string, so reusing it would let that request act on a
+    different user's project.
+    """
+    if not enabled():
+        return False
+    with db.pool().connection() as conn:
+        return conn.execute(
+            "select 1 from rc_projects where id = %s", (pid,)).fetchone() is not None
+
+
+def restore(pid: str, owner_id: str) -> None:
+    """Un-retire a project — for when deletion failed after the row was already retired."""
+    if not enabled():
+        return
+    with db.pool().connection() as conn:
+        conn.execute(
+            "update rc_projects set owner_id = %s, deleted_at = null where id = %s",
+            (owner_id, pid))
+
+
+def release(pid: str) -> str | None:
+    """Retire `pid` when the project is gone. Returns the former owner, if any.
+
+    The row SURVIVES as a tombstone — owner cleared so nobody can reach it, `deleted_at` set so the
+    id is never handed out again. See `0002_retire_ids.sql` for why reuse is unsafe.
+
+    Deletion moves the directory into `.trash`, which frees the id for reuse — so leaving the
+    ownership row behind means the next project to take that id is silently owned by the previous
+    owner. `record_project` would treat the existing row as "already recorded" and succeed, handing
+    the new project to the wrong person while its creator cannot open it.
+
+    The former owner comes back so the caller can put the row BACK if the filesystem step then
+    fails: releasing first and moving second is right for the id-reuse hazard, but on its own it
+    swaps that for a worse one — a project still on disk that its owner can no longer open.
+    """
+    if not enabled():
+        return None
+    with db.pool().connection() as conn:
+        row = conn.execute(
+            "update rc_projects set owner_id = null, deleted_at = now() "
+            "where id = %s returning (select owner_id::text from rc_projects where id = %s)",
+            (pid, pid)).fetchone()
+    return row[0] if row else None

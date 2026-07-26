@@ -10,6 +10,19 @@ from app.routers import settings as settings_router
 from fastapi import HTTPException
 
 
+class _AnonRequest:
+    """A request with no signed-in user — the single-tenant shape these tests exercise.
+
+    The routes now take `Request` so they can scope results to the caller. With no database
+    configured `tenancy` short-circuits before ever reading `state.user`, so this stub only has to
+    exist, not carry an identity.
+    """
+
+    class state:  # noqa: N801 — mirrors Starlette's attribute, not a class in its own right
+        user = None
+
+
+
 class _FakeRequest:
     """Minimal stand-in for the Request these routes now take. The operator gate reads
     request.state.user; in a dev environment (which the suite is) it short-circuits to allow, so
@@ -281,7 +294,7 @@ def test_prompt_inventory_scopes_project_file_path(prompt_environment, tmp_path,
     (project / "reading-method.md").write_text("project method")
     monkeypatch.setattr(config, "PROJECTS_ROOT", project_root)
 
-    response = settings_router.get_prompts(project="three-d-dram")
+    response = settings_router.get_prompts(_AnonRequest(), project="three-d-dram")
     status = next(item for item in response["prompts"] if item["key"] == "reading_method")
     assert status["path"] == str(project / "reading-method.md")
     assert status["value"] == "project method"

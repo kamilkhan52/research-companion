@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import agent, audio_jobs, config, fileio, projects, sessions, tts, usage
+from .. import agent, audio_jobs, config, fileio, projects, sessions, tenancy, tts, usage
 from ..agent import AgentError
 from ..tts import TTSError
 
@@ -24,20 +24,30 @@ class NarrateReq(BaseModel):
     project: str | None = None   # initiating project, for usage attribution (audio is app-global)
 
 
-def _billing_scope(project: str | None) -> str:
+def _billing_scope(project: str | None, request: Request) -> str:
     """Resolve the usage-billing scope for an app-global narration request: the validated
-    initiating project, or the explicit unattributed ledger when none was sent. A provided-but-
-    unknown/invalid project is a client error (400), not a silent misattribution — and
-    projects.exists() rejects any traversal/absolute id centrally (see projects._safe_pid)."""
+    initiating project, or the explicit unattributed ledger when none was sent.
+
+    The project arrives in the BODY, so this route never acquires `use_project` — and this value
+    decides whose ledger the spend lands on. Without an ownership check anyone could name someone
+    else's project and bill their narration to it, corrupting the attribution that M3's per-user
+    quotas will be enforced from. Ownership is checked BEFORE existence so a foreign project and an
+    invented one answer identically.
+
+    A provided-but-unknown project is a client error (400), not a silent misattribution.
+    `projects.exists()` still rejects traversal centrally (see `projects._safe_pid`).
+    """
     if project is None:
         return usage.UNATTRIBUTED
+    if not tenancy.may_access(project, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=400, detail=f"Unknown billing project: {project}")
     if not projects.exists(project):
         raise HTTPException(status_code=400, detail=f"Unknown billing project: {project}")
     return project
 
 
 @router.post("/api/speak")
-def speak(req: NarrateReq):
+def speak(req: NarrateReq, request: Request):
     """Synthesize one passage to mp3 (OpenAI), cached on disk; returns its URL. Blocking —
     long passages can outlive proxy timeouts; prefer the /api/audio/jobs flow for those."""
     s = config.load_settings()
@@ -53,7 +63,7 @@ def speak(req: NarrateReq):
 
 
 @router.post("/api/audio/jobs")
-def start_audio_job(req: NarrateReq):
+def start_audio_job(req: NarrateReq, request: Request):
     """Start (or join) a background narrate→synthesize job for one canonical message and
     return its snapshot immediately; instant 'done' when the result is already cached. The
     client polls /api/audio/jobs/{id} — nothing here depends on a long-lived connection, so
@@ -63,7 +73,7 @@ def start_audio_job(req: NarrateReq):
         raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Nothing to narrate.")
-    return {"job": audio_jobs.start_job(req.text, billing_project=_billing_scope(req.project)).to_dict()}
+    return {"job": audio_jobs.start_job(req.text, billing_project=_billing_scope(req.project, request)).to_dict()}
 
 
 @router.get("/api/audio/jobs/{job_id}")
@@ -98,13 +108,13 @@ def audio(name: str):
 
 
 @router.post("/api/narrate")
-def narrate(req: NarrateReq):
+def narrate(req: NarrateReq, request: Request):
     """Stage 2: adapt one canonical response into a TTS transcript (cached by text hash). Uncached
     narration bills the initiating project (validated) or the unattributed ledger."""
     cached = sessions.get_cached_narration(req.text)
     if cached is not None:
         return {"narration": cached, "cached": True}
-    token = config.set_active_project(_billing_scope(req.project))  # validates project (400)
+    token = config.set_active_project(_billing_scope(req.project, request))  # validates project (400)
     try:
         narration = agent.narrate(req.text)
     except AgentError as e:
