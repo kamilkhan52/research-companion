@@ -40,6 +40,14 @@ PID="$1"
 TARGET="${2%/}"
 NAME="${3:-}"
 
+# The backend's own project-id rule. Checked HERE because $PID is interpolated into a URL and,
+# below, was interpolated into Python source — a value like `x'"'"');import os;os.system(...)#`
+# would have run locally during the name lookup. Percent-encoding kept the URL valid enough for
+# curl to still reach a real /bundle route, so a bad id could not be relied on to fail first.
+case "$PID" in
+  *[!a-z0-9-]*|""|-*) echo "invalid project id: $PID" >&2; exit 2 ;;
+esac
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 bundle="$tmp/$PID.bundle"
@@ -72,7 +80,7 @@ echo "   $(du -h "$bundle" | cut -f1), history intact"
 # Default the name from the source project so the copy is recognisable rather than "llm-basics".
 if [ -z "$NAME" ]; then
   NAME="$(curl -sS ${src_h[@]+"${src_h[@]}"} "$SOURCE_URL/api/projects" \
-    | python3 -c "import sys,json;d=json.load(sys.stdin);ps=d['projects'] if isinstance(d,dict) else d;print(next((p['name'] for p in ps if p['id']=='$PID'), '$PID'))" \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);ps=d['projects'] if isinstance(d,dict) else d;print(next((p['name'] for p in ps if p['id']==sys.argv[1]), sys.argv[1]))" "$PID" \
     2>/dev/null || echo "$PID")"
 fi
 
@@ -89,4 +97,4 @@ if [ "$code" != "200" ]; then
   exit 1
 fi
 
-python3 -c "import sys,json;d=json.load(open('$out'));print('✓ imported as', d['id'], '—', d['name'])"
+python3 -c "import sys,json;d=json.load(open(sys.argv[1]));print('✓ imported as', d['id'], '—', d['name'])" "$out"
