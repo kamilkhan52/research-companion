@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -99,9 +100,14 @@ def _read_meta(pid: str) -> dict:
     p = project_path(pid) / META
     if p.exists():
         try:
-            return json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
+            loaded = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return {}
+        # Must be a dict. `project.json` holding `[]` — from a corrupted write, or a stray
+        # directory under PROJECTS_ROOT — otherwise reaches `.get()` in `list_projects` and takes
+        # down the whole project list, not just that one project.
+        if isinstance(loaded, dict):
+            return loaded
     return {}
 
 
@@ -223,6 +229,176 @@ def create_project(name: str, method: str | None = None) -> dict:
     _git(pid, "init", "-q", "-b", "main")
     _git(pid, "add", "-A")
     _git(pid, "commit", "-q", "-m", f"Initialize project: {name}")
+    return meta
+
+
+# --- sharing: a project moves between instances as a git bundle ----------------------------------
+#
+# A bundle rather than an archive of the directory, because the git history IS the record here
+# (invariant 4: the agent proposes, a human approves, and only then does anything reach git). A
+# bundle carries every commit, so the approval trail survives the move intact.
+#
+# It is also dramatically smaller, for a reason worth stating: `.gitignore` excludes `.state/`, and
+# `.state/` is nearly all of a project on disk — 207 MB of one 214 MB project here. That project
+# bundles to **1.1 MB in 0.17 s**, which is why export is a plain request and not a background job
+# (invariant 1 is about operations that can run for minutes).
+#
+# And it sidesteps a whole bug class: extracting an untrusted archive means defending against
+# absolute and `..` paths yourself. Git validates its own bundle, and a bundle cannot carry hooks —
+# they live in `.git/hooks`, which is not tracked.
+
+#: Bundles above this are refused unread. A real project is ~1 MB; this is 200x that.
+MAX_BUNDLE_BYTES = 200 * 1024 * 1024
+
+
+def export_bundle(pid: str) -> bytes:
+    """The project's approved record, as a git bundle. Working state (`.state/`) never travels.
+
+    Exports **HEAD only**, not `--all`. `--all` sweeps in every ref the repo happens to carry —
+    `refs/stash` above all, which can hold working material that was never approved, and which is
+    exactly the thing this app's whole "agent proposes, human commits" rule exists to keep out of
+    the record. The shareable project is the committed history of the current branch, nothing else.
+    """
+    if not exists(pid):
+        raise ProjectError(f"Unknown project: {pid}")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "project.bundle"
+        _git(pid, "bundle", "create", str(out), "HEAD")
+        return out.read_bytes()
+
+
+#: Tree entry modes git will happily materialize that we must never accept from a stranger.
+_SYMLINK_MODE = "120000"
+_GITLINK_MODE = "160000"
+
+
+def _reject_hostile_tree(repo: Path) -> None:
+    """Refuse a bundle whose tree would put something dangerous on disk.
+
+    `git bundle verify` checks INTEGRITY, not safety, and git's own path rules only stop `..` and
+    absolute paths. It will cheerfully create a **symlink** — so a bundle tracking
+    `.state/covers/x.png -> /etc/passwd` survives clone, and `GET .../papers/x/cover.png` then
+    serves the host's file straight back through `FileResponse`. A directory symlink under
+    `corpus/` or `sessions/` redirects this app's later writes outside the project entirely.
+
+    So the tree is inspected BEFORE checkout, and only ordinary files and directories are allowed:
+
+      * symlinks (120000) — the escape above;
+      * gitlinks (160000) — a submodule pointer, which invites a network fetch later;
+      * anything under `.state/` — working state is per-instance and git-ignored, so a bundle
+        that *tracks* it is not a project we made. Recreating `.state` after checkout is not
+        enough on its own: these paths would already be on disk.
+    """
+    listing = subprocess.run(["git", "ls-tree", "-r", "--full-tree", "HEAD"],
+                             cwd=str(repo), capture_output=True, text=True)
+    if listing.returncode != 0:
+        raise ProjectError(f"Could not read the bundle's contents: {listing.stderr.strip()}")
+    for line in listing.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if mode == _SYMLINK_MODE:
+            raise ProjectError(f"Refusing bundle: it contains a symlink ({path}).")
+        if mode == _GITLINK_MODE:
+            raise ProjectError(f"Refusing bundle: it contains a submodule ({path}).")
+        if path == ".state" or path.startswith(".state/"):
+            raise ProjectError(f"Refusing bundle: it tracks working state ({path}).")
+
+
+def _sanitized_meta(repo: Path, pid: str, name: str) -> dict:
+    """Build this instance's metadata from scratch rather than trusting the bundle's.
+
+    A `project.json` of `[]` would otherwise reach `meta.update()`, raise AttributeError *after*
+    the project was already in place, and leave a directory that every subsequent project listing
+    trips over — one bad import bricking the list for good.
+    """
+    raw: dict = {}
+    meta_file = repo / META
+    if meta_file.exists():
+        try:
+            loaded = json.loads(meta_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            raw = {}
+    created = raw.get("created_at")
+    return {
+        "id": pid,
+        "name": name,
+        "created_at": created if isinstance(created, str) else _now(),
+        "imported_at": _now(),
+    }
+
+
+def import_bundle(data: bytes, name: str) -> dict:
+    """Create a new project from a git bundle. Never overwrites: always a fresh id.
+
+    The bundle is untrusted — it arrives over HTTP from another instance — so the order matters:
+    verify, clone WITHOUT checking out, inspect the tree, only then materialize it, and only then
+    publish. Publication is a single atomic rename from a staging directory inside PROJECTS_ROOT,
+    so a failure at any earlier point leaves nothing behind that the app would list as a project.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ProjectError("A name is required for the imported project.")
+    if not data:
+        raise ProjectError("The uploaded bundle is empty.")
+    if len(data) > MAX_BUNDLE_BYTES:
+        raise ProjectError(
+            f"Bundle is {len(data) // (1024 * 1024)} MB; the limit is "
+            f"{MAX_BUNDLE_BYTES // (1024 * 1024)} MB.")
+
+    pid = _unique_id(slugify(name))
+    dest = project_path(pid)  # validates the id before anything touches the filesystem
+
+    # Staged INSIDE PROJECTS_ROOT, not in the system temp dir: the final step must be a rename on
+    # one filesystem, which is atomic. Across filesystems shutil.move degrades to a copy, and a
+    # crash mid-copy leaves a visible half-project. Dot-prefixed so `list_projects` skips it.
+    config.PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".importing-", dir=str(config.PROJECTS_ROOT)))
+    try:
+        bundle = staging / "incoming.bundle"
+        bundle.write_bytes(data)
+        verify = subprocess.run(["git", "bundle", "verify", str(bundle)],
+                                capture_output=True, text=True)
+        if verify.returncode != 0:
+            raise ProjectError(f"Not a valid project bundle: {verify.stderr.strip()}")
+
+        repo = staging / "clone"
+        clone = subprocess.run(
+            # --no-checkout: nothing from the bundle reaches the filesystem until the tree has been
+            #   inspected. core.hooksPath=/dev/null and --no-recurse-submodules remove the two
+            #   other ways a clone can be talked into running or fetching something.
+            ["git", *config.git_identity_args(), "-c", "core.hooksPath=/dev/null",
+             "clone", "-q", "--no-checkout", "--no-recurse-submodules", str(bundle), str(repo)],
+            capture_output=True, text=True)
+        if clone.returncode != 0:
+            raise ProjectError(f"Could not import the bundle: {clone.stderr.strip()}")
+
+        _reject_hostile_tree(repo)
+
+        checkout = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "checkout", "-q"],
+                                  cwd=str(repo), capture_output=True, text=True)
+        if checkout.returncode != 0:
+            raise ProjectError(f"Could not import the bundle: {checkout.stderr.strip()}")
+
+        if not (repo / "reading-list.md").is_file():
+            raise ProjectError("That bundle is not a Research Companion project.")
+        try:
+            (repo / "reading-list.md").read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError) as e:
+            raise ProjectError("That bundle's reading list is not readable text.") from e
+
+        meta = _sanitized_meta(repo, pid, name)
+        atomic_write_text(repo / META, json.dumps(meta, indent=2))
+        (repo / ".state").mkdir(exist_ok=True)
+        bundle.unlink(missing_ok=True)
+
+        try:
+            os.rename(str(repo), str(dest))  # atomic, and fails rather than merging into an
+        except OSError as e:                 # existing directory if the id was taken meanwhile
+            raise ProjectError(f"Could not place the imported project: {e}") from e
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return meta
 
 
