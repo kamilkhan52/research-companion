@@ -6,7 +6,7 @@ binding it active via `use_project`, exactly as before the split.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -76,7 +76,8 @@ def export_project_bundle(pid: str):
 
 
 @router.post("/api/projects/import")
-async def import_project_bundle(
+def import_project_bundle(
+    request: Request,
     file: UploadFile = File(...),
     name: str = Form(...),
 ):
@@ -86,7 +87,18 @@ async def import_project_bundle(
     divergent histories of the same reading list is a genuine design problem (whose approval wins?)
     and silently picking an answer would be worse than making the operator see two projects.
     """
-    data = await file.read(projects.MAX_BUNDLE_BYTES + 1)
+    # A plain `def`, deliberately: `git bundle verify` and `git clone` are blocking subprocess
+    # calls, and this deployment runs ONE uvicorn worker (invariant 6). In an `async def` they
+    # would stall the event loop — every other request, every job poll — for the duration. FastAPI
+    # runs a sync handler in a threadpool instead.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > projects.MAX_BUNDLE_BYTES:
+        # Rejects an honest oversized client before the body is read. It is NOT the whole bound:
+        # Starlette spools the multipart body to a temp file before this handler runs, so a
+        # chunked or lying client still gets that far. Recorded as a known limit rather than
+        # claimed as a fix; the real bound needs a streaming limit in middleware.
+        raise HTTPException(status_code=413, detail="That bundle is too large to import.")
+    data = file.file.read(projects.MAX_BUNDLE_BYTES + 1)
     try:
         meta = projects.import_bundle(data, name)
     except ProjectError as e:

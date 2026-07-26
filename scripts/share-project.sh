@@ -76,10 +76,13 @@ if [ -z "$NAME" ]; then
     2>/dev/null || echo "$PID")"
 fi
 
+# --form-string, not -F, for the NAME: curl treats a -F value beginning with `<` as "read this
+# local file", so a project named `</etc/passwd` would upload the operator's file instead of a
+# name. --form-string takes the value literally.
 echo "→ importing into $TARGET as \"$NAME\""
 out="$tmp/response.json"
 code="$(curl -sS -w '%{http_code}' ${dst_h[@]+"${dst_h[@]}"} \
-  -F "file=@$bundle" -F "name=$NAME" \
+  -F "file=@$bundle" --form-string "name=$NAME" \
   "$TARGET/api/projects/import" -o "$out")"
 if [ "$code" != "200" ]; then
   echo "   failed (HTTP $code): $(head -c 300 "$out")" >&2

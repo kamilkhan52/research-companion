@@ -77,6 +77,11 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   disk (207 MB of one 214 MB project; the bundle is 1.1 MB in 0.17 s), so export is a plain request
   rather than a job. Import always creates a NEW project: merging two divergent histories of one
   reading list is a real design question, and picking silently would be worse than two projects.
+  **Import is a trust boundary**: `git bundle verify` checks integrity, not safety, and git's path
+  rules only stop `..` and absolute paths — it will happily materialize a **symlink**. So the clone
+  is `--no-checkout`, the tree is inspected first (symlinks, gitlinks, and any tracked `.state/`
+  are refused), hooks are disabled, metadata is rebuilt rather than trusted, and publication is a
+  single atomic rename from staging inside `PROJECTS_ROOT`.
   `scripts/share-project.sh <pid> <target-url>` does both legs.
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
