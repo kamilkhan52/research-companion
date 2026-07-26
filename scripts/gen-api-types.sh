@@ -17,7 +17,11 @@ SCHEMA="$(mktemp -t rc-openapi).json"
 trap 'rm -f "$SCHEMA"' EXIT
 
 echo "Dumping OpenAPI schema from app.main:app ..."
-"$PY" -c "import json; from app.main import app; print(json.dumps(app.openapi()))" > "$SCHEMA"
+# RC_ENV is required at import (app.auth.assert_environment_safe refuses an unset environment
+# rather than assuming "dev"), so importing the app to read its schema needs one. `dev` is right
+# here: this only reads route signatures, and the alternative — staging/prod — additionally demands
+# Supabase credentials the generator has no business holding.
+RC_ENV="${RC_ENV:-dev}" "$PY" -c "import json; from app.main import app; print(json.dumps(app.openapi()))" > "$SCHEMA"
 
 mkdir -p "$(dirname "$OUT")"
 echo "Generating $OUT ..."

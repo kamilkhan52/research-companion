@@ -191,6 +191,16 @@ def git_identity_args() -> list[str]:
 _active_project: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_project", default=None)
 
+# The signed-in user, bound by the auth middleware and rebound by every job worker (invariant 2),
+# so `load_settings()` returns the caller's effective settings without 24 call sites having to
+# thread a user through. Threading it explicitly is how one gets missed — and a missed one does
+# not fail loudly, it silently applies somebody else's preference.
+#
+# None on a single-tenant instance, in open auth mode, and in any background work that has no
+# originating user. All three mean "the instance document", which is the pre-split behaviour.
+_active_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_user", default=None)
+
 # Projects mid-deletion. projects.delete_project holds the pid here across its running-job
 # sweep and the directory move; jobs.start_or_join/put and projects.use_project consult it, so
 # no new work is admitted for a project whose directory is about to disappear (a worker
@@ -377,6 +387,18 @@ def active_project_id() -> str | None:
     return _active_project.get()
 
 
+def set_active_user(user_id: str | None) -> contextvars.Token:
+    return _active_user.set(user_id)
+
+
+def reset_active_user(token: contextvars.Token) -> None:
+    _active_user.reset(token)
+
+
+def active_user_id() -> str | None:
+    return _active_user.get()
+
+
 def project_dir() -> Path:
     """Directory of the active project. Falls back to the legacy single-project dir when no
     project is scoped and no projects root has been populated yet."""
@@ -433,6 +455,33 @@ _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_mode
                  "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
                  "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
 
+# Who owns which setting.
+#
+# `/api/settings` was one document, and slice 2a restricted writing all of it to the operator. That
+# was right for the provider keys — one deployment, one OpenRouter account, and a user who could
+# overwrite that key could take the app offline for everyone — and wrong for the rest, because it
+# also stopped a reader changing their own voice.
+#
+# So the document splits along the line of who pays for the consequence. The keys and the workflow
+# prompts stay the instance's. Everything below describes how one person wants to read: which model
+# answers them, which voice reads it aloud, how much prior context to carry. These are layered over
+# the instance values per user, never copied — so an operator changing a default still moves
+# everyone who has not expressed a preference.
+#
+# `USER_SETTING_KEYS` is mirrored by a CHECK constraint in `0003_user_settings.sql`; adding one
+# needs a migration. The two sets must partition `_SETTING_KEYS` exactly — a key in neither would
+# silently stay instance-wide, which is the wrong default for something a reader would expect to
+# own. `tests/test_user_settings.py` asserts the partition.
+#
+# NOT closed by this split: `DeliveryReq.model` is a per-turn override that bypasses settings
+# entirely (P0-17), so a per-user model preference does not by itself bound what a user can spend.
+# That is a quota question and belongs with M3, not here.
+USER_SETTING_KEYS = frozenset({
+    "model", "narration_model", "preview_model",
+    "speech_provider", "tts_model", "tts_voice", "prior_notes_scope",
+})
+OPERATOR_SETTING_KEYS = frozenset(set(_SETTING_KEYS) - USER_SETTING_KEYS)
+
 # Serializes the read-modify-write of the shared settings file. A turn persisting its model
 # choice, a UI settings save, and a prompt-override edit all mutate the same file; without this
 # two concurrent saves race and one silently drops the other's change (single-process app, so a
@@ -441,15 +490,55 @@ _settings_lock = threading.Lock()
 
 
 def load_settings() -> dict:
-    """File settings (UI-set) layered over env defaults. A stored key is honored even when its
-    value is empty — an explicit "" is a deliberate unset (revert to no value), distinct from a
-    key being absent (use the env default)."""
+    """The effective settings for the current caller.
+
+    Three layers, each overriding the one before: env defaults, the instance settings file (UI-set),
+    then the active user's own preferences. A stored key is honored even when its value is empty —
+    an explicit "" is a deliberate unset (revert to no value), distinct from a key being absent
+    (use the env default).
+
+    The third layer is skipped entirely when there is no database or no bound user, which is why
+    every existing call site keeps working unchanged on a single-tenant instance.
+    """
     data = dict(_ENV_DEFAULTS)
     stored = _read_settings_file()
     for key in _SETTING_KEYS:
         if key in stored:
             data[key] = stored[key]
+
+    from . import user_settings  # function-local: user_settings -> db -> logging_config -> config
+    for key, value in user_settings.load(_active_user.get()).items():
+        if key in USER_SETTING_KEYS:   # the store is constrained too; this is the cheap half
+            data[key] = value
     return data
+
+
+def user_settings_available() -> bool:
+    """Whether the active caller has somewhere of their own to store a preference.
+
+    False on a single-tenant instance and for an unauthenticated caller. Routes use this to decide
+    whether a preference write is the user's own or an edit to the shared document (which needs the
+    operator), so that with no database the settings form behaves exactly as it did before.
+    """
+    from . import user_settings
+    return user_settings.available(_active_user.get())
+
+
+def save_user_settings(patch: dict) -> dict:
+    """Store the active user's preferences and return their new effective settings.
+
+    Only `USER_SETTING_KEYS` are stored; anything else in the patch is dropped rather than
+    rejected, because this is fed straight from a settings form that carries both halves. The
+    operator half travels to `save_settings` instead — dropping here is what stops a user's
+    submitted API key from landing in their personal document and being layered over the
+    instance's on their next turn.
+    """
+    user_id = _active_user.get()
+    if not user_settings_available():
+        raise ValueError("No signed-in user to store preferences for.")
+    from . import user_settings
+    user_settings.save(user_id, patch, USER_SETTING_KEYS)
+    return load_settings()
 
 
 def save_settings(patch: dict) -> dict:

@@ -52,21 +52,52 @@ def read_settings(request: Request):
         "semantic_scholar_key_hint": (s2key[:6] + "…") if s2key else "",
         "prior_notes_scope": s.get("prior_notes_scope") or "related",
         # So a client can render shared controls read-only rather than letting a reader fill in a
-        # form that will 403 on submit. Reading settings stays open to everyone; only this flag
-        # tells them what they may change.
+        # form that will 403 on submit. Reading settings stays open to everyone; these two flags
+        # tell them what they may change, and the settings form has two halves that answer
+        # differently: `is_operator` covers the provider keys, `can_edit_preferences` covers the
+        # model/voice/scope picks the values above already reflect for this caller.
+        #
+        # `web/` and `mobile/` still gate their whole form on `is_operator`, so a reader cannot yet
+        # reach their own preferences from the UI even though the API now accepts them — that
+        # client wiring is the follow-up to this backend change.
         "is_operator": auth.is_operator(getattr(request.state, "user", None)),
+        "can_edit_preferences": (
+            config.user_settings_available()
+            or auth.is_operator(getattr(request.state, "user", None))),
     }
 
 
 @router.post("/api/settings")
 def write_settings(req: SettingsReq, request: Request):
-    # Same gate as the prompt routes, and for a sharper reason: these are the INSTANCE's provider
-    # keys and model choice, not the caller's. Any authenticated user could previously swap the
-    # model every turn runs on, or overwrite the OpenRouter key and take the app offline for
-    # everyone (P0-2). There is one key and one model selection on this deployment — per-user
-    # settings arrive with ownership in M2, and this gate is what holds the line until then.
-    _require_operator(request, "shared settings")
-    merged = config.save_settings(req.model_dump())
+    """Save settings, routing each half of the form to whoever owns it.
+
+    The provider keys are the INSTANCE's, not the caller's: any authenticated user could once swap
+    the model every turn runs on, or overwrite the OpenRouter key and take the app offline for
+    everyone (P0-2). Slice 2a closed that by gating the whole document on the operator, which also
+    took away a reader's own voice and model — so the halves now separate (`config.USER_SETTING_KEYS`).
+
+    Preferences go to the caller's own document when they have one. When they do not — no database,
+    or open auth with no signed-in user — they fall back to the shared document and therefore to
+    the operator gate, which is exactly the pre-split behaviour a single-tenant `./run.sh` needs.
+
+    Note this makes an operator's OWN model and voice picks personal too. The instance-wide defaults
+    for those are the `RC_*` environment variables, set where the deployment is configured; there is
+    no path here for one user to choose another's voice, which is the point.
+    """
+    patch = req.model_dump()
+    operator_part = {k: v for k, v in patch.items() if k in config.OPERATOR_SETTING_KEYS}
+    user_part = {k: v for k, v in patch.items() if k in config.USER_SETTING_KEYS}
+
+    if any(v is not None for v in operator_part.values()):
+        _require_operator(request, "shared settings")
+
+    if config.user_settings_available():
+        config.save_user_settings(user_part)
+        merged = config.save_settings(operator_part)
+    else:
+        if any(v is not None for v in user_part.values()):
+            _require_operator(request, "shared settings")
+        merged = config.save_settings(patch)
     return {
         "has_key": bool(merged.get("openrouter_api_key")), "model": merged.get("model"),
         "narration_model": merged.get("narration_model"),

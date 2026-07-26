@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, logging_config
+from . import auth, config, db, logging_config
 from .auth import AuthError
 from .routers import (
     audio,
@@ -39,6 +39,33 @@ _log = logging_config.get("auth")
 # against an omitted variable rather than a wrong one, because omission is what silently produces
 # the permissive state (auth.mode() falls back to "open"; an unset allowlist means "everyone").
 auth.assert_environment_safe(config.env_name())
+
+def _apply_migrations() -> None:
+    """Bring the schema up to date on boot, when a database is configured at all.
+
+    Until now the only thing that ran migrations was `scripts/adopt_projects.py`, which the
+    operator runs by hand — so shipping a migration meant remembering to run a script after the
+    deploy, and forgetting it leaves an instance whose code expects a table that is not there.
+    `db.migrate()` was written for this: it is idempotent, and it takes an advisory lock precisely
+    because a Fly deploy overlaps the old and new machines.
+
+    A failure here is logged, not fatal. If the database is unreachable the alternative is a
+    machine that will not boot, which on Fly is a crash loop needing a human; booting instead means
+    ownership checks answer 503 until the database returns (`projects.OwnershipUnavailable`) and
+    the next boot retries the migration. Neither is good, but only one recovers on its own.
+    """
+    if not db.enabled():
+        return
+    try:
+        applied = db.migrate()
+    except Exception as e:  # noqa: BLE001 — see the docstring: a boot must not depend on this
+        _log.error("db: migrations did not run (%s): %s", db.safe_target(), str(e)[:300])
+        return
+    if applied:
+        _log.info("db: applied migrations: %s", ", ".join(applied))
+
+
+_apply_migrations()
 
 app = FastAPI(title=config.APP_TITLE)
 
@@ -96,7 +123,18 @@ async def authenticate(request: Request, call_next):
                 {"detail": "This account is not authorized for this instance."}, status_code=403)
         except AuthError:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+
+    # Bind the verified user for the rest of this request, so `config.load_settings()` returns
+    # THEIR effective settings (model, voice, prior-notes scope) without every one of its ~24 call
+    # sites having to be handed a user. Set before `call_next`: the endpoint runs in a context
+    # copied from this one, so the value propagates down but never leaks back up or sideways into
+    # another request. `tests/test_user_settings.py` asserts that propagation over HTTP rather than
+    # assuming it. Reset in `finally` because this coroutine's context outlives the response.
+    token = config.set_active_user((request.state.user or {}).get("user_id"))
+    try:
+        return await call_next(request)
+    finally:
+        config.reset_active_user(token)
 
 
 # ---------- routers ----------

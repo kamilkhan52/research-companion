@@ -122,6 +122,15 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
   fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
+- `user_settings.py` — the per-user half of `/api/settings`. `config._SETTING_KEYS` partitions into
+  `OPERATOR_SETTING_KEYS` (the provider keys — one deployment, one account) and
+  `USER_SETTING_KEYS` (model/voice/prior-notes scope — how one person reads). `load_settings()`
+  layers the caller's rows over the instance document, keyed off a `config._active_user`
+  contextvar bound by the auth middleware and rebound by `JobRegistry` (invariant 2, same as the
+  project). With no database or no signed-in user the layer is skipped entirely, which is what
+  keeps `./run.sh` behaving as before. Adding a preference needs a migration: the allowed keys are
+  mirrored by a CHECK constraint, so a user cannot store a provider key even if the Python filter
+  is wrong.
 - `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
   + `get(name)`; a contextvar filter stamps the active project on every line. Log at job

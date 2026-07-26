@@ -114,6 +114,29 @@ def test_uuid_validation_rejects_what_would_become_a_cast_error():
     assert not db.is_uuid("f4a33e1b-b3c4-4eb2-a0ea")
 
 
+def test_boot_migrations_do_not_run_without_a_database(monkeypatch):
+    monkeypatch.delenv("RC_DATABASE_URL", raising=False)
+    from app import main
+    main._apply_migrations()   # must not raise and must not attempt a connection
+
+
+def test_an_unreachable_database_does_not_stop_the_process_booting(monkeypatch, caplog):
+    """On Fly the alternative to booting is a crash loop that needs a human. Booting means
+    ownership checks answer 503 until the database returns and the next boot retries the
+    migration — bad, but self-healing, which the crash loop is not."""
+    monkeypatch.setenv("RC_DATABASE_URL",
+                       "postgresql://u:p@127.0.0.1:1/nothing-is-listening-here")
+    from app import db as db_module
+    from app import main
+    db_module.close()
+    with caplog.at_level("ERROR"):
+        main._apply_migrations()
+    assert any("migrations did not run" in r.getMessage() for r in caplog.records)
+    # And the failure log must not carry the connection string, which is a Fly secret.
+    assert not any("p@127.0.0.1" in r.getMessage() for r in caplog.records)
+    db_module.close()
+
+
 def test_everything_is_a_no_op_without_a_database(monkeypatch):
     """The fallback that keeps this slice safe to merge: with no database the app behaves exactly
     as it does today, so nothing can start refusing requests because a secret is missing."""

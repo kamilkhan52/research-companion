@@ -300,7 +300,11 @@ class JobRegistry(Generic[J]):
             self._jobs[job.id] = job
             self._prune()
         log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
-        thread = threading.Thread(target=self._run, args=(job, work, pid),
+        # Captured on the CALLER's thread, where the middleware bound it, and rebound on the worker
+        # below — invariant 2, for the same reason as the project: a thread inherits no contextvars,
+        # so without this every job would silently fall back to the instance's model and voice
+        # instead of the preferences of the person who asked for the work.
+        thread = threading.Thread(target=self._run, args=(job, work, pid, config.active_user_id()),
                                   daemon=True, name=f"{self.name}-{job.id[:8]}")
         thread.start()
         return job
@@ -329,8 +333,10 @@ class JobRegistry(Generic[J]):
                 log.warning("settle callback failed %s job=%s: %s", self.name, job.id[:8],
                             str(e)[:200], extra=tag)
 
-    def _run(self, job: J, work: Callable[[J], None], pid: str | None) -> None:
+    def _run(self, job: J, work: Callable[[J], None], pid: str | None,
+             user_id: str | None = None) -> None:
         token = config.set_active_project(pid)
+        user_token = config.set_active_user(user_id)
         tag = _log_tag(pid)
         t0 = time.monotonic()
         try:
@@ -363,6 +369,7 @@ class JobRegistry(Generic[J]):
             self._fire_settle(job, settle_cbs, tag)
         finally:
             config.reset_active_project(token)
+            config.reset_active_user(user_token)
 
     def _prune(self) -> None:  # caller holds the lock
         """Drop the oldest finished jobs past the cap, so a long-lived process doesn't accumulate
