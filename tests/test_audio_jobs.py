@@ -12,6 +12,7 @@ import time
 import pytest
 from app import audio_jobs, config, sessions, tts
 
+
 class _AnonRequest:
     """A request with no signed-in user. `/api/audio/jobs` now takes one because the `project`
     field in its body decides whose usage ledger the spend lands on — with no database configured
