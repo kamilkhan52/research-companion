@@ -283,13 +283,12 @@ def migrate() -> list[str]:
     once it succeeds, and each runs inside its own transaction so a failure leaves the database at
     the last complete migration rather than half-way through a broken one.
 
-    **The ledger is a cache, not a source of truth.** It lives in the schema Supabase exposes, so
-    an anon-key caller could once write into it — insert a migration's filename and that migration
-    is skipped forever, silently. The lockout below closes that going forward, but a row written
-    BEFORE the first hardened deploy would otherwise be permanent. So after applying, the schema is
-    *verified* against `_REQUIRED_TABLES`; if the ledger claims work that plainly did not happen,
-    it is cleared and everything re-applied. This is why every migration file must be idempotent
-    (`create table if not exists`, `add column if not exists`) — see `supabase/migrations/README.md`.
+    **The ledger is a record, not a source of truth.** It lives in the schema Supabase exposes, so
+    a row in it is not evidence that anything ran — an anon-key caller could once insert a
+    migration's filename and that migration would be skipped forever, silently. Nothing skips on it
+    now: every file runs on every call. That is affordable only because every migration is required
+    to be idempotent (`supabase/migrations/README.md`), and it is why that requirement is written
+    down rather than assumed.
 
     **The lockout runs before the loop and again in a `finally`.** The `finally` is the guarantee:
     it is what stops a migration that raises from leaving `rc_projects` writable through the Data
@@ -317,18 +316,12 @@ def migrate() -> list[str]:
                 " name text primary key, applied_at timestamptz not null default now())")
             _enforce_data_api_lockout(conn)   # secure what already exists, before anything can fail
 
-            applied.extend(_apply_unseen(conn, files))
-            if _missing_tables(conn):
-                # The ledger claims work the schema does not show — poisoned rows, or a manual
-                # change. Trust the schema and re-apply from scratch; migrations are idempotent.
-                log.warning("db: ledger disagrees with the schema (missing %s) — re-applying all",
-                            ", ".join(_missing_tables(conn)))
-                conn.execute("delete from rc_schema_migrations")
-                applied.extend(_apply_unseen(conn, files))
-                still_missing = _missing_tables(conn)
-                if still_missing:
-                    raise DatabaseError(
-                        f"schema incomplete after re-applying migrations: {', '.join(still_missing)}")
+            applied.extend(_apply_all(conn, files))
+            missing = _missing_tables(conn)
+            if missing:
+                # Cannot happen via the ledger any more; this catches a table dropped by hand, and
+                # converts it into an error naming the table instead of a 500 on the next request.
+                raise DatabaseError(f"schema incomplete after migrating: {', '.join(missing)}")
         finally:
             # In a `finally` for the same reason the first call is before the loop: a migration that
             # raises must not be able to leave the tables reachable from the Data API.
@@ -349,22 +342,37 @@ def migrate() -> list[str]:
 _REQUIRED_TABLES = ("rc_projects", "rc_user_settings", "rc_users")
 
 
-def _apply_unseen(conn, files) -> list[str]:
-    """Run every migration not already named in the ledger. Returns the names applied."""
-    applied: list[str] = []
-    seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
+def _apply_all(conn, files) -> list[str]:
+    """Run EVERY migration, every time. Returns the names recorded for the first time.
+
+    The ledger is never consulted to decide what to skip. It lives in the schema Supabase exposes
+    over its Data API, so a row in it is not evidence that anything ran — an anon-key caller could
+    once insert a filename and that migration would be skipped forever, silently. The previous
+    attempt at this verified afterwards that the required TABLES existed, which caught a poisoned
+    `0003` (it creates a table) and missed a poisoned `0002` (it only adds a column). Verifying
+    every column, index and constraint a migration might touch is a schema-diffing tool, and one
+    written under time pressure would keep missing a category — the same shape of defect the last
+    three rounds have been.
+
+    So the ledger stops being load-bearing instead. Re-running is safe because every migration is
+    required to be idempotent (`supabase/migrations/README.md`), which is exactly what makes this
+    the cheap answer rather than the thorough one. What remains in the table is a record of when
+    each file was FIRST seen, which is useful to an operator and trusted by nothing.
+    """
+    newly_recorded: list[str] = []
     for path in files:
-        if path.name in seen:
-            continue
         body = path.read_text(encoding="utf-8")
         # Explicit transaction: autocommit is on for ordinary queries, but a migration must be
         # all-or-nothing or a partial DDL apply leaves a schema no file describes.
         with conn.transaction():
             conn.execute(body)
-            conn.execute("insert into rc_schema_migrations (name) values (%s)", (path.name,))
-        applied.append(path.name)
-        log.info("db: applied migration %s", path.name)
-    return applied
+            first_time = conn.execute(
+                "insert into rc_schema_migrations (name) values (%s) "
+                "on conflict (name) do nothing returning name", (path.name,)).fetchone()
+        if first_time:
+            newly_recorded.append(path.name)
+            log.info("db: applied migration %s", path.name)
+    return newly_recorded
 
 
 def _missing_tables(conn) -> list[str]:

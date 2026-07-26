@@ -437,11 +437,17 @@ class JobRegistry(Generic[J]):
             if job.status != "running":
                 by_scope.setdefault(getattr(job, _PID_ATTR, None), []).append(job)
 
+        # By settle tick here too, for exactly the reason it is used for scopes below. Ordering a
+        # scope's own history by `started_at` has the same victim: a notes proposal that ran for an
+        # hour while twenty quick ones came and went started earliest, so it is dropped the moment it
+        # settles — by its own completion, inside its own scope, where no other user is involved.
+        # Leaving this on `started_at` was a deliberate call in the previous round and it was wrong.
         for finished in by_scope.values():
             excess = len(finished) - self._max_finished
             if excess <= 0:
                 continue
-            for stale in sorted(finished, key=lambda j: j.started_at)[:excess]:
+            oldest = sorted(finished, key=lambda j: getattr(j, _SETTLE_SEQ_ATTR, 0))
+            for stale in oldest[:excess]:
                 self._jobs.pop(stale.id, None)
                 finished.remove(stale)
 

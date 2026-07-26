@@ -254,6 +254,38 @@ def test_a_long_running_job_is_not_evicted_by_its_own_completion():
         "the just-finished job was evicted by its own completion")
 
 
+def test_a_long_running_job_is_not_evicted_by_its_own_completion_within_one_scope():
+    """The same defect one level down, and the one I left in place last round by reasoning that
+    within a scope the job's own age was the right notion. It is not: a notes proposal that ran for
+    an hour while twenty quick ones came and went started earliest, so ordering by `started_at`
+    drops it the moment it settles — no other user involved, same lost proposal."""
+    import threading
+
+    from app.jobs import Job, JobRegistry
+
+    registry: JobRegistry[Job] = JobRegistry("test-recency-in-scope", max_finished=3)
+    release = threading.Event()
+
+    slow = registry.start_or_join("slow", lambda: Job(id="slow"),
+                                  lambda _job: release.wait(10), project_id="one-project")
+    for n in range(8):
+        job = registry.start_or_join(f"fast-{n}", lambda n=n: Job(id=f"fast-{n}"),
+                                     lambda _job: None, project_id="one-project")
+        for _ in range(200):
+            if job.status != "running":
+                break
+            time.sleep(0.01)
+
+    release.set()
+    deadline = time.time() + 10
+    while slow.status == "running" and time.time() < deadline:
+        time.sleep(0.01)
+    assert slow.status != "running", "the slow worker never finished"
+
+    assert registry.get(slow.id, project_id="one-project") is not None, (
+        "the just-finished job was evicted by its own completion, inside its own scope")
+
+
 def test_the_audio_job_scope_is_a_pseudonym_not_the_users_id():
     """The registry tags every start/done/error line with the job's scope, so a raw Supabase id
     here would write a durable account identifier — and when that account listens to things — into

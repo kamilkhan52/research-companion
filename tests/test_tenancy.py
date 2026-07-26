@@ -171,6 +171,34 @@ def database(monkeypatch):
 
 
 @needs_pg
+def test_a_poisoned_ledger_row_cannot_suppress_a_column_only_migration(database):
+    """The version that got through the previous fix. Verifying that the required TABLES exist
+    catches a poisoned `0003` (which creates one) and misses a poisoned `0002` (which only adds
+    `deleted_at` and makes `owner_id` nullable) — every table still exists, so nothing re-applies,
+    and `tenancy.owner_of` then fails on a column that is not there.
+
+    Chasing that by verifying columns too would have been the third round of enumerating what a
+    schema check should look at. Nothing skips on the ledger at all now.
+    """
+    with db.pool().connection() as conn:
+        conn.execute("drop table if exists rc_user_settings, rc_projects, rc_users cascade")
+        conn.execute("delete from rc_schema_migrations")
+        conn.execute("insert into rc_schema_migrations (name) values ('0002_retire_ids.sql')")
+
+    db.migrate()
+
+    with db.pool().connection() as conn:
+        column = conn.execute(
+            "select 1 from information_schema.columns where table_schema = 'public' "
+            "and table_name = 'rc_projects' and column_name = 'deleted_at'").fetchone()
+    assert column, "a poisoned ledger row suppressed a column-only migration"
+    # And the real consequence, not just the column: ownership still works end to end.
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("poison-check", OWNER)
+    assert tenancy.owner_of("poison-check") == OWNER
+
+
+@needs_pg
 def test_a_poisoned_ledger_row_cannot_permanently_suppress_a_migration(database):
     """The other half of the same hostile upgrade path. Poisoning the LOCKOUT's own filename is
     closed by running it unconditionally — but poisoning an ordinary migration's name (say
