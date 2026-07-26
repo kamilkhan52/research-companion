@@ -3,9 +3,9 @@ ledger (spend with no project to bill, e.g. narration requested without an initi
 Named `usage_routes`-style module; drives the `app.usage` service."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
 
-from .. import usage
+from .. import auth, usage
 from . import make_project_router
 
 router = APIRouter()
@@ -21,7 +21,16 @@ def get_usage(pid: str):
 
 
 @router.get("/api/usage/unattributed")
-def get_unattributed_usage():
+def get_unattributed_usage(request: Request):
     """App-global ledger of LLM spend with no project to attribute to (e.g. narration requested
-    without an initiating project). Kept explicit so nothing is silently dropped."""
+    without an initiating project). Kept explicit so nothing is silently dropped.
+
+    Operator-only: it is instance-wide by definition, so it reports what EVERY user's unattributed
+    activity cost — models, operations and spend. That is the operator's billing view, not a
+    reader's.
+    """
+    if not auth.is_operator(getattr(request.state, "user", None)):
+        raise HTTPException(
+            status_code=403,
+            detail="The instance-wide usage ledger is restricted to the operator.")
     return usage.unattributed_summary()

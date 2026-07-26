@@ -49,5 +49,9 @@ def get_cover_image(pid: str, slug: str):
     return FileResponse(
         path,
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=604800, immutable"},
+        # `private`, not `public`: these are per-project assets behind auth, and explicitly
+        # authorizing a SHARED cache to store an Authorization-bearing response invites it to serve
+        # a guessable project/paper URL to a different user without the request ever reaching
+        # `use_project`. The browser cache lifetime is unchanged — that one is per-user already.
+        headers={"Cache-Control": "private, max-age=604800, immutable"},
     )

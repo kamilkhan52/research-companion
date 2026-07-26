@@ -75,4 +75,7 @@ def get_figure_asset(pid: str, slug: str, asset: str):
         raise HTTPException(status_code=404, detail="Figure asset not found")
     media = _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media,
-                        headers={"Cache-Control": "public, max-age=86400, must-revalidate"})
+                        # `private`: a per-project asset behind auth must not be stored by a shared
+                        # cache, which could then serve it to another user without the request
+                        # reaching `use_project`.
+                        headers={"Cache-Control": "private, max-age=86400, must-revalidate"})

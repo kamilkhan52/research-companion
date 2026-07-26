@@ -18,7 +18,7 @@ sys.path.insert(0, HERE)
 
 from pathlib import Path  # noqa: E402
 
-from app import config, projects  # noqa: E402
+from app import config, db, projects, tenancy  # noqa: E402
 
 
 def main() -> None:
@@ -29,7 +29,29 @@ def main() -> None:
         for p in projects.list_projects():
             print(f"  - {p['id']}  ({p['name']}, {p['read_count']}/{p['paper_count']})")
         return
+    # Refuse before moving anything, not after. On an ownership-recording instance a migrated
+    # project with no owner is reachable by nobody, so migrating without one would report success
+    # and leave the legacy reading list invisible to its owner — with `./project` already gone.
+    owner = tenancy.adopt_owner()
+    if tenancy.enabled():
+        if not owner:
+            print("this instance records ownership, so migrating needs RC_ADOPT_OWNER=<uuid>. "
+                  "Without one the migrated project would be invisible to everyone.",
+                  file=sys.stderr)
+            return
+        if not db.is_uuid(owner):
+            print(f"RC_ADOPT_OWNER must be a user id (uuid); got {owner!r}", file=sys.stderr)
+            return
+
     pid = projects.adopt_existing(Path(legacy), name, move=True)
+    if tenancy.enabled():
+        try:
+            tenancy.claim(pid, {"user_id": owner})
+        except Exception as e:
+            print(f"migrated to projects/{pid}, but recording the owner failed: {e}\n"
+                  f"    the project is on disk and unreachable until an owner is recorded; "
+                  f"run scripts/adopt_projects.py with RC_ADOPT_OWNER={owner}", file=sys.stderr)
+            return
     print(f"Migrated ./project -> projects/{pid}   (name: {name})")
     print("Done. Restart the server; the project will appear in the switcher.")
 

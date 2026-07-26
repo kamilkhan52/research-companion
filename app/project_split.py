@@ -554,17 +554,22 @@ def split_project(
             # inside the locks so the moved snapshot can't drift before the source removal.
             meta = projects.create_project(name)
             new_pid = meta["id"]
-            # Ownership is recorded HERE — the destination exists and nothing has left the source
-            # yet. Claiming after the split would mean a failure at that point leaves the papers
-            # moved into a project the caller cannot open: not lost, but unreachable, and no longer
-            # in the source either. Raising here aborts before anything is taken away.
-            if on_created is not None:
-                on_created(new_pid)
             # The new pid is visible in the registry the moment create_project returns, so
             # mark it busy while we populate it: a client that refreshes projects and starts a
             # graph/retrieval job on it mid-population would read a half-written reading list
             # and race graph_store.load/save. Cleared once its commit lands.
             config.mark_project_busy(new_pid)
+            # Ownership is recorded AFTER the busy mark and BEFORE anything leaves the source.
+            #
+            # After, because the row is what makes the destination visible to its owner, and an
+            # unbusied scaffold is one a concurrent refresh can discover and start a graph or
+            # retrieval job against — racing the population about to happen below.
+            #
+            # Before, because a claim that failed once the papers had already moved would leave
+            # them in a project the caller cannot open: not lost, but unreachable, and gone from
+            # the source too. Raising here aborts while the source is still intact.
+            if on_created is not None:
+                on_created(new_pid)
             try:
                 if goals:
                     projects.update_meta(new_pid, goals=goals.strip())

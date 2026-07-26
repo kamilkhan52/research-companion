@@ -52,6 +52,19 @@ def two_users(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def not_dev(monkeypatch):
+    """A non-dev environment, which is what makes the operator checks meaningful.
+
+    `auth.is_operator` returns True for everyone in a dev environment so local prompt editing keeps
+    working, and the suite runs as dev — so an operator test left at the default asserts nothing.
+    """
+    from app import config as app_config
+
+    monkeypatch.setattr(app_config, "is_dev_env", lambda: False)
+    monkeypatch.setenv("RC_OPERATOR_USERS", "")
+
+
+@pytest.fixture
 def client_as(monkeypatch):
     """A TestClient authenticated as a chosen user, going through the real auth middleware."""
     from app import auth
@@ -284,3 +297,79 @@ def test_a_deleted_project_id_can_be_reused_by_someone_else(two_users, client_as
 
     tenancy.claim(pid, {"user_id": BOB, "email": "bob@example.com"})
     assert tenancy.owner_of(pid) == BOB
+
+
+@needs_pg
+def test_narration_cannot_be_billed_to_someone_elses_project(two_users, client_as):
+    """The `project` field arrives in the BODY and decides whose usage ledger the spend lands on.
+    Without an ownership check anyone could bill their narration to someone else — corrupting the
+    attribution that M3's per-user quotas will be enforced from."""
+    response = client_as(BOB).post(
+        "/api/audio/jobs", json={"text": "hello", "project": two_users["alice"]})
+    assert response.status_code == 400
+    invented = client_as(BOB).post(
+        "/api/audio/jobs", json={"text": "hello", "project": "no-such-project"})
+    # Status and shape, not the exact body: the detail echoes the id the CALLER supplied, which
+    # tells them nothing they did not already know. What must match is that a foreign project and
+    # an invented one fail the same way.
+    assert response.status_code == invented.status_code
+    assert response.json().keys() == invented.json().keys()
+
+
+@needs_pg
+def test_the_instance_wide_usage_ledger_is_operator_only(two_users, client_as, not_dev):
+    """It reports what EVERY user's unattributed activity cost — models, operations and spend.
+    That is the operator's billing view, not a reader's."""
+    assert client_as(BOB).get("/api/usage/unattributed").status_code == 403
+
+
+@needs_pg
+def test_the_cover_backfill_is_operator_only(two_users, client_as, not_dev):
+    """It walks every project, reads their reading lists, and fetches PDFs from their stored
+    sources — one reader causing reads across everyone's library on the instance's bandwidth."""
+    assert client_as(BOB).post("/api/covers/backfill").status_code == 403
+
+
+@needs_pg
+def test_project_assets_are_not_cacheable_by_a_shared_cache(two_users, client_as):
+    """`Cache-Control: public` on an Authorization-bearing response invites a shared cache to store
+    it and serve the guessable project/paper URL to a different user, without the request ever
+    reaching `use_project`."""
+    from app import config as app_config
+    from app.routers import covers, figures_api
+
+    for module in (covers, figures_api):
+        source = (app_config.BASE_DIR / "app" / "routers" / f"{module.__name__.split('.')[-1]}.py")
+        text = source.read_text()
+        assert "Cache-Control" in text
+        assert '"public' not in text.split("Cache-Control")[1][:60], \
+            f"{source.name} authorizes a shared cache to store a per-project asset"
+
+
+@needs_pg
+def test_recent_sessions_limit_applies_to_your_own_sessions(two_users, client_as):
+    """The limit used to be applied globally and filtered afterwards, so a user whose neighbour had
+    more recent sessions received a short — or empty — list while their own were further down a
+    list they never saw."""
+    from app import config as app_config
+    from app import sessions, store
+
+    # Alice gets several sessions, all newer than Bob's one.
+    token = app_config.set_active_project(two_users["bob"])
+    try:
+        store.add_entry("Bobs Paper", arxiv_id="1111.00001")
+        sessions.start_session("bobs-paper", "Bobs Paper")
+    finally:
+        app_config.reset_active_project(token)
+
+    token = app_config.set_active_project(two_users["alice"])
+    try:
+        for n in range(5):
+            store.add_entry(f"Alice Paper {n}", arxiv_id=f"2222.0000{n}")
+            sessions.start_session(f"alice-paper-{n}", f"Alice Paper {n}")
+    finally:
+        app_config.reset_active_project(token)
+
+    # A limit smaller than Alice's session count: Bob must still see his own.
+    bob_sees = client_as(BOB).get("/api/recent-sessions?limit=3").json()["sessions"]
+    assert [s["project_id"] for s in bob_sees] == [two_users["bob"]]

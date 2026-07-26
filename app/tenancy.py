@@ -184,15 +184,21 @@ def claim(pid: str, user: dict | None) -> None:
     record_project(pid, user_id)
 
 
-def release(pid: str) -> None:
-    """Forget who owned `pid`, when the project itself is gone.
+def release(pid: str) -> str | None:
+    """Forget who owned `pid`, when the project itself is gone. Returns the former owner, if any.
 
     Deletion moves the directory into `.trash`, which frees the id for reuse — so leaving the
     ownership row behind means the next project to take that id is silently owned by the previous
     owner. `record_project` would treat the existing row as "already recorded" and succeed, handing
     the new project to the wrong person while its creator cannot open it.
+
+    The former owner comes back so the caller can put the row BACK if the filesystem step then
+    fails: releasing first and moving second is right for the id-reuse hazard, but on its own it
+    swaps that for a worse one — a project still on disk that its owner can no longer open.
     """
     if not enabled():
-        return
+        return None
     with db.pool().connection() as conn:
-        conn.execute("delete from rc_projects where id = %s", (pid,))
+        row = conn.execute(
+            "delete from rc_projects where id = %s returning owner_id::text", (pid,)).fetchone()
+    return row[0] if row else None

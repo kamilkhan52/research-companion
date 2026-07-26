@@ -36,7 +36,7 @@ for candidate in (Path(__file__).resolve().parent.parent, Path("/srv")):
         sys.path.insert(0, str(candidate))
         break
 
-from app import projects, tenancy  # noqa: E402  — after the path insert
+from app import db, projects, tenancy  # noqa: E402  — after the path insert
 
 
 def main(argv: list[str]) -> int:
@@ -72,11 +72,18 @@ def main(argv: list[str]) -> int:
         print(f"no such bundle: {bundle}", file=sys.stderr)
         return 1
     owner = _owner_from(argv)
-    if tenancy.enabled() and not owner:
-        print("this instance records ownership, so an import needs --owner <uuid> "
-              "(or RC_ADOPT_OWNER). Without one the project would be invisible to everyone.",
-              file=sys.stderr)
-        return 2
+    if tenancy.enabled():
+        # Validated BEFORE publishing, not just checked for emptiness. A nonempty but malformed
+        # owner passed the old check, the bundle was published, and `claim` then rejected the uuid —
+        # producing exactly the unreachable project this refusal exists to prevent.
+        if not owner:
+            print("this instance records ownership, so an import needs --owner <uuid> "
+                  "(or RC_ADOPT_OWNER). Without one the project would be invisible to everyone.",
+                  file=sys.stderr)
+            return 2
+        if not db.is_uuid(owner):
+            print(f"--owner must be a user id (uuid); got {owner!r}", file=sys.stderr)
+            return 2
 
     try:
         meta = projects.import_bundle(bundle.read_bytes(), name)

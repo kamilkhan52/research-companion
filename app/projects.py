@@ -581,14 +581,21 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        # Release the ownership row BEFORE the directory moves. Trashing the directory is what
-        # frees the id for `_unique_id` to hand out again, so releasing afterwards leaves a window
-        # in which the id is available while the old row still exists — and the next project to
-        # take it would silently belong to the previous owner, unreachable by its creator. If the
-        # release fails, the exception propagates and the directory is still in place: the project
-        # is not deleted, which is the recoverable half of the two.
-        tenancy.release(pid)
-        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        # Release the ownership row BEFORE the directory moves, then put it back if the move
+        # fails. Trashing the directory is what frees the id for `_unique_id` to hand out again, so
+        # releasing afterwards leaves a window where the id is available while the old row still
+        # exists — the next project to take it would silently belong to the previous owner.
+        #
+        # But releasing first alone just trades that for a worse failure: if the move then fails,
+        # the project is still on disk and its owner can no longer open it. So the row is restored
+        # on failure. Neither ordering is safe by itself; the compensation is what makes it safe.
+        former_owner = tenancy.release(pid)
+        try:
+            shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        except Exception:
+            if former_owner:
+                tenancy.record_project(pid, former_owner)
+            raise
         # A later project with the same name can reuse this pid. Do not let terminal in-memory
         # results/proposals from the deleted project become visible in that new project.
         jobs.forget_finished_for_project(pid)
