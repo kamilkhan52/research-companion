@@ -50,8 +50,9 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 echo "→ uploading to $APP"
 flyctl ssh sftp put -a "$APP" "$bundle" "$remote" >/dev/null
-# The importer is uploaded too rather than assumed present: the image copies only `app/` and
-# `web/dist/`, and shipping it this way also guarantees the running code matches this checkout.
+# The importer is uploaded rather than baked into the image: `.dockerignore` deliberately keeps
+# `scripts/` out to stay lean, and uploading also guarantees the code that runs matches THIS
+# checkout rather than whatever was deployed.
 flyctl ssh sftp put -a "$APP" "$here/import_bundle.py" "$remote_importer" >/dev/null
 
 echo "→ importing as \"$NAME\""
