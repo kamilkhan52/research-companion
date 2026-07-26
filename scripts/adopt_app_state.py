@@ -59,11 +59,21 @@ def _plan(scope: Path) -> list[tuple[Path, Path]]:
 
 
 def _describe(path: Path) -> str:
-    if path.is_dir():
-        files = list(path.rglob("*"))
-        size = sum(f.stat().st_size for f in files if f.is_file())
-        return f"{len([f for f in files if f.is_file()])} files, {size / 1e9:.2f} GB"
-    return f"{path.stat().st_size / 1e6:.1f} MB"
+    """A size, or what is wrong with the path. Never raises.
+
+    Called from the refusal messages, so it runs on exactly the paths that are in a bad state — a
+    dangling symlink among them, which `stat()` raises on. A reporter that throws while explaining
+    a refusal replaces the explanation with a traceback.
+    """
+    try:
+        if path.is_symlink() and not path.exists():
+            return f"broken symlink -> {os.readlink(path)}"
+        if path.is_dir():
+            files = [f for f in path.rglob("*") if f.is_file()]
+            return f"{len(files)} files, {sum(f.stat().st_size for f in files) / 1e9:.2f} GB"
+        return f"{path.stat().st_size / 1e6:.1f} MB"
+    except OSError as e:
+        return f"unreadable ({e.strerror})"
 
 
 def _partial(done: list[str]) -> int:
@@ -121,7 +131,11 @@ def main(argv: list[str]) -> int:
         return 0
 
     for _src, dst in moves:
-        if dst.exists():
+        # `lexists` on this side too — the source check learned this one round earlier and these
+        # did not, which is how a fix closes an instance instead of a class. A DESTINATION that is
+        # a dangling symlink reads as absent to `exists()`, and `os.rename` would then replace the
+        # link itself, orphaning whatever the signed-in user had pointed it at.
+        if os.path.lexists(dst):
             print(f"REFUSING: {dst} already exists ({_describe(dst)}).\n"
                   "This instance has already been used signed in. Merging two caches by hand is\n"
                   "not something this script should decide — move or remove one first.",
@@ -148,7 +162,7 @@ def main(argv: list[str]) -> int:
         # the destination in between. Re-checked here to shrink the window, and the usage text says
         # to stop the server — for a one-time manual migration that is the honest instruction
         # rather than a lock this script has no way to hold.
-        if dst.exists():
+        if os.path.lexists(dst):
             print(f"REFUSING: {dst} appeared while this ran — is the server still up?",
                   file=sys.stderr)
             return _partial(done)

@@ -206,3 +206,19 @@ def test_a_dangling_symlink_is_not_silently_reported_as_nothing_to_move(flat_sta
     assert adopt.main([ALICE, "--apply"]) == 1
     out = capsys.readouterr()
     assert "nothing to move" not in out.out
+
+
+def test_a_dangling_destination_symlink_is_refused_not_replaced(flat_state, capsys):
+    """The same defect as the source check, one round later and on the other side. A DESTINATION
+    that is a dangling symlink reads as absent to `exists()`, so the refusal misses it and
+    `os.rename` replaces the link — orphaning whatever the signed-in user had pointed it at, while
+    the migration reports success."""
+    scope = _scope_for(ALICE)
+    scope.mkdir(parents=True, exist_ok=True)
+    (scope / "narration-cache.json").symlink_to(scope / "on-an-unmounted-disk.json")
+
+    assert adopt.main([ALICE, "--apply"]) == 1
+    assert "REFUSING" in capsys.readouterr().err
+    # The user's pointer survives, and the source is still there to retry from.
+    assert (scope / "narration-cache.json").is_symlink()
+    assert (flat_state / "narration-cache.json").exists()
