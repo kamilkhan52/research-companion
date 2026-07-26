@@ -42,6 +42,8 @@ RUN pip install -r requirements.txt
 # excluded via .dockerignore — see that file for why projects/ and .app-state/ in particular must
 # never be baked in.
 COPY app/ ./app/
+# Operator tooling that runs inside the container (project import over flyctl ssh).
+COPY scripts/ ./scripts/
 COPY web/dist/ ./web/dist/
 
 # Non-root. The volume is chowned to this uid by the mount, and nothing in the image is written.

@@ -313,3 +313,28 @@ def test_one_unreadable_project_does_not_hide_every_other(tmp_projects):
 
     ids = {p["id"] for p in projects.list_projects()}
     assert good in ids and broken in ids
+
+
+def test_import_works_with_no_git_repository_in_the_working_directory(tmp_projects, tmp_path,
+                                                                      monkeypatch):
+    """`git bundle verify` needs a repository context and fails without one — and the container's
+    working directory (`/srv`) is a COPY of the source, not a repo. Every import on staging and
+    production would have been refused.
+
+    The whole suite hid it, because pytest runs inside this repo and git walks upwards. So this
+    test moves the working directory somewhere that is definitively not a repo, which is the only
+    way the bug is visible from here. It was found by actually running a share against Fly.
+    """
+    outside = tmp_path / "not-a-repo"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    source_root = tmp_path / "elsewhere"
+    source_root.mkdir()
+    monkeypatch.setattr(config, "PROJECTS_ROOT", source_root)
+    source = projects.create_project("Cwd Independent")
+    data = projects.export_bundle(source["id"])
+
+    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_projects)
+    imported = projects.import_bundle(data, "Imported From Nowhere")
+    assert (projects.project_path(imported["id"]) / "reading-list.md").is_file()

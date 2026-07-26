@@ -448,8 +448,18 @@ def import_bundle(data: bytes, name: str) -> dict:
     try:
         bundle = staging / "incoming.bundle"
         bundle.write_bytes(data)
+        # `git bundle verify` REQUIRES a repository context — with none it fails with "need a
+        # repository to verify a bundle" regardless of how good the bundle is. That never showed
+        # up in tests because pytest's working directory is inside this repo, and it never showed
+        # up locally for the same reason. In the container the working directory is `/srv`, which
+        # is a COPY of the source and not a git repo at all, so every import would have been
+        # refused in production. Give it a throwaway empty repo of its own.
+        scratch = staging / "verify.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(scratch)],
+                       capture_output=True, check=True, env=_SAFE_GIT_ENV)
         verify = subprocess.run(["git", "bundle", "verify", str(bundle)],
-                                capture_output=True, text=True, env=_SAFE_GIT_ENV)
+                                cwd=str(scratch), capture_output=True, text=True,
+                                env=_SAFE_GIT_ENV)
         if verify.returncode != 0:
             raise ProjectError(f"Not a valid project bundle: {verify.stderr.strip()}")
 
