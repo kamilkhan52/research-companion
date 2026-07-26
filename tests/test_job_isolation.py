@@ -149,6 +149,40 @@ def test_pruning_cannot_discard_another_scope_s_finished_job():
     assert len(bob_finished) <= 3, bob_finished
 
 
+def test_retention_stays_bounded_when_scopes_are_unbounded():
+    """The per-scope cap alone would have removed the process-wide bound: for notes/chat/preview the
+    scope is a PROJECT, and nothing limits how many projects a user creates, so one finished job in
+    each of ten thousand projects exceeds no local cap and is never pruned. The second bound is on
+    how many scopes keep history, and it evicts the least recently active one — "a project you have
+    not touched aged out" is a defensible rule in a way that "somebody else was busy" is not.
+    """
+    from app import jobs as jobs_module
+    from app.jobs import Job, JobRegistry
+
+    registry: JobRegistry[Job] = JobRegistry("test-scope-bound", max_finished=2)
+
+    def _finished(scope: str, key: str) -> Job:
+        job = registry.start_or_join(key, lambda: Job(id=f"{scope}-{key}"),
+                                     lambda _job: None, project_id=scope)
+        for _ in range(200):
+            if job.status != "running":
+                break
+            time.sleep(0.01)
+        return job
+
+    first = _finished("project-0000", "only")
+    for n in range(1, jobs_module._MAX_SCOPES_RETAINED + 12):
+        _finished(f"project-{n:04d}", "only")
+
+    scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
+    assert len(scopes) <= jobs_module._MAX_SCOPES_RETAINED + 1, len(scopes)
+    # The oldest scope is the one that went, not an arbitrary one.
+    assert registry.get(first.id, project_id="project-0000") is None
+    # And the most recent scope is still there.
+    newest = f"project-{jobs_module._MAX_SCOPES_RETAINED + 11:04d}"
+    assert newest in scopes
+
+
 def test_the_audio_job_scope_is_a_pseudonym_not_the_users_id():
     """The registry tags every start/done/error line with the job's scope, so a raw Supabase id
     here would write a durable account identifier — and when that account listens to things — into

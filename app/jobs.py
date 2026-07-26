@@ -64,6 +64,13 @@ _PID_ATTR = "_rc_project_id"
 _CANCELLED_ATTR = "_rc_cancelled"
 _ON_SETTLE_ATTR = "_rc_on_settle"
 
+# How many scopes (projects, or per-user audio scopes) keep finished-job history at once. The
+# second half of `_prune`'s bound: `max_finished` alone is per scope, and scopes are unbounded
+# because nothing limits how many projects a user creates. Generous enough that ordinary use never
+# reaches it — a reader works in a handful of projects — and small enough that the process-wide
+# ceiling stays a constant.
+_MAX_SCOPES_RETAINED = 25
+
 # Sentinel default for the project_id argument: "capture the ambient active project at call
 # time". Distinct from an explicit None (which means the app-global scope, e.g. audio).
 _AMBIENT: str | None = object()  # type: ignore[assignment]
@@ -384,10 +391,16 @@ class JobRegistry(Generic[J]):
         report nothing to approve. Bounding per scope means one person's activity can only ever
         evict their own.
 
-        The tradeoff is that total retention becomes `max_finished x active scopes` rather than
-        `max_finished`. That is bounded by the allowlist while there is one (M1's gate) and is the
-        kind of in-memory job state M6 replaces with persistence; taking it now is the right trade
-        against silently discarding somebody's work.
+        A per-scope cap ALONE would remove the process-wide bound, which is not an acceptable trade:
+        for notes/chat/preview/retrieval the scope is a project, and nothing limits how many
+        projects a user creates. One finished job in each of ten thousand projects exceeds no local
+        cap and is never pruned. So the second bound is on the number of SCOPES that keep history,
+        evicting the least recently active one wholesale.
+
+        Evicting by scope recency rather than across scopes is the point. "Your proposal is gone
+        because a project you have not touched in weeks aged out" is a defensible rule; "because
+        somebody else was busy this afternoon" is not, and that was the old behaviour. Total
+        retention is `max_finished x _MAX_SCOPES_RETAINED`, which is a constant.
         """
         if self._max_finished is None:
             return
@@ -395,9 +408,20 @@ class JobRegistry(Generic[J]):
         for job in self._jobs.values():
             if job.status != "running":
                 by_scope.setdefault(getattr(job, _PID_ATTR, None), []).append(job)
+
         for finished in by_scope.values():
             excess = len(finished) - self._max_finished
             if excess <= 0:
                 continue
             for stale in sorted(finished, key=lambda j: j.started_at)[:excess]:
+                self._jobs.pop(stale.id, None)
+                finished.remove(stale)
+
+        if len(by_scope) <= _MAX_SCOPES_RETAINED:
+            return
+        # Newest job in each scope is its recency. Running jobs are not in `by_scope` and are never
+        # dropped here, so a scope with work in flight cannot lose it by aging out.
+        coldest = sorted(by_scope, key=lambda s: max(j.started_at for j in by_scope[s]))
+        for scope in coldest[:len(by_scope) - _MAX_SCOPES_RETAINED]:
+            for stale in by_scope[scope]:
                 self._jobs.pop(stale.id, None)
