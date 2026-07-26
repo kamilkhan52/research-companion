@@ -65,8 +65,12 @@ def _authority_is_unambiguous(raw: str) -> bool:
     after_scheme = raw.partition("://")[2]
     if not after_scheme:
         return False
-    authority, sep, rest = after_scheme.partition("/")
-    return "@" not in rest if sep else "@" in authority or "@" not in authority
+    _authority, sep, rest = after_scheme.partition("/")
+    if not sep:
+        # No path at all, so the whole remainder is the authority and nothing escaped it. An `@`
+        # here is just the credential delimiter, and none is a URL without credentials.
+        return True
+    return "@" not in rest
 
 
 def safe_target(raw: str = "") -> str:
