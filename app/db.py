@@ -152,6 +152,15 @@ def assert_usable_url(raw: str = "") -> None:
     raw = raw or url()
     if not raw:
         return
+    # Scheme FIRST, so a non-URL gets an accurate diagnosis. libpq also accepts the key=value form
+    # (`host=… port=…`) and `service=…`; `urlsplit` cannot read either, so the agreement check
+    # below refuses them — but it would report "the parsers disagree", sending the operator to hunt
+    # a password-escaping problem that does not exist. Supabase hands out URLs, so requiring one is
+    # fine; saying so plainly is the point.
+    if urlsplit(raw).scheme not in {"postgres", "postgresql"}:
+        raise DatabaseError(
+            "RC_DATABASE_URL must be a postgres:// URL. Supabase gives you one under Settings → "
+            "Database; the libpq key=value and service= forms are not supported here.")
     if not _parses_agree(raw):
         raise DatabaseError(
             "RC_DATABASE_URL is ambiguous: the URL parser and libpq read a different host, port or "
@@ -160,9 +169,6 @@ def assert_usable_url(raw: str = "") -> None:
             "the connection target. Percent-encode those characters in the password, and put the "
             "host, port and database in the URL itself rather than the query string.")
     parts = urlsplit(raw)
-    if parts.scheme not in {"postgres", "postgresql"}:
-        raise DatabaseError(
-            f"RC_DATABASE_URL must be a postgres:// URL (got scheme {parts.scheme!r}).")
     if not parts.hostname:
         raise DatabaseError("RC_DATABASE_URL has no host.")
     # libpq's port, not the URL's. `_parses_agree` above has already established that the two are

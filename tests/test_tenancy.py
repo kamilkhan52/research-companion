@@ -44,6 +44,20 @@ def test_unusable_urls_are_refused(bad):
         db.assert_usable_url(bad)
 
 
+@pytest.mark.parametrize("dsn", [
+    "host=db.abc.supabase.co port=5432 dbname=postgres user=u password=p",
+    "service=mysvc",
+])
+def test_a_non_url_dsn_is_refused_for_the_RIGHT_reason(dsn):
+    """libpq accepts the key=value and service= forms; `urlsplit` cannot read either, so the
+    agreement check refuses them — but reporting "the parsers disagree" would send the operator
+    hunting a password-escaping problem that does not exist. Requiring a URL is fine (Supabase
+    hands out URLs); saying so accurately is the point, because a misleading error costs more than
+    a missing feature."""
+    with pytest.raises(db.DatabaseError, match="must be a postgres:// URL"):
+        db.assert_usable_url(dsn)
+
+
 def test_an_unset_url_is_not_an_error():
     """No database configured is a supported state, not a misconfiguration — it is how local dev
     and the rest of this suite run."""
