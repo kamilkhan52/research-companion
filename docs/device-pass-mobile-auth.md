@@ -20,7 +20,7 @@ dependency is `@supabase/supabase-js`, which is pure JS, so Metro reload is enou
 | 1 | Launch pointed at staging, signed out | Sign-in screen. **No flash** of app content first, and no flash of the sign-in form on a normal signed-in launch |
 | 2 | "Email me a link", then tap the link in the mail app | Signs in. Works whether the app was open or fully closed — the cold-start path is a different code path and was broken for most of the review |
 | 3 | Tap an expired or already-used link | An explanatory message, not a silent no-op |
-| 4 | "Continue with Google" | In-app browser, returns signed in |
+| 4 | "Continue with Google" | In-app browser, returns signed in. **Blocked until H5's staging callback is registered** — until then this fails with Google's `Error 400: redirect_uri_mismatch`, which is a Google Cloud Console gap, not an app bug |
 | 5 | Dismiss the Google browser without finishing | Back on sign-in, **no error message** — dismissing is not a failure |
 | 6 | Force-quit and relaunch | Still signed in, no sign-in screen. This is what the chunked SecureStore session is for |
 | 7 | Leave it signed in for over an hour, then use it | Still works. A stale token would surface as sudden 401s, which is the failure the refresh wiring exists to prevent |
