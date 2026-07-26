@@ -106,10 +106,8 @@ export default function SettingsScreen() {
   const { dismiss: dismissAudio } = useAudio();
 
   async function handleSignOut() {
-    // Stop the audio FIRST. TrackPlayer is a native singleton configured to keep playing after the
-    // React UI goes away, so unmounting AudioProvider behind the sign-in gate does not silence it:
-    // the previous user's narration would carry on over the sign-in screen, and on into whoever
-    // signs in next.
+    // Stops preparation as well as playback. The provider-independent teardown in AuthProvider
+    // handles the rest — and handles the paths this button never sees, like a token expiring.
     await dismissAudio().catch(() => {});
     await signOut();
   }

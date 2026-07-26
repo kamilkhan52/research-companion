@@ -20,6 +20,7 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { stopPlaybackForSessionEnd } from '@/audio/AudioProvider';
 import { getAuthConfig } from '@/api/endpoints';
 import { setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
@@ -204,7 +205,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
     setEmail(session?.user?.email ?? null);
-    setStatus(session?.access_token ? 'signed-in' : 'signed-out');
+    setStatus((previous) => {
+      const next = session?.access_token ? 'signed-in' : 'signed-out';
+      // Covers every way a session ends, not just the Settings button: an expiring token and a
+      // failed refresh both land here too, and neither goes anywhere near that button.
+      if (previous === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -318,6 +325,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // using a pid that only exists on A. `clear()` and not `invalidateQueries()`: invalidation
     // marks data stale but keeps serving it, which is exactly the wrong half of the behaviour here.
     queryClient.clear();
+    void stopPlaybackForSessionEnd();
     // The remembered project is server-scoped for the same reason, and it is persisted, so it
     // would otherwise survive even a restart onto the new server.
     void AsyncStorage.removeItem('rc.activeProject');

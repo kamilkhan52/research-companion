@@ -127,6 +127,22 @@ async function markHandoffHandled(id: string): Promise<void> {
   }
 }
 
+/** Stop playback and forget it, from outside the React tree.
+ *
+ *  Exists because the thing that ends a session — sign-out, an expiring token, a server switch —
+ *  happens in `AuthProvider`, which sits ABOVE this provider and so cannot reach its context. And
+ *  unmounting is not a usable trigger either: TrackPlayer is a singleton deliberately configured
+ *  to outlive the React UI, and handoff eligibility is *meant* to survive a remount so playback
+ *  can recover from a transient failure. Tying teardown to unmount would break that recovery.
+ *
+ *  Without this, the previous user's narration keeps playing over the sign-in screen and on into
+ *  whoever signs in next. */
+export async function stopPlaybackForSessionEnd(): Promise<void> {
+  await clearPlaybackSnapshot().catch(() => {});
+  await dismissEligibleHandoffs().catch(() => {});
+  await TrackPlayer.reset().catch(() => {});
+}
+
 export function AudioProvider({ children }: { children: ReactNode }) {
   const [prep, setPrep] = useState<PrepState | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);

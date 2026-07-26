@@ -23,6 +23,16 @@ const listeners = new Set<() => void>();
 function notify() {
   listeners.forEach((l) => l());
 }
+/** Bumped every time the base URL changes. Anything that writes to a shared cache OUTSIDE
+ *  TanStack Query's own cancellation — a manual `setQueryData`, say — must capture this before its
+ *  request and re-check it before writing, or a late response can repopulate the previous server's
+ *  data after the cache was cleared. */
+let serverGeneration = 0;
+
+export function getServerGeneration(): number {
+  return serverGeneration;
+}
+
 /** Subscribe to base-URL changes (for useSyncExternalStore). Returns an unsubscribe fn. */
 export function subscribeBaseUrl(cb: () => void): () => void {
   listeners.add(cb);
@@ -60,13 +70,20 @@ export function getBaseUrl(): string {
 }
 
 export async function setBaseUrl(raw: string): Promise<void> {
-  baseUrl = normalizeBaseUrl(raw);
+  const next = normalizeBaseUrl(raw);
+  // A save that does not change the URL must not count as a server switch. Subscribers respond by
+  // clearing the token, wiping the query cache and re-bootstrapping auth, so treating "Save &
+  // connect" on an unchanged address as a switch would throw away every cached page and all
+  // in-flight work for nothing.
+  if (next === baseUrl) return;
+  baseUrl = next;
   // Both of these happen SYNCHRONOUSLY with the URL change, before the await below. A different
   // server means a different Supabase project, and a token minted by the old one is both useless
   // there and a bearer credential that server has no business receiving. Persisting first would
   // leave a window in which `getBaseUrl()` returns the new host while `getToken()` still returns
   // the old token — and audio polling and query timers are firing throughout that window.
   token = null;
+  serverGeneration += 1;
   notify();
   await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
   // Best-effort, and after the fact: the in-memory clear above is what protects the token.

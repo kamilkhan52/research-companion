@@ -37,6 +37,9 @@ jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => ({ auth: mockAuth })),
 }));
 jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
+jest.mock('@/audio/AudioProvider', () => ({
+  stopPlaybackForSessionEnd: jest.fn(async () => undefined),
+}));
 let deepLinkHandler: ((event: { url: string }) => void) | undefined;
 jest.mock('expo-linking', () => ({
   createURL: (path: string) => `researchcompanion://${path}`,
@@ -514,4 +517,48 @@ test('switching servers drops the previous server\'s cached data', async () => {
   notify();
 
   expect(client.getQueryData(['projects'])).toBeUndefined();
+});
+
+
+describe('a session ending silences playback, however it ends', () => {
+  const audio = jest.requireMock('@/audio/AudioProvider');
+
+  beforeEach(() => {
+    jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+    mockAuth.getSession.mockResolvedValue({
+      data: { session: { access_token: 'a-jwt', user: { email: 'r@example.com' } } },
+    });
+  });
+
+  test('a token that expires on its own, with no button pressed', async () => {
+    // The Settings sign-out button called dismiss() directly, so it looked covered. An expiring
+    // token never touches that button, and the narration kept playing over the sign-in screen.
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-in'));
+
+    authStateCallback!('SIGNED_OUT', null);
+    await waitFor(() => expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalled());
+  });
+
+  test('a server switch', async () => {
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-in'));
+
+    const notify = (apiConfig.subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
+    notify();
+    expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalled();
+  });
+
+  test('but not on an ordinary token refresh', async () => {
+    // The guard that keeps the two above honest: firing on every session change would cut off
+    // playback once an hour, every hour, for no reason.
+    const { getByText } = await renderProvider();
+    await waitFor(() => getByText('signed-in'));
+
+    authStateCallback!('TOKEN_REFRESHED', {
+      access_token: 'fresh-jwt', user: { email: 'r@example.com' },
+    });
+    await waitFor(() => expect(apiConfig.setToken).toHaveBeenCalledWith('fresh-jwt'));
+    expect(audio.stopPlaybackForSessionEnd).not.toHaveBeenCalled();
+  });
 });
