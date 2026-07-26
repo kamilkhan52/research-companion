@@ -86,7 +86,11 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `db.py` — Postgres: the pool, the `:6543` transaction-pooler refusal, and the migration runner
-  over `supabase/migrations/*.sql`. **Ownership and index rows only** — content stays in git,
+  over `supabase/migrations/*.sql` (`main` applies them on boot; a failure logs rather than
+  refusing to start, because on Fly that is a crash loop). **Every new table must enable RLS and
+  revoke `anon`/`authenticated`** — Supabase serves the `public` schema over PostgREST and the anon
+  key ships inside the mobile app, so a table without it is world-writable (see
+  `0004_lock_out_the_data_api.sql`; `tests/test_tenancy.py` asserts it per table). **Ownership and index rows only** — content stays in git,
   because the history *is* the record (invariant 4), and a second copy here could disagree with it.
   **Optional**: with `RC_DATABASE_URL` unset there is no pool, `enabled()` is False, and every
   caller falls back to today's single-tenant behaviour — which is what lets local dev and the test
@@ -150,6 +154,13 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
   invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
   function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
+- `audio_jobs.py` — audio is scoped **per user**, not app-global: jobs register under
+  `_audio_scope()` and every mp3 path resolves through `user_audio_dir()` (as does the
+  `/api/audio/{name}` route and the narration cache in `sessions.py`). Isolation is a property of
+  the path, not a check — the same passage yields the same file name for everybody and reaches a
+  different file, so a leaked name buys nothing. Kamil's 2026-07-26 decision: duplicate synthesis
+  is the price of trivially-correct cancellation and `rmtree`-able account deletion. With no
+  signed-in user it collapses to the one flat directory it always used.
 - `tts.py` — OpenAI TTS behind a swappable interface. Default model `tts-1` (H22, revised
   2026-07-25): character-priced at $15/1M, so audio cost is exactly computable *before* synthesis —
   which is what M3's quota needs — and half the price of `tts-1-hd`, which matters because audio is

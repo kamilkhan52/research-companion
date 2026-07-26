@@ -998,7 +998,15 @@ def reopen_discussion(slug: str) -> None:
 # cache is shared (and lives outside any project's git repo).
 
 def _narration_cache_file():
-    return config.APP_STATE_DIR / "narration-cache.json"
+    """Per user, under `config.user_scope_dir()`; the flat app-global file when nobody is bound.
+
+    Scoped for the same two reasons as the mp3s beside it. Sharing it would mean the second person
+    to ask for a passage gets the first person's narration for free — no leak (you must already
+    hold the text to ask for it) but their LLM call never bills to them, and M7 deleting the first
+    account would silently take away the second's cached audio.
+    """
+    scope = config.user_scope_dir()
+    return (scope or config.APP_STATE_DIR) / "narration-cache.json"
 
 
 def _ncache_key(text: str) -> str:
@@ -1022,4 +1030,6 @@ def get_cached_narration(text: str) -> str | None:
 def cache_narration(text: str, narration: str) -> None:
     cache = _load_ncache()
     cache[_ncache_key(text)] = narration
-    atomic_write_text(_narration_cache_file(), json.dumps(cache, ensure_ascii=False, indent=0))
+    path = _narration_cache_file()
+    path.parent.mkdir(parents=True, exist_ok=True)  # a user's scope dir is created on first write
+    atomic_write_text(path, json.dumps(cache, ensure_ascii=False, indent=0))

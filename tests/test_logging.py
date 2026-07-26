@@ -122,3 +122,26 @@ def test_app_global_job_tagged_dash_even_from_a_project_request(caplog):
     finally:
         config.reset_active_project(token)
     assert _rec(caplog, lambda m: m.startswith("start audio")).project == "-"
+
+
+def test_the_handler_follows_sys_stderr_rather_than_capturing_it(capfd):
+    """`configure()` runs when `app.main` is imported, and under pytest that is inside whichever
+    test imports it first — with capture active. A handler holding that stream object writes every
+    later line into a torn-down capture buffer, so an unrelated test asserting on stderr fails
+    depending only on which test file sorts first. Bound at emit time instead."""
+    import sys
+    from io import StringIO
+
+    logging_config.configure()
+    handler = next(h for h in logging.getLogger("rc").handlers
+                   if isinstance(h, logging_config._CurrentStderrHandler))
+
+    replacement = StringIO()
+    original, sys.stderr = sys.stderr, replacement
+    try:
+        assert handler.stream is replacement
+        logging_config.get("test").warning("follows the current stream")
+    finally:
+        sys.stderr = original
+    assert "follows the current stream" in replacement.getvalue()
+    assert handler.stream is original

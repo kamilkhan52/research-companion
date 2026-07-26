@@ -170,6 +170,32 @@ def database(monkeypatch):
 
 
 @needs_pg
+def test_every_table_is_off_the_supabase_data_api(database):
+    """The anon key is published — it ships inside the mobile app — and Supabase exposes `public`
+    through PostgREST with default grants to `anon`/`authenticated`. A table reachable that way is
+    a table where `rc_projects.owner_id` can be rewritten by the person it locks out.
+
+    Asserted per table rather than per migration, so a table added later without this fails here
+    instead of on a live instance.
+    """
+    with db.pool().connection() as conn:
+        rows = conn.execute(
+            "select relname, relrowsecurity from pg_class "
+            "where relname in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "'rc_schema_migrations')").fetchall()
+    assert len(rows) == 4, rows
+    assert all(enabled for _name, enabled in rows), rows
+
+    # And no policy has been added that would re-open one: RLS with zero policies is the denial.
+    with db.pool().connection() as conn:
+        policies = conn.execute(
+            "select tablename, policyname from pg_policies "
+            "where tablename in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "'rc_schema_migrations')").fetchall()
+    assert policies == [], policies
+
+
+@needs_pg
 def test_migrations_are_idempotent(database):
     """Applied on every boot, so a second call must do nothing rather than fail on an existing
     table."""

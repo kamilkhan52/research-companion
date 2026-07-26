@@ -16,7 +16,9 @@ from ..tts import TTSError
 
 router = APIRouter()
 
-AUDIO_DIR = audio_jobs.AUDIO_DIR  # app-global (TTS cache shared across projects)
+# Deliberately no module-level AUDIO_DIR alias any more: the directory to read from depends on
+# who is asking (`audio_jobs.user_audio_dir()`), and a module-level constant is exactly how a
+# later route would quietly go back to reading the shared one.
 
 
 class NarrateReq(BaseModel):
@@ -98,13 +100,24 @@ def cancel_audio_job(job_id: str):
 
 @router.get("/api/audio/{name}")
 def audio(name: str):
+    """Serve one cached mp3 — from the CALLER's audio directory, never a shared one.
+
+    This is the entire fetch-side boundary, and it is a path rather than a check: the same passage
+    in the same voice yields the same file name for everybody, so `name` is not a secret and never
+    needed to be. Joining it to `audio_jobs.user_audio_dir()` means a name learned from — or simply
+    computed the same way as — someone else's client resolves to a file that does not exist for you.
+
+    `private` caching, not `public`: the response now varies by caller, and a shared cache keyed on
+    the URL alone would hand one user's narration to the next (the same correction covers/figures
+    took in slice 2a).
+    """
     if not re.fullmatch(r"[0-9a-f]{40}\.mp3", name):
         raise HTTPException(status_code=404, detail="Not found")
-    path = AUDIO_DIR / name
+    path = audio_jobs.user_audio_dir() / name
     if not path.exists():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path, media_type="audio/mpeg",
-                        headers={"Cache-Control": "public, max-age=86400"})
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/api/narrate")

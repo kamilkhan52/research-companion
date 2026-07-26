@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import json
 import os
 import threading
@@ -397,6 +398,28 @@ def reset_active_user(token: contextvars.Token) -> None:
 
 def active_user_id() -> str | None:
     return _active_user.get()
+
+
+def user_scope_dir() -> Path | None:
+    """One directory holding everything app-global that belongs to the active user — the audio
+    cache and the narration cache today. `None` when no user is bound, which means the flat
+    app-global paths this had before, and is what a single-tenant `./run.sh` keeps using.
+
+    Two things this shape buys. **Isolation is a property of the path**, not of a check: one user's
+    request never resolves to another's file because it never builds that path, so there is no
+    lookup to forget (Kamil's 2026-07-26 decision — scope per user rather than ACL rows over shared
+    blobs). And **M7 account deletion is `rmtree` of one directory** rather than a search for
+    whichever content-addressed files were theirs.
+
+    The directory is named by a hash rather than the user id. A user id reaching a path is a
+    traversal question, and hashing answers it structurally instead of by validation — there is no
+    input for which this returns a path outside `APP_STATE_DIR/users/`. It also keeps user ids off
+    the disk of a machine whose backups are not access-controlled.
+    """
+    user_id = _active_user.get()
+    if not user_id:
+        return None
+    return APP_STATE_DIR / "users" / hashlib.sha256(user_id.encode()).hexdigest()[:32]
 
 
 def project_dir() -> Path:

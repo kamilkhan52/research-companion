@@ -408,7 +408,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Audio */
+        /**
+         * Audio
+         * @description Serve one cached mp3 — from the CALLER's audio directory, never a shared one.
+         *
+         *     This is the entire fetch-side boundary, and it is a path rather than a check: the same passage
+         *     in the same voice yields the same file name for everybody, so `name` is not a secret and never
+         *     needed to be. Joining it to `audio_jobs.user_audio_dir()` means a name learned from — or simply
+         *     computed the same way as — someone else's client resolves to a file that does not exist for you.
+         *
+         *     `private` caching, not `public`: the response now varies by caller, and a shared cache keyed on
+         *     the URL alone would hand one user's narration to the next (the same correction covers/figures
+         *     took in slice 2a).
+         */
         get: operations["audio_api_audio__name__get"];
         put?: never;
         post?: never;
