@@ -176,3 +176,33 @@ def test_a_partial_move_says_which_half_moved(flat_state, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "already moved" in err
     assert "audio" in err
+
+
+def test_a_dangling_symlink_is_reported_not_skipped(flat_state, capsys):
+    """`Path.exists()` follows symlinks, so a cache symlinked onto a disk that is not mounted looks
+    ABSENT — it would drop out of the plan before the symlink refusal ran, and the script would
+    report "nothing to move" while the real cache sat unmigrated. Silence is the worst answer here:
+    the operator would sign in, find an empty cache, and have no reason to suspect the migration."""
+    real = flat_state / "audio"
+    for child in real.iterdir():
+        child.unlink()
+    real.rmdir()
+    real.symlink_to(flat_state / "a-disk-that-is-not-mounted")
+
+    assert adopt.main([ALICE, "--apply"]) == 1
+    err = capsys.readouterr().err
+    assert "symlink" in err
+    assert real.is_symlink()   # untouched
+
+
+def test_a_dangling_symlink_is_not_silently_reported_as_nothing_to_move(flat_state, capsys):
+    (flat_state / "narration-cache.json").unlink()
+    real = flat_state / "audio"
+    for child in real.iterdir():
+        child.unlink()
+    real.rmdir()
+    real.symlink_to(flat_state / "a-disk-that-is-not-mounted")
+
+    assert adopt.main([ALICE, "--apply"]) == 1
+    out = capsys.readouterr()
+    assert "nothing to move" not in out.out

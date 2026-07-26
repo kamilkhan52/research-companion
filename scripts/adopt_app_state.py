@@ -50,7 +50,12 @@ def _plan(scope: Path) -> list[tuple[Path, Path]]:
         (config.APP_STATE_DIR / "audio", scope / "audio"),
         (config.APP_STATE_DIR / "narration-cache.json", scope / "narration-cache.json"),
     ]
-    return [(src, dst) for src, dst in pairs if src.exists()]
+    # `lexists`, not `exists`: the latter FOLLOWS symlinks, so a cache symlinked onto a disk that
+    # is not currently mounted looks absent, drops out of the plan, and never reaches the symlink
+    # refusal below — the script would then report "nothing to move" while leaving the real cache
+    # unmigrated and invisible after sign-in. A link that is present but dangling is precisely the
+    # case the operator most needs told about.
+    return [(src, dst) for src, dst in pairs if os.path.lexists(src)]
 
 
 def _describe(path: Path) -> str:
