@@ -49,9 +49,10 @@ const settings = {
   prior_notes_scope: 'related' as const,
 };
 
-function stubQueries(isOperator: boolean | undefined) {
+function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boolean) {
   jest.spyOn(queries, 'useSettings').mockReturnValue({
-    data: { ...settings, is_operator: isOperator }, isLoading: false, isError: false,
+    data: { ...settings, is_operator: isOperator, can_edit_preferences: canEditPreferences },
+    isLoading: false, isError: false,
   } as never);
   jest.spyOn(queries, 'useFavoriteModels').mockReturnValue({ data: [] } as never);
   jest.spyOn(queries, 'usePrompts').mockReturnValue({
@@ -117,7 +118,7 @@ test('a reader sees the shared settings read-only, with their device controls st
   stubQueries(false);
   await renderScreen();
 
-  expect(screen.getByText('Shared settings are read-only')).toBeTruthy();
+  expect(screen.getByText('Some settings are read-only')).toBeTruthy();
 
   // Instance-wide text fields: not editable.
   for (const value of ['model/a', 'model/n']) {
@@ -143,7 +144,7 @@ test('the operator gets the same screen fully writable', async () => {
   stubQueries(true);
   await renderScreen();
 
-  expect(screen.queryByText('Shared settings are read-only')).toBeNull();
+  expect(screen.queryByText('Some settings are read-only')).toBeNull();
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(true);
   expect(screen.getByText('Save settings')).toBeTruthy();
   for (const label of [...SHARED_TOGGLES, ...LOCAL_TOGGLES]) {
@@ -157,6 +158,39 @@ test('a backend that does not report the flag is treated as writable', async () 
   stubQueries(undefined);
   await renderScreen();
 
-  expect(screen.queryByText('Shared settings are read-only')).toBeNull();
+  expect(screen.queryByText('Some settings are read-only')).toBeNull();
   expect(screen.getByText('Save settings')).toBeTruthy();
+});
+
+
+// The case the split exists for, and the one the helper could not express before: a reader on an
+// instance that stores preferences per user. Their model, voice and prior-notes scope are theirs;
+// the provider keys are still the operator's. Gating both on `is_operator`, as this screen did,
+// left them unable to change their own voice.
+test('a reader on a per-user instance can edit their preferences but not the keys', async () => {
+  stubQueries(false, true);
+  await renderScreen();
+
+  expect(screen.getByText('Some settings are read-only')).toBeTruthy();
+  // Their own picks: writable.
+  for (const value of ['model/a', 'model/n']) {
+    expect(screen.getByDisplayValue(value).props.editable).toBe(true);
+  }
+  for (const label of ['Related papers', 'All read papers', 'OpenAI', 'Browser']) {
+    expect([label, inert(label)]).toEqual([label, false]);
+  }
+  // The instance's key: still not.
+  expect(screen.getByPlaceholderText('Replace key…').props.editable).toBe(false);
+  // ...and there is now something to submit, which there was not before.
+  expect(screen.getByText('Save settings')).toBeTruthy();
+});
+
+// The other direction, and the one that must NOT be permissive: a server too old to know the flag
+// behaves as "operator only", so absence has to reproduce that rather than unlock the form.
+test('a per-user flag that is absent falls back to the operator gate', async () => {
+  stubQueries(false, undefined);
+  await renderScreen();
+
+  expect(screen.getByDisplayValue('model/a').props.editable).toBe(false);
+  expect(screen.queryByText('Save settings')).toBeNull();
 });

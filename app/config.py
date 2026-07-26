@@ -456,7 +456,11 @@ def user_scope_key() -> str | None:
     user_id = _active_user.get()
     if not user_id:
         return None
-    return hashlib.sha256(user_id.encode()).hexdigest()[:32]
+    # Case-folded before hashing. A uuid is case-insensitive as an identifier but `sha256` is not,
+    # so `F4A3…` and `f4a3…` are the same account and two different directories — one of them
+    # empty. Supabase emits lowercase today; depending on that is the same kind of assumption as
+    # depending on an env var being present, and costs nothing to remove.
+    return hashlib.sha256(user_id.lower().encode()).hexdigest()[:32]
 
 
 def project_dir() -> Path:

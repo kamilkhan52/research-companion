@@ -24,6 +24,30 @@ from app import config, projects  # noqa: E402 — must follow the RC_ENV defaul
 
 
 @pytest.fixture(autouse=True)
+def _app_state_is_never_the_real_one(tmp_path_factory, monkeypatch):
+    """Point every app-global path at a tmp directory, for the whole suite.
+
+    `PROJECTS_ROOT` has always been redirected per-test, but `APP_STATE_DIR` was not — so a test
+    that touched settings, the audio cache or the narration cache wrote into the DEVELOPER'S
+    `.app-state/`, i.e. into their live instance. Nothing structural prevented it; the tests that
+    do touch those paths happened to patch them individually, which is a property of the tests
+    rather than of the harness.
+
+    Found when per-user scoping (M2 slice 5) started creating `.app-state/users/<hash>/` and one
+    appeared in the real directory during development. The blast radius before that was smaller but
+    the hole was the same size.
+
+    `audio_jobs.AUDIO_DIR` is derived at import, so it is redirected too — a module-level constant
+    does not follow a monkeypatched `APP_STATE_DIR`.
+    """
+    root = tmp_path_factory.mktemp("app-state")
+    monkeypatch.setattr(config, "APP_STATE_DIR", root)
+    monkeypatch.setattr(config, "SETTINGS_FILE", root / "settings.json")
+    from app import audio_jobs
+    monkeypatch.setattr(audio_jobs, "AUDIO_DIR", root / "audio")
+
+
+@pytest.fixture(autouse=True)
 def _offline_citations(monkeypatch):
     """Citation-count enrichment calls Semantic Scholar inside build_graph; tests must never
     touch the network. Stub only the fetch step — annotate_nodes still runs for real, applying
