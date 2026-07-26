@@ -21,7 +21,7 @@ Fly app + secrets, all of which needs Kamil. M2 then landed in five slices:
 | #235 | 1 — `db.py` (pool, migration runner, DSN validation) + `tenancy.py`, recording ownership only | ✅ merged (`38ac21d`) |
 | #236 | 2a — enforcement: `use_project` refuses a foreign project, cross-project routes filtered, operator-only usage/covers | ✅ merged (`95d54c2`) |
 | #237 | 3 — job isolation pinned by test; audio ownership decision recorded | ✅ merged (`47d1972`) |
-| #238 | 4 — settings split into operator-owned vs per-user; 5 — audio scoped per user; RLS on every table | open |
+| #238 | 4 — settings split into operator-owned vs per-user; 5 — audio scoped per user; the Data API lockout (P0-18) | ✅ merged (`db90e1e`); 10 Sol rounds, 15 findings |
 
 **What M2 actually closed:** P0-1 (every user saw every project), P1-2 (unauthorized job endpoints,
 audio included), the cross-user halves of P1-1 and P1-14 (audio as a read channel), and P0-18 — a
