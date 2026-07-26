@@ -75,7 +75,7 @@ def client_as(monkeypatch):
     ("GET", "/api/projects/{pid}/state"),
     ("GET", "/api/projects/{pid}/usage"),
     ("GET", "/api/projects/{pid}/graph"),
-    ("GET", "/api/projects/{pid}/discovery"),
+    ("POST", "/api/projects/{pid}/discover"),
     ("POST", "/api/projects/{pid}/papers"),
     ("PATCH", "/api/projects/{pid}/meta"),
     ("GET", "/api/projects/{pid}/meta"),
@@ -177,3 +177,93 @@ def test_with_no_database_every_project_is_reachable_as_before(tmp_path, monkeyp
 
     response = client_as(ALICE).get(f"/api/projects/{pid}/state")
     assert response.status_code == 200
+
+
+# --- routes that take a project id somewhere OTHER than the path -------------------------------
+# None of these acquire `use_project`, and none were covered by the parametrized cases above. Each
+# was reachable across users until this slice; they are the reason "one choke point" was wrong
+# twice.
+
+@needs_pg
+def test_recent_sessions_shows_only_your_own(two_users, client_as):
+    """Cross-project by design, so it enumerates every project on disk — and was returning every
+    user's project names, paper titles and source URLs to anyone signed in.
+
+    Alice gets a REAL session first. An earlier version of this test asserted against two freshly
+    created projects, which have no session activity at all: the endpoint returned an empty list
+    either way, so it passed with the filtering removed. Seeding is what makes it a test.
+    """
+    from app import config as app_config
+    from app import sessions, store
+
+    token = app_config.set_active_project(two_users["alice"])
+    try:
+        store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+        sessions.start_session("attention-is-all-you-need", "Attention Is All You Need")
+    finally:
+        app_config.reset_active_project(token)
+
+    # Alice sees her own session, so the endpoint is genuinely returning something.
+    assert any(s["project_id"] == two_users["alice"]
+               for s in client_as(ALICE).get("/api/recent-sessions").json()["sessions"])
+
+    bob_sees = client_as(BOB).get("/api/recent-sessions").json()["sessions"]
+    assert two_users["alice"] not in {s["project_id"] for s in bob_sees}
+    assert all(s["project_id"] == two_users["bob"] for s in bob_sees)
+
+
+@needs_pg
+def test_the_duplicate_preflight_does_not_search_other_libraries(two_users, client_as):
+    """`/paper-matches` reports where else a paper already is. Unscoped, that is a search across
+    everyone's reading lists: submit a title, learn who else has it and what they called their
+    project."""
+    from app import config as app_config
+
+    token = app_config.set_active_project(two_users["alice"])
+    try:
+        from app import store
+        store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+    finally:
+        app_config.reset_active_project(token)
+
+    response = client_as(BOB).post(
+        f"/api/projects/{two_users['bob']}/paper-matches",
+        json={"title": "Attention Is All You Need", "arxiv_id": "1706.03762"})
+    assert response.status_code == 200
+    assert response.json()["matches"] == [], "Bob was shown a paper in Alice's project"
+
+
+@needs_pg
+def test_prompts_cannot_be_scoped_to_someone_elses_project(two_users, client_as):
+    """The project id arrives as a QUERY parameter, so this route never sees `use_project` — and
+    `reading-method.md` is a document its owner wrote."""
+    response = client_as(BOB).get(f"/api/prompts?project={two_users['alice']}")
+    assert response.status_code == 404
+
+
+@needs_pg
+def test_papers_cannot_be_moved_into_someone_elses_project(two_users, client_as):
+    """`dest_pid` arrives in the BODY. This is a write, not a read: without the check Alice could
+    push her papers into Bob's git-backed record, and the distinct busy/deleting responses would
+    disclose his project's state on the way."""
+    response = client_as(ALICE).post(
+        f"/api/projects/{two_users['alice']}/move",
+        json={"dest_pid": two_users["bob"], "slugs": ["anything"]})
+    assert response.status_code == 404
+    invented = client_as(ALICE).post(
+        f"/api/projects/{two_users['alice']}/move",
+        json={"dest_pid": "no-such-project", "slugs": ["anything"]})
+    assert response.status_code == invented.status_code
+
+
+@needs_pg
+def test_a_deleted_project_id_can_be_reused_by_someone_else(two_users, client_as):
+    """Deleting trashes the directory, which frees the id for reuse. A surviving ownership row
+    would silently give the next project with that id to the previous owner — its creator unable
+    to open it, and the previous owner able to read content that is not theirs."""
+    pid = two_users["alice"]
+    assert client_as(ALICE).delete(f"/api/projects/{pid}").status_code == 200
+    assert tenancy.owner_of(pid) is None
+
+    tenancy.claim(pid, {"user_id": BOB, "email": "bob@example.com"})
+    assert tenancy.owner_of(pid) == BOB

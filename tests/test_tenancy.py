@@ -162,13 +162,23 @@ def test_ownership_round_trips(database):
 
 
 @needs_pg
-def test_recording_never_silently_changes_an_owner(database):
-    """`on conflict do nothing`, not `do update`. A transfer should be an explicit operation that
-    says so — not a side effect of a create or a re-run of the backfill."""
+def test_recording_refuses_a_conflicting_owner_rather_than_reporting_success(database):
+    """Never a silent transfer — and never a silent NO-OP either.
+
+    `on conflict do nothing` alone reported success to the second caller while leaving the first
+    owner in place. That is the worse half: the second user believes they own a project they cannot
+    open, and the first user silently gains whatever content the second puts in it. Re-recording
+    the SAME owner stays idempotent, because the backfill re-runs.
+    """
     tenancy.ensure_user(OWNER)
     tenancy.ensure_user(OTHER)
     tenancy.record_project("shared", OWNER)
-    tenancy.record_project("shared", OTHER)
+
+    tenancy.record_project("shared", OWNER)  # idempotent
+    assert tenancy.owner_of("shared") == OWNER
+
+    with pytest.raises(tenancy.TenancyError, match="already owned"):
+        tenancy.record_project("shared", OTHER)
     assert tenancy.owner_of("shared") == OWNER
 
 

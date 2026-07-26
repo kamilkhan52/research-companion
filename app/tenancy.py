@@ -69,9 +69,17 @@ def record_project(pid: str, owner_id: str) -> None:
     if not db.is_uuid(owner_id):
         raise TenancyError("Not a valid user id.")
     with db.pool().connection() as conn:
-        conn.execute(
-            "insert into rc_projects (id, owner_id) values (%s, %s) on conflict (id) do nothing",
-            (pid, owner_id))
+        row = conn.execute(
+            "insert into rc_projects (id, owner_id) values (%s, %s) "
+            "on conflict (id) do nothing returning owner_id::text", (pid, owner_id)).fetchone()
+        if row is None:
+            # The insert did nothing, so a row already existed. Confirm it is THIS owner's, rather
+            # than reporting success: a conflict with someone else means the caller believes they
+            # own a project they cannot open, and the actual owner silently gains their content.
+            existing = conn.execute(
+                "select owner_id::text from rc_projects where id = %s", (pid,)).fetchone()
+            if existing and existing[0] != owner_id:
+                raise TenancyError(f"Project {pid!r} is already owned by someone else.")
 
 
 def owner_of(pid: str) -> str | None:
@@ -155,3 +163,36 @@ def visible_projects(pids: list[str], user: dict | None) -> list[str]:
         return pids
     owned = projects_owned_by(user_id)
     return [pid for pid in pids if pid in owned]
+
+
+def claim(pid: str, user: dict | None) -> None:
+    """Record `user` as the owner of a project they just created. Safe to call unconditionally.
+
+    Does `ensure_user` first, and that is the whole point: nothing else on the request path creates
+    an `rc_users` row. A newly allowlisted Supabase user therefore has no row at all, and
+    `record_project` alone would fail the owner foreign key AFTER the directory was already on
+    disk — leaving them a project nobody owns, which is a project nobody can open. So every path
+    that creates a project (direct, import, split) goes through here rather than calling
+    `record_project` on its own.
+    """
+    if not enabled():
+        return
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return
+    ensure_user(user_id, (user or {}).get("email"))
+    record_project(pid, user_id)
+
+
+def release(pid: str) -> None:
+    """Forget who owned `pid`, when the project itself is gone.
+
+    Deletion moves the directory into `.trash`, which frees the id for reuse — so leaving the
+    ownership row behind means the next project to take that id is silently owned by the previous
+    owner. `record_project` would treat the existing row as "already recorded" and succeed, handing
+    the new project to the wrong person while its creator cannot open it.
+    """
+    if not enabled():
+        return
+    with db.pool().connection() as conn:
+        conn.execute("delete from rc_projects where id = %s", (pid,))

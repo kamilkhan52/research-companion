@@ -145,8 +145,14 @@ def find_locations(
     arxiv_id: str | None = None,
     source_url: str | None = None,
     exclude_pid: str | None = None,
+    only_pids: set[str] | None = None,
 ) -> list[dict]:
-    """Find current reading-list locations for a candidate across every project.
+    """Find current reading-list locations for a candidate across the projects in `only_pids`.
+
+    `only_pids=None` means every project, which is right for callers with no user context (the
+    adoption script, maintenance). **Route callers must pass a scope**: this reads reading lists and
+    returns paper titles and project names, so an unscoped call from a request hands one user a
+    search across everyone else's library.
 
     The caller's active-project context is restored after every project read. Registry-derived
     ids alone cross the path boundary, and the result is a detached plain dict.
@@ -163,6 +169,8 @@ def find_locations(
     for project in projects.list_projects():
         pid = project["id"]
         if pid == exclude_pid:
+            continue
+        if only_pids is not None and pid not in only_pids:
             continue
         token = config.set_active_project(pid)
         try:

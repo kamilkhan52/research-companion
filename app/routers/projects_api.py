@@ -62,8 +62,16 @@ def list_projects(request: Request):
 
 
 @router.get("/api/recent-sessions")
-def recent_sessions(limit: int = Query(default=20, ge=1, le=100)):
-    return {"sessions": projects.recent_sessions(limit)}
+def recent_sessions(request: Request, limit: int = Query(default=20, ge=1, le=100)):
+    """Cross-project, so it enumerates every project on disk and must be filtered here.
+
+    Not path-scoped, so it never acquires `use_project` — which is exactly how it was returning
+    every user's project names, paper titles and source URLs to anyone signed in.
+    """
+    sessions = projects.recent_sessions(limit)
+    allowed = set(tenancy.visible_projects(
+        [s["project_id"] for s in sessions], getattr(request.state, "user", None)))
+    return {"sessions": [s for s in sessions if s["project_id"] in allowed]}
 
 
 @project_router.get("/bundle")
@@ -111,6 +119,9 @@ def import_project_bundle(
     data = file.file.read(projects.MAX_BUNDLE_BYTES + 1)
     try:
         meta = projects.import_bundle(data, name)
+        # Claimed immediately: an imported project with no owner is reachable by NOBODY, so the
+        # import would appear to succeed and hand back a project its importer cannot open.
+        tenancy.claim(meta["id"], getattr(request.state, "user", None))
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return meta
@@ -125,14 +136,12 @@ def create_project(req: ProjectReq, request: Request):
     # Recorded immediately, and NOT best-effort: a project whose ownership row failed to write is
     # invisible to its own creator (an unowned project is reachable by nobody), so silently
     # swallowing the failure would hand someone a directory they can never open again.
-    user_id = (getattr(request.state, "user", None) or {}).get("user_id")
-    if tenancy.enabled() and user_id:
-        try:
-            tenancy.record_project(meta["id"], user_id)
-        except tenancy.TenancyError as e:
-            raise HTTPException(
-                status_code=500,
-                detail="The project was created but its owner could not be recorded.") from e
+    try:
+        tenancy.claim(meta["id"], getattr(request.state, "user", None))
+    except tenancy.TenancyError as e:
+        raise HTTPException(
+            status_code=500,
+            detail="The project was created but its owner could not be recorded.") from e
     return {"project": meta}
 
 
@@ -408,7 +417,7 @@ class SplitReq(BaseModel):
 
 
 @project_router.post("/split")
-def split_project(pid: str, req: SplitReq):
+def split_project(pid: str, req: SplitReq, request: Request):
     """Split selected papers (and the work done on them) into a new project. Deterministic
     phase 1: no LLM, no network — a plain confirmed POST that git-commits both sides, like
     the removal endpoint above. The optional AI working-notes passes are separate jobs.
@@ -449,6 +458,10 @@ def split_project(pid: str, req: SplitReq):
             remove_from_source=req.remove_from_source, goals=req.goals,
         )
         dest = result["new_pid"]
+        # Claimed BEFORE anything else runs against the new project. A split removes papers from
+        # the source, so an unclaimed destination means the papers have left one project and
+        # arrived in one the user cannot open — the content is not lost, but it is unreachable.
+        tenancy.claim(dest, getattr(request.state, "user", None))
         if req.draft_destination_notes or req.cleanup_source_notes:
             # Keep both documents reserved through job admission. A concurrent delete either
             # sees this busy flag and refuses, or wins first; in the latter case the checks after
@@ -504,7 +517,7 @@ class MoveReq(BaseModel):
 
 
 @project_router.post("/move")
-def move_papers(pid: str, req: MoveReq):
+def move_papers(pid: str, req: MoveReq, request: Request):
     """Move selected papers (and their work) into an EXISTING project (R9.13) — the
     deterministic sibling of /split.
 
@@ -514,6 +527,12 @@ def move_papers(pid: str, req: MoveReq):
     `move_to_existing` then takes each project's exclusive write lock to drain in-flight
     synchronous writers. Distinct 409s let the client tell the user which side is busy."""
     dest = req.dest_pid
+    # The DESTINATION needs the same check as the source. `use_project` guards `pid` in the path;
+    # `dest_pid` arrives in the body and reaches none of it, so without this a user could move
+    # their papers INTO someone else's git-backed record — a write, not just a read — and the
+    # distinct busy/deleting responses would disclose that project's state on the way.
+    # Checked before every existence, busy and metadata branch so all of them answer alike.
+    _require_access(dest, request)
     if req.cleanup_source_notes and not req.remove_from_source:
         raise HTTPException(
             status_code=400,

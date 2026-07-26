@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import auth, config, projects, prompts, tts
+from .. import auth, config, projects, prompts, tenancy, tts
 from ..prompts import PromptError, PromptManagedError
 
 router = APIRouter()
@@ -102,8 +102,15 @@ def _require_operator(request: Request, what: str) -> None:
 
 
 @router.get("/api/prompts")
-def get_prompts(project: str | None = None):
-    """All workflow prompts and live status, optionally scoped to one project's method file."""
+def get_prompts(request: Request, project: str | None = None):
+    """All workflow prompts and live status, optionally scoped to one project's method file.
+
+    The project id arrives as a QUERY parameter, so this route never acquires `use_project` and
+    the ownership check has to be made here — without it, naming someone else's project returns
+    their `reading-method.md`, which is a document they wrote.
+    """
+    if project and not tenancy.may_access(project, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=404, detail="Unknown project")
     if project and not projects.exists(project):
         raise HTTPException(status_code=404, detail="Unknown project")
     token = config.set_active_project(project) if project else None

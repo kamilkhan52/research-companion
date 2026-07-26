@@ -576,6 +576,11 @@ def delete_project(pid: str) -> None:
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+        # Free the id in the ownership index too. Trashing the directory makes the id available
+        # again to `_unique_id`, so a surviving row would silently make the NEXT project to take
+        # that id belong to this owner — its creator unable to open it, and this owner able to read
+        # content that is not theirs.
+        tenancy.release(pid)
         # A later project with the same name can reuse this pid. Do not let terminal in-memory
         # results/proposals from the deleted project become visible in that new project.
         jobs.forget_finished_for_project(pid)
@@ -615,18 +620,15 @@ async def use_project(pid: str, request: Request):
     dependency this runs in the request task, so the value is captured into the context copied
     for the endpoint and for StreamingResponse iteration. The finally (reset) runs after the
     response is fully sent, keeping the project bound throughout streaming."""
+    # Ownership FIRST, before the deleting-check and the existence-check. Both of those answer
+    # differently for a real project than for an invented one — a 409 "being deleted" versus a
+    # 404 — so running them first would tell a stranger that someone else's project exists, which
+    # is what the 404-not-403 choice above exists to prevent.
+    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     if config.project_is_deleting(pid):
         raise HTTPException(status_code=409, detail=f"Project is being deleted: {pid}")
     if not exists(pid):
-        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
-    # The single choke point: every per-project route hangs off `make_project_router`, which binds
-    # this dependency once, so one check here covers all of them rather than 73 opportunities to
-    # forget one.
-    #
-    # 404 and not 403, and the message says "Unknown" — deliberately indistinguishable from a
-    # project that does not exist. A 403 would confirm the id IS real, and ids are derived from
-    # project names, so confirming one tells the caller what someone else is reading.
-    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     token = config.set_active_project(pid)
     try:
