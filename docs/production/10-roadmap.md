@@ -33,12 +33,20 @@ with `rc_projects.owner_id` writable, which is a full takeover of another person
 1. **Kamil sets `RC_ADOPT_OWNER` on staging** so the six imported projects have an owner and become
    visible under enforcement. Without it they are unowned, and an unowned project is reachable by
    nobody — which is the correct failure, but it looks like data loss.
-2. **Client wiring for per-user settings.** Both clients still gate the whole settings form on
-   `is_operator`, so a reader cannot reach their own model/voice yet even though the API accepts it.
-   `can_edit_preferences` is on the GET response for this.
-3. **Finish the staging Supabase Site URL / redirect configuration** (Kamil).
+2. **A Postgres for staging, and `RC_DATABASE_URL` set on it** (Kamil — it carries a password, so
+   it never passes through an agent). This is the real blocker, and it makes item 1 possible: with
+   no database configured, `tenancy.enabled()` is False and **all of M2 is inert on staging**.
+   `RC_ADOPT_OWNER` is already staged as a Fly secret, matching `RC_ALLOWED_USERS`.
+3. **Deploy the merged M2 code.** Staging is currently running a pre-M2 image — `app/tenancy.py`
+   does not exist in the running container. Deploy together with the database so there is one
+   restart, then run `scripts/adopt_projects.py` on the machine.
 4. **M2.5's account deletion** is now cheap on the backend side — a user's audio and narration cache
    is one directory — but the project-content half is untouched.
+
+~~Client wiring for per-user settings~~ — done (#240): both clients now separate `is_operator` (the
+provider keys) from `can_edit_preferences` (model/voice/prior-notes). ~~Staging Supabase Site URL /
+redirect~~ — was already configured; the item was stale. Google OAuth on the *staging* project (H5
+step 5) is the one auth piece that may still be unconfigured there, and magic link works without it.
 
 Not in M2 and still open: P0-17 (`DeliveryReq.model` bypasses settings entirely, so per-user model
 preferences do not bound spend — that is M3's tier check), and audio cache eviction, which per-user

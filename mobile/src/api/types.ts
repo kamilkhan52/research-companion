@@ -254,6 +254,9 @@ export interface Settings {
    *  the correct default is `true`, since such a server accepts the write from anyone. The flag is
    *  a UI-honesty signal, never the security boundary; the server decides. */
   is_operator?: boolean;
+  /** Whether the caller may write the per-user half (model/voice/prior-notes). Distinct from
+   *  is_operator, which covers the instance's provider keys and prompts. */
+  can_edit_preferences?: boolean;
 }
 
 /** One effective workflow prompt and its live filesystem validation status (GET /api/prompts). */

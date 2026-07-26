@@ -77,6 +77,13 @@ export default function SettingsScreen() {
   // (RC_OPERATOR_USERS); the server 403s everyone else. Default true so a backend older than the
   // gate — which accepts the write from anyone — is not shown a read-only form it would honour.
   const isOperator = settings.data?.is_operator ?? true;
+  // ...except the model, voice and prior-notes picks, which the server now stores PER USER. Those
+  // describe how one person reads, not how the instance is configured, so gating them on
+  // `is_operator` as well took a reader's own voice away. Same default, same reason.
+  // Falls back to `isOperator`, NOT to true: an absent field means a server older than the split,
+  // whose real behaviour is "only the operator may write these". Absence must reproduce the old
+  // contract rather than unlock the form.
+  const canEditPrefs = settings.data?.can_edit_preferences ?? isOperator;
   const savePrompt = useSavePrompt(activePid);
   const resetPrompt = useResetPrompt(activePid);
 
@@ -151,21 +158,29 @@ export default function SettingsScreen() {
   }
 
   async function handleSaveSettings() {
-    const payload: Record<string, unknown> = {
-      model: model || null,
-      narration_model: narrationModel || null,
-      preview_model: previewModelPatch(previewModel),
-      speech_provider: speechProvider,
-      tts_voice: voice || null,
-      prior_notes_scope: priorScope,
-    };
-    if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
-    if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
-    if (parallelKey.trim()) payload.parallel_api_key = parallelKey.trim();
-    if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
-    if (semanticScholarKey.trim()) {
-      payload.semantic_scholar_api_key = semanticScholarKey.trim();
+    // Send only what this caller may write. A key in the payload from someone who is not the
+    // operator 403s the WHOLE request, taking their voice change down with it.
+    const payload: Record<string, unknown> = {};
+    if (canEditPrefs) {
+      Object.assign(payload, {
+        model: model || null,
+        narration_model: narrationModel || null,
+        preview_model: previewModelPatch(previewModel),
+        speech_provider: speechProvider,
+        tts_voice: voice || null,
+        prior_notes_scope: priorScope,
+      });
     }
+    if (isOperator) {
+      if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
+      if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
+      if (parallelKey.trim()) payload.parallel_api_key = parallelKey.trim();
+      if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
+      if (semanticScholarKey.trim()) {
+        payload.semantic_scholar_api_key = semanticScholarKey.trim();
+      }
+    }
+    if (Object.keys(payload).length === 0) return;
     await saveSettings.mutateAsync(payload);
     setApiKey('');
     setOpenaiKey('');
@@ -234,11 +249,11 @@ export default function SettingsScreen() {
             <SharedWritableContext.Provider value={isOperator}>
               {!isOperator ? (
                 <Card style={{ marginBottom: space.lg }}>
-                  <Text variant="heading">Shared settings are read-only</Text>
+                  <Text variant="heading">Some settings are read-only</Text>
                   <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
-                    The keys, models, voice, and prompts below are one shared configuration for
-                    everyone on this server, so only its operator can change them. Playback, theme,
-                    layout, the map filter, and the server URL are yours and still work.
+                    {canEditPrefs
+                      ? 'The API keys and prompts below are one shared configuration for everyone on this server, so only its operator can change them. The models, voice, and prior-notes setting are yours, as are playback, theme, layout, the map filter, and the server URL.'
+                      : 'The keys, models, voice, and prompts below are one shared configuration for everyone on this server, so only its operator can change them. Playback, theme, layout, the map filter, and the server URL are yours and still work.'}
                   </Text>
                 </Card>
               ) : null}
@@ -253,6 +268,10 @@ export default function SettingsScreen() {
                   autoCapitalize="none"
                 />
 
+                {/* Nested provider: the key above is the instance's, everything below is the
+                    reader's own. The context is just "is this row writable", so nesting is the
+                    whole mechanism. */}
+                <SharedWritableContext.Provider value={canEditPrefs}>
                 <Label text="Analysis model" />
                 <Field value={model} onChangeText={setModel} placeholder="anthropic/claude-opus-…" autoCapitalize="none" />
                 <ModelChips
@@ -287,6 +306,7 @@ export default function SettingsScreen() {
                   gives the fullest cross-paper grounding for a single project; "Related" keeps
                   the context smaller by including only citation-related papers.
                 </Text>
+                </SharedWritableContext.Provider>
               </Section>
 
               {/* Audio */}
@@ -305,11 +325,13 @@ export default function SettingsScreen() {
                     : 'Starts speaking as parts are synthesized: faster to first audio, but seeking is bounded by the current part and backgrounding can interrupt.'}
                 </Text>
 
-                <Label text="Speech provider" />
-                <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
-                  <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => setSpeechProvider('openai')} />
-                  <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => setSpeechProvider('browser')} />
-                </View>
+                <SharedWritableContext.Provider value={canEditPrefs}>
+                  <Label text="Speech provider" />
+                  <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
+                    <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => setSpeechProvider('openai')} />
+                    <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => setSpeechProvider('browser')} />
+                  </View>
+                </SharedWritableContext.Provider>
 
                 {speechProvider === 'openai' ? (
                   <>
@@ -321,12 +343,14 @@ export default function SettingsScreen() {
                       secureTextEntry
                       autoCapitalize="none"
                     />
-                    <Label text="Voice" />
-                    <ModelChips
-                      models={(settings.data?.voices ?? []).map((v) => ({ label: v, id: v }))}
-                      selected={voice}
-                      onPick={setVoice}
-                    />
+                    <SharedWritableContext.Provider value={canEditPrefs}>
+                      <Label text="Voice" />
+                      <ModelChips
+                        models={(settings.data?.voices ?? []).map((v) => ({ label: v, id: v }))}
+                        selected={voice}
+                        onPick={setVoice}
+                      />
+                    </SharedWritableContext.Provider>
                   </>
                 ) : null}
               </Section>
@@ -464,7 +488,7 @@ export default function SettingsScreen() {
                 />
               </Section>
 
-              {isOperator ? (
+              {isOperator || canEditPrefs ? (
                 <>
                   <Button
                     title="Save settings"
