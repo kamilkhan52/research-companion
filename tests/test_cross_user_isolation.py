@@ -423,3 +423,25 @@ def test_only_one_delete_can_run_at_a_time(two_users):
             projects.delete_project(pid)
     finally:
         app_config.unmark_project_deleting(pid)
+
+
+def test_an_unreachable_ownership_store_is_a_503_not_a_500(tmp_path, monkeypatch, client_as):
+    """A CONFIGURED but unreachable database is not the same as no database.
+
+    With none there is nothing to record and single-tenant behaviour is right. With one that is
+    down, creating anyway would produce a project with no ownership row — reachable by nobody,
+    including the person who just made it. So it must fail; the point of this test is that it fails
+    COMPREHENSIBLY, rather than as a ten-second PoolTimeout surfacing as a 500.
+    """
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setattr(config, "PROJECTS_ROOT", root)
+    monkeypatch.setenv("RC_DATABASE_URL", "postgresql://postgres:x@127.0.0.1:59999/nope")
+    db.close()
+    try:
+        response = client_as(ALICE).post("/api/projects", json={"name": "Doomed"})
+        assert response.status_code == 503
+        assert "ownership" in response.json()["detail"].lower()
+        assert not list(root.iterdir()), "a project was left on disk that nobody can reach"
+    finally:
+        db.close()

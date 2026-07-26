@@ -25,7 +25,7 @@ from .. import (
 )
 from ..committer import CommitError
 from ..project_split import SplitError
-from ..projects import ProjectError
+from ..projects import OwnershipUnavailable, ProjectError
 from . import make_project_router
 
 router = APIRouter()
@@ -134,6 +134,10 @@ def import_project_bundle(
 def create_project(req: ProjectReq, request: Request):
     try:
         meta = projects.create_project(req.name, req.method)
+    except OwnershipUnavailable as e:
+        # 503, not 400: the request was fine and the server could not serve it. A retryable
+        # outage reported as a client error sends the user to edit their project name.
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     # Recorded immediately, and NOT best-effort: a project whose ownership row failed to write is

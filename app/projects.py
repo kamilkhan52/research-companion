@@ -29,6 +29,14 @@ META = "project.json"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
+class OwnershipUnavailable(Exception):
+    """The ownership store is configured but unreachable — maps to 503, not 400.
+
+    Distinct from `ProjectError` because it is not the caller's fault and it is retryable: the
+    request was well-formed and the server could not serve it.
+    """
+
+
 class ProjectError(Exception):
     pass
 
@@ -149,7 +157,19 @@ def _id_is_taken(pid: str) -> bool:
     conflict only AFTER the directory is visible. Consulting both means such an id is simply never
     handed out: the stale row makes the id unusable, which costs one id and leaks nothing.
     """
-    return exists(pid) or tenancy.owner_of(pid) is not None
+    if exists(pid):
+        return True
+    try:
+        return tenancy.owner_of(pid) is not None
+    except Exception as e:
+        # A CONFIGURED but unreachable database is not the same as no database. With none, there is
+        # nothing to record and single-tenant behaviour is correct. With one that is down, creating
+        # anyway would produce a project with no ownership row — reachable by nobody, including the
+        # person who just made it. Failing is right; failing comprehensibly is the part worth
+        # writing, because the raw error is a 10-second PoolTimeout.
+        raise OwnershipUnavailable(
+            "Cannot create a project right now: the ownership store is unavailable, and a project "
+            "created without an owner would not be reachable by anyone.") from e
 
 
 def _unique_id(base: str) -> str:
