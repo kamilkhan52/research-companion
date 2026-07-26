@@ -56,7 +56,15 @@ flyctl ssh sftp put -a "$APP" "$bundle" "$remote" >/dev/null
 flyctl ssh sftp put -a "$APP" "$here/import_bundle.py" "$remote_importer" >/dev/null
 
 echo "→ importing as \"$NAME\""
+# The name crosses the shell BASE64-ENCODED and is decoded inside the importer. It is
+# user-controlled data — editable in the app, and carried inside an imported bundle's project.json
+# — and this command string is evaluated by a shell in the container, so a project named
+# `$(...)` would otherwise run as a command there with the app's privileges. base64's alphabet
+# cannot express shell syntax, so the value travels inert.
+name_b64="$(printf '%s' "$NAME" | base64 | tr -d '\n')"
+case "$name_b64" in *[!A-Za-z0-9+/=]*|"") echo "could not encode the project name" >&2; exit 1 ;; esac
+
 # PYTHONPATH=/srv because the container's WORKDIR holds `app/`, and Python puts the *script's*
 # directory on sys.path, not the working directory.
 flyctl ssh console -a "$APP" -C \
-  "sh -lc 'PYTHONPATH=/srv python \"$remote_importer\" \"$remote\" \"$NAME\"; rc=\$?; rm -f \"$remote\" \"$remote_importer\"; exit \$rc'"
+  "sh -lc 'PYTHONPATH=/srv python \"$remote_importer\" \"$remote\" --name-b64 \"$name_b64\"; rc=\$?; rm -f \"$remote\" \"$remote_importer\"; exit \$rc'"

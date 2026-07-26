@@ -2,6 +2,7 @@
 """Import a project bundle from inside the instance — no HTTP, no user token.
 
     python scripts/import_bundle.py <bundle-path> <project name>
+    python scripts/import_bundle.py <bundle-path> --name-b64 <base64 of the name>
 
 Why this exists alongside `POST /api/projects/import`: the HTTP route needs a signed-in user's
 JWT, and getting one means a browser with developer tools. Moving a project between two instances
@@ -20,6 +21,7 @@ limits, project shape. A second import path that skipped them would be a hole in
 """
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 
@@ -38,7 +40,26 @@ def main(argv: list[str]) -> int:
         print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
         return 2
     bundle = Path(argv[1])
-    name = " ".join(argv[2:]).strip()
+    if argv[2] == "--name-b64":
+        # The name arrives base64-encoded because the caller reaches this script through
+        # `flyctl ssh console -C "sh -lc '...'"`, i.e. through a shell. A project name is
+        # user-controlled data — it is editable in the app and travels inside an imported
+        # bundle's project.json — so a name like `$(...)` embedded in that command string would
+        # execute in the container. base64's alphabet cannot express shell syntax, so the value
+        # crosses the shell inert and is decoded here, where it is only ever data.
+        if len(argv) < 4:
+            print("--name-b64 needs a value", file=sys.stderr)
+            return 2
+        try:
+            name = base64.b64decode(argv[3], validate=True).decode("utf-8").strip()
+        except (ValueError, UnicodeDecodeError) as e:
+            print(f"could not decode the name: {e}", file=sys.stderr)
+            return 2
+    else:
+        name = " ".join(argv[2:]).strip()
+    if not name:
+        print("the project needs a name", file=sys.stderr)
+        return 2
     if not bundle.is_file():
         print(f"no such bundle: {bundle}", file=sys.stderr)
         return 1
