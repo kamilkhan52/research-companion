@@ -313,3 +313,88 @@ def test_one_unreadable_project_does_not_hide_every_other(tmp_projects):
 
     ids = {p["id"] for p in projects.list_projects()}
     assert good in ids and broken in ids
+
+
+def test_import_works_with_no_git_repository_in_the_working_directory(tmp_projects, tmp_path,
+                                                                      monkeypatch):
+    """`git bundle verify` needs a repository context and fails without one — and the container's
+    working directory (`/srv`) is a COPY of the source, not a repo. Every import on staging and
+    production would have been refused.
+
+    The whole suite hid it, because pytest runs inside this repo and git walks upwards. So this
+    test moves the working directory somewhere that is definitively not a repo, which is the only
+    way the bug is visible from here. It was found by actually running a share against Fly.
+    """
+    outside = tmp_path / "not-a-repo"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    source_root = tmp_path / "elsewhere"
+    source_root.mkdir()
+    monkeypatch.setattr(config, "PROJECTS_ROOT", source_root)
+    source = projects.create_project("Cwd Independent")
+    data = projects.export_bundle(source["id"])
+
+    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_projects)
+    imported = projects.import_bundle(data, "Imported From Nowhere")
+    assert (projects.project_path(imported["id"]) / "reading-list.md").is_file()
+
+
+# --- the importer's name channel -----------------------------------------------------------
+# `share-to-fly.sh` reaches the importer through `flyctl ssh console -C "sh -lc '...'"`, so the
+# argument list is evaluated by a shell in the container. A project name is user-controlled data —
+# editable in the app, and carried inside an imported bundle's project.json — so it must not travel
+# as shell source.
+
+def _import_bundle_script():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "import_bundle.py"
+    spec = importlib.util.spec_from_file_location("rc_import_bundle", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_importer_accepts_a_base64_name(tmp_projects, tmp_path):
+    """The channel the script actually uses. A name full of shell metacharacters must arrive
+    intact as DATA — which is the proof it never needed shell-quoting in the first place."""
+    import base64
+
+    source = _make_project(tmp_projects)
+    bundle = tmp_path / "src.bundle"
+    bundle.write_bytes(projects.export_bundle(source))
+
+    hostile = "Notes $(id) `whoami` && rm -rf /"
+    encoded = base64.b64encode(hostile.encode()).decode()
+    script = _import_bundle_script()
+
+    assert script.main(["import_bundle.py", str(bundle), "--name-b64", encoded]) == 0
+    assert any(p["name"] == hostile for p in projects.list_projects()), \
+        "the name should round-trip verbatim, as data"
+
+
+def test_importer_rejects_a_malformed_base64_name(tmp_projects, tmp_path):
+    """A decode failure must be an error, not a silent fallback to treating the argument as the
+    name — that fallback would put attacker-controlled text back on the very path this encoding
+    exists to remove it from."""
+    source = _make_project(tmp_projects)
+    bundle = tmp_path / "src2.bundle"
+    bundle.write_bytes(projects.export_bundle(source))
+
+    script = _import_bundle_script()
+    before = len(projects.list_projects())
+    assert script.main(["import_bundle.py", str(bundle), "--name-b64", "not!valid!base64"]) == 2
+    assert len(projects.list_projects()) == before
+
+
+def test_share_to_fly_never_puts_the_name_in_the_remote_command():
+    """The defect itself: `$NAME` was interpolated into the nested `sh -lc` program, so a project
+    named `$(...)` executed as a command in the destination container with the app's privileges."""
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parent.parent / "scripts" / "share-to-fly.sh").read_text()
+    remote_command = script[script.index("flyctl ssh console"):]
+    assert "$NAME" not in remote_command, "the raw name must not reach the remote shell"
+    assert "--name-b64" in remote_command and "$name_b64" in remote_command
