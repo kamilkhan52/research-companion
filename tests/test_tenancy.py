@@ -141,9 +141,27 @@ def test_a_project_id_that_is_not_a_safe_path_segment_cannot_be_stored(database)
     a safe path cannot exist in the first place."""
     tenancy.ensure_user(OWNER)
     import psycopg
-    for hostile in ["../escape", "/abs", "Upper", "has space", ""]:
+    for hostile in ["../escape", "/abs", "has space", "with/slash", "", "dot.dot"]:
         with pytest.raises(psycopg.errors.CheckViolation):
             tenancy.record_project(hostile, OWNER)
+
+
+@needs_pg
+def test_the_constraint_accepts_everything_the_trust_boundary_does(database):
+    """The constraint must RESTATE `_safe_pid`, not tighten it.
+
+    A stricter database rule creates a class of project the app can create on disk and then cannot
+    record — and since the backfill walks every existing project, one such id aborts it part-way
+    with a raw constraint violation. `_PID_RE` allows uppercase and underscores (its own comment
+    notes underscores are tolerated for env-configured ids), so these are not hypothetical.
+    """
+    from app import projects as projects_module
+
+    tenancy.ensure_user(OWNER)
+    for pid in ["llm-basics", "My_Project", "Vaccines", "x_y", "default", "a" * 200, "3d-dram"]:
+        assert projects_module._PID_RE.match(pid), f"{pid} should be valid per _safe_pid"
+        tenancy.record_project(pid, OWNER)  # must not raise
+        assert tenancy.owner_of(pid) == OWNER
 
 
 @needs_pg

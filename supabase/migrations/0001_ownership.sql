@@ -18,12 +18,19 @@ create table if not exists rc_users (
 
 create table if not exists rc_projects (
     -- The project id is the directory name under PROJECTS_ROOT, so it is also a path segment.
-    -- `projects._safe_pid` is the trust boundary that validates it; this constraint is a second,
-    -- independent statement of the same rule, so a row that could not be turned back into a safe
-    -- path cannot be stored in the first place.
+    -- `projects._safe_pid` is the trust boundary that validates it; this constraint restates the
+    -- SAME rule independently, so a row that could not be turned back into a safe path cannot be
+    -- stored in the first place.
+    --
+    -- It must mirror `_PID_RE` exactly, not tighten it. A stricter constraint would create a class
+    -- of project the app can create and the database cannot record — `_PID_RE` allows uppercase
+    -- and underscores (the code comment there notes underscores are tolerated for env-configured
+    -- ids), so an id like `My_Project` would be accepted on disk and then abort the backfill
+    -- part-way through with a raw constraint violation. The length bound is the filesystem's own
+    -- limit on a path segment, so it cannot reject an id that already exists as a directory.
     id           text primary key
                  constraint rc_projects_id_is_a_safe_path_segment
-                 check (id ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
+                 check (id ~ '^[A-Za-z0-9][A-Za-z0-9_-]*$' and length(id) <= 255),
     owner_id     uuid not null references rc_users(id) on delete cascade,
     created_at   timestamptz not null default now(),
     adopted_at   timestamptz not null default now()
