@@ -217,6 +217,43 @@ def test_the_ceiling_holds_at_rest_not_only_under_traffic():
     assert len(scopes) <= jobs_module._MAX_SCOPES_RETAINED, len(scopes)
 
 
+def test_a_long_running_job_is_not_evicted_by_its_own_completion():
+    """Scope recency has to be when a scope last SETTLED something, not when it last STARTED
+    something. Ranking by `started_at` meant a notes job that ran for an hour and finished last
+    carried its scope's rank from that old start time — so it was chosen as the coldest scope and
+    deleted during its own completion, destroying the unapproved proposal that exists nowhere else.
+    The longer the job, the likelier it was to be thrown away.
+    """
+    import threading
+
+    from app import jobs as jobs_module
+    from app.jobs import Job, JobRegistry
+
+    registry: JobRegistry[Job] = JobRegistry("test-recency", max_finished=2)
+    release = threading.Event()
+
+    slow = registry.start_or_join("only", lambda: Job(id="slow"),
+                                  lambda _job: release.wait(10), project_id="project-slow")
+
+    # Everything else starts later AND finishes first, so `started_at` ranks the slow scope coldest.
+    for n in range(jobs_module._MAX_SCOPES_RETAINED + 5):
+        job = registry.start_or_join("only", lambda n=n: Job(id=f"fast-{n}"),
+                                     lambda _job: None, project_id=f"project-fast-{n:04d}")
+        for _ in range(200):
+            if job.status != "running":
+                break
+            time.sleep(0.01)
+
+    release.set()
+    deadline = time.time() + 10
+    while slow.status == "running" and time.time() < deadline:
+        time.sleep(0.01)
+    assert slow.status != "running", "the slow worker never finished"
+
+    assert registry.get(slow.id, project_id="project-slow") is not None, (
+        "the just-finished job was evicted by its own completion")
+
+
 def test_the_audio_job_scope_is_a_pseudonym_not_the_users_id():
     """The registry tags every start/done/error line with the job's scope, so a raw Supabase id
     here would write a durable account identifier — and when that account listens to things — into

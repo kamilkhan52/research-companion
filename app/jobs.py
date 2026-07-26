@@ -63,6 +63,12 @@ _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
 _CANCELLED_ATTR = "_rc_cancelled"
 _ON_SETTLE_ATTR = "_rc_on_settle"
+# Monotonic tick stamped on a job when it stops running, used to rank scopes by recency in
+# `_prune`. Deliberately not a timestamp: `started_at`/`finished_at` are ISO strings at SECOND
+# resolution, so everything a busy instance settles inside one second compares equal and the
+# ordering silently degrades to "whichever scope was inserted first" — which is the oldest, i.e.
+# exactly the one the ranking exists to protect.
+_SETTLE_SEQ_ATTR = "_rc_settle_seq"
 
 # How many scopes (projects, or per-user audio scopes) keep finished-job history at once. The
 # second half of `_prune`'s bound: `max_finished` alone is per scope, and scopes are unbounded
@@ -131,6 +137,7 @@ class JobRegistry(Generic[J]):
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
+        self._settle_seq = 0
         _ALL_REGISTRIES.append(self)
 
     @property
@@ -221,6 +228,7 @@ class JobRegistry(Generic[J]):
             if was_running:
                 job.status = "cancelled"
                 job.finished_at = now_iso()
+                self._stamp_settled(job)
                 self._prune()   # this job just became prunable; see _prune's note on settling
         if was_running:
             log.info("cancel %s job=%s", self.name, job.id[:8], extra=_log_tag(pid))
@@ -248,6 +256,7 @@ class JobRegistry(Generic[J]):
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
             self._jobs[job.id] = job
+            self._stamp_settled(job)   # `put` registers an ALREADY-terminal job
             self._prune()
         return job
 
@@ -353,6 +362,7 @@ class JobRegistry(Generic[J]):
                 if job.status == "running":   # worker didn't set a terminal status itself
                     job.status = "done"
                     job.finished_at = now_iso()
+                self._stamp_settled(job)
                 final = job.status
                 settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
                 self._prune()
@@ -372,6 +382,7 @@ class JobRegistry(Generic[J]):
                     job.status = "error"
                     job.error = str(e)[:400]
                     job.finished_at = now_iso()
+                self._stamp_settled(job)
                 settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
                 self._prune()
             log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
@@ -380,6 +391,11 @@ class JobRegistry(Generic[J]):
         finally:
             config.reset_active_project(token)
             config.reset_active_user(user_token)
+
+    def _stamp_settled(self, job: J) -> None:  # caller holds the lock
+        """Record WHEN, in registry order, this job stopped running. See `_SETTLE_SEQ_ATTR`."""
+        self._settle_seq += 1
+        setattr(job, _SETTLE_SEQ_ATTR, self._settle_seq)
 
     def _prune(self) -> None:  # caller holds the lock
         """Drop the oldest finished jobs past the cap, so a long-lived process doesn't accumulate
@@ -410,8 +426,9 @@ class JobRegistry(Generic[J]):
         scopes concurrently, let them all finish, and nothing counts them until the next admission —
         which may never come. Pruning at both ends makes the ceiling hold at rest rather than only
         under continued traffic. A job that has just settled is the newest in its scope and its
-        scope is now the most recently active, so neither cap can evict the result its own
-        completion triggered.
+        scope is now the most recently active *by settlement time* — which is why recency is
+        measured that way below and not by `started_at` — so neither cap can evict the result its
+        own completion triggered.
         """
         if self._max_finished is None:
             return
@@ -430,9 +447,19 @@ class JobRegistry(Generic[J]):
 
         if len(by_scope) <= _MAX_SCOPES_RETAINED:
             return
-        # Newest job in each scope is its recency. Running jobs are not in `by_scope` and are never
-        # dropped here, so a scope with work in flight cannot lose it by aging out.
-        coldest = sorted(by_scope, key=lambda s: max(j.started_at for j in by_scope[s]))
+        # Recency is when a scope last SETTLED something, not when it last started something. Using
+        # `started_at` was wrong in a way that defeated the purpose: a notes job that ran for an hour
+        # and finished last would rank its scope by that old start time, be chosen as the coldest,
+        # and be deleted during its own completion — destroying the unapproved proposal that exists
+        # nowhere else. The longer a job takes, the more likely it was to be discarded.
+        #
+        # And a settle *timestamp* is not enough either: they are ISO strings at second resolution,
+        # so a busy instance ties, and a tie resolves to insertion order — the oldest scope, which
+        # is the one this ranking exists to protect. Hence the monotonic tick.
+        def _last_settled(scope: str | None) -> int:
+            return max(getattr(j, _SETTLE_SEQ_ATTR, 0) for j in by_scope[scope])
+
+        coldest = sorted(by_scope, key=_last_settled)
         for scope in coldest[:len(by_scope) - _MAX_SCOPES_RETAINED]:
             for stale in by_scope[scope]:
                 self._jobs.pop(stale.id, None)

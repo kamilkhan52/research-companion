@@ -282,6 +282,21 @@ def migrate() -> list[str]:
     Idempotent, and safe to call on every boot: each file is recorded in `rc_schema_migrations`
     once it succeeds, and each runs inside its own transaction so a failure leaves the database at
     the last complete migration rather than half-way through a broken one.
+
+    **The ledger is a cache, not a source of truth.** It lives in the schema Supabase exposes, so
+    an anon-key caller could once write into it — insert a migration's filename and that migration
+    is skipped forever, silently. The lockout below closes that going forward, but a row written
+    BEFORE the first hardened deploy would otherwise be permanent. So after applying, the schema is
+    *verified* against `_REQUIRED_TABLES`; if the ledger claims work that plainly did not happen,
+    it is cleared and everything re-applied. This is why every migration file must be idempotent
+    (`create table if not exists`, `add column if not exists`) — see `supabase/migrations/README.md`.
+
+    **The lockout runs before the loop and again in a `finally`.** The `finally` is the guarantee:
+    it is what stops a migration that raises from leaving `rc_projects` writable through the Data
+    API, which is what happened when enforcement sat at the end of the happy path. The call ahead of
+    the loop is not redundant but its benefit is narrower and worth stating precisely — it secures
+    tables that already exist *before* a long migration run rather than after it, closing a window
+    measured in however long the DDL takes. Both calls are cheap and idempotent.
     """
     applied: list[str] = []
     files = _migration_files()
@@ -300,26 +315,64 @@ def migrate() -> list[str]:
             conn.execute(
                 "create table if not exists rc_schema_migrations ("
                 " name text primary key, applied_at timestamptz not null default now())")
-            seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
+            _enforce_data_api_lockout(conn)   # secure what already exists, before anything can fail
 
-            for path in files:
-                if path.name in seen:
-                    continue
-                sql = path.read_text(encoding="utf-8")
-                # Explicit transaction: autocommit is on for ordinary queries, but a migration must
-                # be all-or-nothing or a partial DDL apply leaves a schema no file describes.
-                with conn.transaction():
-                    conn.execute(sql)
-                    conn.execute("insert into rc_schema_migrations (name) values (%s)",
-                                 (path.name,))
-                applied.append(path.name)
-                log.info("db: applied migration %s", path.name)
-            _enforce_data_api_lockout(conn)
+            applied.extend(_apply_unseen(conn, files))
+            if _missing_tables(conn):
+                # The ledger claims work the schema does not show — poisoned rows, or a manual
+                # change. Trust the schema and re-apply from scratch; migrations are idempotent.
+                log.warning("db: ledger disagrees with the schema (missing %s) — re-applying all",
+                            ", ".join(_missing_tables(conn)))
+                conn.execute("delete from rc_schema_migrations")
+                applied.extend(_apply_unseen(conn, files))
+                still_missing = _missing_tables(conn)
+                if still_missing:
+                    raise DatabaseError(
+                        f"schema incomplete after re-applying migrations: {', '.join(still_missing)}")
         finally:
+            # In a `finally` for the same reason the first call is before the loop: a migration that
+            # raises must not be able to leave the tables reachable from the Data API.
+            try:
+                _enforce_data_api_lockout(conn)
+            except Exception as e:  # noqa: BLE001 — never mask the original failure with this one
+                log.error("db: could not assert the data-api lockout: %s", str(e)[:200])
             # Released explicitly rather than left to the session ending: this connection goes back
             # to the pool alive, and a session-scoped lock left held would block every later boot.
             conn.execute("select pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     return applied
+
+
+#: The tables the application code requires. Verified against the schema after migrating, because
+#: the migration ledger lives in the schema Supabase exposes and therefore cannot be trusted to say
+#: what actually ran. `tests/test_tenancy.py` asserts this matches what a fresh migrate produces, so
+#: adding a table without adding it here fails in CI rather than in production.
+_REQUIRED_TABLES = ("rc_projects", "rc_user_settings", "rc_users")
+
+
+def _apply_unseen(conn, files) -> list[str]:
+    """Run every migration not already named in the ledger. Returns the names applied."""
+    applied: list[str] = []
+    seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
+    for path in files:
+        if path.name in seen:
+            continue
+        body = path.read_text(encoding="utf-8")
+        # Explicit transaction: autocommit is on for ordinary queries, but a migration must be
+        # all-or-nothing or a partial DDL apply leaves a schema no file describes.
+        with conn.transaction():
+            conn.execute(body)
+            conn.execute("insert into rc_schema_migrations (name) values (%s)", (path.name,))
+        applied.append(path.name)
+        log.info("db: applied migration %s", path.name)
+    return applied
+
+
+def _missing_tables(conn) -> list[str]:
+    """Which required tables are absent — i.e. where the ledger and the schema disagree."""
+    present = {row[0] for row in conn.execute(
+        "select tablename from pg_tables where schemaname = 'public' "
+        "and tablename = any(%s)", (list(_REQUIRED_TABLES),))}
+    return [name for name in _REQUIRED_TABLES if name not in present]
 
 
 def _enforce_data_api_lockout(conn) -> None:
@@ -349,6 +402,16 @@ def _enforce_data_api_lockout(conn) -> None:
     in an exposed schema), and the grants revoked outright. Not `force` — the backend owns these
     tables and an owner is exempt from its own table's RLS unless forced, so forcing would lock out
     the application instead of the attacker.
+
+    **Per table, in its own transaction.** `ALTER TABLE` requires ownership, so one `public.rc_*`
+    table owned by a different role — a leftover, or something an operator created by hand — would
+    otherwise roll the whole statement back and leave EVERY table exposed. One table failing must
+    cost only that table. The failure is logged at ERROR because nothing else will notice it.
+
+    Schema-qualified, because the enumeration is specifically of `public` while a bare
+    `alter table rc_projects` resolves through `search_path` — which a DSN option can set. Without
+    the qualification the two could name different tables and this would log success over an
+    untouched `public.rc_projects`.
     """
     from psycopg import sql  # function-local, matching `conninfo` above
 
@@ -358,14 +421,19 @@ def _enforce_data_api_lockout(conn) -> None:
         return
     roles = [row[0] for row in conn.execute(
         "select rolname from pg_roles where rolname in ('anon', 'authenticated')")]
-    with conn.transaction():
-        for table in tables:
-            conn.execute(sql.SQL("alter table {} enable row level security").format(
-                sql.Identifier(table)))
-            for role in roles:   # absent on a plain Postgres (CI, local) — then there is nothing
-                conn.execute(sql.SQL("revoke all on {} from {}").format(  # to revoke
-                    sql.Identifier(table), sql.Identifier(role)))
-    log.info("db: data-api lockout asserted on %d table(s)", len(tables))
+    locked = 0
+    for table in tables:
+        try:
+            with conn.transaction():
+                conn.execute(sql.SQL("alter table public.{} enable row level security").format(
+                    sql.Identifier(table)))
+                for role in roles:   # absent on a plain Postgres (CI, local) — nothing to revoke
+                    conn.execute(sql.SQL("revoke all on public.{} from {}").format(
+                        sql.Identifier(table), sql.Identifier(role)))
+            locked += 1
+        except Exception as e:  # noqa: BLE001 — one table must not decide the fate of the others
+            log.error("db: could NOT lock public.%s out of the data api: %s", table, str(e)[:200])
+    log.info("db: data-api lockout asserted on %d/%d table(s)", locked, len(tables))
 
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
