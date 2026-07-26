@@ -137,7 +137,20 @@ async function markHandoffHandled(id: string): Promise<void> {
  *
  *  Without this, the previous user's narration keeps playing over the sign-in screen and on into
  *  whoever signs in next. */
+let sessionEpoch = 0;
+
+/** The current audio session. Every in-flight pipeline captures this and stops if it changes:
+ *  resetting the player is not enough on its own, because a queued `TrackPlayer.add` resolving
+ *  afterwards would start the previous session's audio again on top of a reset player — over the
+ *  sign-in screen, or into the next user's session. */
+export function audioSessionEpoch(): number {
+  return sessionEpoch;
+}
+
 export async function stopPlaybackForSessionEnd(): Promise<void> {
+  // Bumped FIRST and synchronously, so everything already in flight is invalidated before any
+  // await below gives it another chance to run.
+  sessionEpoch += 1;
   await clearPlaybackSnapshot().catch(() => {});
   await dismissEligibleHandoffs().catch(() => {});
   await TrackPlayer.reset().catch(() => {});
@@ -338,7 +351,8 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         return;
       }
       const gen = ++generation.current;
-      const live = () => generation.current === gen;
+      const epoch = sessionEpoch;
+      const live = () => generation.current === gen && sessionEpoch === epoch;
       // Capture the initiating project ONCE, up front: this preparation bills whichever project
       // started it, even if the user switches projects before the POST (or a restart re-POST)
       // fires. Reading the ref again later would misattribute the spend to the new project.
@@ -493,9 +507,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
 
   const playPreview = useCallback(async (id: string, title: string, url: string) => {
     const queueGen = queueGeneration.current;
+    const queueEpoch = sessionEpoch;
     let played = false;
     const run = async () => {
-      const live = () => queueGeneration.current === queueGen;
+      const live = () => queueGeneration.current === queueGen && sessionEpoch === queueEpoch;
       // Manual playback preparation owns the player. Automatic listening-mode preparation is
       // different: it runs remotely for minutes, and preview cues are specifically meant to fill
       // that wait until the final track is ready.
@@ -583,9 +598,10 @@ export function AudioProvider({ children }: { children: ReactNode }) {
       else queuedPreparationCounts.current.delete(request.id);
     };
     const queueGen = queueGeneration.current;
+    const queueEpoch = sessionEpoch;
 
     queueTail.current = queueTail.current.then(async () => {
-      if (queueGeneration.current !== queueGen) {
+      if (queueGeneration.current !== queueGen || sessionEpoch !== queueEpoch) {
         releasePreparation();
         return;
       }
@@ -594,11 +610,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         if (chatJobId) await consumeEligibleHandoff(chatJobId);
         return;
       }
-      if (queueGeneration.current !== queueGen) {
+      if (queueGeneration.current !== queueGen || sessionEpoch !== queueEpoch) {
         releasePreparation();
         return;
       }
-      const live = () => queueGeneration.current === queueGen;
+      const live = () => queueGeneration.current === queueGen && sessionEpoch === queueEpoch;
       automaticPrepIdRef.current = request.id;
       setErrorById((errors) => {
         if (!(request.id in errors)) return errors;
