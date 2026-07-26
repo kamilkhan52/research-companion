@@ -86,15 +86,25 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `db.py` — Postgres: the pool, the `:6543` transaction-pooler refusal, and the migration runner
-  over `supabase/migrations/*.sql`. **Ownership and index rows only** — content stays in git,
+  over `supabase/migrations/*.sql` (`main` applies them on boot, retrying in the background on
+  failure rather than refusing to start, because on Fly that is a crash loop). Every `rc_*` table is
+  taken off Supabase's Data API — RLS with no policies, plus revoked `anon`/`authenticated` grants —
+  by `_enforce_data_api_lockout`, which runs on **every** migrate and enumerates tables from the
+  catalog. Deliberately not a migration file: `migrate()` skips anything named in
+  `rc_schema_migrations`, and that ledger is itself in the exposed schema, so a lockout shipped as a
+  migration could be suppressed by an anon-key caller inserting its filename first. New tables need
+  no action; `tests/test_tenancy.py` asserts both the end state and the poisoned-ledger case. **Ownership and index rows only** — content stays in git,
   because the history *is* the record (invariant 4), and a second copy here could disagree with it.
   **Optional**: with `RC_DATABASE_URL` unset there is no pool, `enabled()` is False, and every
   caller falls back to today's single-tenant behaviour — which is what lets local dev and the test
   suite run with no server. Never log or print the URL; use `safe_target()`.
-- `tenancy.py` — who owns which project. As of M2 slice 1 it **records** ownership and enforces
-  nothing; enforcement arrives with the per-user `PROJECTS_ROOT` namespacing, deliberately in a
-  separate change so the trust boundary (`projects._safe_pid`/`project_path`) is not altered in the
-  same commit that introduces the tables it reads.
+- `tenancy.py` — who owns which project, and (since M2 slice 2a) the enforcement. `may_access` is
+  the gate: with no database it is single-tenant and everything is reachable; with one, an unowned
+  project is reachable by **nobody**, which is the correct failure but looks like data loss — hence
+  `RC_ADOPT_OWNER` for projects that predate ownership. `use_project` checks it BEFORE existence, so
+  a foreign project and an invented one answer identically. Routes that name a project somewhere
+  other than the URL path (a request body, a `?project=` query, a cross-project scan) do **not** get
+  it for free and must call it themselves — that was the source of every miss during slice 2a.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
 - `sessions.py` — per-paper session state + transcript JSONL + narration cache + retry
   branches (U.14): a retry archives the live tail under `.state/branches/` (working state,
@@ -122,6 +132,15 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
   fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
+- `user_settings.py` — the per-user half of `/api/settings`. `config._SETTING_KEYS` partitions into
+  `OPERATOR_SETTING_KEYS` (the provider keys — one deployment, one account) and
+  `USER_SETTING_KEYS` (model/voice/prior-notes scope — how one person reads). `load_settings()`
+  layers the caller's rows over the instance document, keyed off a `config._active_user`
+  contextvar bound by the auth middleware and rebound by `JobRegistry` (invariant 2, same as the
+  project). With no database or no signed-in user the layer is skipped entirely, which is what
+  keeps `./run.sh` behaving as before. Adding a preference needs a migration: the allowed keys are
+  mirrored by a CHECK constraint, so a user cannot store a provider key even if the Python filter
+  is wrong.
 - `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
 - `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
   + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
@@ -141,6 +160,13 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 - `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
   invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
   function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
+- `audio_jobs.py` — audio is scoped **per user**, not app-global: jobs register under
+  `_audio_scope()` and every mp3 path resolves through `user_audio_dir()` (as does the
+  `/api/audio/{name}` route and the narration cache in `sessions.py`). Isolation is a property of
+  the path, not a check — the same passage yields the same file name for everybody and reaches a
+  different file, so a leaked name buys nothing. Kamil's 2026-07-26 decision: duplicate synthesis
+  is the price of trivially-correct cancellation and `rmtree`-able account deletion. With no
+  signed-in user it collapses to the one flat directory it always used.
 - `tts.py` — OpenAI TTS behind a swappable interface. Default model `tts-1` (H22, revised
   2026-07-25): character-priced at $15/1M, so audio cost is exactly computable *before* synthesis —
   which is what M3's quota needs — and half the price of `tts-1-hd`, which matters because audio is

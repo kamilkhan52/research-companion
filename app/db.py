@@ -282,6 +282,20 @@ def migrate() -> list[str]:
     Idempotent, and safe to call on every boot: each file is recorded in `rc_schema_migrations`
     once it succeeds, and each runs inside its own transaction so a failure leaves the database at
     the last complete migration rather than half-way through a broken one.
+
+    **The ledger is a record, not a source of truth.** It lives in the schema Supabase exposes, so
+    a row in it is not evidence that anything ran — an anon-key caller could once insert a
+    migration's filename and that migration would be skipped forever, silently. Nothing skips on it
+    now: every file runs on every call. That is affordable only because every migration is required
+    to be idempotent (`supabase/migrations/README.md`), and it is why that requirement is written
+    down rather than assumed.
+
+    **The lockout runs before the loop and again in a `finally`.** The `finally` is the guarantee:
+    it is what stops a migration that raises from leaving `rc_projects` writable through the Data
+    API, which is what happened when enforcement sat at the end of the happy path. The call ahead of
+    the loop is not redundant but its benefit is narrower and worth stating precisely — it secures
+    tables that already exist *before* a long migration run rather than after it, closing a window
+    measured in however long the DDL takes. Both calls are cheap and idempotent.
     """
     applied: list[str] = []
     files = _migration_files()
@@ -300,25 +314,134 @@ def migrate() -> list[str]:
             conn.execute(
                 "create table if not exists rc_schema_migrations ("
                 " name text primary key, applied_at timestamptz not null default now())")
-            seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
+            _enforce_data_api_lockout(conn)   # secure what already exists, before anything can fail
 
-            for path in files:
-                if path.name in seen:
-                    continue
-                sql = path.read_text(encoding="utf-8")
-                # Explicit transaction: autocommit is on for ordinary queries, but a migration must
-                # be all-or-nothing or a partial DDL apply leaves a schema no file describes.
-                with conn.transaction():
-                    conn.execute(sql)
-                    conn.execute("insert into rc_schema_migrations (name) values (%s)",
-                                 (path.name,))
-                applied.append(path.name)
-                log.info("db: applied migration %s", path.name)
+            applied.extend(_apply_all(conn, files))
+            missing = _missing_tables(conn)
+            if missing:
+                # Cannot happen via the ledger any more; this catches a table dropped by hand, and
+                # converts it into an error naming the table instead of a 500 on the next request.
+                raise DatabaseError(f"schema incomplete after migrating: {', '.join(missing)}")
         finally:
+            # In a `finally` for the same reason the first call is before the loop: a migration that
+            # raises must not be able to leave the tables reachable from the Data API.
+            try:
+                _enforce_data_api_lockout(conn)
+            except Exception as e:  # noqa: BLE001 — never mask the original failure with this one
+                log.error("db: could not assert the data-api lockout: %s", str(e)[:200])
             # Released explicitly rather than left to the session ending: this connection goes back
             # to the pool alive, and a session-scoped lock left held would block every later boot.
             conn.execute("select pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     return applied
+
+
+#: The tables the application code requires. Verified against the schema after migrating, because
+#: the migration ledger lives in the schema Supabase exposes and therefore cannot be trusted to say
+#: what actually ran. `tests/test_tenancy.py` asserts this matches what a fresh migrate produces, so
+#: adding a table without adding it here fails in CI rather than in production.
+_REQUIRED_TABLES = ("rc_projects", "rc_user_settings", "rc_users")
+
+
+def _apply_all(conn, files) -> list[str]:
+    """Run EVERY migration, every time. Returns the names recorded for the first time.
+
+    The ledger is never consulted to decide what to skip. It lives in the schema Supabase exposes
+    over its Data API, so a row in it is not evidence that anything ran — an anon-key caller could
+    once insert a filename and that migration would be skipped forever, silently. The previous
+    attempt at this verified afterwards that the required TABLES existed, which caught a poisoned
+    `0003` (it creates a table) and missed a poisoned `0002` (it only adds a column). Verifying
+    every column, index and constraint a migration might touch is a schema-diffing tool, and one
+    written under time pressure would keep missing a category — the same shape of defect the last
+    three rounds have been.
+
+    So the ledger stops being load-bearing instead. Re-running is safe because every migration is
+    required to be idempotent (`supabase/migrations/README.md`), which is exactly what makes this
+    the cheap answer rather than the thorough one. What remains in the table is a record of when
+    each file was FIRST seen, which is useful to an operator and trusted by nothing.
+    """
+    newly_recorded: list[str] = []
+    for path in files:
+        body = path.read_text(encoding="utf-8")
+        # Explicit transaction: autocommit is on for ordinary queries, but a migration must be
+        # all-or-nothing or a partial DDL apply leaves a schema no file describes.
+        with conn.transaction():
+            conn.execute(body)
+            first_time = conn.execute(
+                "insert into rc_schema_migrations (name) values (%s) "
+                "on conflict (name) do nothing returning name", (path.name,)).fetchone()
+        if first_time:
+            newly_recorded.append(path.name)
+            log.info("db: applied migration %s", path.name)
+    return newly_recorded
+
+
+def _missing_tables(conn) -> list[str]:
+    """Which required tables are absent — i.e. where the ledger and the schema disagree."""
+    present = {row[0] for row in conn.execute(
+        "select tablename from pg_tables where schemaname = 'public' "
+        "and tablename = any(%s)", (list(_REQUIRED_TABLES),))}
+    return [name for name in _REQUIRED_TABLES if name not in present]
+
+
+def _enforce_data_api_lockout(conn) -> None:
+    """Take every `rc_*` table off Supabase's Data API. Runs on EVERY migrate, not as a migration.
+
+    Supabase serves the `public` schema over PostgREST and its default privileges grant `anon` and
+    `authenticated` full DML on tables created there. The anon key is *published* — it ships inside
+    the mobile app by design — so without this, `rc_users` is every user's email and
+    `rc_projects.owner_id` is **writable**: set it to your own id and `tenancy.may_access` hands you
+    another person's reading list, which the backend then serves correctly, having been told the
+    truth by a table the attacker controls.
+
+    **Why this is not a migration file.** It was one, and that was wrong. `migrate()` skips any file
+    already named in `rc_schema_migrations` — and that ledger is itself in the exposed schema. So an
+    anon-key caller could insert the lockout migration's own filename before the deploy that
+    introduces it, and the one statement that would have closed the hole is the one silently
+    skipped, with startup cheerfully reporting nothing pending. A lockout that consults the ledger
+    it exists to secure is not a lockout. Applied unconditionally instead: every statement here is
+    idempotent, so re-running it each boot costs nothing and cannot be suppressed by anything an
+    attacker can write.
+
+    The table list is enumerated from the catalog rather than hard-coded, so a table added later is
+    covered without anyone remembering to add it — the same "two places to keep in sync" trap in a
+    different costume.
+
+    Two independent locks per table: RLS with no policies (Supabase's own requirement for anything
+    in an exposed schema), and the grants revoked outright. Not `force` — the backend owns these
+    tables and an owner is exempt from its own table's RLS unless forced, so forcing would lock out
+    the application instead of the attacker.
+
+    **Per table, in its own transaction.** `ALTER TABLE` requires ownership, so one `public.rc_*`
+    table owned by a different role — a leftover, or something an operator created by hand — would
+    otherwise roll the whole statement back and leave EVERY table exposed. One table failing must
+    cost only that table. The failure is logged at ERROR because nothing else will notice it.
+
+    Schema-qualified, because the enumeration is specifically of `public` while a bare
+    `alter table rc_projects` resolves through `search_path` — which a DSN option can set. Without
+    the qualification the two could name different tables and this would log success over an
+    untouched `public.rc_projects`.
+    """
+    from psycopg import sql  # function-local, matching `conninfo` above
+
+    tables = [row[0] for row in conn.execute(
+        r"select tablename from pg_tables where schemaname = 'public' and tablename like 'rc\_%'")]
+    if not tables:
+        return
+    roles = [row[0] for row in conn.execute(
+        "select rolname from pg_roles where rolname in ('anon', 'authenticated')")]
+    locked = 0
+    for table in tables:
+        try:
+            with conn.transaction():
+                conn.execute(sql.SQL("alter table public.{} enable row level security").format(
+                    sql.Identifier(table)))
+                for role in roles:   # absent on a plain Postgres (CI, local) — nothing to revoke
+                    conn.execute(sql.SQL("revoke all on public.{} from {}").format(
+                        sql.Identifier(table), sql.Identifier(role)))
+            locked += 1
+        except Exception as e:  # noqa: BLE001 — one table must not decide the fate of the others
+            log.error("db: could NOT lock public.%s out of the data api: %s", table, str(e)[:200])
+    log.info("db: data-api lockout asserted on %d/%d table(s)", locked, len(tables))
 
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)

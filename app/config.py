@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import json
 import os
 import threading
@@ -190,6 +191,16 @@ def git_identity_args() -> list[str]:
 
 _active_project: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_project", default=None)
+
+# The signed-in user, bound by the auth middleware and rebound by every job worker (invariant 2),
+# so `load_settings()` returns the caller's effective settings without 24 call sites having to
+# thread a user through. Threading it explicitly is how one gets missed — and a missed one does
+# not fail loudly, it silently applies somebody else's preference.
+#
+# None on a single-tenant instance, in open auth mode, and in any background work that has no
+# originating user. All three mean "the instance document", which is the pre-split behaviour.
+_active_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_user", default=None)
 
 # Projects mid-deletion. projects.delete_project holds the pid here across its running-job
 # sweep and the directory move; jobs.start_or_join/put and projects.use_project consult it, so
@@ -377,6 +388,77 @@ def active_project_id() -> str | None:
     return _active_project.get()
 
 
+def set_active_user(user_id: str | None) -> contextvars.Token:
+    return _active_user.set(user_id)
+
+
+def reset_active_user(token: contextvars.Token) -> None:
+    _active_user.reset(token)
+
+
+def active_user_id() -> str | None:
+    return _active_user.get()
+
+
+@contextlib.contextmanager
+def bound_scope(project_id: str | None, user_id: str | None):
+    """Bind BOTH request-scoped contextvars for the duration of a worker thread (invariant 2).
+
+    A thread inherits neither, and they are wrong in different ways when forgotten: a missing
+    project reads and writes another project's files, a missing user quietly runs on the instance's
+    model and voice instead of the caller's. Two sites rebound only the project — `affiliations`
+    and `figures`, both raw `threading.Thread` workers outside the job registry — which is what this
+    exists to stop being possible: capture with `active_project_id()`/`active_user_id()` on the
+    calling thread, then enter this on the worker.
+
+    `JobRegistry._run` does the same thing inline and predates it; it is not rewritten to use this
+    because reindenting that method's body around a `with` is risk without benefit.
+    """
+    project_token = _active_project.set(project_id)
+    user_token = _active_user.set(user_id)
+    try:
+        yield
+    finally:
+        _active_user.reset(user_token)
+        _active_project.reset(project_token)
+
+
+def user_scope_dir() -> Path | None:
+    """One directory holding everything app-global that belongs to the active user — the audio
+    cache and the narration cache today. `None` when no user is bound, which means the flat
+    app-global paths this had before, and is what a single-tenant `./run.sh` keeps using.
+
+    Two things this shape buys. **Isolation is a property of the path**, not of a check: one user's
+    request never resolves to another's file because it never builds that path, so there is no
+    lookup to forget (Kamil's 2026-07-26 decision — scope per user rather than ACL rows over shared
+    blobs). And **M7 account deletion is `rmtree` of one directory** rather than a search for
+    whichever content-addressed files were theirs.
+
+    The directory is named by a hash rather than the user id. A user id reaching a path is a
+    traversal question, and hashing answers it structurally instead of by validation — there is no
+    input for which this returns a path outside `APP_STATE_DIR/users/`. It also keeps user ids off
+    the disk of a machine whose backups are not access-controlled.
+    """
+    key = user_scope_key()
+    return None if key is None else APP_STATE_DIR / "users" / key
+
+
+def user_scope_key() -> str | None:
+    """A stable pseudonym for the active user, or None. The name of their directory above, and the
+    scope audio jobs register under.
+
+    The hash is not only about path safety. This value reaches **log lines** — `JobRegistry` tags
+    every start/done/error line with the job's scope — so using the raw Supabase id would write a
+    durable account identifier, with correlated activity timing, into whatever Fly ships logs to.
+    The one place this app deliberately logs a real user id is the non-allowlisted rejection, which
+    is rate-limited and exists so the operator can repair the allowlist; ordinary work should not.
+    """
+    user_id = _active_user.get()
+    if not user_id:
+        return None
+    return hashlib.sha256(user_id.encode()).hexdigest()[:32]
+
+
 def project_dir() -> Path:
     """Directory of the active project. Falls back to the legacy single-project dir when no
     project is scoped and no projects root has been populated yet."""
@@ -433,6 +515,33 @@ _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_mode
                  "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
                  "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
 
+# Who owns which setting.
+#
+# `/api/settings` was one document, and slice 2a restricted writing all of it to the operator. That
+# was right for the provider keys — one deployment, one OpenRouter account, and a user who could
+# overwrite that key could take the app offline for everyone — and wrong for the rest, because it
+# also stopped a reader changing their own voice.
+#
+# So the document splits along the line of who pays for the consequence. The keys and the workflow
+# prompts stay the instance's. Everything below describes how one person wants to read: which model
+# answers them, which voice reads it aloud, how much prior context to carry. These are layered over
+# the instance values per user, never copied — so an operator changing a default still moves
+# everyone who has not expressed a preference.
+#
+# `USER_SETTING_KEYS` is mirrored by a CHECK constraint in `0003_user_settings.sql`; adding one
+# needs a migration. The two sets must partition `_SETTING_KEYS` exactly — a key in neither would
+# silently stay instance-wide, which is the wrong default for something a reader would expect to
+# own. `tests/test_user_settings.py` asserts the partition.
+#
+# NOT closed by this split: `DeliveryReq.model` is a per-turn override that bypasses settings
+# entirely (P0-17), so a per-user model preference does not by itself bound what a user can spend.
+# That is a quota question and belongs with M3, not here.
+USER_SETTING_KEYS = frozenset({
+    "model", "narration_model", "preview_model",
+    "speech_provider", "tts_model", "tts_voice", "prior_notes_scope",
+})
+OPERATOR_SETTING_KEYS = frozenset(set(_SETTING_KEYS) - USER_SETTING_KEYS)
+
 # Serializes the read-modify-write of the shared settings file. A turn persisting its model
 # choice, a UI settings save, and a prompt-override edit all mutate the same file; without this
 # two concurrent saves race and one silently drops the other's change (single-process app, so a
@@ -441,15 +550,55 @@ _settings_lock = threading.Lock()
 
 
 def load_settings() -> dict:
-    """File settings (UI-set) layered over env defaults. A stored key is honored even when its
-    value is empty — an explicit "" is a deliberate unset (revert to no value), distinct from a
-    key being absent (use the env default)."""
+    """The effective settings for the current caller.
+
+    Three layers, each overriding the one before: env defaults, the instance settings file (UI-set),
+    then the active user's own preferences. A stored key is honored even when its value is empty —
+    an explicit "" is a deliberate unset (revert to no value), distinct from a key being absent
+    (use the env default).
+
+    The third layer is skipped entirely when there is no database or no bound user, which is why
+    every existing call site keeps working unchanged on a single-tenant instance.
+    """
     data = dict(_ENV_DEFAULTS)
     stored = _read_settings_file()
     for key in _SETTING_KEYS:
         if key in stored:
             data[key] = stored[key]
+
+    from . import user_settings  # function-local: user_settings -> db -> logging_config -> config
+    for key, value in user_settings.load(_active_user.get()).items():
+        if key in USER_SETTING_KEYS:   # the store is constrained too; this is the cheap half
+            data[key] = value
     return data
+
+
+def user_settings_available() -> bool:
+    """Whether the active caller has somewhere of their own to store a preference.
+
+    False on a single-tenant instance and for an unauthenticated caller. Routes use this to decide
+    whether a preference write is the user's own or an edit to the shared document (which needs the
+    operator), so that with no database the settings form behaves exactly as it did before.
+    """
+    from . import user_settings
+    return user_settings.available(_active_user.get())
+
+
+def save_user_settings(patch: dict) -> dict:
+    """Store the active user's preferences and return their new effective settings.
+
+    Only `USER_SETTING_KEYS` are stored; anything else in the patch is dropped rather than
+    rejected, because this is fed straight from a settings form that carries both halves. The
+    operator half travels to `save_settings` instead — dropping here is what stops a user's
+    submitted API key from landing in their personal document and being layered over the
+    instance's on their next turn.
+    """
+    user_id = _active_user.get()
+    if not user_settings_available():
+        raise ValueError("No signed-in user to store preferences for.")
+    from . import user_settings
+    user_settings.save(user_id, patch, USER_SETTING_KEYS)
+    return load_settings()
 
 
 def save_settings(patch: dict) -> dict:

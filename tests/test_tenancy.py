@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 
+import psycopg
 import pytest
 from app import db, tenancy
 
@@ -114,6 +115,29 @@ def test_uuid_validation_rejects_what_would_become_a_cast_error():
     assert not db.is_uuid("f4a33e1b-b3c4-4eb2-a0ea")
 
 
+def test_boot_migrations_do_not_run_without_a_database(monkeypatch):
+    monkeypatch.delenv("RC_DATABASE_URL", raising=False)
+    from app import main
+    main._apply_migrations()   # must not raise and must not attempt a connection
+
+
+def test_an_unreachable_database_does_not_stop_the_process_booting(monkeypatch, caplog):
+    """On Fly the alternative to booting is a crash loop that needs a human. Booting means
+    ownership checks answer 503 until the database returns and the next boot retries the
+    migration — bad, but self-healing, which the crash loop is not."""
+    monkeypatch.setenv("RC_DATABASE_URL",
+                       "postgresql://u:p@127.0.0.1:1/nothing-is-listening-here")
+    from app import db as db_module
+    from app import main
+    db_module.close()
+    with caplog.at_level("ERROR"):
+        main._apply_migrations()
+    assert any("migrations did not run" in r.getMessage() for r in caplog.records)
+    # And the failure log must not carry the connection string, which is a Fly secret.
+    assert not any("p@127.0.0.1" in r.getMessage() for r in caplog.records)
+    db_module.close()
+
+
 def test_everything_is_a_no_op_without_a_database(monkeypatch):
     """The fallback that keeps this slice safe to merge: with no database the app behaves exactly
     as it does today, so nothing can start refusing requests because a secret is missing."""
@@ -144,6 +168,203 @@ def database(monkeypatch):
     db.migrate()
     yield
     db.close()
+
+
+@needs_pg
+def test_a_poisoned_ledger_row_cannot_suppress_a_column_only_migration(database):
+    """The version that got through the previous fix. Verifying that the required TABLES exist
+    catches a poisoned `0003` (which creates one) and misses a poisoned `0002` (which only adds
+    `deleted_at` and makes `owner_id` nullable) — every table still exists, so nothing re-applies,
+    and `tenancy.owner_of` then fails on a column that is not there.
+
+    Chasing that by verifying columns too would have been the third round of enumerating what a
+    schema check should look at. Nothing skips on the ledger at all now.
+    """
+    with db.pool().connection() as conn:
+        conn.execute("drop table if exists rc_user_settings, rc_projects, rc_users cascade")
+        conn.execute("delete from rc_schema_migrations")
+        conn.execute("insert into rc_schema_migrations (name) values ('0002_retire_ids.sql')")
+
+    db.migrate()
+
+    with db.pool().connection() as conn:
+        column = conn.execute(
+            "select 1 from information_schema.columns where table_schema = 'public' "
+            "and table_name = 'rc_projects' and column_name = 'deleted_at'").fetchone()
+    assert column, "a poisoned ledger row suppressed a column-only migration"
+    # And the real consequence, not just the column: ownership still works end to end.
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("poison-check", OWNER)
+    assert tenancy.owner_of("poison-check") == OWNER
+
+
+@needs_pg
+def test_a_poisoned_ledger_row_cannot_permanently_suppress_a_migration(database):
+    """The other half of the same hostile upgrade path. Poisoning the LOCKOUT's own filename is
+    closed by running it unconditionally — but poisoning an ordinary migration's name (say
+    `0003_user_settings.sql`) before the hardening deploy would skip creating its table, and then
+    the ledger is locked with the poison inside it. Preference saves would 500 forever.
+
+    So the ledger is treated as a cache: after applying, the schema is verified, and if it does not
+    show what the ledger claims, the ledger is cleared and everything re-applied.
+    """
+    with db.pool().connection() as conn:
+        conn.execute("drop table if exists rc_user_settings cascade")
+        conn.execute("insert into rc_schema_migrations (name) values ('0003_user_settings.sql') "
+                     "on conflict do nothing")
+
+    db.migrate()
+
+    with db.pool().connection() as conn:
+        present = conn.execute(
+            "select 1 from pg_tables where schemaname = 'public' "
+            "and tablename = 'rc_user_settings'").fetchone()
+    assert present, "a poisoned ledger row permanently suppressed the migration"
+
+
+@needs_pg
+def test_the_required_table_list_matches_what_the_migrations_actually_create(database):
+    """`_REQUIRED_TABLES` is what the verification above checks, so a table added by a migration
+    without being added there would not be verified — the poisoning window would silently reopen
+    for it. Asserted against a real migrate rather than by reading the files."""
+    with db.pool().connection() as conn:
+        created = {row[0] for row in conn.execute(
+            r"select tablename from pg_tables where schemaname = 'public' "
+            r"and tablename like 'rc\_%'")}
+    assert created - {"rc_schema_migrations"} == set(db._REQUIRED_TABLES)
+
+
+@needs_pg
+def test_a_failing_migration_still_leaves_the_tables_locked_down(database, tmp_path, monkeypatch):
+    """Enforcement used to sit at the end of the happy path, so any migration that raised skipped
+    it — and `main._apply_migrations` catches and boots anyway. A restricted role or one bad file
+    therefore left `rc_projects` writable through the Data API while retries failed indefinitely.
+    It is in a `finally` now."""
+    with db.pool().connection() as conn:
+        conn.execute("alter table rc_projects disable row level security")
+
+    broken = tmp_path / "9999_broken.sql"
+    broken.write_text("select 1/0;")
+    monkeypatch.setattr(db, "_migration_files",
+                        lambda: [*sorted(db.MIGRATIONS_DIR.glob("*.sql")), broken])
+
+    with pytest.raises(psycopg.errors.DivisionByZero):
+        db.migrate()
+
+    with db.pool().connection() as conn:
+        enabled = conn.execute(
+            "select relrowsecurity from pg_class where relname = 'rc_projects'").fetchone()[0]
+    assert enabled, "a failing migration left the tables reachable from the Data API"
+
+
+def test_one_unlockable_table_does_not_leave_the_others_exposed(caplog):
+    """`ALTER TABLE` needs ownership, so a single `public.rc_*` table owned by somebody else — a
+    leftover, or something an operator created by hand — must not roll back the lockout for
+    everything else. One table failing has to cost exactly that table.
+
+    A fake connection rather than Postgres: reproducing an ownership failure needs a non-superuser
+    role, and the local/CI databases connect as superuser, which bypasses ownership entirely. The
+    property under test is the loop's error handling, so that is what is driven directly — a
+    database that refused nothing would make this test vacuous.
+    """
+    class _Conn:
+        def __init__(self):
+            self.locked = []
+
+        def execute(self, query, params=None):
+            text = str(getattr(query, "as_string", lambda _c=None: query)(None)
+                       if hasattr(query, "as_string") else query)
+            if "pg_tables" in text:
+                return [("rc_users",), ("rc_stubborn",), ("rc_projects",)]
+            if "pg_roles" in text:
+                return [("anon",)]
+            if "rc_stubborn" in text:
+                raise RuntimeError("must be owner of table rc_stubborn")
+            if "enable row level security" in text:
+                self.locked.append(text)
+            return []
+
+        def transaction(self):
+            import contextlib
+            return contextlib.nullcontext()
+
+    conn = _Conn()
+    with caplog.at_level("ERROR"):
+        db._enforce_data_api_lockout(conn)
+
+    assert any("rc_users" in stmt for stmt in conn.locked)
+    assert any("rc_projects" in stmt for stmt in conn.locked), (
+        "a table that failed stopped the tables after it from being locked down")
+    assert any("rc_stubborn" in r.getMessage() for r in caplog.records), (
+        "the failure was swallowed silently — nothing else will notice it")
+
+
+@needs_pg
+def test_the_lockout_does_not_trust_the_ledger_it_secures(database):
+    """The sharpest version of the same finding. `migrate()` skips any file already named in
+    `rc_schema_migrations` — and that ledger is itself in the exposed schema. So when the lockout
+    was a migration FILE, an anon-key caller could insert its filename before the deploy that
+    introduced it, and the one statement that would have closed the hole was the one silently
+    skipped, with startup reporting nothing pending.
+
+    It is applied unconditionally on every migrate now, so poisoning the ledger achieves nothing.
+    """
+    with db.pool().connection() as conn:
+        conn.execute("alter table rc_projects disable row level security")
+        # Whatever an attacker can write into the ledger.
+        for name in ("0004_lock_out_the_data_api.sql", "0005_anything.sql", "9999_future.sql"):
+            conn.execute("insert into rc_schema_migrations (name) values (%s) "
+                         "on conflict do nothing", (name,))
+
+    db.migrate()
+
+    with db.pool().connection() as conn:
+        enabled = conn.execute(
+            "select relrowsecurity from pg_class where relname = 'rc_projects'").fetchone()[0]
+    assert enabled, "a poisoned migration ledger suppressed the Data API lockout"
+
+
+@needs_pg
+def test_a_table_added_later_is_locked_down_without_anyone_remembering(database):
+    """The list is enumerated from the catalog rather than hard-coded, so "every new table needs
+    RLS and revoked grants" stops being something a future migration has to remember."""
+    with db.pool().connection() as conn:
+        conn.execute("create table if not exists rc_something_new (id int primary key)")
+    try:
+        db.migrate()
+        with db.pool().connection() as conn:
+            enabled = conn.execute(
+                "select relrowsecurity from pg_class where relname = 'rc_something_new'").fetchone()
+        assert enabled and enabled[0]
+    finally:
+        with db.pool().connection() as conn:
+            conn.execute("drop table if exists rc_something_new")
+
+
+@needs_pg
+def test_every_table_is_off_the_supabase_data_api(database):
+    """The anon key is published — it ships inside the mobile app — and Supabase exposes `public`
+    through PostgREST with default grants to `anon`/`authenticated`. A table reachable that way is
+    a table where `rc_projects.owner_id` can be rewritten by the person it locks out.
+
+    Asserted per table rather than per migration, so a table added later without this fails here
+    instead of on a live instance.
+    """
+    with db.pool().connection() as conn:
+        rows = conn.execute(
+            "select relname, relrowsecurity from pg_class "
+            "where relname in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "'rc_schema_migrations')").fetchall()
+    assert len(rows) == 4, rows
+    assert all(enabled for _name, enabled in rows), rows
+
+    # And no policy has been added that would re-open one: RLS with zero policies is the denial.
+    with db.pool().connection() as conn:
+        policies = conn.execute(
+            "select tablename, policyname from pg_policies "
+            "where tablename in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "'rc_schema_migrations')").fetchall()
+    assert policies == [], policies
 
 
 @needs_pg

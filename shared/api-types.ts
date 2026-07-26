@@ -52,7 +52,23 @@ export interface paths {
         /** Read Settings */
         get: operations["read_settings_api_settings_get"];
         put?: never;
-        /** Write Settings */
+        /**
+         * Write Settings
+         * @description Save settings, routing each half of the form to whoever owns it.
+         *
+         *     The provider keys are the INSTANCE's, not the caller's: any authenticated user could once swap
+         *     the model every turn runs on, or overwrite the OpenRouter key and take the app offline for
+         *     everyone (P0-2). Slice 2a closed that by gating the whole document on the operator, which also
+         *     took away a reader's own voice and model — so the halves now separate (`config.USER_SETTING_KEYS`).
+         *
+         *     Preferences go to the caller's own document when they have one. When they do not — no database,
+         *     or open auth with no signed-in user — they fall back to the shared document and therefore to
+         *     the operator gate, which is exactly the pre-split behaviour a single-tenant `./run.sh` needs.
+         *
+         *     Note this makes an operator's OWN model and voice picks personal too. The instance-wide defaults
+         *     for those are the `RC_*` environment variables, set where the deployment is configured; there is
+         *     no path here for one user to choose another's voice, which is the point.
+         */
         post: operations["write_settings_api_settings_post"];
         delete?: never;
         options?: never;
@@ -70,6 +86,10 @@ export interface paths {
         /**
          * Get Prompts
          * @description All workflow prompts and live status, optionally scoped to one project's method file.
+         *
+         *     The project id arrives as a QUERY parameter, so this route never acquires `use_project` and
+         *     the ownership check has to be made here — without it, naming someone else's project returns
+         *     their `reading-method.md`, which is a document they wrote.
          */
         get: operations["get_prompts_api_prompts_get"];
         put?: never;
@@ -167,7 +187,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Projects */
+        /**
+         * List Projects
+         * @description Only the caller's own projects, once ownership is being recorded.
+         *
+         *     Filtered here rather than inside `projects.list_projects()` so that module keeps working
+         *     without a user — the adoption script and the job layer both enumerate every project on disk and
+         *     must continue to see all of them.
+         */
         get: operations["list_projects_api_projects_get"];
         put?: never;
         /** Create Project */
@@ -185,10 +212,40 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Recent Sessions */
+        /**
+         * Recent Sessions
+         * @description Cross-project, so it enumerates every project on disk and must be filtered here.
+         *
+         *     Not path-scoped, so it never acquires `use_project` — which is exactly how it was returning
+         *     every user's project names, paper titles and source URLs to anyone signed in.
+         */
         get: operations["recent_sessions_api_recent_sessions_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Project Bundle
+         * @description Create a project from a bundle exported by another instance.
+         *
+         *     Always a NEW project — import never merges into or overwrites an existing one. Merging two
+         *     divergent histories of the same reading list is a genuine design problem (whose approval wins?)
+         *     and silently picking an answer would be worse than making the operator see two projects.
+         */
+        post: operations["import_project_bundle_api_projects_import_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -244,6 +301,10 @@ export interface paths {
          * Get Unattributed Usage
          * @description App-global ledger of LLM spend with no project to attribute to (e.g. narration requested
          *     without an initiating project). Kept explicit so nothing is silently dropped.
+         *
+         *     Operator-only: it is instance-wide by definition, so it reports what EVERY user's unattributed
+         *     activity cost — models, operations and spend. That is the operator's billing view, not a
+         *     reader's.
          */
         get: operations["get_unattributed_usage_api_usage_unattributed_get"];
         put?: never;
@@ -347,7 +408,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Audio */
+        /**
+         * Audio
+         * @description Serve one cached mp3 — from the CALLER's audio directory, never a shared one.
+         *
+         *     This is the entire fetch-side boundary, and it is a path rather than a check: the same passage
+         *     in the same voice yields the same file name for everybody, so `name` is not a secret and never
+         *     needed to be. Joining it to `audio_jobs.user_audio_dir()` means a name learned from — or simply
+         *     computed the same way as — someone else's client resolves to a file that does not exist for you.
+         *
+         *     `private` caching, not `public`: the response now varies by caller, and a shared cache keyed on
+         *     the URL alone would hand one user's narration to the next (the same correction covers/figures
+         *     took in slice 2a).
+         */
         get: operations["audio_api_audio__name__get"];
         put?: never;
         post?: never;
@@ -372,6 +445,30 @@ export interface paths {
          *     narration bills the initiating project (validated) or the unattributed ledger.
          */
         post: operations["narrate_api_narrate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Project Bundle
+         * @description Download this project as a git bundle — the shareable form of a project.
+         *
+         *     A plain response rather than a background job (invariant 1) on measured grounds: the largest
+         *     project here is 214 MB on disk but bundles to 1.1 MB in 0.17 s, because `.state/` is working
+         *     state and git-ignored. Nothing about this can approach the tunnel's ~100 s ceiling.
+         */
+        get: operations["export_project_bundle_api_projects__pid__bundle_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1848,6 +1945,13 @@ export interface components {
             /** Name */
             name: string;
         };
+        /** Body_import_project_bundle_api_projects_import_post */
+        Body_import_project_bundle_api_projects_import_post: {
+            /** File */
+            file: string;
+            /** Name */
+            name: string;
+        };
         /** Body_upload_paper_api_projects__pid__upload_paper_post */
         Body_upload_paper_api_projects__pid__upload_paper_post: {
             /** Slug */
@@ -2630,6 +2734,39 @@ export interface operations {
             };
         };
     };
+    import_project_bundle_api_projects_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_project_bundle_api_projects_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     project_meta_api_projects__pid__meta_get: {
         parameters: {
             query?: never;
@@ -2918,6 +3055,37 @@ export interface operations {
                 "application/json": components["schemas"]["NarrateReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_project_bundle_api_projects__pid__bundle_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

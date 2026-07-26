@@ -55,6 +55,45 @@ _registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50)
 _jobs = _registry.jobs
 
 
+def user_audio_dir() -> Path:
+    """Where the active user's mp3s live: their own directory, or the flat app-global one when no
+    user is bound (single-tenant `./run.sh`, which therefore keeps its existing cache).
+
+    Every path in this module resolves through here, and so does the `/api/audio/{name}` route —
+    which is the whole boundary. Two users asking for the same passage in the same voice produce
+    the SAME file name, and reach different files, because the name is only ever joined to the
+    caller's own directory. There is no ownership lookup to forget, and a leaked file name buys
+    nothing.
+
+    The cost is honest and was chosen (Kamil, 2026-07-26): identical narration is synthesized once
+    per user instead of once. In exchange, cancellation is trivially correct (the job is the
+    caller's alone) and account deletion is a directory removal.
+    """
+    scope = config.user_scope_dir()
+    directory = AUDIO_DIR if scope is None else scope / "audio"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _audio_scope() -> str | None:
+    """The job-registry scope for the active user, or None (app-global) when there is none.
+
+    This travels in the same field `JobRegistry` uses for project ids, and `start_or_join` consults
+    the project deletion/busy tombstones with whatever it is handed. That is safe only because a
+    `user:` prefix can never be a project id — `projects._safe_pid` rejects `:` — so the two
+    namespaces provably cannot collide rather than happening not to. Asserted in
+    `tests/test_audio_isolation.py`.
+
+    The pseudonym rather than the raw id, because the registry TAGS EVERY LOG LINE with this scope:
+    the id itself would put a durable Supabase account identifier, and the times that account
+    listens to things, into the log drain. It is also the same value that names the user's audio
+    directory, so a log line and a directory can be lined up during support without either one
+    naming a person.
+    """
+    key = config.user_scope_key()
+    return None if key is None else f"user:{key}"
+
+
 def _voice_key() -> str:
     s = config.load_settings()
     return f"openai|{s.get('tts_model')}|{s.get('tts_voice')}"
@@ -68,12 +107,12 @@ def audio_cache_path(narration: str) -> Path:
     """Cache file for a narration under the current voice settings. Same key scheme
     /api/speak has always used, so both entry points share one cache."""
     name = hashlib.sha1(f"{_voice_key()}|{narration}".encode()).hexdigest() + ".mp3"
-    return AUDIO_DIR / name
+    return user_audio_dir() / name
 
 
 def segment_cache_path(text: str) -> Path:
     name = hashlib.sha1(f"segment|{_voice_key()}|{text}".encode()).hexdigest() + ".mp3"
-    return AUDIO_DIR / name
+    return user_audio_dir() / name
 
 
 def _segment_metadata(parts: list[str], *, existing_only: bool) -> list[dict]:
@@ -86,20 +125,24 @@ def _segment_metadata(parts: list[str], *, existing_only: bool) -> list[dict]:
     return out
 
 
-# Audio is app-global (the mp3 cache is shared across projects), so its jobs live under the
-# None project scope explicitly — identical audio requested from any project shares one job.
+# Audio is app-global ACROSS PROJECTS — one user's audio is shared between their own projects,
+# since the mp3 cache is keyed by content and voice, not by paper. It is NOT shared across users:
+# the scope below is the caller's, so a job id names a job only for the person who started it.
 def get_job(job_id: str) -> AudioJob | None:
-    return _registry.get(job_id, project_id=None)
+    return _registry.get(job_id, project_id=_audio_scope())
 
 
 def cancel_job(job_id: str) -> AudioJob | None:
     """Cooperatively cancel a running preparation (see JobRegistry.cancel). The worker stops at
     its next checkpoint — before the narration call and between TTS segments — so at most one
-    in-flight upstream call completes after this returns. Because jobs are deduped by content
-    hash, cancelling also cancels for any other client joined to the same text (acceptable for
-    the single-household deployment). Segments already synthesized stay in the cache, so a
-    re-request resumes rather than restarting from zero."""
-    return _registry.cancel(job_id, project_id=None)
+    in-flight upstream call completes after this returns. Segments already synthesized stay in the
+    cache, so a re-request resumes rather than restarting from zero.
+
+    Dedup joins only within one user's scope, so cancelling can no longer stop a preparation
+    somebody else is waiting on. That used to be documented as acceptable for a single-household
+    deployment; with strangers on the instance it is an unauthenticated denial of service, and it
+    is what made per-user scoping the right answer rather than an ACL over a shared job."""
+    return _registry.cancel(job_id, project_id=_audio_scope())
 
 
 def start_job(text: str, billing_project: str | None = None,
@@ -109,8 +152,13 @@ def start_job(text: str, billing_project: str | None = None,
     is already running, or answer instantly from the caches if the result already exists.
     Returns the job snapshot either way — callers just poll get_job(id) until it settles.
 
-    The job itself is app-global (project_id=None) so the mp3/narration caches and dedup are
-    shared across projects, but the narration LLM call is billed to `billing_project` — the
+    The job is scoped to the active USER (`_audio_scope`), not to a project, so the mp3/narration
+    caches and dedup are shared across that person's projects but never across people. The worker
+    thread resolves the same scope because `JobRegistry` rebinds the active user alongside the
+    active project — without that rebind the worker would write into the flat app-global directory
+    while the route read from the user's, and every preparation would appear to fail.
+
+    The narration LLM call is billed to `billing_project` — the
     project that initiated this uncached narration. A cache hit does no LLM work and so costs
     nothing (no one is billed), matching the intended policy. `billing_project` must already be
     validated by the caller. narrate_fn/synth_fn are injectable for tests."""
@@ -118,7 +166,7 @@ def start_job(text: str, billing_project: str | None = None,
     synth_fn = synth_fn or tts.openai_speech
     jid = job_id_for(text)
 
-    existing = _registry.active_for(jid, project_id=None)
+    existing = _registry.active_for(jid, project_id=_audio_scope())
     if existing:
         return existing
 
@@ -132,7 +180,7 @@ def start_job(text: str, billing_project: str | None = None,
             url=f"/api/audio/{audio_cache_path(narration).name}",
             segments=segments, segments_done=len(segments), segments_total=len(parts),
             finished_at=now_iso()),
-            project_id=None)
+            project_id=_audio_scope())
 
     def work(job: AudioJob) -> None:
         # Cancellation checkpoints bracket every paid upstream call (narration LLM, each TTS
@@ -198,4 +246,5 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"
 
-    return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work, project_id=None)
+    return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work,
+                                   project_id=_audio_scope())

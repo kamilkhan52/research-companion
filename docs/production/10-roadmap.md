@@ -11,9 +11,40 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-25)
+## Current position (updated 2026-07-26)
 
-**In M1.** Plan merged (#217). Five M1 PRs merged (#218–#223); the API-36 spike is done (answer: already 36, no change). What remains of M1 is the production Fly app + secrets — all of which needs Kamil.
+**M2's backend is complete.** M1 is code-complete (#218–#224); what remains of it is the production
+Fly app + secrets, all of which needs Kamil. M2 then landed in five slices:
+
+| PR | Slice | Status |
+|---|---|---|
+| #235 | 1 — `db.py` (pool, migration runner, DSN validation) + `tenancy.py`, recording ownership only | ✅ merged (`38ac21d`) |
+| #236 | 2a — enforcement: `use_project` refuses a foreign project, cross-project routes filtered, operator-only usage/covers | ✅ merged (`95d54c2`) |
+| #237 | 3 — job isolation pinned by test; audio ownership decision recorded | ✅ merged (`47d1972`) |
+| #238 | 4 — settings split into operator-owned vs per-user; 5 — audio scoped per user; RLS on every table | open |
+
+**What M2 actually closed:** P0-1 (every user saw every project), P1-2 (unauthorized job endpoints,
+audio included), the cross-user halves of P1-1 and P1-14 (audio as a read channel), and P0-18 — a
+finding made *during* the work: the ownership tables were reachable from the published anon key,
+with `rc_projects.owner_id` writable, which is a full takeover of another person's reading list.
+
+**What is left before testers can be let in:**
+
+1. **Kamil sets `RC_ADOPT_OWNER` on staging** so the six imported projects have an owner and become
+   visible under enforcement. Without it they are unowned, and an unowned project is reachable by
+   nobody — which is the correct failure, but it looks like data loss.
+2. **Client wiring for per-user settings.** Both clients still gate the whole settings form on
+   `is_operator`, so a reader cannot reach their own model/voice yet even though the API accepts it.
+   `can_edit_preferences` is on the GET response for this.
+3. **Finish the staging Supabase Site URL / redirect configuration** (Kamil).
+4. **M2.5's account deletion** is now cheap on the backend side — a user's audio and narration cache
+   is one directory — but the project-content half is untouched.
+
+Not in M2 and still open: P0-17 (`DeliveryReq.model` bypasses settings entirely, so per-user model
+preferences do not bound spend — that is M3's tier check), and audio cache eviction, which per-user
+copies make *more* pressing rather than less.
+
+M1's PRs, for reference:
 
 | PR | Scope | Status |
 |---|---|---|
@@ -246,8 +277,8 @@ gets updated as each lands.
 
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
-| M1 | Hosting, environments, and secrets | — | L | **in progress** (#218 merged, #219 open, PR 3 pending) |
-| M2 | Identity, tenancy, and per-user isolation | M1 | L | queued |
+| M1 | Hosting, environments, and secrets | — | L | **code-complete** (#218–#224 merged); the rest needs Kamil — see `HUMAN_ACTIONS.md` |
+| M2 | Identity, tenancy, and per-user isolation | M1 | L | **backend complete** (#235–#238 merged/open); client wiring + Kamil's `RC_ADOPT_OWNER` remain |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
