@@ -230,8 +230,36 @@ when M2's ownership enforcement lands.
 
 ## Blocking M2 (identity and tenancy)
 
-### H5 — Google OAuth credentials · ✅ `done` (2026-07-25)
+### H5 — Google OAuth credentials · 🟡 `prod done; staging callback outstanding` (2026-07-26)
 Web client created and wired into Supabase's Google provider; 3 accounts added as OAuth test users.
+
+**The staging project's callback is a SEPARATE redirect URI and is missing.** Hit on the first
+device test of mobile sign-in (2026-07-26):
+
+```
+Error 400: redirect_uri_mismatch
+redirect_uri=https://iqsiabkdbczvgyccswcy.supabase.co/auth/v1/callback
+```
+
+Enabling the Google provider *inside* Supabase is only half the job. The other half is in Google
+Cloud Console, and it is per-project because the callback URL contains the project ref. Add to the
+same **Web application** client's *Authorized redirect URIs*:
+
+```
+https://iqsiabkdbczvgyccswcy.supabase.co/auth/v1/callback
+```
+
+Worth knowing for diagnosing this class of error: there are **two** redirect legs, and only one of
+them is Google's business.
+
+| Leg | Redirect | Registered where |
+|---|---|---|
+| App → Supabase | `researchcompanion://auth` | Supabase → Authentication → URL Configuration |
+| Supabase → Google and back | `https://<ref>.supabase.co/auth/v1/callback` | Google Cloud Console → Credentials |
+
+A `redirect_uri_mismatch` from Google is always the second leg, so the app's own scheme is never
+the cause and changing it never helps. Magic-link sign-in does not touch Google at all, which makes
+it the way to verify everything else while this is outstanding.
 
 **Carried forward to H16:** adding test users means the Google consent screen is in **Testing**
 mode, which restricts sign-in to those specific accounts. Before M2.5 needs 12+ testers, either add
