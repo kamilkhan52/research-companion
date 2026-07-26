@@ -410,6 +410,15 @@ OAuth redirect via `expo-web-browser` back through the app's `researchcompanion`
 mobile `apiBaseUrl` cutover **cannot happen until this lands**. Until then the app keeps pointing
 at the Mac mini. This is also why M2.5 depends on M2 — testers must be able to sign in.
 
+**DECIDED 2026-07-26 (Kamil): scope audio jobs and the mp3 cache PER USER.** Each user gets their
+own job and their own copy of the file. Chosen over the ACL-rows-over-shared-blobs alternative the
+paragraph below recommends, and the reasoning is worth keeping: per-user caching still de-duplicates
+a user's OWN repeat listens, which is the common case, so the cache-sharing loss only applies when
+two different users narrate identical text — rare with different readers on different papers.
+Against that, ownership becomes obvious, cancellation is trivially correct (the job is yours alone),
+and M7 deletion is `rm -rf audio/<user_id>/` rather than reference counting. Revisit only if the
+usage ledger shows real cross-user duplication.
+
 **Audio needs an explicit redesign, not just an ownership check.** Audio jobs are deliberately
 registered under the `None` project scope so identical narration requested from anywhere shares one
 job (`audio_jobs.py:89`), cancellation therefore cancels *every* caller joined to that content, and
