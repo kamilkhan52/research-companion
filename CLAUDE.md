@@ -71,6 +71,13 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   module (or a new module + `include_router` in main.py), not to main.py.
 - `config.py` — settings (app-global) + the active-project contextvar + vault/path precedence.
 - `projects.py` — multi-project registry; `use_project` dependency binds the contextvar.
+  Also **project sharing**: `export_bundle`/`import_bundle` move a project between instances as a
+  **git bundle**, because the git history *is* the record (invariant 4) and a bundle carries it
+  intact. It is also tiny — `.gitignore` excludes `.state/`, which is nearly all of a project on
+  disk (207 MB of one 214 MB project; the bundle is 1.1 MB in 0.17 s), so export is a plain request
+  rather than a job. Import always creates a NEW project: merging two divergent histories of one
+  reading list is a real design question, and picking silently would be worse than two projects.
+  `scripts/share-project.sh <pid> <target-url>` does both legs.
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.

@@ -6,7 +6,8 @@ binding it active via `use_project`, exactly as before the split.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from .. import (
@@ -53,6 +54,44 @@ def list_projects():
 @router.get("/api/recent-sessions")
 def recent_sessions(limit: int = Query(default=20, ge=1, le=100)):
     return {"sessions": projects.recent_sessions(limit)}
+
+
+@project_router.get("/bundle")
+def export_project_bundle(pid: str):
+    """Download this project as a git bundle — the shareable form of a project.
+
+    A plain response rather than a background job (invariant 1) on measured grounds: the largest
+    project here is 214 MB on disk but bundles to 1.1 MB in 0.17 s, because `.state/` is working
+    state and git-ignored. Nothing about this can approach the tunnel's ~100 s ceiling.
+    """
+    try:
+        data = projects.export_bundle(pid)
+    except ProjectError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return Response(
+        content=data,
+        media_type="application/x-git-bundle",
+        headers={"Content-Disposition": f'attachment; filename="{pid}.bundle"'},
+    )
+
+
+@router.post("/api/projects/import")
+async def import_project_bundle(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+):
+    """Create a project from a bundle exported by another instance.
+
+    Always a NEW project — import never merges into or overwrites an existing one. Merging two
+    divergent histories of the same reading list is a genuine design problem (whose approval wins?)
+    and silently picking an answer would be worse than making the operator see two projects.
+    """
+    data = await file.read(projects.MAX_BUNDLE_BYTES + 1)
+    try:
+        meta = projects.import_bundle(data, name)
+    except ProjectError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return meta
 
 
 @router.post("/api/projects")

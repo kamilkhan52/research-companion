@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -223,6 +224,90 @@ def create_project(name: str, method: str | None = None) -> dict:
     _git(pid, "init", "-q", "-b", "main")
     _git(pid, "add", "-A")
     _git(pid, "commit", "-q", "-m", f"Initialize project: {name}")
+    return meta
+
+
+# --- sharing: a project moves between instances as a git bundle ----------------------------------
+#
+# A bundle rather than an archive of the directory, because the git history IS the record here
+# (invariant 4: the agent proposes, a human approves, and only then does anything reach git). A
+# bundle carries every commit, so the approval trail survives the move intact.
+#
+# It is also dramatically smaller, for a reason worth stating: `.gitignore` excludes `.state/`, and
+# `.state/` is nearly all of a project on disk — 207 MB of one 214 MB project here. That project
+# bundles to **1.1 MB in 0.17 s**, which is why export is a plain request and not a background job
+# (invariant 1 is about operations that can run for minutes).
+#
+# And it sidesteps a whole bug class: extracting an untrusted archive means defending against
+# absolute and `..` paths yourself. Git validates its own bundle, and a bundle cannot carry hooks —
+# they live in `.git/hooks`, which is not tracked.
+
+#: Bundles above this are refused unread. A real project is ~1 MB; this is 200x that.
+MAX_BUNDLE_BYTES = 200 * 1024 * 1024
+
+
+def export_bundle(pid: str) -> bytes:
+    """Every commit in `pid`, as a git bundle. Working state (`.state/`) is excluded by design."""
+    if not exists(pid):
+        raise ProjectError(f"Unknown project: {pid}")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "project.bundle"
+        # `--all` plus HEAD: --all covers every branch and tag, and HEAD makes the clone check out
+        # the right branch instead of landing detached.
+        _git(pid, "bundle", "create", str(out), "--all", "HEAD")
+        return out.read_bytes()
+
+
+def import_bundle(data: bytes, name: str) -> dict:
+    """Create a new project from a git bundle. Never overwrites: always a fresh id.
+
+    The bundle is untrusted — it arrives over HTTP from another instance — so it is verified
+    before anything is cloned, and cloned into a temporary directory that is only moved into place
+    once it looks like a project. A half-imported directory under PROJECTS_ROOT would otherwise be
+    listed as a real project.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise ProjectError("A name is required for the imported project.")
+    if not data:
+        raise ProjectError("The uploaded bundle is empty.")
+    if len(data) > MAX_BUNDLE_BYTES:
+        raise ProjectError(
+            f"Bundle is {len(data) // (1024 * 1024)} MB; the limit is "
+            f"{MAX_BUNDLE_BYTES // (1024 * 1024)} MB.")
+
+    pid = _unique_id(slugify(name))
+    dest = project_path(pid)  # validates the id before anything touches the filesystem
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bundle = Path(tmp) / "incoming.bundle"
+        bundle.write_bytes(data)
+        # Verify first. `git clone` on a malformed bundle leaves a partial directory behind, and
+        # the error it gives is far less legible than this one.
+        verify = subprocess.run(["git", "bundle", "verify", str(bundle)],
+                                capture_output=True, text=True)
+        if verify.returncode != 0:
+            raise ProjectError(f"Not a valid project bundle: {verify.stderr.strip()}")
+
+        staged = Path(tmp) / "clone"
+        clone = subprocess.run(
+            # No --recurse-submodules: a .gitmodules in the bundle must not cause a network fetch.
+            ["git", *config.git_identity_args(), "clone", "-q", str(bundle), str(staged)],
+            capture_output=True, text=True)
+        if clone.returncode != 0:
+            raise ProjectError(f"Could not import the bundle: {clone.stderr.strip()}")
+        if not (staged / "reading-list.md").exists():
+            raise ProjectError("That bundle is not a Research Companion project.")
+
+        # `.state/` is working state and is not in the bundle; recreate it so the project behaves
+        # like any other from the first request.
+        (staged / ".state").mkdir(exist_ok=True)
+        shutil.move(str(staged), str(dest))
+
+    meta = _read_meta(pid)
+    meta.update({"id": pid, "name": name, "created_at": meta.get("created_at") or _now(),
+                 "imported_at": _now()})
+    _write_meta(pid, meta)
     return meta
 
 
