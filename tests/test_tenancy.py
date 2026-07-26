@@ -406,3 +406,23 @@ def test_a_trailing_newline_is_not_a_project_id():
 
     with pytest.raises(projects_module.ProjectError):
         projects_module._safe_pid("project\n")
+
+
+@needs_pg
+def test_release_returns_the_owner_it_just_cleared(database):
+    """`release` retires the row and must hand back who owned it, so a failed delete can restore it.
+
+    It does that with `update ... returning (select owner_id ...)`, which relies on Postgres
+    evaluating the subquery against the statement's snapshot — i.e. seeing the value BEFORE the
+    update. That is subtle and could plausibly differ across versions, and if it ever returned null
+    the compensating restore in `delete_project` would silently do nothing while looking correct.
+    """
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("doomed", OWNER)
+
+    assert tenancy.release("doomed") == OWNER
+    assert tenancy.owner_of("doomed") is None          # retired: nobody owns it
+    assert tenancy.id_is_recorded("doomed") is True    # but the id stays taken
+
+    tenancy.restore("doomed", OWNER)
+    assert tenancy.owner_of("doomed") == OWNER
