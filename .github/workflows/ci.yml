@@ -9,6 +9,19 @@ jobs:
   backend:
     name: Backend (ruff + pytest)
     runs-on: ubuntu-latest
+    # A real Postgres, because M2's ownership tests assert things only Postgres can tell us: the
+    # CHECK constraint on a project id, the owner foreign key, `on conflict do nothing`. A fake
+    # would assert my idea of those rules rather than the database's. Without this the tests skip,
+    # and a skipped isolation test is indistinguishable from a passing one at a glance.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rc_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,7 +33,11 @@ jobs:
       - name: Lint (ruff)
         run: ruff check app tests
       - name: Test (pytest)
-        # The suite is network-free by design (see tests/conftest.py); no secrets needed.
+        # Still network-free by design (see tests/conftest.py) — the database is a loopback service
+        # container, not an external call. RC_TEST_DATABASE_URL is what un-skips the ownership
+        # tests; it is a throwaway CI database, not a secret.
+        env:
+          RC_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rc_test
         run: python -m pytest
 
   mobile:

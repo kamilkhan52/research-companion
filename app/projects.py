@@ -69,11 +69,21 @@ def slugify(name: str) -> str:
 # (so no `..`), never absolute — so `PROJECTS_ROOT / pid` can never escape the root. This is the
 # trust boundary for EVERY caller that turns an untrusted id into a path: `use_project` (the
 # route pid) and the audio billing `project` both flow through here.
-_PID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_PID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+#: A path segment cannot exceed this on any filesystem we run on, so an id longer than it could
+#: never have been a real directory — and accepting one lets a value through this boundary that
+#: only fails much later, at mkdir, far from the check that should have caught it.
+_PID_MAX_LENGTH = 255
 
 
 def _safe_pid(pid: str) -> str:
-    if not isinstance(pid, str) or not _PID_RE.match(pid):
+    # `fullmatch`, not `match`: Python's `$` also matches immediately BEFORE a trailing newline, so
+    # `_PID_RE.match("project\n")` succeeded and `"project\n"` was accepted as a project id. It is
+    # not a legitimate id by any route, and it is the kind of value that behaves differently in
+    # every layer that later handles it — a filesystem name, a log line, a database CHECK (Postgres
+    # regexes have no such newline rule, so the same id is valid here and invalid there).
+    if not isinstance(pid, str) or len(pid) > _PID_MAX_LENGTH or not _PID_RE.fullmatch(pid):
         raise ProjectError(f"Invalid project id: {pid!r}")
     return pid
 
