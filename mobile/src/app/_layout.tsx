@@ -13,7 +13,7 @@ import {
 } from '@expo-google-fonts/newsreader';
 import { Feather } from '@expo/vector-icons';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 // Theme APIs come from expo-router itself: as of SDK 56 the bundler rejects any direct
 // `@react-navigation/*` import in application code (expo-router vendors react-navigation).
@@ -33,14 +33,16 @@ import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { loadConfig } from '@/api/config';
-import { queryClient } from '@/api/queryClient';
+import { loadConfig, subscribeBaseUrl } from '@/api/config';
+import { createQueryClient, setActiveQueryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
 import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
+import { AuthProvider } from '@/auth/AuthProvider';
+import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
@@ -122,8 +124,30 @@ function ThemedShell() {
   );
 }
 
+/** A QueryClient scoped to the current server. See `createQueryClient` for why this is replaced
+ *  rather than cleared: a stale continuation cannot write into a client that no longer exists. */
+function useServerScopedQueryClient(): QueryClient {
+  const [client, setClient] = useState(() => {
+    const created = createQueryClient();
+    setActiveQueryClient(created);
+    return created;
+  });
+  useEffect(() => subscribeBaseUrl(() => {
+    setClient((previous) => {
+      previous.unmount();  // it holds focus/online subscriptions and GC timers
+      const created = createQueryClient();
+      // Registered so module-level code — the analysis and paper-offer chains, which run outside
+      // React and cannot call useQueryClient() — invalidates the cache that is actually rendered.
+      setActiveQueryClient(created);
+      return created;
+    });
+  }), []);
+  return client;
+}
+
 export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
+  const queryClient = useServerScopedQueryClient();
   const [fontsLoaded] = useFonts({
     Manrope_400Regular,
     Manrope_500Medium,
@@ -165,6 +189,13 @@ export default function RootLayout() {
         <ToastProvider>
         <KeyboardProvider>
           <QueryClientProvider client={queryClient}>
+            <AuthProvider>
+            {/* The gate sits ABOVE every API and audio consumer, not just above the screens.
+                PaperEntityProvider fetches project state and AudioProvider restores tracks with
+                auth headers on mount — below the gate they cannot fire a protected request with a
+                stale cached token while Supabase is still restoring the session, which on an
+                overnight cold start would cache a 401 or break audio restoration. */}
+            <AuthGate>
             <ProjectProvider>
               <ListeningProvider>
                 <GraphSettingsProvider>
@@ -184,6 +215,8 @@ export default function RootLayout() {
                 </GraphSettingsProvider>
               </ListeningProvider>
             </ProjectProvider>
+            </AuthGate>
+            </AuthProvider>
           </QueryClientProvider>
         </KeyboardProvider>
         </ToastProvider>

@@ -9,6 +9,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { getServerGeneration } from '@/api/config';
 import { getGraph, getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import { showToast } from '@/ui/Toast';
@@ -110,12 +111,17 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         && loadedSnapshotRef.current !== snapshotRevision
       ) {
         loadedSnapshotRef.current = snapshotRevision;
+        // This write bypasses TanStack Query, so `queryClient.clear()` on a server switch cannot
+        // cancel it. Without the generation check a response from server A, resolving after the
+        // switch, would reinstate A's graph as fresh data under a project id that also exists on B.
+        const requestedOnGeneration = getServerGeneration();
         void getGraph(pid)
           .then((response) => {
             // A final job snapshot can arrive while this one-off skeleton fetch is in flight.
             // Never let the slower, older response overwrite the enriched graph.
             if (
-              loadedSnapshotRef.current === snapshotRevision
+              getServerGeneration() === requestedOnGeneration
+              && loadedSnapshotRef.current === snapshotRevision
               && response.graph?.revision === snapshotRevision
               && response.graph.stage === 'skeleton'
             ) {

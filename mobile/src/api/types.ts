@@ -281,7 +281,11 @@ export interface PromptStatus {
 /** GET /api/auth/config */
 export interface AuthConfig {
   mode: 'supabase' | 'token' | 'open';
+  /** `mode !== 'open'`. The server sends it; the type omitted it, so the client could not tell
+   *  "no auth configured" from "auth on, not signed in". */
+  enabled: boolean;
   supabase_url?: string;
+  /** Publishable by design — it is served to clients so they can construct a Supabase client. */
   supabase_anon_key?: string;
 }
 

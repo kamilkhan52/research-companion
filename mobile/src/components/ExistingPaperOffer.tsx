@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Switch, View } from 'react-native';
 
 import * as api from '@/api/endpoints';
-import { queryClient } from '@/api/queryClient';
+import { getActiveQueryClient } from '@/api/queryClient';
 import type { Paper, PaperLocation } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -128,25 +128,25 @@ export function ExistingPaperOfferHost() {
       // Keep cross-project surfaces live even though the add mutation itself did not call the
       // ordinary add endpoint. Shapes mirror api/queries.ts without importing it (which would
       // cycle useAddPaper -> this host -> useMoveProject).
-      void queryClient.invalidateQueries({ queryKey: ['projects'] });
-      void queryClient.invalidateQueries({ queryKey: ['recentSessions'] });
-      void queryClient.invalidateQueries({
+      void getActiveQueryClient().invalidateQueries({ queryKey: ['projects'] });
+      void getActiveQueryClient().invalidateQueries({ queryKey: ['recentSessions'] });
+      void getActiveQueryClient().invalidateQueries({
         queryKey: ['project', offer.targetPid, 'state'],
       });
-      void queryClient.invalidateQueries({
+      void getActiveQueryClient().invalidateQueries({
         queryKey: ['project', offer.targetPid, 'graph'],
       });
-      void queryClient.invalidateQueries({
+      void getActiveQueryClient().invalidateQueries({
         queryKey: ['project', offer.targetPid, 'graphAuthors'],
       });
       if (removeFromSource) {
-        void queryClient.invalidateQueries({
+        void getActiveQueryClient().invalidateQueries({
           queryKey: ['project', selected.project_id, 'state'],
         });
-        void queryClient.invalidateQueries({
+        void getActiveQueryClient().invalidateQueries({
           queryKey: ['project', selected.project_id, 'graph'],
         });
-        void queryClient.invalidateQueries({
+        void getActiveQueryClient().invalidateQueries({
           queryKey: ['project', selected.project_id, 'graphAuthors'],
         });
       }

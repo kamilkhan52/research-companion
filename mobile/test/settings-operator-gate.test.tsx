@@ -10,6 +10,7 @@ import type { ReactTestInstance } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/settings';
 import * as queries from '@/api/queries';
+import { AuthProvider } from '@/auth/AuthProvider';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
 import { GraphSettingsProvider } from '@/store/graphSettings';
@@ -17,10 +18,26 @@ import { ThemeProvider } from '@/theme/ThemeProvider';
 import { ToastProvider } from '@/ui/Toast';
 
 jest.mock('expo-router', () => ({ useRouter: () => ({ back: jest.fn(), push: jest.fn() }) }));
+// Settings stops narration before signing out, so it now consumes the audio context. Mocked
+// rather than wrapped in a real AudioProvider: that would pull in TrackPlayer and the whole
+// playback stack for a test about which settings fields are editable.
+jest.mock('@/audio/AudioProvider', () => ({
+  useAudio: () => ({ dismiss: jest.fn(async () => undefined) }),
+}));
+// The settings screen pulls in AuthProvider (for the sign-out control), which touches expo-linking.
+jest.mock('expo-linking', () => ({
+  createURL: (path: string) => `researchcompanion://${path}`,
+  parse: jest.fn(() => ({ queryParams: {} })),
+  getInitialURL: jest.fn(async () => null),
+  addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+}));
 jest.mock('@/api/config', () => ({
   getBaseUrl: () => 'https://example.test',
   hasBaseUrl: () => true,
   setBaseUrl: jest.fn(),
+  // AuthProvider re-bootstraps when the server URL changes, so it subscribes here.
+  subscribeBaseUrl: jest.fn(() => jest.fn()),
+  setToken: jest.fn(async () => undefined),
 }));
 
 const settings = {
@@ -56,6 +73,8 @@ const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTi
 function renderScreen() {
   return renderAsync(
     <QueryClientProvider client={client}>
+      {/* Settings shows a sign-out control, so the screen now needs the auth context. */}
+      <AuthProvider>
       <ThemeProvider>
         <ToastProvider>
           <ProjectProvider>
@@ -67,6 +86,7 @@ function renderScreen() {
           </ProjectProvider>
         </ToastProvider>
       </ThemeProvider>
+      </AuthProvider>
     </QueryClientProvider>,
   );
 }
