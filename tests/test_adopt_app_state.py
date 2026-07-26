@@ -160,19 +160,19 @@ def test_a_destination_appearing_mid_run_is_never_nested_or_clobbered(flat_state
 
 def test_a_partial_move_says_which_half_moved(flat_state, monkeypatch, capsys):
     """Two things move; if the second fails the operator has to know the first already went, or
-    re-running looks like it did nothing and the state looks corrupt."""
-    real_rename = adopt.os.rename
+    re-running looks like it did nothing and the state looks corrupt.
+
+    The directory goes through `os.rename` and the file through `os.link`, so failing the file is
+    what leaves exactly one half done."""
     calls = {"n": 0}
 
-    def _fail_the_second(src, dst):
+    def _fail_the_file(src, dst):
         calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError(66, "Directory not empty")
-        return real_rename(src, dst)
+        raise OSError(17, "File exists")
 
-    monkeypatch.setattr(adopt.os, "rename", _fail_the_second)
+    monkeypatch.setattr(adopt.os, "link", _fail_the_file)
     assert adopt.main([ALICE, "--apply"]) == 1
-    assert calls["n"] > 0, "the script no longer routes through os.rename; this test went vacuous"
+    assert calls["n"] > 0, "the script no longer routes the file through os.link; test went vacuous"
     err = capsys.readouterr().err
     assert "already moved" in err
     assert "audio" in err
@@ -222,3 +222,39 @@ def test_a_dangling_destination_symlink_is_refused_not_replaced(flat_state, caps
     # The user's pointer survives, and the source is still there to retry from.
     assert (scope / "narration-cache.json").is_symlink()
     assert (flat_state / "narration-cache.json").exists()
+
+
+def test_a_file_destination_created_mid_run_is_never_clobbered(flat_state, monkeypatch):
+    """`os.rename` on a DIRECTORY refuses a non-empty destination, but on a FILE it silently
+    replaces one — so the pre-check was only as good as the window after it, and a running
+    signed-in app can create exactly this file in that window. Destroying the user's live narration
+    cache while reporting success is the worst outcome this script has available."""
+    scope = _scope_for(ALICE)
+    real_link = adopt.os.link
+    calls = {"n": 0}
+
+    def _someone_gets_there_first(src, dst):
+        calls["n"] += 1
+        pathlib_dst = adopt.Path(dst)
+        pathlib_dst.parent.mkdir(parents=True, exist_ok=True)
+        pathlib_dst.write_text('{"live": "written by the server"}')
+        return real_link(src, dst)
+
+    monkeypatch.setattr(adopt.os, "link", _someone_gets_there_first)
+    adopt.main([ALICE, "--apply"])
+    assert calls["n"] > 0, "the script no longer routes the file through os.link; test went vacuous"
+
+    # The live cache survives and the legacy one is still there to retry from.
+    assert (scope / "narration-cache.json").read_text() == '{"live": "written by the server"}'
+    assert (flat_state / "narration-cache.json").exists()
+
+
+def test_a_symlink_nested_inside_the_cache_is_refused(flat_state, capsys):
+    """A relative link one level down re-points exactly like a top-level one when the directory
+    moves. The app cannot create these, so this is hardening rather than a reachable bug — but the
+    refusal is a directory walk this script was going to do anyway."""
+    (flat_state / "audio" / "linked.mp3").symlink_to(flat_state / "somewhere-else.mp3")
+
+    assert adopt.main([ALICE, "--apply"]) == 1
+    assert "symlink inside" in capsys.readouterr().err
+    assert (flat_state / "audio" / "aaa.mp3").exists()

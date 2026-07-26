@@ -115,6 +115,16 @@ def main(argv: list[str]) -> int:
     assert scope is not None   # is_uuid passed, so a scope always resolves
 
     for src, _dst in _plan(scope):
+        # Anything BELOW the source too, not just the source itself. The app writes this cache
+        # with `atomic_write_bytes` and never creates a link inside it, so this is hardening
+        # against a hand-made one rather than a case the app can produce — but a relative link
+        # moved several directories deeper re-points exactly the same way, and refusing costs one
+        # walk of a directory this script is about to read anyway.
+        nested = next((c for c in src.rglob("*") if c.is_symlink()), None) if src.is_dir() else None
+        if nested is not None:
+            print(f"REFUSING: {nested} is a symlink inside {src.name}. Moving the directory would\n"
+                  "re-point it. Replace it with a real file first.", file=sys.stderr)
+            return 1
         if src.is_symlink():
             # Moving a relative symlink several directories deeper re-points it: the target
             # resolves somewhere else, or nowhere. A 2.8 GB cache is exactly the thing someone
@@ -167,7 +177,18 @@ def main(argv: list[str]) -> int:
                   file=sys.stderr)
             return _partial(done)
         try:
-            os.rename(src, dst)
+            if src.is_dir():
+                # `os.rename` on a directory refuses a non-empty destination (ENOTEMPTY), which is
+                # the protection wanted here.
+                os.rename(src, dst)
+            else:
+                # But `rename` on a FILE silently REPLACES an existing destination, so the check
+                # above is only as good as the window after it — and a running signed-in app can
+                # create this exact file in that window, which `rename` would then destroy.
+                # `os.link` fails with EEXIST atomically instead, so the race is closed rather than
+                # narrowed: link, then drop the old name. Same inode, no copy.
+                os.link(src, dst)
+                os.unlink(src)
         except OSError as e:
             # ENOTEMPTY is the refusal working: something created the destination in the window.
             # Reported rather than raised, because a traceback in the middle of a data migration
