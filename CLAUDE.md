@@ -85,6 +85,16 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   `scripts/share-project.sh <pid> <target-url>` does both legs.
   `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
   path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
+- `db.py` — Postgres: the pool, the `:6543` transaction-pooler refusal, and the migration runner
+  over `supabase/migrations/*.sql`. **Ownership and index rows only** — content stays in git,
+  because the history *is* the record (invariant 4), and a second copy here could disagree with it.
+  **Optional**: with `RC_DATABASE_URL` unset there is no pool, `enabled()` is False, and every
+  caller falls back to today's single-tenant behaviour — which is what lets local dev and the test
+  suite run with no server. Never log or print the URL; use `safe_target()`.
+- `tenancy.py` — who owns which project. As of M2 slice 1 it **records** ownership and enforces
+  nothing; enforcement arrives with the per-user `PROJECTS_ROOT` namespacing, deliberately in a
+  separate change so the trust boundary (`projects._safe_pid`/`project_path`) is not altered in the
+  same commit that introduces the tables it reads.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
 - `sessions.py` — per-paper session state + transcript JSONL + narration cache + retry
   branches (U.14): a retry archives the live tail under `.state/branches/` (working state,

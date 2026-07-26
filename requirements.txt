@@ -7,4 +7,5 @@ pymupdf>=1.24            # rasterize a paper's first PDF page to a cover image (
 feedparser>=6.0
 python-dotenv>=1.0
 python-multipart>=0.0.9   # FastAPI file/form uploads (user-supplied paper PDFs)
+psycopg[binary,pool]>=3.2  # Postgres: ownership + index only; content stays in git (app/db.py)
 pydantic-ai-slim[openai]>=2.2,<3   # agentic analyst tool loop (app/agent_harness.py)
