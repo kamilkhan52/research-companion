@@ -73,7 +73,12 @@ def test_a_malformed_connection_string_never_leaks_the_password(caplog):
 
     rendered = f"{excinfo.value}{excinfo.value.__cause__}{excinfo.value.__context__}{caplog.text}"
     assert "zzword" not in rendered
-    assert "db.abc.supabase.co:5432/postgres" in str(excinfo.value)  # still says WHICH database
+    # It cannot name the database here, and should not try: libpq refuses to read this string at
+    # all, so any host we printed would come from the OTHER parser's guess — which is exactly the
+    # guess that prints password fragments. Naming the database is asserted where it is safe, in
+    # `test_legitimate_urls_are_still_identified`.
+    assert db.safe_target(secret) == "?"
+    assert "password" in str(excinfo.value)  # says what to fix
 
 
 def test_migrations_are_applied_in_filename_order():
@@ -284,6 +289,42 @@ def test_deleting_a_user_cannot_silently_orphan_their_projects(database):
             conn.execute("delete from rc_users where id = %s", (OWNER,))
 
     assert tenancy.owner_of("theirs") == OWNER
+
+
+@pytest.mark.parametrize("url,why", [
+    ("postgresql://u:12/34@h:5432/db",
+     "an unescaped '/' ends the authority early, so host/port/db are really password"),
+    ("postgresql://u:123?secret@pooler.supabase.com:6543/postgres",
+     "'?' starts the query for urlsplit but is password to libpq — the port check would test 123, "
+     "not the 6543 it actually connects to"),
+    ("postgresql://u:p@host:5432/postgres?port=6543",
+     "libpq honours ?port=, so the transaction-pooler refusal is bypassed by a query string"),
+    ("postgresql://u:p@host:5432/db?host=other",
+     "?host= redirects the connection, so an error would name a database never contacted"),
+    ("postgresql://u:p#frag@h:5432/db", "'#' starts a fragment for one parser and not the other"),
+])
+def test_a_url_the_two_parsers_read_differently_is_refused(url, why):
+    """Validating with `urlsplit` while CONNECTING with libpq is how a check gets quietly bypassed.
+    Each of these was verified to diverge against the installed psycopg."""
+    assert db.safe_target(url) == "?", why
+    with pytest.raises(db.DatabaseError):
+        db.assert_usable_url(url)
+
+
+@pytest.mark.parametrize("url,target", [
+    ("postgresql://postgres:pw@db.abc.supabase.co:5432/postgres", "db.abc.supabase.co:5432/postgres"),
+    ("postgres://postgres.ref:pw@aws-0.pooler.supabase.com:5432/postgres",
+     "aws-0.pooler.supabase.com:5432/postgres"),
+    ("postgresql://u:p%2Fw@db.abc.supabase.co:5432/postgres", "db.abc.supabase.co:5432/postgres"),
+    ("postgresql://u:p@h/db?sslmode=require", "h/db"),
+    ("postgresql://u:p@[::1]:5432/postgres", "::1:5432/postgres"),
+])
+def test_legitimate_urls_are_still_identified(url, target):
+    """Failing closed must not swallow the normal cases — a query parameter that does not change
+    the connection target, a correctly escaped password, IPv6 — or every message says `?` and the
+    operator cannot tell which database failed."""
+    assert db.safe_target(url) == target
+    db.assert_usable_url(url)
 
 
 def test_an_ambiguous_connection_string_is_refused_rather_than_guessed():

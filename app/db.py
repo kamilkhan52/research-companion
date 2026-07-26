@@ -52,63 +52,90 @@ def enabled() -> bool:
     return bool(url())
 
 
-def _authority_is_unambiguous(raw: str) -> bool:
-    """Whether the credential delimiters stayed inside the authority.
+def _effective_params(raw: str) -> dict | None:
+    """What libpq will ACTUALLY connect to, or None if it will not parse.
 
-    An unescaped `/` in a password silently redraws the URL: in
-    `postgresql://user:12/34@db.example.com:5432/postgres` the authority ends at that slash, so
-    `urlsplit` (and psycopg, identically) reports host `user`, port `12`, and a database name that
-    is really `34@db.example.com:5432/postgres`. Rendering "host:port/database" from that prints
-    part of the PASSWORD. The tell is an `@` appearing after the authority ended — in a well-formed
-    URL the last `@` precedes the first `/` that follows `//`.
+    psycopg's reading is the authority, because it is the one that connects. `urlsplit` below is a
+    second opinion used only to detect disagreement.
     """
+    try:
+        from psycopg import conninfo
+
+        return conninfo.conninfo_to_dict(raw)
+    except Exception:
+        return None
+
+
+def _url_params(raw: str) -> dict | None:
+    """The same three fields as `urlsplit` reads them, or None if it will not parse."""
+    try:
+        parts = urlsplit(raw)
+        return {"host": parts.hostname, "port": parts.port,
+                "dbname": parts.path.lstrip("/") or None}
+    except ValueError:
+        # Raises on some inputs (NFKC normalization) with the WHOLE netloc — credentials included —
+        # in the message. Swallowed here; never re-raised or chained.
+        return None
+
+
+def _parses_agree(raw: str) -> bool:
+    """Whether both parsers see the same host, port and database.
+
+    Validating with one parser while CONNECTING with another is how a check gets quietly bypassed.
+    Three divergences, all verified against the installed psycopg:
+
+    * `postgresql://u:123?secret@host:6543/db` — `urlsplit` treats `?` as the start of the query,
+      so it reports host `u`, port `123`; psycopg reads the password as `123?secret` and connects
+      to `host:6543`. The pooler refusal would test the wrong number, and `safe_target` would print
+      `u:123` — the first half of the password.
+    * `postgresql://u:p@host:5432/db?port=6543` — libpq honours query parameters, so the effective
+      port is 6543 while `urlsplit` says 5432. The refusal is defeated by a query string.
+    * `postgresql://u:p@host/db?host=other` — likewise for the host, so an error would name a
+      database that was never contacted.
+
+    Disagreement means the string cannot be reasoned about, so everything downstream fails closed.
+    """
+    # Agreement alone is NOT sufficient: `postgresql://u:12/34@h:5432/db` fools both parsers the
+    # same way (host `u`, port 12, database `34@h:5432/db`), so they agree on an answer that is
+    # entirely password. The structural check catches that — in a well-formed URL the credential
+    # `@` precedes the first `/` after `//`, so an `@` after it means a delimiter escaped.
     after_scheme = raw.partition("://")[2]
     if not after_scheme:
         return False
     _authority, sep, rest = after_scheme.partition("/")
-    if not sep:
-        # No path at all, so the whole remainder is the authority and nothing escaped it. An `@`
-        # here is just the credential delimiter, and none is a URL without credentials.
-        return True
-    return "@" not in rest
+    if sep and "@" in rest:
+        return False
+
+    effective, plain = _effective_params(raw), _url_params(raw)
+    if effective is None or plain is None:
+        return False
+    for key in ("host", "port", "dbname"):
+        left, right = effective.get(key), plain.get(key)
+        # libpq omits a key it was never given; urlsplit reports None. Compare as strings so that
+        # 5432 and "5432" are the same answer.
+        if (str(left) if left is not None else None) != (str(right) if right is not None else None):
+            return False
+    return True
 
 
 def safe_target(raw: str = "") -> str:
     """`host:port/database` — never the credentials, and `?` whenever that cannot be guaranteed.
 
     Exists so errors and logs can say *which* database failed without the password travelling with
-    them. A connection string is a Fly secret; the moment one appears in a log line it is in
-    whatever ships those logs, and it stops being revocable by rotating one place. So this fails
-    closed: an input it cannot decompose confidently renders as `?` rather than as a best guess,
-    because a best guess is exactly how a fragment of a password gets printed.
+    them. A connection string is a Fly secret; the moment one reaches a log line it is in whatever
+    ships those logs, and it stops being revocable by rotating one place. So this fails closed: an
+    input the two parsers disagree about renders as `?` rather than a best guess, because a best
+    guess is exactly how a fragment of a password gets printed.
     """
     raw = raw or url()
-    if not raw or not _authority_is_unambiguous(raw):
+    if not raw or not _parses_agree(raw):
         return "?"
-    try:
-        parts = urlsplit(raw)
-        host = parts.hostname
-        port = f":{parts.port}" if parts.port else ""
-    except ValueError:
-        # `urlsplit` raises on some inputs (NFKC normalization) with the WHOLE netloc in the
-        # message — credentials included. Caught here and discarded; never re-raised or chained.
-        return "?"
+    effective = _effective_params(raw) or {}
+    host = effective.get("host")
     if not host:
         return "?"
-    return f"{host}{port}/{parts.path.lstrip('/') or '?'}"
-
-
-def _dsn_parses(raw: str) -> bool:
-    """Whether psycopg can parse this connection string. Returns a bool rather than re-raising, so
-    the caller's `DatabaseError` is raised outside any `except` block and the psycopg exception —
-    which quotes the offending credential token — never becomes its `__context__`."""
-    try:
-        from psycopg import conninfo
-
-        conninfo.conninfo_to_dict(raw)
-        return True
-    except Exception:
-        return False
+    port = f":{effective['port']}" if effective.get("port") else ""
+    return f"{host}{port}/{effective.get('dbname') or '?'}"
 
 
 def assert_usable_url(raw: str = "") -> None:
@@ -125,38 +152,27 @@ def assert_usable_url(raw: str = "") -> None:
     raw = raw or url()
     if not raw:
         return
-    if not _authority_is_unambiguous(raw):
+    if not _parses_agree(raw):
         raise DatabaseError(
-            "RC_DATABASE_URL is ambiguous: a credential delimiter appears outside the authority. "
-            "An unescaped '/' in the password silently redraws the URL, so the host and database "
-            "cannot be identified — percent-encode '/', '@', ':' and '%' in the password.")
-    try:
-        parts = urlsplit(raw)
-    except ValueError:
-        # Not chained: the message embeds the whole netloc, credentials included.
-        raise DatabaseError("RC_DATABASE_URL is not a valid URL.") from None
+            "RC_DATABASE_URL is ambiguous: the URL parser and libpq read a different host, port or "
+            "database from it. That happens when a credential delimiter escapes the authority — an "
+            "unescaped '/', '?', '#' or '@' in the password — or when a query parameter overrides "
+            "the connection target. Percent-encode those characters in the password, and put the "
+            "host, port and database in the URL itself rather than the query string.")
+    parts = urlsplit(raw)
     if parts.scheme not in {"postgres", "postgresql"}:
         raise DatabaseError(
             f"RC_DATABASE_URL must be a postgres:// URL (got scheme {parts.scheme!r}).")
     if not parts.hostname:
         raise DatabaseError("RC_DATABASE_URL has no host.")
-    # Parse it the way psycopg will, HERE, where the error can be sanitized. psycopg's own
-    # exception for a malformed DSN quotes the offending token verbatim — a mistyped password
-    # produces `invalid percent-encoded token: "p%zzword"` — and `psycopg_pool` logs connection
-    # failures at WARNING, so without this the secret reaches the Fly logs in plaintext and
-    # rotating it becomes the only remedy.
-    #
-    # Raised OUTSIDE the `except`, via a predicate, rather than with `raise ... from None`.
-    # `from None` only sets `__suppress_context__`, which stops the DEFAULT traceback printer
-    # showing the cause — the original exception object stays reachable on `__context__`, and
-    # structured error reporters walk that chain regardless of the flag.
-    if not _dsn_parses(raw):
-        raise DatabaseError(
-            f"RC_DATABASE_URL could not be parsed as a connection string (target {safe_target(raw)}). "
-            "Check for an unescaped character in the password — a literal '%', space, '@' or '/' "
-            "must be percent-encoded.")
-
-    if parts.port == _TRANSACTION_POOLER_PORT:
+    # libpq's port, not the URL's. `_parses_agree` above has already established that the two are
+    # identical — a `?port=6543` override makes them differ and is refused there, which is what
+    # actually closes that bypass. This uses the effective value anyway because it is the one that
+    # decides where the connection goes, so the check cannot drift if that guarantee is ever
+    # loosened. It is defensive, not load-bearing; no test distinguishes it today, and pretending
+    # otherwise would misdescribe where the protection lives.
+    effective_port = (_effective_params(raw) or {}).get("port")
+    if str(effective_port) == str(_TRANSACTION_POOLER_PORT):
         raise DatabaseError(
             "RC_DATABASE_URL points at Supabase's transaction pooler (port 6543), which does not "
             "support prepared statements — psycopg uses them automatically once a query repeats, "
