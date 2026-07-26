@@ -18,14 +18,22 @@ export function createQueryClient(): QueryClient {
   });
 }
 
-/** The client for the current server. Replaced wholesale when the base URL changes.
+/** The client currently rendered by `QueryClientProvider`.
  *
- *  This is the structural answer to a problem that per-call-site guards kept losing to: any
- *  asynchronous continuation holding a `queryClient` reference — a poll, a mutation's onSuccess, a
- *  one-off fetch — can call `setQueryData` AFTER a server switch. Clearing the cache does not stop
- *  it, and "the updater no-ops on an empty cache" is false, because by then the new server has
- *  populated that cache and the stale write merges into it under the same project id.
+ *  A holder rather than a plain singleton, because the client is replaced when the server changes
+ *  (see `useServerScopedQueryClient`). Module-level code that cannot call `useQueryClient()` —
+ *  `InitialAnalysisOffer` and `ExistingPaperOffer` run their chains outside React — must read it
+ *  through `getActiveQueryClient()` at the moment of use.
  *
- *  Giving the new server a NEW client means every one of those late writes lands in an object
- *  nobody reads. No query keys change, so no call site can be missed. */
-export const queryClient = createQueryClient();
+ *  Getting this wrong is not theoretical: exporting a second, unrendered client meant their
+ *  invalidations landed on a cache nobody reads, so an open ComposeFirst screen kept its stale
+ *  empty transcript and its Start button would clobber the analysis that had just finished. */
+let active = createQueryClient();
+
+export function getActiveQueryClient(): QueryClient {
+  return active;
+}
+
+export function setActiveQueryClient(client: QueryClient): void {
+  active = client;
+}

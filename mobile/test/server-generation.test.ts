@@ -10,7 +10,7 @@
 import { QueryClient } from '@tanstack/react-query';
 
 import { getServerGeneration, setBaseUrl } from '@/api/config';
-import { createQueryClient } from '@/api/queryClient';
+import { createQueryClient, getActiveQueryClient, setActiveQueryClient } from '@/api/queryClient';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
@@ -54,12 +54,20 @@ test('a late write from the old server cannot reach the new server\'s cache', as
   expect(serverB.getQueryData(['project', 'default', 'graph'])).toEqual({ graph: 'B' });
 });
 
-test('each server gets a distinct client, so their caches cannot share state', () => {
-  const first = track(createQueryClient());
-  const second = track(createQueryClient());
-  first.setQueryData(['projects'], [{ id: 'from-a' }]);
-  expect(second.getQueryData(['projects'])).toBeUndefined();
-  expect(first).not.toBe(second);
+test('the rendered client is the one module-level code invalidates', () => {
+  // The eighth false-positive test in this PR built two clients by hand and never touched the
+  // wiring, so it passed with `useServerScopedQueryClient` deleted — and passed while a SECOND,
+  // unrendered client was live. That bug was real: the analysis and paper-offer chains run outside
+  // React, so their invalidations went to a cache nobody reads, leaving an open ComposeFirst on a
+  // stale empty transcript whose Start button would clobber the finished analysis.
+  const rendered = track(createQueryClient());
+  setActiveQueryClient(rendered);
+  expect(getActiveQueryClient()).toBe(rendered);
+
+  const replacement = track(createQueryClient());
+  setActiveQueryClient(replacement);
+  expect(getActiveQueryClient()).toBe(replacement);
+  expect(getActiveQueryClient()).not.toBe(rendered);
 });
 
 test('the server generation still changes when the base URL does', async () => {

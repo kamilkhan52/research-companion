@@ -8,7 +8,7 @@
 import { useEffect, useState } from 'react';
 
 import * as api from '@/api/endpoints';
-import { queryClient } from '@/api/queryClient';
+import { getActiveQueryClient } from '@/api/queryClient';
 import { READING_MODE_LABELS, type ReadingMode, type RetrievalJob } from '@/api/types';
 import { useListeningMode } from '@/store/listening';
 import { showToast } from '@/ui/Toast';
@@ -46,9 +46,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  ComposeFirst for this paper must flip to the live discussion, not sit on a stale empty
  *  transcript whose Start button would clobber the finished session. */
 function refreshSession(pid: string, slug: string) {
-  void queryClient.invalidateQueries({ queryKey: ['project', pid, 'session', slug] });
-  void queryClient.invalidateQueries({ queryKey: ['project', pid, 'state'] });
-  void queryClient.invalidateQueries({ queryKey: ['recentSessions'] });
+  void getActiveQueryClient().invalidateQueries({ queryKey: ['project', pid, 'session', slug] });
+  void getActiveQueryClient().invalidateQueries({ queryKey: ['project', pid, 'state'] });
+  void getActiveQueryClient().invalidateQueries({ queryKey: ['recentSessions'] });
 }
 
 /** Fire-and-forget: start the chain, then poll retrieval → analysis, toasting the outcome.

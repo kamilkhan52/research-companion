@@ -34,7 +34,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { loadConfig, subscribeBaseUrl } from '@/api/config';
-import { createQueryClient } from '@/api/queryClient';
+import { createQueryClient, setActiveQueryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
 import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
@@ -127,8 +127,21 @@ function ThemedShell() {
 /** A QueryClient scoped to the current server. See `createQueryClient` for why this is replaced
  *  rather than cleared: a stale continuation cannot write into a client that no longer exists. */
 function useServerScopedQueryClient(): QueryClient {
-  const [client, setClient] = useState(createQueryClient);
-  useEffect(() => subscribeBaseUrl(() => setClient(createQueryClient())), []);
+  const [client, setClient] = useState(() => {
+    const created = createQueryClient();
+    setActiveQueryClient(created);
+    return created;
+  });
+  useEffect(() => subscribeBaseUrl(() => {
+    setClient((previous) => {
+      previous.unmount();  // it holds focus/online subscriptions and GC timers
+      const created = createQueryClient();
+      // Registered so module-level code — the analysis and paper-offer chains, which run outside
+      // React and cannot call useQueryClient() — invalidates the cache that is actually rendered.
+      setActiveQueryClient(created);
+      return created;
+    });
+  }), []);
   return client;
 }
 
