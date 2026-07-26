@@ -160,7 +160,7 @@ def _id_is_taken(pid: str) -> bool:
     if exists(pid):
         return True
     try:
-        return tenancy.owner_of(pid) is not None
+        return tenancy.id_is_recorded(pid)
     except Exception as e:
         # A CONFIGURED but unreachable database is not the same as no database. With none, there is
         # nothing to record and single-tenant behaviour is correct. With one that is down, creating
@@ -631,7 +631,9 @@ def delete_project(pid: str) -> None:
             shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
         except Exception:
             if former_owner:
-                tenancy.record_project(pid, former_owner)
+                # `restore`, not `record_project`: the row still exists as a tombstone, so an
+                # insert would conflict rather than give the project back to its owner.
+                tenancy.restore(pid, former_owner)
             raise
         # A later project with the same name can reuse this pid. Do not let terminal in-memory
         # results/proposals from the deleted project become visible in that new project.

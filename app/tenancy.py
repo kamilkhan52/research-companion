@@ -87,7 +87,9 @@ def owner_of(pid: str) -> str | None:
     if not enabled():
         return None
     with db.pool().connection() as conn:
-        row = conn.execute("select owner_id::text from rc_projects where id = %s", (pid,)).fetchone()
+        row = conn.execute(
+            "select owner_id::text from rc_projects where id = %s and deleted_at is null",
+            (pid,)).fetchone()
     return row[0] if row else None
 
 
@@ -96,7 +98,9 @@ def projects_owned_by(owner_id: str) -> set[str]:
     if not enabled() or not db.is_uuid(owner_id):
         return set()
     with db.pool().connection() as conn:
-        rows = conn.execute("select id from rc_projects where owner_id = %s", (owner_id,)).fetchall()
+        rows = conn.execute(
+            "select id from rc_projects where owner_id = %s and deleted_at is null",
+            (owner_id,)).fetchall()
     return {row[0] for row in rows}
 
 
@@ -184,8 +188,36 @@ def claim(pid: str, user: dict | None) -> None:
     record_project(pid, user_id)
 
 
+def id_is_recorded(pid: str) -> bool:
+    """Whether this id appears in the ownership index AT ALL — live or retired.
+
+    Used for id allocation, where the question is "has this id ever been taken", not "who owns it".
+    A retired id must never be handed out again: a request that passed the ownership check for the
+    previous incarnation carries only the id string, so reusing it would let that request act on a
+    different user's project.
+    """
+    if not enabled():
+        return False
+    with db.pool().connection() as conn:
+        return conn.execute(
+            "select 1 from rc_projects where id = %s", (pid,)).fetchone() is not None
+
+
+def restore(pid: str, owner_id: str) -> None:
+    """Un-retire a project — for when deletion failed after the row was already retired."""
+    if not enabled():
+        return
+    with db.pool().connection() as conn:
+        conn.execute(
+            "update rc_projects set owner_id = %s, deleted_at = null where id = %s",
+            (owner_id, pid))
+
+
 def release(pid: str) -> str | None:
-    """Forget who owned `pid`, when the project itself is gone. Returns the former owner, if any.
+    """Retire `pid` when the project is gone. Returns the former owner, if any.
+
+    The row SURVIVES as a tombstone — owner cleared so nobody can reach it, `deleted_at` set so the
+    id is never handed out again. See `0002_retire_ids.sql` for why reuse is unsafe.
 
     Deletion moves the directory into `.trash`, which frees the id for reuse — so leaving the
     ownership row behind means the next project to take that id is silently owned by the previous
@@ -200,5 +232,7 @@ def release(pid: str) -> str | None:
         return None
     with db.pool().connection() as conn:
         row = conn.execute(
-            "delete from rc_projects where id = %s returning owner_id::text", (pid,)).fetchone()
+            "update rc_projects set owner_id = null, deleted_at = now() "
+            "where id = %s returning (select owner_id::text from rc_projects where id = %s)",
+            (pid, pid)).fetchone()
     return row[0] if row else None

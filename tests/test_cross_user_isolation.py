@@ -297,16 +297,24 @@ def test_papers_cannot_be_moved_into_someone_elses_project(two_users, client_as)
 
 
 @needs_pg
-def test_a_deleted_project_id_can_be_reused_by_someone_else(two_users, client_as):
-    """Deleting trashes the directory, which frees the id for reuse. A surviving ownership row
-    would silently give the next project with that id to the previous owner — its creator unable
-    to open it, and the previous owner able to read content that is not theirs."""
+def test_a_deleted_project_id_is_never_handed_out_again(two_users, client_as):
+    """The ABA that made id reuse unsafe.
+
+    A request can pass the ownership check for `foo`, and by the time it resolves paths `foo` has
+    been deleted and RE-CREATED BY SOMEONE ELSE — so it reads or writes a different user's project
+    while carrying an authorization that was genuine when granted. Nothing in the request carries
+    the incarnation, only the string. So the id is retired rather than freed.
+    """
     pid = two_users["alice"]
     assert client_as(ALICE).delete(f"/api/projects/{pid}").status_code == 200
-    assert tenancy.owner_of(pid) is None
 
-    tenancy.claim(pid, {"user_id": BOB, "email": "bob@example.com"})
-    assert tenancy.owner_of(pid) == BOB
+    # Retired: nobody owns it, and it is not reachable.
+    assert tenancy.owner_of(pid) is None
+    assert client_as(ALICE).get(f"/api/projects/{pid}/state").status_code == 404
+
+    # And the id is not available to the next project of the same name — not even to Alice.
+    recreated = projects.create_project("Alice Reading")
+    assert recreated["id"] != pid, "a deleted project's id was handed out again"
 
 
 @needs_pg
@@ -445,3 +453,28 @@ def test_an_unreachable_ownership_store_is_a_503_not_a_500(tmp_path, monkeypatch
         assert not list(root.iterdir()), "a project was left on disk that nobody can reach"
     finally:
         db.close()
+
+
+@needs_pg
+def test_an_authorization_cannot_survive_into_a_different_users_project(two_users, client_as):
+    """The ABA interleaving itself, not just the id-allocation rule that prevents it.
+
+    Alice is authorized for `foo`. Alice deletes `foo`. If the id were reusable, Bob could create a
+    project that lands on `foo` — and Alice's still-running request, which carries only the string,
+    would then act on Bob's project with an authorization that was genuine when it was granted.
+    """
+    alice_pid = two_users["alice"]
+    assert tenancy.owner_of(alice_pid) == ALICE          # Alice's authorization is real...
+    client_as(ALICE).delete(f"/api/projects/{alice_pid}")
+
+    # Bob now creates projects until one would have collided under the old rule.
+    for _ in range(3):
+        made = projects.create_project("Alice Reading")
+        tenancy.claim(made["id"], {"user_id": BOB, "email": "bob@example.com"})
+        assert made["id"] != alice_pid, (
+            "Bob's project took the id Alice was authorized for — her in-flight request would "
+            "now be operating on his content")
+
+    # ...and the stale authorization resolves to nothing rather than to somebody else's project.
+    assert client_as(ALICE).get(f"/api/projects/{alice_pid}/state").status_code == 404
+    assert tenancy.owner_of(alice_pid) is None
