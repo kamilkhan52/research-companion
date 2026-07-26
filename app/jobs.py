@@ -221,6 +221,7 @@ class JobRegistry(Generic[J]):
             if was_running:
                 job.status = "cancelled"
                 job.finished_at = now_iso()
+                self._prune()   # this job just became prunable; see _prune's note on settling
         if was_running:
             log.info("cancel %s job=%s", self.name, job.id[:8], extra=_log_tag(pid))
         return job
@@ -354,6 +355,7 @@ class JobRegistry(Generic[J]):
                     job.finished_at = now_iso()
                 final = job.status
                 settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
+                self._prune()
             dur = time.monotonic() - t0
             if final == "error":  # the worker recorded its own error (e.g. graph per-paper)
                 log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8], dur,
@@ -371,6 +373,7 @@ class JobRegistry(Generic[J]):
                     job.error = str(e)[:400]
                     job.finished_at = now_iso()
                 settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
+                self._prune()
             log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
                         time.monotonic() - t0, str(e)[:200], extra=tag)
             self._fire_settle(job, settle_cbs, tag)
@@ -401,6 +404,14 @@ class JobRegistry(Generic[J]):
         because a project you have not touched in weeks aged out" is a defensible rule; "because
         somebody else was busy this afternoon" is not, and that was the old behaviour. Total
         retention is `max_finished x _MAX_SCOPES_RETAINED`, which is a constant.
+
+        **Called when a job SETTLES as well as when one is admitted.** Only running jobs are exempt
+        from the caps, so admission-time pruning alone leaves a hole: start forty jobs in forty
+        scopes concurrently, let them all finish, and nothing counts them until the next admission —
+        which may never come. Pruning at both ends makes the ceiling hold at rest rather than only
+        under continued traffic. A job that has just settled is the newest in its scope and its
+        scope is now the most recently active, so neither cap can evict the result its own
+        completion triggered.
         """
         if self._max_finished is None:
             return

@@ -183,6 +183,40 @@ def test_retention_stays_bounded_when_scopes_are_unbounded():
     assert newest in scopes
 
 
+def test_the_ceiling_holds_at_rest_not_only_under_traffic():
+    """Only running jobs are exempt from the caps, so pruning at admission alone leaves a hole:
+    start many jobs in many scopes concurrently, let them all finish, and nothing counts them until
+    the next admission — which may never come. The bound has to hold when the process goes quiet,
+    which is exactly when it would otherwise be holding the most."""
+    import threading
+
+    from app import jobs as jobs_module
+    from app.jobs import Job, JobRegistry
+
+    registry: JobRegistry[Job] = JobRegistry("test-settle-prune", max_finished=2)
+    release = threading.Event()
+    started = []
+
+    total = jobs_module._MAX_SCOPES_RETAINED + 15
+    for _n in range(total):
+        started.append(registry.start_or_join(
+            "only", lambda: Job(id=f"job-{len(started):04d}"),
+            lambda _job: release.wait(10), project_id=f"project-{len(started):04d}"))
+
+    # Every scope is admitted while its job is still running, so no cap has bitten yet.
+    release.set()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if all(j.status != "running" for j in started):
+            break
+        time.sleep(0.01)
+    assert all(j.status != "running" for j in started), "workers never finished"
+
+    # No further admission happens. The ceiling must hold anyway.
+    scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
+    assert len(scopes) <= jobs_module._MAX_SCOPES_RETAINED, len(scopes)
+
+
 def test_the_audio_job_scope_is_a_pseudonym_not_the_users_id():
     """The registry tags every start/done/error line with the job's scope, so a raw Supabase id
     here would write a durable account identifier — and when that account listens to things — into
