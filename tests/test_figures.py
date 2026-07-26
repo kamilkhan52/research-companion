@@ -432,6 +432,61 @@ def test_timed_out_worker_stays_in_lifecycle_accounting_until_it_exits(temp_proj
     assert jobs.any_running_for_project(temp_project) is None
 
 
+def test_a_refused_orphan_is_joined_rather_than_abandoned(temp_project, monkeypatch):
+    """The other side of the test above: when orphan admission LOSES the deletion race, the worker
+    is invisible to `any_running_for_project`, so nothing else can hold deletion back. Python cannot
+    stop the thread and it can still write into the project, so the only safe answer is for the
+    parent to join it. `affiliations` was hardened for this and the identical figures path was not —
+    a `RuntimeError` escaped and left a live, unaccounted writer behind.
+    """
+    import threading
+
+    from app import config, jobs
+
+    monkeypatch.setattr(figures, "HARD_DEADLINE_S", 0.05)
+    release = threading.Event()
+    wrote = []
+
+    def blocked(slug, *, force=False):
+        release.wait(5)
+        wrote.append(slug)
+
+    # Refuse admission the way a deletion tombstone does.
+    def _refuse(*_args, **_kwargs):
+        raise RuntimeError("Project is being modified; not accepting new jobs.")
+
+    monkeypatch.setattr(figures._orphan_registry, "put", _refuse)
+
+    finished = threading.Event()
+    outcome: dict = {}
+
+    def _call():
+        # However this call ends — returning or raising — record whether the work had already
+        # finished. That is the property: the parent must not hand control back to the graph job
+        # while a writer it can no longer account for is still running.
+        try:
+            figures._derive_with_deadline("stuck-paper", False, blocked)
+        except Exception as e:  # noqa: BLE001 — the escaping RuntimeError is one of the failures
+            outcome["raised"] = repr(e)
+        outcome["work_done_on_return"] = list(wrote)
+        finished.set()
+
+    token = config.set_active_project(temp_project)
+    try:
+        caller = threading.Thread(target=_call, daemon=True)
+        caller.start()
+        assert not finished.wait(0.4), (
+            f"parent settled while its worker was still alive: {outcome}")
+        assert jobs.any_running_for_project(temp_project) is None  # admission was refused
+        release.set()
+        assert finished.wait(5), "parent never settled after the worker finished"
+    finally:
+        release.set()
+        config.reset_active_project(token)
+    assert outcome.get("raised") is None, outcome
+    assert outcome["work_done_on_return"] == ["stuck-paper"], outcome
+
+
 def test_a_stalled_host_aborts_the_rest_of_the_pass(temp_project):
     paper("a", title="Paper A", arxiv_id="2401.00001")
     paper("b", title="Paper B", arxiv_id="2401.00002")

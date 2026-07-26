@@ -685,8 +685,20 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
     if worker.is_alive():
         with _orphans_lock:
             _orphans.append(worker)
-        job = _orphan_registry.put(f"orphan:{slug}", OrphanJob(id=new_id(), slug=slug),
-                                   project_id=pid)
+        try:
+            job = _orphan_registry.put(f"orphan:{slug}", OrphanJob(id=new_id(), slug=slug),
+                                       project_id=pid)
+        except RuntimeError:
+            # A deletion tombstone (or an in-progress split) refuses the orphan job. Python cannot
+            # stop a stuck thread, and this one can still write into the project through `derive`,
+            # so if it is not visible to move/delete admission the parent must not settle while it
+            # lives — otherwise deletion moves the directory out from under it and its next write
+            # recreates `projects/<pid>` as a partial store. Join instead, exactly as
+            # `affiliations._track_orphan`'s caller does; that path was hardened and this identical
+            # one was missed.
+            log.info("figure orphan admission refused for %s; joining the worker", slug)
+            worker.join()
+            return True
         with _orphan_registry.lock:
             cell["job"] = job
             _settle_orphan(cell)  # worker may have finished during registration
