@@ -174,6 +174,8 @@ export function sessionStorageKey(supabaseUrl: string): string {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('unknown');
+  /** Mirrors `status` for comparisons that must not live inside a setState updater. */
+  const statusRef = useRef<AuthStatus>('unknown');
   const [mode, setMode] = useState<AuthConfig['mode'] | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -205,13 +207,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
     setEmail(session?.user?.email ?? null);
-    setStatus((previous) => {
-      const next = session?.access_token ? 'signed-in' : 'signed-out';
-      // Covers every way a session ends, not just the Settings button: an expiring token and a
-      // failed refresh both land here too, and neither goes anywhere near that button.
-      if (previous === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
-      return next;
-    });
+    const next = session?.access_token ? 'signed-in' : 'signed-out';
+    // Compared against a ref, not inside the setState updater. React may invoke an updater more
+    // than once (Strict Mode, a discarded concurrent render), and an updater must stay pure — a
+    // side effect in there can fire for a render that never commits.
+    //
+    // Covers every way a session ends, not just the Settings button: an expiring token and a
+    // failed refresh both land here, and neither goes near that button.
+    if (statusRef.current === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
+    statusRef.current = next;
+    setStatus(next);
   }, []);
 
   useEffect(() => {
@@ -315,6 +320,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // current, so a refresh landing in the gap passes the generation check and restores the token
     // we just cleared. The new server's very first request could then carry the old project's JWT.
     generation.current += 1;
+    statusRef.current = 'unknown';
     client.current?.auth.stopAutoRefresh();
     client.current = null;
     void setToken(null);
