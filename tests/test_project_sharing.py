@@ -236,3 +236,80 @@ def test_export_does_not_carry_unapproved_stash_entries(tmp_projects):
     log = projects._git(imported["id"], "log", "--all", "--format=%s")
     assert "unapproved" not in log
     assert "SECRET DRAFT" not in (projects.project_path(imported["id"]) / "working-notes.md").read_text()
+
+
+def test_a_gitattributes_file_is_refused(tmp_projects, tmp_path):
+    """`.gitattributes` is not ordinary content — it can select a filter driver (`filter=lfs`)
+    whose COMMAND comes from the host's git config, so checkout would run an external process and
+    let the bundle drive network requests. Disabling hooks does not disable filters."""
+    def build(repo):
+        (repo / ".gitattributes").write_text("* filter=lfs\n", encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="git configuration"):
+        projects.import_bundle(_hostile_bundle(tmp_path, build), "Filtered")
+    assert not projects.list_projects()
+
+
+def test_a_case_aliased_state_path_is_refused(tmp_projects, tmp_path):
+    """macOS folds case, so `.STATE/sessions.json` is a different string but the same file as
+    `.state/sessions.json` — and a planted session index breaks the cross-project recent view."""
+    def build(repo):
+        (repo / ".STATE").mkdir()
+        (repo / ".STATE" / "sessions.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="working state"):
+        projects.import_bundle(_hostile_bundle(tmp_path, build), "Case Alias")
+    assert not projects.list_projects()
+
+
+def test_a_directory_where_a_paper_file_belongs_is_refused(tmp_projects, tmp_path):
+    """`corpus/<slug>.md` as a DIRECTORY used to import fine and then make `list_projects` raise
+    IsADirectoryError — every project vanishing from the app, not just the bad one."""
+    def build(repo):
+        d = repo / "corpus" / "attention.md"
+        d.mkdir(parents=True)
+        (d / "inner.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="is a directory"):
+        projects.import_bundle(_hostile_bundle(tmp_path, build), "Dir Paper")
+    assert not projects.list_projects()
+
+
+def test_a_tree_with_too_many_files_is_refused(tmp_projects, tmp_path, monkeypatch):
+    """The byte cap on the bundle says nothing about what it inflates to; a small compressed
+    bundle can check out into millions of paths and exhaust the volume."""
+    monkeypatch.setattr(projects, "MAX_TREE_ENTRIES", 3)
+
+    def build(repo):
+        (repo / "corpus").mkdir()
+        for n in range(6):
+            (repo / "corpus" / f"p{n}.md").write_text("x", encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="more than 3 files"):
+        projects.import_bundle(_hostile_bundle(tmp_path, build), "Too Many")
+    assert not projects.list_projects()
+
+
+def test_an_oversized_blob_is_refused(tmp_projects, tmp_path, monkeypatch):
+    monkeypatch.setattr(projects, "MAX_BLOB_BYTES", 128)
+
+    def build(repo):
+        (repo / "corpus").mkdir()
+        (repo / "corpus" / "huge.md").write_text("x" * 400, encoding="utf-8")
+
+    with pytest.raises(ProjectError, match="larger than"):
+        projects.import_bundle(_hostile_bundle(tmp_path, build), "Fat Blob")
+    assert not projects.list_projects()
+
+
+def test_one_unreadable_project_does_not_hide_every_other(tmp_projects):
+    """Defence in depth for the case above: even if a bad tree ever got in, the registry must
+    degrade to "that project has no papers" rather than returning nothing at all."""
+    good = _make_project(tmp_projects, "Healthy")
+    broken = _make_project(tmp_projects, "Broken")
+    corpus = projects.project_path(broken) / "corpus"
+    corpus.mkdir(exist_ok=True)
+    (corpus / "paper.md").mkdir()  # a directory where a paper file belongs
+
+    ids = {p["id"] for p in projects.list_projects()}
+    assert good in ids and broken in ids

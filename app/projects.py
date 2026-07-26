@@ -16,12 +16,14 @@ import shutil
 import subprocess
 import tempfile
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import HTTPException
 
-from . import config, jobs, prompts, store
+from . import config, jobs, logging_config, prompts, store
 from .fileio import atomic_write_text
+
+log = logging_config.get("projects")
 
 META = "project.json"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -149,6 +151,14 @@ def list_projects() -> list[dict]:
         token = config.set_active_project(pid)
         try:
             papers = store.list_papers()
+        except OSError:
+            # One unreadable project must not take the whole registry with it. `store.list_papers`
+            # touches per-paper files, and a path that is a DIRECTORY where a file is expected
+            # raises IsADirectoryError — which, unhandled, makes every project disappear from the
+            # app rather than just the broken one. Import rejects such trees now, but the registry
+            # should not depend on that being airtight.
+            log.warning("project %s could not be read; listing it with no papers", pid)
+            papers = []
         finally:
             config.reset_active_project(token)
         out.append({
@@ -271,6 +281,40 @@ def export_bundle(pid: str) -> bytes:
 _SYMLINK_MODE = "120000"
 _GITLINK_MODE = "160000"
 
+#: Expansion bounds. A byte cap on the BUNDLE says nothing about what it inflates to — a small,
+#: highly compressed bundle can check out into an enormous file or millions of paths and exhaust
+#: the volume before anything is published. A real project here is ~30 files and ~1 MB.
+MAX_TREE_ENTRIES = 20_000
+MAX_BLOB_BYTES = 50 * 1024 * 1024
+MAX_CHECKOUT_BYTES = 500 * 1024 * 1024
+MAX_PATH_DEPTH = 24
+MAX_PATH_LENGTH = 255
+
+#: Files that change how git ITSELF behaves during checkout, rather than being ordinary content.
+#: `.gitattributes` is the dangerous one: it can select a filter driver (`filter=lfs`) whose
+#: command comes from the HOST's git config, so a bundle can cause an external process to run and
+#: make network requests. Disabling hooks does not disable filters.
+_GIT_CONTROL_FILES = {".gitattributes", ".gitconfig", ".gitmodules"}
+
+#: git invoked so nothing on this machine can be recruited by the bundle: GIT_CONFIG_* neutralize
+#: host-level filter and alias definitions, and the hooks path removes the other execution route.
+_SAFE_GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
+
+def _is_state_path(path: str) -> bool:
+    """Whether `path` lands in `.state/`, including aliases a filesystem would fold together.
+
+    Case-folded because macOS is case-insensitive: `.STATE/sessions.json` is a different string
+    but the same file, and a planted session index breaks the cross-project recent-sessions view.
+    """
+    return path.split("/", 1)[0].casefold() == ".state"
+
 
 def _reject_hostile_tree(repo: Path) -> None:
     """Refuse a bundle whose tree would put something dangerous on disk.
@@ -281,27 +325,73 @@ def _reject_hostile_tree(repo: Path) -> None:
     serves the host's file straight back through `FileResponse`. A directory symlink under
     `corpus/` or `sessions/` redirects this app's later writes outside the project entirely.
 
-    So the tree is inspected BEFORE checkout, and only ordinary files and directories are allowed:
-
-      * symlinks (120000) — the escape above;
-      * gitlinks (160000) — a submodule pointer, which invites a network fetch later;
-      * anything under `.state/` — working state is per-instance and git-ignored, so a bundle
-        that *tracks* it is not a project we made. Recreating `.state` after checkout is not
-        enough on its own: these paths would already be on disk.
+    Inspected BEFORE checkout, and with `-z`: without it git C-quotes any path containing control
+    or non-ASCII characters, which both mangles the parse and lets a crafted name slip past a
+    prefix test.
     """
-    listing = subprocess.run(["git", "ls-tree", "-r", "--full-tree", "HEAD"],
-                             cwd=str(repo), capture_output=True, text=True)
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-l", "-z", "--full-tree", "HEAD"],
+        cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
     if listing.returncode != 0:
-        raise ProjectError(f"Could not read the bundle's contents: {listing.stderr.strip()}")
-    for line in listing.stdout.splitlines():
-        meta, _, path = line.partition("\t")
-        mode = meta.split(" ", 1)[0]
+        raise ProjectError("Could not read the bundle's contents.")
+
+    total = 0
+    entries = 0
+    for record in listing.stdout.split(b"\0"):
+        if not record:
+            continue
+        entries += 1
+        if entries > MAX_TREE_ENTRIES:
+            raise ProjectError(f"Refusing bundle: more than {MAX_TREE_ENTRIES} files.")
+        meta, _, raw_path = record.partition(b"\t")
+        try:
+            path = raw_path.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ProjectError("Refusing bundle: it contains a non-UTF-8 path.") from e
+        fields = meta.split()
+        mode = fields[0].decode()
+        size = fields[3].decode() if len(fields) > 3 else "-"
+
         if mode == _SYMLINK_MODE:
             raise ProjectError(f"Refusing bundle: it contains a symlink ({path}).")
         if mode == _GITLINK_MODE:
             raise ProjectError(f"Refusing bundle: it contains a submodule ({path}).")
-        if path == ".state" or path.startswith(".state/"):
+        if _is_state_path(path):
             raise ProjectError(f"Refusing bundle: it tracks working state ({path}).")
+        if PurePosixPath(path).name in _GIT_CONTROL_FILES:
+            raise ProjectError(f"Refusing bundle: it carries git configuration ({path}).")
+        if len(path) > MAX_PATH_LENGTH or path.count("/") + 1 > MAX_PATH_DEPTH:
+            raise ProjectError("Refusing bundle: a path is too long or too deep.")
+
+        if size.isdigit():
+            blob = int(size)
+            if blob > MAX_BLOB_BYTES:
+                raise ProjectError(f"Refusing bundle: {path} is larger than "
+                                   f"{MAX_BLOB_BYTES // (1024 * 1024)} MB.")
+            total += blob
+            if total > MAX_CHECKOUT_BYTES:
+                raise ProjectError("Refusing bundle: it expands to more than "
+                                   f"{MAX_CHECKOUT_BYTES // (1024 * 1024)} MB.")
+
+
+def _assert_project_shape(repo: Path) -> None:
+    """Every path this app later opens as a file must actually BE a file.
+
+    A bundle can name `corpus/<slug>.md` as a DIRECTORY. Import would succeed, and then
+    `list_projects` — which reads per-paper files — raises IsADirectoryError and every project
+    vanishes from the app, not just this one. The listing is defended separately; this stops the
+    bad tree getting in at all.
+    """
+    if not (repo / "reading-list.md").is_file():
+        raise ProjectError("That bundle is not a Research Companion project.")
+    for directory in ("corpus", "sessions"):
+        d = repo / directory
+        if d.exists() and not d.is_dir():
+            raise ProjectError(f"Refusing bundle: {directory} is not a directory.")
+        if d.is_dir():
+            for child in d.rglob("*.md"):
+                if child.is_dir():
+                    raise ProjectError(f"Refusing bundle: {child.name} is a directory.")
 
 
 def _sanitized_meta(repo: Path, pid: str, name: str) -> dict:
@@ -359,7 +449,7 @@ def import_bundle(data: bytes, name: str) -> dict:
         bundle = staging / "incoming.bundle"
         bundle.write_bytes(data)
         verify = subprocess.run(["git", "bundle", "verify", str(bundle)],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, env=_SAFE_GIT_ENV)
         if verify.returncode != 0:
             raise ProjectError(f"Not a valid project bundle: {verify.stderr.strip()}")
 
@@ -370,19 +460,18 @@ def import_bundle(data: bytes, name: str) -> dict:
             #   other ways a clone can be talked into running or fetching something.
             ["git", *config.git_identity_args(), "-c", "core.hooksPath=/dev/null",
              "clone", "-q", "--no-checkout", "--no-recurse-submodules", str(bundle), str(repo)],
-            capture_output=True, text=True)
+            capture_output=True, text=True, env=_SAFE_GIT_ENV)
         if clone.returncode != 0:
             raise ProjectError(f"Could not import the bundle: {clone.stderr.strip()}")
 
         _reject_hostile_tree(repo)
 
         checkout = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "checkout", "-q"],
-                                  cwd=str(repo), capture_output=True, text=True)
+                                  cwd=str(repo), capture_output=True, text=True, env=_SAFE_GIT_ENV)
         if checkout.returncode != 0:
             raise ProjectError(f"Could not import the bundle: {checkout.stderr.strip()}")
 
-        if not (repo / "reading-list.md").is_file():
-            raise ProjectError("That bundle is not a Research Companion project.")
+        _assert_project_shape(repo)
         try:
             (repo / "reading-list.md").read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as e:
