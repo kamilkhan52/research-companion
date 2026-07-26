@@ -367,6 +367,19 @@ def test_an_ambiguous_connection_string_is_refused_rather_than_guessed():
         db.assert_usable_url(leaky)
 
 
+def test_a_url_with_no_credential_delimiter_is_not_named():
+    """`postgresql://postgres:1234/postgres` reads as host `postgres`, port 1234 — correctly, since
+    that is what a docker-compose DSN looks like. It is ALSO what a Supabase URL looks like with
+    `@host` accidentally dropped, in which case "port 1234" is the password. Nothing can tell them
+    apart, so we decline to name the target rather than risk printing the secret."""
+    assert db.safe_target("postgresql://postgres:1234/postgres") == "?"
+    assert db.safe_target("postgresql://localhost:5432/rc_test") == "?"
+    # Still connectable — refusing would break the credential-less DSN local development uses.
+    db.assert_usable_url("postgresql://postgres:1234/postgres")
+    # No colon means no possible confusion between host:port and user:password.
+    assert db.safe_target("postgresql://localhost/rc_test") == "localhost/rc_test"
+
+
 def test_a_percent_encoded_password_still_identifies_the_database():
     """The fail-closed rule must not swallow a correctly-escaped password — otherwise every error
     message says `?` and the operator cannot tell which database failed."""

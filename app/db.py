@@ -144,6 +144,20 @@ def safe_target(raw: str = "") -> str:
     raw = raw or url()
     if not raw or not _parses_agree(raw):
         return "?"
+
+    # No credential `@`, but a `:` in the authority — `postgresql://postgres:1234/postgres`. Both
+    # parsers read that as host `postgres`, port 1234, and they are RIGHT to: it is exactly what a
+    # docker-compose DSN looks like. It is also exactly what a Supabase URL looks like with the
+    # `@host` part accidentally dropped, in which case "port 1234" is the operator's password and
+    # printing it puts the secret in the log. Nothing can tell those two apart, so this declines to
+    # name the target rather than guess. The URL is still ACCEPTED and still connects — refusing it
+    # would break the credential-less DSN that local development legitimately uses — and the cost
+    # of `?` lands on local dev, where logs are not shipped anywhere. A deployed Supabase URL always
+    # has an `@`, so production diagnosability is unaffected.
+    authority = raw.partition("://")[2].partition("/")[0]
+    if "@" not in authority and ":" in authority:
+        return "?"
+
     effective = _effective_params(raw) or {}
     host = effective.get("host")
     if not host:
