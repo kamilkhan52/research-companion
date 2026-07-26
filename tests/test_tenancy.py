@@ -61,6 +61,21 @@ def test_the_connection_string_never_appears_in_what_we_print():
     assert shown == "db.abc.supabase.co:5432/postgres"
 
 
+def test_a_malformed_connection_string_never_leaks_the_password(caplog):
+    """psycopg quotes the offending token verbatim — a mistyped password yields
+    `invalid percent-encoded token: "p%zzword"` — and psycopg_pool logs connection failures at
+    WARNING. So the parse has to happen here, where the error can be sanitized, or the secret ends
+    up in the Fly logs in plaintext and rotating it is the only remedy."""
+    secret = "postgresql://postgres:p%zzword with space@db.abc.supabase.co:5432/postgres"
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(db.DatabaseError) as excinfo:
+            db.assert_usable_url(secret)
+
+    rendered = f"{excinfo.value}{excinfo.value.__cause__}{excinfo.value.__context__}{caplog.text}"
+    assert "zzword" not in rendered
+    assert "db.abc.supabase.co:5432/postgres" in str(excinfo.value)  # still says WHICH database
+
+
 def test_migrations_are_applied_in_filename_order():
     """Order is the entire correctness property of a migration set, and `Path.glob` does not
     promise one — so this asserts the sort, not the enumeration."""
@@ -216,3 +231,42 @@ def test_backfill_does_not_steal_a_project_that_is_already_owned(database):
 def test_backfill_refuses_an_owner_that_is_not_a_user_id(database):
     with pytest.raises(tenancy.TenancyError):
         tenancy.backfill("not-a-uuid", ["a"])
+
+
+@needs_pg
+def test_two_processes_migrating_at_once_do_not_fight(database):
+    """A Fly deploy overlaps the old and new machines, so two processes can call `migrate()` at the
+    same moment even though each is a single worker. Without the advisory lock both read the same
+    "unseen" set, both run the DDL, and the loser dies on the duplicate primary key — a deployment
+    that fails at startup even though the schema is correct."""
+    import concurrent.futures
+
+    with db.pool().connection() as conn:
+        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool_:
+        results = [f.result() for f in [pool_.submit(db.migrate) for _ in range(4)]]
+
+    # Exactly one caller should have applied it; the rest see it already done. What must NOT happen
+    # is an exception, which is what `.result()` above would have raised.
+    assert sum(1 for r in results if r) == 1
+    with db.pool().connection() as conn:
+        assert conn.execute("select count(*) from rc_schema_migrations").fetchone()[0] == \
+            len(db._migration_files())
+
+
+@needs_pg
+def test_deleting_a_user_cannot_silently_orphan_their_projects(database):
+    """RESTRICT, not CASCADE. A project is a directory with a git history in it and no foreign key
+    can delete that — so cascading would drop the ownership row while leaving the reading on disk,
+    and the next backfill would adopt one person's papers under whoever RC_ADOPT_OWNER names."""
+    import psycopg
+
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("theirs", OWNER)
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db.pool().connection() as conn:
+            conn.execute("delete from rc_users where id = %s", (OWNER,))
+
+    assert tenancy.owner_of("theirs") == OWNER

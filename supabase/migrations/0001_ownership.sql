@@ -31,7 +31,13 @@ create table if not exists rc_projects (
     id           text primary key
                  constraint rc_projects_id_is_a_safe_path_segment
                  check (id ~ '^[A-Za-z0-9][A-Za-z0-9_-]*$' and length(id) <= 255),
-    owner_id     uuid not null references rc_users(id) on delete cascade,
+    -- RESTRICT, not CASCADE. A project is a DIRECTORY on disk with a git history in it, and no
+    -- foreign key can delete that. Cascading would drop the ownership rows while leaving the
+    -- directories in place — and the next backfill would then see them as unowned and adopt one
+    -- person's reading under whoever RC_ADOPT_OWNER happens to name. Deleting a user has to be a
+    -- deliberate operation that deals with the filesystem too (M7), so the database refuses to
+    -- let it happen as a side effect.
+    owner_id     uuid not null references rc_users(id) on delete restrict,
     created_at   timestamptz not null default now(),
     adopted_at   timestamptz not null default now()
 );

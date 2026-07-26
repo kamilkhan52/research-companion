@@ -28,6 +28,9 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "supabase" / "migratio
 #: Supavisor's TRANSACTION pooler. Rejected rather than supported — see `assert_usable_url`.
 _TRANSACTION_POOLER_PORT = 6543
 
+#: Arbitrary but FIXED — every process must pick the same number for the lock to mean anything.
+_MIGRATION_LOCK_KEY = 4_337_100_201
+
 _pool = None
 _pool_lock = threading.Lock()
 
@@ -66,6 +69,19 @@ def safe_target(raw: str = "") -> str:
         return "?"
 
 
+def _dsn_parses(raw: str) -> bool:
+    """Whether psycopg can parse this connection string. Returns a bool rather than re-raising, so
+    the caller's `DatabaseError` is raised outside any `except` block and the psycopg exception —
+    which quotes the offending credential token — never becomes its `__context__`."""
+    try:
+        from psycopg import conninfo
+
+        conninfo.conninfo_to_dict(raw)
+        return True
+    except Exception:
+        return False
+
+
 def assert_usable_url(raw: str = "") -> None:
     """Refuse a connection string this backend cannot use correctly. Raises `DatabaseError`.
 
@@ -89,6 +105,22 @@ def assert_usable_url(raw: str = "") -> None:
             f"RC_DATABASE_URL must be a postgres:// URL (got scheme {parts.scheme!r}).")
     if not parts.hostname:
         raise DatabaseError("RC_DATABASE_URL has no host.")
+    # Parse it the way psycopg will, HERE, where the error can be sanitized. psycopg's own
+    # exception for a malformed DSN quotes the offending token verbatim — a mistyped password
+    # produces `invalid percent-encoded token: "p%zzword"` — and `psycopg_pool` logs connection
+    # failures at WARNING, so without this the secret reaches the Fly logs in plaintext and
+    # rotating it becomes the only remedy.
+    #
+    # Raised OUTSIDE the `except`, via a predicate, rather than with `raise ... from None`.
+    # `from None` only sets `__suppress_context__`, which stops the DEFAULT traceback printer
+    # showing the cause — the original exception object stays reachable on `__context__`, and
+    # structured error reporters walk that chain regardless of the flag.
+    if not _dsn_parses(raw):
+        raise DatabaseError(
+            f"RC_DATABASE_URL could not be parsed as a connection string (target {safe_target(raw)}). "
+            "Check for an unescaped character in the password — a literal '%', space, '@' or '/' "
+            "must be percent-encoded.")
+
     if parts.port == _TRANSACTION_POOLER_PORT:
         raise DatabaseError(
             "RC_DATABASE_URL points at Supabase's transaction pooler (port 6543), which does not "
@@ -155,24 +187,36 @@ def migrate() -> list[str]:
     if not files:
         return applied
 
+    # Everything below happens under one advisory lock on ONE connection. A Fly deploy overlaps the
+    # old and new machines, so two processes can call this at the same moment even though each is a
+    # single worker (invariant 6). Without the lock both read the same "unseen" set, both run the
+    # DDL, and the loser dies on the duplicate primary key — a deployment that fails at startup
+    # even though the schema is correct. `create table if not exists` is not enough on its own:
+    # concurrent creates race in the catalog and raise a duplicate-object error.
     with pool().connection() as conn:
-        conn.execute(
-            "create table if not exists rc_schema_migrations ("
-            " name text primary key, applied_at timestamptz not null default now())")
-        seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
+        conn.execute("select pg_advisory_lock(%s)", (_MIGRATION_LOCK_KEY,))
+        try:
+            conn.execute(
+                "create table if not exists rc_schema_migrations ("
+                " name text primary key, applied_at timestamptz not null default now())")
+            seen = {row[0] for row in conn.execute("select name from rc_schema_migrations")}
 
-    for path in files:
-        if path.name in seen:
-            continue
-        sql = path.read_text(encoding="utf-8")
-        with pool().connection() as conn:
-            # Explicit transaction: autocommit is on for ordinary queries, but a migration must be
-            # all-or-nothing or a partial DDL apply leaves a schema no file describes.
-            with conn.transaction():
-                conn.execute(sql)
-                conn.execute("insert into rc_schema_migrations (name) values (%s)", (path.name,))
-        applied.append(path.name)
-        log.info("db: applied migration %s", path.name)
+            for path in files:
+                if path.name in seen:
+                    continue
+                sql = path.read_text(encoding="utf-8")
+                # Explicit transaction: autocommit is on for ordinary queries, but a migration must
+                # be all-or-nothing or a partial DDL apply leaves a schema no file describes.
+                with conn.transaction():
+                    conn.execute(sql)
+                    conn.execute("insert into rc_schema_migrations (name) values (%s)",
+                                 (path.name,))
+                applied.append(path.name)
+                log.info("db: applied migration %s", path.name)
+        finally:
+            # Released explicitly rather than left to the session ending: this connection goes back
+            # to the pool alive, and a session-scoped lock left held would block every later boot.
+            conn.execute("select pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     return applied
 
 
