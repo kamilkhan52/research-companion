@@ -8,6 +8,8 @@ the auth middleware, include every router, then mount the SPA shell last so /api
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,20 +51,51 @@ def _apply_migrations() -> None:
     `db.migrate()` was written for this: it is idempotent, and it takes an advisory lock precisely
     because a Fly deploy overlaps the old and new machines.
 
-    A failure here is logged, not fatal. If the database is unreachable the alternative is a
-    machine that will not boot, which on Fly is a crash loop needing a human; booting instead means
-    ownership checks answer 503 until the database returns (`projects.OwnershipUnavailable`) and
-    the next boot retries the migration. Neither is good, but only one recovers on its own.
+    A failure here is logged, not fatal: if the database is unreachable the alternative is a
+    machine that will not boot, which on Fly is a crash loop needing a human.
+
+    But logging alone is not enough, because the process is long-lived and this runs once. A blip
+    during a deploy would otherwise leave the replacement machine serving indefinitely against an
+    old schema — and the migration most likely to be the missing one is the newest, which right now
+    is the Data API lockout (`0004`). So a failure arms a background retry instead. The exposure
+    window is then bounded by the retry interval rather than by "until somebody restarts it", and
+    it closes on its own: the app can only *use* the database under the same condition that lets
+    the retry succeed.
     """
     if not db.enabled():
         return
     try:
         applied = db.migrate()
     except Exception as e:  # noqa: BLE001 — see the docstring: a boot must not depend on this
-        _log.error("db: migrations did not run (%s): %s", db.safe_target(), str(e)[:300])
+        _log.error("db: migrations did not run (%s): %s — retrying in the background",
+                   db.safe_target(), str(e)[:300])
+        _retry_migrations_until_they_apply()
         return
     if applied:
         _log.info("db: applied migrations: %s", ", ".join(applied))
+
+
+MIGRATION_RETRY_START_S = 5.0
+MIGRATION_RETRY_MAX_S = 300.0
+
+
+def _retry_migrations_until_they_apply() -> None:
+    """Keep trying, with backoff, until the schema is current. Daemon thread, so it never holds up
+    shutdown; single worker (invariant 6), so there is only ever one of these."""
+    def _retry() -> None:
+        delay = MIGRATION_RETRY_START_S
+        while True:
+            time.sleep(delay)
+            try:
+                applied = db.migrate()
+            except Exception as e:  # noqa: BLE001 — this loop exists to outlive failures
+                _log.warning("db: migration retry failed, next in %.0fs: %s", delay, str(e)[:200])
+                delay = min(delay * 2, MIGRATION_RETRY_MAX_S)
+                continue
+            _log.info("db: migrations applied on retry: %s", ", ".join(applied) or "(none pending)")
+            return
+
+    threading.Thread(target=_retry, daemon=True, name="db-migrate-retry").start()
 
 
 _apply_migrations()

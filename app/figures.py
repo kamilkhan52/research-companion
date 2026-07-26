@@ -659,20 +659,22 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
     pass either way — an unavailable host must not cost its timeout once per paper).
     Other in-thread failures are a retryable miss, never an exception on the build thread."""
     pid = config.active_project_id()
+    uid = config.active_user_id()
     result: dict = {}
     cell: dict = {}
 
     def _do() -> None:
-        token = config.set_active_project(pid)
+        # Project AND user (invariant 2, see config.bound_scope): a raw thread inherits neither,
+        # and a missing user silently runs this on the instance's model rather than the caller's.
         try:
-            derive(slug, force=force)
+            with config.bound_scope(pid, uid):
+                derive(slug, force=force)
         except StallError as e:
             result["stalled"] = True
             log.info("figure fetch stalled for %s: %s", slug, str(e)[:120])
         except Exception as e:  # noqa: BLE001
             log.info("figure derivation errored for %s: %s", slug, str(e)[:120])
         finally:
-            config.reset_active_project(token)
             with _orphan_registry.lock:
                 cell["done"] = True
                 _settle_orphan(cell)

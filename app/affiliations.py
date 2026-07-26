@@ -150,21 +150,22 @@ def _track_orphan(worker: threading.Thread) -> bool:
 
 def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None]:
     """Run one extraction under the wall-clock deadline: (timed_out, ships). The worker
-    thread doesn't inherit contextvars, so the project is rebound (invariant 2) or usage
-    lands on the wrong ledger. In-thread failures land as a retryable miss, never an
+    thread doesn't inherit contextvars, so project AND user are rebound (invariant 2, via
+    `config.bound_scope`) — without the project, usage lands on the wrong ledger; without the
+    user, `llm.complete` takes its default model from the instance settings rather than from the
+    preferences of whoever asked for the work. In-thread failures land as a retryable miss, never an
     exception on the build thread. A timed-out worker is remembered so later passes don't
     stack new threads on top of a provider that never returns."""
     pid = config.active_project_id()
+    uid = config.active_user_id()
     result: dict = {}
 
     def _do():
-        token = config.set_active_project(pid)
-        try:
-            result["ships"] = extract(slug, complete=complete)
-        except Exception as e:  # noqa: BLE001 — retryable miss, logged, never raised
-            log.info("affiliation extraction errored for %s: %s", slug, str(e)[:120])
-        finally:
-            config.reset_active_project(token)
+        with config.bound_scope(pid, uid):
+            try:
+                result["ships"] = extract(slug, complete=complete)
+            except Exception as e:  # noqa: BLE001 — retryable miss, logged, never raised
+                log.info("affiliation extraction errored for %s: %s", slug, str(e)[:120])
 
     worker = threading.Thread(target=_do, daemon=True, name="affiliations")
     worker.start()

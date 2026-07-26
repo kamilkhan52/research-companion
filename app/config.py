@@ -400,6 +400,29 @@ def active_user_id() -> str | None:
     return _active_user.get()
 
 
+@contextlib.contextmanager
+def bound_scope(project_id: str | None, user_id: str | None):
+    """Bind BOTH request-scoped contextvars for the duration of a worker thread (invariant 2).
+
+    A thread inherits neither, and they are wrong in different ways when forgotten: a missing
+    project reads and writes another project's files, a missing user quietly runs on the instance's
+    model and voice instead of the caller's. Two sites rebound only the project — `affiliations`
+    and `figures`, both raw `threading.Thread` workers outside the job registry — which is what this
+    exists to stop being possible: capture with `active_project_id()`/`active_user_id()` on the
+    calling thread, then enter this on the worker.
+
+    `JobRegistry._run` does the same thing inline and predates it; it is not rewritten to use this
+    because reindenting that method's body around a `with` is risk without benefit.
+    """
+    project_token = _active_project.set(project_id)
+    user_token = _active_user.set(user_id)
+    try:
+        yield
+    finally:
+        _active_user.reset(user_token)
+        _active_project.reset(project_token)
+
+
 def user_scope_dir() -> Path | None:
     """One directory holding everything app-global that belongs to the active user — the audio
     cache and the narration cache today. `None` when no user is bound, which means the flat

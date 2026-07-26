@@ -210,3 +210,69 @@ def test_no_active_user_means_the_instance_document(database):
 
     config.set_active_user(None)
     assert config.load_settings()["tts_voice"] == "alloy"
+
+
+# --- worker threads outside the job registry ----------------------------------------------------
+
+@needs_pg
+def test_a_raw_worker_thread_rebinds_the_user_as_well_as_the_project(database):
+    """`affiliations` and `figures` spawn raw `threading.Thread` workers rather than going through
+    `JobRegistry`, and both rebound only the project. A missing project writes another project's
+    files; a missing user quietly runs the work on the instance's model instead of the caller's.
+    `config.bound_scope` is the one call that does both — this asserts both sites use it."""
+    from app import affiliations, figures
+
+    config.save_settings({"model": "instance/model"})
+    config.set_active_user(ALICE)
+    config.save_user_settings({"model": "alice/model"})
+    token = config.set_active_project("alice-project")
+    try:
+        seen: dict = {}
+
+        def _record(slug, **_kwargs):
+            seen[slug] = (config.active_project_id(), config.load_settings()["model"])
+            return []
+
+        monkey = pytest.MonkeyPatch()
+        try:
+            monkey.setattr(affiliations, "extract", _record)
+            affiliations._extract_with_deadline("paper-a", complete=lambda *a, **k: "")
+            figures._derive_with_deadline("paper-f", False, _record)
+        finally:
+            monkey.undo()
+    finally:
+        config.reset_active_project(token)
+
+    assert seen["paper-a"] == ("alice-project", "alice/model")
+    assert seen["paper-f"] == ("alice-project", "alice/model")
+
+
+def test_a_failed_boot_migration_is_retried_rather_than_left_alone(monkeypatch):
+    """The process is long-lived and `_apply_migrations` runs once. A database blip during a Fly
+    deploy would otherwise leave the replacement machine serving against an old schema until
+    somebody restarted it — and the newest migration is the one that takes the tables off
+    Supabase's Data API, so "until somebody notices" is the wrong duration for it."""
+    import threading
+
+    from app import db as db_module
+    from app import main
+
+    monkeypatch.setenv("RC_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/nothing-here")
+    monkeypatch.setattr(main, "MIGRATION_RETRY_START_S", 0.01)
+    monkeypatch.setattr(main, "MIGRATION_RETRY_MAX_S", 0.01)
+
+    applied = threading.Event()
+    attempts = []
+
+    def _flaky():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("database is not up yet")
+        applied.set()
+        return ["0004_lock_out_the_data_api.sql"]
+
+    monkeypatch.setattr(db_module, "migrate", _flaky)
+    main._apply_migrations()
+
+    assert applied.wait(timeout=5.0), f"retry never succeeded after {len(attempts)} attempts"
+    assert len(attempts) >= 3
