@@ -97,7 +97,7 @@ def main(argv: list[str]) -> int:
             return 1
 
     print(f"user {user_id} -> {scope}")
-    for src, dst in moves:
+    for src, _dst in moves:
         print(f"  {src.name}: {_describe(src)}")
     if not apply:
         print("\ndry run. Re-run with --apply to move.")
