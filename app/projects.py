@@ -139,9 +139,22 @@ def _git(pid: str, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _id_is_taken(pid: str) -> bool:
+    """Whether `pid` is claimed by EITHER store.
+
+    The directory and the ownership row are two separate records of the same fact, and they can
+    disagree — a delete whose row release succeeded but whose move failed, or a historical row from
+    before this check existed. Allocating against the filesystem alone would then hand a fresh
+    project an id that still has someone else's ownership row, and `record_project` refuses the
+    conflict only AFTER the directory is visible. Consulting both means such an id is simply never
+    handed out: the stale row makes the id unusable, which costs one id and leaks nothing.
+    """
+    return exists(pid) or tenancy.owner_of(pid) is not None
+
+
 def _unique_id(base: str) -> str:
     pid, n = base, 2
-    while exists(pid):
+    while _id_is_taken(pid):
         pid, n = f"{base}-{n}", n + 1
     return pid
 
@@ -563,7 +576,11 @@ def delete_project(pid: str) -> None:
     # pids), THEN sweep for jobs admitted before the tombstone, then move. Any job either
     # registered before the tombstone (the sweep sees it and refuses) or was admitted after
     # (the tombstone refuses it) — no window where a fresh worker can slip past the move.
-    config.mark_project_deleting(pid)
+    if not config.mark_project_deleting(pid):
+        # Another DELETE for this project is already running. Refusing keeps the
+        # release/move/compensate sequence below single-threaded: two callers interleaving it can
+        # leave an ownership row for a directory that is gone.
+        raise ProjectError(f"Project is already being deleted: {pid}")
     try:
         # A split or move touching this project is a synchronous mutation (not a job) that
         # relocates its files; deleting the dir under it would strand the operation mid-copy.

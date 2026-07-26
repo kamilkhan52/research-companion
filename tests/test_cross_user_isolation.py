@@ -186,12 +186,22 @@ def test_isolation_holds_when_both_users_use_the_same_project_id(two_users, clie
     assert client_as(ALICE).get(f"/api/projects/{alice_pid}/state").status_code == 200
 
 
-@needs_pg
-def test_traversal_in_the_pid_is_still_refused(two_users, client_as):
-    """Ownership must not become the only check — `_safe_pid` is still the trust boundary."""
-    client = client_as(ALICE)
-    for hostile in ["..%2f..%2fetc", "%2e%2e%2f", "a/b"]:
-        assert client.get(f"/api/projects/{hostile}/state").status_code in (403, 404, 422)
+def test_traversal_in_the_pid_is_still_refused():
+    """Ownership must not become the only check — `_safe_pid` is still the trust boundary.
+
+    Asserted directly against `_safe_pid` rather than over HTTP. Through a route the ownership
+    check now answers 404 first, so a hostile id never reaches the path boundary at all and the
+    test would pass with `_safe_pid` deleted entirely — which is precisely the check it exists to
+    defend. No database either: this property must hold whether or not ownership is recorded.
+    """
+    for hostile in ["../etc", "..", "a/b", "/abs", ".trash", "", "\x00", "a\nb"]:
+        with pytest.raises(projects.ProjectError):
+            projects._safe_pid(hostile)
+
+    # And the containment guarantee the charset check backs up.
+    for hostile in ["../etc", "a/b", "/abs"]:
+        with pytest.raises(projects.ProjectError):
+            projects.project_path(hostile)
 
 
 # --- without a database, nothing changes -------------------------------------------------------
@@ -373,3 +383,43 @@ def test_recent_sessions_limit_applies_to_your_own_sessions(two_users, client_as
     # A limit smaller than Alice's session count: Bob must still see his own.
     bob_sees = client_as(BOB).get("/api/recent-sessions?limit=3").json()["sessions"]
     assert [s["project_id"] for s in bob_sees] == [two_users["bob"]]
+
+
+@needs_pg
+def test_an_id_with_a_stale_ownership_row_is_never_handed_out(two_users):
+    """The directory and the ownership row are two records of one fact, and they can disagree —
+    a delete whose release succeeded but whose move failed, or a row from before this check
+    existed. Allocating against the filesystem alone would hand a fresh project an id that still
+    carries someone else's ownership row, and `record_project` refuses the conflict only AFTER the
+    directory is visible, so the previous owner would already be able to read the new content.
+    """
+    # A row with no directory: exactly the state a half-finished delete leaves behind.
+    tenancy.record_project("ghost-project", ALICE)
+    assert not projects.exists("ghost-project")
+
+    created = projects.create_project("Ghost Project")
+    assert created["id"] != "ghost-project", (
+        "a fresh project took an id that still carried another user's ownership row")
+    assert tenancy.owner_of("ghost-project") == ALICE
+
+
+@needs_pg
+def test_only_one_delete_can_run_at_a_time(two_users):
+    """Two concurrent DELETEs both used to enter: one moved the directory, the other's move failed
+    and restored the ownership row it had just released — leaving a row for a project that no
+    longer exists."""
+    from app import config as app_config
+
+    pid = two_users["alice"]
+    assert app_config.mark_project_deleting(pid) is True
+    assert app_config.mark_project_deleting(pid) is False, (
+        "a second deletion claimed the same project")
+    app_config.unmark_project_deleting(pid)
+
+    # And the route-level refusal, so the exclusivity is not just an internal detail.
+    assert app_config.mark_project_deleting(pid) is True
+    try:
+        with pytest.raises(projects.ProjectError, match="already being deleted"):
+            projects.delete_project(pid)
+    finally:
+        app_config.unmark_project_deleting(pid)
