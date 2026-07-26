@@ -132,10 +132,27 @@ def test_an_unowned_project_is_not_visible_to_anyone(two_users, client_as):
 
 @needs_pg
 def test_creating_a_project_records_the_creator_as_owner(two_users, client_as):
-    response = client_as(BOB).post("/api/projects", json={"name": "Bob's Second"})
-    assert response.status_code == 200
+    """Uses a THIRD user who has never been seen before, deliberately.
+
+    The first version of this used Bob, whom the fixture had already inserted into `rc_users` — so
+    it stayed green with `ensure_user` removed from `claim`, while the bug it was supposed to catch
+    (a newly allowlisted user has no row, so creation fails the owner foreign key AFTER writing the
+    directory) reappeared. A signup test that pre-creates the user tests everything except signup.
+    """
+    newcomer = "9b1e77aa-3c2d-4f18-a0b5-77c1d90e4411"
+    assert tenancy.owner_of("anything") is None
+    with db.pool().connection() as conn:
+        assert conn.execute(
+            "select count(*) from rc_users where id = %s", (newcomer,)).fetchone()[0] == 0
+
+    response = client_as(newcomer).post("/api/projects", json={"name": "First Ever"})
+    assert response.status_code == 200, response.text
     pid = response.json()["project"]["id"]
-    assert tenancy.owner_of(pid) == BOB
+
+    assert tenancy.owner_of(pid) == newcomer
+    with db.pool().connection() as conn:
+        assert conn.execute(
+            "select count(*) from rc_users where id = %s", (newcomer,)).fetchone()[0] == 1
     assert client_as(ALICE).get(f"/api/projects/{pid}/state").status_code == 404
 
 

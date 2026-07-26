@@ -68,10 +68,13 @@ def recent_sessions(request: Request, limit: int = Query(default=20, ge=1, le=10
     Not path-scoped, so it never acquires `use_project` — which is exactly how it was returning
     every user's project names, paper titles and source URLs to anyone signed in.
     """
-    sessions = projects.recent_sessions(limit)
-    allowed = set(tenancy.visible_projects(
-        [s["project_id"] for s in sessions], getattr(request.state, "user", None)))
-    return {"sessions": [s for s in sessions if s["project_id"] in allowed]}
+    user = getattr(request.state, "user", None)
+    # Scoped inside the walk rather than filtered afterwards: `limit` applies to what the CALLER
+    # can see, so a user whose neighbour has twenty newer sessions still gets their own.
+    scope = None
+    if tenancy.enabled() and (user or {}).get("user_id"):
+        scope = set(tenancy.projects_owned_by(user["user_id"]))
+    return {"sessions": projects.recent_sessions(limit, only_pids=scope)}
 
 
 @project_router.get("/bundle")
@@ -453,15 +456,16 @@ def split_project(pid: str, req: SplitReq, request: Request):
                 status_code=409,
                 detail=f"A background job ({busy}) is running for this project — wait, then split.",
             )
+        user = getattr(request.state, "user", None)
+        user = getattr(request.state, "user", None)
         result = project_split.split_project(
             pid, req.name, req.slugs,
             remove_from_source=req.remove_from_source, goals=req.goals,
+            # Claimed inside the split, before any paper leaves the source — see the callback's
+            # comment there for why the ordering matters.
+            on_created=lambda new_pid: tenancy.claim(new_pid, user),
         )
         dest = result["new_pid"]
-        # Claimed BEFORE anything else runs against the new project. A split removes papers from
-        # the source, so an unclaimed destination means the papers have left one project and
-        # arrived in one the user cannot open — the content is not lost, but it is unreachable.
-        tenancy.claim(dest, getattr(request.state, "user", None))
         if req.draft_destination_notes or req.cleanup_source_notes:
             # Keep both documents reserved through job admission. A concurrent delete either
             # sees this busy flag and refuses, or wins first; in the latter case the checks after

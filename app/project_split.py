@@ -516,6 +516,7 @@ def split_project(
     *,
     remove_from_source: bool = True,
     goals: str | None = None,
+    on_created=None,
 ) -> dict:
     """Move/copy `slugs` from `source_pid` into a new project `name`. Returns
     {new_pid, name, moved, removed, departed_notes} — `departed_notes` (slug -> Notes text)
@@ -553,6 +554,12 @@ def split_project(
             # inside the locks so the moved snapshot can't drift before the source removal.
             meta = projects.create_project(name)
             new_pid = meta["id"]
+            # Ownership is recorded HERE — the destination exists and nothing has left the source
+            # yet. Claiming after the split would mean a failure at that point leaves the papers
+            # moved into a project the caller cannot open: not lost, but unreachable, and no longer
+            # in the source either. Raising here aborts before anything is taken away.
+            if on_created is not None:
+                on_created(new_pid)
             # The new pid is visible in the registry the moment create_project returns, so
             # mark it busy while we populate it: a client that refreshes projects and starts a
             # graph/retrieval job on it mid-population would read a half-written reading list

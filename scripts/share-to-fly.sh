@@ -66,5 +66,12 @@ case "$name_b64" in *[!A-Za-z0-9+/=]*|"") echo "could not encode the project nam
 
 # PYTHONPATH=/srv because the container's WORKDIR holds `app/`, and Python puts the *script's*
 # directory on sys.path, not the working directory.
+# RC_ADOPT_OWNER is read from the TARGET's environment inside the container, so the importer can
+# record who the project belongs to. An import with no owner is reachable by nobody, so the
+# importer refuses rather than publishing something invisible — pass RC_OWNER here to override.
+owner_arg=""
+[ -n "${RC_OWNER:-}" ] && owner_arg=" --owner \"$RC_OWNER\""
+case "${RC_OWNER:-}" in *[!0-9a-fA-F-]*) echo "RC_OWNER must be a uuid" >&2; exit 2 ;; esac
+
 flyctl ssh console -a "$APP" -C \
-  "sh -lc 'PYTHONPATH=/srv python \"$remote_importer\" \"$remote\" --name-b64 \"$name_b64\"; rc=\$?; rm -f \"$remote\" \"$remote_importer\"; exit \$rc'"
+  "sh -lc 'PYTHONPATH=/srv python \"$remote_importer\" \"$remote\" --name-b64 \"$name_b64\"$owner_arg; rc=\$?; rm -f \"$remote\" \"$remote_importer\"; exit \$rc'"

@@ -183,8 +183,12 @@ def list_projects() -> list[dict]:
     return out
 
 
-def recent_sessions(limit: int = 20) -> list[dict]:
+def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[dict]:
     """Recent session activity across projects, newest first.
+
+    `only_pids` scopes the walk. It is applied BEFORE the limit, not after: filtering the results
+    of a global "20 newest" means a user with a busy neighbour gets a short list — or an empty one
+    — while their own sessions are simply further down a list they never saw.
 
     Session state is project-scoped, so every index read is performed with that project bound
     to the active contextvar. Only registry-derived ids reach the path boundary.
@@ -194,6 +198,8 @@ def recent_sessions(limit: int = 20) -> list[dict]:
     out = []
     for project in list_projects():
         pid = project["id"]
+        if only_pids is not None and pid not in only_pids:
+            continue
         token = config.set_active_project(pid)
         try:
             index = sessions.session_index()
@@ -575,12 +581,14 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
-        # Free the id in the ownership index too. Trashing the directory makes the id available
-        # again to `_unique_id`, so a surviving row would silently make the NEXT project to take
-        # that id belong to this owner — its creator unable to open it, and this owner able to read
-        # content that is not theirs.
+        # Release the ownership row BEFORE the directory moves. Trashing the directory is what
+        # frees the id for `_unique_id` to hand out again, so releasing afterwards leaves a window
+        # in which the id is available while the old row still exists — and the next project to
+        # take it would silently belong to the previous owner, unreachable by its creator. If the
+        # release fails, the exception propagates and the directory is still in place: the project
+        # is not deleted, which is the recoverable half of the two.
         tenancy.release(pid)
+        shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
         # A later project with the same name can reuse this pid. Do not let terminal in-memory
         # results/proposals from the deleted project become visible in that new project.
         jobs.forget_finished_for_project(pid)
