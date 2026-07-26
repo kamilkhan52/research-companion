@@ -107,6 +107,10 @@ function ThemedShell() {
               animation: 'slide_from_right',
             }}>
             <Stack.Screen name="(tabs)" />
+            {/* The sign-in callback lands here before bouncing home. No animation: it is a
+                transit screen, and sliding it in makes a successful sign-in look like a
+                navigation the user did not ask for. */}
+            <Stack.Screen name="auth" options={{ animation: 'none' }} />
             <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
             <Stack.Screen
               name="player"
