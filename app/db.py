@@ -52,21 +52,46 @@ def enabled() -> bool:
     return bool(url())
 
 
+def _authority_is_unambiguous(raw: str) -> bool:
+    """Whether the credential delimiters stayed inside the authority.
+
+    An unescaped `/` in a password silently redraws the URL: in
+    `postgresql://user:12/34@db.example.com:5432/postgres` the authority ends at that slash, so
+    `urlsplit` (and psycopg, identically) reports host `user`, port `12`, and a database name that
+    is really `34@db.example.com:5432/postgres`. Rendering "host:port/database" from that prints
+    part of the PASSWORD. The tell is an `@` appearing after the authority ended — in a well-formed
+    URL the last `@` precedes the first `/` that follows `//`.
+    """
+    after_scheme = raw.partition("://")[2]
+    if not after_scheme:
+        return False
+    authority, sep, rest = after_scheme.partition("/")
+    return "@" not in rest if sep else "@" in authority or "@" not in authority
+
+
 def safe_target(raw: str = "") -> str:
-    """`host:port/database` — never the credentials.
+    """`host:port/database` — never the credentials, and `?` whenever that cannot be guaranteed.
 
     Exists so errors and logs can say *which* database failed without the password travelling with
     them. A connection string is a Fly secret; the moment one appears in a log line it is in
-    whatever ships those logs, and it is no longer revocable by rotating one place.
+    whatever ships those logs, and it stops being revocable by rotating one place. So this fails
+    closed: an input it cannot decompose confidently renders as `?` rather than as a best guess,
+    because a best guess is exactly how a fragment of a password gets printed.
     """
-    try:
-        parts = urlsplit(raw or url())
-        host = parts.hostname or "?"
-        port = f":{parts.port}" if parts.port else ""
-        name = parts.path.lstrip("/") or "?"
-        return f"{host}{port}/{name}"
-    except ValueError:
+    raw = raw or url()
+    if not raw or not _authority_is_unambiguous(raw):
         return "?"
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname
+        port = f":{parts.port}" if parts.port else ""
+    except ValueError:
+        # `urlsplit` raises on some inputs (NFKC normalization) with the WHOLE netloc in the
+        # message — credentials included. Caught here and discarded; never re-raised or chained.
+        return "?"
+    if not host:
+        return "?"
+    return f"{host}{port}/{parts.path.lstrip('/') or '?'}"
 
 
 def _dsn_parses(raw: str) -> bool:
@@ -96,10 +121,16 @@ def assert_usable_url(raw: str = "") -> None:
     raw = raw or url()
     if not raw:
         return
+    if not _authority_is_unambiguous(raw):
+        raise DatabaseError(
+            "RC_DATABASE_URL is ambiguous: a credential delimiter appears outside the authority. "
+            "An unescaped '/' in the password silently redraws the URL, so the host and database "
+            "cannot be identified — percent-encode '/', '@', ':' and '%' in the password.")
     try:
         parts = urlsplit(raw)
-    except ValueError as e:
-        raise DatabaseError("RC_DATABASE_URL is not a valid URL.") from e
+    except ValueError:
+        # Not chained: the message embeds the whole netloc, credentials included.
+        raise DatabaseError("RC_DATABASE_URL is not a valid URL.") from None
     if parts.scheme not in {"postgres", "postgresql"}:
         raise DatabaseError(
             f"RC_DATABASE_URL must be a postgres:// URL (got scheme {parts.scheme!r}).")

@@ -167,16 +167,30 @@ def test_the_constraint_accepts_everything_the_trust_boundary_does(database):
 
     A stricter database rule creates a class of project the app can create on disk and then cannot
     record — and since the backfill walks every existing project, one such id aborts it part-way
-    with a raw constraint violation. `_PID_RE` allows uppercase and underscores (its own comment
-    notes underscores are tolerated for env-configured ids), so these are not hypothetical.
+    with a raw constraint violation.
+
+    Generated rather than listed. The fixed list this replaced looked thorough and still missed the
+    real divergence: Python's `$` matches before a trailing newline, so `_safe_pid("project\n")`
+    was accepted while Postgres — which has no such rule — rejected it. A sample only ever tests
+    the cases you already thought of, so this drives the boundary itself and asserts the property.
     """
     from app import projects as projects_module
 
     tenancy.ensure_user(OWNER)
-    for pid in ["llm-basics", "My_Project", "Vaccines", "x_y", "default", "a" * 200, "3d-dram"]:
-        assert projects_module._PID_RE.match(pid), f"{pid} should be valid per _safe_pid"
-        tenancy.record_project(pid, OWNER)  # must not raise
-        assert tenancy.owner_of(pid) == OWNER
+    candidates = [
+        "llm-basics", "My_Project", "Vaccines", "x_y", "default", "3d-dram", "a",
+        "a" * 255,                      # the longest a path segment can be
+        "a" * 256, "project\n", "pro\nject", "", "-lead", "_lead", "has space",
+        "../escape", "/abs", "dot.dot", "with/slash", "tab\there", "ünicode", "a\r",
+    ]
+    for pid in candidates:
+        try:
+            projects_module._safe_pid(pid)
+        except projects_module.ProjectError:
+            continue  # the boundary rejects it; the database's opinion does not matter
+        # The boundary accepted it, so the database MUST be able to store it.
+        tenancy.record_project(pid, OWNER)
+        assert tenancy.owner_of(pid) == OWNER, f"{pid!r} passed _safe_pid but was not recorded"
 
 
 @needs_pg
@@ -270,3 +284,33 @@ def test_deleting_a_user_cannot_silently_orphan_their_projects(database):
             conn.execute("delete from rc_users where id = %s", (OWNER,))
 
     assert tenancy.owner_of("theirs") == OWNER
+
+
+def test_an_ambiguous_connection_string_is_refused_rather_than_guessed():
+    """An unescaped `/` in a password silently redraws the URL: in
+    `postgresql://user:12/34@db.example.com:5432/postgres` the authority ends at that slash, so the
+    parse reports host `user`, port `12` and a database name containing the rest — and rendering
+    "host:port/database" from that prints part of the PASSWORD."""
+    leaky = "postgresql://postgres:123/rest@db.abc.supabase.co:5432/postgres"
+    assert db.safe_target(leaky) == "?"
+    assert "123" not in db.safe_target(leaky)
+    with pytest.raises(db.DatabaseError, match="ambiguous"):
+        db.assert_usable_url(leaky)
+
+
+def test_a_percent_encoded_password_still_identifies_the_database():
+    """The fail-closed rule must not swallow a correctly-escaped password — otherwise every error
+    message says `?` and the operator cannot tell which database failed."""
+    fine = "postgresql://postgres:p%2Fw%40x@db.abc.supabase.co:5432/postgres"
+    assert db.safe_target(fine) == "db.abc.supabase.co:5432/postgres"
+    db.assert_usable_url(fine)
+
+
+def test_a_trailing_newline_is_not_a_project_id():
+    """Python's `$` matches immediately before a final newline, so `_PID_RE.match("project\n")`
+    succeeded and the id was accepted — as a directory name, a log line, and a database value that
+    Postgres would reject, since its regexes have no such rule."""
+    from app import projects as projects_module
+
+    with pytest.raises(projects_module.ProjectError):
+        projects_module._safe_pid("project\n")
