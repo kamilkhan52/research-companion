@@ -86,3 +86,93 @@ def test_nothing_to_move_is_not_an_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config, "APP_STATE_DIR", tmp_path)
     assert adopt.main([ALICE, "--apply"]) == 0
     assert "nothing to move" in capsys.readouterr().out
+
+
+def test_an_uppercase_uuid_lands_where_the_app_will_look(flat_state):
+    """`db.is_uuid` accepts either case but a hash does not, so an uppercase argument would move
+    the cache under a directory the running app — which sees Supabase's lowercase `sub` — never
+    looks in. The script would report success and the user would open an empty cache: exactly the
+    failure it exists to prevent, now wearing a disguise."""
+    from app import audio_jobs
+
+    assert adopt.main([ALICE.upper(), "--apply"]) == 0
+    token = config.set_active_user(ALICE)
+    try:
+        assert (audio_jobs.user_audio_dir() / "aaa.mp3").exists()
+    finally:
+        config.reset_active_user(token)
+
+
+def test_the_scope_is_the_same_directory_whatever_the_case(flat_state):
+    assert _scope_for(ALICE) == _scope_for(ALICE.upper())
+
+
+def test_a_symlinked_cache_is_refused_rather_than_re_pointed(flat_state, tmp_path, capsys):
+    """A 2.8 GB cache is exactly the thing someone symlinks onto another disk. Relocating the link
+    several directories deeper re-points a relative target — at best somewhere else, at worst
+    nowhere — and the original path is gone."""
+    elsewhere = tmp_path.parent / "elsewhere-audio"
+    elsewhere.mkdir()
+    (elsewhere / "bbb.mp3").write_bytes(b"mp3-b")
+    real = flat_state / "audio"
+    for child in real.iterdir():
+        child.unlink()
+    real.rmdir()
+    real.symlink_to(elsewhere)
+
+    assert adopt.main([ALICE, "--apply"]) == 1
+    assert "symlink" in capsys.readouterr().err
+    assert real.is_symlink()          # untouched
+    assert (elsewhere / "bbb.mp3").exists()
+
+
+def test_a_destination_appearing_mid_run_is_never_nested_or_clobbered(flat_state, monkeypatch):
+    """`shutil.move` into an existing directory nests the source inside it — `audio/audio` — and
+    reports success, which is the worst outcome available: the migration claims to have worked and
+    the cache is invisible. A signed-in server still running can create that directory between the
+    check and the move."""
+    scope = _scope_for(ALICE)
+    real_rename = adopt.os.rename
+    calls = {"n": 0}
+
+    def _rename_after_someone_else_got_there(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Simulate the running app creating the destination in the window.
+            (scope / "audio").mkdir(parents=True, exist_ok=True)
+            (scope / "audio" / "live.mp3").write_bytes(b"written by the server")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(adopt.os, "rename", _rename_after_someone_else_got_there)
+    assert adopt.main([ALICE, "--apply"]) == 1   # reported, not a traceback
+
+    # This test drives the race through `os.rename`. If the script switched to something else
+    # (`shutil.move`, which NESTS instead of refusing), the hook would never fire and everything
+    # below would pass without exercising anything. Fail loudly rather than go quiet.
+    assert calls["n"] > 0, "the script no longer routes through os.rename; this test went vacuous"
+
+    # The legacy cache must not be nested inside the live one, and the live file must survive.
+    assert not (scope / "audio" / "audio").exists()
+    assert (scope / "audio" / "live.mp3").read_bytes() == b"written by the server"
+    # ...and the source is still there to retry from, rather than half gone.
+    assert (flat_state / "audio" / "aaa.mp3").exists()
+
+
+def test_a_partial_move_says_which_half_moved(flat_state, monkeypatch, capsys):
+    """Two things move; if the second fails the operator has to know the first already went, or
+    re-running looks like it did nothing and the state looks corrupt."""
+    real_rename = adopt.os.rename
+    calls = {"n": 0}
+
+    def _fail_the_second(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(66, "Directory not empty")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(adopt.os, "rename", _fail_the_second)
+    assert adopt.main([ALICE, "--apply"]) == 1
+    assert calls["n"] > 0, "the script no longer routes through os.rename; this test went vacuous"
+    err = capsys.readouterr().err
+    assert "already moved" in err
+    assert "audio" in err
