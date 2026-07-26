@@ -439,10 +439,24 @@ def user_scope_dir() -> Path | None:
     input for which this returns a path outside `APP_STATE_DIR/users/`. It also keeps user ids off
     the disk of a machine whose backups are not access-controlled.
     """
+    key = user_scope_key()
+    return None if key is None else APP_STATE_DIR / "users" / key
+
+
+def user_scope_key() -> str | None:
+    """A stable pseudonym for the active user, or None. The name of their directory above, and the
+    scope audio jobs register under.
+
+    The hash is not only about path safety. This value reaches **log lines** — `JobRegistry` tags
+    every start/done/error line with the job's scope — so using the raw Supabase id would write a
+    durable account identifier, with correlated activity timing, into whatever Fly ships logs to.
+    The one place this app deliberately logs a real user id is the non-allowlisted rejection, which
+    is rate-limited and exists so the operator can repair the allowlist; ordinary work should not.
+    """
     user_id = _active_user.get()
     if not user_id:
         return None
-    return APP_STATE_DIR / "users" / hashlib.sha256(user_id.encode()).hexdigest()[:32]
+    return hashlib.sha256(user_id.encode()).hexdigest()[:32]
 
 
 def project_dir() -> Path:

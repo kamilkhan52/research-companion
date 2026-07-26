@@ -15,6 +15,7 @@ ownership redesign, which is a product decision rather than a bug fix — see P1
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 from app import config, db, projects, tenancy
@@ -114,3 +115,52 @@ def test_bob_cannot_poll_alices_job_through_his_own_project(two_users, client_as
     response = client_as(BOB).get(
         f"/api/projects/{two_users['bob']}/chat/jobs/{alice_job.id}")
     assert response.status_code == 404
+
+
+def test_pruning_cannot_discard_another_scope_s_finished_job():
+    """`max_finished` used to apply across every project and user at once, so retention of YOUR
+    result depended on how busy everybody else was. For `notes` that is data loss with a price on
+    it: an agent proposal lives only in the registry until a human approves it (invariant 4), so
+    other people's finished jobs could evict a completed, paid, unapproved proposal and
+    `/notes/jobs/latest` would then report nothing to approve."""
+    from app.jobs import Job, JobRegistry
+
+    registry: JobRegistry[Job] = JobRegistry("test-prune", max_finished=2)
+
+    def _finished(scope: str, key: str) -> Job:
+        job = registry.start_or_join(key, lambda: Job(id=f"{scope}-{key}"),
+                                     lambda _job: None, project_id=scope)
+        for _ in range(200):
+            if job.status != "running":
+                break
+            time.sleep(0.01)
+        return job
+
+    alices = _finished("alice-project", "proposal")
+    for n in range(6):                       # well past the cap, all from another scope
+        _finished("bob-project", f"noise-{n}")
+
+    assert registry.get(alices.id, project_id="alice-project") is not None
+    # Bob's own scope is still bounded — this is a per-scope cap, not the removal of one.
+    # `max_finished + 1` at rest, not `max_finished`: pruning runs at admission, when the newest
+    # job is still `running` and therefore not yet counted. That was true of the global cap too.
+    bob_finished = [j for j in registry.jobs.values()
+                    if getattr(j, "_rc_project_id", None) == "bob-project"]
+    assert len(bob_finished) <= 3, bob_finished
+
+
+def test_the_audio_job_scope_is_a_pseudonym_not_the_users_id():
+    """The registry tags every start/done/error line with the job's scope, so a raw Supabase id
+    here would write a durable account identifier — and when that account listens to things — into
+    whatever Fly ships logs to."""
+    from app import audio_jobs, config
+
+    config.set_active_user(ALICE)
+    try:
+        scope = audio_jobs._audio_scope()
+    finally:
+        config.set_active_user(None)
+
+    assert scope is not None
+    assert ALICE not in scope
+    assert scope.endswith(config.APP_STATE_DIR.name) is False  # sanity: not a path

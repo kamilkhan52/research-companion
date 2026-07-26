@@ -83,9 +83,15 @@ def _audio_scope() -> str | None:
     `user:` prefix can never be a project id — `projects._safe_pid` rejects `:` — so the two
     namespaces provably cannot collide rather than happening not to. Asserted in
     `tests/test_audio_isolation.py`.
+
+    The pseudonym rather than the raw id, because the registry TAGS EVERY LOG LINE with this scope:
+    the id itself would put a durable Supabase account identifier, and the times that account
+    listens to things, into the log drain. It is also the same value that names the user's audio
+    directory, so a log line and a directory can be lined up during support without either one
+    naming a person.
     """
-    user_id = config.active_user_id()
-    return None if not user_id else f"user:{user_id}"
+    key = config.user_scope_key()
+    return None if key is None else f"user:{key}"
 
 
 def _voice_key() -> str:

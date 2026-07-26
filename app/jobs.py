@@ -374,10 +374,30 @@ class JobRegistry(Generic[J]):
     def _prune(self) -> None:  # caller holds the lock
         """Drop the oldest finished jobs past the cap, so a long-lived process doesn't accumulate
         them forever. max_finished=None keeps everything (used by the pid-keyed registries, which
-        hold at most one job per project)."""
+        hold at most one job per project).
+
+        **Per scope, not process-wide.** The cap used to apply across every project and user at
+        once, which made retention of your own result depend on how busy everybody else was. For
+        `notes` that is data loss with a price on it: an agent notes proposal lives ONLY here until
+        a human approves it (invariant 4), so twenty finished notes jobs belonging to other people
+        would evict a completed, paid, unapproved proposal and `/notes/jobs/latest` would then
+        report nothing to approve. Bounding per scope means one person's activity can only ever
+        evict their own.
+
+        The tradeoff is that total retention becomes `max_finished x active scopes` rather than
+        `max_finished`. That is bounded by the allowlist while there is one (M1's gate) and is the
+        kind of in-memory job state M6 replaces with persistence; taking it now is the right trade
+        against silently discarding somebody's work.
+        """
         if self._max_finished is None:
             return
-        finished = [j for j in self._jobs.values() if j.status != "running"]
-        if len(finished) > self._max_finished:
-            for stale in sorted(finished, key=lambda j: j.started_at)[:len(finished) - self._max_finished]:
+        by_scope: dict[str | None, list[J]] = {}
+        for job in self._jobs.values():
+            if job.status != "running":
+                by_scope.setdefault(getattr(job, _PID_ATTR, None), []).append(job)
+        for finished in by_scope.values():
+            excess = len(finished) - self._max_finished
+            if excess <= 0:
+                continue
+            for stale in sorted(finished, key=lambda j: j.started_at)[:excess]:
                 self._jobs.pop(stale.id, None)
