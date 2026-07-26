@@ -119,3 +119,39 @@ def backfill(owner_id: str, pids: list[str]) -> dict:
     log.info("tenancy: backfill adopted %d project(s), %d already owned",
              len(adopted), len(skipped))
     return {"owner": owner_id, "adopted": adopted, "already_owned": sorted(set(skipped) | already & set(pids))}
+
+
+def may_access(pid: str, user: dict | None) -> bool:
+    """Whether `user` may reach project `pid`.
+
+    Three states, and the distinction between them is what keeps this safe to deploy:
+
+    * **No database** — ownership is not being recorded at all, so there is nothing to enforce and
+      every project is reachable, exactly as before M2. This is how `./run.sh` and the test suite
+      work, and enforcement that failed CLOSED on a missing secret would take the app down rather
+      than protect it.
+    * **No signed-in user** — the instance is running in `open` auth mode, which staging and prod
+      refuse to boot in (`auth.assert_environment_safe`). There is no identity to compare against,
+      so this is single-tenant by configuration.
+    * **A signed-in user and a database** — the project must be owned BY THEM. An unowned project is
+      reachable by nobody: a directory with no ownership row is either an import that predates
+      adoption or something dropped in by hand, and defaulting it to visible is how a migration gap
+      becomes a data leak.
+    """
+    if not enabled():
+        return True
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return True
+    return owner_of(pid) == user_id
+
+
+def visible_projects(pids: list[str], user: dict | None) -> list[str]:
+    """`pids` filtered to what `user` may see, preserving order."""
+    if not enabled():
+        return pids
+    user_id = (user or {}).get("user_id")
+    if not user_id:
+        return pids
+    owned = projects_owned_by(user_id)
+    return [pid for pid in pids if pid in owned]

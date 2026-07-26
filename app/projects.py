@@ -18,9 +18,9 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
-from . import config, jobs, logging_config, prompts, store
+from . import config, jobs, logging_config, prompts, store, tenancy
 from .fileio import atomic_write_text
 
 log = logging_config.get("projects")
@@ -607,7 +607,7 @@ def adopt_existing(src: Path, name: str, move: bool = True) -> str:
     return pid
 
 
-async def use_project(pid: str):
+async def use_project(pid: str, request: Request):
     """FastAPI dependency: validate the project and bind it as active for the request.
 
     MUST be async: a sync generator dependency runs its body in a worker thread, so a
@@ -618,6 +618,15 @@ async def use_project(pid: str):
     if config.project_is_deleting(pid):
         raise HTTPException(status_code=409, detail=f"Project is being deleted: {pid}")
     if not exists(pid):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+    # The single choke point: every per-project route hangs off `make_project_router`, which binds
+    # this dependency once, so one check here covers all of them rather than 73 opportunities to
+    # forget one.
+    #
+    # 404 and not 403, and the message says "Unknown" — deliberately indistinguishable from a
+    # project that does not exist. A 403 would confirm the id IS real, and ids are derived from
+    # project names, so confirming one tells the caller what someone else is reading.
+    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     token = config.set_active_project(pid)
     try:

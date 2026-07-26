@@ -21,6 +21,7 @@ from .. import (
     projects,
     sessions,
     store,
+    tenancy,
 )
 from ..committer import CommitError
 from ..project_split import SplitError
@@ -47,8 +48,17 @@ class PaperPatchReq(BaseModel):
 
 
 @router.get("/api/projects")
-def list_projects():
-    return {"projects": projects.list_projects()}
+def list_projects(request: Request):
+    """Only the caller's own projects, once ownership is being recorded.
+
+    Filtered here rather than inside `projects.list_projects()` so that module keeps working
+    without a user — the adoption script and the job layer both enumerate every project on disk and
+    must continue to see all of them.
+    """
+    everything = projects.list_projects()
+    allowed = set(tenancy.visible_projects(
+        [p["id"] for p in everything], getattr(request.state, "user", None)))
+    return {"projects": [p for p in everything if p["id"] in allowed]}
 
 
 @router.get("/api/recent-sessions")
@@ -107,24 +117,53 @@ def import_project_bundle(
 
 
 @router.post("/api/projects")
-def create_project(req: ProjectReq):
+def create_project(req: ProjectReq, request: Request):
     try:
         meta = projects.create_project(req.name, req.method)
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # Recorded immediately, and NOT best-effort: a project whose ownership row failed to write is
+    # invisible to its own creator (an unowned project is reachable by nobody), so silently
+    # swallowing the failure would hand someone a directory they can never open again.
+    user_id = (getattr(request.state, "user", None) or {}).get("user_id")
+    if tenancy.enabled() and user_id:
+        try:
+            tenancy.record_project(meta["id"], user_id)
+        except tenancy.TenancyError as e:
+            raise HTTPException(
+                status_code=500,
+                detail="The project was created but its owner could not be recorded.") from e
     return {"project": meta}
 
 
+def _require_access(pid: str, request: Request) -> None:
+    """Ownership check for the project routes that do NOT hang off `make_project_router()`.
+
+    Three of them — GET/PATCH `/meta` and DELETE — are declared on the plain app-global router
+    because they operate ON a project rather than inside one, so they never acquire the
+    `use_project` dependency that guards the other seventy-odd. Nothing about their URL shape says
+    so, which is exactly how DELETE ended up reachable for anyone: the isolation tests caught it,
+    the architecture did not.
+
+    404 with the same message as a missing project, for the same reason as `use_project`: a 403
+    would confirm the id is real, and ids are derived from project names.
+    """
+    if not tenancy.may_access(pid, getattr(request.state, "user", None)):
+        raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
+
+
 @router.get("/api/projects/{pid}/meta")
-def project_meta(pid: str):
+def project_meta(pid: str, request: Request):
+    _require_access(pid, request)
     if not projects.exists(pid):
         raise HTTPException(status_code=404, detail=f"Unknown project: {pid}")
     return {"project": projects._read_meta(pid)}
 
 
 @router.patch("/api/projects/{pid}/meta")
-def update_project_meta(pid: str, req: MetaPatchReq):
+def update_project_meta(pid: str, req: MetaPatchReq, request: Request):
     """Rename and/or (un)favorite. Fields are independent so the client can PATCH just one."""
+    _require_access(pid, request)
     if req.name is None and req.favorite is None:
         raise HTTPException(status_code=400, detail="Nothing to update.")
     try:
@@ -141,7 +180,8 @@ def update_project_meta(pid: str, req: MetaPatchReq):
 
 
 @router.delete("/api/projects/{pid}")
-def delete_project(pid: str):
+def delete_project(pid: str, request: Request):
+    _require_access(pid, request)
     try:
         projects.delete_project(pid)
     except ProjectError as e:
