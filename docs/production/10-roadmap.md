@@ -104,6 +104,12 @@ recorded as P2-4 in the audit.
 
 **Fly payment method: added.** ✅ The production app + volume is unblocked.
 
+**Staging is fully wired (2026-07-26).** Its own Supabase project (`iqsiabkdbczvgyccswcy`), Site URL
+and Redirect URLs configured — including `researchcompanion://auth` for the mobile scheme — Google
+provider enabled, and `RC_ALLOWED_USERS` / `RC_OPERATOR_USERS` set to Kamil's staging UUID. Mobile
+authentication shipped in #228, so the Android app can now talk to staging: **P0-15 is closed and
+M2's hard ordering constraint is satisfied.**
+
 #### Sizing M3 against the $200 ceiling
 
 $200/month is the total spend ceiling (Kamil, 2026-07-25). Fixed cost is **$25.86** (Fly prod
