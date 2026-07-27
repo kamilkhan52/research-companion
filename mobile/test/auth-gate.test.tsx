@@ -65,6 +65,16 @@ test('signed-out users start at the welcome screen and can choose sign in', asyn
   expect(view.getByText('Email me a sign-in link')).toBeTruthy();
 });
 
+test('email entry uses Google branding without the crossed-out supporting items', async () => {
+  const view = await renderGate();
+  fireEvent.press(view.getByText('Get started'));
+
+  expect(view.getByLabelText('Continue with Google')).toBeTruthy();
+  expect(view.getByTestId('google-sign-in-logo')).toBeTruthy();
+  expect(view.queryByText('One tap from your inbox')).toBeNull();
+  expect(view.queryByText('Using a self-hosted server? Change server')).toBeNull();
+});
+
 test('a cold-start callback error is visible on welcome with a recovery path', async () => {
   mockAuthState = {
     ...mockAuthState,

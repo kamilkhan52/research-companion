@@ -153,6 +153,7 @@ export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
   const queryClient = useServerScopedQueryClient();
   const [fontsLoaded] = useFonts({
+    GoogleSans_500Medium: require('../../assets/brand/GoogleSans-Medium.ttf'),
     Manrope_400Regular,
     Manrope_500Medium,
     Manrope_600SemiBold,

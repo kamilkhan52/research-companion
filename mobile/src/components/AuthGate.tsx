@@ -9,6 +9,7 @@ import * as Linking from 'expo-linking';
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -107,7 +108,6 @@ function SignedOutExperience() {
         setSentEmail(email);
         setFlow('check-inbox');
       }}
-      onChangeServer={() => setChangingServer(true)}
     />
   );
 }
@@ -167,13 +167,11 @@ function EmailEntry({
   onBack,
   onChangeMode,
   onEmailSent,
-  onChangeServer,
 }: {
   mode: EntryFlow;
   onBack: () => void;
   onChangeMode: (mode: EntryFlow) => void;
   onEmailSent: (email: string) => void;
-  onChangeServer: () => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -257,10 +255,7 @@ function EmailEntry({
         <View style={styles.orLine} />
       </View>
 
-      <Button
-        title="Continue with Google"
-        icon="globe"
-        variant="ghost"
+      <GoogleSignInButton
         onPress={() => void runGoogle()}
         loading={busy === 'google'}
         disabled={busy !== null}
@@ -278,32 +273,60 @@ function EmailEntry({
         </Text>
       </Pressable>
 
-      <InfoCard
-        icon={creating ? 'file-text' : 'shield'}
-        title={creating ? 'One tap from your inbox' : 'Private by default'}
-        body={
-          creating
-            ? 'We’ll email a short-lived link to verify your address and sign you in.'
-            : 'We only use your email for account access and essential service messages.'
-        }
-        accent={creating ? t.violet : t.mint}
-      />
-
       {error ? (
         <Text variant="caption" color={t.danger} style={styles.error}>
           {error}
         </Text>
       ) : null}
-
-      <Pressable
-        accessibilityRole="button"
-        onPress={onChangeServer}
-        style={styles.serverLink}>
-        <Text variant="caption" color={t.mint}>
-          Using a self-hosted server? Change server
-        </Text>
-      </Pressable>
     </AuthCanvas>
+  );
+}
+
+function GoogleSignInButton({
+  onPress,
+  loading,
+  disabled,
+}: {
+  onPress: () => void;
+  loading: boolean;
+  disabled: boolean;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const isDisabled = loading || disabled;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Continue with Google"
+      accessibilityState={{ disabled: isDisabled, busy: loading }}
+      disabled={isDisabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.googleButton,
+        pressed && !isDisabled && styles.pressed,
+        isDisabled && styles.disabled,
+      ]}>
+      <View style={styles.googleButtonContent}>
+        <View style={styles.googleLogoBackground}>
+          <Image
+            testID="google-sign-in-logo"
+            source={require('../../assets/brand/google-g-logo.png')}
+            resizeMode="contain"
+            style={styles.googleLogo}
+          />
+        </View>
+        <Text style={[styles.googleButtonText, { color: t.googleButtonText }]}>
+          Continue with Google
+        </Text>
+      </View>
+      {loading ? (
+        <ActivityIndicator
+          size="small"
+          color={t.googleButtonText}
+          style={styles.googleButtonSpinner}
+        />
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -832,6 +855,36 @@ const makeStyles = (t: ThemePalette) =>
       fontFamily: fonts.body,
       fontSize: 15,
     },
+    googleButton: {
+      height: 50,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: t.googleButtonBorder,
+      borderRadius: radius.pill,
+      backgroundColor: t.googleButtonBg,
+      paddingHorizontal: 12,
+    },
+    googleButtonContent: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 10,
+    },
+    googleLogoBackground: {
+      width: 20,
+      height: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: t.googleLogoBg,
+    },
+    googleLogo: { width: 18, height: 18 },
+    googleButtonText: {
+      fontFamily: fonts.googleButton,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    googleButtonSpinner: { position: 'absolute', right: 12 },
     orRow: {
       flexDirection: 'row',
       alignItems: 'center',
