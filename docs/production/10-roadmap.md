@@ -28,20 +28,20 @@ audio included), the cross-user halves of P1-1 and P1-14 (audio as a read channe
 finding made *during* the work: the ownership tables were reachable from the published anon key,
 with `rc_projects.owner_id` writable, which is a full takeover of another person's reading list.
 
-**What is left before testers can be let in:**
+**Staging M2 rollout completed 2026-07-27.** `RC_DATABASE_URL` uses the staging Supabase direct
+connection, `RC_ADOPT_OWNER` matches the allowed/operator user, and the merged M2 code is deployed.
+All six pre-tenancy projects were adopted under that owner; an immediate second run adopted zero
+and reported all six already owned. The deployed schema has all four `rc_*` tables under RLS with
+no `anon` or `authenticated` table grants, and unauthenticated `/api/projects` returns 401.
 
-1. **Kamil sets `RC_ADOPT_OWNER` on staging** so the six imported projects have an owner and become
-   visible under enforcement. Without it they are unowned, and an unowned project is reachable by
-   nobody — which is the correct failure, but it looks like data loss.
-2. **A Postgres for staging, and `RC_DATABASE_URL` set on it** (Kamil — it carries a password, so
-   it never passes through an agent). This is the real blocker, and it makes item 1 possible: with
-   no database configured, `tenancy.enabled()` is False and **all of M2 is inert on staging**.
-   `RC_ADOPT_OWNER` is already staged as a Fly secret, matching `RC_ALLOWED_USERS`.
-3. **Deploy the merged M2 code.** Staging is currently running a pre-M2 image — `app/tenancy.py`
-   does not exist in the running container. Deploy together with the database so there is one
-   restart, then run `scripts/adopt_projects.py` on the machine.
-4. **M2.5's account deletion** is now cheap on the backend side — a user's audio and narration cache
-   is one directory — but the project-content half is untouched.
+The rollout found and fixed a production-image gap: `app.db` resolves migrations from
+`/srv/supabase/migrations`, and the runbook invokes `/srv/scripts/adopt_projects.py`, but the image
+contained neither. Commit `7fa07ba` adds both runtime payloads and a source-level packaging
+regression test. Without it, a database-configured machine health-checked successfully while
+running against an empty schema.
+
+**Next production gate:** M2.5's account deletion is now cheap on the backend side — a user's audio
+and narration cache is one directory — but the project-content half is untouched.
 
 ~~Client wiring for per-user settings~~ — done (#240): both clients now separate `is_operator` (the
 provider keys) from `can_edit_preferences` (model/voice/prior-notes). ~~Staging Supabase Site URL /
@@ -286,7 +286,7 @@ gets updated as each lands.
 | # | Milestone | Depends on | Complexity | Status |
 |---|---|---|---|---|
 | M1 | Hosting, environments, and secrets | — | L | **code-complete** (#218–#224 merged); the rest needs Kamil — see `HUMAN_ACTIONS.md` |
-| M2 | Identity, tenancy, and per-user isolation | M1 | L | **backend complete** (#235–#238 merged/open); client wiring + Kamil's `RC_ADOPT_OWNER` remain |
+| M2 | Identity, tenancy, and per-user isolation | M1 | L | **staging rollout complete** — backend #235–#238, client #240, database migrations + six-project adoption verified |
 | M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
