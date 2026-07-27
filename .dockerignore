@@ -22,7 +22,10 @@ project/
 # Not part of the server runtime.
 tests/
 mobile/
-scripts/
+# Most development scripts are not runtime payload. The one exception is the explicit,
+# idempotent M2 ownership backfill copied by Dockerfile.
+scripts/*
+!scripts/adopt_projects.py
 docs/
 shared/
 .github/
