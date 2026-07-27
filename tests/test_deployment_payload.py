@@ -3,8 +3,8 @@
 This is deliberately a source-level packaging test: CI does not build Docker images, so a missing
 COPY otherwise ships cleanly and is discovered only after a real database is connected.
 """
-from pathlib import Path
 
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
