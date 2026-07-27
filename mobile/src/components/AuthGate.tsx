@@ -74,6 +74,7 @@ function SignedOutExperience() {
   if (flow === 'welcome') {
     return (
       <Welcome
+        onChangeServer={() => setChangingServer(true)}
         onCreate={() => {
           setEntryFlow('create-account');
           setFlow('create-account');
@@ -113,9 +114,11 @@ function SignedOutExperience() {
 }
 
 function Welcome({
+  onChangeServer,
   onCreate,
   onSignIn,
 }: {
+  onChangeServer: () => void;
   onCreate: () => void;
   onSignIn: () => void;
 }) {
@@ -125,6 +128,12 @@ function Welcome({
   return (
     <AuthCanvas>
       <View style={styles.welcomeContent}>
+        <IconButton
+          name="settings"
+          accessibilityLabel="Server settings"
+          onPress={onChangeServer}
+          style={styles.welcomeServerButton}
+        />
         <Brand />
         <View style={styles.welcomeCopy}>
           <Text variant="editorial" style={styles.heroTitle}>
@@ -765,6 +774,7 @@ const makeStyles = (t: ThemePalette) =>
       paddingBottom: space.xxl,
     },
     welcomeContent: { flex: 1, paddingTop: 54 },
+    welcomeServerButton: { position: 'absolute', right: 0, top: 0 },
     brand: {
       flexDirection: 'row',
       alignItems: 'center',

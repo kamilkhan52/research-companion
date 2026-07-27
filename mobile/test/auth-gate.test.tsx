@@ -75,6 +75,15 @@ test('email entry uses Google branding without the crossed-out supporting items'
   expect(view.queryByText('Using a self-hosted server? Change server')).toBeNull();
 });
 
+test('signed-out users can recover from a reachable wrong server without the removed text link', async () => {
+  const view = await renderGate();
+
+  fireEvent.press(view.getByLabelText('Server settings'));
+
+  expect(view.getByText('Can’t reach the server')).toBeTruthy();
+  expect(view.getByDisplayValue('https://staging.example.com')).toBeTruthy();
+});
+
 test('a cold-start callback error is visible on welcome with a recovery path', async () => {
   mockAuthState = {
     ...mockAuthState,
