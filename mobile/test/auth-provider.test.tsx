@@ -22,7 +22,9 @@ const mockAuth = {
   signOut: jest.fn(async () => ({ error: null })),
   exchangeCodeForSession: jest.fn(async () => ({ error: null })),
   setSession: jest.fn(async () => ({ error: null })),
-  signInWithOtp: jest.fn(async () => ({ error: null })),
+  signInWithOtp: jest.fn(
+    async (_options?: unknown): Promise<{ error: { message: string } | null }> => ({ error: null }),
+  ),
   signInWithOAuth: jest.fn(async () => ({
     data: { url: 'https://project.supabase.co/auth/v1/authorize?x=1' }, error: null,
   })),
@@ -100,6 +102,7 @@ beforeEach(() => {
   jest.requireMock('expo-secure-store').getItemAsync.mockResolvedValue('pending');
   authStateCallback = undefined;
   mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+  mockAuth.signInWithOtp.mockResolvedValue({ error: null });
   jest.spyOn(apiConfig, 'setToken').mockResolvedValue(undefined);
   jest.spyOn(apiConfig, 'subscribeBaseUrl').mockImplementation(() => jest.fn());
 });
@@ -496,6 +499,34 @@ test('a dismissed Google sign-in is not reported as an error', async () => {
   await auth!.signInWithGoogle();
   expect(auth!.error).toBeNull();
   expect(mockAuth.exchangeCodeForSession).not.toHaveBeenCalled();
+});
+
+test('an accepted magic-link request reports success without manufacturing an error', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-out'));
+
+  await expect(auth!.signInWithMagicLink(' reader@example.com ')).resolves.toBe(true);
+  expect(mockAuth.signInWithOtp).toHaveBeenCalledWith(expect.objectContaining({
+    email: 'reader@example.com',
+  }));
+  expect(auth!.error).toBeNull();
+});
+
+test('a rejected magic-link request reports failure and surfaces the provider error', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.signInWithOtp.mockResolvedValue({ error: { message: 'Email delivery failed' } });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-out'));
+
+  await expect(auth!.signInWithMagicLink('reader@example.com')).resolves.toBe(false);
+  await waitFor(() => expect(auth!.error).toBe('Email delivery failed'));
 });
 
 
