@@ -5,7 +5,7 @@
 import { fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
-import { ReportContentSheet } from '@/components/ReportContentSheet';
+import { ReportContentSheet, reportReference } from '@/components/ReportContentSheet';
 
 // `mock`-prefixed because Jest hoists the factory above this and forbids other out-of-scope refs.
 const mockToast = jest.fn();
@@ -75,4 +75,34 @@ test('every reason the server accepts is offered', async () => {
   ]) {
     expect(view.getByText(label)).toBeTruthy();
   }
+});
+
+describe('the pointer a report carries', () => {
+  // What is NOT covered here, stated rather than implied: that the "Report this response" row is
+  // actually pushed onto the assistant long-press menu. That menu is built inside `DiscussionThread`
+  // and reached through the chat surface, which the paper-screen tests mock to render null, so
+  // deleting the row would not redden anything. The pointer is the half that silently corrupts
+  // EVERY report if it is wrong, so it is the half worth pinning here; reachability wants a device
+  // pass or a rendering harness for the chat list.
+
+  test('identifies the thread as well as the turn', () => {
+    // `transcript:12` on `main` and on `t2` are different turns. Without the thread they produce
+    // byte-identical reports, and an operator resolving one against the wrong thread finds an
+    // innocuous turn and dismisses a real report.
+    expect(reportReference('main', 12)).toBe('thread:main/transcript:12');
+    expect(reportReference('t2', 12)).toBe('thread:t2/transcript:12');
+    expect(reportReference('main', 12)).not.toBe(reportReference('t2', 12));
+  });
+
+  test('never silently reports index zero as missing', () => {
+    // A `??` on a falsy check would turn the FIRST turn in a thread into "unknown".
+    expect(reportReference('main', 0)).toBe('thread:main/transcript:0');
+    expect(reportReference('main', null)).toBe('thread:main/transcript:-1');
+    expect(reportReference('main', undefined)).toBe('thread:main/transcript:-1');
+  });
+
+  test('stays inside the length the server accepts', () => {
+    // REFERENCE_MAX is 256 server-side; over it is a 422 the reader cannot act on.
+    expect(reportReference('a'.repeat(64), 999999).length).toBeLessThanOrEqual(256);
+  });
 });

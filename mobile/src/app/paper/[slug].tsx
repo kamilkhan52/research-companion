@@ -69,7 +69,7 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
-import { ReportContentSheet } from '@/components/ReportContentSheet';
+import { ReportContentSheet, reportReference } from '@/components/ReportContentSheet';
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
@@ -1663,11 +1663,18 @@ function DiscussionThread({
         subtitle: 'Flag offensive or harmful content',
         icon: 'flag',
         section: true,
-        onPress: () => setReporting(
-          message.transcriptIndex != null
-            ? `transcript:${message.transcriptIndex}`
-            : `assistant:${entry.assistant_index}`,
-        ),
+        // The THREAD is part of the identity. Discussions are per-thread — `sessions/<slug>.threads/`
+        // server-side, and a per-thread query key here — so `transcript:12` on `main` and on `t2`
+        // are different turns that would otherwise produce byte-identical reports. An operator
+        // resolving one against the wrong thread finds an innocuous turn and dismisses a real
+        // report.
+        //
+        // The index is still the most volatile identifier available: a retry archives the old tail
+        // and puts a new response at the same index, and an edit rewinds and regenerates it. Since
+        // the backend deliberately stores no copy of the text, nothing can detect that rot. Living
+        // with it for now because the alternative is storing content; M7's review queue is where a
+        // sturdier handle should be designed, if the queue shows it is needed.
+        onPress: () => setReporting(reportReference(threadId, message.transcriptIndex)),
       });
       if (!stream.streaming && canRetry) {
         if (entry.assistant_index === 0) {
