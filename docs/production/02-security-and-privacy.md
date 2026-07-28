@@ -56,6 +56,7 @@ immediately before submission.
 | Chat prompts and thread actions | User discusses a paper | Generate a response, maintain thread state, retry/branch, and prepare notes | Optional in-app messages |
 | Notes, synthesis edits, and approval actions | User edits or approves research output | Maintain the approved scholarly record | Optional user-generated content |
 | Model, voice, reading, theme, and density choices | User changes settings | Personalize generation/playback and local presentation | Server receives model/voice/reading preferences; theme/density remain device-local |
+| OpenRouter, OpenAI, Parallel, Firecrawl, and Semantic Scholar API keys | An instance operator enters or replaces a provider key in Settings | Configure shared backend provider access; persisted in the app-global settings document | Optional operator credential; ordinary readers cannot submit or read it |
 | Feature-operation metadata | A paid/background operation runs | Attribute calls, tokens, cost, timestamps, and pending provider generations | Automatically collected app interaction data |
 | Authorization token | Every authenticated API request | Authenticate the request | Sensitive authentication data; not a separate Play taxonomy row |
 
@@ -96,7 +97,7 @@ the server inventory below.
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
 | In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
-| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors; a rate-limited raw UUID for allowlist rejection; **current media URLs put the Supabase bearer JWT in `?token=`, which uvicorn access logs can record** | Not configured in this repository | **Launch blocker:** stop putting reusable credentials in logged URLs (use header-authenticated media, narrowly scoped short-lived signed URLs, or verified query redaction), then confirm retention and deletion capability with the hosting setup |
+| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors, **full human/LLM commit summaries (which can contain private research content)**; a rate-limited raw UUID for allowlist rejection; **current media URLs put the Supabase bearer JWT in `?token=`, which uvicorn access logs can record** | Not configured in this repository | **Launch blocker:** stop putting reusable credentials in logged URLs (use header-authenticated media, narrowly scoped short-lived signed URLs, or verified query redaction), remove or safely redact commit-summary content, then confirm retention and deletion capability with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
 Postgres ownership checks. They are not filesystem-namespaced by user. Access isolation is
@@ -124,12 +125,12 @@ exception and the actual provider terms/configuration support that classificatio
 | Supabase Auth | Email, OAuth identity response, session/auth metadata | Account management and authentication | `mobile/src/auth/`, `app/auth.py` |
 | Supabase Postgres | UUID, email, ownership rows, user preferences | Tenancy and settings | `app/db.py`, `app/tenancy.py`, `app/user_settings.py` |
 | Google Identity | OAuth sign-in request and Google account interaction | User-initiated authentication | Supabase Google provider |
-| OpenRouter and dynamically eligible inference endpoints | System prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
-| OpenAI | Generated narration text, selected TTS model/voice/instructions | Text-to-speech | `app/tts.py` |
-| Firecrawl | Research objective/search query, or requested public URLs | Web search and extraction | `app/research_tools.py` |
-| Parallel Search | Research objective, search queries, requested URLs, random process session ID | Web search and extraction | `app/research_tools.py` |
+| OpenRouter and dynamically eligible inference endpoints | Operator API credential; system prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Authentication; analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
+| OpenAI | Operator API credential; generated narration text, selected TTS model/voice/instructions | Authentication; text-to-speech | `app/tts.py` |
+| Firecrawl | Operator API credential; research objective/search query, or requested public URLs | Authentication; web search and extraction | `app/research_tools.py` |
+| Parallel Search | Operator API credential; research objective, search queries, requested URLs, random process session ID | Authentication; web search and extraction | `app/research_tools.py` |
 | DuckDuckGo | Search query | Keyless search fallback | `app/research_tools.py` |
-| Semantic Scholar | Paper title/arXiv/DOI/S2 identifier | Scholarly metadata, citation matching | `app/semantic_scholar.py`, `app/citations.py` |
+| Semantic Scholar | Optional operator API credential; paper title/arXiv/DOI/S2 identifier | Authentication; scholarly metadata, citation matching | `app/semantic_scholar.py`, `app/citations.py` |
 | OpenAlex | arXiv/DOI plus operator contact in User-Agent when configured | Author/affiliation metadata | `app/openalex.py` |
 | arXiv/ar5iv and user-selected public hosts | Paper identifier or requested public URL; standard request metadata | Retrieve paper text, HTML, figures, or PDF | `app/retriever.py`, `app/figures.py`, `app/safe_fetch.py` |
 
@@ -225,7 +226,7 @@ rules as the privacy policy.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
 - [ ] Remove reusable bearer tokens from media query strings (or prove complete query redaction),
       rotate any credentials exposed during testing, then define log destination, retention, access,
-      and deletion behavior and sanitize provider errors.
+      and deletion behavior; remove/redact commit summaries and sanitize provider errors.
 - [ ] Confirm Google OAuth scopes and which identity fields Supabase retains.
 - [ ] Review current data-processing/retention/training terms and configuration for Fly, Supabase,
       OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,
