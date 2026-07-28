@@ -218,12 +218,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const recoverLocalDeletion = useCallback(async (): Promise<'none' | 'cleared' | 'failed'> => {
     if (!(await hasAccountDeletionIntent().catch(() => false))) return 'none';
     queryClient.clear();
-    await stopPlaybackForSessionEnd().catch(() => {});
+    let failed = false;
+    try {
+      await stopPlaybackForSessionEnd({ failClosed: true });
+    } catch {
+      failed = true;
+    }
     try {
       await clearDeletedAccountStorage();
+    } catch {
+      failed = true;
+    }
+    if (failed) {
+      // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
+      setError(
+        'Some deleted-account data could not be cleared from this device. '
+        + 'Clear the app’s data before another person uses it.',
+      );
+      return 'failed';
+    }
+    try {
       await clearAccountDeletionIntent();
     } catch {
-      // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
       setError(
         'Some deleted-account data could not be cleared from this device. '
         + 'Clear the app’s data before another person uses it.',
@@ -641,13 +657,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const finishAccountDeletion = useCallback(async () => {
     setError(null);
     let failure: string | null = null;
-    await stopPlaybackForSessionEnd().catch(() => {});
+    try {
+      await stopPlaybackForSessionEnd({ failClosed: true });
+    } catch {
+      failure = 'Private playback could not be stopped.';
+    }
     try {
       await clearDeletedAccountStorage();
-      await clearAccountDeletionIntent();
     } catch {
       // Keep the local intent marker so a later signed-out launch retries cleanup.
       failure = 'Some account-linked data could not be cleared from this device.';
+    }
+    if (!failure) {
+      try {
+        await clearAccountDeletionIntent();
+      } catch {
+        failure = 'Some account-linked data could not be cleared from this device.';
+      }
     }
     // Identity deletion already happened server-side. A normal/global sign-out would now make an
     // unnecessary Auth request against an account that no longer exists; local scope removes the

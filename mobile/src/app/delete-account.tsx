@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ApiError } from '@/api/client';
-import { startAccountDeletion } from '@/api/endpoints';
+import { getAccountDeletion, startAccountDeletion } from '@/api/endpoints';
 import { useAuth } from '@/auth/AuthProvider';
 import {
   clearAccountDeletionIntent,
@@ -53,10 +53,29 @@ export default function DeleteAccountScreen() {
       // durable progress surface. No other protected request can race after the tombstone.
       queryClient.setQueryData(accountDeletionQueryKey(userId), result);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.status > 0) {
-        // The server answered and did not accept the request. Network ambiguity deliberately
-        // keeps the marker: the durable request may have landed before the connection was lost.
+      const explicitPrePersistenceRejection = caught instanceof ApiError && (
+        (caught.status >= 400 && caught.status < 500)
+        || (
+          caught.status === 503
+          && caught.message === 'Account deletion is not configured on this server yet.'
+        )
+      );
+      if (explicitPrePersistenceRejection) {
+        // These responses are produced before account_deletion.request() can persist a tombstone.
+        // Any other server/proxy failure is ambiguous and deliberately retains the recovery marker.
         await clearAccountDeletionIntent().catch(() => {});
+      } else if (caught instanceof ApiError && caught.status > 0) {
+        // A response can be lost after persistence. If an authoritative follow-up already sees the
+        // tombstone, hand control to the deletion guard; an unavailable/null read cannot safely
+        // disprove an in-flight forwarded POST, so it leaves the marker in place.
+        try {
+          const observed = await getAccountDeletion();
+          if (observed.deletion) {
+            queryClient.setQueryData(accountDeletionQueryKey(userId), observed);
+          }
+        } catch {
+          // The persisted marker is the fail-closed recovery mechanism.
+        }
       }
       setError(caught instanceof Error ? caught.message : 'Account deletion could not be started.');
     } finally {

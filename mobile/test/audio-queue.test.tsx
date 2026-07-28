@@ -5,7 +5,11 @@ import TrackPlayer, { State } from 'react-native-track-player';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { AudioJob, TranscriptEntry } from '@/api/types';
-import { AudioProvider, useAudio } from '@/audio/AudioProvider';
+import {
+  AudioProvider,
+  stopPlaybackForSessionEnd,
+  useAudio,
+} from '@/audio/AudioProvider';
 import { isHandoffEligible, registerEligibleHandoff } from '@/audio/handoffState';
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { ProjectProvider } from '@/store/project';
@@ -15,6 +19,14 @@ import { ListeningProvider } from '@/store/listening';
 
 // Playback-mode opt-ins must not leak across tests in this file.
 afterEach(() => AsyncStorage.removeItem('rc.audioPlayback'));
+
+test('deleted-account teardown fails closed when the native player cannot reset', async () => {
+  jest.mocked(TrackPlayer.reset).mockRejectedValueOnce(new Error('native player busy'));
+
+  await expect(
+    stopPlaybackForSessionEnd({ failClosed: true }),
+  ).rejects.toThrow('Private playback could not be stopped.');
+});
 
 const doneJob: AudioJob = {
   id: 'audio-job',

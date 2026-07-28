@@ -102,3 +102,21 @@ test('an explicit server rejection removes the pre-request recovery marker', asy
   )).toBeTruthy());
   expect(await hasAccountDeletionIntent()).toBe(false);
 });
+
+test('an ambiguous gateway failure preserves the recovery marker', async () => {
+  jest.mocked(api.startAccountDeletion).mockRejectedValue(
+    new ApiError(504, 'The upstream request timed out.'),
+  );
+  jest.mocked(api.getAccountDeletion).mockRejectedValue(
+    new ApiError(503, 'Account deletion status is temporarily unavailable.'),
+  );
+  const view = await renderScreen();
+  fireEvent.changeText(
+    view.getByLabelText('Type DELETE to confirm account deletion'),
+    'DELETE',
+  );
+  fireEvent.press(view.getByText('Permanently delete account'));
+
+  await waitFor(() => expect(view.getByText('The upstream request timed out.')).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(true);
+});

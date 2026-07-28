@@ -147,13 +147,34 @@ export function audioSessionEpoch(): number {
   return sessionEpoch;
 }
 
-export async function stopPlaybackForSessionEnd(): Promise<void> {
+export async function stopPlaybackForSessionEnd(
+  options: { failClosed?: boolean } = {},
+): Promise<void> {
   // Bumped FIRST and synchronously, so everything already in flight is invalidated before any
   // await below gives it another chance to run.
   sessionEpoch += 1;
-  await clearPlaybackSnapshot().catch(() => {});
-  await dismissEligibleHandoffs().catch(() => {});
-  await TrackPlayer.reset().catch(() => {});
+  let failed = false;
+  try {
+    await clearPlaybackSnapshot();
+  } catch {
+    failed = true;
+  }
+  try {
+    await dismissEligibleHandoffs();
+  } catch {
+    failed = true;
+  }
+  try {
+    await TrackPlayer.reset();
+  } catch {
+    failed = true;
+  }
+  // Ordinary session teardown remains best-effort so a storage error cannot strand sign-out.
+  // Deleted-account cleanup is different: the recovery marker must survive until every private
+  // playback surface is gone, including the native singleton that outlives the React tree.
+  if (failed && options.failClosed) {
+    throw new Error('Private playback could not be stopped.');
+  }
 }
 
 export function AudioProvider({ children }: { children: ReactNode }) {

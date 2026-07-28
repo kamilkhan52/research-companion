@@ -253,6 +253,36 @@ test('finishing deletion uses local sign-out and clears the API token', async ()
   await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
 });
 
+test('finishing deletion fails closed when private playback cannot stop', async () => {
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  audio.stopPlaybackForSessionEnd
+    .mockRejectedValueOnce(new Error('native player busy'))
+    .mockRejectedValueOnce(new Error('native player still busy'));
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  await waitFor(() => expect(getByText('cleanup-required')).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(true);
+  expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalledWith({ failClosed: true });
+});
+
 test('cold start honors local deletion intent without a restorable session or reachable API', async () => {
   await AsyncStorage.setItem('rc.activeProject', 'private-project');
   await AsyncStorage.setItem('rc.draft.v1:private-project:paper', 'private draft');
