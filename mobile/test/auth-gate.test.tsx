@@ -2,6 +2,7 @@ import { act, fireEvent, renderAsync, waitFor } from '@testing-library/react-nat
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Text } from 'react-native';
 
+import { ApiError } from '@/api/client';
 import * as api from '@/api/endpoints';
 import { AuthGate } from '@/components/AuthGate';
 import { createTestQueryClient } from './queryClient';
@@ -143,6 +144,27 @@ test('a background deletion poll does not tear the app down', async () => {
 
   releasePoll();
   await waitFor(() => expect(view.getByText('Private library')).toBeTruthy());
+  await view.unmountAsync();
+});
+
+test('a forbidden account is told so, and offered the one action that helps', async () => {
+  // Found on a device pass: a second Supabase account signed in fine but was not in
+  // `RC_ALLOWED_USERS`, so every /api call 403'd. The guard has no cached answer for a new user,
+  // so it fell into the offline card — "Try again" against a server that will never say yes, with
+  // no route back to Settings or to another account. This recurs for each of M2.5's twelve
+  // testers, since every one has to be allowlisted by hand.
+  const signOut = jest.fn(async () => undefined);
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-c', signOut };
+  jest.mocked(api.getAccountDeletion).mockRejectedValue(new ApiError(403, 'Not permitted.'));
+
+  const view = await renderGate();
+  await waitFor(() => expect(view.getByText('This account doesn’t have access')).toBeTruthy());
+  // The misleading card must NOT be what a 403 produces.
+  expect(view.queryByText('Couldn’t check your account')).toBeNull();
+  expect(view.queryByText('Try again')).toBeNull();
+
+  fireEvent.press(view.getByText('Sign out'));
+  expect(signOut).toHaveBeenCalled();
   await view.unmountAsync();
 });
 

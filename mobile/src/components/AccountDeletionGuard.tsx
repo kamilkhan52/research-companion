@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
+import { ApiError } from '@/api/client';
 import { getAccountDeletion, startAccountDeletion } from '@/api/endpoints';
 import type { AccountDeletion } from '@/api/types';
 import { useAuth } from '@/auth/AuthProvider';
@@ -29,7 +30,7 @@ const COPY: Record<AccountDeletion['status'], string> = {
 export function AccountDeletionGuard({ children }: { children: ReactNode }) {
   const t = useTheme();
   const queryClient = useQueryClient();
-  const { userId, finishAccountDeletion } = useAuth();
+  const { userId, finishAccountDeletion, signOut } = useAuth();
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const finishing = useRef(false);
@@ -93,6 +94,34 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
       <Screen>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator color={t.mint} />
+        </View>
+      </Screen>
+    );
+  }
+
+  // 403 is not a failure to reach the server — it is the server saying this account may not use
+  // this instance (`RC_ALLOWED_USERS`). Reported as a network problem it is actively misleading:
+  // the card below offers "Try again", which can never succeed, and the user is stuck with no way
+  // out and no way to reach Settings. Found on a real device pass, and it will recur for every one
+  // of M2.5's twelve testers, because each has to be allowlisted by hand before they can sign in.
+  //
+  // Sign out is the one action that helps: it returns to the welcome screen, from which another
+  // account — or another server — is reachable.
+  if (query.error instanceof ApiError && query.error.status === 403) {
+    return (
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center', padding: space.xl }}>
+          <Card>
+            <Icon name="lock" size={24} color={t.danger} />
+            <Text variant="title" style={{ marginTop: space.md }}>
+              This account doesn’t have access
+            </Text>
+            <Text color={t.muted} style={{ marginTop: space.sm, marginBottom: space.lg }}>
+              You’re signed in, but this server hasn’t granted this account access yet. Ask the
+              person who runs it to add you, or sign in with a different account.
+            </Text>
+            <Button title="Sign out" onPress={() => { void signOut(); }} />
+          </Card>
         </View>
       </Screen>
     );
