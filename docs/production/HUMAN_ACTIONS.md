@@ -415,6 +415,18 @@ Wait until the account-deletion coordinator has landed before setting it. Then v
 with a disposable staging account before production configuration. The backend treats an already
 missing Auth identity as success so the final step is safe to retry.
 
+**Ready as of 2026-07-28 — this is now the blocker, not the prerequisite.** The coordinator (#253)
+and the mobile client (#254) are merged and deployed to staging at version 17; migrations `0004`
+and `0005` applied on boot. `flyctl secrets list -a research-companion-staging` shows every other
+secret present and this one absent.
+
+Until it is set, `supabase_admin.configured()` is False and `account_deletion.request()` refuses
+**before** writing a tombstone, so a tap on "Permanently delete account" returns 503 and nothing is
+deleted. That refusal is a designed path and is worth exercising on the device — the client should
+clear its local deletion marker and say the server is not configured — but it is not the
+Play-required deletion path, and the Data safety form cannot truthfully claim deletion works until
+the disposable-account run above has passed.
+
 ---
 
 ## Standing rules
