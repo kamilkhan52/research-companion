@@ -60,6 +60,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/reports/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Report Content
+         * @description Report offensive AI-generated content without leaving the app.
+         *
+         *     Required by Google Play's AI-Generated Content policy for any app whose content is model
+         *     output, which is all of this one. Kept a plain POST rather than a job (invariant 1): it is one
+         *     small insert, and a reader who has just seen something objectionable should be told immediately
+         *     that it was recorded, not handed a job id to poll.
+         */
+        post: operations["report_content_api_reports_content_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings": {
         parameters: {
             query?: never;
@@ -2013,6 +2038,21 @@ export interface components {
             /** Mode */
             mode?: ("balanced" | "background" | "technical" | "detailed") | null;
         };
+        /** ContentReportRequest */
+        ContentReportRequest: {
+            /** Surface */
+            surface: string;
+            /** Reason */
+            reason: string;
+            /** Project Id */
+            project_id?: string | null;
+            /** Paper Slug */
+            paper_slug?: string | null;
+            /** Reference */
+            reference?: string | null;
+            /** Reporter Note */
+            reporter_note?: string | null;
+        };
         /** CreateThreadReq */
         CreateThreadReq: {
             /** Title */
@@ -2498,6 +2538,39 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    report_content_api_reports_content_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContentReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
