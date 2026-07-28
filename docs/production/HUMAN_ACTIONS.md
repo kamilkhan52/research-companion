@@ -297,8 +297,27 @@ named. A dev environment short-circuits to allow, since local prompt editing has
 **Kamil still needs to run this** for staging (and later production), or prompt editing stays off
 for everyone including him:
 ```
-flyctl secrets set RC_OPERATOR_USERS=b8f19707-4b13-4cbb-834a-93cd6d06f489 -a research-companion-staging
+flyctl secrets set RC_OPERATOR_USERS=<your-staging-supabase-uuid> -a research-companion-staging
 ```
+
+**The literal UUID that used to sit in that command was removed on 2026-07-28, because it was
+wrong and it caused an outage.** It predated the 2026-07-25 split into a separate staging Supabase
+project, and Supabase user ids are per project — the same warning H4 already gives. An agent read
+it as current, used it to rewrite `RC_ALLOWED_USERS`, and locked Kamil out of staging until the
+real ids were recovered from `flyctl logs`.
+
+Two rules follow, and they are the actual lesson:
+
+- **Never write a UUID for a live environment into these documents.** They go stale silently and
+  read as authoritative. The environment is the source of truth.
+- **`flyctl secrets set` REPLACES a value, and `flyctl secrets list` shows only names.** So a
+  secret that holds a list — `RC_ALLOWED_USERS`, `RC_OPERATOR_USERS` — cannot be appended to
+  safely: you cannot read what is there. Setting one means setting the complete intended list, and
+  if you do not know it, recover it first rather than guessing.
+
+To recover the ids when they are unknown: sign in on the device and read the middleware's own
+rejection line, which exists for exactly this — `flyctl logs -a research-companion-staging
+--no-tail | grep "rejected non-allowlisted"` prints the id it refused.
 
 Unaffected, deliberately: the per-session **starting prompt** a reader edits before a discussion.
 That travels on the turn (`ChatStartReq.prompt`) and never touches the prompt registry, so it stays
