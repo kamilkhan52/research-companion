@@ -109,3 +109,26 @@ def test_total_failure_errors_the_job_and_does_not_claim_researched(temp_project
     snap = _settled(lab_research.start_research(research_fn=broken).id)
     assert snap["status"] == "error" and "every author" in snap["error"]
     assert lab_research.labs_board(lab_research._board())["researched"] is False
+
+
+def test_agent_provider_error_excludes_upstream_message(temp_project, monkeypatch):
+    import pydantic_ai
+    from app import agent_harness, graph
+
+    secret = "PRIVATE_PROMPT_ECHO_lab"
+
+    class FailedAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, *args, **kwargs):
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(pydantic_ai, "Agent", FailedAgent)
+    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None: object())
+    monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
+
+    with pytest.raises(RuntimeError) as err:
+        lab_research._research_with_agent("Researcher", "University", ["Paper"])
+    assert "model provider" in str(err.value)
+    assert secret not in str(err.value)

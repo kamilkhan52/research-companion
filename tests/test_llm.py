@@ -446,7 +446,7 @@ def test_catalogue_cold_failure_is_single_flight(monkeypatch):
     assert len(errors) == 6    # every caller received the shared error outcome
 
 
-# ---- U.22: provider failures surface in the app's voice, raw payloads stay in the log ----
+# ---- U.22: provider failures surface in the app's voice; raw payloads stay private ----
 
 def test_out_of_credits_reads_as_an_actionable_message(key, monkeypatch, rc_logs):
     raw = '{"error":{"message":"Insufficient credits","code":402}}'
@@ -455,8 +455,8 @@ def test_out_of_credits_reads_as_an_actionable_message(key, monkeypatch, rc_logs
         llm.complete([{"role": "user", "content": "hi"}])
     msg = str(err.value)
     assert "credits" in msg and "openrouter.ai" in msg
-    assert "Insufficient credits" not in msg          # raw payload is not user-facing
-    assert any(raw[:40] in m for m in _llm_msgs(rc_logs))  # ...but it IS in the server log
+    assert "Insufficient credits" not in msg
+    assert all("Insufficient credits" not in m for m in _llm_msgs(rc_logs))
 
 
 def test_bad_key_message_points_at_settings(key, monkeypatch):
@@ -481,8 +481,53 @@ def test_provider_5xx_reads_as_transient(key, monkeypatch):
     assert "retry shortly" in str(err.value).lower()
 
 
-def test_unrecognized_status_keeps_a_short_raw_excerpt(key, monkeypatch):
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(418, text="teapot"))
+def test_unrecognized_status_keeps_status_but_not_raw_body(key, monkeypatch, rc_logs):
+    secret = "PRIVATE_PROMPT_ECHO_teapot"
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(418, text=secret))
     with pytest.raises(llm.LLMError) as err:
         llm.complete([{"role": "user", "content": "hi"}])
-    assert "418" in str(err.value) and "teapot" in str(err.value)
+    assert "418" in str(err.value)
+    assert secret not in str(err.value)
+    assert all(secret not in m for m in _llm_msgs(rc_logs))
+
+
+def test_retryable_http_body_never_reaches_logs(key, monkeypatch, rc_logs):
+    secret = "PRIVATE_PROMPT_ECHO_retry"
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(503, text=secret))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}], tries=2)
+    assert secret not in str(err.value)
+    assert all(secret not in m for m in _llm_msgs(rc_logs))
+
+
+def test_stream_http_body_never_reaches_logs(key, monkeypatch, rc_logs):
+    secret = "PRIVATE_PAPER_TEXT_stream"
+    monkeypatch.setattr(httpx, "stream", _scripted(FakeStream(503, body=secret)))
+    with pytest.raises(llm.LLMError) as err:
+        list(llm.stream([{"role": "user", "content": "hi"}], tries=2))
+    assert secret not in str(err.value)
+    assert all(secret not in m for m in _llm_msgs(rc_logs))
+
+
+def test_non_json_success_body_never_reaches_errors_or_logs(key, monkeypatch, rc_logs):
+    secret = "PRIVATE_PAPER_TEXT_non_json"
+
+    class InvalidJsonResp(FakeResp):
+        def json(self):
+            raise ValueError("not json")
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: InvalidJsonResp(200, text=secret))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert secret not in str(err.value)
+    assert all(secret not in m for m in _llm_msgs(rc_logs))
+
+
+def test_unexpected_response_shape_never_reaches_errors_or_logs(key, monkeypatch, rc_logs):
+    secret = "PRIVATE_PAPER_TEXT_shape"
+    monkeypatch.setattr(
+        httpx, "post", lambda *a, **k: FakeResp(200, {"provider_echo": secret}))
+    with pytest.raises(llm.LLMError) as err:
+        llm.complete([{"role": "user", "content": "hi"}])
+    assert secret not in str(err.value)
+    assert all(secret not in m for m in _llm_msgs(rc_logs))

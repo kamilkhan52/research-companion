@@ -71,7 +71,8 @@ _TRIES = 3
 
 def _friendly_tts_error(status: int, raw: str) -> str:
     """User-facing message for an OpenAI speech failure — quota/key/rate problems in the
-    app's voice with the action to take, raw payload reserved for anyone reading raw (U.22)."""
+    app's voice with the action to take. The raw body is inspected only to distinguish quota from
+    rate limiting; it is never included in the returned error."""
     if status == 401:
         return "OpenAI rejected the speech API key. Check it in Settings → Speech."
     if status == 429:
@@ -81,7 +82,7 @@ def _friendly_tts_error(status: int, raw: str) -> str:
         return "OpenAI is rate-limiting speech synthesis. Wait a moment and retry."
     if status >= 500:
         return f"OpenAI's speech service is having trouble (HTTP {status}). Retry shortly."
-    return f"OpenAI TTS error {status}: {raw[:200]}"
+    return f"OpenAI declined speech synthesis (HTTP {status}). Check Speech settings and retry."
 
 
 def openai_speech(text: str) -> bytes:

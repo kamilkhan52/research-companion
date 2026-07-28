@@ -85,8 +85,12 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
                 if holder.get("full_text"):
                     break  # got the paper — no need to let the model keep narrating
         summary = (run.result.output if run.result else "") or ""
-    except Exception as e:
-        yield {"type": "result", "ok": False, "summary": f"PDF hunt failed: {str(e)[:200]}"}
+    except Exception:
+        yield {
+            "type": "result",
+            "ok": False,
+            "summary": "The model provider could not complete the PDF hunt.",
+        }
         return
     yield {"type": "result", "ok": bool(holder.get("full_text")),
            "full_text": holder.get("full_text"), "source": holder.get("source"),

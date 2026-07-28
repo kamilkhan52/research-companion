@@ -95,7 +95,7 @@ def _record_run_usage(run_usage, model: Model | None, operation: str) -> None:
             # totals estimated (no generation id to reconcile by) rather than implying $0.
             usage.record_pending(operation, model_name, None)
     except Exception as e:  # noqa: BLE001 — accounting is best-effort
-        log.debug("agentic usage accounting skipped: %s", str(e)[:120])
+        log.debug("agentic usage accounting skipped (error=%s)", type(e).__name__)
 
 # ---- web-tool wrappers: drop the injectable `client` kwarg so it isn't exposed in the schema.
 #      Their names become the tool names the model (and the mobile activity trail) see. ----
@@ -192,8 +192,8 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
         result = ag.run_sync(prompt, message_history=_to_message_history(prior),
                              usage_limits=_USAGE_LIMITS, usage=run_usage)
     except Exception as e:  # tool-incompatible / provider error → single-shot fallback
-        log.warning("agentic turn failed for %s (%s); falling back to single-shot",
-                    slug, str(e)[:200])
+        log.warning("agentic turn failed for %s (error=%s); falling back to single-shot",
+                    slug, type(e).__name__)
         # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
         return agent_mod.run_turn(slug, history, model=_model_id(model))
     finally:
@@ -284,7 +284,8 @@ async def stream_agent_events(ag: Agent, prompt: str,
     except agent_mod.AgentError:
         raise
     except Exception as e:  # normalize framework/provider errors
-        raise agent_mod.AgentError(f"Agentic stream failed: {str(e)[:300]}") from e
+        raise agent_mod.AgentError(
+            "The model provider could not complete the agentic request.") from e
     finally:
         _record_run_usage(run_usage, ag.model, operation)
 
@@ -311,7 +312,8 @@ async def stream_with_single_shot_fallback(
     except agent_mod.AgentError as e:
         if produced_final:
             raise  # the answer already landed; a later error has nothing to recover
-        log.warning("agentic stream failed (%s); falling back to single-shot", str(e)[:200])
+        log.warning("agentic stream failed (error=%s); falling back to single-shot",
+                    type(e).__name__)
         yield {"type": "segment"}  # demote any partial commentary/text already shown
         for ev in single_shot():
             yield ev

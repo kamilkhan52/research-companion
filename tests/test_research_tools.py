@@ -80,8 +80,23 @@ def test_firecrawl_search_formats_results(temp_project, monkeypatch):
 
 def test_firecrawl_search_raises_on_402_so_chain_falls_through(temp_project, monkeypatch):
     monkeypatch.setattr(research_tools, "_firecrawl_key", lambda: "fc-test")
-    with pytest.raises(research_tools.ToolError):
-        research_tools._firecrawl_search("q", ["q"], client=_OneShot(_resp(402, text='{"error":"no credit"}')))
+    secret = "PRIVATE_PROMPT_ECHO_firecrawl"
+    with pytest.raises(research_tools.ToolError) as err:
+        research_tools._firecrawl_search(
+            "q", ["q"], client=_OneShot(_resp(402, text=f'{{"error":"{secret}"}}')))
+    assert "402" in str(err.value)
+    assert secret not in str(err.value)
+
+
+def test_parallel_error_excludes_provider_message(temp_project, monkeypatch):
+    monkeypatch.setattr(research_tools, "_parallel_key", lambda: "parallel-test")
+    secret = "PRIVATE_PAPER_TEXT_parallel"
+    response = _resp(
+        200, text=f'{{"jsonrpc":"2.0","id":2,"error":{{"message":"{secret}"}}}}')
+    with pytest.raises(research_tools.ToolError) as err:
+        research_tools._parallel_search("q", ["q"], client=_OneShot(response))
+    assert "provider error" in str(err.value)
+    assert secret not in str(err.value)
 
 
 def test_ddg_search_parses_and_unwraps(temp_project):

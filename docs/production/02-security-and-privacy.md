@@ -97,7 +97,7 @@ the server inventory below.
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
 | In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
-| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors, and a rate-limited raw UUID for allowlist rejection. Commit lifecycle lines contain only slug/revision as of 2026-07-28; older logs may contain full human/LLM summaries with private research content. Protected mobile media now uses authorization headers. A temporary old-client fallback still accepts query tokens only on cover/figure GETs and removes them from this app's access-log scope, but an upstream proxy can observe the original target; pre-fix staging logs may also contain expired Supabase JWTs | Not configured in this repository | **Launch blocker:** retire the compatibility fallback after the mobile rollout, audit historical log exposure, sanitize provider error bodies, then confirm retention and deletion capability with the hosting setup |
+| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, sanitized error classes/statuses, and a rate-limited raw UUID for allowlist rejection. Commit lifecycle lines contain only slug/revision as of 2026-07-28; older logs may contain full human/LLM summaries with private research content. As of 2026-07-28, OpenRouter, OpenAI speech, Firecrawl, Parallel, and DuckDuckGo response bodies and exception messages are excluded from new operational logs and job-facing errors. Protected mobile media now uses authorization headers. A temporary old-client fallback still accepts query tokens only on cover/figure GETs and removes them from this app's access-log scope, but an upstream proxy can observe the original target; pre-fix staging logs may also contain expired Supabase JWTs | Not configured in this repository | **Launch blocker:** retire the compatibility fallback after the mobile rollout, audit historical log exposure, then confirm retention and deletion capability with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
 Postgres ownership checks. They are not filesystem-namespaced by user. Access isolation is
@@ -141,10 +141,11 @@ submission, either pin an approved endpoint-routing policy or enumerate and revi
 OpenRouter can select for every allowed model. The provider actually serving the call belongs in
 the privacy-policy processor list and contract review.
 
-Error handling can write up to 400 characters of an OpenRouter error body and up to 200 characters
-of some other exception strings into backend logs. These are intended as provider diagnostics,
-but the provider payload could echo user content. Before launch, sanitize structured provider
-errors or establish that these fields cannot contain prompts/paper text.
+Provider failures are reduced to operationally useful metadata—provider, model, HTTP status,
+attempt count, and exception class—before they reach logs or user/job error surfaces. Raw response
+bodies and exception messages from OpenRouter, OpenAI speech, Firecrawl, Parallel, and
+DuckDuckGo are excluded because they can echo prompts or paper text. Historical staging logs from
+before 2026-07-28 still require audit under the log-retention launch check.
 
 ## Google Play Data Safety draft
 
@@ -232,7 +233,8 @@ rules as the privacy policy.
       project-scoped slug and git revision needed to locate the approved record.
 - [ ] Audit historical staging logs and rotate any still-live credential found there; define log
       destination, retention, access, and deletion behavior.
-- [ ] Sanitize provider error bodies before logging; they can echo prompts or paper content.
+- [x] Sanitize provider error bodies before logging or returning job-facing errors; retain only
+      provider/model/status/attempt/error-class diagnostics.
 - [ ] Confirm Google OAuth scopes and which identity fields Supabase retains.
 - [ ] Review current data-processing/retention/training terms and configuration for Fly, Supabase,
       OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,

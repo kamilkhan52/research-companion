@@ -109,11 +109,10 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
     return body
 
 
-def _friendly_http_error(status: int, raw: str, model: str | None) -> str:
+def _friendly_http_error(status: int, model: str | None) -> str:
     """The user-facing message for an OpenRouter HTTP failure. Quota, key, and rate problems
-    read in the app's voice with the action to take — the raw provider payload stays in the
-    server log (U.22; the future credits layer will intercept these same cases). Unrecognized
-    statuses keep a short raw excerpt, which is diagnostic rather than noise."""
+    read in the app's voice with the action to take. Provider payloads are deliberately excluded
+    from both this message and logs: an upstream error can echo prompts or paper text."""
     name = model or "the selected model"
     if status == 401:
         return "OpenRouter rejected the API key. Check it in Settings."
@@ -131,7 +130,7 @@ def _friendly_http_error(status: int, raw: str, model: str | None) -> str:
     if status >= 500:
         return (f"OpenRouter or the provider behind {name} is having trouble "
                 f"(HTTP {status}). This is usually brief — retry shortly.")
-    return f"OpenRouter error {status}: {raw[:200]}"
+    return f"OpenRouter declined the request (HTTP {status}). Try again or choose another model."
 
 
 _TRANSPORT_FRIENDLY = "Could not reach OpenRouter. Check the connection and retry."
@@ -140,7 +139,7 @@ _TRANSPORT_FRIENDLY = "Could not reach OpenRouter. Check the connection and retr
 def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
     """POST the chat-completions body, retrying transient failures with backoff. Returns the
     parsed JSON response; raises LLMError once retries are exhausted or the error is fatal.
-    Logs carry the raw provider payload; the raised LLMError carries the user-facing message."""
+    Logs retain status/attempt/model diagnostics but never the provider response body."""
     last = "unknown error"
     friendly = _TRANSPORT_FRIENDLY
     attempts = 0
@@ -154,16 +153,18 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
             r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
                            headers=_headers(key), json=body, timeout=timeout)
         except httpx.HTTPError as e:
-            last = f"OpenRouter request failed: {e}"
+            last = f"transport={type(e).__name__}"
             friendly = _TRANSPORT_FRIENDLY
             continue  # transport-level: always worth a retry
         if r.status_code == 200:
             try:
                 return r.json()
             except ValueError as e:
-                raise LLMError(f"OpenRouter returned a non-JSON 200: {r.text[:400]}") from e
-        last = f"OpenRouter error {r.status_code}: {r.text[:400]}"
-        friendly = _friendly_http_error(r.status_code, r.text, body.get("model"))
+                log.error("openrouter returned invalid JSON (model=%s, HTTP 200)",
+                          body.get("model"))
+                raise LLMError("OpenRouter returned an invalid response. Retry shortly.") from e
+        last = f"HTTP {r.status_code}"
+        friendly = _friendly_http_error(r.status_code, body.get("model"))
         if r.status_code not in _RETRY_STATUS:
             break  # fatal: don't count attempts we never made
     # `attempts` is what we actually tried (1 for a fatal first response, `tries` if exhausted).
@@ -190,7 +191,9 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
     except (KeyError, IndexError, TypeError) as e:
-        raise LLMError(f"Unexpected OpenRouter response: {str(data)[:400]}") from e
+        log.error("openrouter returned an unexpected response shape (model=%s)",
+                  body.get("model"))
+        raise LLMError("OpenRouter returned an unexpected response. Retry shortly.") from e
     content = _flatten_content(message.get("content"))
     if not content.strip() and not allow_empty:
         raise LLMError(_empty_response_message(choice.get("finish_reason"), data.get("usage") or {}))
@@ -239,9 +242,8 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
                 if r.status_code != 200:
-                    detail = r.read().decode("utf-8", "ignore")[:400]
-                    last = f"OpenRouter error {r.status_code}: {detail}"
-                    friendly = _friendly_http_error(r.status_code, detail, body.get("model"))
+                    last = f"HTTP {r.status_code}"
+                    friendly = _friendly_http_error(r.status_code, body.get("model"))
                     if r.status_code in _RETRY_STATUS:
                         continue  # not billed — safe to retry, nothing to account
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)
@@ -271,7 +273,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
             _account_stream(operation, body.get("model"), seen_usage, gen_id)  # exact or pending
             return  # stream finished cleanly
         except httpx.HTTPError as e:
-            last = f"OpenRouter stream failed: {e}"
+            last = f"transport={type(e).__name__}"
             friendly = _TRANSPORT_FRIENDLY
             # A 200 generation is billed the moment OpenRouter accepts it (it can spend on hidden
             # reasoning before any content), so account it even if it dropped before a token — as
@@ -341,14 +343,18 @@ def catalogue(*, timeout: float = 30, ttl: float = _CATALOGUE_TTL) -> list[dict]
             r.raise_for_status()
             data = r.json().get("data", [])
         except (httpx.HTTPError, ValueError) as e:
-            msg = f"Could not reach OpenRouter: {e}"
+            msg = "Could not load the OpenRouter model catalogue. Retry shortly."
+            if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+                diagnostic = f"HTTP {e.response.status_code}"
+            else:
+                diagnostic = type(e).__name__
             with _catalogue_lock:
                 _catalogue_cooldown_until = time.monotonic() + _CATALOGUE_ERROR_COOLDOWN
                 _catalogue_last_error = msg
                 have_stale = _catalogue_cache is not None
                 stale_data = _catalogue_cache[1] if _catalogue_cache else None
-            log.warning("catalogue refresh failed, serving %s: %s",
-                        "stale" if have_stale else "error", e)
+            log.warning("catalogue refresh failed, serving %s (%s)",
+                        "stale" if have_stale else "error", diagnostic)
             if have_stale:
                 return stale_data  # serve stale rather than fail the caller
             raise LLMError(msg) from e

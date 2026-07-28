@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 
@@ -216,6 +217,28 @@ def test_external_sources_use_bounded_agent_findings_cache_and_fail_soft(
         slug,
         lambda *_: (_ for _ in ()).throw(RuntimeError("offline")),
     ) == []
+
+
+def test_external_sources_log_excludes_provider_message(
+        temp_project, monkeypatch, caplog):
+    from app import store
+
+    store.add_entry("Attention Is All You Need")
+    slug = store.list_papers()[0].slug
+    secret = "PRIVATE_PAPER_TEXT_preview"
+    preview_jobs._external_cache.clear()
+    logger = logging.getLogger("rc.preview")
+    previous = logger.propagate
+    logger.propagate = True
+    caplog.set_level(logging.WARNING, logger="rc.preview")
+    try:
+        sources = preview_jobs.external_sources(
+            slug, lambda *_: (_ for _ in ()).throw(RuntimeError(secret)))
+    finally:
+        logger.propagate = previous
+
+    assert sources == []
+    assert all(secret not in record.getMessage() for record in caplog.records)
 
 
 def test_coordinator_continues_cues_with_audio_progress_until_ready(
