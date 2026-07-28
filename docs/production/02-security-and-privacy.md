@@ -49,7 +49,7 @@ immediately before submission.
 |---|---|---|---|
 | Supabase user ID and email address | Sign-in and every authenticated API request | Authenticate, allowlist, own projects, apply user preferences | Required in production |
 | Google identity profile fields | Google OAuth | Supabase Auth processes the identity response | **Verify** the configured scopes and live `auth.users` metadata; name/avatar may be present even though this app reads only `sub` and `email` |
-| Project name and paper-list metadata | Create/rename/import a project; add or edit a paper | Organize the user's research library | Optional user-provided content |
+| Project name and paper-list metadata | Create/rename/import a project; add or edit a paper | Organize the user's research library | A non-empty project name is required to begin the current research workflow; later paper metadata is user-provided |
 | Uploaded PDF, filename, MIME type | User explicitly chooses “Upload PDF” | Extract and retain paper text; build reading context | Optional; direct URL/arXiv retrieval is also supported |
 | Paper title, arXiv ID, DOI, or URL | Add/retrieve/search for a paper | Locate scholarly metadata and full text | Optional user-provided research query |
 | Discovery topic/question | User runs Discover | Find and rank scholarly sources | Optional in-app search history |
@@ -95,6 +95,7 @@ the server inventory below.
 | `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite; no purge policy | **Blocker:** ownership is cleared before the directory moves, so former-user association is not retained |
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
+| In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
 | Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors; a rate-limited raw UUID for allowlist rejection | Not configured in this repository | Retention and deletion capability must be confirmed with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
@@ -123,7 +124,7 @@ exception and the actual provider terms/configuration support that classificatio
 | Supabase Auth | Email, OAuth identity response, session/auth metadata | Account management and authentication | `mobile/src/auth/`, `app/auth.py` |
 | Supabase Postgres | UUID, email, ownership rows, user preferences | Tenancy and settings | `app/db.py`, `app/tenancy.py`, `app/user_settings.py` |
 | Google Identity | OAuth sign-in request and Google account interaction | User-initiated authentication | Supabase Google provider |
-| OpenRouter and selected upstream model provider | System prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
+| OpenRouter and dynamically eligible inference endpoints | System prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
 | OpenAI | Generated narration text, selected TTS model/voice/instructions | Text-to-speech | `app/tts.py` |
 | Firecrawl | Research objective/search query, or requested public URLs | Web search and extraction | `app/research_tools.py` |
 | Parallel Search | Research objective, search queries, requested URLs, random process session ID | Web search and extraction | `app/research_tools.py` |
@@ -132,9 +133,12 @@ exception and the actual provider terms/configuration support that classificatio
 | OpenAlex | arXiv/DOI plus operator contact in User-Agent when configured | Author/affiliation metadata | `app/openalex.py` |
 | arXiv/ar5iv and user-selected public hosts | Paper identifier or requested public URL; standard request metadata | Retrieve paper text, HTML, figures, or PDF | `app/retriever.py`, `app/figures.py`, `app/safe_fetch.py` |
 
-OpenRouter is not only an API endpoint: it routes requests to the model provider selected in the
-model ID. The provider actually serving each allowed model therefore belongs in the privacy-policy
-processor list and contract review.
+OpenRouter is not only an API endpoint. The current clients send a model ID but no `provider`
+routing constraint, so OpenRouter may choose among endpoints eligible to serve that model; the
+provider-like prefix in a model ID does not prove which organization receives the payload. Before
+submission, either pin an approved endpoint-routing policy or enumerate and review every endpoint
+OpenRouter can select for every allowed model. The provider actually serving the call belongs in
+the privacy-policy processor list and contract review.
 
 Error handling can write up to 400 characters of an OpenRouter error body and up to 200 characters
 of some other exception strings into backend logs. These are intended as provider diagnostics,
@@ -148,7 +152,7 @@ errors or establish that these fields cannot contain prompts/paper text.
 | Question | Current truthful answer | Submission target / blocker |
 |---|---|---|
 | Does the app collect or share any required user data types? | **Yes** | Stable |
-| Is all collected data encrypted in transit? | **Do not answer Yes for the current source build.** `mobile/app.json` still permits cleartext and defaults to an `http://` Tailscale address. The tailnet encrypts transport below HTTP, but the Play artifact must use the production HTTPS origin and remove unnecessary cleartext support before this claim is made. | Verify the exact AAB points only to HTTPS and exercise every collection path |
+| Is all collected data encrypted in transit? | **Do not answer Yes for the current source build.** `mobile/app.json` still permits cleartext and defaults to an `http://` Tailscale address. The tailnet encrypts transport below HTTP, but the Play artifact must use the production HTTPS origin and remove unnecessary cleartext support before this claim is made. Separately, `safe_fetch` permits user-supplied and agent-selected `http://` source/PDF URLs, so research URLs and requests can also leave the backend in plaintext. | Verify the exact AAB points only to HTTPS **and** require HTTPS for server-side user/agent source fetches (or retain a No answer); exercise every collection path |
 | Can users request data deletion? | **No, not yet** | Implement authenticated in-app account deletion plus a public web request path; verify deletion end to end |
 | Is data shared with third parties? | **Unresolved.** The app transfers content to several providers, but Play exempts qualifying service providers and some user-initiated transfers from “sharing.” | Review the current contracts/terms and configurations for every recipient above; answer per data type, not by assumption |
 | Is data sold or used for advertising/marketing? | **No in product code** | Confirm provider terms do not permit sale/cross-customer advertising use |
@@ -167,7 +171,7 @@ optional is valid only when every user can use the app without providing that da
 | Messages — Other in-app messages | **Yes** | Optional | App functionality; personalization of the selected research thread | Pending OpenRouter/upstream-provider review |
 | Files and docs — Files and docs | **Yes** | Optional | App functionality | Pending hosting/extraction-provider review; public scholarly retrieval alone is not a user file, but explicit PDF upload is |
 | App activity — In-app search history | **Yes** | Optional | App functionality; personalization of research results | Pending search/scholarly-provider review |
-| App activity — Other user-generated content | **Yes** | Optional | App functionality; personalization | Pending provider review; covers project names, notes, synthesis edits, and open-ended paper metadata not classified as messages/search/files |
+| App activity — Other user-generated content | **Yes** | **Required** | App functionality; personalization | The current workflow requires a non-empty project name before research can begin; this row also covers optional notes, synthesis edits, and open-ended paper metadata not classified as messages/search/files. Pending provider review |
 | App activity — App interactions | **Yes** | Required/automatic | App functionality; cost accounting; fraud/security and future quota enforcement | Pending hosting/provider review |
 | App info and performance — Diagnostics | **Likely no today** | — | — | The mobile app sends no crash, stack, device-performance, or telemetry payload. Revisit when observability/crash reporting lands |
 | Location — Approximate location | **No based on product code; verify processors** | — | — | The app does not infer location from IP. Confirm hosting/auth/SDK configurations do not do so for this app |
@@ -194,14 +198,16 @@ The account-deletion implementation is complete only when one idempotent workflo
 3. snapshots the complete set of active and previously trashed projects belonging to the user;
 4. permanently removes those git repositories, git history, project `.state/`, covers, figures,
    uploaded-PDF-derived text/assets, transcripts, notes, discovery state, and usage records;
-5. removes `.app-state/users/<user-hash>/` narration/audio;
-6. removes per-user Postgres settings and ownership, retaining only explicitly documented legal
+5. purges retained terminal job payloads for every owned project and the user's
+   `user:<user-hash>` audio-job scope, after the corresponding running jobs have stopped;
+6. removes `.app-state/users/<user-hash>/` narration/audio;
+7. removes per-user Postgres settings and ownership, retaining only explicitly documented legal
    or anti-abuse records;
-7. revokes/deletes the Supabase Auth identity only after application-data deletion has succeeded,
+8. revokes/deletes the Supabase Auth identity only after application-data deletion has succeeded,
    or records a durable retryable deletion request if ordering fails;
-8. clears the device session and local account-linked caches;
-9. is safe to retry after a crash at every step; and
-10. produces an operator-auditable result without logging deleted content or credentials.
+9. clears the device session and local account-linked caches;
+10. is safe to retry after a crash at every step; and
+11. produces an operator-auditable result without logging deleted content or credentials.
 
 The external deletion page must identify Paradigm, accept or initiate a deletion request without
 requiring app installation, explain any identity-verification step, and link to the same retention
@@ -214,14 +220,17 @@ rules as the privacy policy.
 - [ ] Decide whether project-ID tombstones survive account deletion and document why they are
       non-content anti-ABA/security records.
 - [ ] Implement and test Supabase Auth deletion with least-privilege server credentials.
+- [ ] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
+      all owned project scopes and the hashed per-user audio scope.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
 - [ ] Define log destination, retention, access, and deletion behavior; sanitize provider errors.
 - [ ] Confirm Google OAuth scopes and which identity fields Supabase retains.
 - [ ] Review current data-processing/retention/training terms and configuration for Fly, Supabase,
-      OpenRouter plus every allowed upstream model provider, OpenAI, Firecrawl, Parallel,
-      DuckDuckGo, Semantic Scholar, OpenAlex, arXiv, and ar5iv.
+      OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,
+      Firecrawl, Parallel, DuckDuckGo, Semantic Scholar, OpenAlex, arXiv, and ar5iv.
 - [ ] Point the release AAB exclusively at the production HTTPS origin; remove unneeded Android
-      cleartext support and verify the merged manifest/runtime configuration.
+      cleartext support, require HTTPS for server-side user/agent-selected source fetches, and
+      verify the merged manifest/runtime configuration.
 - [ ] Implement an in-app offensive-AI-content report action and durable report store.
 - [ ] Implement in-app privacy, terms, and account-deletion links plus the public deletion page.
 - [ ] Add the M3 usage-event/reservation and M4–M5 billing changes to this inventory before their

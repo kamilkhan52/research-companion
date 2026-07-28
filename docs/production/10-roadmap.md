@@ -48,8 +48,9 @@ provisional Play Data Safety matrix now live in
 [`02-security-and-privacy.md`](02-security-and-privacy.md). It found two declaration blockers that
 must be fixed rather than hidden in policy prose: ordinary project deletion clears the owner before
 moving a recoverable repository to `.trash`, so account deletion cannot find former projects; and
-the current mobile source still defaults to an `http://` tailnet URL, so “all data encrypted in
-transit” must wait for an AAB pinned to the production HTTPS origin.
+the current mobile source still defaults to an `http://` tailnet URL while backend source retrieval
+also permits public `http://` URLs, so “all data encrypted in transit” must wait for an AAB pinned
+to the production HTTPS origin and HTTPS-only user/agent-selected fetches.
 
 ~~Client wiring for per-user settings~~ — done (#240): both clients now separate `is_operator` (the
 provider keys) from `can_edit_preferences` (model/voice/prior-notes). ~~Staging Supabase Site URL /
