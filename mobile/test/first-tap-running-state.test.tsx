@@ -3,7 +3,7 @@
 // that first poll can land BEFORE the start POST registers the job server-side, and the
 // "no job" (or previous settled job) snapshot must not flip the running view back off.
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHookAsync } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
@@ -11,8 +11,9 @@ import * as api from '@/api/endpoints';
 import type { DiscoveryJob, GraphBuildJob } from '@/api/types';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { useGraphBuild } from '@/hooks/useGraphBuild';
+import { createTestQueryClient } from './queryClient';
 
-const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const qc = createTestQueryClient();
 const wrapper = ({ children }: { children: ReactNode }) => (
   <QueryClientProvider client={qc}>{children}</QueryClientProvider>
 );

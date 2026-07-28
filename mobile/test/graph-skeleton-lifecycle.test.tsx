@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { act, renderHookAsync, waitFor } from '@testing-library/react-native';
 import type { PropsWithChildren } from 'react';
 
@@ -88,9 +89,7 @@ test('a pending start from the previous project cannot swallow the new project f
     return Promise.resolve({ build: projectBJob });
   });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: projectBJob });
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -125,9 +124,7 @@ test('a pending start from the previous project cannot swallow the new project f
 test('run(true) forwards force to startGraphBuild (rebuild from scratch)', async () => {
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: runningJob });
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -148,9 +145,7 @@ test('promotes a running skeleton into the graph query cache', async () => {
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({ build: runningJob });
   jest.mocked(api.getGraph).mockResolvedValueOnce(responseFor(skeleton, runningJob));
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -213,9 +208,7 @@ test('a late skeleton response cannot overwrite the enriched graph', async () =>
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: runningJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValueOnce({ build: finishedJob });
   jest.mocked(api.getGraph).mockReturnValueOnce(lateSkeleton);
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }

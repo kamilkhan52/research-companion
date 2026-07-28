@@ -2,7 +2,8 @@
 // tab screens stay mounted, so the poll loop usually settles while the user is elsewhere in
 // the app. Errors keep the existing error banner and never toast.
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { act, renderHookAsync, waitFor } from '@testing-library/react-native';
 import type { PropsWithChildren } from 'react';
 
@@ -35,9 +36,7 @@ const baseJob: GraphBuildJob = {
 };
 
 function harness() {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }

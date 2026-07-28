@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { renderHookAsync, waitFor } from '@testing-library/react-native';
 import type { PropsWithChildren } from 'react';
 
@@ -22,9 +23,7 @@ test('useProjects fetches through the API module when a server is configured', a
   await setBaseUrl('api.test');
   expect(getBaseUrl()).toBe('https://api.test');
 
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -54,9 +53,7 @@ test('useRecentSessions fetches cross-project activity', async () => {
   jest.mocked(api.getRecentSessions).mockResolvedValueOnce({ sessions });
   await setBaseUrl('api.test');
 
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }

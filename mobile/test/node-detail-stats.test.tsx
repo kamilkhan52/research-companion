@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { renderAsync, screen } from '@testing-library/react-native';
 
 import type { GraphNode } from '@/api/types';
@@ -24,7 +25,7 @@ const projectNode: GraphNode = {
 };
 
 async function renderSheet(node: GraphNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0 } } });
+  const client = createTestQueryClient();
   await renderAsync(
     <QueryClientProvider client={client}>
       <NodeDetailSheet

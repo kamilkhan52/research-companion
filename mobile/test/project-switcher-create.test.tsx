@@ -2,7 +2,7 @@
 // up hidden under the keyboard. Creating now replaces the list with a dedicated panel, so
 // the input sits at the sheet's top regardless of project count.
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import type { ReactNode } from 'react';
 
@@ -10,6 +10,7 @@ import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { Project } from '@/api/types';
 import { ProjectSwitcher } from '@/components/ProjectSwitcher';
+import { createTestQueryClient } from './queryClient';
 
 beforeEach(() => setBaseUrl('https://api.test'));
 
@@ -23,7 +24,7 @@ const projects: Project[] = Array.from({ length: 5 }, (_, i) => ({
 }));
 
 function wrap(children: ReactNode) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = createTestQueryClient();
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
 

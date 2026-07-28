@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import * as DocumentPicker from 'expo-document-picker';
 
@@ -40,9 +41,7 @@ beforeEach(async () => {
 });
 
 function wrapper(children: React.ReactNode) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  });
+  const client = createTestQueryClient();
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
@@ -424,9 +423,7 @@ test('a confirmed title suppresses future resolver suggestions', () => {
 });
 
 test('title updates preserve the active thread session while refetching its exact key', async () => {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+  const client = createTestQueryClient();
   const paper: Paper = {
     slug: 'stable',
     title: 'Rough Title',

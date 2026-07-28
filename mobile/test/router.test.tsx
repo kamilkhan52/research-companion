@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, waitFor } from '@testing-library/react-native';
 import { Slot, useLocalSearchParams } from 'expo-router';
 import { renderRouter, screen } from 'expo-router/testing-library';
@@ -11,9 +12,7 @@ import { setBaseUrl } from '@/api/config';
 import { keys } from '@/api/queries';
 import { ProjectProvider } from '@/store/project';
 
-const client = new QueryClient({
-  defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-});
+const client = createTestQueryClient();
 
 function TestLayout() {
   return (

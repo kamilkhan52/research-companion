@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import type { PropsWithChildren } from 'react';
 import { Pressable, Text } from 'react-native';
@@ -52,7 +53,7 @@ test('adding a paper raises the initial-analysis offer (R7.8)', async () => {
   jest
     .mocked(api.addPaper)
     .mockResolvedValue({ paper: { slug: 'awq', title: 'AWQ', arxiv_id: '2306.00978' } } as never);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return (
       <QueryClientProvider client={client}>
@@ -93,7 +94,7 @@ test('an existing paper is offered for reuse instead of silently added again', a
       arxiv_id: '2306.00978',
     }],
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const client = createTestQueryClient();
   const { unmountAsync } = await renderAsync(
     <QueryClientProvider client={client}>
       <AddButton />

@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHookAsync } from '@testing-library/react-native';
 import type { PropsWithChildren } from 'react';
 
@@ -6,6 +6,7 @@ import { apiPost } from '@/api/client';
 import * as api from '@/api/endpoints';
 import type { ChatJob } from '@/api/types';
 import { useStreamingTurn } from '@/hooks/useStreamingTurn';
+import { createTestQueryClient } from './queryClient';
 
 jest.mock('@/api/client', () => ({
   apiPost: jest.fn(),
@@ -61,7 +62,7 @@ test('listening turns send delivery mode and hand the completed audio job to the
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
   const onDone = jest.fn();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -97,7 +98,7 @@ test('failed parent invalidates preview polling before exposing the terminal sta
   };
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: failed });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -126,7 +127,7 @@ test('reports server acceptance before watching the background job', async () =>
   jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
   const onAccepted = jest.fn();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
@@ -149,7 +150,7 @@ test('reports server acceptance before watching the background job', async () =>
 
 test('refetches accepted state when the start response is lost', async () => {
   jest.mocked(apiPost).mockRejectedValueOnce(new Error('connection reset'));
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   const invalidate = jest.spyOn(client, 'invalidateQueries');
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
@@ -183,7 +184,7 @@ test('an independent thread qualifies the turn body and cache without changing m
   };
   jest.mocked(apiPost).mockResolvedValueOnce({ job: sideJob });
   jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   const invalidate = jest.spyOn(client, 'invalidateQueries');
   function Wrapper({ children }: PropsWithChildren) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
@@ -214,7 +215,7 @@ test('an independent thread qualifies the turn body and cache without changing m
 // a different thread — the last-opened-thread restore switches the conversation right after
 // mount, while the main-thread active-job lookup can still be in flight.
 test('a thread switch mid-resume never attaches the old thread’s job', async () => {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = createTestQueryClient();
   const wrapper = ({ children }: PropsWithChildren) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
