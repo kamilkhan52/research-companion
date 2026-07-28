@@ -1,4 +1,4 @@
-import { fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { Text } from 'react-native';
 
@@ -57,6 +57,13 @@ beforeEach(() => {
   jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: null });
 });
 
+/** A REAL flush. Awaiting a promise only drains microtasks; React's re-render lands after them,
+ *  so an assertion made without this observes the tree as it was BEFORE the state change and
+ *  passes whether or not the bug is present. Both tests below were vacuous until this existed. */
+async function flushRender() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+}
+
 async function renderGate(client = createTestQueryClient()) {
   return renderAsync(
     <QueryClientProvider client={client}>
@@ -77,6 +84,55 @@ test('signed-out users start at the welcome screen and can choose sign in', asyn
   expect(view.getByText('Email me a sign-in link')).toBeTruthy();
 });
 
+test('a background deletion poll does not tear the app down', async () => {
+  // The guard re-polls every 30s for the whole life of a signed-in session, forever, whether or
+  // not any deletion exists. If it renders the spinner during those polls it is not showing a
+  // loading state — it is UNMOUNTING everything under `AuthGate`, which is the router stack and
+  // every provider: navigation resets to the root route, drafts and open sheets are destroyed,
+  // and playback is paused by AudioProvider's mount effect. Every 30 seconds.
+  const client = createTestQueryClient();
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
+  const view = await renderGate(client);
+  await waitFor(() => expect(view.getByText('Private library')).toBeTruthy());
+
+  // A refetch that is deliberately still in flight, which is the state the bug rendered wrongly.
+  let releasePoll: () => void = () => {};
+  jest.mocked(api.getAccountDeletion).mockImplementation(
+    () => new Promise((resolve) => { releasePoll = () => resolve({ deletion: null }); }),
+  );
+  void client.refetchQueries({ queryKey: ['account-deletion', 'user-a'] });
+  await flushRender();
+  expect(jest.mocked(api.getAccountDeletion)).toHaveBeenCalled();   // the poll really is in flight
+
+  expect(view.getByText('Private library')).toBeTruthy();
+
+  releasePoll();
+  await waitFor(() => expect(view.getByText('Private library')).toBeTruthy());
+  await view.unmountAsync();
+});
+
+test('a failed deletion poll does not tear the app down when an answer is already held', async () => {
+  // Refusing to mount until the server confirms no deletion is running is a deliberate
+  // fail-closed choice ON FIRST LOAD. Applying it to a later poll is a different thing: the guard
+  // is holding a successful answer from seconds ago, and the backend 423s every other route the
+  // moment a tombstone exists — so one dropped packet should not end the session.
+  const client = createTestQueryClient();
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
+  const view = await renderGate(client);
+  await waitFor(() => expect(view.getByText('Private library')).toBeTruthy());
+
+  jest.mocked(api.getAccountDeletion).mockRejectedValue(new Error('offline'));
+  await client.refetchQueries({ queryKey: ['account-deletion', 'user-a'] });
+  await flushRender();
+  // Vacuity guard: if the query never actually reached its error state, the assertion below
+  // would hold for a reason that has nothing to do with the fix.
+  expect(client.getQueryState(['account-deletion', 'user-a'])?.status).toBe('error');
+
+  expect(view.queryByText('Couldn’t check your account')).toBeNull();
+  expect(view.getByText('Private library')).toBeTruthy();
+  await view.unmountAsync();
+});
+
 test('deletion status is fetched fresh and isolated across account changes', async () => {
   const client = createTestQueryClient();
   mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
@@ -90,16 +146,24 @@ test('deletion status is fetched fresh and isolated across account changes', asy
     </QueryClientProvider>,
   );
 
-  jest.mocked(api.getAccountDeletion).mockResolvedValue({
-    deletion: {
-      status: 'draining',
-      error_code: null,
-      attempts: 1,
-      requested_at: '2026-07-28T00:00:00Z',
-      updated_at: '2026-07-28T00:00:01Z',
-      completed_at: null,
-    },
-  });
+  // Held open, so the assertion below observes user B BEFORE their own answer arrives. Without
+  // this the two cases converge and the test cannot tell them apart — which is what was wrong
+  // with it: every assertion it made was satisfied by a shared cache key too.
+  let releaseB: () => void = () => {};
+  jest.mocked(api.getAccountDeletion).mockImplementation(
+    () => new Promise((resolve) => {
+      releaseB = () => resolve({
+        deletion: {
+          status: 'draining',
+          error_code: null,
+          attempts: 1,
+          requested_at: '2026-07-28T00:00:00Z',
+          updated_at: '2026-07-28T00:00:01Z',
+          completed_at: null,
+        },
+      });
+    }),
+  );
   mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-b' };
   await view.rerenderAsync(
     <QueryClientProvider client={client}>
@@ -107,6 +171,14 @@ test('deletion status is fetched fresh and isolated across account changes', asy
     </QueryClientProvider>,
   );
 
+  // THE discriminator. User A's entry says `{deletion: null}`. On a shared, non-user-scoped key
+  // user B reads that entry, the guard falls straight through to `if (!deletion) return children`,
+  // and B mounts the app on A's answer. A user-scoped key has no entry for B at all, so the guard
+  // must still be pending here. Per AGENTS.md the composite (user, scope) key is the highest-risk
+  // thing in this repo, and this is the only test defending this one.
+  expect(view.queryByText('Private library')).toBeNull();
+
+  releaseB();
   await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
   expect(view.queryByText('Private library')).toBeNull();
   expect(api.getAccountDeletion).toHaveBeenCalledTimes(2);

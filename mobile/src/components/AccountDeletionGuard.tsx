@@ -38,7 +38,9 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     queryKey,
     queryFn: getAccountDeletion,
     enabled: Boolean(userId),
-    retry: false,
+    // Retries left at the client default (2, with backoff). `retry: false` turned a single
+    // dropped packet on the 30s poll into a terminal error for the whole app — see the render
+    // guards below, which now also refuse to act on a failure while a known-good answer is held.
     staleTime: 0,
     refetchOnMount: 'always',
     refetchInterval: ({ state }) => {
@@ -79,7 +81,14 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     }
   }
 
-  if (!userId || query.isPending || (query.isFetching && !deletion)) {
+  // FIRST load only. `query.isFetching && !deletion` also matched every BACKGROUND poll — and
+  // since `refetchInterval` returns 30s whenever there is no deletion, that is every signed-in
+  // user, every 30 seconds, forever. Returning a different element unmounts `children`, and
+  // everything under `AuthGate` is provider state: the router stack resets to the root route,
+  // open sheets and composer drafts are destroyed, and `AudioProvider`'s mount effect pauses
+  // playback. `isPending` is false once any answer is held, so a revalidation now happens behind
+  // the app rather than in front of it.
+  if (!userId || query.isPending) {
     return (
       <Screen>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -89,7 +98,12 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     );
   }
 
-  if (query.isError) {
+  // Only when there is NO answer to fall back on. Refusing to mount until the server has confirmed
+  // no deletion is running is a deliberate fail-closed choice on first load, and the copy below
+  // says so. Applying it to a later poll is not the same thing: the guard is holding a successful
+  // answer from seconds ago, the backend 423s every other route the moment a tombstone exists, and
+  // tearing the app down instead means one blip on a train ends the session.
+  if (query.isError && !query.data) {
     return (
       <Screen>
         <View style={{ flex: 1, justifyContent: 'center', padding: space.xl }}>

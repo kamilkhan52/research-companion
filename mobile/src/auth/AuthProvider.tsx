@@ -29,6 +29,7 @@ import {
   clearAccountDeletionIntent,
   clearDeletedAccountStorage,
   hasAccountDeletionIntent,
+  markAccountDeletionIntent,
 } from './accountCleanup';
 import { secureSessionStore } from './secureSessionStore';
 
@@ -657,6 +658,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const finishAccountDeletion = useCallback(async () => {
     setError(null);
     let failure: string | null = null;
+    // Write the marker HERE too, not only on the device that tapped delete. The whole fail-closed
+    // design downstream — keep the marker, retry on the next launch, block the app if cleanup is
+    // still owed — rests on it existing, and `delete-account.tsx` was the only writer. A SECOND
+    // signed-in device learns about the deletion by polling instead, so if its cleanup then failed
+    // there was nothing to retry from: `recoverLocalDeletion()` reported 'none', the app went to a
+    // plain signed-out state, and the deleted user's drafts, active project, playback snapshot and
+    // image cache stayed on that device behind one dismissible warning.
+    //
+    // Marking before attempting anything is the correct order: an unnecessary marker costs one
+    // redundant purge, a missing one costs silent retention.
+    try {
+      await markAccountDeletionIntent();
+    } catch {
+      // Best effort. Failing to mark must not stop the cleanup it exists to make retryable.
+    }
     try {
       await stopPlaybackForSessionEnd({ failClosed: true });
     } catch {

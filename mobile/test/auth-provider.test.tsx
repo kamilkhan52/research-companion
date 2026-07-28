@@ -283,6 +283,43 @@ test('finishing deletion fails closed when private playback cannot stop', async 
   expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalledWith({ failClosed: true });
 });
 
+test('a device that did not start the deletion still fails closed on cleanup', async () => {
+  // The test above pre-marks the intent, which is the INITIATING device: `delete-account.tsx`
+  // writes the marker before its POST. A second signed-in device never runs that screen — it
+  // learns about the deletion by polling and goes straight to `finishAccountDeletion`. The whole
+  // fail-closed design downstream (keep the marker, retry next launch, block the app while
+  // cleanup is owed) rests on that marker, so without it a failed purge on that device left the
+  // deleted user's drafts, active project and image cache in place behind one dismissible warning.
+  //
+  // Deliberately no `markAccountDeletionIntent()` here — that absence IS the scenario.
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  audio.stopPlaybackForSessionEnd
+    .mockRejectedValueOnce(new Error('native player busy'))
+    .mockRejectedValueOnce(new Error('native player still busy'));
+  expect(await hasAccountDeletionIntent()).toBe(false);
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-b', email: 'other-device@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  await waitFor(() => expect(getByText('cleanup-required')).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(true);
+});
+
 test('cold start honors local deletion intent without a restorable session or reachable API', async () => {
   await AsyncStorage.setItem('rc.activeProject', 'private-project');
   await AsyncStorage.setItem('rc.draft.v1:private-project:paper', 'private draft');
