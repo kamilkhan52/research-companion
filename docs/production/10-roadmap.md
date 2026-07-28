@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-26)
+## Current position (updated 2026-07-28)
 
 **M2's backend is complete.** M1 is code-complete (#218–#224); what remains of it is the production
 Fly app + secrets, all of which needs Kamil. M2 then landed in five slices:
@@ -42,6 +42,15 @@ running against an empty schema.
 
 **Next production gate:** M2.5's account deletion is now cheap on the backend side — a user's audio
 and narration cache is one directory — but the project-content half is untouched.
+
+**M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
+provisional Play Data Safety matrix now live in
+[`02-security-and-privacy.md`](02-security-and-privacy.md). It found two declaration blockers that
+must be fixed rather than hidden in policy prose: ordinary project deletion clears the owner before
+moving a recoverable repository to `.trash`, so account deletion cannot find former projects; and
+the current mobile source still defaults to an `http://` tailnet URL while backend source retrieval
+also permits public `http://` URLs, so “all data encrypted in transit” must wait for an AAB pinned
+to the production HTTPS origin and HTTPS-only user/agent-selected fetches.
 
 ~~Client wiring for per-user settings~~ — done (#240): both clients now separate `is_operator` (the
 provider keys) from `can_edit_preferences` (model/voice/prior-notes). ~~Staging Supabase Site URL /
@@ -287,7 +296,7 @@ gets updated as each lands.
 |---|---|---|---|---|
 | M1 | Hosting, environments, and secrets | — | L | **code-complete** (#218–#224 merged); the rest needs Kamil — see `HUMAN_ACTIONS.md` |
 | M2 | Identity, tenancy, and per-user isolation | M1 | L | **staging rollout complete** — backend #235–#238, client #240, database migrations + six-project adoption verified |
-| M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | queued |
+| M2.5 | Closed-track compliance minimum (incl. account deletion) + first build — starts the 14-day tester clock | M1, M2 | L | **in progress** — code-derived inventory and declaration draft written; deletion/report/policy/build remain |
 | M3 | Metering, quotas, and abuse controls | M2, M2.5 | L | queued |
 | M4 | RevenueCat foundation | M2 | M | queued |
 | M5 | Subscription-backed access | M3, M4 | M | queued |
@@ -529,7 +538,8 @@ hosting. Sol's review (PR #217) established that was wrong on two counts, both v
 So this milestone now depends on M1 **and** M2, and carries the compliance slice itself.
 
 **Scope, part 1 — compliance minimum.** The subset of M7 that the upload requires: a data
-inventory derived from actual code, truthful Data safety answers, a published privacy policy and
+inventory derived from actual code and a truthful Data Safety draft (started in
+[`02-security-and-privacy.md`](02-security-and-privacy.md)), a published privacy policy and
 terms at public URLs, in-app links to both, and a working in-app report action for offensive
 AI-generated content with somewhere for reports to land.
 
@@ -962,7 +972,7 @@ web checklists live inside the milestones that action them rather than as standa
 | `10-roadmap.md` (this file) | ✅ done | now |
 | `HUMAN_ACTIONS.md` | ✅ done | now |
 | `01-architecture.md` | queued | M1 |
-| `02-security-and-privacy.md` | queued | M7 |
+| `02-security-and-privacy.md` | 🚧 M2.5 code-derived inventory + Data Safety draft written; implementation and M7 expansion open | M2.5, expanded in M7 |
 | `03-monetization-and-entitlements.md` | queued | M4 |
 | `04-ai-costs-quotas-and-abuse.md` | queued | M3 |
 
