@@ -9,7 +9,8 @@ import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { useTheme } from '@/theme/ThemeProvider';
 import { space } from '@/theme/tokens';
 
-export const ACCOUNT_DELETION_QUERY_KEY = ['account-deletion'] as const;
+export const accountDeletionQueryKey = (userId: string | null) =>
+  ['account-deletion', userId ?? 'unknown'] as const;
 
 const COPY: Record<AccountDeletion['status'], string> = {
   pending: 'Your request is queued.',
@@ -28,17 +29,22 @@ const COPY: Record<AccountDeletion['status'], string> = {
 export function AccountDeletionGuard({ children }: { children: ReactNode }) {
   const t = useTheme();
   const queryClient = useQueryClient();
-  const { refreshSession, finishAccountDeletion } = useAuth();
+  const { userId, finishAccountDeletion } = useAuth();
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const finishing = useRef(false);
+  const queryKey = accountDeletionQueryKey(userId);
   const query = useQuery({
-    queryKey: ACCOUNT_DELETION_QUERY_KEY,
+    queryKey,
     queryFn: getAccountDeletion,
+    enabled: Boolean(userId),
     retry: false,
+    staleTime: 0,
+    refetchOnMount: 'always',
     refetchInterval: ({ state }) => {
       const status = state.data?.deletion?.status;
-      return status && status !== 'completed' && status !== 'error' ? 1000 : false;
+      if (!status) return 30_000;
+      return status !== 'completed' && status !== 'error' ? 1000 : false;
     },
   });
   const deletion = query.data?.deletion ?? null;
@@ -53,9 +59,11 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     setRetrying(true);
     setRetryError(null);
     try {
-      await refreshSession();
+      // The initial request required a freshly minted JWT. Once the server has a durable
+      // tombstone, retry is already authorized and must also work when Auth identity deletion
+      // succeeded but its response was lost—at which point refresh is impossible.
       const next = await startAccountDeletion();
-      queryClient.setQueryData(ACCOUNT_DELETION_QUERY_KEY, next);
+      queryClient.setQueryData(queryKey, next);
     } catch (caught) {
       setRetryError(caught instanceof Error ? caught.message : 'Could not retry deletion.');
     } finally {
@@ -63,7 +71,7 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     }
   }
 
-  if (query.isPending) {
+  if (!userId || query.isPending || (query.isFetching && !deletion)) {
     return (
       <Screen>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>

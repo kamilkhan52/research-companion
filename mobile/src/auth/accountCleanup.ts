@@ -1,6 +1,21 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 
+const DELETION_INTENT_KEY = 'rc.accountDeletionIntent.v1';
+
+/** Persisted before POST so local privacy cleanup survives identity/token loss or process death. */
+export async function markAccountDeletionIntent(): Promise<void> {
+  await AsyncStorage.setItem(DELETION_INTENT_KEY, '1');
+}
+
+export async function hasAccountDeletionIntent(): Promise<boolean> {
+  return (await AsyncStorage.getItem(DELETION_INTENT_KEY)) === '1';
+}
+
+export async function clearAccountDeletionIntent(): Promise<void> {
+  await AsyncStorage.removeItem(DELETION_INTENT_KEY);
+}
+
 /** Account/project-linked device state. Device preferences and the selected server survive. */
 const ACCOUNT_KEYS = new Set([
   'rc.activeProject',

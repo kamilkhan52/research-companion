@@ -14,6 +14,7 @@ const mockSetBaseUrl = jest.fn(async (_url: string) => undefined);
 let mockAuthState = {
   status: 'signed-out',
   mode: 'supabase',
+  userId: null as string | null,
   email: null,
   error: null as string | null,
   signInWithGoogle,
@@ -42,6 +43,7 @@ beforeEach(() => {
   mockAuthState = {
     status: 'signed-out',
     mode: 'supabase',
+    userId: null,
     email: null,
     error: null,
     signInWithGoogle,
@@ -55,9 +57,9 @@ beforeEach(() => {
   jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: null });
 });
 
-async function renderGate() {
+async function renderGate(client = createTestQueryClient()) {
   return renderAsync(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={client}>
       <AuthGate>
         <Text>Private library</Text>
       </AuthGate>
@@ -73,6 +75,42 @@ test('signed-out users start at the welcome screen and can choose sign in', asyn
 
   expect(view.getByText('Welcome back')).toBeTruthy();
   expect(view.getByText('Email me a sign-in link')).toBeTruthy();
+});
+
+test('deletion status is fetched fresh and isolated across account changes', async () => {
+  const client = createTestQueryClient();
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
+  const view = await renderGate(client);
+  await waitFor(() => expect(view.getByText('Private library')).toBeTruthy());
+
+  mockAuthState = { ...mockAuthState, status: 'signed-out', userId: null };
+  await view.rerenderAsync(
+    <QueryClientProvider client={client}>
+      <AuthGate><Text>Private library</Text></AuthGate>
+    </QueryClientProvider>,
+  );
+
+  jest.mocked(api.getAccountDeletion).mockResolvedValue({
+    deletion: {
+      status: 'draining',
+      error_code: null,
+      attempts: 1,
+      requested_at: '2026-07-28T00:00:00Z',
+      updated_at: '2026-07-28T00:00:01Z',
+      completed_at: null,
+    },
+  });
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-b' };
+  await view.rerenderAsync(
+    <QueryClientProvider client={client}>
+      <AuthGate><Text>Private library</Text></AuthGate>
+    </QueryClientProvider>,
+  );
+
+  await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
+  expect(view.queryByText('Private library')).toBeNull();
+  expect(api.getAccountDeletion).toHaveBeenCalledTimes(2);
+  await view.unmountAsync();
 });
 
 test('email entry uses Google branding without the crossed-out supporting items', async () => {
@@ -107,6 +145,17 @@ test('a cold-start callback error is visible on welcome with a recovery path', a
 
   fireEvent.press(view.getByText('I already have an account'));
   expect(view.getByText('Email me a sign-in link')).toBeTruthy();
+});
+
+test('a failed deleted-account cleanup is not mislabeled as a sign-in-link error', async () => {
+  mockAuthState = {
+    ...mockAuthState,
+    error: 'Some deleted-account data remains. Clear the app’s data before sharing this device.',
+  };
+  const view = await renderGate();
+
+  expect(view.getByText('Local data needs attention')).toBeTruthy();
+  expect(view.queryByText('That sign-in link couldn’t be used')).toBeNull();
 });
 
 test('an accepted email request advances to the check-inbox state', async () => {
@@ -156,7 +205,7 @@ test('an unreachable server exposes recovery without suggesting sign-in', async 
 });
 
 test('signed-in and auth-disabled states pass through to the app', async () => {
-  mockAuthState = { ...mockAuthState, status: 'signed-in' };
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
   const signedIn = await renderGate();
   await waitFor(() => expect(signedIn.getByText('Private library')).toBeTruthy());
   expect(api.getAccountDeletion).toHaveBeenCalledTimes(1);
@@ -173,7 +222,7 @@ test('signed-in and auth-disabled states pass through to the app', async () => {
 });
 
 test('a durable deletion resumes before ordinary app consumers mount', async () => {
-  mockAuthState = { ...mockAuthState, status: 'signed-in' };
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
   jest.mocked(api.getAccountDeletion).mockResolvedValue({
     deletion: {
       status: 'draining',
@@ -191,8 +240,8 @@ test('a durable deletion resumes before ordinary app consumers mount', async () 
   await view.unmountAsync();
 });
 
-test('a paused deletion can refresh the session and retry idempotently', async () => {
-  mockAuthState = { ...mockAuthState, status: 'signed-in' };
+test('a paused deletion retries without requiring a now-impossible Auth refresh', async () => {
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-a' };
   const failed = {
     status: 'error' as const,
     error_code: 'deleting_identity:upstream',
@@ -210,7 +259,7 @@ test('a paused deletion can refresh the session and retry idempotently', async (
   await waitFor(() => expect(view.getByText('Retry deletion')).toBeTruthy());
   fireEvent.press(view.getByText('Retry deletion'));
 
-  await waitFor(() => expect(mockAuthState.refreshSession).toHaveBeenCalledTimes(1));
+  expect(mockAuthState.refreshSession).not.toHaveBeenCalled();
   expect(api.startAccountDeletion).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
   await view.unmountAsync();

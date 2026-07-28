@@ -25,7 +25,11 @@ import { getAuthConfig } from '@/api/endpoints';
 import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
-import { clearDeletedAccountStorage } from './accountCleanup';
+import {
+  clearAccountDeletionIntent,
+  clearDeletedAccountStorage,
+  hasAccountDeletionIntent,
+} from './accountCleanup';
 import { secureSessionStore } from './secureSessionStore';
 
 /** `unknown` until /api/auth/config answers — the app must not decide it is signed out while it
@@ -36,6 +40,8 @@ interface AuthState {
   status: AuthStatus;
   /** Non-null only in supabase mode once config has loaded. */
   mode: AuthConfig['mode'] | null;
+  /** Stable Supabase subject used to isolate user-scoped client caches. */
+  userId: string | null;
   email: string | null;
   error: string | null;
   signInWithGoogle: () => Promise<void>;
@@ -183,6 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** Mirrors `status` for comparisons that must not live inside a setState updater. */
   const statusRef = useRef<AuthStatus>('unknown');
   const [mode, setMode] = useState<AuthConfig['mode'] | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -216,6 +223,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    if (!session && await hasAccountDeletionIntent().catch(() => false)) {
+      // Auth identity deletion can make refresh impossible before the app next opens. The local
+      // intent is therefore an independent recovery signal: purge private device state even when
+      // no JWT remains with which to observe the server's completed tombstone.
+      queryClient.clear();
+      await stopPlaybackForSessionEnd().catch(() => {});
+      try {
+        await clearDeletedAccountStorage();
+        await clearAccountDeletionIntent();
+      } catch {
+        // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
+        setError(
+          'Some deleted-account data could not be cleared from this device. '
+          + 'Clear the app’s data before another person uses it.',
+        );
+      }
+    }
+    if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    setUserId(session?.user?.id ?? null);
     setEmail(session?.user?.email ?? null);
     const next = session?.access_token ? 'signed-in' : 'signed-out';
     // Compared against a ref, not inside the setState updater. React may invoke an updater more
@@ -227,7 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
     statusRef.current = next;
     setStatus(next);
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     let cancelled = false;
@@ -501,6 +527,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const finishAccountDeletion = useCallback(async () => {
     setError(null);
     let failure: string | null = null;
+    await stopPlaybackForSessionEnd().catch(() => {});
+    try {
+      await clearDeletedAccountStorage();
+      await clearAccountDeletionIntent();
+    } catch {
+      // Keep the local intent marker so a later signed-out launch retries cleanup.
+      failure = 'Some account-linked data could not be cleared from this device.';
+    }
     // Identity deletion already happened server-side. A normal/global sign-out would now make an
     // unnecessary Auth request against an account that no longer exists; local scope removes the
     // persisted Supabase session and refresh token from this device only.
@@ -509,14 +543,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (result?.error) failure = result.error.message;
     } catch (caught) {
       failure = caught instanceof Error ? caught.message : 'Could not clear the local session.';
-    }
-    await stopPlaybackForSessionEnd().catch(() => {});
-    try {
-      await clearDeletedAccountStorage();
-    } catch {
-      // The server-side account is gone, so never leave its bearer token active merely because
-      // device storage failed. Sign out below, but make the residual-data risk explicit.
-      failure = 'Some account-linked data could not be cleared from this device.';
     }
     queryClient.clear();
     await adoptSession(null);
@@ -527,12 +553,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AuthState>(
     () => ({
-      status, mode, email, error,
+      status, mode, userId, email, error,
       signInWithGoogle, signInWithMagicLink, refreshSession, finishAccountDeletion, signOut,
       retry: () => setAttempt((n) => n + 1),
     }),
     [
-      status, mode, email, error, signInWithGoogle, signInWithMagicLink,
+      status, mode, userId, email, error, signInWithGoogle, signInWithMagicLink,
       refreshSession, finishAccountDeletion, signOut,
     ],
   );

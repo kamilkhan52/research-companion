@@ -3,9 +3,14 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
+import { ApiError } from '@/api/client';
 import { startAccountDeletion } from '@/api/endpoints';
 import { useAuth } from '@/auth/AuthProvider';
-import { ACCOUNT_DELETION_QUERY_KEY } from '@/components/AccountDeletionGuard';
+import {
+  clearAccountDeletionIntent,
+  markAccountDeletionIntent,
+} from '@/auth/accountCleanup';
+import { accountDeletionQueryKey } from '@/components/AccountDeletionGuard';
 import { TopBar } from '@/components/TopBar';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -14,7 +19,7 @@ import { Button, Card, Icon, Screen, Text } from '@/ui';
 export default function DeleteAccountScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { email, refreshSession } = useAuth();
+  const { userId, email, refreshSession } = useAuth();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [confirmation, setConfirmation] = useState('');
@@ -29,11 +34,20 @@ export default function DeleteAccountScreen() {
     try {
       // The backend accepts deletion only with a token minted in the last five minutes.
       await refreshSession();
+      // Must land before the POST. Supabase identity deletion can make session restoration
+      // impossible before the app next opens; this marker lets signed-out bootstrap still purge
+      // account-linked device state. An explicit server rejection removes it below.
+      await markAccountDeletionIntent();
       const result = await startAccountDeletion();
       // AccountDeletionGuard observes this key and immediately replaces the ordinary app with the
       // durable progress surface. No other protected request can race after the tombstone.
-      queryClient.setQueryData(ACCOUNT_DELETION_QUERY_KEY, result);
+      queryClient.setQueryData(accountDeletionQueryKey(userId), result);
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status > 0) {
+        // The server answered and did not accept the request. Network ambiguity deliberately
+        // keeps the marker: the durable request may have landed before the connection was lost.
+        await clearAccountDeletionIntent().catch(() => {});
+      }
       setError(caught instanceof Error ? caught.message : 'Account deletion could not be started.');
     } finally {
       setSubmitting(false);

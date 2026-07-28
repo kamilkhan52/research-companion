@@ -1,8 +1,11 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import DeleteAccountScreen from '@/app/delete-account';
+import { ApiError } from '@/api/client';
 import * as api from '@/api/endpoints';
+import { hasAccountDeletionIntent } from '@/auth/accountCleanup';
 import { ThemeProvider } from '@/theme/ThemeProvider';
 import { createTestQueryClient } from './queryClient';
 
@@ -14,13 +17,15 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('@/auth/AuthProvider', () => ({
   useAuth: () => ({
+    userId: 'user-a',
     email: 'reader@example.com',
     refreshSession: mockRefreshSession,
   }),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
+  await AsyncStorage.clear();
   jest.mocked(api.startAccountDeletion).mockResolvedValue({
     deletion: {
       status: 'pending',
@@ -59,6 +64,26 @@ test('requires exact confirmation and adopts a fresh session before deletion sta
 
   await waitFor(() => expect(api.startAccountDeletion).toHaveBeenCalledTimes(1));
   expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+  expect(AsyncStorage.setItem).toHaveBeenCalledWith('rc.accountDeletionIntent.v1', '1');
   expect(mockRefreshSession.mock.invocationCallOrder[0])
     .toBeLessThan(jest.mocked(api.startAccountDeletion).mock.invocationCallOrder[0]);
+  expect(jest.mocked(AsyncStorage.setItem).mock.invocationCallOrder[0])
+    .toBeLessThan(jest.mocked(api.startAccountDeletion).mock.invocationCallOrder[0]);
+});
+
+test('an explicit server rejection removes the pre-request recovery marker', async () => {
+  jest.mocked(api.startAccountDeletion).mockRejectedValue(
+    new ApiError(503, 'Account deletion is not configured on this server yet.'),
+  );
+  const view = await renderScreen();
+  fireEvent.changeText(
+    view.getByLabelText('Type DELETE to confirm account deletion'),
+    'DELETE',
+  );
+  fireEvent.press(view.getByText('Permanently delete account'));
+
+  await waitFor(() => expect(view.getByText(
+    'Account deletion is not configured on this server yet.',
+  )).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(false);
 });

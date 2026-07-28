@@ -129,6 +129,7 @@ function Welcome({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { error } = useAuth();
+  const localDataWarning = error?.includes('Clear the app') ?? false;
   return (
     <AuthCanvas>
       <View style={styles.welcomeContent}>
@@ -154,10 +155,12 @@ function Welcome({
               <Icon name="alert-circle" size={18} color={t.danger} />
               <View style={common.flex}>
                 <Text variant="label" color={t.danger}>
-                  That sign-in link couldn’t be used
+                  {localDataWarning
+                    ? 'Local data needs attention'
+                    : 'That sign-in link couldn’t be used'}
                 </Text>
                 <Text variant="caption" color={t.muted} style={{ marginTop: 2 }}>
-                  {error} Request a new link below.
+                  {error}{localDataWarning ? '' : ' Request a new link below.'}
                 </Text>
               </View>
             </View>

@@ -136,9 +136,12 @@ keeps claim-failure content attributable to account deletion even if compensatin
 Initial deletion authorization uses a recent signed Supabase `amr` user-presence timestamp, not JWT
 `iat`, because automatic token refresh can mint a new access token without reauthentication.
 The mobile app now provides exact typed confirmation, requires a fresh Supabase user-presence
-event, resumes durable progress after restart, and clears account-linked device state at
-completion, including protected image caches. The remaining user-facing work is the public web
-request path, H23 configuration, and disposable-account staging verification.
+event, persists a non-identifying local intent before the first request, resumes durable progress
+after restart, and clears account-linked device state plus protected image caches even if Auth
+identity removal makes later session restoration impossible. Durable retries do not require a
+second reauthentication after the destructive decision was already authorized. The remaining
+user-facing work is the public web request path, H23 configuration, and disposable-account staging
+verification.
 
 Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
 records operation, model, tokens, cost, timestamps, and pending OpenRouter generation IDs. M3 will

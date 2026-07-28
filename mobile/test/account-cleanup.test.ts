@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image } from 'expo-image';
 
-import { clearDeletedAccountStorage } from '@/auth/accountCleanup';
+import {
+  clearAccountDeletionIntent,
+  clearDeletedAccountStorage,
+  hasAccountDeletionIntent,
+  markAccountDeletionIntent,
+} from '@/auth/accountCleanup';
 
 jest.mock('expo-image', () => ({
   Image: {
@@ -70,4 +75,13 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.playbackRate', '1.25'],
     ['rc.graph.allowAllFilter', 'true'],
   ]);
+});
+
+test('deletion intent survives data cleanup until the authenticated flow is finished', async () => {
+  await markAccountDeletionIntent();
+  await clearDeletedAccountStorage();
+  expect(await hasAccountDeletionIntent()).toBe(true);
+
+  await clearAccountDeletionIntent();
+  expect(await hasAccountDeletionIntent()).toBe(false);
 });

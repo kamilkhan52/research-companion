@@ -5,12 +5,17 @@
 
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderAsync, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text } from 'react-native';
 
 import * as apiConfig from '@/api/config';
 import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
 import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
+import {
+  hasAccountDeletionIntent,
+  markAccountDeletionIntent,
+} from '@/auth/accountCleanup';
 import { createTestQueryClient } from './queryClient';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
@@ -44,6 +49,12 @@ jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => ({ auth: mockAuth })),
 }));
 jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
+jest.mock('expo-image', () => ({
+  Image: {
+    clearMemoryCache: jest.fn(async () => true),
+    clearDiskCache: jest.fn(async () => true),
+  },
+}));
 jest.mock('@/audio/AudioProvider', () => ({
   stopPlaybackForSessionEnd: jest.fn(async () => undefined),
 }));
@@ -99,8 +110,9 @@ async function renderProvider() {
   return renderAsync(withQuery(<AuthProvider><Probe /></AuthProvider>));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
+  await AsyncStorage.clear();
   // clearAllMocks resets CALLS, not implementations — a mockResolvedValue set by one test would
   // otherwise deliver its cold-start URL to every test after it.
   jest.requireMock('expo-linking').getInitialURL.mockResolvedValue(null);
@@ -192,6 +204,20 @@ test('finishing deletion uses local sign-out and clears the API token', async ()
   expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
   expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
   await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
+});
+
+test('a signed-out cold start honors local deletion intent after Auth identity is gone', async () => {
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await AsyncStorage.setItem('rc.draft.v1:private-project:paper', 'private draft');
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+
+  const { getByText } = await renderProvider();
+  await waitFor(() => getByText('signed-out'));
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await AsyncStorage.getItem('rc.draft.v1:private-project:paper')).toBeNull();
+  expect(await hasAccountDeletionIntent()).toBe(false);
 });
 
 test('signing out clears the token, not just the UI state', async () => {
