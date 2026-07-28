@@ -126,14 +126,17 @@ def _set_status(
     completed: bool = False,
 ) -> None:
     with db.pool().connection() as conn:
-        conn.execute(
+        changed = conn.execute(
             "update rc_account_deletions set status = %s, error_code = %s, "
             "attempts = attempts + %s, updated_at = now(), "
             "completed_at = case when %s then now() else completed_at end, "
             "user_id = case when %s then null else user_id end "
             "where subject_key = %s",
             (status, error_code, int(increment_attempt), completed, completed, key),
-        )
+        ).rowcount
+    if changed != 1:
+        # Never perform irreversible work without the durable row that makes a crash retryable.
+        raise RuntimeError("Deletion request is missing.")
 
 
 def _owned_data(user_id: str) -> tuple[set[str], set[str]]:
