@@ -44,7 +44,11 @@ running against an empty schema.
 and narration cache is one directory. Recoverable project trash now retains an exact,
 non-authorizing directory-to-owner link; a transition trigger protects old-worker deletes and the
 adoption script repairs only unambiguous or explicitly mapped legacy trash. The remaining
-project-content work is the permanent, retryable deletion coordinator.
+project-content work is now implemented by a durable, retry-safe coordinator: it closes request
+and job admission, drains actual worker threads, permanently removes active/trash/user-cache data,
+retains only content-free project-ID and subject tombstones, and deletes Supabase Auth last.
+The gate now moves to the mobile/public request surfaces, H23 server-secret configuration, and a
+disposable-account staging deletion test.
 
 **M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
 provisional Play Data Safety matrix now live in

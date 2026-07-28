@@ -1,0 +1,58 @@
+# See `ci-backend.yml` for why the workflow is split by path and what that costs.
+name: CI (mobile)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "shared/**"
+      - ".github/workflows/ci-mobile.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "shared/**"
+      - ".github/workflows/ci-mobile.yml"
+
+concurrency:
+  group: ci-mobile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mobile:
+    name: Mobile (Jest + tsc)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      # `node_modules` itself, not just npm's tarball cache. `setup-node`'s `cache: npm` only avoids
+      # the DOWNLOAD; `npm ci` still deletes and rebuilds the tree, which measured 19s. Restoring the
+      # built tree takes ~2s, which is what pulls this job back under two billed minutes.
+      #
+      # The key includes `patch-react-native-track-player.js` because it is a `postinstall` script
+      # that edits files INSIDE `node_modules`. A cache hit skips `npm ci` and therefore skips
+      # postinstall, so the cached tree must have been built by the same patch — keying on the
+      # lockfile alone would serve a tree patched by an older version of that script.
+      - name: Cache node_modules
+        id: node_modules
+        uses: actions/cache@v4
+        with:
+          path: mobile/node_modules
+          key: mobile-node-modules-${{ runner.os }}-node20-${{ hashFiles('mobile/package-lock.json', 'mobile/scripts/patch-react-native-track-player.js') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies
+        if: steps.node_modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Test
+        # Serial on purpose. `--maxWorkers=2` was trialled on 2026-07-27 and reverted the same day;
+        # it is worth ~10s of the 73s and was judged not worth the change. Do not reintroduce it
+        # without measuring again.
+        run: npm run test:ci
+      - name: Typecheck
+        run: npx tsc --noEmit

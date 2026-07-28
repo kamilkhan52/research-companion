@@ -43,15 +43,23 @@ def main() -> None:
             print(f"RC_ADOPT_OWNER must be a user id (uuid); got {owner!r}", file=sys.stderr)
             return
 
-    pid = projects.adopt_existing(Path(legacy), name, move=True)
+    pid = projects.adopt_existing(
+        Path(legacy),
+        name,
+        move=True,
+        provisional_owner_id=owner if tenancy.enabled() else None,
+    )
     if tenancy.enabled():
         try:
             tenancy.claim(pid, {"user_id": owner})
         except Exception as e:
-            print(f"migrated to projects/{pid}, but recording the owner failed: {e}\n"
-                  f"    the project is on disk and unreachable until an owner is recorded; "
-                  f"run scripts/adopt_projects.py with RC_ADOPT_OWNER={owner}", file=sys.stderr)
+            print(f"migrated to projects/{pid}, but recording the owner failed "
+                  f"({type(e).__name__})\n"
+                  "    its provisional owner marker remains discoverable by account deletion; "
+                  f"repair with scripts/adopt_projects.py and RC_ADOPT_OWNER={owner}",
+                  file=sys.stderr)
             return
+        projects.clear_provisional_owner(pid)
     print(f"Migrated ./project -> projects/{pid}   (name: {name})")
     print("Done. Restart the server; the project will appear in the switcher.")
 

@@ -180,7 +180,7 @@ def database(monkeypatch):
     db.close()
     with db.pool().connection() as conn:
         conn.execute(
-            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "drop table if exists rc_account_deletions, rc_project_trash, rc_projects, rc_users, "
             "rc_schema_migrations cascade")
     db.migrate()
     yield
@@ -199,7 +199,7 @@ def test_a_poisoned_ledger_row_cannot_suppress_a_column_only_migration(database)
     """
     with db.pool().connection() as conn:
         conn.execute(
-            "drop table if exists rc_project_trash, rc_user_settings, rc_projects, "
+            "drop table if exists rc_account_deletions, rc_project_trash, rc_user_settings, rc_projects, "
             "rc_users cascade")
         conn.execute("delete from rc_schema_migrations")
         conn.execute("insert into rc_schema_migrations (name) values ('0002_retire_ids.sql')")
@@ -373,9 +373,9 @@ def test_every_table_is_off_the_supabase_data_api(database):
         rows = conn.execute(
             "select relname, relrowsecurity from pg_class "
             "where relname in ('rc_users', 'rc_projects', 'rc_project_trash', "
-            "'rc_user_settings', "
+            "'rc_user_settings', 'rc_account_deletions', "
             "'rc_schema_migrations')").fetchall()
-    assert len(rows) == 5, rows
+    assert len(rows) == 6, rows
     assert all(enabled for _name, enabled in rows), rows
 
     # And no policy has been added that would re-open one: RLS with zero policies is the denial.
@@ -383,7 +383,7 @@ def test_every_table_is_off_the_supabase_data_api(database):
         policies = conn.execute(
             "select tablename, policyname from pg_policies "
             "where tablename in ('rc_users', 'rc_projects', 'rc_project_trash', "
-            "'rc_user_settings', "
+            "'rc_user_settings', 'rc_account_deletions', "
             "'rc_schema_migrations')").fetchall()
     assert policies == [], policies
 
@@ -542,7 +542,7 @@ def test_two_processes_migrating_at_once_do_not_fight(database):
 
     with db.pool().connection() as conn:
         conn.execute(
-            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "drop table if exists rc_account_deletions, rc_project_trash, rc_projects, rc_users, "
             "rc_schema_migrations cascade")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool_:

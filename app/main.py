@@ -17,10 +17,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
-from . import auth, config, db, logging_config
+from . import account_deletion, auth, config, db, deploy_guard, logging_config
 from .auth import AuthError
 from .routers import (
+    account,
     audio,
     catalogue,
     covers,
@@ -75,6 +77,7 @@ def _apply_migrations() -> None:
         return
     if applied:
         _log.info("db: applied migrations: %s", ", ".join(applied))
+    _resume_account_deletions()
 
 
 MIGRATION_RETRY_START_S = 5.0
@@ -95,11 +98,74 @@ def _retry_migrations_until_they_apply() -> None:
                 delay = min(delay * 2, MIGRATION_RETRY_MAX_S)
                 continue
             _log.info("db: migrations applied on retry: %s", ", ".join(applied) or "(none pending)")
+            _resume_account_deletions()
             return
 
     threading.Thread(target=_retry, daemon=True, name="db-migrate-retry").start()
 
 
+def _resume_account_deletions() -> None:
+    try:
+        deploy_guard.start()
+        resumed = account_deletion.resume_pending()
+    except Exception as e:  # noqa: BLE001 — migration retry or the next boot can recover it
+        _log.error("account deletion resume failed: %s", type(e).__name__)
+        return
+    if resumed:
+        _log.info("account deletion resumed %d durable request(s)", resumed)
+    account_deletion.start_resume_monitor()
+
+GUARD_BOOT_TIMEOUT_S = 15.0
+GUARD_RETRY_START_S = 5.0
+GUARD_RETRY_MAX_S = 60.0
+
+
+def _start_deploy_guard() -> None:
+    """Take the shared process guard, without letting it decide whether the app boots at all.
+
+    The guard does not depend on the application schema, so it is taken before migrations: a
+    process retrying failed DDL must still be visible to a destructive worker on a replacement.
+
+    But it was previously an unguarded module-scope call, which made it strictly more fatal than
+    the migrations twelve lines below — whose docstring already states the rule, that a failure is
+    logged rather than fatal because on Fly an unbootable image is a crash loop needing a human.
+    An unreachable database therefore made `import app.main` raise, and the machine never served.
+    Verified by pointing `RC_DATABASE_URL` at a closed port.
+
+    The timeout matters as much as the try/except. The default budget is ten minutes, and the case
+    where a peer holds the exclusive lock — a deletion running on the retiring process during a
+    rolling deploy — is precisely the case this feature exists for. So the replacement machine
+    would hang its own import for the whole deletion, then fail. A short boot attempt with a
+    background retry keeps the machine serving while it waits its turn, and
+    `account_deletion.DEPLOY_OVERLAP_S` is the window that already covers a peer briefly not
+    holding the lock.
+    """
+    if not db.enabled():
+        return
+    try:
+        deploy_guard.start(timeout_s=GUARD_BOOT_TIMEOUT_S)
+        return
+    except Exception as e:  # noqa: BLE001 — see the docstring: a boot must not depend on this
+        _log.error("deploy guard not acquired at boot (%s) — retrying in the background",
+                   type(e).__name__)
+
+    def _retry() -> None:
+        delay = GUARD_RETRY_START_S
+        while True:
+            time.sleep(delay)
+            try:
+                deploy_guard.start(timeout_s=GUARD_BOOT_TIMEOUT_S)
+            except Exception as e:  # noqa: BLE001 — this loop exists to outlive failures
+                _log.warning("deploy guard retry failed, next in %.0fs: %s", delay, type(e).__name__)
+                delay = min(delay * 2, GUARD_RETRY_MAX_S)
+                continue
+            _log.info("deploy guard acquired on retry")
+            return
+
+    threading.Thread(target=_retry, daemon=True, name="deploy-guard-retry").start()
+
+
+_start_deploy_guard()
 _apply_migrations()
 
 app = FastAPI(title=config.APP_TITLE)
@@ -126,6 +192,7 @@ _AUTH_EXEMPT = {"/api/health", "/api/auth/config"}
 # is no longer distributed/supported.
 _LEGACY_QUERY_MEDIA = re.compile(
     r"^/api/projects/[^/]+/papers/[^/]+/(?:cover\.png|figures/[^/]+)$")
+_ACCOUNT_DELETION_PATH = "/api/account/deletion"
 
 
 def _query_token_and_redact(request: Request) -> str:
@@ -195,11 +262,65 @@ async def authenticate(request: Request, call_next):
     # copied from this one, so the value propagates down but never leaks back up or sideways into
     # another request. `tests/test_user_settings.py` asserts that propagation over HTTP rather than
     # assuming it. Reset in `finally` because this coroutine's context outlives the response.
-    token = config.set_active_user((request.state.user or {}).get("user_id"))
+    user_id = (request.state.user or {}).get("user_id")
+    request_admitted = False
+    if user_id and request.url.path == _ACCOUNT_DELETION_PATH:
+        # Start/status must remain reachable through the tombstone. Still count their full response
+        # body lifetime so the worker cannot delete the Auth identity before the accepted start
+        # response has actually reached the client.
+        config.track_user_request(user_id)
+        request_admitted = True
+    elif user_id:
+        try:
+            # Off the event loop. `is_blocked` is synchronous psycopg, and a `@app.middleware`
+            # coroutine runs ON the loop rather than in the threadpool a sync dependency would get
+            # — so every authenticated request was serializing all request handling behind a
+            # round trip to Postgres (two, in fact: the pool checks out with `check_connection`).
+            # Worse on a slow database: `pool().connection()` blocks up to its 10s timeout, and
+            # spending that on the loop turns a degraded database into a total stall instead of
+            # the per-request 503 below. Single worker (invariant 6), so there is no second
+            # process to absorb it.
+            blocked = await run_in_threadpool(account_deletion.is_blocked, user_id)
+        except Exception:
+            return JSONResponse(
+                {"detail": "Account and ownership data is temporarily unavailable."},
+                status_code=503,
+            )
+        if blocked or not config.admit_user_request(user_id):
+            return JSONResponse(
+                {
+                    "detail": "This account is being permanently deleted.",
+                    "code": "account_deletion_in_progress",
+                },
+                status_code=423,
+            )
+        request_admitted = True
+
+    token = config.set_active_user(user_id)
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if request_admitted:
+            # `call_next` returns as soon as a StreamingResponse object exists, not when its body
+            # generator has stopped. Releasing here would let account deletion remove a project
+            # under a legacy SSE turn or retrieval stream that is still writing. Wrap the actual
+            # body lifetime so disconnect, completion, and generator failure all release the
+            # admission count exactly once.
+            original_body = response.body_iterator
+
+            async def tracked_body():
+                try:
+                    async for chunk in original_body:
+                        yield chunk
+                finally:
+                    config.release_user_request(user_id)
+
+            response.body_iterator = tracked_body()
+            request_admitted = False
+        return response
     finally:
         config.reset_active_user(token)
+        if request_admitted:
+            config.release_user_request(user_id)
 
 
 # ---------- routers ----------
@@ -207,6 +328,7 @@ async def authenticate(request: Request, call_next):
 # with the use_project dependency via routers.make_project_router). Order among them doesn't
 # matter — every path template is distinct — but all must be registered before the static mount.
 app.include_router(system.router)
+app.include_router(account.router)
 app.include_router(settings.router)
 app.include_router(catalogue.router)
 app.include_router(covers.router)

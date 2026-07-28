@@ -62,6 +62,7 @@ J = TypeVar("J", bound=Job)
 _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
 _CANCELLED_ATTR = "_rc_cancelled"
+_WORKER_ACTIVE_ATTR = "_rc_worker_active"
 _ON_SETTLE_ATTR = "_rc_on_settle"
 # Monotonic tick stamped on a job when it stops running, used to rank scopes by recency in
 # `_prune`. Deliberately not a timestamp: `started_at`/`finished_at` are ISO strings at SECOND
@@ -92,23 +93,92 @@ def _log_tag(pid: str | None) -> dict:
     return {"project": pid or "-"}
 
 
+def _worker_is_active(job: Job) -> bool:
+    """Whether work can still touch the job's scope.
+
+    Registry-managed threads carry the explicit marker so cancellation can be terminal to clients
+    while the worker remains active. A few deadline-orphan adapters publish a manually managed
+    ``running`` job instead; preserving status as their fallback keeps those external threads in
+    lifecycle accounting without pretending JobRegistry owns them.
+    """
+    marker = getattr(job, _WORKER_ACTIVE_ATTR, None)
+    return job.status == "running" if marker is None else bool(marker)
+
+
 # Every registry the process has created, so cross-cutting checks (project deletion refusing
 # to pull a directory out from under a running worker) can sweep all job kinds at once.
 _ALL_REGISTRIES: list[JobRegistry] = []
 
 
-def any_running_for_project(pid: str) -> str | None:
-    """The name of the first registry holding a RUNNING job for `pid`, else None.
-
-    Used by projects.delete_project: a live worker resolves paths from the project id, so
-    moving the directory mid-job would make the worker's next write silently recreate
-    `projects/<pid>` and split its output from the trashed copy."""
+def any_active_for_scopes(scopes: set[str | None]) -> str | None:
+    """The first registry with a live worker in one of ``scopes``, else None."""
     for reg in _ALL_REGISTRIES:
         with reg.lock:
             for job in reg.jobs.values():
-                if job.status == "running" and getattr(job, _PID_ATTR, None) == pid:
+                if (
+                    _worker_is_active(job)
+                    and getattr(job, _PID_ATTR, None) in scopes
+                ):
                     return reg.name
     return None
+
+
+def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
+    """Cooperatively cancel every registry-managed worker in ``scopes``.
+
+    Returns how many client-visible running jobs changed to ``cancelled``. Deadline-orphan
+    adapters manage their own raw threads and publish a status-only liveness record; they cannot
+    be cancelled here and remain visible to :func:`any_active_for_scopes` until they really exit.
+    """
+    cancelled: list[tuple[str, Job, str | None]] = []
+    for reg in _ALL_REGISTRIES:
+        with reg.lock:
+            for job in reg.jobs.values():
+                scope = getattr(job, _PID_ATTR, None)
+                # Only JobRegistry-owned threads carry the marker. A status-only orphan has no
+                # cooperative checkpoint to signal, and changing its status would hide its actual
+                # liveness from deletion.
+                if scope not in scopes or getattr(job, _WORKER_ACTIVE_ATTR, None) is not True:
+                    continue
+                setattr(job, _CANCELLED_ATTR, True)
+                if job.status == "running":
+                    job.status = "cancelled"
+                    job.finished_at = now_iso()
+                    reg._stamp_settled(job)
+                    cancelled.append((reg.name, job, scope))
+            reg._prune()
+    for name, job, scope in cancelled:
+        log.info("cancel %s job=%s", name, job.id[:8], extra=_log_tag(scope))
+    return len(cancelled)
+
+
+def forget_inactive_for_scopes(scopes: set[str | None]) -> None:
+    """Drop retained payloads in ``scopes`` without erasing any live-worker record."""
+    for reg in _ALL_REGISTRIES:
+        with reg.lock:
+            stale = [
+                job_id for job_id, job in reg.jobs.items()
+                if (
+                    getattr(job, _PID_ATTR, None) in scopes
+                    and not _worker_is_active(job)
+                )
+            ]
+            for job_id in stale:
+                reg.jobs.pop(job_id, None)
+
+
+def any_running_for_project(pid: str) -> str | None:
+    """The name of the first registry with a live worker for ``pid``, else None.
+
+    Used by projects.delete_project: a live worker resolves paths from the project id, so
+    moving the directory mid-job would make the worker's next write silently recreate
+    `projects/<pid>` and split its output from the trashed copy.
+
+    This deliberately follows worker liveness rather than the client-visible status. Cooperative
+    cancellation changes the status to ``cancelled`` immediately, but Python cannot kill the
+    thread: it can still be unwinding an upstream call or running a settle callback. Deletion must
+    wait for that actual work to leave the scope."""
+    return any_active_for_scopes({pid})
 
 
 def forget_finished_for_project(pid: str) -> None:
@@ -117,16 +187,9 @@ def forget_finished_for_project(pid: str) -> None:
     Project ids can be reused after their directory moves to ``.trash``. Retaining an old
     proposal under that pid would expose it through the newly created project's latest-job
     endpoint, so deletion clears every terminal registry entry while its tombstone still blocks
-    new admission. Callers must already have refused running jobs.
+    new admission. Callers must already have refused live workers.
     """
-    for reg in _ALL_REGISTRIES:
-        with reg.lock:
-            stale = [
-                job_id for job_id, job in reg.jobs.items()
-                if getattr(job, _PID_ATTR, None) == pid and job.status != "running"
-            ]
-            for job_id in stale:
-                reg.jobs.pop(job_id, None)
+    forget_inactive_for_scopes({pid})
 
 
 class JobRegistry(Generic[J]):
@@ -249,6 +312,11 @@ class JobRegistry(Generic[J]):
             # Keep this check under the registry lock: deletion marks the tombstone before
             # sweeping registries, so either this registration wins first and the sweep removes
             # it, or the tombstone wins and registration is refused.
+            if config.user_is_deleting(config.active_user_id()):
+                raise RuntimeError("Account is being deleted; not accepting new jobs.")
+            if pid is None and config.global_job_drain_active():
+                raise RuntimeError(
+                    "Account deletion is draining instance-wide work; not accepting global jobs.")
             if pid is not None and (
                 config.project_is_deleting(pid) or config.project_is_busy(pid)
             ):
@@ -288,6 +356,14 @@ class JobRegistry(Generic[J]):
         # none for an app-global job), while done/error run on the worker thread.
         tag = _log_tag(pid)
         with self._lock:
+            # Atomic with the account-deletion sweep for the same reason the project check below
+            # is atomic with project deletion: either this registration wins and the sweep sees
+            # it, or the user gate wins and admission is refused.
+            if config.user_is_deleting(config.active_user_id()):
+                raise RuntimeError("Account is being deleted; not accepting new jobs.")
+            if pid is None and config.global_job_drain_active():
+                raise RuntimeError(
+                    "Account deletion is draining instance-wide work; not accepting global jobs.")
             # Admission gate for project deletion / an in-progress split of the source: once
             # the pid is tombstoned (delete) or marked busy (split), no new worker may register
             # — its writes would recreate a moved directory or land in files being relocated.
@@ -314,6 +390,9 @@ class JobRegistry(Generic[J]):
             job = factory()
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
+            # Set before publishing the job in the registry. A deletion sweep that wins after this
+            # point must see the scope as active even if the new thread has not entered _run yet.
+            setattr(job, _WORKER_ACTIVE_ATTR, True)
             self._jobs[job.id] = job
             self._prune()
         log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
@@ -389,6 +468,12 @@ class JobRegistry(Generic[J]):
                         time.monotonic() - t0, str(e)[:200], extra=tag)
             self._fire_settle(job, settle_cbs, tag)
         finally:
+            # Last action while this worker is still logically inside the registry. Settle
+            # callbacks above can touch the project or admit follow-on work, so a deletion sweep
+            # must continue to see the worker until they have returned too.
+            with self._lock:
+                setattr(job, _WORKER_ACTIVE_ATTR, False)
+                self._prune()
             config.reset_active_project(token)
             config.reset_active_user(user_token)
 
@@ -434,7 +519,9 @@ class JobRegistry(Generic[J]):
             return
         by_scope: dict[str | None, list[J]] = {}
         for job in self._jobs.values():
-            if job.status != "running":
+            # A cancelled job is terminal to the client but its worker may still be unwinding.
+            # Never prune the only liveness record before deletion has a chance to observe it.
+            if not _worker_is_active(job):
                 by_scope.setdefault(getattr(job, _PID_ATTR, None), []).append(job)
 
         # By settle tick here too, for exactly the reason it is used for scopes below. Ordering a

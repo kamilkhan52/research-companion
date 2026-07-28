@@ -20,12 +20,13 @@ from pathlib import Path, PurePosixPath
 
 from fastapi import HTTPException, Request
 
-from . import config, jobs, logging_config, prompts, store, tenancy
+from . import config, db, jobs, logging_config, prompts, store, tenancy
 from .fileio import atomic_write_text
 
 log = logging_config.get("projects")
 
 META = "project.json"
+PROVISIONAL_OWNER = ".state/provisional-owner"
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -300,17 +301,75 @@ def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[
     return out[:limit]
 
 
-def create_project(name: str, method: str | None = None) -> dict:
+def _write_provisional_owner(root: Path, owner_id: str | None) -> None:
+    if owner_id is None:
+        return
+    if not db.is_uuid(owner_id):
+        raise ProjectError("Invalid provisional project owner.")
+    atomic_write_text(root / PROVISIONAL_OWNER, f"{owner_id}\n")
+
+
+def clear_provisional_owner(pid: str) -> None:
+    (project_path(pid) / PROVISIONAL_OWNER).unlink(missing_ok=True)
+
+
+def provisionally_owned_projects(owner_id: str) -> set[str]:
+    """Filesystem fallback for publication that outlived a failed ownership claim."""
+    if not db.is_uuid(owner_id) or not config.PROJECTS_ROOT.is_dir():
+        return set()
+    owned: set[str] = set()
+    for child in config.PROJECTS_ROOT.iterdir():
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            pid = _safe_pid(child.name)
+            recorded = (child / PROVISIONAL_OWNER).read_text(encoding="utf-8").strip()
+        except (OSError, ProjectError, UnicodeDecodeError):
+            continue
+        if recorded == owner_id:
+            owned.add(pid)
+    return owned
+
+
+def discard_provisional_project(pid: str, owner_id: str) -> None:
+    """Compensate a failed claim, but only while its exact provisional marker remains."""
+    root = project_path(pid)
+    try:
+        recorded = (root / PROVISIONAL_OWNER).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ProjectError("Project no longer has provisional ownership.") from exc
+    if recorded != owner_id:
+        raise ProjectError("Project provisional ownership changed.")
+    try:
+        if root.is_symlink():
+            root.unlink()
+        else:
+            shutil.rmtree(root)
+    except OSError as exc:
+        raise ProjectError("Could not remove the provisionally owned project.") from exc
+
+
+def create_project(
+    name: str,
+    method: str | None = None,
+    *,
+    provisional_owner_id: str | None = None,
+) -> dict:
     """Scaffold a new project dir (git repo) with starter files. Returns its meta."""
     name = (name or "").strip()
     if not name:
         raise ProjectError("Project name is required.")
+    if provisional_owner_id is not None and not db.is_uuid(provisional_owner_id):
+        raise ProjectError("Invalid provisional project owner.")
     pid = _unique_id(slugify(name))
     root = project_path(pid)
     root.mkdir(parents=True, exist_ok=False)
     (root / "corpus").mkdir()
     (root / "sessions").mkdir()
     (root / ".state").mkdir()
+    # Written before the directory becomes a complete/listable project. If the process or database
+    # fails between publication and tenancy.claim(), account deletion can still attribute it.
+    _write_provisional_owner(root, provisional_owner_id)
     (root / "reading-list.md").write_text(_STARTER_READING_LIST, encoding="utf-8")
     default_method = prompts.REGISTRY_BY_KEY["reading_method"].bundled_default
     (root / "reading-method.md").write_text(method or default_method, encoding="utf-8")
@@ -501,7 +560,12 @@ def _sanitized_meta(repo: Path, pid: str, name: str) -> dict:
     }
 
 
-def import_bundle(data: bytes, name: str) -> dict:
+def import_bundle(
+    data: bytes,
+    name: str,
+    *,
+    provisional_owner_id: str | None = None,
+) -> dict:
     """Create a new project from a git bundle. Never overwrites: always a fresh id.
 
     The bundle is untrusted — it arrives over HTTP from another instance — so the order matters:
@@ -512,6 +576,8 @@ def import_bundle(data: bytes, name: str) -> dict:
     name = (name or "").strip()
     if not name:
         raise ProjectError("A name is required for the imported project.")
+    if provisional_owner_id is not None and not db.is_uuid(provisional_owner_id):
+        raise ProjectError("Invalid provisional project owner.")
     if not data:
         raise ProjectError("The uploaded bundle is empty.")
     if len(data) > MAX_BUNDLE_BYTES:
@@ -572,6 +638,7 @@ def import_bundle(data: bytes, name: str) -> dict:
         meta = _sanitized_meta(repo, pid, name)
         atomic_write_text(repo / META, json.dumps(meta, indent=2))
         (repo / ".state").mkdir(exist_ok=True)
+        _write_provisional_owner(repo, provisional_owner_id)
         bundle.unlink(missing_ok=True)
 
         try:
@@ -675,14 +742,26 @@ def delete_project(pid: str) -> None:
         config.unmark_project_deleting(pid)
 
 
-def adopt_existing(src: Path, name: str, move: bool = True) -> str:
+def adopt_existing(
+    src: Path,
+    name: str,
+    move: bool = True,
+    *,
+    provisional_owner_id: str | None = None,
+) -> str:
     """Bring a pre-existing store dir (the legacy ./project) under PROJECTS_ROOT as a project,
     preserving its git history. Adds project.json + .gitignore(.state/) and commits them.
     move=False copies instead (useful for testing without disturbing the original)."""
     import shutil
+    if provisional_owner_id is not None and not db.is_uuid(provisional_owner_id):
+        raise ProjectError("Invalid provisional project owner.")
     config.PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
     pid = _unique_id(slugify(name))
     dst = project_path(pid)
+    # Mark the source before moving it, so even a process death immediately after publication
+    # leaves the only copy attributable. `.state` is working state and remains git-ignored.
+    (src / ".state").mkdir(exist_ok=True)
+    _write_provisional_owner(src, provisional_owner_id)
     if move:
         shutil.move(str(src), str(dst))
     else:
