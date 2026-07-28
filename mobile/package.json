@@ -66,7 +66,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test": "jest",
-    "test:ci": "jest --runInBand",
+    "test:ci": "jest --maxWorkers=2",
     "postinstall": "node ./scripts/patch-react-native-track-player.js"
   },
   "private": true,
