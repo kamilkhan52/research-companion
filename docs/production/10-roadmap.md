@@ -54,6 +54,48 @@ The backend also ages every destructive attempt past Fly's rolling-deploy kill w
 moves to the public web request surface, H23 server-secret configuration, and a disposable-account
 staging deletion test.
 
+**The account-deletion stack merged 2026-07-28** as #251 → #252 → #253, plus #257 for review
+follow-ups. The mobile half (#254) is the only piece still open.
+
+| PR | Scope | Status |
+|---|---|---|
+| #251 | `supabase_admin.py` — server-only Auth identity deletion, redirect-refusing, sanitized errors | ✅ merged (`6d33920`) |
+| #252 | `jobs.py` — a cancelled worker stays visible to a deletion drain until its thread really exits | ✅ merged (`25abcff`) |
+| #253 | `account_deletion.py` + `deploy_guard.py` — the durable coordinator and cross-process exclusion | ✅ merged (`787c3d2`) |
+| #257 | Three tests from #253's review that were weaker than they read | ✅ merged |
+| #254 | The Expo client: start deletion, follow it, purge local state | open, CI green, awaiting review |
+
+**Reviews for this stack ran as Claude subagents, not Codex.** The Codex account hit its usage limit
+on 2026-07-28 (resets Aug 3) and Kamil disabled automatic Codex PR review the same day. Cold
+subagents pointed at `AGENTS.md` and this ledger found: nothing at P0/P1 on #251/#252, and **four
+P1s on #253**, all in the guard and admission plumbing rather than in the deletion ordering. Worth
+recording because three of them share one shape — *a single failure treated as proof*:
+
+1. `deploy_guard.start()` was an unguarded module-scope call, so an unreachable database made
+   `import app.main` raise and the machine never served. Reproduced against a closed port. It was
+   strictly more fatal than the migrations twelve lines below it, whose docstring already gives the
+   rule. Its ten-minute default budget was the other half: a peer holding the exclusive lock is
+   exactly the case the feature exists for, so a replacement machine would hang its whole import.
+2. The lifetime watchdog, `acquire_exclusive`'s cleanup, and `release_exclusive` each SIGTERM'd the
+   process on one failed round trip. A two-second database blip during one "delete account" tap
+   would restart the instance and kill every in-flight job. Losing the exclusive race did it too,
+   by construction — the restore asks for a *shared* lock, incompatible with the exclusive one a
+   peer legitimately still holds.
+3. `is_blocked` — synchronous psycopg — ran on the event loop in the auth middleware, serializing
+   all request handling behind two round trips per authenticated request, and converting a slow
+   database into a total stall rather than the per-request 503 it was written to give.
+
+Fail-stop is kept, but it now has to be *earned*: `_recover_shared` tries to re-take the lock within
+30s and that attempt is itself the test — a blip recovers, a peer genuinely holding exclusivity
+keeps failing `pg_try_advisory_lock_shared` and the process still terminates. The budget stays well
+under the 310s overlap window a deleter already waits for exactly this reason.
+
+**Known gap, not yet closed:** `_owned_data` raising `ambiguous-transition-trash` is the correct
+fail-closed choice, but it leaves the account in a permanent 423 with a retry that can never
+succeed without operator repair — and "deletion is stuck forever" is indistinguishable from
+"deletion is running" to the client. That needs an operator-alert story before the Play submission,
+since the Data safety form asserts deletion works.
+
 **M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
 provisional Play Data Safety matrix now live in
 [`02-security-and-privacy.md`](02-security-and-privacy.md). It found two declaration blockers that
