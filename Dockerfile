@@ -38,11 +38,15 @@ WORKDIR /srv
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Runtime payload only. Everything else the repo carries (tests, mobile/, scripts/, docs/) is
-# excluded via .dockerignore — see that file for why projects/ and .app-state/ in particular must
-# never be baked in.
+# Runtime payload only. The migration runner resolves `supabase/migrations` relative to `/srv`,
+# and the M2 rollout/repair path invokes `scripts/adopt_projects.py` inside the machine. Keeping
+# those beside `app/` is therefore correctness, not operator convenience: omitting the SQL lets a
+# database-configured machine boot with an empty schema, while omitting the script makes the
+# documented idempotent ownership backfill impossible to run from the deployed artifact.
 COPY app/ ./app/
 COPY web/dist/ ./web/dist/
+COPY supabase/migrations/ ./supabase/migrations/
+COPY scripts/adopt_projects.py ./scripts/adopt_projects.py
 
 # Non-root. The volume is chowned to this uid by the mount, and nothing in the image is written.
 RUN useradd --create-home --uid 10001 rc && chown -R rc:rc /srv
