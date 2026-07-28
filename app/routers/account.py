@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import account_deletion, logging_config
+from .. import account_deletion, content_reports, logging_config
 
 router = APIRouter()
 
@@ -29,6 +29,15 @@ _USER_PRESENCE_METHODS = frozenset({
 
 class DeleteAccountRequest(BaseModel):
     confirmation: str
+
+
+class ContentReportRequest(BaseModel):
+    surface: str
+    reason: str
+    project_id: str | None = None
+    paper_slug: str | None = None
+    reference: str | None = None
+    reporter_note: str | None = None
 
 
 def _user(request: Request) -> dict:
@@ -122,3 +131,34 @@ def delete_account(body: DeleteAccountRequest, request: Request):
             detail="Account deletion could not be started.",
         ) from exc
     return {"deletion": state}
+
+
+@router.post("/api/reports/content", status_code=201)
+def report_content(body: ContentReportRequest, request: Request):
+    """Report offensive AI-generated content without leaving the app.
+
+    Required by Google Play's AI-Generated Content policy for any app whose content is model
+    output, which is all of this one. Kept a plain POST rather than a job (invariant 1): it is one
+    small insert, and a reader who has just seen something objectionable should be told immediately
+    that it was recorded, not handed a job id to poll.
+    """
+    user = _user(request)
+    try:
+        created = content_reports.submit(
+            user["user_id"],
+            surface=body.surface,
+            reason=body.reason,
+            project_id=body.project_id,
+            paper_slug=body.paper_slug,
+            reference=body.reference,
+            reporter_note=body.reporter_note,
+        )
+    except content_reports.ContentReportError as exc:
+        # 422 rather than 500: every one of these is something the caller can correct or a limit
+        # they have hit, and the message is written to be shown to them.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="The report could not be recorded. Please try again.",
+        ) from exc
+    return {"report": created}
