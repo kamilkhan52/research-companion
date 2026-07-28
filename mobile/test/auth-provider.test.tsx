@@ -3,7 +3,7 @@
 // synchronously from module state, so a session change that does not reach `setToken` produces
 // silent 401s — most cruelly an hour after sign-in, when the first refresh lands.
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { renderAsync, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
@@ -11,6 +11,7 @@ import * as apiConfig from '@/api/config';
 import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
 import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
+import { createTestQueryClient } from './queryClient';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
 const mockAuth = {
@@ -86,7 +87,7 @@ function Probe() {
 
 /** AuthProvider clears the query cache on a server switch, so it needs a client above it. */
 function withQuery(children: React.ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
@@ -536,7 +537,7 @@ test('switching servers drops the previous server\'s cached data', async () => {
   // pid that only exists on A. invalidateQueries is not enough: it marks data stale and keeps
   // serving it, which is the wrong half of the behaviour.
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = createTestQueryClient();
   client.setQueryData(['projects'], [{ id: 'from-server-a' }]);
 
   const { getByText } = await renderAsync(

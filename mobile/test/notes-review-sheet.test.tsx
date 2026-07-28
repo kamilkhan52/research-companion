@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { fireEvent, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
@@ -27,7 +28,7 @@ beforeEach(async () => {
 });
 
 function render(onCommitted = jest.fn(), onClose = jest.fn()) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const client = createTestQueryClient();
   return renderAsync(
     <QueryClientProvider client={client}>
       <NotesReviewSheet visible pid="proj" slug="awq" onClose={onClose} onCommitted={onCommitted} />

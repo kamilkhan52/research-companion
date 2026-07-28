@@ -4,7 +4,8 @@
 // shared controls go read-only for a reader, and the reader's own DEVICE-local controls (playback
 // mode, theme, density, the map filter, the server URL) keep working.
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { renderAsync, screen } from '@testing-library/react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 
@@ -68,7 +69,7 @@ function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boole
   jest.spyOn(queries, 'useResetPrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
 }
 
-const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+const client = createTestQueryClient();
 
 /** The screen's real provider stack from `_layout.tsx`, minus what it does not touch. */
 function renderScreen() {

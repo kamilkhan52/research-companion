@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 
 import * as api from '@/api/endpoints';
@@ -23,7 +24,7 @@ const projectState = {
 } as ProjectState;
 
 function wrap(children: React.ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0 } } });
+  const client = createTestQueryClient();
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 

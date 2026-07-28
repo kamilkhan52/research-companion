@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createTestQueryClient } from './queryClient';
 import {
   act,
   fireEventAsync,
@@ -19,9 +20,7 @@ beforeEach(async () => {
 });
 
 test('copy is the safe default and carries notes plus discussion work', async () => {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 } },
-  });
+  const client = createTestQueryClient();
   const { unmountAsync } = await renderAsync(
     <QueryClientProvider client={client}>
       <ExistingPaperOfferHost />
