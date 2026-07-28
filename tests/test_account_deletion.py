@@ -417,8 +417,12 @@ def test_deploy_guard_lock_wait_has_deadline(monkeypatch):
         def execute(self, _query, _params=None):
             return Cursor()
 
-    monotonic = iter((10.0, 10.0))
-    monkeypatch.setattr(deploy_guard.time, "monotonic", lambda: next(monotonic))
+    # A frozen clock, not a two-element iterator. The iterator made the test depend on the exact
+    # NUMBER of `time.monotonic()` calls in the function under test: adding one anywhere — a log
+    # line, a metric — exhausted it, and the test then failed with `StopIteration` instead of
+    # saying anything about deadlines. Freezing time expresses the actual precondition, which is
+    # that no time passes, so the deadline can only be reached by the budget being zero.
+    monkeypatch.setattr(deploy_guard.time, "monotonic", lambda: 10.0)
 
     with pytest.raises(TimeoutError, match="deploy-guard-exclusive"):
         deploy_guard._wait_for_advisory_lock(
@@ -544,12 +548,19 @@ def test_watchdog_waking_into_a_normal_release_does_not_terminate(monkeypatch):
 
 
 def test_exclusivity_lost_in_the_overlap_window_removes_nothing(monkeypatch):
-    """The lease is acquired BEFORE the 310-second overlap wait and proven again after it.
+    """`_run` consults the lease at least once between the overlap wait and the first `rmtree`.
 
-    That gap is the whole point: a lease that died during the wait means some peer could have
-    taken exclusivity and be writing the very trees this attempt is about to `rmtree`. The
-    primitive-level tests above prove `assert_exclusive` raises; this proves `_run` actually
-    consults it, and does so before the first removal rather than after.
+    The lease is acquired BEFORE the 310-second overlap wait, so holding it at acquisition proves
+    nothing about the moment of deletion: a lease that died during that wait means a peer could
+    have taken exclusivity and be writing the very trees this attempt is about to remove. The
+    primitive-level tests above prove `assert_exclusive` raises; this proves `_run` acts on it.
+
+    Stated precisely, because an earlier version of this docstring claimed more than the test
+    delivers. `_run` has two `assert_exclusive` calls in that span and only one is needed to fail
+    the attempt, so removing either one alone leaves this green — the second still fires before
+    `_owned_data`, and the only thing between them is a status read. That is not a gap worth
+    closing with a sharper test; it is the accurate description of the property, which is a
+    boundary ("nothing is removed without a live lease") rather than a specific call site.
     """
     class LostConnection:
         def execute(self, _query, _params=None):
@@ -599,21 +610,35 @@ def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):
     release = threading.Event()
     path = "/api/test/account-deletion-stream-lifetime"
 
-    if not any(getattr(route, "path", None) == path for route in app.routes):
-        @app.get(path)
-        def _test_stream():
-            def body():
-                started.set()
-                yield b"started"
-                release.wait(5)
-                yield b"done"
+    @app.get(path)
+    def _test_stream():
+        def body():
+            started.set()
+            yield b"started"
+            release.wait(5)
+            yield b"done"
 
-            return StreamingResponse(body())
+        return StreamingResponse(body())
+
     # The production static mount is intentionally last at app assembly time; this test-only route
     # is registered later, so move it ahead of that catch-all mount.
     test_route = next(route for route in app.routes if getattr(route, "path", None) == path)
     app.routes.remove(test_route)
     app.routes.insert(0, test_route)
+    # `app` is a module-level singleton shared by every test in the suite, so a route left behind
+    # here is visible to all of them — including anything that enumerates routes or reads the
+    # OpenAPI schema. The previous shape guarded registration with an `if not already present`,
+    # which made the test idempotent but left the route installed for the rest of the session.
+    # Registering unconditionally and removing in `finally` keeps the app as it was found.
+    try:
+        _run_streaming_lifetime_assertions(path, started, release)
+    finally:
+        app.routes.remove(test_route)
+        app.openapi_schema = None   # the cached schema was built with the test route in it
+
+
+def _run_streaming_lifetime_assertions(path, started, release):
+    from app.main import app
 
     def consume():
         with TestClient(app).stream(
