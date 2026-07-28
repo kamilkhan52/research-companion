@@ -58,11 +58,12 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: rc_test
         ports: ["5432:5432"]
-        # 2s rather than 5s, with retries raised to keep the same total grace. "Initialize
-        # containers" measured 14s; Postgres itself is ready well inside the first interval, so most
-        # of that was spent waiting for the next poll rather than for the server.
+        # Left at 5s. Tightening this to 2s looked like free time — "Initialize containers" measures
+        # ~11-14s and Postgres is ready well inside one interval — but measuring it said otherwise:
+        # two runs at 2s came in at 24s and 20s against 11s/13s/14s at 5s. Consistently worse, so
+        # the theory was wrong. Do not re-tune this without runs on both settings.
         options: >-
-          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 25
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
