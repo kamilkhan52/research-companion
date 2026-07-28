@@ -1,0 +1,82 @@
+# Split out of the single `CI` workflow so a change that cannot affect this job does not pay for it.
+# Measured 2026-07-28 on a green run: backend 100s, mobile 124s, web 43s — and Actions bills each
+# JOB rounded up to the whole minute, so one run of everything cost 6 minutes while most PRs in the
+# current milestone touch `app/` and `tests/` only.
+#
+# CONSEQUENCE, deliberately accepted: a PR touching only documentation matches none of the three
+# workflows' filters and therefore produces NO check runs at all. "No runs for this SHA" is not the
+# same as "green", and anything gating a merge on CI must treat the two differently.
+#
+# The path list is duplicated between `push` and `pull_request` on purpose — GitHub Actions does not
+# reliably expand YAML anchors in workflow files, and a filter that silently fails open would run
+# everything again while looking like it was tuned.
+name: CI (backend)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "supabase/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - "requirements-dev.txt"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/ci-backend.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "tests/**"
+      - "supabase/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - "requirements-dev.txt"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/ci-backend.yml"
+
+concurrency:
+  group: ci-backend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    # A real Postgres, because M2's ownership tests assert things only Postgres can tell us: the
+    # CHECK constraint on a project id, the owner foreign key, `on conflict do nothing`. A fake
+    # would assert my idea of those rules rather than the database's. Without this the tests skip,
+    # and a skipped isolation test is indistinguishable from a passing one at a glance.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rc_test
+        ports: ["5432:5432"]
+        # 2s rather than 5s, with retries raised to keep the same total grace. "Initialize
+        # containers" measured 14s; Postgres itself is ready well inside the first interval, so most
+        # of that was spent waiting for the next poll rather than for the server.
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check app tests
+      - name: Test (pytest)
+        # Still network-free by design (see tests/conftest.py) — the database is a loopback service
+        # container, not an external call. RC_TEST_DATABASE_URL is what un-skips the ownership
+        # tests; it is a throwaway CI database, not a secret.
+        env:
+          RC_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/rc_test
+        run: python -m pytest
