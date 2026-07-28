@@ -845,3 +845,27 @@ export interface UsageSummary {
   first_at: string | null;
   updated_at: string | null;
 }
+
+/** Surfaces a reader can report AI-generated content from. Mirrors `app/content_reports.SURFACES`
+ *  and the schema CHECK; an unknown value is refused at the boundary rather than stored. */
+export type ContentReportSurface = 'discussion' | 'narration' | 'discovery' | 'notes';
+
+/** Mirrors `app/content_reports.REASONS`. */
+export type ContentReportReason =
+  | 'offensive'
+  | 'harmful'
+  | 'sexual'
+  | 'violent'
+  | 'harassment'
+  | 'misinformation'
+  | 'other';
+
+export interface ContentReportRequest {
+  surface: ContentReportSurface;
+  reason: ContentReportReason;
+  project_id?: string | null;
+  paper_slug?: string | null;
+  /** Where in the transcript, so an operator can find the exact turn. Never the content itself. */
+  reference?: string | null;
+  reporter_note?: string | null;
+}

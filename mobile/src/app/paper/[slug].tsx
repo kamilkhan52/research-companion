@@ -69,6 +69,7 @@ import {
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { ReportContentSheet, reportReference } from '@/components/ReportContentSheet';
 import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
@@ -1599,6 +1600,9 @@ function DiscussionThread({
   // OptionsSheet is the only menu idiom anywhere in the app).
   const audio = useAudio();
   const [msgMenu, setMsgMenu] = useState<SheetOption[] | null>(null);
+  // The transcript index, so the report carries a pointer an operator can resolve to the exact
+  // turn. Null means the sheet is closed.
+  const [reporting, setReporting] = useState<string | null>(null);
   const onLongPressMessage = useCallback((_context: unknown, message: DiscussionMessage) => {
     const entry = message.entry;
     if (!entry) return;
@@ -1648,6 +1652,29 @@ function DiscussionThread({
         title: audio.currentId === audioId ? 'Pause / resume' : 'Listen',
         icon: 'headphones',
         onPress: () => void audio.playText({ id: audioId, title, text: entry.canonical }),
+      });
+      // Required by Google Play's AI-Generated Content policy for every surface that shows model
+      // output, and every assistant turn is model output. On the long-press menu because that is
+      // where per-message actions live; a reader who has just read something objectionable should
+      // not have to go looking for Settings.
+      options.push({
+        key: 'report',
+        title: 'Report this response',
+        subtitle: 'Flag offensive or harmful content',
+        icon: 'flag',
+        section: true,
+        // The THREAD is part of the identity. Discussions are per-thread — `sessions/<slug>.threads/`
+        // server-side, and a per-thread query key here — so `transcript:12` on `main` and on `t2`
+        // are different turns that would otherwise produce byte-identical reports. An operator
+        // resolving one against the wrong thread finds an innocuous turn and dismisses a real
+        // report.
+        //
+        // The index is still the most volatile identifier available: a retry archives the old tail
+        // and puts a new response at the same index, and an edit rewinds and regenerates it. Since
+        // the backend deliberately stores no copy of the text, nothing can detect that rot. Living
+        // with it for now because the alternative is storing content; M7's review queue is where a
+        // sturdier handle should be designed, if the queue shows it is needed.
+        onPress: () => setReporting(reportReference(threadId, message.transcriptIndex)),
       });
       if (!stream.streaming && canRetry) {
         if (entry.assistant_index === 0) {
@@ -1976,6 +2003,14 @@ function DiscussionThread({
       visible={!!msgMenu}
       onClose={() => setMsgMenu(null)}
       options={msgMenu ?? []}
+    />
+    <ReportContentSheet
+      visible={reporting !== null}
+      onClose={() => setReporting(null)}
+      surface="discussion"
+      projectId={pid}
+      paperSlug={slug}
+      reference={reporting}
     />
     <FirstResponseRetrySheet
       visible={firstRetryOpen}
