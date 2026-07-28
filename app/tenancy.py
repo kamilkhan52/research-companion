@@ -107,25 +107,38 @@ def projects_owned_by(owner_id: str) -> set[str]:
     return {row[0] for row in rows}
 
 
-def trashed_projects_owned_by(owner_id: str) -> set[str]:
-    """Project ids whose recoverable `.trash` repository formerly belonged to `owner_id`.
+def trash_entries_owned_by(owner_id: str) -> set[str]:
+    """Concrete `.trash` directory names formerly belonging to `owner_id`.
 
-    This is not an authorization surface: retired rows have no live `owner_id` and remain
-    unreachable through `owner_of`/`may_access`. It is the enumeration account deletion needs in
-    order to remove personal data that ordinary project deletion kept recoverable.
+    This is not an authorization surface. It is a separate incarnation index for account deletion:
+    before permanent tombstones, one project id could be deleted, reused, and deleted again.
     """
     if not enabled() or not db.is_uuid(owner_id):
         return set()
     with db.pool().connection() as conn:
         rows = conn.execute(
-            "select id from rc_projects "
-            "where deleted_owner_id = %s and deleted_at is not null",
+            "select trash_name from rc_project_trash where owner_id = %s",
             (owner_id,)).fetchall()
     return {row[0] for row in rows}
 
 
+def trash_owner_of(trash_name: str) -> str | None:
+    """The non-authorizing owner of one concrete recoverable trash entry."""
+    if not enabled():
+        return None
+    with db.pool().connection() as conn:
+        row = conn.execute(
+            "select owner_id::text from rc_project_trash where trash_name = %s",
+            (trash_name,)).fetchone()
+    return row[0] if row else None
+
+
 def deleted_owner_of(pid: str) -> str | None:
-    """The non-authorizing former owner of retired `pid`, if one is recorded."""
+    """Transition owner retained on a retired id, if one is recorded.
+
+    The concrete `rc_project_trash` entry is authoritative. This column exists so an old worker
+    whose release statement predates that table cannot erase the owner during a rolling deploy.
+    """
     if not enabled():
         return None
     with db.pool().connection() as conn:
@@ -165,16 +178,12 @@ def backfill(owner_id: str, pids: list[str]) -> dict:
     return {"owner": owner_id, "adopted": adopted, "already_owned": sorted(set(skipped) | already & set(pids))}
 
 
-def backfill_trashed(owner_id: str, pids: list[str]) -> dict:
-    """Attribute legacy `.trash` entries to the explicitly named instance owner.
+def backfill_trashed(owner_id: str, trash_names: list[str]) -> dict:
+    """Attribute explicitly selected legacy `.trash` entries to `owner_id`.
 
-    Handles both upgrade shapes:
-
-    * a post-M2 tombstone whose old release path cleared `owner_id`; and
-    * a trash directory that predates ownership entirely and therefore has no row.
-
-    It never rewrites an existing attribution and never retires a live row. That makes re-running
-    safe after more users exist: a conflict is reported, not stolen.
+    The caller must choose concrete directory names. This never infers that all legacy trash
+    belongs to one instance owner: after multi-user ownership shipped, such an inference could make
+    one account's deletion remove another user's repository. Existing attribution is never changed.
     """
     if not enabled():
         raise TenancyError("No database is configured (RC_DATABASE_URL is unset).")
@@ -185,43 +194,37 @@ def backfill_trashed(owner_id: str, pids: list[str]) -> dict:
     adopted: list[str] = []
     already: list[str] = []
     attributed_elsewhere: list[str] = []
-    not_retired: list[str] = []
+    from . import projects  # local import: projects imports tenancy
+
     with db.pool().connection() as conn:
-        for pid in sorted(set(pids)):
+        for trash_name in sorted(set(trash_names)):
+            pid = projects.project_id_from_trash_name(trash_name)
             changed = conn.execute(
-                "insert into rc_projects "
-                "(id, owner_id, deleted_owner_id, deleted_at) "
-                "values (%s, null, %s, now()) "
-                "on conflict (id) do update "
-                "set deleted_owner_id = excluded.deleted_owner_id "
-                "where rc_projects.deleted_at is not null "
-                "and rc_projects.deleted_owner_id is null "
-                "returning deleted_owner_id::text",
-                (pid, owner_id),
+                "insert into rc_project_trash (trash_name, project_id, owner_id) "
+                "values (%s, %s, %s) on conflict (trash_name) do nothing "
+                "returning owner_id::text",
+                (trash_name, pid, owner_id),
             ).fetchone()
             if changed:
-                adopted.append(pid)
+                adopted.append(trash_name)
                 continue
             existing = conn.execute(
-                "select deleted_at is not null, deleted_owner_id::text "
-                "from rc_projects where id = %s", (pid,)).fetchone()
-            if not existing or not existing[0]:
-                not_retired.append(pid)
-            elif existing[1] == owner_id:
-                already.append(pid)
+                "select owner_id::text from rc_project_trash where trash_name = %s",
+                (trash_name,)).fetchone()
+            if existing and existing[0] == owner_id:
+                already.append(trash_name)
             else:
-                attributed_elsewhere.append(pid)
+                attributed_elsewhere.append(trash_name)
 
     log.info(
         "tenancy: trash backfill attributed %d, already %d, conflicts %d",
-        len(adopted), len(already), len(attributed_elsewhere) + len(not_retired),
+        len(adopted), len(already), len(attributed_elsewhere),
     )
     return {
         "owner": owner_id,
         "adopted": adopted,
         "already_attributed": already,
         "attributed_elsewhere": attributed_elsewhere,
-        "not_retired": not_retired,
     }
 
 
@@ -295,24 +298,31 @@ def id_is_recorded(pid: str) -> bool:
             "select 1 from rc_projects where id = %s", (pid,)).fetchone() is not None
 
 
-def restore(pid: str, owner_id: str) -> None:
+def restore(pid: str, owner_id: str, trash_name: str) -> None:
     """Un-retire a project — for when deletion failed after the row was already retired."""
     if not enabled():
         return
     with db.pool().connection() as conn:
-        conn.execute(
-            "update rc_projects "
-            "set owner_id = %s, deleted_owner_id = null, deleted_at = null where id = %s",
-            (owner_id, pid))
+        with conn.transaction():
+            restored = conn.execute(
+                "update rc_projects "
+                "set owner_id = %s, deleted_owner_id = null, deleted_at = null "
+                "where id = %s and deleted_owner_id = %s and deleted_at is not null",
+                (owner_id, pid, owner_id),
+            ).rowcount
+            if restored:
+                conn.execute(
+                    "delete from rc_project_trash where trash_name = %s and owner_id = %s",
+                    (trash_name, owner_id))
 
 
-def release(pid: str) -> str | None:
+def release(pid: str, trash_name: str) -> str | None:
     """Retire `pid` when the project is gone. Returns the former owner, if any.
 
     The row SURVIVES as a tombstone — live owner cleared so nobody can reach it, former owner
-    copied to `deleted_owner_id` so account deletion can find its recoverable repository, and
-    `deleted_at` set so the id is never handed out again. See `0002_retire_ids.sql` for why reuse
-    is unsafe.
+    copied to the transition column, and `deleted_at` set so the id is never handed out again. The
+    exact destination name is recorded separately in `rc_project_trash`; account deletion must act
+    on that concrete incarnation rather than a reusable historical id.
 
     Deletion moves the directory into `.trash`, but the surviving row permanently reserves the id.
     `record_project` refuses that retired row even if the same user later creates a project with
@@ -324,10 +334,21 @@ def release(pid: str) -> str | None:
     """
     if not enabled():
         return None
+    from . import projects  # local import: projects imports tenancy
+    trash_pid = projects.project_id_from_trash_name(trash_name)
+    if trash_pid != pid:
+        raise TenancyError("Trash entry does not belong to the project being retired.")
     with db.pool().connection() as conn:
-        row = conn.execute(
-            "update rc_projects "
-            "set deleted_owner_id = owner_id, owner_id = null, deleted_at = now() "
-            "where id = %s and deleted_at is null returning deleted_owner_id::text",
-            (pid,)).fetchone()
+        with conn.transaction():
+            row = conn.execute(
+                "update rc_projects "
+                "set deleted_owner_id = owner_id, owner_id = null, deleted_at = now() "
+                "where id = %s and owner_id is not null and deleted_at is null "
+                "returning deleted_owner_id::text",
+                (pid,)).fetchone()
+            if row:
+                conn.execute(
+                    "insert into rc_project_trash (trash_name, project_id, owner_id) "
+                    "values (%s, %s, %s)",
+                    (trash_name, pid, row[0]))
     return row[0] if row else None

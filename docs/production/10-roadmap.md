@@ -41,17 +41,18 @@ regression test. Without it, a database-configured machine health-checked succes
 running against an empty schema.
 
 **Next production gate:** M2.5's account deletion is now cheap on the backend side — a user's audio
-and narration cache is one directory. Recoverable project trash now retains a separate,
-non-authorizing former-owner link and the adoption script repairs legacy trash; the remaining
+and narration cache is one directory. Recoverable project trash now retains an exact,
+non-authorizing directory-to-owner link; a transition trigger protects old-worker deletes and the
+adoption script repairs only unambiguous or explicitly mapped legacy trash. The remaining
 project-content work is the permanent, retryable deletion coordinator.
 
 **M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
 provisional Play Data Safety matrix now live in
 [`02-security-and-privacy.md`](02-security-and-privacy.md). It found two declaration blockers that
 must be fixed rather than hidden in policy prose. The first is now code-complete: ordinary project
-deletion clears the live owner but preserves a separate former-owner attribution for `.trash`, and
-the adoption script can repair legacy entries. The remaining declaration blocker is that the
-current mobile source still defaults to an `http://` tailnet URL while backend source retrieval
+deletion clears the live owner but preserves the exact `.trash` incarnation and former owner, while
+ambiguous legacy directories require explicit operator mapping. The remaining declaration blocker
+is that the current mobile source still defaults to an `http://` tailnet URL while backend retrieval
 also permits public `http://` URLs, so “all data encrypted in transit” must wait for an AAB pinned
 to the production HTTPS origin and HTTPS-only user/agent-selected fetches.
 

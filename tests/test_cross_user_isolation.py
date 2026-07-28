@@ -311,7 +311,9 @@ def test_a_deleted_project_id_is_never_handed_out_again(two_users, client_as):
     # Retired: nobody owns it, and it is not reachable.
     assert tenancy.owner_of(pid) is None
     assert tenancy.deleted_owner_of(pid) == ALICE
-    assert tenancy.trashed_projects_owned_by(ALICE) == {pid}
+    trash_entries = projects.trashed_project_entries()
+    assert len(trash_entries) == 1
+    assert tenancy.trash_entries_owned_by(ALICE) == {trash_entries[0]}
     assert client_as(ALICE).get(f"/api/projects/{pid}/state").status_code == 404
 
     # And the id is not available to the next project of the same name — not even to Alice.
@@ -333,7 +335,7 @@ def test_a_failed_trash_move_restores_live_owner_and_clears_deleted_owner(
 
     assert tenancy.owner_of(pid) == ALICE
     assert tenancy.deleted_owner_of(pid) is None
-    assert tenancy.trashed_projects_owned_by(ALICE) == set()
+    assert tenancy.trash_entries_owned_by(ALICE) == set()
 
 
 @needs_pg

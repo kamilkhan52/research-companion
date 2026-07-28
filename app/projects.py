@@ -217,12 +217,22 @@ def list_projects() -> list[dict]:
     return out
 
 
-def trashed_project_ids() -> list[str]:
-    """Safe project ids represented by recoverable `.trash/<pid>-<timestamp>` directories.
+def project_id_from_trash_name(trash_name: str) -> str:
+    """Validate a concrete trash directory name and return its original project id."""
+    match = _TRASH_ENTRY_RE.fullmatch(trash_name)
+    if not match:
+        raise ProjectError(f"Invalid project trash entry: {trash_name!r}")
+    return _safe_pid(match.group(1))
+
+
+def trashed_project_entries() -> list[str]:
+    """Safe recoverable `.trash/<pid>-<timestamp>` directory names.
 
     This is an operator/account-deletion enumeration seam, not a project registry: entries remain
-    unreachable through normal APIs. Ignore hand-written or malformed names rather than turning
-    arbitrary directory names into database path identifiers.
+    unreachable through normal APIs. Return the concrete entry, not just the project id: before
+    tombstones existed, a deleted id could be reused and have more than one incarnation in trash.
+    Ignore hand-written or malformed names rather than turning arbitrary names into database/path
+    identifiers.
     """
     trash = config.PROJECTS_ROOT / ".trash"
     if not trash.is_dir():
@@ -231,15 +241,11 @@ def trashed_project_ids() -> list[str]:
     for entry in trash.iterdir():
         if not entry.is_dir():
             continue
-        match = _TRASH_ENTRY_RE.fullmatch(entry.name)
-        if not match:
-            continue
-        pid = match.group(1)
         try:
-            _safe_pid(pid)
+            project_id_from_trash_name(entry.name)
         except ProjectError:
             continue
-        found.add(pid)
+        found.add(entry.name)
     return sorted(found)
 
 
@@ -645,6 +651,7 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        trash_name = f"{pid}-{stamp}"
         # Retire the ownership row BEFORE the directory moves, then put it back if the move fails.
         # A retired row permanently reserves the id, and clearing its live owner before the move
         # also makes the project unreachable as soon as deletion begins.
@@ -652,14 +659,14 @@ def delete_project(pid: str) -> None:
         # But releasing first alone just trades that for a worse failure: if the move then fails,
         # the project is still on disk and its owner can no longer open it. So the row is restored
         # on failure. Neither ordering is safe by itself; the compensation is what makes it safe.
-        former_owner = tenancy.release(pid)
+        former_owner = tenancy.release(pid, trash_name)
         try:
-            shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+            shutil.move(str(project_path(pid)), str(trash / trash_name))
         except Exception:
             if former_owner:
                 # `restore`, not `record_project`: the row still exists as a tombstone, so an
                 # insert would conflict rather than give the project back to its owner.
-                tenancy.restore(pid, former_owner)
+                tenancy.restore(pid, former_owner, trash_name)
             raise
         # The tombstone prevents this pid from being reused. Still release terminal in-memory
         # results/proposals now so deleted project content is not retained unnecessarily.
