@@ -66,15 +66,16 @@ def _trash_assignments(
     for name, supplied_owner in explicit.items():
         if existing[name] and existing[name] != supplied_owner:
             raise ValueError(f"{name!r} is already attributed to another owner")
+    all_by_pid: dict[str, list[str]] = {}
+    for name in entries:
+        all_by_pid.setdefault(projects.project_id_from_trash_name(name), []).append(name)
     unattributed = [name for name in entries if existing[name] is None]
-    by_pid: dict[str, list[str]] = {}
-    for name in unattributed:
-        by_pid.setdefault(projects.project_id_from_trash_name(name), []).append(name)
 
     assignments = {name: owner for name, owner in explicit.items() if name in unattributed}
-    for pid, names in by_pid.items():
+    for pid, all_names in all_by_pid.items():
+        names = [name for name in all_names if existing[name] is None]
         transition_owner = tenancy.deleted_owner_of(pid)
-        if len(names) == 1 and transition_owner:
+        if len(all_names) == 1 and len(names) == 1 and transition_owner:
             supplied = assignments.get(names[0])
             if supplied and supplied != transition_owner:
                 raise ValueError(

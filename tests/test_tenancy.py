@@ -753,6 +753,11 @@ def test_old_release_statement_preserves_owner_during_rolling_migration(database
         {ambiguous[0]: OWNER},
     ) == ({ambiguous[0]: OWNER}, [ambiguous[1]])
 
+    # An already-attributed incarnation still counts: it must not make the other one look unique.
+    tenancy.ensure_user(OTHER)
+    tenancy.backfill_trashed(OTHER, [ambiguous[0]])
+    assert adopt_script._trash_assignments(ambiguous, {}) == ({}, [ambiguous[1]])
+
 
 @needs_pg
 def test_a_trashed_project_blocks_orphaning_its_former_owner(database):
