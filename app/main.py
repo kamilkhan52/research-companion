@@ -18,9 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, db, logging_config
+from . import account_deletion, auth, config, db, logging_config
 from .auth import AuthError
 from .routers import (
+    account,
     audio,
     catalogue,
     covers,
@@ -75,6 +76,7 @@ def _apply_migrations() -> None:
         return
     if applied:
         _log.info("db: applied migrations: %s", ", ".join(applied))
+    _resume_account_deletions()
 
 
 MIGRATION_RETRY_START_S = 5.0
@@ -95,9 +97,20 @@ def _retry_migrations_until_they_apply() -> None:
                 delay = min(delay * 2, MIGRATION_RETRY_MAX_S)
                 continue
             _log.info("db: migrations applied on retry: %s", ", ".join(applied) or "(none pending)")
+            _resume_account_deletions()
             return
 
     threading.Thread(target=_retry, daemon=True, name="db-migrate-retry").start()
+
+
+def _resume_account_deletions() -> None:
+    try:
+        resumed = account_deletion.resume_pending()
+    except Exception as e:  # noqa: BLE001 — migration retry or the next boot can recover it
+        _log.error("account deletion resume failed: %s", type(e).__name__)
+        return
+    if resumed:
+        _log.info("account deletion resumed %d durable request(s)", resumed)
 
 
 _apply_migrations()
@@ -126,6 +139,7 @@ _AUTH_EXEMPT = {"/api/health", "/api/auth/config"}
 # is no longer distributed/supported.
 _LEGACY_QUERY_MEDIA = re.compile(
     r"^/api/projects/[^/]+/papers/[^/]+/(?:cover\.png|figures/[^/]+)$")
+_ACCOUNT_DELETION_PATH = "/api/account/deletion"
 
 
 def _query_token_and_redact(request: Request) -> str:
@@ -195,11 +209,33 @@ async def authenticate(request: Request, call_next):
     # copied from this one, so the value propagates down but never leaks back up or sideways into
     # another request. `tests/test_user_settings.py` asserts that propagation over HTTP rather than
     # assuming it. Reset in `finally` because this coroutine's context outlives the response.
-    token = config.set_active_user((request.state.user or {}).get("user_id"))
+    user_id = (request.state.user or {}).get("user_id")
+    request_admitted = False
+    if user_id and request.url.path != _ACCOUNT_DELETION_PATH:
+        try:
+            blocked = account_deletion.is_blocked(user_id)
+        except Exception:
+            return JSONResponse(
+                {"detail": "Account and ownership data is temporarily unavailable."},
+                status_code=503,
+            )
+        if blocked or not config.admit_user_request(user_id):
+            return JSONResponse(
+                {
+                    "detail": "This account is being permanently deleted.",
+                    "code": "account_deletion_in_progress",
+                },
+                status_code=423,
+            )
+        request_admitted = True
+
+    token = config.set_active_user(user_id)
     try:
         return await call_next(request)
     finally:
         config.reset_active_user(token)
+        if request_admitted:
+            config.release_user_request(user_id)
 
 
 # ---------- routers ----------
@@ -207,6 +243,7 @@ async def authenticate(request: Request, call_next):
 # with the use_project dependency via routers.make_project_router). Order among them doesn't
 # matter — every path template is distinct — but all must be registered before the static mount.
 app.include_router(system.router)
+app.include_router(account.router)
 app.include_router(settings.router)
 app.include_router(catalogue.router)
 app.include_router(covers.router)

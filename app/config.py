@@ -202,6 +202,77 @@ _active_project: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _active_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_user", default=None)
 
+# Account deletion closes request and background-job admission before it touches any data. The
+# request counter covers synchronous handlers that were already admitted when deletion won the
+# gate; the coordinator waits for them to leave. Both live here with the project gate because
+# main.py (request writer), jobs.py (background admission), and account_deletion.py (coordinator)
+# all need the same atomic in-process state without importing one another.
+_deleting_users: set[str] = set()
+_active_user_requests: dict[str, int] = {}
+_global_job_drains = 0
+_user_admission_lock = threading.Lock()
+
+
+def admit_user_request(user_id: str) -> bool:
+    """Atomically admit one authenticated request unless account deletion has started."""
+    with _user_admission_lock:
+        if user_id in _deleting_users:
+            return False
+        _active_user_requests[user_id] = _active_user_requests.get(user_id, 0) + 1
+        return True
+
+
+def release_user_request(user_id: str) -> None:
+    with _user_admission_lock:
+        remaining = _active_user_requests.get(user_id, 0) - 1
+        if remaining > 0:
+            _active_user_requests[user_id] = remaining
+        else:
+            _active_user_requests.pop(user_id, None)
+
+
+def mark_user_deleting(user_id: str) -> None:
+    """Close admission for ``user_id``. Idempotent for retries and status requests."""
+    with _user_admission_lock:
+        _deleting_users.add(user_id)
+
+
+def unmark_user_deleting(user_id: str) -> None:
+    """Reopen admission only when persisting the deletion request itself failed."""
+    with _user_admission_lock:
+        _deleting_users.discard(user_id)
+
+
+def user_is_deleting(user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    with _user_admission_lock:
+        return user_id in _deleting_users
+
+
+def begin_global_job_drain() -> None:
+    """Pause new app-global jobs while a deletion drains workers that can touch every project."""
+    global _global_job_drains
+    with _user_admission_lock:
+        _global_job_drains += 1
+
+
+def end_global_job_drain() -> None:
+    global _global_job_drains
+    with _user_admission_lock:
+        _global_job_drains = max(0, _global_job_drains - 1)
+
+
+def global_job_drain_active() -> bool:
+    with _user_admission_lock:
+        return _global_job_drains > 0
+
+
+def active_request_count(user_id: str) -> int:
+    with _user_admission_lock:
+        return _active_user_requests.get(user_id, 0)
+
+
 # Projects mid-deletion. projects.delete_project holds the pid here across its running-job
 # sweep and the directory move; jobs.start_or_join/put and projects.use_project consult it, so
 # no new work is admitted for a project whose directory is about to disappear (a worker
@@ -443,6 +514,11 @@ def user_scope_dir() -> Path | None:
     return None if key is None else APP_STATE_DIR / "users" / key
 
 
+def user_scope_key_for(user_id: str) -> str:
+    """The stable, path-safe pseudonym for one explicit user id."""
+    return hashlib.sha256(user_id.lower().encode()).hexdigest()[:32]
+
+
 def user_scope_key() -> str | None:
     """A stable pseudonym for the active user, or None. The name of their directory above, and the
     scope audio jobs register under.
@@ -460,7 +536,7 @@ def user_scope_key() -> str | None:
     # so `F4A3…` and `f4a3…` are the same account and two different directories — one of them
     # empty. Supabase emits lowercase today; depending on that is the same kind of assumption as
     # depending on an env var being present, and costs nothing to remove.
-    return hashlib.sha256(user_id.lower().encode()).hexdigest()[:32]
+    return user_scope_key_for(user_id)
 
 
 def project_dir() -> Path:

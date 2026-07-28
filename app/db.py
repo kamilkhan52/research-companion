@@ -339,7 +339,13 @@ def migrate() -> list[str]:
 #: the migration ledger lives in the schema Supabase exposes and therefore cannot be trusted to say
 #: what actually ran. `tests/test_tenancy.py` asserts this matches what a fresh migrate produces, so
 #: adding a table without adding it here fails in CI rather than in production.
-_REQUIRED_TABLES = ("rc_project_trash", "rc_projects", "rc_user_settings", "rc_users")
+_REQUIRED_TABLES = (
+    "rc_account_deletions",
+    "rc_project_trash",
+    "rc_projects",
+    "rc_user_settings",
+    "rc_users",
+)
 
 
 def _apply_all(conn, files) -> list[str]:
