@@ -1,14 +1,15 @@
 // A paper figure card in the discussion (R.10): the cached arXiv-HTML figure image, its
 // number + caption, and a subtle source line. Placed inline after the first paragraph that
 // references the figure (see lib/figures.planFigurePlacement + Markdown). The image comes
-// from the app's own authenticated origin (figureAssetUrl carries the ?token + a ?v cache
-// bust), so no CSP concerns. If the image fails to load the card degrades gracefully to
-// caption + source link rather than showing a broken-image box.
+// from the app's own authenticated origin (figureAssetSource carries the Authorization header
+// plus a non-secret ?v cache bust), so no CSP concerns. If the image fails to load, the card
+// degrades gracefully to caption + source link rather than showing a broken-image box.
 
 import { useState } from 'react';
-import { Image, Linking, Pressable, StyleSheet, View } from 'react-native';
+import { Image } from 'expo-image';
+import { Linking, Pressable, StyleSheet, View } from 'react-native';
 
-import { figureAssetUrl } from '@/api/endpoints';
+import { figureAssetSource } from '@/api/endpoints';
 import type { PaperFigure } from '@/api/types';
 import { Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -29,7 +30,7 @@ export function FigureCard({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [failed, setFailed] = useState(false);
-  const uri = figureAssetUrl(pid, slug, figure.asset, version);
+  const source = figureAssetSource(pid, slug, figure.asset, version);
   // Known dimensions keep the layout stable (no reflow when the image loads); otherwise a
   // sensible max height with contain fit.
   const aspectRatio =
@@ -44,9 +45,9 @@ export function FigureCard({
       {!failed ? (
         <Pressable onPress={openSource} accessibilityRole="imagebutton" accessibilityLabel={figure.alt || heading}>
           <Image
-            source={{ uri }}
+            source={source}
             style={[styles.image, aspectRatio ? { aspectRatio } : { height: 220 }]}
-            resizeMode="contain"
+            contentFit="contain"
             onError={() => setFailed(true)}
           />
         </Pressable>

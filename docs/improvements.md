@@ -350,10 +350,13 @@ Smaller, concrete issues found while reading; none are crashing today, all are w
    `allow_origins=["*"]` combined with `allow_credentials=True` is rejected by browsers
    (Starlette silently sends no `Access-Control-Allow-Origin`). Special-case `*` or document
    that it can't be combined with credentials.
-5. **Token in query string.** `?token=` for audio/SSE is pragmatic, but tokens land in
-   server/proxy logs. Mitigate where cheap: short-lived signed media URLs, or at least note
-   it as accepted risk. Related: `settings.json` holds API keys world-readable-by-default —
-   `chmod 600` on write costs one line.
+5. **Migration started 2026-07-28 — token in query string.** Protected mobile covers and figures
+   now attach `Authorization` headers and use a non-secret per-user image-cache namespace; audio
+   already used headers. The backend retains a one-release, GET-only compatibility fallback for
+   the old cover/figure URLs and strips the token from its own access-log scope. Remove that
+   fallback after the updated mobile release is no longer distributed/supported; upstream proxies
+   can still observe a legacy client's original request target. `settings.json` writes are also
+   mode `0600`; neither credential class belongs in a request URL or world-readable file.
 6. **SSRF guard has a resolve/fetch gap.** `_assert_public_url` resolves the host, checks the
    IPs, then httpx re-resolves for the actual fetch — a DNS-rebinding window. Low stakes
    here (read-only fetch, personal deployment), but pinning the resolved IP (custom

@@ -2,7 +2,7 @@
 // configured base, and turns non-2xx responses into a typed ApiError carrying the backend's
 // {detail} message. Streaming (SSE) lives in stream.ts; audio URLs in audio.ts.
 
-import { getBaseUrl, getToken } from './config';
+import { getBaseUrl, getMediaCacheNamespace, getToken } from './config';
 
 export class ApiError extends Error {
   status: number;
@@ -23,6 +23,26 @@ export function apiUrl(path: string): string {
 export function authHeaders(): Record<string, string> {
   const t = getToken();
   return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/** React Native / Expo image source for protected backend media.
+ *
+ * Keep the bearer credential in the Authorization header, never in the URL. URLs are routinely
+ * written to proxy and application access logs; headers remain outside the request target.
+ */
+export function authenticatedMediaSource(path: string): {
+  uri: string;
+  headers: Record<string, string>;
+  cacheKey: string;
+} {
+  const uri = apiUrl(path);
+  return {
+    uri,
+    headers: authHeaders(),
+    // Explicit because iOS and Android image caches do not consistently include request headers
+    // in their cache identity. The namespace is a Supabase user id, never a bearer credential.
+    cacheKey: `${uri}::${getMediaCacheNamespace()}`,
+  };
 }
 
 async function parseError(res: Response): Promise<never> {

@@ -22,7 +22,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { stopPlaybackForSessionEnd } from '@/audio/AudioProvider';
 import { getAuthConfig } from '@/api/endpoints';
-import { setToken, subscribeBaseUrl } from '@/api/config';
+import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
 import { secureSessionStore } from './secureSessionStore';
@@ -201,6 +201,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // so the old client stays subscribed for a moment after the base URL changes; if its refresh
     // lands in that window it would restore the old token on top of the clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    // Change both in-memory request identities before SecureStore yields. Otherwise an account
+    // switch has a window where requests carry B's token but protected images use A's cache key,
+    // placing B's media where a later A session can read it locally.
+    setMediaCacheNamespace(session?.user?.id);
     await setToken(session?.access_token ?? null);
     // Checked AGAIN after the await. `setToken` touches SecureStore, so a callback can pass the
     // first check, pause here, and resume after the base-URL subscriber has retired its client —

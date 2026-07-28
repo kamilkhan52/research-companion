@@ -80,7 +80,7 @@ exactly the shape the **paper cover** feature already solved:
 - Serve via a new project-scoped route mirroring the cover route
   (`GET /api/projects/{pid}/figures/{slug}/{figId}.<ext>` → bytes; a manifest endpoint
   `GET …/figures/{slug}` → JSON). The mobile client builds the image URL the same way
-  `paperCoverImageUrl` does and lets React Native `Image` fetch it. (Markdown's CSP concerns
+  `paperCoverImageSource` does and lets React Native `Image` fetch it. (Markdown's CSP concerns
   don't apply — this is the app's own authenticated origin, not an artifact.)
 
 ### 4. When figures are derived (background, invariant 1)
@@ -160,7 +160,7 @@ fails to load ⇒ the card degrades to caption + source link (no broken-image bo
    tests with injected HTML fixtures.
 2. **[SHIPPED #155]** Serving routes (`app/routers/figures_api.py`: manifest + asset bytes,
    with a current-manifest identity check on the asset route) + `shared/api-types.ts` regen +
-   mobile endpoints (`getPaperFigures`, `figureAssetUrl`).
+   mobile endpoints (`getPaperFigures`, `figureAssetSource`).
 3. **[SHIPPED #156]** Shared reference resolution — `mobile/src/lib/figures.ts`
    (`figureNumbersInText` + `planFigurePlacement`), a pure helper with tests. (The optional
    `sessions.py` cached hint was not needed — render-time resolution against the live manifest

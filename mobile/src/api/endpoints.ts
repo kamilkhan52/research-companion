@@ -1,7 +1,15 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { apiDelete, apiForm, apiGet, apiPatch, apiPost, authHeaders, apiUrl } from './client';
+import {
+  apiDelete,
+  apiForm,
+  apiGet,
+  apiPatch,
+  apiPost,
+  apiUrl,
+  authenticatedMediaSource,
+} from './client';
 import type {
   AudioJob,
   AuthConfig,
@@ -434,16 +442,16 @@ export const backfillCovers = () =>
   apiPost<{ status: string }>('/api/covers/backfill', {});
 
 /** Render status for a paper's first-page cover image. `pending` -> poll again; `ready` ->
- *  load paperCoverImageUrl; `unavailable` -> no fetchable PDF (fall back to an icon). */
+ *  load paperCoverImageSource; `unavailable` -> no fetchable PDF (fall back to an icon). */
 export const getPaperCover = (pid: string, slug: string) =>
   apiGet<{ status: 'ready' | 'pending' | 'unavailable' }>(
     `${P(pid)}/papers/${encodeURIComponent(slug)}/cover`,
   );
 
-/** Absolute, ?token-authed URL for a paper's cached cover PNG (for <Image>). Only meaningful
- *  once getPaperCover reports `ready`; 404s before then. */
-export const paperCoverImageUrl = (pid: string, slug: string): string =>
-  mediaUrl(`${P(pid)}/papers/${encodeURIComponent(slug)}/cover.png`);
+/** Header-authenticated image source for a paper's cached cover PNG. Only meaningful once
+ *  getPaperCover reports `ready`; 404s before then. */
+export const paperCoverImageSource = (pid: string, slug: string) =>
+  authenticatedMediaSource(`${P(pid)}/papers/${encodeURIComponent(slug)}/cover.png`);
 
 // ---------- paper figures (R.10) ----------
 
@@ -453,18 +461,16 @@ export const paperCoverImageUrl = (pid: string, slug: string): string =>
 export const getPaperFigures = (pid: string, slug: string) =>
   apiGet<FigureManifest>(`${P(pid)}/papers/${encodeURIComponent(slug)}/figures`);
 
-/** Absolute, ?token-authed URL for one cached figure image (for <Image>). `version` is the
- *  manifest's fetched_ts — appended so a re-derivation busts the client/image cache. */
-export const figureAssetUrl = (pid: string, slug: string, asset: string, version?: number | null): string => {
-  const base = mediaUrl(`${P(pid)}/papers/${encodeURIComponent(slug)}/figures/${encodeURIComponent(asset)}`);
-  return version ? `${base}${base.includes('?') ? '&' : '?'}v=${version}` : base;
+/** Header-authenticated source for one cached figure image. `version` is the manifest's
+ *  fetched_ts — appended only as a non-secret cache-busting query parameter. */
+export const figureAssetSource = (
+  pid: string,
+  slug: string,
+  asset: string,
+  version?: number | null,
+) => {
+  const versionQuery = version ? `?v=${version}` : '';
+  return authenticatedMediaSource(
+    `${P(pid)}/papers/${encodeURIComponent(slug)}/figures/${encodeURIComponent(asset)}${versionQuery}`,
+  );
 };
-
-/** Absolute URL for a media path (relative like "/api/audio/<hash>.mp3"), with ?token for
- *  the audio player which can't send an Authorization header. */
-export function mediaUrl(relativePath: string): string {
-  const url = apiUrl(relativePath);
-  const auth = authHeaders();
-  const token = auth.Authorization?.replace(/^Bearer\s+/i, '');
-  return token ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : url;
-}

@@ -23,11 +23,14 @@ export const listProjects = jest.fn(async () => ({ projects: [] }));
 export const getRecentSessions = jest.fn(async () => ({ sessions: [] }));
 export const backfillCovers = jest.fn(async () => ({ status: 'running' }));
 export const getPaperCover = jest.fn(async () => ({ status: 'unavailable' as const }));
-export const paperCoverImageUrl = jest.fn(() => '');
+export const paperCoverImageSource = jest.fn(() => ({ uri: '', headers: {} }));
 export const getPaperFigures = jest.fn(async () => ({ status: 'none' as const, figures: [] }));
-export const figureAssetUrl = jest.fn(
+export const figureAssetSource = jest.fn(
   (pid: string, slug: string, asset: string, version?: number | null) =>
-    `https://api.test/fig/${pid}/${slug}/${asset}${version ? `?v=${version}` : ''}`,
+    ({
+      uri: `https://api.test/fig/${pid}/${slug}/${asset}${version ? `?v=${version}` : ''}`,
+      headers: {},
+    }),
 );
 export const createProject = unexpected('createProject');
 export const getProjectState = unexpected('getProjectState');
@@ -73,7 +76,6 @@ export const getGraphAuthors = unexpected('getGraphAuthors');
 export const getRelated = unexpected('getRelated');
 export const startGraphBuild = unexpected('startGraphBuild');
 export const getGraphBuildStatus = unexpected('getGraphBuildStatus');
-export const mediaUrl = jest.fn((path: string) => `https://api.test${path}`);
 export const moveProject = jest.fn(
   async (_pid: string, body: {
     dest_pid: string;

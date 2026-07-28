@@ -27,7 +27,7 @@ export interface FigureContext {
   pid: string;
   slug: string;
   figures: PaperFigure[];
-  /** Manifest fetched_ts, forwarded to figureAssetUrl for cache-busting. */
+  /** Manifest fetched_ts, forwarded to figureAssetSource for cache-busting. */
   version?: number | null;
 }
 

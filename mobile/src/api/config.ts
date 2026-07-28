@@ -15,6 +15,11 @@ const BAKED_BASE_URL: string =
 
 let baseUrl = BAKED_BASE_URL;
 let token: string | null = null;
+// Protected image caches must not use the URL alone as their key: two users can own projects with
+// the same ids/slugs on one device, and a URI-keyed disk cache would then show user A's cover to
+// user B without asking the backend. AuthProvider supplies Supabase's stable, non-secret user id.
+// It is used only inside the native image-cache key and is never added to the request URL.
+let mediaCacheNamespace = 'signed-out';
 let loaded = false;
 
 // Reactive notification so screens/queries re-render when the base URL changes (e.g. the user
@@ -83,6 +88,7 @@ export async function setBaseUrl(raw: string): Promise<void> {
   // leave a window in which `getBaseUrl()` returns the new host while `getToken()` still returns
   // the old token — and audio polling and query timers are firing throughout that window.
   token = null;
+  setMediaCacheNamespace(null);
   serverGeneration += 1;
   notify();
   await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);
@@ -98,10 +104,19 @@ export function getToken(): string | null {
   return token;
 }
 
+export function getMediaCacheNamespace(): string {
+  return mediaCacheNamespace;
+}
+
+export function setMediaCacheNamespace(userId: string | null | undefined): void {
+  mediaCacheNamespace = userId ? `user:${userId}` : 'signed-out';
+}
+
 export async function setToken(value: string | null): Promise<void> {
   // In-memory first and unconditionally: this is what `client.ts` reads on every request, and it
   // must change even if persistence fails.
   token = value;
+  if (!value) setMediaCacheNamespace(null);
   try {
     if (value) await SecureStore.setItemAsync(TOKEN_KEY, value);
     else await SecureStore.deleteItemAsync(TOKEN_KEY);

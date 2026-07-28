@@ -12,7 +12,7 @@
 import { Image } from 'expo-image';
 import { ActivityIndicator, StyleSheet, View, type ViewStyle } from 'react-native';
 
-import { paperCoverImageUrl } from '@/api/endpoints';
+import { paperCoverImageSource } from '@/api/endpoints';
 import { usePaperCover } from '@/api/queries';
 import { useTheme } from '@/theme/ThemeProvider';
 import { Icon } from '@/ui';
@@ -62,7 +62,7 @@ export function PaperCover({
       <View style={[styles.clip, { borderRadius: cornerRadius }]}>
         {ready ? (
           <Image
-            source={{ uri: paperCoverImageUrl(projectId, slug) }}
+            source={paperCoverImageSource(projectId, slug)}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
             contentPosition="top"
