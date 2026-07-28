@@ -4,7 +4,7 @@ import logging
 import time
 
 import pytest
-from app import config, jobs, logging_config
+from app import committer, config, jobs, logging_config
 
 
 @pytest.fixture(autouse=True)
@@ -145,3 +145,28 @@ def test_the_handler_follows_sys_stderr_rather_than_capturing_it(capfd):
         sys.stderr = original
     assert "follows the current stream" in replacement.getvalue()
     assert handler.stream is original
+
+
+def test_committer_log_identifies_commit_without_private_summary(monkeypatch, caplog):
+    """The approved summary belongs in git and the API response, not the hosting log."""
+    _capture(caplog)
+    secret = "private finding about an unpublished result"
+
+    monkeypatch.setattr(committer.store, "title_for", lambda _slug: "Private Paper")
+    monkeypatch.setattr(committer.store, "append_notes_block", lambda *_args: None)
+    monkeypatch.setattr(committer.store, "set_status_read", lambda *_args: None)
+    monkeypatch.setattr(committer.sessions, "finalize_proposal_for_commit", lambda _slug: None)
+    monkeypatch.setattr(committer.sessions, "mark_committed", lambda _slug: None)
+    monkeypatch.setattr(
+        committer,
+        "_git",
+        lambda *args: "abc123" if args == ("rev-parse", "--short", "HEAD") else "",
+    )
+
+    result = committer.commit("private-paper", "## Notes\n\nSensitive.", "", secret)
+
+    assert result["message"] == secret  # still part of the approved project/API contract
+    messages = [record.getMessage() for record in caplog.records
+                if record.name == "rc.committer"]
+    assert messages == ["commit slug=private-paper rev=abc123"]
+    assert secret not in caplog.text

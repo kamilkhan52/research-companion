@@ -264,8 +264,9 @@ to check) and cost awareness.
   a background-thread log is attributable without threading the id through. Log points at the
   single highest-leverage seams: `jobs.JobRegistry` (start/join/done/error + duration — covers
   all five job types at once), `llm` (retry warnings + final failure + catalogue-refresh
-  failure), and `committer.commit` (slug/rev/message). `test_logging` covers the setup, the
-  filter, and that the registry emits lifecycle lines.
+  failure), and `committer.commit` (slug/rev only; human/LLM summaries stay out of operational
+  logs). `test_logging` covers the setup, the filter, lifecycle lines, and the commit-summary
+  privacy boundary.
 - ✅ **DONE (backend)** (branch `quality/usage-tracking`): `app/usage.py` records every LLM
   call's usage from the one seam that sees them all (`llm.complete`/`llm.stream`). Cost is
   requested from OpenRouter directly (`usage.include` → `usage.cost`) rather than a local
