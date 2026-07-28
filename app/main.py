@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import account_deletion, auth, config, db, logging_config
+from . import account_deletion, auth, config, db, deploy_guard, logging_config
 from .auth import AuthError
 from .routers import (
     account,
@@ -105,6 +105,7 @@ def _retry_migrations_until_they_apply() -> None:
 
 def _resume_account_deletions() -> None:
     try:
+        deploy_guard.start()
         resumed = account_deletion.resume_pending()
     except Exception as e:  # noqa: BLE001 — migration retry or the next boot can recover it
         _log.error("account deletion resume failed: %s", type(e).__name__)
@@ -113,7 +114,10 @@ def _resume_account_deletions() -> None:
         _log.info("account deletion resumed %d durable request(s)", resumed)
     account_deletion.start_resume_monitor()
 
-
+# The shared process guard does not depend on the application schema. Acquire it before migrations
+# so even a process retrying failed DDL is visible to a destructive worker on a replacement.
+if db.enabled():
+    deploy_guard.start()
 _apply_migrations()
 
 app = FastAPI(title=config.APP_TITLE)

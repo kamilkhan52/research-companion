@@ -24,7 +24,8 @@ kill_timeout = 300
   RC_PROJECTS_ROOT = "/data/projects"
   RC_APP_STATE_DIR = "/data/.app-state"
   RC_APP_TITLE = "Paradigm (staging)"
-  # Must remain greater than kill_timeout; see the production config.
+  RC_DEPLOY_GUARD_ID = "research-companion-staging"
+  # Must remain greater than kill_timeout; see the production deploy-guard explanation.
   RC_ACCOUNT_DELETION_OVERLAP_S = "310"
 
 [[mounts]]

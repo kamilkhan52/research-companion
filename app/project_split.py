@@ -516,6 +516,7 @@ def split_project(
     *,
     remove_from_source: bool = True,
     goals: str | None = None,
+    provisional_owner_id: str | None = None,
     on_created=None,
 ) -> dict:
     """Move/copy `slugs` from `source_pid` into a new project `name`. Returns
@@ -552,7 +553,13 @@ def split_project(
 
             # Scaffold the new project (takes a pid, not the contextvar) and populate it —
             # inside the locks so the moved snapshot can't drift before the source removal.
-            meta = projects.create_project(name)
+            if provisional_owner_id is None:
+                meta = projects.create_project(name)
+            else:
+                meta = projects.create_project(
+                    name,
+                    provisional_owner_id=provisional_owner_id,
+                )
             new_pid = meta["id"]
             # The new pid is visible in the registry the moment create_project returns, so
             # mark it busy while we populate it: a client that refreshes projects and starts a
@@ -568,9 +575,9 @@ def split_project(
             # Before, because a claim that failed once the papers had already moved would leave
             # them in a project the caller cannot open: not lost, but unreachable, and gone from
             # the source too. Raising here aborts while the source is still intact.
-            if on_created is not None:
-                on_created(new_pid)
             try:
+                if on_created is not None:
+                    on_created(new_pid)
                 if goals:
                     projects.update_meta(new_pid, goals=goals.strip())
                 new_token = config.set_active_project(new_pid)

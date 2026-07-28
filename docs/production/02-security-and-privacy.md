@@ -116,14 +116,20 @@ admission tombstone. It retains only a 128-bit subject pseudonym plus timestamps
 the raw Supabase UUID is cleared. Project-ID rows survive with no owner or content link because
 reusing an ID creates an authorization ABA: an already-authorized request carries the ID string,
 not an incarnation. These rows are therefore security reservations, not retained reading data.
-Each destructive attempt also waits the configured 310-second Fly deployment-overlap window
-(greater than the 300-second `kill_timeout`). A replacement process restarts that wait rather than
-reusing the original request time. The app's steady-state single-Machine invariant plus that rule
-means a retiring process cannot recreate data after removal; the surviving process's request and
-worker registries provide the fine-grained drain. Global job admission stays paused during the
-overlap wait, and a bounded five-second durable rescan picks up requests persisted after a rolling
-replacement's one-time startup scan. Transition-only former ownership from a pre-index worker is
-reconciled only when one concrete trash incarnation is attributable; ambiguity fails closed.
+Each database-backed process holds a deployment-namespaced shared Postgres advisory lock for its
+lifetime (`RC_DEPLOY_GUARD_ID` keeps production and staging independent even on one cluster). A
+destructive attempt releases its own shared lock and acquires the exclusive form, proving that a
+retiring feature-aware process actually disconnected instead of guessing when Fly began its kill
+timer.
+It then also waits the configured 310-second deployment-overlap window (greater than the
+300-second `kill_timeout`) for first-rollout or connection-loss safety. The surviving process's
+request and worker registries provide the fine-grained drain, and global job admission stays
+paused throughout. A bounded five-second durable rescan picks up requests persisted after a rolling
+replacement's one-time startup scan and retries failed attempts with bounded exponential backoff.
+Transition-only former ownership from a pre-index worker is reconciled only when one concrete
+trash incarnation is attributable; ambiguity fails closed. A filesystem provisional-owner marker,
+written before a new/imported/split repository is published and removed only after its DB claim,
+keeps claim-failure content attributable to account deletion even if compensating removal fails.
 Initial deletion authorization uses a recent signed Supabase `amr` user-presence timestamp, not JWT
 `iat`, because automatic token refresh can mint a new access token without reauthentication.
 The remaining user-facing work is the in-app surface, public web request path, H23 configuration,

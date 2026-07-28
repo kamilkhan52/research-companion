@@ -3,12 +3,48 @@ dot-dir skip that keeps trashed projects invisible."""
 import pytest
 from app import config, jobs, projects
 from app.routers import catalogue as catalogue_router
+from app.routers import projects_api
 
 
 @pytest.fixture
 def root(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path)
     return tmp_path
+
+
+def test_provisional_owner_survives_claim_gap_and_bounds_compensation(root):
+    owner = "715ed5db-f090-4b8c-a067-640ecee36aa0"
+    meta = projects.create_project("Pending Claim", provisional_owner_id=owner)
+
+    assert projects.provisionally_owned_projects(owner) == {meta["id"]}
+    with pytest.raises(projects.ProjectError, match="changed"):
+        projects.discard_provisional_project(
+            meta["id"],
+            "11111111-1111-4111-8111-111111111111",
+        )
+    assert projects.exists(meta["id"])
+
+    projects.discard_provisional_project(meta["id"], owner)
+    assert not projects.exists(meta["id"])
+
+
+def test_failed_ownership_claim_removes_the_published_repository(root, monkeypatch):
+    owner = "715ed5db-f090-4b8c-a067-640ecee36aa0"
+    meta = projects.create_project("Claim Failure", provisional_owner_id=owner)
+    monkeypatch.setattr(projects_api.tenancy, "enabled", lambda: True)
+    monkeypatch.setattr(
+        projects_api.tenancy,
+        "claim",
+        lambda _pid, _user: (_ for _ in ()).throw(RuntimeError("database response lost")),
+    )
+
+    with pytest.raises(RuntimeError, match="database response lost"):
+        projects_api._claim_published(
+            meta["id"],
+            {"user_id": owner, "email": "reader@example.com"},
+        )
+
+    assert not projects.exists(meta["id"])
 
 
 @pytest.fixture

@@ -29,8 +29,10 @@ kill_timeout = 300
   RC_PROJECTS_ROOT = "/data/projects"
   RC_APP_STATE_DIR = "/data/.app-state"
   RC_APP_TITLE = "Paradigm"
-  # Must remain greater than kill_timeout. Each destructive attempt waits this full window before
-  # removing files, so a process from a rolling deploy cannot recreate them.
+  # Namespaces the Postgres process guard from staging if both use one Supabase cluster.
+  RC_DEPLOY_GUARD_ID = "research-companion"
+  # Must remain greater than kill_timeout. Postgres advisory locks confirm feature-aware peers
+  # actually disconnected; this is the first-rollout/guard-loss safety window after exclusivity.
   RC_ACCOUNT_DELETION_OVERLAP_S = "310"
 
 # The git-backed project stores and the app-state/audio cache. 20 GB: current real-world usage is

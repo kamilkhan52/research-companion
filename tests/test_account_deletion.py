@@ -5,7 +5,7 @@ import threading
 import time
 
 import pytest
-from app import account_deletion, auth, config, db, jobs, supabase_admin, tenancy
+from app import account_deletion, auth, config, db, deploy_guard, jobs, supabase_admin, tenancy
 from app.jobs import Job, JobRegistry
 from fastapi.responses import StreamingResponse
 from starlette.testclient import TestClient
@@ -63,12 +63,17 @@ def test_transition_owner_adds_one_unindexed_trash_incarnation(monkeypatch):
     monkeypatch.setattr(tenancy, "projects_owned_by", lambda _uid: {"live"})
     monkeypatch.setattr(tenancy, "trash_entries_owned_by", lambda _uid: {"indexed"})
     monkeypatch.setattr(tenancy, "transition_projects_owned_by", lambda _uid: {"legacy-project"})
+    monkeypatch.setattr(
+        account_deletion.projects,
+        "provisionally_owned_projects",
+        lambda _uid: {"provisional"},
+    )
     monkeypatch.setattr(account_deletion.projects, "trashed_project_entries", lambda: [name])
     monkeypatch.setattr(tenancy, "trash_owner_of", lambda _name: None)
 
     live, trash = account_deletion._owned_data(USER_ID)
 
-    assert live == {"live"}
+    assert live == {"live", "provisional"}
     assert trash == {"indexed", name}
 
 
@@ -80,6 +85,11 @@ def test_transition_owner_refuses_ambiguous_unindexed_incarnations(monkeypatch):
     monkeypatch.setattr(tenancy, "projects_owned_by", lambda _uid: set())
     monkeypatch.setattr(tenancy, "trash_entries_owned_by", lambda _uid: set())
     monkeypatch.setattr(tenancy, "transition_projects_owned_by", lambda _uid: {"legacy-project"})
+    monkeypatch.setattr(
+        account_deletion.projects,
+        "provisionally_owned_projects",
+        lambda _uid: set(),
+    )
     monkeypatch.setattr(account_deletion.projects, "trashed_project_entries", lambda: names)
     monkeypatch.setattr(tenancy, "trash_owner_of", lambda _name: None)
 
@@ -270,6 +280,12 @@ def test_deploy_overlap_wait_is_measured_from_each_worker_attempt(monkeypatch):
     assert sleeps == [pytest.approx(0.09)]
 
 
+def test_failed_attempt_retry_delay_is_bounded():
+    assert account_deletion._retry_delay_s(1) == 5
+    assert account_deletion._retry_delay_s(2) == 10
+    assert account_deletion._retry_delay_s(99) == 300
+
+
 def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):
     """Middleware dispatch returns before an SSE body is consumed. The request drain must follow
     the body iterator or account deletion can remove a project under a still-writing stream."""
@@ -332,6 +348,7 @@ def database(monkeypatch):
         )
     db.migrate()
     yield
+    deploy_guard.stop()
     db.close()
 
 
@@ -401,3 +418,33 @@ def test_active_rescan_finds_request_created_after_startup(database, monkeypatch
 
     assert account_deletion.resume_active() == 1
     assert started == [USER_ID]
+
+
+@needs_pg
+def test_active_rescan_retries_due_error_after_identity_response_loss(database, monkeypatch):
+    key = account_deletion.subject_key(USER_ID)
+    with db.pool().connection() as conn:
+        conn.execute(
+            "insert into rc_account_deletions "
+            "(subject_key, user_id, status, attempts, updated_at) "
+            "values (%s, %s, 'error', 2, now() - interval '11 seconds')",
+            (key, USER_ID),
+        )
+    monkeypatch.setattr(supabase_admin, "configured", lambda: True)
+    started: list[str] = []
+    monkeypatch.setattr(account_deletion, "start_worker", lambda uid: started.append(uid) or True)
+
+    assert account_deletion.resume_active() == 1
+    assert started == [USER_ID]
+
+
+@needs_pg
+def test_destructive_guard_takes_database_exclusivity_and_restores_process_guard(database):
+    deploy_guard.start()
+
+    token = deploy_guard.acquire_exclusive()
+    assert token is not None
+    deploy_guard.release_exclusive(token)
+
+    # Idempotent means the release path already restored the shared lifetime lock.
+    assert deploy_guard.start() is False

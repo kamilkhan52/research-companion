@@ -14,17 +14,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import config, db, jobs, logging_config, projects, supabase_admin, tenancy
+from . import config, db, deploy_guard, jobs, logging_config, projects, supabase_admin, tenancy
 
 log = logging_config.get("account-deletion")
 
 DRAIN_POLL_S = 0.1
 DRAIN_TIMEOUT_S = 600.0
 # A Fly deploy can overlap the retiring and replacement processes even though the steady-state
-# deployment has exactly one Machine. Request/job registries are intentionally process-local, so
-# every destructive attempt waits past Fly's 300-second maximum kill_timeout before files can be
-# removed. Any process older than the attempt is then guaranteed gone; the surviving process's
-# ordinary request and worker drains cover everything else.
+# deployment has exactly one Machine. Request/job registries are intentionally process-local.
+# deploy_guard's shared/exclusive advisory lock confirms feature-aware peers disconnected; this
+# additional wait covers the first rollout (whose old process has no guard) and guard-connection
+# loss, after the replacement is already serving or has acquired database exclusivity.
 #
 # Default closed outside dev so a production-like deployment cannot silently omit the setting.
 # fly.toml and fly.staging.toml state the same value beside kill_timeout, where drift is visible.
@@ -155,7 +155,7 @@ def _set_status(
 
 
 def _owned_data(user_id: str) -> tuple[set[str], set[str]]:
-    live = tenancy.projects_owned_by(user_id)
+    live = tenancy.projects_owned_by(user_id) | projects.provisionally_owned_projects(user_id)
     trash = tenancy.trash_entries_owned_by(user_id)
 
     # During the 0004 rolling migration an old process could retire a project after the trigger
@@ -243,11 +243,13 @@ def _wait_for_workers(scopes: set[str | None]) -> None:
 
 
 def _wait_for_prior_deploy_processes() -> None:
-    """Let every process older than this deletion attempt pass Fly's kill deadline.
+    """Cover an unguarded first-rollout peer or a process whose guard connection was lost.
 
-    This is intentionally measured from *each attempt*, not the original tombstone. If a deploy
-    interrupts deletion, the replacement process starts a fresh wait; using ``requested_at`` could
-    otherwise let it delete while the process it is replacing is still inside its overlap window.
+    Feature-aware peers have already disconnected before deploy_guard grants exclusivity. A legacy
+    peer cannot create a deletion tombstone itself, so this attempt can only begin once the new
+    guarded route is serving; a peer that loses its guard is terminated by the watchdog. Measuring
+    a full wait from *each* exclusive attempt covers both without trusting the original request
+    time, and a replacement interrupted here starts the safety window again.
     """
     deadline = time.monotonic() + DEPLOY_OVERLAP_S
     while (remaining := deadline - time.monotonic()) > 0:
@@ -259,6 +261,7 @@ def _run(user_id: str) -> None:
     config.mark_user_deleting(user_id)
     claimed_projects: set[str] = set()
     global_drain = False
+    deployment_guard = None
     phase = "pending"
     try:
         with config.bound_scope(None, user_id):
@@ -274,6 +277,10 @@ def _run(user_id: str) -> None:
             # anything. This is intentionally before the ownership snapshot.
             config.begin_global_job_drain()
             global_drain = True
+            # Every feature-aware process holds the shared form for its lifetime. The exclusive
+            # lock therefore proves retiring peers actually disconnected; the delay below remains
+            # as a first-rollout/guard-loss safety window for a legacy process with no shared lock.
+            deployment_guard = deploy_guard.acquire_exclusive()
             _wait_for_prior_deploy_processes()
             # A replacement process can start this attempt while the retiring one is already in
             # its destructive phase. The retiring process is guaranteed gone by now; if it
@@ -331,12 +338,16 @@ def _run(user_id: str) -> None:
             )
         log.warning("account deletion paused subject=%s error=%s", key, code)
     finally:
-        for pid in claimed_projects:
-            config.unmark_project_deleting(pid)
-        if global_drain:
-            config.end_global_job_drain()
-        with _workers_lock:
-            _workers.discard(key)
+        try:
+            for pid in claimed_projects:
+                config.unmark_project_deleting(pid)
+            if deployment_guard is not None:
+                deploy_guard.release_exclusive(deployment_guard)
+        finally:
+            if global_drain:
+                config.end_global_job_drain()
+            with _workers_lock:
+                _workers.discard(key)
 
 
 def start_worker(user_id: str) -> bool:
@@ -358,32 +369,34 @@ def start_worker(user_id: str) -> bool:
 
 
 def resume_pending() -> int:
-    """Resume every incomplete durable request after a process restart."""
-    if not db.enabled() or not supabase_admin.configured():
-        return 0
-    with db.pool().connection() as conn:
-        rows = conn.execute(
-            "select user_id::text from rc_account_deletions "
-            "where user_id is not null and status <> 'completed'",
-        ).fetchall()
-    for row in rows:
-        start_worker(row[0])
-    return len(rows)
+    """Resume active and due failed requests after a process restart."""
+    return resume_active()
+
+
+def _retry_delay_s(attempts: int) -> float:
+    """Bounded exponential delay for durable error rows; first retry is prompt."""
+    return min(300.0, RESUME_SCAN_S * (2 ** min(max(attempts - 1, 0), 6)))
 
 
 def resume_active() -> int:
-    """Resume newly durable active requests a rolling replacement's startup scan missed."""
+    """Resume active and due failed requests, including post-identity response loss."""
     if not db.enabled() or not supabase_admin.configured():
         return 0
     with db.pool().connection() as conn:
         rows = conn.execute(
-            "select user_id::text from rc_account_deletions "
+            "select user_id::text, status, attempts, "
+            "extract(epoch from (now() - updated_at)) "
+            "from rc_account_deletions "
             "where user_id is not null "
-            "and status in ('pending', 'draining', 'deleting_data', 'deleting_identity')",
+            "and status <> 'completed'",
         ).fetchall()
-    for row in rows:
-        start_worker(row[0])
-    return len(rows)
+    due = [
+        row[0] for row in rows
+        if row[1] != "error" or float(row[3]) >= _retry_delay_s(row[2])
+    ]
+    for user_id in due:
+        start_worker(user_id)
+    return len(due)
 
 
 def start_resume_monitor() -> bool:
