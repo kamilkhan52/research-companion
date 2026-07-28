@@ -282,12 +282,14 @@ def _run(user_id: str) -> None:
             # as a first-rollout/guard-loss safety window for a legacy process with no shared lock.
             deployment_guard = deploy_guard.acquire_exclusive()
             _wait_for_prior_deploy_processes()
+            deploy_guard.assert_exclusive(deployment_guard)
             # A replacement process can start this attempt while the retiring one is already in
             # its destructive phase. The retiring process is guaranteed gone by now; if it
             # completed before exiting, do not repeat the work or regress its completed tombstone.
             current = status_for(user_id)
             if current and current.get("status") == "completed":
                 return
+            deploy_guard.assert_exclusive(deployment_guard)
             project_ids, trash_names = _owned_data(user_id)
 
             # Close project-scoped admission too. This covers system-triggered work that has a
@@ -309,15 +311,20 @@ def _run(user_id: str) -> None:
             phase = "deleting_data"
             _set_status(key, phase)
             for pid in sorted(project_ids):
+                deploy_guard.assert_exclusive(deployment_guard)
                 _remove_tree(projects.project_path(pid))
             for trash_name in sorted(trash_names):
+                deploy_guard.assert_exclusive(deployment_guard)
                 _remove_tree(_trash_path(trash_name))
+            deploy_guard.assert_exclusive(deployment_guard)
             _remove_tree(config.APP_STATE_DIR / "users" / config.user_scope_key_for(user_id))
             jobs.forget_inactive_for_scopes(owned_scopes)
+            deploy_guard.assert_exclusive(deployment_guard)
             _retire_database_rows(user_id)
 
             phase = "deleting_identity"
             _set_status(key, phase)
+            deploy_guard.assert_exclusive(deployment_guard)
             supabase_admin.delete_user(user_id)
 
             _set_status(key, "completed", completed=True)

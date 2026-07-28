@@ -286,6 +286,126 @@ def test_failed_attempt_retry_delay_is_bounded():
     assert account_deletion._retry_delay_s(99) == 300
 
 
+def test_deploy_guard_io_timeout_bounds_blackholed_connection():
+    release = threading.Event()
+
+    class HangingConnection:
+        def execute(self, _query, _params=None):
+            release.wait()
+
+    try:
+        with pytest.raises(TimeoutError, match="deploy-guard-io"):
+            deploy_guard._execute_bounded(
+                HangingConnection(),
+                "select 1",
+                timeout_s=0.01,
+            )
+    finally:
+        release.set()
+
+
+def test_deploy_guard_lock_wait_has_deadline(monkeypatch):
+    class Cursor:
+        def fetchone(self):
+            return (False,)
+
+    class BusyConnection:
+        def execute(self, _query, _params=None):
+            return Cursor()
+
+    monotonic = iter((10.0, 10.0))
+    monkeypatch.setattr(deploy_guard.time, "monotonic", lambda: next(monotonic))
+
+    with pytest.raises(TimeoutError, match="deploy-guard-exclusive"):
+        deploy_guard._wait_for_advisory_lock(
+            BusyConnection(),
+            shared=False,
+            timeout_s=0,
+        )
+
+
+def test_deploy_guard_local_lock_wait_has_deadline(monkeypatch):
+    monkeypatch.setattr(deploy_guard.db, "enabled", lambda: True)
+    deploy_guard._destructive_lock.acquire()
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError, match="deploy-guard-local-exclusive"):
+            deploy_guard.acquire_exclusive(timeout_s=0.01)
+    finally:
+        deploy_guard._destructive_lock.release()
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_exclusive_guard_loss_is_fatal_once(monkeypatch):
+    class LostConnection:
+        def execute(self, _query, _params=None):
+            raise OSError("connection lost")
+
+    drains: list[bool] = []
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(config, "begin_global_job_drain", lambda: drains.append(True))
+    monkeypatch.setattr(
+        deploy_guard.os,
+        "kill",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    lease = deploy_guard.ExclusiveLease(LostConnection())
+
+    with pytest.raises(deploy_guard.DeployGuardLost):
+        deploy_guard.assert_exclusive(lease)
+    with pytest.raises(deploy_guard.DeployGuardLost):
+        deploy_guard.assert_exclusive(lease)
+
+    assert drains == [True]
+    assert signals == [(os.getpid(), deploy_guard.signal.SIGTERM)]
+
+
+def test_exclusivity_lost_in_the_overlap_window_removes_nothing(monkeypatch):
+    """The lease is acquired BEFORE the 310-second overlap wait and proven again after it.
+
+    That gap is the whole point: a lease that died during the wait means some peer could have
+    taken exclusivity and be writing the very trees this attempt is about to `rmtree`. The
+    primitive-level tests above prove `assert_exclusive` raises; this proves `_run` actually
+    consults it, and does so before the first removal rather than after.
+    """
+    class LostConnection:
+        def execute(self, _query, _params=None):
+            raise OSError("connection lost")
+
+    lease = deploy_guard.ExclusiveLease(LostConnection())
+    released: list[object] = []
+    removed: list[object] = []
+    statuses: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(deploy_guard, "acquire_exclusive", lambda **_kw: lease)
+    monkeypatch.setattr(deploy_guard, "release_exclusive", lambda held: released.append(held))
+    # Guard loss is process-fatal by design; keep the signal off the pytest process itself.
+    monkeypatch.setattr(deploy_guard.os, "kill", lambda _pid, _sig: None)
+    monkeypatch.setattr(account_deletion, "_wait_for_prior_deploy_processes", lambda: None)
+    monkeypatch.setattr(account_deletion, "status_for", lambda _uid: None)
+    monkeypatch.setattr(account_deletion, "_owned_data", lambda _uid: ({"alpha"}, {"alpha-trash"}))
+    monkeypatch.setattr(account_deletion, "_remove_tree", lambda path: removed.append(path))
+    monkeypatch.setattr(account_deletion, "_retire_database_rows", lambda _uid: None)
+    monkeypatch.setattr(
+        account_deletion,
+        "_set_status",
+        lambda _key, status, *, error_code=None, **_kw: statuses.append((status, error_code)),
+    )
+
+    # `_terminate_for_guard_loss` opens a drain the terminating process would never close.
+    drains_before = config.global_job_drain_active()
+    try:
+        account_deletion._run(USER_ID)
+    finally:
+        while config.global_job_drain_active() != drains_before:
+            config.end_global_job_drain()
+
+    assert removed == []
+    assert ("error", "draining:DeployGuardLost") in statuses
+    assert released == [lease]
+
+
 def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):
     """Middleware dispatch returns before an SSE body is consumed. The request drain must follow
     the body iterator or account deletion can remove a project under a still-writing stream."""

@@ -120,7 +120,10 @@ Each database-backed process holds a deployment-namespaced shared Postgres advis
 lifetime (`RC_DEPLOY_GUARD_ID` keeps production and staging independent even on one cluster). A
 destructive attempt releases its own shared lock and acquires the exclusive form, proving that a
 retiring feature-aware process actually disconnected instead of guessing when Fly began its kill
-timer.
+timer. Both lock acquisition and every established-session heartbeat have deadlines: a stuck peer
+turns the attempt into a durable retryable error, while a lost shared or exclusive session drains
+job admission and terminates the process. The exclusive lease is heartbeated throughout deletion
+and synchronously revalidated before each destructive boundary.
 It then also waits the configured 310-second deployment-overlap window (greater than the
 300-second `kill_timeout`) for first-rollout or connection-loss safety. The surviving process's
 request and worker registries provide the fine-grained drain, and global job admission stays
