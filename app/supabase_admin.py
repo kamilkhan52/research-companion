@@ -32,8 +32,14 @@ class SupabaseDeleteError(RuntimeError):
 
 
 def configured() -> bool:
-    """Whether both the Auth origin and server-only secret are present."""
-    return bool(auth.SUPABASE_URL and os.environ.get(SECRET_ENV, "").strip())
+    """Whether the server can safely perform the privileged deletion request."""
+    if not auth.SUPABASE_URL or not os.environ.get(SECRET_ENV, "").strip():
+        return False
+    try:
+        _admin_origin()
+    except SupabaseAdminUnavailable:
+        return False
+    return True
 
 
 def _canonical_user_id(user_id: str) -> str:

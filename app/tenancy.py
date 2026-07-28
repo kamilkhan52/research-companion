@@ -122,6 +122,25 @@ def trash_entries_owned_by(owner_id: str) -> set[str]:
     return {row[0] for row in rows}
 
 
+def transition_projects_owned_by(owner_id: str) -> set[str]:
+    """Retired project ids whose old-worker transition owner is ``owner_id``.
+
+    The concrete trash index is authoritative when present. This is the rolling-migration safety
+    net for a pre-0004 worker that cleared ``owner_id`` before it knew how to write
+    ``rc_project_trash``; account deletion must reconcile it against the filesystem before clearing
+    the link.
+    """
+    if not enabled() or not db.is_uuid(owner_id):
+        return set()
+    with db.pool().connection() as conn:
+        rows = conn.execute(
+            "select id from rc_projects "
+            "where deleted_owner_id = %s and deleted_at is not null",
+            (owner_id,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
 def trash_owner_of(trash_name: str) -> str | None:
     """The non-authorizing owner of one concrete recoverable trash entry."""
     if not enabled():

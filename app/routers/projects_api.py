@@ -47,6 +47,29 @@ class PaperPatchReq(BaseModel):
     title_confirmed: bool = False
 
 
+def _owner_id(user: dict | None) -> str | None:
+    owner_id = (user or {}).get("user_id")
+    return owner_id if tenancy.enabled() and owner_id else None
+
+
+def _claim_published(pid: str, user: dict | None) -> None:
+    """Finish provisional publication, compensating the tree if its DB claim fails."""
+    owner_id = _owner_id(user)
+    try:
+        tenancy.claim(pid, user)
+    except Exception:
+        if owner_id:
+            # A failed/ambiguous commit cannot leave private content outside the deletion index.
+            # If removal itself fails, the marker remains and account deletion can still find it.
+            try:
+                projects.discard_provisional_project(pid, owner_id)
+            except projects.ProjectError:
+                pass
+        raise
+    if owner_id:
+        projects.clear_provisional_owner(pid)
+
+
 @router.get("/api/projects")
 def list_projects(request: Request):
     """Only the caller's own projects, once ownership is being recorded.
@@ -120,20 +143,35 @@ def import_project_bundle(
         # claimed as a fix; the real bound needs a streaming limit in middleware.
         raise HTTPException(status_code=413, detail="That bundle is too large to import.")
     data = file.file.read(projects.MAX_BUNDLE_BYTES + 1)
+    user = getattr(request.state, "user", None)
     try:
-        meta = projects.import_bundle(data, name)
+        meta = projects.import_bundle(
+            data,
+            name,
+            provisional_owner_id=_owner_id(user),
+        )
         # Claimed immediately: an imported project with no owner is reachable by NOBODY, so the
         # import would appear to succeed and hand back a project its importer cannot open.
-        tenancy.claim(meta["id"], getattr(request.state, "user", None))
+        _claim_published(meta["id"], user)
     except ProjectError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except tenancy.TenancyError as e:
+        raise HTTPException(
+            status_code=500,
+            detail="The project was imported but its owner could not be recorded.",
+        ) from e
     return meta
 
 
 @router.post("/api/projects")
 def create_project(req: ProjectReq, request: Request):
+    user = getattr(request.state, "user", None)
     try:
-        meta = projects.create_project(req.name, req.method)
+        meta = projects.create_project(
+            req.name,
+            req.method,
+            provisional_owner_id=_owner_id(user),
+        )
     except OwnershipUnavailable as e:
         # 503, not 400: the request was fine and the server could not serve it. A retryable
         # outage reported as a client error sends the user to edit their project name.
@@ -144,7 +182,7 @@ def create_project(req: ProjectReq, request: Request):
     # invisible to its own creator (an unowned project is reachable by nobody), so silently
     # swallowing the failure would hand someone a directory they can never open again.
     try:
-        tenancy.claim(meta["id"], getattr(request.state, "user", None))
+        _claim_published(meta["id"], user)
     except tenancy.TenancyError as e:
         raise HTTPException(
             status_code=500,
@@ -461,13 +499,13 @@ def split_project(pid: str, req: SplitReq, request: Request):
                 detail=f"A background job ({busy}) is running for this project — wait, then split.",
             )
         user = getattr(request.state, "user", None)
-        user = getattr(request.state, "user", None)
         result = project_split.split_project(
             pid, req.name, req.slugs,
             remove_from_source=req.remove_from_source, goals=req.goals,
+            provisional_owner_id=_owner_id(user),
             # Claimed inside the split, before any paper leaves the source — see the callback's
             # comment there for why the ordering matters.
-            on_created=lambda new_pid: tenancy.claim(new_pid, user),
+            on_created=lambda new_pid: _claim_published(new_pid, user),
         )
         dest = result["new_pid"]
         if req.draft_destination_notes or req.cleanup_source_notes:

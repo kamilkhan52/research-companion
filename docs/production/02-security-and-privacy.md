@@ -87,16 +87,16 @@ the server inventory below.
 
 | Store | Data | Current retention | Account-deletion state |
 |---|---|---|---|
-| Supabase Auth | Identity/provider metadata, login credentials/session machinery | Provider-managed; exact retention must be verified | No deletion workflow exists yet |
-| Postgres `rc_users` | Verified Supabase UUID, email, creation time | Indefinite while account exists | Blocked by owned-project `RESTRICT`; must be coordinated |
-| Postgres `rc_projects` / `rc_project_trash` | Project ID, live owner UUID, transition former-owner UUID, concrete trash-directory name and owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion; exact trash entry retained until permanent purge | Active and trashed project incarnations are enumerable by account; tombstone retention after account deletion still needs a rule |
+| Supabase Auth | Identity/provider metadata, login credentials/session machinery | Provider-managed; exact retention must be verified | Deleted last by the durable coordinator; staging verification still requires H23 |
+| Postgres `rc_users` | Verified Supabase UUID, email, creation time | Until completed account deletion | Deleted only after owned filesystem data and attribution rows are purged |
+| Postgres `rc_projects` / `rc_project_trash` | Project ID, live owner UUID, transition former-owner UUID, concrete trash-directory name and owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion; exact trash entry retained until permanent purge | Account deletion removes every owner link and trash row but retains content-free project-ID tombstones as anti-ABA/security records |
 | Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | `ON DELETE CASCADE`, but parent account deletion is absent |
-| Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active repos can be enumerated by owner; no account deletion coordinator |
+| Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active and attributed trashed repositories are permanently removed by the coordinator |
 | Project `.state/` | Session index, discovery results, graph/metadata caches, usage totals, covers, figures, branches/drafts, and transient job state | Indefinite/rebuildable; no general TTL | Removed only when the containing project is permanently removed |
-| `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite; no purge policy | New deletes atomically record the exact directory in `rc_project_trash`; a transition trigger preserves old-worker deletes. Ambiguous legacy entries require an explicit per-directory owner mapping. Permanent account deletion/purge is not implemented |
-| `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
+| `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite until account deletion; no separate TTL yet | Exact attributed entries are permanently removed by account deletion. Ambiguous legacy entries still require explicit per-directory mapping |
+| `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Until account deletion; no separate eviction yet | Removed recursively by account deletion |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
-| In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
+| In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Deletion closes admission, cancels cooperative workers, waits for actual thread/orphan liveness, then purges every owned project and `user:<user-hash>` payload |
 | Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, sanitized error classes/statuses, and a rate-limited raw UUID for allowlist rejection. Commit lifecycle lines contain only slug/revision as of 2026-07-28; older logs may contain full human/LLM summaries with private research content. As of 2026-07-28, OpenRouter, OpenAI speech, Firecrawl, Parallel, and DuckDuckGo response bodies and exception messages are excluded from new operational logs and job-facing errors. Protected mobile media now uses authorization headers. A temporary old-client fallback still accepts query tokens only on cover/figure GETs and removes them from this app's access-log scope, but an upstream proxy can observe the original target; pre-fix staging logs may also contain expired Supabase JWTs | Not configured in this repository | **Launch blocker:** retire the compatibility fallback after the mobile rollout, audit historical log exposure, then confirm retention and deletion capability with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
@@ -111,7 +111,32 @@ later reused. A database trigger preserves the former owner if an old worker run
 release statement during deployment. `scripts/adopt_projects.py` binds that transition owner only
 when exactly one matching directory exists; ambiguous older entries require an explicit repeated
 `--trash-owner <directory>=<owner-uuid>` mapping and are never bulk-assigned to `RC_ADOPT_OWNER`.
-The remaining M2.5 work is the permanent, retryable account-deletion coordinator.
+The M2.5 backend coordinator uses `rc_account_deletions` as both a retry ledger and a durable
+admission tombstone. It retains only a 128-bit subject pseudonym plus timestamps after completion;
+the raw Supabase UUID is cleared. Project-ID rows survive with no owner or content link because
+reusing an ID creates an authorization ABA: an already-authorized request carries the ID string,
+not an incarnation. These rows are therefore security reservations, not retained reading data.
+Each database-backed process holds a deployment-namespaced shared Postgres advisory lock for its
+lifetime (`RC_DEPLOY_GUARD_ID` keeps production and staging independent even on one cluster). A
+destructive attempt releases its own shared lock and acquires the exclusive form, proving that a
+retiring feature-aware process actually disconnected instead of guessing when Fly began its kill
+timer. Both lock acquisition and every established-session heartbeat have deadlines: a stuck peer
+turns the attempt into a durable retryable error, while a lost shared or exclusive session drains
+job admission and terminates the process. The exclusive lease is heartbeated throughout deletion
+and synchronously revalidated before each destructive boundary.
+It then also waits the configured 310-second deployment-overlap window (greater than the
+300-second `kill_timeout`) for first-rollout or connection-loss safety. The surviving process's
+request and worker registries provide the fine-grained drain, and global job admission stays
+paused throughout. A bounded five-second durable rescan picks up requests persisted after a rolling
+replacement's one-time startup scan and retries failed attempts with bounded exponential backoff.
+Transition-only former ownership from a pre-index worker is reconciled only when one concrete
+trash incarnation is attributable; ambiguity fails closed. A filesystem provisional-owner marker,
+written before a new/imported/split repository is published and removed only after its DB claim,
+keeps claim-failure content attributable to account deletion even if compensating removal fails.
+Initial deletion authorization uses a recent signed Supabase `amr` user-presence timestamp, not JWT
+`iat`, because automatic token refresh can mint a new access token without reauthentication.
+The remaining user-facing work is the in-app surface, public web request path, H23 configuration,
+and disposable-account staging verification.
 
 Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
 records operation, model, tokens, cost, timestamps, and pending OpenRouter generation IDs. M3 will
@@ -223,13 +248,14 @@ rules as the privacy policy.
 
 - [x] Preserve exact, non-authorizing former-owner attribution for recoverable `.trash` entries;
       ambiguous legacy directories require explicit per-entry mappings.
-- [ ] Add a permanent account-deletion path that includes active and existing trashed projects.
-- [ ] Decide whether project-ID tombstones survive account deletion and document why they are
+- [x] Add a retry-safe backend account-deletion path that includes active and existing attributed
+      trashed projects; the in-app and public request surfaces remain.
+- [x] Decide whether project-ID tombstones survive account deletion and document why they are
       non-content anti-ABA/security records.
 - [x] Implement and test a narrow server-only Supabase Auth deletion client; the coordinator still
       must call it, and H23 must supply the secret directly to each Fly environment before
       end-to-end verification.
-- [ ] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
+- [x] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
 - [ ] Finish removing reusable bearer tokens from media query strings: protected mobile images

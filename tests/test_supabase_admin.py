@@ -134,6 +134,9 @@ def test_configured_requires_both_values(monkeypatch):
     assert supabase_admin.configured() is True
     monkeypatch.delenv(supabase_admin.SECRET_ENV)
     assert supabase_admin.configured() is False
+    monkeypatch.setenv(supabase_admin.SECRET_ENV, SECRET)
+    monkeypatch.setattr(auth, "SUPABASE_URL", "http://project.supabase.co")
+    assert supabase_admin.configured() is False
 
 
 def test_server_secret_never_enters_the_client_auth_config():

@@ -38,7 +38,7 @@ def two_users(tmp_path, monkeypatch):
     db.close()
     with db.pool().connection() as conn:
         conn.execute(
-            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "drop table if exists rc_account_deletions, rc_project_trash, rc_projects, rc_users, "
             "rc_schema_migrations cascade")
     db.migrate()
 

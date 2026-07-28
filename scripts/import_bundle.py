@@ -86,7 +86,11 @@ def main(argv: list[str]) -> int:
             return 2
 
     try:
-        meta = projects.import_bundle(bundle.read_bytes(), name)
+        meta = projects.import_bundle(
+            bundle.read_bytes(),
+            name,
+            provisional_owner_id=owner if tenancy.enabled() else None,
+        )
     except projects.ProjectError as e:
         print(f"refused: {e}", file=sys.stderr)
         return 1
@@ -95,14 +99,21 @@ def main(argv: list[str]) -> int:
         try:
             tenancy.claim(meta["id"], {"user_id": owner})
         except Exception as e:  # TenancyError, or the database going away mid-import
-            # The directory is already published. Say so precisely rather than "failed": the
-            # content is safe and the fix is one command, but silence here would leave a project
-            # on disk that nobody can open and no message explaining why.
-            print(f"imported as {meta['id']}, but recording the owner failed: {e}\n"
-                  f"    the project is on disk and unreachable until an owner is recorded; "
-                  f"re-run scripts/adopt_projects.py with RC_ADOPT_OWNER={owner}",
-                  file=sys.stderr)
+            try:
+                projects.discard_provisional_project(meta["id"], owner)
+                recovery = "the unpublished project was removed; retry the import"
+            except projects.ProjectError:
+                recovery = (
+                    "compensating removal failed, but its provisional owner marker remains "
+                    "discoverable by account deletion"
+                )
+            print(
+                f"recording the imported project's owner failed ({type(e).__name__})\n"
+                f"    {recovery}",
+                file=sys.stderr,
+            )
             return 1
+        projects.clear_provisional_owner(meta["id"])
 
     print(f"imported as {meta['id']} — {meta['name']}")
     return 0

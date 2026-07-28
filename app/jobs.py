@@ -110,7 +110,7 @@ def _worker_is_active(job: Job) -> bool:
 _ALL_REGISTRIES: list[JobRegistry] = []
 
 
-def any_active_for_scopes(scopes: set[str]) -> str | None:
+def any_active_for_scopes(scopes: set[str | None]) -> str | None:
     """The first registry with a live worker in one of ``scopes``, else None."""
     for reg in _ALL_REGISTRIES:
         with reg.lock:
@@ -123,7 +123,7 @@ def any_active_for_scopes(scopes: set[str]) -> str | None:
     return None
 
 
-def request_cancellation_for_scopes(scopes: set[str]) -> int:
+def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
     """Cooperatively cancel every registry-managed worker in ``scopes``.
 
     Returns how many client-visible running jobs changed to ``cancelled``. Deadline-orphan
@@ -152,7 +152,7 @@ def request_cancellation_for_scopes(scopes: set[str]) -> int:
     return len(cancelled)
 
 
-def forget_inactive_for_scopes(scopes: set[str]) -> None:
+def forget_inactive_for_scopes(scopes: set[str | None]) -> None:
     """Drop retained payloads in ``scopes`` without erasing any live-worker record."""
     for reg in _ALL_REGISTRIES:
         with reg.lock:
@@ -312,6 +312,11 @@ class JobRegistry(Generic[J]):
             # Keep this check under the registry lock: deletion marks the tombstone before
             # sweeping registries, so either this registration wins first and the sweep removes
             # it, or the tombstone wins and registration is refused.
+            if config.user_is_deleting(config.active_user_id()):
+                raise RuntimeError("Account is being deleted; not accepting new jobs.")
+            if pid is None and config.global_job_drain_active():
+                raise RuntimeError(
+                    "Account deletion is draining instance-wide work; not accepting global jobs.")
             if pid is not None and (
                 config.project_is_deleting(pid) or config.project_is_busy(pid)
             ):
@@ -351,6 +356,14 @@ class JobRegistry(Generic[J]):
         # none for an app-global job), while done/error run on the worker thread.
         tag = _log_tag(pid)
         with self._lock:
+            # Atomic with the account-deletion sweep for the same reason the project check below
+            # is atomic with project deletion: either this registration wins and the sweep sees
+            # it, or the user gate wins and admission is refused.
+            if config.user_is_deleting(config.active_user_id()):
+                raise RuntimeError("Account is being deleted; not accepting new jobs.")
+            if pid is None and config.global_job_drain_active():
+                raise RuntimeError(
+                    "Account deletion is draining instance-wide work; not accepting global jobs.")
             # Admission gate for project deletion / an in-progress split of the source: once
             # the pid is tombstoned (delete) or marked busy (split), no new worker may register
             # — its writes would recreate a moved directory or land in files being relocated.
