@@ -310,11 +310,30 @@ def test_a_deleted_project_id_is_never_handed_out_again(two_users, client_as):
 
     # Retired: nobody owns it, and it is not reachable.
     assert tenancy.owner_of(pid) is None
+    assert tenancy.deleted_owner_of(pid) == ALICE
+    assert tenancy.trashed_projects_owned_by(ALICE) == {pid}
     assert client_as(ALICE).get(f"/api/projects/{pid}/state").status_code == 404
 
     # And the id is not available to the next project of the same name — not even to Alice.
     recreated = projects.create_project("Alice Reading")
     assert recreated["id"] != pid, "a deleted project's id was handed out again"
+
+
+@needs_pg
+def test_a_failed_trash_move_restores_live_owner_and_clears_deleted_owner(
+        two_users, monkeypatch):
+    pid = two_users["alice"]
+
+    def fail_move(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(projects.shutil, "move", fail_move)
+    with pytest.raises(OSError, match="disk unavailable"):
+        projects.delete_project(pid)
+
+    assert tenancy.owner_of(pid) == ALICE
+    assert tenancy.deleted_owner_of(pid) is None
+    assert tenancy.trashed_projects_owned_by(ALICE) == set()
 
 
 @needs_pg

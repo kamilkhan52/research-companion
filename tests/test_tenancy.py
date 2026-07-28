@@ -147,6 +147,8 @@ def test_everything_is_a_no_op_without_a_database(monkeypatch):
     tenancy.record_project("x", OWNER)
     assert tenancy.owner_of("x") is None
     assert tenancy.projects_owned_by(OWNER) == set()
+    assert tenancy.deleted_owner_of("x") is None
+    assert tenancy.trashed_projects_owned_by(OWNER) == set()
     with pytest.raises(tenancy.TenancyError):
         tenancy.backfill(OWNER, ["x"])  # backfill is explicit, so silence would be wrong here
 
@@ -644,6 +646,61 @@ def test_release_returns_the_owner_it_just_cleared(database):
     assert tenancy.release("doomed") == OWNER
     assert tenancy.owner_of("doomed") is None          # retired: nobody owns it
     assert tenancy.id_is_recorded("doomed") is True    # but the id stays taken
+    assert tenancy.deleted_owner_of("doomed") == OWNER
+    assert tenancy.trashed_projects_owned_by(OWNER) == {"doomed"}
 
     tenancy.restore("doomed", OWNER)
     assert tenancy.owner_of("doomed") == OWNER
+    assert tenancy.deleted_owner_of("doomed") is None
+    assert tenancy.trashed_projects_owned_by(OWNER) == set()
+
+
+@needs_pg
+def test_record_project_refuses_a_retired_id(database):
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("retired", OWNER)
+    tenancy.release("retired")
+
+    with pytest.raises(tenancy.TenancyError, match="retired"):
+        tenancy.record_project("retired", OWNER)
+
+
+@needs_pg
+def test_trash_backfill_handles_preownership_and_legacy_tombstones(database):
+    tenancy.ensure_user(OWNER)
+    tenancy.ensure_user(OTHER)
+    with db.pool().connection() as conn:
+        # A post-M2, pre-0004 delete: tombstone exists but its former owner was discarded.
+        conn.execute(
+            "insert into rc_projects (id, owner_id, deleted_at) "
+            "values ('legacy-trash', null, now())")
+    tenancy.record_project("other-trash", OTHER)
+    tenancy.release("other-trash")
+    tenancy.record_project("still-live", OWNER)
+
+    result = tenancy.backfill_trashed(
+        OWNER, ["preownership-trash", "legacy-trash", "other-trash", "still-live"])
+
+    assert result["adopted"] == ["legacy-trash", "preownership-trash"]
+    assert result["already_attributed"] == []
+    assert result["attributed_elsewhere"] == ["other-trash"]
+    assert result["not_retired"] == ["still-live"]
+    assert tenancy.trashed_projects_owned_by(OWNER) == {
+        "legacy-trash", "preownership-trash"}
+
+    rerun = tenancy.backfill_trashed(OWNER, ["preownership-trash", "legacy-trash"])
+    assert rerun["adopted"] == []
+    assert rerun["already_attributed"] == ["legacy-trash", "preownership-trash"]
+
+
+@needs_pg
+def test_a_trashed_project_blocks_orphaning_its_former_owner(database):
+    import psycopg
+
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("trashed", OWNER)
+    tenancy.release("trashed")
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db.pool().connection() as conn:
+            conn.execute("delete from rc_users where id = %s", (OWNER,))

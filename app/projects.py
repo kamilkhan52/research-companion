@@ -78,6 +78,7 @@ def slugify(name: str) -> str:
 # trust boundary for EVERY caller that turns an untrusted id into a path: `use_project` (the
 # route pid) and the audio billing `project` both flow through here.
 _PID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_TRASH_ENTRY_RE = re.compile(r"(.+)-\d{8}-\d{6}")
 
 #: A path segment cannot exceed this on any filesystem we run on, so an id longer than it could
 #: never have been a real directory — and accepting one lets a value through this boundary that
@@ -214,6 +215,32 @@ def list_projects() -> list[dict]:
         })
     out.sort(key=lambda p: (not p["favorite"], p.get("created_at") or "", p["name"]))
     return out
+
+
+def trashed_project_ids() -> list[str]:
+    """Safe project ids represented by recoverable `.trash/<pid>-<timestamp>` directories.
+
+    This is an operator/account-deletion enumeration seam, not a project registry: entries remain
+    unreachable through normal APIs. Ignore hand-written or malformed names rather than turning
+    arbitrary directory names into database path identifiers.
+    """
+    trash = config.PROJECTS_ROOT / ".trash"
+    if not trash.is_dir():
+        return []
+    found: set[str] = set()
+    for entry in trash.iterdir():
+        if not entry.is_dir():
+            continue
+        match = _TRASH_ENTRY_RE.fullmatch(entry.name)
+        if not match:
+            continue
+        pid = match.group(1)
+        try:
+            _safe_pid(pid)
+        except ProjectError:
+            continue
+        found.add(pid)
+    return sorted(found)
 
 
 def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[dict]:
@@ -618,10 +645,9 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        # Release the ownership row BEFORE the directory moves, then put it back if the move
-        # fails. Trashing the directory is what frees the id for `_unique_id` to hand out again, so
-        # releasing afterwards leaves a window where the id is available while the old row still
-        # exists — the next project to take it would silently belong to the previous owner.
+        # Retire the ownership row BEFORE the directory moves, then put it back if the move fails.
+        # A retired row permanently reserves the id, and clearing its live owner before the move
+        # also makes the project unreachable as soon as deletion begins.
         #
         # But releasing first alone just trades that for a worse failure: if the move then fails,
         # the project is still on disk and its owner can no longer open it. So the row is restored
@@ -635,8 +661,8 @@ def delete_project(pid: str) -> None:
                 # insert would conflict rather than give the project back to its owner.
                 tenancy.restore(pid, former_owner)
             raise
-        # A later project with the same name can reuse this pid. Do not let terminal in-memory
-        # results/proposals from the deleted project become visible in that new project.
+        # The tombstone prevents this pid from being reused. Still release terminal in-memory
+        # results/proposals now so deleted project content is not retained unnecessarily.
         jobs.forget_finished_for_project(pid)
     finally:
         config.unmark_project_deleting(pid)
