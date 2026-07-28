@@ -128,12 +128,133 @@ def test_pruning_drops_oldest_finished_jobs():
     assert reg.get(ids[-1]) is not None           # newest kept
 
 
+def test_scope_eviction_never_drops_a_worker_that_is_still_unwinding():
+    """`_prune`'s scope cap deletes a cold scope's retained jobs *wholesale*.
+
+    A cancelled job is terminal to the client, but Python cannot kill its thread — it may still be
+    inside the project, and that registry record is the only thing telling deletion to wait. If the
+    cap can evict it, an `rmtree` proceeds under a live writer. Reaching this branch needs more
+    than `_MAX_SCOPES_RETAINED` scopes, which no other test creates.
+    """
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("scope-cap", max_finished=1)
+    try:
+        unwinding = SampleJob(id="unwinding", status="cancelled")
+        setattr(unwinding, jobs._PID_ATTR, "cold-scope")
+        setattr(unwinding, jobs._WORKER_ACTIVE_ATTR, True)
+        with reg.lock:
+            reg.jobs[unwinding.id] = unwinding
+            # Stamped first, so its scope is the COLDEST by settle tick and is therefore the one
+            # the cap chooses to evict. A later tick would make this test pass for free.
+            reg._stamp_settled(unwinding)
+
+            for i in range(jobs._MAX_SCOPES_RETAINED + 1):
+                done = SampleJob(id=f"done-{i}", status="done")
+                setattr(done, jobs._PID_ATTR, f"warm-{i}")
+                setattr(done, jobs._WORKER_ACTIVE_ATTR, False)
+                reg.jobs[done.id] = done
+                reg._stamp_settled(done)
+
+            before = len(reg.jobs)
+            reg._prune()
+            # The cap really did fire; otherwise this asserts nothing.
+            assert len(reg.jobs) < before
+
+        assert unwinding.id in reg.jobs
+        assert jobs.any_active_for_scopes({"cold-scope"}) == "scope-cap"
+    finally:
+        jobs._ALL_REGISTRIES.remove(reg)
+
+
 def test_put_registers_a_terminal_job_without_a_thread():
     reg: JobRegistry[SampleJob] = JobRegistry("t")
     job = SampleJob(id="cached", status="done", value=7)
     reg.put("k", job)
     assert reg.get("cached").value == 7
     assert reg.active_for("k") is None        # a done job isn't "running"
+
+
+def test_cancelled_worker_blocks_project_deletion_until_its_thread_exits():
+    """Cancellation is immediate client state, not proof that the worker has stopped touching
+    files. Project deletion must follow actual thread liveness or it can move the repository while
+    a cancelled worker is still unwinding and let that worker recreate a partial live directory."""
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("cancel-drain")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def work(_job):
+        entered.set()
+        release.wait(5)
+
+    job = reg.start_or_join(
+        "k", lambda: SampleJob(id=new_id()), work, project_id="drain-project")
+    assert entered.wait(2)
+    assert reg.cancel(job.id, project_id="drain-project").status == "cancelled"
+    assert jobs.any_running_for_project("drain-project") == "cancel-drain"
+
+    # A terminal cleanup sweep must not erase the only record that the live worker still exists.
+    jobs.forget_finished_for_project("drain-project")
+    assert job.id in reg.jobs
+
+    release.set()
+    deadline = time.time() + 5
+    while jobs.any_running_for_project("drain-project") and time.time() < deadline:
+        time.sleep(0.01)
+    assert jobs.any_running_for_project("drain-project") is None
+
+    jobs.forget_finished_for_project("drain-project")
+    assert job.id not in reg.jobs
+
+
+def test_scope_drain_cancels_managed_workers_but_keeps_raw_orphans_visible():
+    """Account deletion drains many project and user-audio scopes at once. Managed workers get a
+    cooperative cancellation request; raw deadline orphans cannot be killed, so their liveness
+    record must remain until the owning adapter marks it done."""
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("account-drain")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def work(_job):
+        entered.set()
+        release.wait(5)
+
+    managed = reg.start_or_join(
+        "managed", lambda: SampleJob(id="managed"), work, project_id="project-a")
+    assert entered.wait(2)
+
+    orphan = SampleJob(id="orphan")
+    setattr(orphan, jobs._PID_ATTR, "project-a")
+    reg.jobs[orphan.id] = orphan
+
+    other = SampleJob(id="other")
+    setattr(other, jobs._PID_ATTR, "project-b")
+    reg.jobs[other.id] = other
+
+    assert jobs.request_cancellation_for_scopes({"project-a", "user:abc"}) == 1
+    assert managed.status == "cancelled"
+    assert orphan.status == "running"  # hiding an unkillable thread would make deletion unsafe
+    assert other.status == "running"   # an unrelated account is untouched
+    # Assert the MANAGED worker's own liveness, not just that the scope looks active: the raw
+    # orphan alone satisfies `any_active_for_scopes`, so without this the cancelled-but-unwinding
+    # claim in the docstring would be carried entirely by another test.
+    assert getattr(managed, jobs._WORKER_ACTIVE_ATTR) is True
+    assert jobs.any_active_for_scopes({"project-a"}) == "account-drain"
+
+    release.set()
+    deadline = time.time() + 5
+    while getattr(managed, jobs._WORKER_ACTIVE_ATTR, True) and time.time() < deadline:
+        time.sleep(0.01)
+    orphan.status = "done"  # its external adapter observed the raw thread exit
+    assert jobs.any_active_for_scopes({"project-a"}) is None
+
+    jobs.forget_inactive_for_scopes({"project-a"})
+    assert managed.id not in reg.jobs and orphan.id not in reg.jobs
+    assert other.id in reg.jobs
 
 
 # ---- project isolation ----
