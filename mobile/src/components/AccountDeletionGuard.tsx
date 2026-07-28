@@ -153,7 +153,13 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
 
   if (!deletion) return <>{children}</>;
 
-  const failed = deletion.status === 'error';
+  // `stalled` outranks the instantaneous phase. A deletion that cannot finish spends most of its
+  // time in a RUNNING phase — the resume monitor keeps restarting it — so keying the UI off
+  // `status` alone showed a spinner and "deletion continues safely on the server" forever, to
+  // someone whose data was in fact not going anywhere. That is the one thing this screen must
+  // never say wrongly.
+  const stalled = deletion.stalled;
+  const failed = stalled || deletion.status === 'error';
   return (
     <Screen>
       <View style={{ flex: 1, justifyContent: 'center', padding: space.xl }}>
@@ -164,10 +170,15 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
             <ActivityIndicator color={t.mint} />
           )}
           <Text variant="title" style={{ marginTop: space.lg }}>
-            {failed ? 'Account deletion paused' : 'Deleting your account'}
+            {stalled
+              ? 'Account deletion needs attention'
+              : failed ? 'Account deletion paused' : 'Deleting your account'}
           </Text>
           <Text color={t.muted} style={{ marginTop: space.sm }}>
-            {COPY[deletion.status]}
+            {stalled
+              ? 'This has failed repeatedly and will not finish on its own. Your data has not been '
+                + 'fully removed yet.'
+              : COPY[deletion.status]}
           </Text>
           {!failed ? (
             <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
@@ -177,7 +188,10 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
           ) : (
             <>
               <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
-                No deleted data is restored. Retrying resumes from the last durable step.
+                {stalled
+                  ? 'Retrying is safe and resumes from the last durable step, but this one needs '
+                    + 'the server operator to look at it.'
+                  : 'No deleted data is restored. Retrying resumes from the last durable step.'}
               </Text>
               {retryError ? (
                 <Text variant="caption" color={t.danger} style={{ marginTop: space.md }}>

@@ -307,6 +307,10 @@ export interface AccountDeletion {
   /** Sanitized server phase/code only; never an exception message or user data. */
   error_code: string | null;
   attempts: number;
+  /** Derived server-side: this has failed enough times that it will not finish unaided. Stays true
+   *  while a retry is mid-flight, because the row oscillates between `error` and the running
+   *  phases and the instantaneous status alone cannot tell "stuck" from "working". */
+  stalled: boolean;
   requested_at: string;
   updated_at: string;
   completed_at: string | null;

@@ -32,6 +32,7 @@ beforeEach(async () => {
       status: 'pending',
       error_code: null,
       attempts: 0,
+      stalled: false,
       requested_at: '2026-07-28T00:00:00Z',
       updated_at: '2026-07-28T00:00:00Z',
       completed_at: null,
