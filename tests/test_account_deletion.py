@@ -142,7 +142,10 @@ def _authenticated(monkeypatch):
         lambda _token: {
             "user_id": USER_ID,
             "email": "reader@example.com",
-            "claims": {"iat": int(time.time())},
+            "claims": {
+                "iat": int(time.time()),
+                "amr": [{"method": "oauth", "timestamp": int(time.time())}],
+            },
         },
     )
 
@@ -169,7 +172,7 @@ def test_durable_tombstone_blocks_ordinary_routes_but_allows_status(monkeypatch)
     assert status.json()["deletion"]["status"] == "deleting_identity"
 
 
-def test_start_requires_exact_confirmation_and_recent_session(monkeypatch):
+def test_start_requires_exact_confirmation_and_recent_user_authentication(monkeypatch):
     from app.main import app
 
     _authenticated(monkeypatch)
@@ -196,7 +199,15 @@ def test_start_requires_exact_confirmation_and_recent_session(monkeypatch):
         "check",
         lambda _token: {
             "user_id": USER_ID,
-            "claims": {"iat": int(time.time()) - 301},
+            # A token refresh is recent, but it is not a user-presence event and cannot authorize
+            # irreversible deletion. The original OAuth method is outside the five-minute window.
+            "claims": {
+                "iat": int(time.time()),
+                "amr": [
+                    {"method": "oauth", "timestamp": int(time.time()) - 301},
+                    {"method": "token_refresh", "timestamp": int(time.time())},
+                ],
+            },
         },
     )
     stale = client.post(
@@ -216,6 +227,18 @@ def test_start_requires_exact_confirmation_and_recent_session(monkeypatch):
         "/api/account/deletion", headers=headers, json={"confirmation": "DELETE"},
     )
     assert retry.status_code == 202
+
+
+def test_deploy_overlap_wait_is_measured_from_each_worker_attempt(monkeypatch):
+    monotonic = iter((10.0, 10.11, 10.21))
+    sleeps: list[float] = []
+    monkeypatch.setattr(account_deletion, "DEPLOY_OVERLAP_S", 0.2)
+    monkeypatch.setattr(account_deletion.time, "monotonic", lambda: next(monotonic))
+    monkeypatch.setattr(account_deletion.time, "sleep", sleeps.append)
+
+    account_deletion._wait_for_prior_deploy_processes()
+
+    assert sleeps == [pytest.approx(0.09)]
 
 
 def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):

@@ -10,7 +10,15 @@ from .. import account_deletion
 
 router = APIRouter()
 
-RECENT_SESSION_S = 300
+RECENT_AUTHENTICATION_S = 300
+_USER_PRESENCE_METHODS = frozenset({
+    "email/signup",
+    "magiclink",
+    "oauth",
+    "otp",
+    "password",
+    "totp",
+})
 
 
 class DeleteAccountRequest(BaseModel):
@@ -25,17 +33,32 @@ def _user(request: Request) -> dict:
     return user
 
 
-def _require_recent_session(user: dict) -> None:
-    issued_at = (user.get("claims") or {}).get("iat")
+def _require_recent_authentication(user: dict) -> None:
+    """Require a recent user-presence method, never merely a refreshed access token.
+
+    Supabase access tokens are minted again automatically, so ``iat`` proves token freshness, not
+    that the person reauthenticated. Supabase's signed ``amr`` entries retain the method and its
+    timestamp; ``token_refresh`` is deliberately absent from the allowlist.
+    """
+    methods = (user.get("claims") or {}).get("amr")
     now = int(time.time())
-    if (
-        not isinstance(issued_at, (int, float))
-        or issued_at > now + 60
-        or now - issued_at > RECENT_SESSION_S
-    ):
+    recent = False
+    if isinstance(methods, list):
+        for entry in methods:
+            if not isinstance(entry, dict) or entry.get("method") not in _USER_PRESENCE_METHODS:
+                continue
+            authenticated_at = entry.get("timestamp")
+            if (
+                isinstance(authenticated_at, (int, float))
+                and authenticated_at <= now + 60
+                and now - authenticated_at <= RECENT_AUTHENTICATION_S
+            ):
+                recent = True
+                break
+    if not recent:
         raise HTTPException(
             status_code=401,
-            detail="Refresh your sign-in before permanently deleting this account.",
+            detail="Sign in again before permanently deleting this account.",
         )
 
 
@@ -69,7 +92,7 @@ def delete_account(body: DeleteAccountRequest, request: Request):
             detail="Account deletion status is temporarily unavailable.",
         ) from exc
     if existing is None:
-        _require_recent_session(user)
+        _require_recent_authentication(user)
     try:
         state = account_deletion.request(user["user_id"])
     except account_deletion.AccountDeletionUnavailable as exc:

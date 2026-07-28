@@ -116,6 +116,14 @@ admission tombstone. It retains only a 128-bit subject pseudonym plus timestamps
 the raw Supabase UUID is cleared. Project-ID rows survive with no owner or content link because
 reusing an ID creates an authorization ABA: an already-authorized request carries the ID string,
 not an incarnation. These rows are therefore security reservations, not retained reading data.
+Each destructive attempt also waits the configured 310-second Fly deployment-overlap window
+(greater than the 300-second `kill_timeout`). A replacement process restarts that wait rather than
+reusing the original request time. The app's steady-state single-Machine invariant plus that rule
+means a retiring process cannot recreate data after removal; the surviving process's request and
+worker registries provide the fine-grained drain. Global job admission stays paused during the
+overlap wait. Initial deletion authorization uses a recent signed Supabase `amr` user-presence
+timestamp, not JWT `iat`, because automatic token refresh can mint a new access token without
+reauthentication.
 The remaining user-facing work is the in-app surface, public web request path, H23 configuration,
 and disposable-account staging verification.
 

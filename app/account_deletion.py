@@ -20,6 +20,18 @@ log = logging_config.get("account-deletion")
 
 DRAIN_POLL_S = 0.1
 DRAIN_TIMEOUT_S = 600.0
+# A Fly deploy can overlap the retiring and replacement processes even though the steady-state
+# deployment has exactly one Machine. Request/job registries are intentionally process-local, so
+# every destructive attempt waits past Fly's 300-second maximum kill_timeout before files can be
+# removed. Any process older than the attempt is then guaranteed gone; the surviving process's
+# ordinary request and worker drains cover everything else.
+#
+# Default closed outside dev so a production-like deployment cannot silently omit the setting.
+# fly.toml and fly.staging.toml state the same value beside kill_timeout, where drift is visible.
+DEPLOY_OVERLAP_S = float(os.environ.get(
+    "RC_ACCOUNT_DELETION_OVERLAP_S",
+    "0" if config.is_dev_env() else "310",
+))
 
 _workers: set[str] = set()
 _workers_lock = threading.Lock()
@@ -200,6 +212,18 @@ def _wait_for_workers(scopes: set[str | None]) -> None:
         time.sleep(DRAIN_POLL_S)
 
 
+def _wait_for_prior_deploy_processes() -> None:
+    """Let every process older than this deletion attempt pass Fly's kill deadline.
+
+    This is intentionally measured from *each attempt*, not the original tombstone. If a deploy
+    interrupts deletion, the replacement process starts a fresh wait; using ``requested_at`` could
+    otherwise let it delete while the process it is replacing is still inside its overlap window.
+    """
+    deadline = time.monotonic() + DEPLOY_OVERLAP_S
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(DRAIN_POLL_S, remaining))
+
+
 def _run(user_id: str) -> None:
     key = subject_key(user_id)
     config.mark_user_deleting(user_id)
@@ -214,8 +238,13 @@ def _run(user_id: str) -> None:
             # create/delete/split request can change both ownership sets; capturing before this
             # drain would permanently miss the project or trash incarnation it publishes.
             _wait_for_requests(user_id)
+            # `is_blocked()` closes admission durably on every process, but a request admitted by a
+            # retiring Fly process just before the tombstone is visible only to that process's
+            # counter. Let Fly's configured kill window retire it before enumerating or deleting
+            # anything. This is intentionally before the ownership snapshot.
             config.begin_global_job_drain()
             global_drain = True
+            _wait_for_prior_deploy_processes()
             project_ids, trash_names = _owned_data(user_id)
 
             # Close project-scoped admission too. This covers system-triggered work that has a
