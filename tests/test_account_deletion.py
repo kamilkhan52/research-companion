@@ -315,6 +315,46 @@ def test_recover_shared_gives_up_when_the_lock_is_genuinely_held(monkeypatch):
     assert attempts["n"] > 0
 
 
+def test_a_repeatedly_failing_deletion_is_reported_as_stalled_not_running():
+    """The row oscillates between `error` and the running phases forever, so the instantaneous
+    status cannot distinguish "stuck" from "working" — which is why the client showed a spinner and
+    "continues safely on the server" to someone whose data was going nowhere."""
+    assert account_deletion._is_stalled("error", account_deletion.STALL_ATTEMPTS) is True
+    # Mid-retry: still stalled. This is the case the whole flag exists for.
+    assert account_deletion._is_stalled("draining", account_deletion.STALL_ATTEMPTS) is True
+    assert account_deletion._is_stalled("error", account_deletion.STALL_ATTEMPTS - 1) is False
+    # A finished deletion is never stalled, however many attempts it took to get there.
+    assert account_deletion._is_stalled("completed", 99) is False
+
+    # The threshold is the point where the backoff has saturated, so a stalled row really is
+    # retrying on a flat interval rather than still backing off toward one.
+    assert account_deletion._retry_delay_s(account_deletion.STALL_ATTEMPTS) >= 160
+
+
+def test_a_stall_is_announced_once_and_again_only_if_it_recurs(caplog):
+    """Retries continue forever, so a per-scan log line would bury the signal it is meant to be."""
+    account_deletion._alerted_stalled.discard(USER_ID)
+    try:
+        with caplog.at_level("ERROR", logger="rc.account-deletion"):
+            for _ in range(3):
+                account_deletion._alert_if_stalled(
+                    USER_ID, "error", account_deletion.STALL_ATTEMPTS)
+        stalls = [r for r in caplog.records if "STALLED" in r.getMessage()]
+        assert len(stalls) == 1
+        # The raw user id must not reach the log; the subject key is the safe handle.
+        assert USER_ID not in stalls[0].getMessage()
+        assert account_deletion.subject_key(USER_ID) in stalls[0].getMessage()
+
+        caplog.clear()
+        # Recovered, then stalled again: the operator must hear about the second one.
+        account_deletion._alert_if_stalled(USER_ID, "draining", 1)
+        with caplog.at_level("ERROR", logger="rc.account-deletion"):
+            account_deletion._alert_if_stalled(USER_ID, "error", account_deletion.STALL_ATTEMPTS)
+        assert len([r for r in caplog.records if "STALLED" in r.getMessage()]) == 1
+    finally:
+        account_deletion._alerted_stalled.discard(USER_ID)
+
+
 def test_every_pre_persistence_refusal_returns_the_same_detail(monkeypatch):
     """The mobile client matches this exact string to decide it is safe to clear its local
     deletion marker, so the match has to be COMPLETE, not merely correct today.

@@ -147,6 +147,33 @@ test('a background deletion poll does not tear the app down', async () => {
   await view.unmountAsync();
 });
 
+test('a deletion that cannot finish stops claiming it is in progress', async () => {
+  // The resume monitor keeps restarting a stalled deletion, so it spends most of its life in a
+  // RUNNING phase. Keyed off `status` alone the user saw a spinner and "deletion continues safely
+  // on the server" indefinitely, while their data sat there — the one thing this screen must not
+  // get wrong. `stalled` is reported alongside the phase precisely so the UI can outrank it.
+  mockAuthState = { ...mockAuthState, status: 'signed-in', userId: 'user-d' };
+  jest.mocked(api.getAccountDeletion).mockResolvedValue({
+    deletion: {
+      status: 'draining',          // mid-retry: the misleading case
+      error_code: 'draining:RuntimeError',
+      attempts: 6,
+      stalled: true,
+      requested_at: '2026-07-28T00:00:00Z',
+      updated_at: '2026-07-28T00:05:00Z',
+      completed_at: null,
+    },
+  });
+
+  const view = await renderGate();
+  await waitFor(() => expect(view.getByText('Account deletion needs attention')).toBeTruthy());
+  expect(view.queryByText('Deleting your account')).toBeNull();
+  expect(view.queryByText(/continues safely on the server/)).toBeNull();
+  // The recovery affordance must still be there — it is safe and resumes from the durable step.
+  expect(view.getByText('Retry deletion')).toBeTruthy();
+  await view.unmountAsync();
+});
+
 test('a forbidden account is told so, and offered the one action that helps', async () => {
   // Found on a device pass: a second Supabase account signed in fine but was not in
   // `RC_ALLOWED_USERS`, so every /api call 403'd. The guard has no cached answer for a new user,
@@ -214,6 +241,7 @@ test('deletion status is fetched fresh and isolated across account changes', asy
           status: 'draining',
           error_code: null,
           attempts: 1,
+          stalled: false,
           requested_at: '2026-07-28T00:00:00Z',
           updated_at: '2026-07-28T00:00:01Z',
           completed_at: null,
@@ -372,6 +400,7 @@ test('a durable deletion resumes before ordinary app consumers mount', async () 
       status: 'draining',
       error_code: null,
       attempts: 1,
+      stalled: false,
       requested_at: '2026-07-28T00:00:00Z',
       updated_at: '2026-07-28T00:00:01Z',
       completed_at: null,
@@ -390,6 +419,7 @@ test('a paused deletion retries without requiring a now-impossible Auth refresh'
     status: 'error' as const,
     error_code: 'deleting_identity:upstream',
     attempts: 1,
+    stalled: false,
     requested_at: '2026-07-28T00:00:00Z',
     updated_at: '2026-07-28T00:00:01Z',
     completed_at: null,

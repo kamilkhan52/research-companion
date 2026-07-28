@@ -50,6 +50,29 @@ def subject_key(user_id: str) -> str:
     return config.user_scope_key_for(user_id)
 
 
+# The attempt at which `_retry_delay_s` saturates at its 300-second cap. Reaching it means roughly
+# five minutes of consecutive failures, which is long past any blip the retry loop can absorb on its
+# own — so it is the honest point to stop calling this "in progress".
+#
+# Deliberately a count, not a list of terminal error codes. A list would have to be kept in step
+# with every failure the coordinator can raise, and would go stale silently; "it has failed six
+# times and is not recovering" needs no maintenance and cannot be wrong about a code nobody
+# classified yet. `ambiguous-transition-trash` is the case this was written for — it needs an
+# operator to disambiguate a legacy trash directory and will never succeed unaided — but a wedged
+# Supabase key or a permanently unreachable database land here too, which is correct.
+STALL_ATTEMPTS = 6
+
+
+def _is_stalled(status: str | None, attempts: int | None) -> bool:
+    """Whether this deletion has stopped making progress on its own.
+
+    Note it stays true while a retry is mid-flight (`status` back to `draining`). That is the point:
+    the row oscillates between `error` and the running phases forever, and reporting only the
+    instantaneous phase is exactly why "stuck" and "running" were indistinguishable to the client.
+    """
+    return (attempts or 0) >= STALL_ATTEMPTS and status != "completed"
+
+
 def _public_row(row) -> dict | None:
     if row is None:
         return None
@@ -64,6 +87,9 @@ def _public_row(row) -> dict | None:
         "requested_at": rendered(row[3]),
         "updated_at": rendered(row[4]),
         "completed_at": rendered(row[5]),
+        # Derived, not stored: it is a reading of `attempts`, and a column would be a second copy
+        # of that fact able to disagree with it.
+        "stalled": _is_stalled(row[0], row[2]),
     }
 
 
@@ -380,6 +406,34 @@ def resume_pending() -> int:
     return resume_active()
 
 
+_alerted_stalled: set[str] = set()
+
+
+def _alert_if_stalled(user_id: str, status: str | None, attempts: int | None) -> None:
+    """Say once, loudly, that a deletion needs a human. Retries continue either way.
+
+    There is nowhere else this surfaces. A stalled deletion keeps flipping between `error` and the
+    running phases, so it looks like work in progress in every log line the coordinator already
+    emits — and the account stays permanently 423'd meanwhile. Google's policy requires deletion to
+    actually happen, so silence here is a compliance failure that nobody would notice.
+
+    Deduplicated per process rather than durably, on purpose. A restart re-announcing an unresolved
+    stall is the correct behaviour, not noise: it is still true, and a fresh boot is exactly when an
+    operator is looking. Single worker (invariant 6), so one set is the whole story.
+    """
+    if not _is_stalled(status, attempts):
+        _alerted_stalled.discard(user_id)   # recovered; let it announce again if it re-stalls
+        return
+    if user_id in _alerted_stalled:
+        return
+    _alerted_stalled.add(user_id)
+    log.error(
+        "account deletion STALLED subject=%s attempts=%s status=%s — retries continue but will "
+        "not succeed unaided; operator action required",
+        subject_key(user_id), attempts, status,
+    )
+
+
 def _retry_delay_s(attempts: int) -> float:
     """Bounded exponential delay for durable error rows; first retry is prompt."""
     return min(300.0, RESUME_SCAN_S * (2 ** min(max(attempts - 1, 0), 6)))
@@ -397,6 +451,8 @@ def resume_active() -> int:
             "where user_id is not null "
             "and status <> 'completed'",
         ).fetchall()
+    for row in rows:
+        _alert_if_stalled(row[0], row[1], row[2])
     due = [
         row[0] for row in rows
         if row[1] != "error" or float(row[3]) >= _retry_delay_s(row[2])
