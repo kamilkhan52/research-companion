@@ -25,21 +25,45 @@ import { getAuthConfig } from '@/api/endpoints';
 import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
+import {
+  clearAccountDeleted,
+  clearAccountDeletionIntent,
+  clearDeletedAccountStorage,
+  hasAccountDeleted,
+  hasAccountDeletionIntent,
+  markAccountDeleted,
+  markAccountDeletionIntent,
+} from './accountCleanup';
 import { secureSessionStore } from './secureSessionStore';
 
 /** `unknown` until /api/auth/config answers — the app must not decide it is signed out while it
  *  still does not know whether auth is even on. */
-export type AuthStatus = 'unknown' | 'disabled' | 'signed-out' | 'signed-in' | 'unreachable';
+export type AuthStatus =
+  | 'unknown'
+  | 'disabled'
+  | 'signed-out'
+  | 'signed-in'
+  | 'unreachable'
+  | 'cleanup-required';
 
 interface AuthState {
   status: AuthStatus;
   /** Non-null only in supabase mode once config has loaded. */
   mode: AuthConfig['mode'] | null;
+  /** Stable Supabase subject used to isolate user-scoped client caches. */
+  userId: string | null;
   email: string | null;
   error: string | null;
   signInWithGoogle: () => Promise<void>;
   /** True when Supabase accepted the email and the UI may advance to "check your inbox". */
   signInWithMagicLink: (email: string) => Promise<boolean>;
+  /** Establish recent user presence before the first irreversible deletion request. */
+  reauthenticateForDeletion: () => Promise<'authenticated' | 'email-sent' | 'cancelled'>;
+  /** Remove the deleted identity's session and account-linked device state without a server call. */
+  finishAccountDeletion: () => Promise<void>;
+  /** True until the user acknowledges that their account was deleted. */
+  accountDeleted: boolean;
+  dismissAccountDeleted: () => void;
   signOut: () => Promise<void>;
   retry: () => void;
 }
@@ -104,6 +128,10 @@ async function consumePendingSignIn(): Promise<boolean> {
   const pending = await SecureStore.getItemAsync(PENDING_SIGN_IN_KEY).catch(() => null);
   if (pending) await SecureStore.deleteItemAsync(PENDING_SIGN_IN_KEY).catch(() => {});
   return Boolean(pending);
+}
+
+async function clearPendingSignIn(): Promise<void> {
+  await SecureStore.deleteItemAsync(PENDING_SIGN_IN_KEY).catch(() => {});
 }
 
 /** A storage key unique per Supabase project, by construction.
@@ -178,12 +206,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** Mirrors `status` for comparisons that must not live inside a setState updater. */
   const statusRef = useRef<AuthStatus>('unknown');
   const [mode, setMode] = useState<AuthConfig['mode'] | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const queryClient = useQueryClient();
   const client = useRef<SupabaseClient | null>(null);
   /** A callback URL that arrived before the Supabase client existed (cold start). */
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const pendingUrl = useRef<string | null>(null);
   /** Bumped when a client becomes available, so the deep-link effect can replay. */
   const [clientReady, setClientReady] = useState(0);
@@ -191,6 +221,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    *  refresh completing on a REPLACED client cannot write its token back after we cleared it —
    *  which, on a server switch, would send the old project's JWT to the new host. */
   const generation = useRef(0);
+
+  /** Local deletion recovery must not depend on a restorable Supabase session or reachable API. */
+  const recoverLocalDeletion = useCallback(async (): Promise<'none' | 'cleared' | 'failed'> => {
+    // Read before the early return: a cold start on a device whose deletion already completed has
+    // no intent marker left, and must still show the acknowledgement.
+    if (await hasAccountDeleted().catch(() => false)) setAccountDeleted(true);
+    if (!(await hasAccountDeletionIntent().catch(() => false))) return 'none';
+    queryClient.clear();
+    let failed = false;
+    try {
+      await stopPlaybackForSessionEnd({ failClosed: true });
+    } catch {
+      failed = true;
+    }
+    try {
+      await clearDeletedAccountStorage();
+    } catch {
+      failed = true;
+    }
+    if (failed) {
+      // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
+      setError(
+        'Some deleted-account data could not be cleared from this device. '
+        + 'Clear the app’s data before another person uses it.',
+      );
+      return 'failed';
+    }
+    try {
+      await clearAccountDeletionIntent();
+    } catch {
+      setError(
+        'Some deleted-account data could not be cleared from this device. '
+        + 'Clear the app’s data before another person uses it.',
+      );
+      return 'failed';
+    }
+    return 'cleared';
+  }, [queryClient]);
 
   /** The one place a session becomes an API token. Every path that changes the session — restore,
    *  sign-in, refresh, sign-out — goes through here, because `src/api/client.ts` reads the token
@@ -211,6 +279,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    if (!session) {
+      // Auth identity deletion can make refresh impossible before the app next opens. The local
+      // intent is therefore an independent recovery signal: purge private device state even when
+      // no JWT remains with which to observe the server's completed tombstone.
+      const recovery = await recoverLocalDeletion();
+      if (recovery === 'failed') {
+        setUserId(null);
+        setEmail(null);
+        statusRef.current = 'cleanup-required';
+        setStatus('cleanup-required');
+        return;
+      }
+    }
+    if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    setUserId(session?.user?.id ?? null);
     setEmail(session?.user?.email ?? null);
     const next = session?.access_token ? 'signed-in' : 'signed-out';
     // Compared against a ref, not inside the setState updater. React may invoke an updater more
@@ -222,7 +305,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
     statusRef.current = next;
     setStatus(next);
-  }, []);
+  }, [queryClient, recoverLocalDeletion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -243,13 +326,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // Distinct from signed-out: the server may be down or the URL wrong. Telling the user to
         // sign in would be a lie, and would hide the actual problem behind a login form.
-        if (!cancelled) setStatus('unreachable');
+        if (!cancelled) {
+          const recovery = await recoverLocalDeletion();
+          setStatus(recovery === 'failed' ? 'cleanup-required' : 'unreachable');
+        }
         return;
       }
       if (cancelled) return;
       setMode(config.mode);
 
       if (!config.enabled) {
+        // A server switch can land here after an ambiguous deletion POST on the previous server.
+        // The non-identifying intent is device-global and must win before this early return mounts
+        // an auth-disabled app around account-linked drafts or protected media caches.
+        const recovery = await recoverLocalDeletion();
+        if (recovery === 'failed') {
+          if (!cancelled) setStatus('cleanup-required');
+          return;
+        }
         await setToken(null);
         if (!cancelled) setStatus('disabled');
         return;
@@ -257,6 +351,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Both values are required: mode() keys off the URL alone server-side, so a missing anon key
       // still reports "supabase" while leaving the client unable to construct anything.
       if (config.mode !== 'supabase' || !config.supabase_url || !config.supabase_anon_key) {
+        const recovery = await recoverLocalDeletion();
+        if (recovery === 'failed') {
+          if (!cancelled) setStatus('cleanup-required');
+          return;
+        }
         if (!cancelled) setStatus('signed-out');
         return;
       }
@@ -298,12 +397,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const message = await completeFromUrl(parked);
         if (!cancelled && message) setError(message);
       }
-    })().catch((caught) => {
+    })().catch(async (caught) => {
       // Without this the app sits on the loading spinner forever with no message: `status` never
       // leaves 'unknown', and an unhandled rejection in a fire-and-forget async IIFE is invisible.
       if (cancelled) return;
-      setError(caught instanceof Error ? caught.message : 'Could not start sign-in.');
-      setStatus('unreachable');
+      const recovery = await recoverLocalDeletion();
+      if (recovery === 'none') {
+        setError(caught instanceof Error ? caught.message : 'Could not start sign-in.');
+      }
+      setStatus(
+        recovery === 'failed'
+          ? 'cleanup-required'
+          : recovery === 'cleared' ? 'signed-out' : 'unreachable',
+      );
     });
 
     return () => {
@@ -314,7 +420,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       client.current?.auth.stopAutoRefresh();
       client.current = null;
     };
-  }, [adoptSession, attempt]);
+  }, [adoptSession, attempt, recoverLocalDeletion]);
 
   // Pointing the app at a different server means a different Supabase project, and a JWT minted
   // by the old project is meaningless to the new one — worse, sending it there hands a bearer
@@ -429,11 +535,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       options: { redirectTo: redirectUri(), skipBrowserRedirect: true },
     });
     if (oauthError || !data?.url) {
+      await clearPendingSignIn();
       setError(oauthError?.message ?? 'Could not start Google sign-in.');
       return;
     }
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
-    if (result.type !== 'success') return;  // user dismissed; not an error worth showing
+    if (result.type !== 'success') {
+      await clearPendingSignIn();
+      return;  // user dismissed; not an error worth showing
+    }
     const message = await completeFromUrl(result.url);
     if (message) setError(message);
   }, [completeFromUrl]);
@@ -476,13 +586,158 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [adoptSession]);
 
+  const reauthenticateForDeletion = useCallback(async () => {
+    setError(null);
+    const supabase = client.current;
+    const mine = generation.current;
+    if (!supabase) throw new Error('Your sign-in session is unavailable.');
+
+    const current = (await supabase.auth.getSession()).data.session;
+    if (!current || current.user.id !== userId) {
+      throw new Error('Your sign-in session changed. Return to Settings and try again.');
+    }
+    const lastSignIn = Date.parse(current.user.last_sign_in_at ?? '');
+    const signInAge = Date.now() - lastSignIn;
+    // Stay comfortably inside the backend's five-minute AMR window so network/UI latency cannot
+    // turn a client-approved destructive action into a confusing 401.
+    if (Number.isFinite(lastSignIn) && signInAge >= -60_000 && signInAge < 4 * 60 * 1000) {
+      await adoptSession(current, mine);
+      return 'authenticated';
+    }
+
+    const providers = current.user.app_metadata?.providers;
+    const provider = current.user.app_metadata?.provider;
+    const usesGoogle = provider === 'google'
+      || (Array.isArray(providers) && providers.includes('google'));
+    if (!usesGoogle) {
+      if (!current.user.email) throw new Error('This account has no verified email address.');
+      await markSignInPending();
+      const { error: otpError } = await supabase.auth.signInWithOtp({
+        email: current.user.email,
+        options: { emailRedirectTo: redirectUri() },
+      });
+      if (otpError) {
+        await clearPendingSignIn();
+        throw new Error(otpError.message);
+      }
+      return 'email-sent';
+    }
+
+    await markSignInPending();
+    const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUri(),
+        skipBrowserRedirect: true,
+        // Google documents select_account as an explicit authentication prompt. It prevents an
+        // automatic refresh/cookie redirect from being mistaken for recent user presence.
+        queryParams: { prompt: 'select_account' },
+      },
+    });
+    if (oauthError || !data?.url) {
+      await clearPendingSignIn();
+      throw new Error(oauthError?.message ?? 'Could not confirm your Google account.');
+    }
+    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
+    if (result.type !== 'success') {
+      await clearPendingSignIn();
+      return 'cancelled';
+    }
+    const message = await completeFromUrl(result.url);
+    if (message) throw new Error(message);
+    const verified = (await supabase.auth.getSession()).data.session;
+    if (!verified || verified.user.id !== userId) {
+      // The provider chooser may select another Google account. Never reinterpret confirmation
+      // for account A as authorization to delete B.
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+      await adoptSession(null, mine);
+      throw new Error('Choose the same Google account that is signed in to Paradigm.');
+    }
+    const verifiedSignInAge = Date.now() - Date.parse(verified.user.last_sign_in_at ?? '');
+    if (
+      !Number.isFinite(verifiedSignInAge)
+      || verifiedSignInAge < -60_000
+      || verifiedSignInAge >= 4 * 60 * 1000
+    ) {
+      throw new Error('Google did not confirm a recent sign-in. Try again.');
+    }
+    await adoptSession(verified, mine);
+    return 'authenticated';
+  }, [adoptSession, completeFromUrl, userId]);
+
+  const finishAccountDeletion = useCallback(async () => {
+    setError(null);
+    let failure: string | null = null;
+    // Write the marker HERE too, not only on the device that tapped delete. The whole fail-closed
+    // design downstream — keep the marker, retry on the next launch, block the app if cleanup is
+    // still owed — rests on it existing, and `delete-account.tsx` was the only writer. A SECOND
+    // signed-in device learns about the deletion by polling instead, so if its cleanup then failed
+    // there was nothing to retry from: `recoverLocalDeletion()` reported 'none', the app went to a
+    // plain signed-out state, and the deleted user's drafts, active project, playback snapshot and
+    // image cache stayed on that device behind one dismissible warning.
+    //
+    // Marking before attempting anything is the correct order: an unnecessary marker costs one
+    // redundant purge, a missing one costs silent retention.
+    try {
+      await markAccountDeletionIntent();
+    } catch {
+      // Best effort. Failing to mark must not stop the cleanup it exists to make retryable.
+    }
+    try {
+      await stopPlaybackForSessionEnd({ failClosed: true });
+    } catch {
+      failure = 'Private playback could not be stopped.';
+    }
+    try {
+      await clearDeletedAccountStorage();
+    } catch {
+      // Keep the local intent marker so a later signed-out launch retries cleanup.
+      failure = 'Some account-linked data could not be cleared from this device.';
+    }
+    if (!failure) {
+      try {
+        await clearAccountDeletionIntent();
+      } catch {
+        failure = 'Some account-linked data could not be cleared from this device.';
+      }
+    }
+    // The account is gone server-side whether or not the local purge succeeded, so record the
+    // acknowledgement here rather than on the success path only. `cleanup-required` takes priority
+    // in AuthGate, so a failed purge still shows its own screen first and this surfaces after.
+    await markAccountDeleted().catch(() => {});
+    setAccountDeleted(true);
+    // Identity deletion already happened server-side. A normal/global sign-out would now make an
+    // unnecessary Auth request against an account that no longer exists; local scope removes the
+    // persisted Supabase session and refresh token from this device only.
+    try {
+      const result = await client.current?.auth.signOut({ scope: 'local' });
+      if (result?.error) failure = result.error.message;
+    } catch (caught) {
+      failure = caught instanceof Error ? caught.message : 'Could not clear the local session.';
+    }
+    queryClient.clear();
+    await adoptSession(null);
+    if (failure) {
+      setError(`${failure} Clear the app's data before another person uses this device.`);
+    }
+  }, [adoptSession, queryClient]);
+
   const value = useMemo<AuthState>(
     () => ({
-      status, mode, email, error,
-      signInWithGoogle, signInWithMagicLink, signOut,
+      status, mode, userId, email, error,
+      signInWithGoogle, signInWithMagicLink, reauthenticateForDeletion,
+      finishAccountDeletion, signOut,
+      accountDeleted,
+      dismissAccountDeleted: () => {
+        setAccountDeleted(false);
+        void clearAccountDeleted();
+      },
       retry: () => setAttempt((n) => n + 1),
     }),
-    [status, mode, email, error, signInWithGoogle, signInWithMagicLink, signOut],
+    [
+      status, mode, userId, email, error, signInWithGoogle, signInWithMagicLink,
+      reauthenticateForDeletion, finishAccountDeletion, signOut, accountDeleted,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

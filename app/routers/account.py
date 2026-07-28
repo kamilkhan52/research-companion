@@ -6,11 +6,17 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import account_deletion
+from .. import account_deletion, logging_config
 
 router = APIRouter()
 
+log = logging_config.get("account")
+
 RECENT_AUTHENTICATION_S = 300
+# The one detail a pre-persistence refusal returns. The mobile client matches this exact string to
+# decide it is safe to clear its local deletion marker, so it is part of the contract: changing it
+# needs the client changed in the same PR, and nothing else may reuse it.
+UNCONFIGURED_DETAIL = "Account deletion is not configured on this server yet."
 _USER_PRESENCE_METHODS = frozenset({
     "email/signup",
     "magiclink",
@@ -96,7 +102,20 @@ def delete_account(body: DeleteAccountRequest, request: Request):
     try:
         state = account_deletion.request(user["user_id"])
     except account_deletion.AccountDeletionUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # ONE stable detail for every raise of this class, with the specific reason logged rather
+        # than returned. The client has to decide whether a 503 landed before or after the durable
+        # tombstone: before, it clears its local deletion marker; after, it must keep it. It makes
+        # that call by matching this string, and `AccountDeletionUnavailable` is by construction the
+        # pre-persistence case — so the match has to be complete, not merely correct today.
+        #
+        # It was not. This raised `str(exc)`, and the class has two messages; the client knew only
+        # the second. On an instance with `RC_DATABASE_URL` unset, a tap wrote a marker nothing
+        # could ever clear, which then wiped drafts, active project and the image cache at the next
+        # ORDINARY sign-out. A third message would have reintroduced it. One string cannot.
+        log.warning("account deletion refused before persistence: %s", exc)
+        raise HTTPException(
+            status_code=503, detail=UNCONFIGURED_DETAIL,
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=503,

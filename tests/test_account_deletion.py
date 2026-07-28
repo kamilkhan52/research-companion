@@ -315,6 +315,52 @@ def test_recover_shared_gives_up_when_the_lock_is_genuinely_held(monkeypatch):
     assert attempts["n"] > 0
 
 
+def test_every_pre_persistence_refusal_returns_the_same_detail(monkeypatch):
+    """The mobile client matches this exact string to decide it is safe to clear its local
+    deletion marker, so the match has to be COMPLETE, not merely correct today.
+
+    It was not. The route returned `str(exc)` and `AccountDeletionUnavailable` has two messages;
+    the client knew only one. On an instance with `RC_DATABASE_URL` unset — staging before
+    2026-07-27, any self-hosted instance now — a tap wrote a marker nothing could ever clear,
+    which then wiped drafts, active project and the image cache at the next ORDINARY sign-out.
+
+    Asserted over every raise site found in the module rather than the two known today, so adding
+    a third message cannot silently reintroduce it.
+    """
+    from app.routers import account as account_router
+
+    _authenticated(monkeypatch)
+    monkeypatch.setattr(account_deletion, "status_for", lambda _uid: None)
+    monkeypatch.setattr(
+        account_router, "_require_recent_authentication", lambda _user: None)
+
+    messages = [
+        "Account deletion requires RC_DATABASE_URL.",
+        "Account deletion is not configured on this server yet.",
+        "A third reason nobody has written yet.",
+    ]
+    seen: set[str] = set()
+    for message in messages:
+        def refuse(_uid, _message=message):
+            raise account_deletion.AccountDeletionUnavailable(_message)
+
+        monkeypatch.setattr(account_deletion, "request", refuse)
+        response = TestClient(app_for_tests()).post(
+            "/api/account/deletion",
+            json={"confirmation": "DELETE"},
+            headers={"Authorization": "Bearer valid"},
+        )
+        assert response.status_code == 503
+        seen.add(response.json()["detail"])
+
+    assert seen == {account_router.UNCONFIGURED_DETAIL}
+
+
+def app_for_tests():
+    from app.main import app
+    return app
+
+
 def test_start_requires_exact_confirmation_and_recent_user_authentication(monkeypatch):
     from app.main import app
 

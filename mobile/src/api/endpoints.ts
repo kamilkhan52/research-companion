@@ -12,6 +12,7 @@ import {
 } from './client';
 import type {
   AudioJob,
+  AccountDeletion,
   AuthConfig,
   AuthorBoardResponse,
   AuthorProfileJob,
@@ -51,6 +52,10 @@ import type {
 // ---------- global ----------
 
 export const getAuthConfig = () => apiGet<AuthConfig>('/api/auth/config');
+export const getAccountDeletion = () =>
+  apiGet<{ deletion: AccountDeletion | null }>('/api/account/deletion');
+export const startAccountDeletion = () =>
+  apiPost<{ deletion: AccountDeletion }>('/api/account/deletion', { confirmation: 'DELETE' });
 export const getHealth = () => apiGet<{ ok: boolean; title: string; dev: boolean }>('/api/health');
 export const getSettings = () => apiGet<Settings>('/api/settings');
 export const saveSettings = (body: Partial<Settings> & Record<string, unknown>) =>

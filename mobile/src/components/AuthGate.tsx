@@ -21,7 +21,8 @@ import {
 
 import { getBaseUrl, setBaseUrl } from '@/api/config';
 import { useAuth } from '@/auth/AuthProvider';
-import { Button, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
+import { AccountDeletionGuard } from '@/components/AccountDeletionGuard';
+import { Button, Card, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 
@@ -29,7 +30,7 @@ type AuthFlow = 'welcome' | 'sign-in' | 'create-account' | 'check-inbox';
 type EntryFlow = Extract<AuthFlow, 'sign-in' | 'create-account'>;
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { status } = useAuth();
+  const { status, accountDeleted } = useAuth();
 
   if (status === 'unknown') {
     return (
@@ -40,10 +41,70 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       </Screen>
     );
   }
+  if (status === 'cleanup-required') return <LocalCleanupRequired />;
+  // After `cleanup-required`, because an incomplete purge is the more urgent thing to say. Before
+  // everything else, because the alternative is what this exists to stop: the completion screen
+  // flashes past and the user lands on the sign-in form, with no durable confirmation that an
+  // irreversible action worked — and an invitation to create a fresh empty account under the same
+  // address, since Supabase sign-up is self-service.
+  if (accountDeleted) return <AccountDeleted />;
   // `disabled` is a local backend with no auth configured — the normal development case, and the
   // only one where showing content without a token is correct.
-  if (status === 'disabled' || status === 'signed-in') return <>{children}</>;
+  if (status === 'disabled') return <>{children}</>;
+  if (status === 'signed-in') {
+    return <AccountDeletionGuard>{children}</AccountDeletionGuard>;
+  }
   return <SignedOutExperience />;
+}
+
+function LocalCleanupRequired() {
+  const t = useTheme();
+  const { error, retry } = useAuth();
+  return (
+    <Screen edges={['top', 'bottom']}>
+      <View style={common.centered}>
+        <Card style={{ margin: space.xl }}>
+          <Icon name="alert-triangle" size={28} color={t.danger} />
+          <Text variant="title" style={{ marginTop: space.lg }}>
+            Local data needs attention
+          </Text>
+          <Text color={t.muted} style={{ marginTop: space.sm }}>
+            {error ?? 'Some deleted-account data could not be cleared from this device.'}
+          </Text>
+          <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
+            Paradigm will not load private content while cleanup is incomplete. Clear the app’s
+            storage in device settings, or try the cleanup again.
+          </Text>
+          <Button title="Try cleanup again" onPress={retry} style={{ marginTop: space.lg }} />
+        </Card>
+      </View>
+    </Screen>
+  );
+}
+
+/** Terminal acknowledgement of a completed deletion. Deliberately plain — it is seen once, by
+ *  someone who is leaving. Reuses `UnsupportedServer`'s layout rather than introducing styles. */
+function AccountDeleted() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { dismissAccountDeleted } = useAuth();
+  return (
+    <AuthCanvas>
+      <View style={styles.centerCard}>
+        <View style={styles.stateIcon}>
+          <Icon name="check" size={28} color={t.mint} />
+        </View>
+        <Text variant="editorial" style={{ textAlign: 'center' }}>
+          Your account was deleted
+        </Text>
+        <Text variant="body" color={t.muted} style={styles.stateBody}>
+          Your projects, papers, notes, and sign-in have been permanently removed. Nothing is kept
+          on this device.
+        </Text>
+        <Button title="Done" onPress={dismissAccountDeleted} />
+      </View>
+    </AuthCanvas>
+  );
 }
 
 function SignedOutExperience() {
@@ -125,6 +186,7 @@ function Welcome({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { error } = useAuth();
+  const localDataWarning = error?.includes('Clear the app') ?? false;
   return (
     <AuthCanvas>
       <View style={styles.welcomeContent}>
@@ -150,10 +212,12 @@ function Welcome({
               <Icon name="alert-circle" size={18} color={t.danger} />
               <View style={common.flex}>
                 <Text variant="label" color={t.danger}>
-                  That sign-in link couldn’t be used
+                  {localDataWarning
+                    ? 'Local data needs attention'
+                    : 'That sign-in link couldn’t be used'}
                 </Text>
                 <Text variant="caption" color={t.muted} style={{ marginTop: 2 }}>
-                  {error} Request a new link below.
+                  {error}{localDataWarning ? '' : ' Request a new link below.'}
                 </Text>
               </View>
             </View>

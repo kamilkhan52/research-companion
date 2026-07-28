@@ -4,13 +4,20 @@
 // silent 401s — most cruelly an hour after sign-in, when the first refresh lands.
 
 import { QueryClientProvider } from '@tanstack/react-query';
-import { renderAsync, waitFor } from '@testing-library/react-native';
+import { act, renderAsync, waitFor } from '@testing-library/react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text } from 'react-native';
 
 import * as apiConfig from '@/api/config';
 import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
 import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
+import {
+  hasAccountDeletionIntent,
+  hasAccountDeleted,
+  markAccountDeleted,
+  markAccountDeletionIntent,
+} from '@/auth/accountCleanup';
 import { createTestQueryClient } from './queryClient';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
@@ -40,6 +47,12 @@ jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => ({ auth: mockAuth })),
 }));
 jest.mock('expo-web-browser', () => ({ openAuthSessionAsync: jest.fn() }));
+jest.mock('expo-image', () => ({
+  Image: {
+    clearMemoryCache: jest.fn(async () => true),
+    clearDiskCache: jest.fn(async () => true),
+  },
+}));
 jest.mock('@/audio/AudioProvider', () => ({
   stopPlaybackForSessionEnd: jest.fn(async () => undefined),
 }));
@@ -95,8 +108,9 @@ async function renderProvider() {
   return renderAsync(withQuery(<AuthProvider><Probe /></AuthProvider>));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
+  await AsyncStorage.clear();
   // clearAllMocks resets CALLS, not implementations — a mockResolvedValue set by one test would
   // otherwise deliver its cold-start URL to every test after it.
   jest.requireMock('expo-linking').getInitialURL.mockResolvedValue(null);
@@ -136,6 +150,236 @@ test('a token refresh replaces the stored token', async () => {
   await waitFor(() => expect(apiConfig.setToken).toHaveBeenCalledWith('second-jwt'));
 });
 
+test('account deletion reauthentication requires Google account selection and adopts its token', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  const oldSession = {
+    access_token: 'old-jwt',
+    user: {
+      id: 'user-a',
+      email: 'r@example.com',
+      last_sign_in_at: '2026-07-20T00:00:00Z',
+      app_metadata: { provider: 'google', providers: ['google'] },
+    },
+  };
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: oldSession },
+  });
+  const WebBrowser = jest.requireMock('expo-web-browser');
+  WebBrowser.openAuthSessionAsync.mockResolvedValue({
+    type: 'success', url: `${redirectUri()}?code=reauth-code`,
+  });
+  const freshSession = {
+    access_token: 'fresh-jwt',
+    user: {
+      ...oldSession.user,
+      last_sign_in_at: new Date().toISOString(),
+    },
+  };
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+  mockAuth.getSession
+    .mockResolvedValueOnce({ data: { session: oldSession } })
+    .mockResolvedValueOnce({ data: { session: freshSession } });
+
+  await act(async () => {
+    await auth!.reauthenticateForDeletion();
+  });
+
+  expect(mockAuth.signInWithOAuth).toHaveBeenCalledWith({
+    provider: 'google',
+    options: expect.objectContaining({
+      redirectTo: redirectUri(),
+      skipBrowserRedirect: true,
+      queryParams: { prompt: 'select_account' },
+    }),
+  });
+  expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('reauth-code');
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith('fresh-jwt');
+});
+
+test('recent email authentication is accepted without sending another link', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'recent-jwt',
+        user: {
+          id: 'user-a',
+          email: 'r@example.com',
+          last_sign_in_at: new Date().toISOString(),
+          app_metadata: { provider: 'email', providers: ['email'] },
+        },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  let result: Awaited<ReturnType<NonNullable<typeof auth>['reauthenticateForDeletion']>>;
+  await act(async () => {
+    result = await auth!.reauthenticateForDeletion();
+  });
+
+  expect(result!).toBe('authenticated');
+  expect(mockAuth.signInWithOtp).not.toHaveBeenCalled();
+});
+
+test('finishing deletion uses local sign-out and clears the API token', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
+  await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
+});
+
+test('finishing deletion fails closed when private playback cannot stop', async () => {
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  audio.stopPlaybackForSessionEnd
+    .mockRejectedValueOnce(new Error('native player busy'))
+    .mockRejectedValueOnce(new Error('native player still busy'));
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  await waitFor(() => expect(getByText('cleanup-required')).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(true);
+  expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalledWith({ failClosed: true });
+});
+
+test('a device that did not start the deletion still fails closed on cleanup', async () => {
+  // The test above pre-marks the intent, which is the INITIATING device: `delete-account.tsx`
+  // writes the marker before its POST. A second signed-in device never runs that screen — it
+  // learns about the deletion by polling and goes straight to `finishAccountDeletion`. The whole
+  // fail-closed design downstream (keep the marker, retry next launch, block the app while
+  // cleanup is owed) rests on that marker, so without it a failed purge on that device left the
+  // deleted user's drafts, active project and image cache in place behind one dismissible warning.
+  //
+  // Deliberately no `markAccountDeletionIntent()` here — that absence IS the scenario.
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  audio.stopPlaybackForSessionEnd
+    .mockRejectedValueOnce(new Error('native player busy'))
+    .mockRejectedValueOnce(new Error('native player still busy'));
+  expect(await hasAccountDeletionIntent()).toBe(false);
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-b', email: 'other-device@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  await waitFor(() => expect(getByText('cleanup-required')).toBeTruthy());
+  expect(await hasAccountDeletionIntent()).toBe(true);
+});
+
+test('the deletion acknowledgement outlives the sign-out that ends the flow', async () => {
+  // It cannot be component state: the completion path ends in a sign-out, which unmounts the tree
+  // that would have held it. Persisted, so it also survives the user closing the app immediately
+  // after deleting — which someone who just deleted their account plausibly does.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => { await auth!.finishAccountDeletion(); });
+
+  await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
+  expect(auth!.accountDeleted).toBe(true);
+  expect(await hasAccountDeleted()).toBe(true);
+
+  await act(async () => { auth!.dismissAccountDeleted(); });
+  await waitFor(() => expect(auth!.accountDeleted).toBe(false));
+  expect(await hasAccountDeleted()).toBe(false);
+});
+
+test('a cold start after a completed deletion still shows the acknowledgement', async () => {
+  // No intent marker survives a successful purge, so the acknowledgement has to be recorded
+  // separately or the app reopens straight onto the sign-in form as if nothing happened.
+  await markAccountDeleted();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-out'));
+
+  expect(auth!.accountDeleted).toBe(true);
+});
+
+test('cold start honors local deletion intent without a restorable session or reachable API', async () => {
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await AsyncStorage.setItem('rc.draft.v1:private-project:paper', 'private draft');
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockRejectedValue(new Error('server unavailable'));
+
+  const { getByText } = await renderProvider();
+  await waitFor(() => getByText('unreachable'));
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await AsyncStorage.getItem('rc.draft.v1:private-project:paper')).toBeNull();
+  expect(await hasAccountDeletionIntent()).toBe(false);
+});
+
 test('signing out clears the token, not just the UI state', async () => {
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
   mockAuth.getSession.mockResolvedValue({
@@ -163,12 +407,29 @@ test('an unreachable server is not reported as signed out', async () => {
 });
 
 test('a backend with auth disabled clears any stale token and lets the app through', async () => {
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await markAccountDeletionIntent();
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue({ mode: 'open', enabled: false });
   const { getByText } = await renderProvider();
   await waitFor(() => getByText('disabled'));
   // A token left from a previous authenticated server would be sent to one that never asked for
   // it — harmless today, but it is a credential travelling somewhere it has no business going.
   expect(apiConfig.setToken).toHaveBeenCalledWith(null);
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await hasAccountDeletionIntent()).toBe(false);
+});
+
+test('an auth-disabled server cannot mount content when deletion cleanup fails', async () => {
+  const ExpoImage = jest.requireMock('expo-image').Image;
+  ExpoImage.clearDiskCache.mockResolvedValueOnce(false);
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue({ mode: 'open', enabled: false });
+
+  const { getByText } = await renderProvider();
+
+  await waitFor(() => getByText('cleanup-required'));
+  expect(await hasAccountDeletionIntent()).toBe(true);
 });
 
 test('supabase mode without an anon key does not pretend to be signed in', async () => {

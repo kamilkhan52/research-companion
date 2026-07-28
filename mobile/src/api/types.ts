@@ -293,6 +293,25 @@ export interface AuthConfig {
   supabase_anon_key?: string;
 }
 
+export type AccountDeletionPhase =
+  | 'pending'
+  | 'draining'
+  | 'deleting_data'
+  | 'deleting_identity'
+  | 'error'
+  | 'completed';
+
+/** Durable status returned by GET/POST /api/account/deletion. */
+export interface AccountDeletion {
+  status: AccountDeletionPhase;
+  /** Sanitized server phase/code only; never an exception message or user data. */
+  error_code: string | null;
+  attempts: number;
+  requested_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
 export interface ModelOption {
   id: string;
   name: string;
