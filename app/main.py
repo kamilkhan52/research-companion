@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from . import account_deletion, auth, config, db, deploy_guard, logging_config
 from .auth import AuthError
@@ -114,10 +115,57 @@ def _resume_account_deletions() -> None:
         _log.info("account deletion resumed %d durable request(s)", resumed)
     account_deletion.start_resume_monitor()
 
-# The shared process guard does not depend on the application schema. Acquire it before migrations
-# so even a process retrying failed DDL is visible to a destructive worker on a replacement.
-if db.enabled():
-    deploy_guard.start()
+GUARD_BOOT_TIMEOUT_S = 15.0
+GUARD_RETRY_START_S = 5.0
+GUARD_RETRY_MAX_S = 60.0
+
+
+def _start_deploy_guard() -> None:
+    """Take the shared process guard, without letting it decide whether the app boots at all.
+
+    The guard does not depend on the application schema, so it is taken before migrations: a
+    process retrying failed DDL must still be visible to a destructive worker on a replacement.
+
+    But it was previously an unguarded module-scope call, which made it strictly more fatal than
+    the migrations twelve lines below — whose docstring already states the rule, that a failure is
+    logged rather than fatal because on Fly an unbootable image is a crash loop needing a human.
+    An unreachable database therefore made `import app.main` raise, and the machine never served.
+    Verified by pointing `RC_DATABASE_URL` at a closed port.
+
+    The timeout matters as much as the try/except. The default budget is ten minutes, and the case
+    where a peer holds the exclusive lock — a deletion running on the retiring process during a
+    rolling deploy — is precisely the case this feature exists for. So the replacement machine
+    would hang its own import for the whole deletion, then fail. A short boot attempt with a
+    background retry keeps the machine serving while it waits its turn, and
+    `account_deletion.DEPLOY_OVERLAP_S` is the window that already covers a peer briefly not
+    holding the lock.
+    """
+    if not db.enabled():
+        return
+    try:
+        deploy_guard.start(timeout_s=GUARD_BOOT_TIMEOUT_S)
+        return
+    except Exception as e:  # noqa: BLE001 — see the docstring: a boot must not depend on this
+        _log.error("deploy guard not acquired at boot (%s) — retrying in the background",
+                   type(e).__name__)
+
+    def _retry() -> None:
+        delay = GUARD_RETRY_START_S
+        while True:
+            time.sleep(delay)
+            try:
+                deploy_guard.start(timeout_s=GUARD_BOOT_TIMEOUT_S)
+            except Exception as e:  # noqa: BLE001 — this loop exists to outlive failures
+                _log.warning("deploy guard retry failed, next in %.0fs: %s", delay, type(e).__name__)
+                delay = min(delay * 2, GUARD_RETRY_MAX_S)
+                continue
+            _log.info("deploy guard acquired on retry")
+            return
+
+    threading.Thread(target=_retry, daemon=True, name="deploy-guard-retry").start()
+
+
+_start_deploy_guard()
 _apply_migrations()
 
 app = FastAPI(title=config.APP_TITLE)
@@ -224,7 +272,15 @@ async def authenticate(request: Request, call_next):
         request_admitted = True
     elif user_id:
         try:
-            blocked = account_deletion.is_blocked(user_id)
+            # Off the event loop. `is_blocked` is synchronous psycopg, and a `@app.middleware`
+            # coroutine runs ON the loop rather than in the threadpool a sync dependency would get
+            # — so every authenticated request was serializing all request handling behind a
+            # round trip to Postgres (two, in fact: the pool checks out with `check_connection`).
+            # Worse on a slow database: `pool().connection()` blocks up to its 10s timeout, and
+            # spending that on the loop turns a degraded database into a total stall instead of
+            # the per-request 503 below. Single worker (invariant 6), so there is no second
+            # process to absorb it.
+            blocked = await run_in_threadpool(account_deletion.is_blocked, user_id)
         except Exception:
             return JSONResponse(
                 {"detail": "Account and ownership data is temporarily unavailable."},

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import time
@@ -209,6 +210,109 @@ def test_durable_tombstone_blocks_ordinary_routes_but_allows_status(monkeypatch)
     status = client.get("/api/account/deletion", headers=headers)
     assert status.status_code == 200
     assert status.json()["deletion"]["status"] == "deleting_identity"
+
+
+def test_tombstone_lookup_does_not_run_on_the_event_loop(monkeypatch):
+    """`is_blocked` is synchronous psycopg and the auth middleware is a coroutine.
+
+    A `@app.middleware("http")` coroutine runs ON the event loop, unlike the sync dependencies every
+    other database caller here reaches Postgres from. Left on the loop, one round trip per
+    authenticated request serializes ALL request handling behind it — and on a slow database
+    `pool().connection()` blocks up to its 10s timeout, turning degradation into a total stall
+    instead of the intended per-request 503. Single worker, so nothing absorbs it.
+
+    Asserted by the absence of a running loop rather than by a thread name: a threadpool worker has
+    no running loop, the event loop thread does, and that distinction is the property itself.
+    """
+    from app.main import app
+
+    _authenticated(monkeypatch)
+    on_loop: list[bool] = []
+
+    def probe(_uid):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        return False
+
+    monkeypatch.setattr(account_deletion, "is_blocked", probe)
+
+    TestClient(app).get("/api/settings", headers={"Authorization": "Bearer valid"})
+
+    assert on_loop == [False]
+
+
+def test_boot_survives_a_deploy_guard_it_cannot_acquire(monkeypatch):
+    """An unreachable database must not make `import app.main` raise.
+
+    It did: the boot-time `deploy_guard.start()` was an unguarded module-scope call, strictly more
+    fatal than the migrations below it — whose docstring already gives the rule, that on Fly an
+    unbootable image is a crash loop needing a human. The timeout matters too: the default budget
+    is ten minutes, and a peer holding the exclusive lock (a deletion on the retiring process
+    during a rolling deploy) is exactly the case this feature exists for, so the replacement
+    machine would hang its whole import waiting for it.
+    """
+    from app import main as app_main
+
+    monkeypatch.setattr(app_main.db, "enabled", lambda: True)
+    monkeypatch.setattr(app_main, "GUARD_RETRY_START_S", 0.01)
+    timeouts: list[float | None] = []
+
+    def flaky_start(*, timeout_s=None):
+        timeouts.append(timeout_s)
+        if len(timeouts) < 3:
+            raise OSError("connection refused")
+        return True
+
+    monkeypatch.setattr(app_main.deploy_guard, "start", flaky_start)
+
+    app_main._start_deploy_guard()          # must not raise
+
+    deadline = time.monotonic() + 5
+    while len(timeouts) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(timeouts) == 3, "the background retry never ran"
+    # Bounded on every attempt, never the ten-minute default.
+    assert timeouts == [app_main.GUARD_BOOT_TIMEOUT_S] * 3
+
+
+def test_recover_shared_tolerates_a_transient_failure(monkeypatch):
+    """One failed round trip is not proof the guard was lost, and treating it as proof used to
+    SIGTERM a healthy process over a two-second database blip."""
+    monkeypatch.setattr(deploy_guard, "_GUARD_RECOVERY_POLL_S", 0.01)
+    session = object()
+    attempts = {"n": 0}
+
+    def flaky(_timeout_s):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise OSError("blip")
+        return session
+
+    monkeypatch.setattr(deploy_guard, "_take_shared", flaky)
+
+    assert deploy_guard._recover_shared(5.0) is session
+    assert attempts["n"] == 3, "it succeeded first try, so nothing about retrying was tested"
+
+
+def test_recover_shared_gives_up_when_the_lock_is_genuinely_held(monkeypatch):
+    """The recovery attempt IS the test for a lost guard: a peer's exclusive lock is incompatible
+    with `pg_try_advisory_lock_shared`, so it keeps failing and this must still resolve to None so
+    the caller terminates. Tolerating a blip must not become tolerating an actual loss."""
+    monkeypatch.setattr(deploy_guard, "_GUARD_RECOVERY_POLL_S", 0.01)
+    attempts = {"n": 0}
+
+    def never(_timeout_s):
+        attempts["n"] += 1
+        raise TimeoutError("deploy-guard-shared")
+
+    monkeypatch.setattr(deploy_guard, "_take_shared", never)
+
+    assert deploy_guard._recover_shared(0.05) is None
+    assert attempts["n"] > 0
 
 
 def test_start_requires_exact_confirmation_and_recent_user_authentication(monkeypatch):

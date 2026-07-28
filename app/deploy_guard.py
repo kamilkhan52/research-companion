@@ -30,6 +30,12 @@ _EXCLUSIVE_ACQUIRE_TIMEOUT_S = float(os.environ.get(
     "600",
 ))
 _LOCK_POLL_S = 0.25
+# How long a process may spend trying to get a lost shared guard back before treating it as truly
+# lost and terminating. Must stay well under `account_deletion.DEPLOY_OVERLAP_S` (310s): that window
+# exists so a deleter tolerates a peer which is briefly not holding the lock, and a recovery budget
+# longer than it would let this process outlive the cover.
+_GUARD_RECOVERY_S = 30.0
+_GUARD_RECOVERY_POLL_S = 1.0
 
 _state_lock = threading.Lock()
 _destructive_lock = threading.Lock()
@@ -140,50 +146,95 @@ def _wait_for_advisory_lock(
         time.sleep(min(_LOCK_POLL_S, remaining))
 
 
-def start(*, timeout_s: float | None = None) -> bool:
-    """Acquire the shared lifetime guard, with a bounded wait behind deletion."""
+def _take_shared(timeout_s: float):
+    """Connect and hold the shared lifetime lock. Returns the session, or None if one is held."""
     global _shared_conn
-    if not db.enabled():
-        return False
     with _state_lock:
         if _shared_conn is not None:
-            return False
+            return None
         conn = _connect()
         try:
-            _wait_for_advisory_lock(
-                conn,
-                shared=True,
-                timeout_s=(
-                    _EXCLUSIVE_ACQUIRE_TIMEOUT_S if timeout_s is None else timeout_s
-                ),
-            )
+            _wait_for_advisory_lock(conn, shared=True, timeout_s=timeout_s)
         except Exception:
             conn.close()
             raise
         _shared_conn = conn
+        return conn
 
-    def watchdog(held_conn) -> None:
-        global _shared_conn
-        while True:
-            time.sleep(_CHECK_S)
+
+def _recover_shared(budget_s: float):
+    """Try to get the shared guard back. Returns the new session, or None if it is truly gone.
+
+    **This attempt IS the test for whether the guard was lost.** A single failed round trip proves
+    nothing: the process may simply have hit a blip on a connection that is still, server-side, the
+    holder. What distinguishes the two is whether a fresh session can take the lock again — and if a
+    peer really has taken exclusivity, `pg_try_advisory_lock_shared` is incompatible with it and
+    keeps failing, so this returns None and the caller terminates. Both answers are earned rather
+    than assumed.
+
+    The budget must stay well under `account_deletion.DEPLOY_OVERLAP_S` (310s), which is the window
+    a deleter waits precisely to cover a peer that is momentarily not holding the lock.
+    """
+    deadline = time.monotonic() + budget_s
+    while True:
+        try:
+            conn = _take_shared(max(0.0, deadline - time.monotonic()))
+            if conn is not None:
+                return conn
+            # Someone else re-established it while this ran; the guarantee is restored either way.
             with _state_lock:
-                if _shared_conn is not held_conn:
-                    return
-                try:
-                    _execute_bounded(held_conn, "select 1")
-                except Exception as exc:  # noqa: BLE001 — losing the guard is process-fatal
-                    # The lock may already be gone server-side. Stop accepting new background work
-                    # immediately, then terminate; an exclusive deleter still observes the legacy
-                    # overlap delay before touching files, giving Fly's shutdown window time.
-                    _shared_conn = None
-                    try:
-                        held_conn.close()
-                    finally:
-                        _terminate_for_guard_loss("shared", exc)
-                    return
+                if _shared_conn is not None:
+                    return _shared_conn
+        except Exception:  # noqa: BLE001 — the whole point is to keep trying through failures
+            pass
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_GUARD_RECOVERY_POLL_S)
 
+
+def _watch_shared(held_conn) -> None:
+    """Heartbeat the shared guard, recovering from a transient failure before declaring it lost."""
+    global _shared_conn
+    while True:
+        time.sleep(_CHECK_S)
+        with _state_lock:
+            if _shared_conn is not held_conn:
+                return
+            try:
+                _execute_bounded(held_conn, "select 1")
+                continue
+            except Exception as exc:  # noqa: BLE001 — resolved below, outside the lock
+                # Publish the loss immediately: for as long as this is indeterminate, nothing may
+                # believe the guard is held.
+                _shared_conn = None
+                failure = exc
+        try:
+            held_conn.close()
+        except Exception:  # noqa: BLE001 — it is already unusable; closing is best effort
+            pass
+        # Do NOT terminate on this one failure. During a database outage no peer can acquire
+        # exclusivity either, so killing the process defends against nothing in the window it fires
+        # in — while a partition that isolates only this process is exactly what the recovery
+        # attempt below detects.
+        recovered = _recover_shared(_GUARD_RECOVERY_S)
+        if recovered is None:
+            _terminate_for_guard_loss("shared", failure)
+            return
+        log.warning(
+            "shared deploy guard re-established after error=%s", type(failure).__name__,
+        )
+        held_conn = recovered
+
+
+def start(*, timeout_s: float | None = None) -> bool:
+    """Acquire the shared lifetime guard, with a bounded wait behind deletion."""
+    if not db.enabled():
+        return False
+    conn = _take_shared(_EXCLUSIVE_ACQUIRE_TIMEOUT_S if timeout_s is None else timeout_s)
+    if conn is None:
+        return False
     threading.Thread(
-        target=watchdog,
+        target=_watch_shared,
         args=(conn,),
         daemon=True,
         name="deploy-guard-watchdog",
@@ -308,14 +359,17 @@ def acquire_exclusive(*, timeout_s: float | None = None):
         if conn is not None:
             conn.close()
         try:
-            try:
-                # The caller's acquisition deadline is already exhausted or failed. Restoring a
-                # compatible shared lock should succeed on the first try; if another process took
-                # exclusivity, fail-stop instead of turning cleanup into another unbounded wait.
-                start(timeout_s=0)
-            except Exception as restore_exc:
-                _terminate_for_guard_loss("shared restore", restore_exc)
-                raise
+            # A bounded retry, not one attempt. This path is reached by an ordinary transient
+            # failure — `_connect()` hitting a two-second database blip is enough — and at this
+            # point the process has already given up its own shared guard, so a single failed
+            # attempt used to SIGTERM a process that was serving perfectly well. It is also reached
+            # by simply losing the exclusive race to a peer, whose hold can legitimately outlast
+            # this caller's budget. `_recover_shared` still terminates when the lock is genuinely
+            # unobtainable, so the fail-stop property is kept and only the tolerance changes.
+            if _recover_shared(_GUARD_RECOVERY_S) is None:
+                _terminate_for_guard_loss(
+                    "shared restore", DeployGuardLost("shared guard could not be restored"),
+                )
         finally:
             _destructive_lock.release()
         raise
@@ -347,10 +401,14 @@ def release_exclusive(lease: ExclusiveLease) -> None:
                 release_error or DeployGuardLost("exclusive deploy guard was lost"),
             )
         else:
-            try:
-                start()
-            except Exception as exc:
-                _terminate_for_guard_loss("shared restore", exc)
-                raise
+            # Same bounded retry as the failure path above, and for the same reason: a deletion
+            # that fully succeeded should not restart the process because the one attempt to
+            # re-take the lifetime guard happened to land on a blip. `start()` was also the
+            # 600-second default here, so a peer holding exclusivity stalled the release for ten
+            # minutes before deciding anything.
+            if _recover_shared(_GUARD_RECOVERY_S) is None:
+                _terminate_for_guard_loss(
+                    "shared restore", DeployGuardLost("shared guard could not be restored"),
+                )
     finally:
         _destructive_lock.release()
