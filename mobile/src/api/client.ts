@@ -25,6 +25,18 @@ export function authHeaders(): Record<string, string> {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+/** React Native / Expo image source for protected backend media.
+ *
+ * Keep the bearer credential in the Authorization header, never in the URL. URLs are routinely
+ * written to proxy and application access logs; headers remain outside the request target.
+ */
+export function authenticatedMediaSource(path: string): {
+  uri: string;
+  headers: Record<string, string>;
+} {
+  return { uri: apiUrl(path), headers: authHeaders() };
+}
+
 async function parseError(res: Response): Promise<never> {
   let detail = `Request failed (${res.status})`;
   try {

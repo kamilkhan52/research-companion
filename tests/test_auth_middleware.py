@@ -67,6 +67,29 @@ def test_bad_credentials_are_401_and_log_no_identity(monkeypatch, capfd):
     assert "rejected non-allowlisted" not in capfd.readouterr().err
 
 
+def test_query_string_bearer_tokens_are_never_accepted(monkeypatch):
+    """Access logs include query strings. Even a valid bearer must therefore fail when supplied
+    as `?token=`; protected native media attaches the same credential as a header."""
+    from app.main import app
+
+    seen = []
+
+    def check(token):
+        seen.append(token)
+        if token != "valid-header-token":
+            raise auth.AuthError("bad token")
+        return {"user_id": "00000000-0000-0000-0000-000000000001"}
+
+    monkeypatch.setattr(auth, "enabled", lambda: True)
+    monkeypatch.setattr(auth, "check", check)
+
+    client = TestClient(app)
+    assert client.get("/api/settings?token=valid-header-token").status_code == 401
+    assert seen == [""]
+    assert client.get(
+        "/api/settings", headers={"Authorization": "Bearer valid-header-token"}).status_code == 200
+
+
 def test_the_health_probe_stays_open_so_clients_can_bootstrap(monkeypatch):
     """If the exempt list ever stopped covering it, a client could not discover how to sign in —
     and the operator could not tell a down instance from a locked-out one."""

@@ -122,10 +122,12 @@ _AUTH_EXEMPT = {"/api/health", "/api/auth/config"}
 
 @app.middleware("http")
 async def authenticate(request: Request, call_next):
-    """Gate /api/* per app.auth.mode(). Token arrives as `Authorization: Bearer <t>` (fetch/
-    native) or `?token=<t>` (so <audio>/download/SSE tags work). OPTIONS, the exempt routes,
-    and non-/api routes (static SPA shell) are always allowed. The verified user (if any) is
-    stashed on request.state.user for handlers/future per-user data.
+    """Gate /api/* per app.auth.mode(). Tokens arrive only as
+    `Authorization: Bearer <t>`. Query-string bearer tokens are deliberately unsupported:
+    uvicorn access logs include the query string, so accepting `?token=<t>` turns ordinary request
+    logging into a credential leak. Native images and audio can both attach request headers.
+    OPTIONS, the exempt routes, and non-/api routes (static SPA shell) are always allowed. The
+    verified user (if any) is stashed on request.state.user for handlers/future per-user data.
 
     Two distinct denials: 401 for bad/missing credentials, 403 for a valid user who is not on this
     instance's allowlist (see auth.allowed_users)."""
@@ -133,7 +135,7 @@ async def authenticate(request: Request, call_next):
     if auth.enabled() and request.method != "OPTIONS" \
             and request.url.path.startswith("/api/") and request.url.path not in _AUTH_EXEMPT:
         hdr = request.headers.get("authorization", "")
-        token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else request.query_params.get("token", "")
+        token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
         try:
             request.state.user = auth.check(token)
         except auth.NotAllowlisted as rejected:

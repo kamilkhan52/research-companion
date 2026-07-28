@@ -81,7 +81,8 @@ export interface PaperMatchResponse {
 }
 
 /** One figure from the paper's arXiv-HTML rendering (R.10). `asset` is the cached image's
- *  filename — build its URL with figureAssetUrl(); `number` is the paper's own "Figure N". */
+ *  filename — build its authenticated image source with figureAssetSource(); `number` is the
+ *  paper's own "Figure N". */
 export interface PaperFigure {
   id: string;
   number: number | null;
