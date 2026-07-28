@@ -88,6 +88,7 @@ export async function setBaseUrl(raw: string): Promise<void> {
   // leave a window in which `getBaseUrl()` returns the new host while `getToken()` still returns
   // the old token — and audio polling and query timers are firing throughout that window.
   token = null;
+  setMediaCacheNamespace(null);
   serverGeneration += 1;
   notify();
   await AsyncStorage.setItem(BASE_URL_KEY, baseUrl);

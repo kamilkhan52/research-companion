@@ -201,13 +201,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // so the old client stays subscribed for a moment after the base URL changes; if its refresh
     // lands in that window it would restore the old token on top of the clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    // Change both in-memory request identities before SecureStore yields. Otherwise an account
+    // switch has a window where requests carry B's token but protected images use A's cache key,
+    // placing B's media where a later A session can read it locally.
+    setMediaCacheNamespace(session?.user?.id);
     await setToken(session?.access_token ?? null);
     // Checked AGAIN after the await. `setToken` touches SecureStore, so a callback can pass the
     // first check, pause here, and resume after the base-URL subscriber has retired its client —
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
-    setMediaCacheNamespace(session?.user?.id);
     setEmail(session?.user?.email ?? null);
     const next = session?.access_token ? 'signed-in' : 'signed-out';
     // Compared against a ref, not inside the setState updater. React may invoke an updater more
