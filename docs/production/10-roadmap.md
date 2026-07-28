@@ -134,8 +134,9 @@ under the 310s overlap window a deleter already waits for exactly this reason.
 3. **A disposable-account deletion test on staging**, once H23 lands: create a throwaway Supabase
    user, give it a project, delete the account, and confirm the project tree, the user's audio
    directory, the Postgres rows and the Auth identity are all gone.
-4. **An operator signal for a stalled deletion** (see the known gap below). This is the last thing
-   between M2.5's deletion work and a truthful Data safety declaration.
+4. ~~**An operator signal for a stalled deletion**~~ — done (#262). A deletion that has failed
+   `STALL_ATTEMPTS` times is reported `stalled`, logged once for the operator, and the client stops
+   claiming it is progressing.
 5. **The remaining M2.5 compliance items** — privacy policy and terms at public URLs, in-app links
    to both, the AI-content report action, and the Data safety answers themselves. The one
    declaration blocker still open is transport encryption: the mobile source defaults to an
@@ -169,11 +170,23 @@ So: **prove what is served, never that a server is up.**
 `https://research-companion-staging.fly.dev`. `app.json`'s baked `extra.apiBaseUrl` is the Mac's
 tailnet address, which is the open-auth instance.
 
-**Known gap, not yet closed:** `_owned_data` raising `ambiguous-transition-trash` is the correct
-fail-closed choice, but it leaves the account in a permanent 423 with a retry that can never
-succeed without operator repair — and "deletion is stuck forever" is indistinguishable from
-"deletion is running" to the client. That needs an operator-alert story before the Play submission,
-since the Data safety form asserts deletion works.
+**Closed 2026-07-28 (#262).** `_owned_data` raising `ambiguous-transition-trash` is the correct
+fail-closed choice, but it used to leave the account in a permanent 423 with a retry that could
+never succeed, and "deletion is stuck forever" was indistinguishable from "deletion is running" —
+because a stalled row *oscillates* between `error` and the running phases as the resume monitor
+restarts it, so the instantaneous status was evidence of nothing.
+
+`stalled` is now derived from the attempt count and outranks the phase: the operator gets one
+`ERROR` line per stall (never per scan, and carrying the subject key rather than the user id), and
+the client says the deletion needs attention instead of that it "continues safely on the server".
+Retries continue regardless — the signal reports, it does not give up.
+
+Two things from its review are worth carrying, because both were true of code that looked fine:
+the threshold's stated justification was arithmetically wrong (`_retry_delay_s(6)` is 160, not the
+300 cap) and the test that appeared to guard it asserted `>= 160`, which the wrong value satisfies;
+and the feature had **no end-to-end coverage at all** — deleting either the `stalled` key from the
+wire or the alert loop from `resume_active` left both suites green. Both are now bracketed and
+probed. The remaining operator surface — a queue rather than a log line — is M8.
 
 **M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
 provisional Play Data Safety matrix now live in

@@ -326,9 +326,11 @@ def test_a_repeatedly_failing_deletion_is_reported_as_stalled_not_running():
     # A finished deletion is never stalled, however many attempts it took to get there.
     assert account_deletion._is_stalled("completed", 99) is False
 
-    # The threshold is the point where the backoff has saturated, so a stalled row really is
-    # retrying on a flat interval rather than still backing off toward one.
-    assert account_deletion._retry_delay_s(account_deletion.STALL_ATTEMPTS) >= 160
+    # Bracketed, not lower-bounded. The previous assertion was `>= 160`, which the UNSATURATED
+    # value 160 satisfies — so it passed while the comment claiming saturation was false. This
+    # fails if the threshold moves off the cap in either direction, or if the backoff curve does.
+    assert account_deletion._retry_delay_s(account_deletion.STALL_ATTEMPTS) == 300
+    assert account_deletion._retry_delay_s(account_deletion.STALL_ATTEMPTS - 1) < 300
 
 
 def test_a_stall_is_announced_once_and_again_only_if_it_recurs(caplog):
@@ -345,12 +347,13 @@ def test_a_stall_is_announced_once_and_again_only_if_it_recurs(caplog):
         assert USER_ID not in stalls[0].getMessage()
         assert account_deletion.subject_key(USER_ID) in stalls[0].getMessage()
 
+        # A mid-retry running phase must NOT re-announce: the row oscillates between `error` and
+        # the running phases on every scan, which is precisely the noise the dedupe exists for.
         caplog.clear()
-        # Recovered, then stalled again: the operator must hear about the second one.
-        account_deletion._alert_if_stalled(USER_ID, "draining", 1)
         with caplog.at_level("ERROR", logger="rc.account-deletion"):
-            account_deletion._alert_if_stalled(USER_ID, "error", account_deletion.STALL_ATTEMPTS)
-        assert len([r for r in caplog.records if "STALLED" in r.getMessage()]) == 1
+            account_deletion._alert_if_stalled(
+                USER_ID, "draining", account_deletion.STALL_ATTEMPTS)
+        assert [r for r in caplog.records if "STALLED" in r.getMessage()] == []
     finally:
         account_deletion._alerted_stalled.discard(USER_ID)
 
@@ -849,6 +852,70 @@ def test_active_rescan_retries_due_error_after_identity_response_loss(database, 
 
     assert account_deletion.resume_active() == 1
     assert started == [USER_ID]
+
+
+@needs_pg
+def test_attempts_never_decreases_so_a_stall_cannot_clear_itself(database):
+    """`_alert_if_stalled` has no recovery branch, and that is only safe if a row cannot fall back
+    below the threshold by retrying. Asserted against the database rather than by reading the SQL:
+    an earlier version of this test grepped the source and matched a log format string.
+    """
+    key = account_deletion.subject_key(USER_ID)
+    with db.pool().connection() as conn:
+        conn.execute(
+            "insert into rc_account_deletions (subject_key, user_id) values (%s, %s)",
+            (key, USER_ID),
+        )
+
+    seen = []
+    for phase, increment in (
+        ("draining", True), ("deleting_data", False), ("error", False),
+        ("draining", True), ("deleting_data", False),
+    ):
+        account_deletion._set_status(key, phase, increment_attempt=increment)
+        seen.append(account_deletion.status_for(USER_ID)["attempts"])
+
+    assert seen == sorted(seen), f"attempts went backwards: {seen}"
+    assert seen[-1] >= 2, f"no attempt was ever counted, so nothing was tested: {seen}"
+
+
+@needs_pg
+def test_a_stalled_row_reaches_both_the_operator_log_and_the_wire(database, monkeypatch, caplog):
+    """End to end, through the two seams the feature actually ships on.
+
+    Both halves were previously untested: deleting the alert loop from `resume_active`, or the
+    `stalled` key from `_public_row`, left the whole suite green. The client tests cannot catch the
+    second either — they hard-code `stalled` into a mocked response, so they assert the client's
+    READING of the field, never that a server produces it.
+    """
+    monkeypatch.setattr(supabase_admin, "configured", lambda: True)
+    started: list[str] = []
+    monkeypatch.setattr(account_deletion, "start_worker", lambda uid: started.append(uid) or True)
+    key = account_deletion.subject_key(USER_ID)
+    account_deletion._alerted_stalled.discard(USER_ID)
+
+    with db.pool().connection() as conn:
+        conn.execute(
+            "insert into rc_account_deletions "
+            "(subject_key, user_id, status, attempts, updated_at) "
+            "values (%s, %s, 'error', %s, now() - interval '1 hour')",
+            (key, USER_ID, account_deletion.STALL_ATTEMPTS),
+        )
+
+    try:
+        with caplog.at_level("ERROR", logger="rc.account-deletion"):
+            account_deletion.resume_active()
+        stalls = [r for r in caplog.records if "STALLED" in r.getMessage()]
+        assert len(stalls) == 1, "resume_active did not raise the operator signal"
+        assert key in stalls[0].getMessage()
+        assert USER_ID not in stalls[0].getMessage()
+        # Still retried — the signal reports, it does not give up.
+        assert started == [USER_ID]
+
+        # And the same fact reaches the client, which keys its entire UI off it.
+        assert account_deletion.status_for(USER_ID)["stalled"] is True
+    finally:
+        account_deletion._alerted_stalled.discard(USER_ID)
 
 
 @needs_pg

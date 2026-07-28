@@ -50,17 +50,22 @@ def subject_key(user_id: str) -> str:
     return config.user_scope_key_for(user_id)
 
 
-# The attempt at which `_retry_delay_s` saturates at its 300-second cap. Reaching it means roughly
-# five minutes of consecutive failures, which is long past any blip the retry loop can absorb on its
-# own — so it is the honest point to stop calling this "in progress".
+# The attempt at which `_retry_delay_s` reaches its 300-second cap, so a row that has got here is
+# retrying on a flat interval rather than still backing off toward one. Reaching it costs
+# 5+10+20+40+80+160 = 315 seconds of consecutive failure — past anything the backoff absorbs.
+#
+# An earlier version said 6 and justified it with this same sentence; both the saturation point and
+# the "roughly five minutes" were wrong (`_retry_delay_s(6)` is 160, and reaching 6 costs 155s).
+# The number is now the one the reasoning actually describes, and the test below brackets it
+# against the backoff so the two cannot drift apart silently.
 #
 # Deliberately a count, not a list of terminal error codes. A list would have to be kept in step
-# with every failure the coordinator can raise, and would go stale silently; "it has failed six
+# with every failure the coordinator can raise, and would go stale silently; "it has failed seven
 # times and is not recovering" needs no maintenance and cannot be wrong about a code nobody
 # classified yet. `ambiguous-transition-trash` is the case this was written for — it needs an
 # operator to disambiguate a legacy trash directory and will never succeed unaided — but a wedged
 # Supabase key or a permanently unreachable database land here too, which is correct.
-STALL_ATTEMPTS = 6
+STALL_ATTEMPTS = 7
 
 
 def _is_stalled(status: str | None, attempts: int | None) -> bool:
@@ -354,6 +359,7 @@ def _run(user_id: str) -> None:
             supabase_admin.delete_user(user_id)
 
             _set_status(key, "completed", completed=True)
+            _alerted_stalled.discard(user_id)
             log.info("account deletion completed subject=%s", key)
     except Exception as exc:  # noqa: BLE001 — every step is durable and retryable
         if isinstance(exc, supabase_admin.SupabaseDeleteError):
@@ -420,9 +426,14 @@ def _alert_if_stalled(user_id: str, status: str | None, attempts: int | None) ->
     Deduplicated per process rather than durably, on purpose. A restart re-announcing an unresolved
     stall is the correct behaviour, not noise: it is still true, and a fresh boot is exactly when an
     operator is looking. Single worker (invariant 6), so one set is the whole story.
+
+    `attempts` is monotonic — `_set_status` only ever adds to it and `request()` is
+    `on conflict do nothing` — so a row cannot become un-stalled by retrying, and this must NOT try
+    to clear itself on a low-attempts reading. An earlier version did, with a comment about
+    recovery; that branch was unreachable, and the test that covered it fed an attempts value the
+    schema cannot produce. Completion is the one real exit, and `_run` clears the entry there.
     """
     if not _is_stalled(status, attempts):
-        _alerted_stalled.discard(user_id)   # recovered; let it announce again if it re-stalls
         return
     if user_id in _alerted_stalled:
         return
