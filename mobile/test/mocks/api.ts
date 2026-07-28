@@ -4,6 +4,8 @@ const unexpected = (name: string) =>
   });
 
 export const getAuthConfig = unexpected('getAuthConfig');
+export const getAccountDeletion = jest.fn(async () => ({ deletion: null }));
+export const startAccountDeletion = unexpected('startAccountDeletion');
 export const getHealth = jest.fn(async () => ({ ok: true, title: 'Test', dev: false }));
 export const getSettings = unexpected('getSettings');
 export const saveSettings = unexpected('saveSettings');

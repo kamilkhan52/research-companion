@@ -1,7 +1,10 @@
 import { fireEvent, renderAsync, waitFor } from '@testing-library/react-native';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Text } from 'react-native';
 
+import * as api from '@/api/endpoints';
 import { AuthGate } from '@/components/AuthGate';
+import { createTestQueryClient } from './queryClient';
 
 const signInWithGoogle = jest.fn(async () => undefined);
 const signInWithMagicLink = jest.fn(async () => true);
@@ -15,6 +18,8 @@ let mockAuthState = {
   error: null as string | null,
   signInWithGoogle,
   signInWithMagicLink,
+  refreshSession: jest.fn(async () => undefined),
+  finishAccountDeletion: jest.fn(async () => undefined),
   signOut: jest.fn(async () => undefined),
   retry,
 };
@@ -41,17 +46,22 @@ beforeEach(() => {
     error: null,
     signInWithGoogle,
     signInWithMagicLink,
+    refreshSession: jest.fn(async () => undefined),
+    finishAccountDeletion: jest.fn(async () => undefined),
     signOut: jest.fn(async () => undefined),
     retry,
   };
   signInWithMagicLink.mockResolvedValue(true);
+  jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: null });
 });
 
 async function renderGate() {
   return renderAsync(
-    <AuthGate>
-      <Text>Private library</Text>
-    </AuthGate>,
+    <QueryClientProvider client={createTestQueryClient()}>
+      <AuthGate>
+        <Text>Private library</Text>
+      </AuthGate>
+    </QueryClientProvider>,
   );
 }
 
@@ -148,13 +158,60 @@ test('an unreachable server exposes recovery without suggesting sign-in', async 
 test('signed-in and auth-disabled states pass through to the app', async () => {
   mockAuthState = { ...mockAuthState, status: 'signed-in' };
   const signedIn = await renderGate();
-  expect(signedIn.getByText('Private library')).toBeTruthy();
+  await waitFor(() => expect(signedIn.getByText('Private library')).toBeTruthy());
+  expect(api.getAccountDeletion).toHaveBeenCalledTimes(1);
 
   mockAuthState = { ...mockAuthState, status: 'disabled' };
   await signedIn.rerenderAsync(
-    <AuthGate>
-      <Text>Private library</Text>
-    </AuthGate>,
+    <QueryClientProvider client={createTestQueryClient()}>
+      <AuthGate>
+        <Text>Private library</Text>
+      </AuthGate>
+    </QueryClientProvider>,
   );
   expect(signedIn.getByText('Private library')).toBeTruthy();
+});
+
+test('a durable deletion resumes before ordinary app consumers mount', async () => {
+  mockAuthState = { ...mockAuthState, status: 'signed-in' };
+  jest.mocked(api.getAccountDeletion).mockResolvedValue({
+    deletion: {
+      status: 'draining',
+      error_code: null,
+      attempts: 1,
+      requested_at: '2026-07-28T00:00:00Z',
+      updated_at: '2026-07-28T00:00:01Z',
+      completed_at: null,
+    },
+  });
+
+  const view = await renderGate();
+  await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
+  expect(view.queryByText('Private library')).toBeNull();
+  await view.unmountAsync();
+});
+
+test('a paused deletion can refresh the session and retry idempotently', async () => {
+  mockAuthState = { ...mockAuthState, status: 'signed-in' };
+  const failed = {
+    status: 'error' as const,
+    error_code: 'deleting_identity:upstream',
+    attempts: 1,
+    requested_at: '2026-07-28T00:00:00Z',
+    updated_at: '2026-07-28T00:00:01Z',
+    completed_at: null,
+  };
+  jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: failed });
+  jest.mocked(api.startAccountDeletion).mockResolvedValue({
+    deletion: { ...failed, status: 'pending', attempts: 2, error_code: null },
+  });
+
+  const view = await renderGate();
+  await waitFor(() => expect(view.getByText('Retry deletion')).toBeTruthy());
+  fireEvent.press(view.getByText('Retry deletion'));
+
+  await waitFor(() => expect(mockAuthState.refreshSession).toHaveBeenCalledTimes(1));
+  expect(api.startAccountDeletion).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
+  await view.unmountAsync();
 });

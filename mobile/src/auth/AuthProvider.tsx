@@ -25,6 +25,7 @@ import { getAuthConfig } from '@/api/endpoints';
 import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
+import { clearDeletedAccountStorage } from './accountCleanup';
 import { secureSessionStore } from './secureSessionStore';
 
 /** `unknown` until /api/auth/config answers — the app must not decide it is signed out while it
@@ -40,6 +41,10 @@ interface AuthState {
   signInWithGoogle: () => Promise<void>;
   /** True when Supabase accepted the email and the UI may advance to "check your inbox". */
   signInWithMagicLink: (email: string) => Promise<boolean>;
+  /** Mint a new access token immediately before a destructive, recent-session operation. */
+  refreshSession: () => Promise<void>;
+  /** Remove the deleted identity's session and account-linked device state without a server call. */
+  finishAccountDeletion: () => Promise<void>;
   signOut: () => Promise<void>;
   retry: () => void;
 }
@@ -476,13 +481,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [adoptSession]);
 
+  const refreshSession = useCallback(async () => {
+    setError(null);
+    const supabase = client.current;
+    const mine = generation.current;
+    if (!supabase) throw new Error('Your sign-in session is unavailable.');
+    const { data, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError || !data.session) {
+      const message = refreshError?.message ?? 'Sign in again before deleting this account.';
+      setError(message);
+      throw new Error(message);
+    }
+    // Do not rely on the auth-state listener racing the deletion POST. The backend deliberately
+    // requires an iat no more than five minutes old, so the request must not leave until the
+    // freshly minted token is the synchronous token used by api/client.ts.
+    await adoptSession(data.session, mine);
+  }, [adoptSession]);
+
+  const finishAccountDeletion = useCallback(async () => {
+    setError(null);
+    let failure: string | null = null;
+    // Identity deletion already happened server-side. A normal/global sign-out would now make an
+    // unnecessary Auth request against an account that no longer exists; local scope removes the
+    // persisted Supabase session and refresh token from this device only.
+    try {
+      const result = await client.current?.auth.signOut({ scope: 'local' });
+      if (result?.error) failure = result.error.message;
+    } catch (caught) {
+      failure = caught instanceof Error ? caught.message : 'Could not clear the local session.';
+    }
+    await stopPlaybackForSessionEnd().catch(() => {});
+    try {
+      await clearDeletedAccountStorage();
+    } catch {
+      // The server-side account is gone, so never leave its bearer token active merely because
+      // device storage failed. Sign out below, but make the residual-data risk explicit.
+      failure = 'Some account-linked data could not be cleared from this device.';
+    }
+    queryClient.clear();
+    await adoptSession(null);
+    if (failure) {
+      setError(`${failure} Clear the app's data before another person uses this device.`);
+    }
+  }, [adoptSession, queryClient]);
+
   const value = useMemo<AuthState>(
     () => ({
       status, mode, email, error,
-      signInWithGoogle, signInWithMagicLink, signOut,
+      signInWithGoogle, signInWithMagicLink, refreshSession, finishAccountDeletion, signOut,
       retry: () => setAttempt((n) => n + 1),
     }),
-    [status, mode, email, error, signInWithGoogle, signInWithMagicLink, signOut],
+    [
+      status, mode, email, error, signInWithGoogle, signInWithMagicLink,
+      refreshSession, finishAccountDeletion, signOut,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

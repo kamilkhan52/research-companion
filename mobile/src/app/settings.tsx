@@ -225,6 +225,13 @@ export default function SettingsScreen() {
                 {authEmail ? `Signed in as ${authEmail}.` : 'Signed in.'}
               </Text>
               <Button title="Sign out" onPress={() => { void handleSignOut(); }} />
+              <Button
+                title="Delete account"
+                variant="danger"
+                icon="trash-2"
+                onPress={() => router.push('/delete-account')}
+                style={{ marginTop: space.sm }}
+              />
             </Section>
           ) : null}
 

@@ -112,6 +112,7 @@ function ThemedShell() {
                 navigation the user did not ask for. */}
             <Stack.Screen name="auth" options={{ animation: 'none' }} />
             <Stack.Screen name="settings" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="delete-account" />
             <Stack.Screen
               name="player"
               options={{ presentation: 'modal', animation: 'slide_from_bottom' }}

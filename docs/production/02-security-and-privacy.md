@@ -90,7 +90,7 @@ the server inventory below.
 | Supabase Auth | Identity/provider metadata, login credentials/session machinery | Provider-managed; exact retention must be verified | Deleted last by the durable coordinator; staging verification still requires H23 |
 | Postgres `rc_users` | Verified Supabase UUID, email, creation time | Until completed account deletion | Deleted only after owned filesystem data and attribution rows are purged |
 | Postgres `rc_projects` / `rc_project_trash` | Project ID, live owner UUID, transition former-owner UUID, concrete trash-directory name and owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion; exact trash entry retained until permanent purge | Account deletion removes every owner link and trash row but retains content-free project-ID tombstones as anti-ABA/security records |
-| Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | `ON DELETE CASCADE`, but parent account deletion is absent |
+| Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | Removed transactionally with the parent `rc_users` row |
 | Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active and attributed trashed repositories are permanently removed by the coordinator |
 | Project `.state/` | Session index, discovery results, graph/metadata caches, usage totals, covers, figures, branches/drafts, and transient job state | Indefinite/rebuildable; no general TTL | Removed only when the containing project is permanently removed |
 | `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite until account deletion; no separate TTL yet | Exact attributed entries are permanently removed by account deletion. Ambiguous legacy entries still require explicit per-directory mapping |
@@ -135,7 +135,9 @@ written before a new/imported/split repository is published and removed only aft
 keeps claim-failure content attributable to account deletion even if compensating removal fails.
 Initial deletion authorization uses a recent signed Supabase `amr` user-presence timestamp, not JWT
 `iat`, because automatic token refresh can mint a new access token without reauthentication.
-The remaining user-facing work is the in-app surface, public web request path, H23 configuration,
+The mobile app now provides exact typed confirmation, requires a fresh Supabase user-presence
+event, resumes durable progress after restart, and clears account-linked device state at
+completion. The remaining user-facing work is the public web request path, H23 configuration,
 and disposable-account staging verification.
 
 Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
@@ -218,9 +220,10 @@ take precedence over this source review.
 ## Retention and deletion requirements
 
 No externally publishable retention promise is supportable yet. The current technical behavior is
-“retain until the user/project is deleted,” but project deletion is recoverable indefinitely and
-account deletion does not exist. Log, Fly snapshot/backup, Supabase Auth, and provider retention
-also need explicit answers.
+“retain until the user/project is deleted”; ordinary project deletion is recoverable indefinitely,
+while durable account deletion permanently removes attributed application data. Log, Fly
+snapshot/backup, Supabase Auth, and provider retention still need explicit answers and staging
+deletion cannot be verified until H23 is configured.
 
 The account-deletion implementation is complete only when one idempotent workflow:
 
@@ -257,6 +260,8 @@ rules as the privacy policy.
       end-to-end verification.
 - [x] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
+- [x] Add an authenticated in-app deletion path with recent-session refresh, exact confirmation,
+      restart-safe polling/retry, and account-linked local cache/session cleanup.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
 - [ ] Finish removing reusable bearer tokens from media query strings: protected mobile images
       use `Authorization` and per-user cache keys, and audio already uses headers. After the
@@ -276,7 +281,8 @@ rules as the privacy policy.
       cleartext support, require HTTPS for server-side user/agent-selected source fetches, and
       verify the merged manifest/runtime configuration.
 - [ ] Implement an in-app offensive-AI-content report action and durable report store.
-- [ ] Implement in-app privacy, terms, and account-deletion links plus the public deletion page.
+- [ ] Implement in-app privacy and terms links plus the public deletion page. The in-app
+      account-deletion path is implemented.
 - [ ] Add the M3 usage-event/reservation and M4–M5 billing changes to this inventory before their
       releases reach Play.
 - [ ] Have the developer approve the privacy policy/terms and make the final Play Console

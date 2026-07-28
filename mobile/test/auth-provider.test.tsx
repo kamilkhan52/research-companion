@@ -4,7 +4,7 @@
 // silent 401s — most cruelly an hour after sign-in, when the first refresh lands.
 
 import { QueryClientProvider } from '@tanstack/react-query';
-import { renderAsync, waitFor } from '@testing-library/react-native';
+import { act, renderAsync, waitFor } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import * as apiConfig from '@/api/config';
@@ -20,6 +20,10 @@ const mockAuth = {
     return { data: { subscription: { unsubscribe: jest.fn() } } };
   }),
   getSession: jest.fn(async (): Promise<{ data: { session: unknown } }> => ({ data: { session: null } })),
+  refreshSession: jest.fn(async (): Promise<{
+    data: { session: unknown };
+    error: { message: string } | null;
+  }> => ({ data: { session: null }, error: null })),
   signOut: jest.fn(async () => ({ error: null })),
   exchangeCodeForSession: jest.fn(async () => ({ error: null })),
   setSession: jest.fn(async () => ({ error: null })),
@@ -103,6 +107,7 @@ beforeEach(() => {
   jest.requireMock('expo-secure-store').getItemAsync.mockResolvedValue('pending');
   authStateCallback = undefined;
   mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+  mockAuth.refreshSession.mockResolvedValue({ data: { session: null }, error: null });
   mockAuth.signInWithOtp.mockResolvedValue({ error: null });
   jest.spyOn(apiConfig, 'setToken').mockResolvedValue(undefined);
   jest.spyOn(apiConfig, 'subscribeBaseUrl').mockImplementation(() => jest.fn());
@@ -134,6 +139,59 @@ test('a token refresh replaces the stored token', async () => {
     access_token: 'second-jwt', user: { email: 'r@example.com' },
   });
   await waitFor(() => expect(apiConfig.setToken).toHaveBeenCalledWith('second-jwt'));
+});
+
+test('a sensitive action waits until an explicitly refreshed token is adopted', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: { access_token: 'old-jwt', user: { email: 'r@example.com' } } },
+  });
+  mockAuth.refreshSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'fresh-jwt',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+    error: null,
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.refreshSession();
+  });
+
+  expect(mockAuth.refreshSession).toHaveBeenCalledTimes(1);
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith('fresh-jwt');
+});
+
+test('finishing deletion uses local sign-out and clears the API token', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => {
+    await auth!.finishAccountDeletion();
+  });
+
+  expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
+  await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
 });
 
 test('signing out clears the token, not just the UI state', async () => {

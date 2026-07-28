@@ -21,6 +21,7 @@ import {
 
 import { getBaseUrl, setBaseUrl } from '@/api/config';
 import { useAuth } from '@/auth/AuthProvider';
+import { AccountDeletionGuard } from '@/components/AccountDeletionGuard';
 import { Button, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -42,7 +43,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
   // `disabled` is a local backend with no auth configured — the normal development case, and the
   // only one where showing content without a token is correct.
-  if (status === 'disabled' || status === 'signed-in') return <>{children}</>;
+  if (status === 'disabled') return <>{children}</>;
+  if (status === 'signed-in') {
+    return <AccountDeletionGuard>{children}</AccountDeletionGuard>;
+  }
   return <SignedOutExperience />;
 }
 
