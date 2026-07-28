@@ -137,8 +137,8 @@ Initial deletion authorization uses a recent signed Supabase `amr` user-presence
 `iat`, because automatic token refresh can mint a new access token without reauthentication.
 The mobile app now provides exact typed confirmation, requires a fresh Supabase user-presence
 event, resumes durable progress after restart, and clears account-linked device state at
-completion. The remaining user-facing work is the public web request path, H23 configuration,
-and disposable-account staging verification.
+completion, including protected image caches. The remaining user-facing work is the public web
+request path, H23 configuration, and disposable-account staging verification.
 
 Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
 records operation, model, tokens, cost, timestamps, and pending OpenRouter generation IDs. M3 will

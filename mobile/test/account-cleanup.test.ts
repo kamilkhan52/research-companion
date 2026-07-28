@@ -1,6 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image } from 'expo-image';
 
 import { clearDeletedAccountStorage } from '@/auth/accountCleanup';
+
+jest.mock('expo-image', () => ({
+  Image: {
+    clearMemoryCache: jest.fn(async () => true),
+    clearDiskCache: jest.fn(async () => true),
+  },
+}));
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -14,6 +22,7 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.paperSort.v1:project-a', 'year'],
     ['rc.eligibleListeningHandoffs', '["job-a"]'],
     ['rc.handledAudioHandoffs', '["job-b"]'],
+    ['rc.playbackSnapshot.v1', '{"title":"private narration"}'],
     ['rc.baseUrl', 'https://staging.example.com'],
     ['rc.themeMode', 'light'],
     ['rc.layoutDensity', 'tight'],
@@ -32,6 +41,7 @@ test('deletion purges account research state but keeps device preferences and se
     'rc.paperSort.v1:project-a',
     'rc.eligibleListeningHandoffs',
     'rc.handledAudioHandoffs',
+    'rc.playbackSnapshot.v1',
   ])).toEqual([
     ['rc.activeProject', null],
     ['rc.draft.v1:project-a:paper', null],
@@ -39,7 +49,10 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.paperSort.v1:project-a', null],
     ['rc.eligibleListeningHandoffs', null],
     ['rc.handledAudioHandoffs', null],
+    ['rc.playbackSnapshot.v1', null],
   ]);
+  expect(Image.clearMemoryCache).toHaveBeenCalledTimes(1);
+  expect(Image.clearDiskCache).toHaveBeenCalledTimes(1);
   expect(await AsyncStorage.multiGet([
     'rc.baseUrl',
     'rc.themeMode',
