@@ -179,7 +179,9 @@ def database(monkeypatch):
     monkeypatch.setenv("RC_DATABASE_URL", TEST_DB)
     db.close()
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
     db.migrate()
     yield
     db.close()
@@ -196,7 +198,9 @@ def test_a_poisoned_ledger_row_cannot_suppress_a_column_only_migration(database)
     schema check should look at. Nothing skips on the ledger at all now.
     """
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_user_settings, rc_projects, rc_users cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_user_settings, rc_projects, "
+            "rc_users cascade")
         conn.execute("delete from rc_schema_migrations")
         conn.execute("insert into rc_schema_migrations (name) values ('0002_retire_ids.sql')")
 
@@ -537,7 +541,9 @@ def test_two_processes_migrating_at_once_do_not_fight(database):
     import concurrent.futures
 
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool_:
         results = [f.result() for f in [pool_.submit(db.migrate) for _ in range(4)]]
