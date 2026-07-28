@@ -58,6 +58,35 @@ def test_request_refuses_before_persisting_when_admin_secret_is_missing(monkeypa
     assert config.user_is_deleting(USER_ID) is False
 
 
+def test_transition_owner_adds_one_unindexed_trash_incarnation(monkeypatch):
+    name = "legacy-project-20260728-010203"
+    monkeypatch.setattr(tenancy, "projects_owned_by", lambda _uid: {"live"})
+    monkeypatch.setattr(tenancy, "trash_entries_owned_by", lambda _uid: {"indexed"})
+    monkeypatch.setattr(tenancy, "transition_projects_owned_by", lambda _uid: {"legacy-project"})
+    monkeypatch.setattr(account_deletion.projects, "trashed_project_entries", lambda: [name])
+    monkeypatch.setattr(tenancy, "trash_owner_of", lambda _name: None)
+
+    live, trash = account_deletion._owned_data(USER_ID)
+
+    assert live == {"live"}
+    assert trash == {"indexed", name}
+
+
+def test_transition_owner_refuses_ambiguous_unindexed_incarnations(monkeypatch):
+    names = [
+        "legacy-project-20260728-010203",
+        "legacy-project-20260729-010203",
+    ]
+    monkeypatch.setattr(tenancy, "projects_owned_by", lambda _uid: set())
+    monkeypatch.setattr(tenancy, "trash_entries_owned_by", lambda _uid: set())
+    monkeypatch.setattr(tenancy, "transition_projects_owned_by", lambda _uid: {"legacy-project"})
+    monkeypatch.setattr(account_deletion.projects, "trashed_project_entries", lambda: names)
+    monkeypatch.setattr(tenancy, "trash_owner_of", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="ambiguous-transition-trash"):
+        account_deletion._owned_data(USER_ID)
+
+
 def test_coordinator_removes_every_owned_tree_then_identity(tmp_path, monkeypatch):
     project_id = "owned-project"
     trash_name = "older-project-20260728-010203"
@@ -355,3 +384,20 @@ def test_completed_deletion_clears_raw_uuid_but_keeps_subject_gate(database):
         ).fetchone()
     assert row == (None, "completed", True)
     assert account_deletion.is_blocked(USER_ID) is True
+
+
+@needs_pg
+def test_active_rescan_finds_request_created_after_startup(database, monkeypatch):
+    key = account_deletion.subject_key(USER_ID)
+    with db.pool().connection() as conn:
+        conn.execute(
+            "insert into rc_account_deletions (subject_key, user_id, status) "
+            "values (%s, %s, 'draining')",
+            (key, USER_ID),
+        )
+    monkeypatch.setattr(supabase_admin, "configured", lambda: True)
+    started: list[str] = []
+    monkeypatch.setattr(account_deletion, "start_worker", lambda uid: started.append(uid) or True)
+
+    assert account_deletion.resume_active() == 1
+    assert started == [USER_ID]

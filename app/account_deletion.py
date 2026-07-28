@@ -35,6 +35,9 @@ DEPLOY_OVERLAP_S = float(os.environ.get(
 
 _workers: set[str] = set()
 _workers_lock = threading.Lock()
+_monitor_started = False
+_monitor_lock = threading.Lock()
+RESUME_SCAN_S = 5.0
 
 
 class AccountDeletionUnavailable(RuntimeError):
@@ -152,7 +155,34 @@ def _set_status(
 
 
 def _owned_data(user_id: str) -> tuple[set[str], set[str]]:
-    return tenancy.projects_owned_by(user_id), tenancy.trash_entries_owned_by(user_id)
+    live = tenancy.projects_owned_by(user_id)
+    trash = tenancy.trash_entries_owned_by(user_id)
+
+    # During the 0004 rolling migration an old process could retire a project after the trigger
+    # landed but before that process knew how to populate rc_project_trash. The trigger preserved
+    # only the project-level former owner. Reconcile that link exactly as the adoption script does:
+    # one concrete incarnation is attributable; multiple unindexed incarnations are not. Never
+    # clear the transition owner and claim completion while an ambiguous repository remains.
+    transition_pids = tenancy.transition_projects_owned_by(user_id)
+    by_pid: dict[str, list[str]] = {}
+    for name in projects.trashed_project_entries():
+        pid = projects.project_id_from_trash_name(name)
+        if pid in transition_pids:
+            by_pid.setdefault(pid, []).append(name)
+
+    for pid in transition_pids:
+        names = by_pid.get(pid, [])
+        owners = {name: tenancy.trash_owner_of(name) for name in names}
+        unindexed = [name for name, owner in owners.items() if owner is None]
+        if len(names) == 1:
+            owner = owners[names[0]]
+            if owner is None:
+                trash.add(names[0])
+            elif owner != user_id:
+                raise RuntimeError("transition-trash-owner-conflict")
+        elif unindexed:
+            raise RuntimeError("ambiguous-transition-trash")
+    return live, trash
 
 
 def _trash_path(trash_name: str) -> Path:
@@ -245,6 +275,12 @@ def _run(user_id: str) -> None:
             config.begin_global_job_drain()
             global_drain = True
             _wait_for_prior_deploy_processes()
+            # A replacement process can start this attempt while the retiring one is already in
+            # its destructive phase. The retiring process is guaranteed gone by now; if it
+            # completed before exiting, do not repeat the work or regress its completed tombstone.
+            current = status_for(user_id)
+            if current and current.get("status") == "completed":
+                return
             project_ids, trash_names = _owned_data(user_id)
 
             # Close project-scoped admission too. This covers system-triggered work that has a
@@ -333,3 +369,44 @@ def resume_pending() -> int:
     for row in rows:
         start_worker(row[0])
     return len(rows)
+
+
+def resume_active() -> int:
+    """Resume newly durable active requests a rolling replacement's startup scan missed."""
+    if not db.enabled() or not supabase_admin.configured():
+        return 0
+    with db.pool().connection() as conn:
+        rows = conn.execute(
+            "select user_id::text from rc_account_deletions "
+            "where user_id is not null "
+            "and status in ('pending', 'draining', 'deleting_data', 'deleting_identity')",
+        ).fetchall()
+    for row in rows:
+        start_worker(row[0])
+    return len(rows)
+
+
+def start_resume_monitor() -> bool:
+    """Start one daemon that closes the rolling-deploy gap after the one-time startup scan."""
+    global _monitor_started
+    if not db.enabled() or not supabase_admin.configured():
+        return False
+    with _monitor_lock:
+        if _monitor_started:
+            return False
+        _monitor_started = True
+
+    def monitor() -> None:
+        while True:
+            time.sleep(RESUME_SCAN_S)
+            try:
+                resume_active()
+            except Exception as exc:  # noqa: BLE001 — the next bounded scan retries
+                log.warning("account deletion resume scan failed error=%s", type(exc).__name__)
+
+    threading.Thread(
+        target=monitor,
+        daemon=True,
+        name="account-delete-resume",
+    ).start()
+    return True

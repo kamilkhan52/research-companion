@@ -121,9 +121,11 @@ Each destructive attempt also waits the configured 310-second Fly deployment-ove
 reusing the original request time. The app's steady-state single-Machine invariant plus that rule
 means a retiring process cannot recreate data after removal; the surviving process's request and
 worker registries provide the fine-grained drain. Global job admission stays paused during the
-overlap wait. Initial deletion authorization uses a recent signed Supabase `amr` user-presence
-timestamp, not JWT `iat`, because automatic token refresh can mint a new access token without
-reauthentication.
+overlap wait, and a bounded five-second durable rescan picks up requests persisted after a rolling
+replacement's one-time startup scan. Transition-only former ownership from a pre-index worker is
+reconciled only when one concrete trash incarnation is attributable; ambiguity fails closed.
+Initial deletion authorization uses a recent signed Supabase `amr` user-presence timestamp, not JWT
+`iat`, because automatic token refresh can mint a new access token without reauthentication.
 The remaining user-facing work is the in-app surface, public web request path, H23 configuration,
 and disposable-account staging verification.
 

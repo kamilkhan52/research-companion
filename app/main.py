@@ -111,6 +111,7 @@ def _resume_account_deletions() -> None:
         return
     if resumed:
         _log.info("account deletion resumed %d durable request(s)", resumed)
+    account_deletion.start_resume_monitor()
 
 
 _apply_migrations()
