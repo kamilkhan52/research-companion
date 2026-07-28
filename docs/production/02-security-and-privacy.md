@@ -96,7 +96,7 @@ the server inventory below.
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
 | In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
-| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors; a rate-limited raw UUID for allowlist rejection | Not configured in this repository | Retention and deletion capability must be confirmed with the hosting setup |
+| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors; a rate-limited raw UUID for allowlist rejection; **current media URLs put the Supabase bearer JWT in `?token=`, which uvicorn access logs can record** | Not configured in this repository | **Launch blocker:** stop putting reusable credentials in logged URLs (use header-authenticated media, narrowly scoped short-lived signed URLs, or verified query redaction), then confirm retention and deletion capability with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
 Postgres ownership checks. They are not filesystem-namespaced by user. Access isolation is
@@ -223,7 +223,9 @@ rules as the privacy policy.
 - [ ] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
-- [ ] Define log destination, retention, access, and deletion behavior; sanitize provider errors.
+- [ ] Remove reusable bearer tokens from media query strings (or prove complete query redaction),
+      rotate any credentials exposed during testing, then define log destination, retention, access,
+      and deletion behavior and sanitize provider errors.
 - [ ] Confirm Google OAuth scopes and which identity fields Supabase retains.
 - [ ] Review current data-processing/retention/training terms and configuration for Fly, Supabase,
       OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,
