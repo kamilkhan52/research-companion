@@ -16,6 +16,27 @@ export async function clearAccountDeletionIntent(): Promise<void> {
   await AsyncStorage.removeItem(DELETION_INTENT_KEY);
 }
 
+const DELETED_NOTICE_KEY = 'rc.accountDeletedNotice.v1';
+
+/** Set once deletion completes, cleared only when the user acknowledges it.
+ *
+ * Persisted rather than held in component state because the completion path ends in a sign-out,
+ * which unmounts the tree that would have held it — and because someone who just deleted their
+ * account may well close the app immediately. Deliberately NOT in `ACCOUNT_KEYS` below: this is a
+ * one-word flag about a device, not the deleted user's research state, and the purge must not eat
+ * the acknowledgement it exists to deliver. */
+export async function markAccountDeleted(): Promise<void> {
+  await AsyncStorage.setItem(DELETED_NOTICE_KEY, '1');
+}
+
+export async function hasAccountDeleted(): Promise<boolean> {
+  return (await AsyncStorage.getItem(DELETED_NOTICE_KEY)) === '1';
+}
+
+export async function clearAccountDeleted(): Promise<void> {
+  await AsyncStorage.removeItem(DELETED_NOTICE_KEY);
+}
+
 /** Account/project-linked device state. Device preferences and the selected server survive. */
 const ACCOUNT_KEYS = new Set([
   'rc.activeProject',

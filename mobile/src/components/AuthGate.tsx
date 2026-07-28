@@ -30,7 +30,7 @@ type AuthFlow = 'welcome' | 'sign-in' | 'create-account' | 'check-inbox';
 type EntryFlow = Extract<AuthFlow, 'sign-in' | 'create-account'>;
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const { status } = useAuth();
+  const { status, accountDeleted } = useAuth();
 
   if (status === 'unknown') {
     return (
@@ -42,6 +42,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
   if (status === 'cleanup-required') return <LocalCleanupRequired />;
+  // After `cleanup-required`, because an incomplete purge is the more urgent thing to say. Before
+  // everything else, because the alternative is what this exists to stop: the completion screen
+  // flashes past and the user lands on the sign-in form, with no durable confirmation that an
+  // irreversible action worked — and an invitation to create a fresh empty account under the same
+  // address, since Supabase sign-up is self-service.
+  if (accountDeleted) return <AccountDeleted />;
   // `disabled` is a local backend with no auth configured — the normal development case, and the
   // only one where showing content without a token is correct.
   if (status === 'disabled') return <>{children}</>;
@@ -73,6 +79,31 @@ function LocalCleanupRequired() {
         </Card>
       </View>
     </Screen>
+  );
+}
+
+/** Terminal acknowledgement of a completed deletion. Deliberately plain — it is seen once, by
+ *  someone who is leaving. Reuses `UnsupportedServer`'s layout rather than introducing styles. */
+function AccountDeleted() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { dismissAccountDeleted } = useAuth();
+  return (
+    <AuthCanvas>
+      <View style={styles.centerCard}>
+        <View style={styles.stateIcon}>
+          <Icon name="check" size={28} color={t.mint} />
+        </View>
+        <Text variant="editorial" style={{ textAlign: 'center' }}>
+          Your account was deleted
+        </Text>
+        <Text variant="body" color={t.muted} style={styles.stateBody}>
+          Your projects, papers, notes, and sign-in have been permanently removed. Nothing is kept
+          on this device.
+        </Text>
+        <Button title="Done" onPress={dismissAccountDeleted} />
+      </View>
+    </AuthCanvas>
   );
 }
 

@@ -26,9 +26,12 @@ import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config
 import type { AuthConfig } from '@/api/types';
 
 import {
+  clearAccountDeleted,
   clearAccountDeletionIntent,
   clearDeletedAccountStorage,
+  hasAccountDeleted,
   hasAccountDeletionIntent,
+  markAccountDeleted,
   markAccountDeletionIntent,
 } from './accountCleanup';
 import { secureSessionStore } from './secureSessionStore';
@@ -58,6 +61,9 @@ interface AuthState {
   reauthenticateForDeletion: () => Promise<'authenticated' | 'email-sent' | 'cancelled'>;
   /** Remove the deleted identity's session and account-linked device state without a server call. */
   finishAccountDeletion: () => Promise<void>;
+  /** True until the user acknowledges that their account was deleted. */
+  accountDeleted: boolean;
+  dismissAccountDeleted: () => void;
   signOut: () => Promise<void>;
   retry: () => void;
 }
@@ -207,6 +213,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const client = useRef<SupabaseClient | null>(null);
   /** A callback URL that arrived before the Supabase client existed (cold start). */
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const pendingUrl = useRef<string | null>(null);
   /** Bumped when a client becomes available, so the deep-link effect can replay. */
   const [clientReady, setClientReady] = useState(0);
@@ -217,6 +224,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /** Local deletion recovery must not depend on a restorable Supabase session or reachable API. */
   const recoverLocalDeletion = useCallback(async (): Promise<'none' | 'cleared' | 'failed'> => {
+    // Read before the early return: a cold start on a device whose deletion already completed has
+    // no intent marker left, and must still show the acknowledgement.
+    if (await hasAccountDeleted().catch(() => false)) setAccountDeleted(true);
     if (!(await hasAccountDeletionIntent().catch(() => false))) return 'none';
     queryClient.clear();
     let failed = false;
@@ -691,6 +701,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         failure = 'Some account-linked data could not be cleared from this device.';
       }
     }
+    // The account is gone server-side whether or not the local purge succeeded, so record the
+    // acknowledgement here rather than on the success path only. `cleanup-required` takes priority
+    // in AuthGate, so a failed purge still shows its own screen first and this surfaces after.
+    await markAccountDeleted().catch(() => {});
+    setAccountDeleted(true);
     // Identity deletion already happened server-side. A normal/global sign-out would now make an
     // unnecessary Auth request against an account that no longer exists; local scope removes the
     // persisted Supabase session and refresh token from this device only.
@@ -712,11 +727,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       status, mode, userId, email, error,
       signInWithGoogle, signInWithMagicLink, reauthenticateForDeletion,
       finishAccountDeletion, signOut,
+      accountDeleted,
+      dismissAccountDeleted: () => {
+        setAccountDeleted(false);
+        void clearAccountDeleted();
+      },
       retry: () => setAttempt((n) => n + 1),
     }),
     [
       status, mode, userId, email, error, signInWithGoogle, signInWithMagicLink,
-      reauthenticateForDeletion, finishAccountDeletion, signOut,
+      reauthenticateForDeletion, finishAccountDeletion, signOut, accountDeleted,
     ],
   );
 

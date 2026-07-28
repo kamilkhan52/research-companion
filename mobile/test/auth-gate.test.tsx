@@ -22,6 +22,8 @@ let mockAuthState = {
   reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
   finishAccountDeletion: jest.fn(async () => undefined),
   signOut: jest.fn(async () => undefined),
+  accountDeleted: false,
+  dismissAccountDeleted: jest.fn(),
   retry,
 };
 
@@ -51,6 +53,8 @@ beforeEach(() => {
     reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
     finishAccountDeletion: jest.fn(async () => undefined),
     signOut: jest.fn(async () => undefined),
+    accountDeleted: false,
+    dismissAccountDeleted: jest.fn(),
     retry,
   };
   signInWithMagicLink.mockResolvedValue(true);
@@ -82,6 +86,37 @@ test('signed-out users start at the welcome screen and can choose sign in', asyn
 
   expect(view.getByText('Welcome back')).toBeTruthy();
   expect(view.getByText('Email me a sign-in link')).toBeTruthy();
+});
+
+test('a completed deletion is acknowledged before the sign-in form comes back', async () => {
+  // Without this the completion copy flashes past and the user lands on the welcome screen with
+  // no confirmation that an irreversible action worked — next to a "Get started" button that,
+  // with self-service sign-up, silently makes a fresh empty account under the same address.
+  const dismiss = jest.fn();
+  mockAuthState = {
+    ...mockAuthState, status: 'signed-out', userId: null,
+    accountDeleted: true, dismissAccountDeleted: dismiss,
+  };
+  const view = await renderGate();
+
+  expect(view.getByText('Your account was deleted')).toBeTruthy();
+  expect(view.queryByText('Understand a field,\nnot just a paper.')).toBeNull();
+
+  fireEvent.press(view.getByText('Done'));
+  expect(dismiss).toHaveBeenCalled();
+});
+
+test('an incomplete local purge is reported ahead of the deletion acknowledgement', async () => {
+  // Both are true at once when cleanup fails. The one that still needs the user to DO something
+  // has to win, or the acknowledgement dismisses them past it.
+  mockAuthState = {
+    ...mockAuthState, status: 'cleanup-required', accountDeleted: true,
+    error: 'Some account-linked data could not be cleared from this device.',
+  };
+  const view = await renderGate();
+
+  expect(view.getByText('Local data needs attention')).toBeTruthy();
+  expect(view.queryByText('Your account was deleted')).toBeNull();
 });
 
 test('a background deletion poll does not tear the app down', async () => {

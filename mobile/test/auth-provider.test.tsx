@@ -14,6 +14,8 @@ import * as endpoints from '@/api/endpoints';
 import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
 import {
   hasAccountDeletionIntent,
+  hasAccountDeleted,
+  markAccountDeleted,
   markAccountDeletionIntent,
 } from '@/auth/accountCleanup';
 import { createTestQueryClient } from './queryClient';
@@ -318,6 +320,51 @@ test('a device that did not start the deletion still fails closed on cleanup', a
 
   await waitFor(() => expect(getByText('cleanup-required')).toBeTruthy());
   expect(await hasAccountDeletionIntent()).toBe(true);
+});
+
+test('the deletion acknowledgement outlives the sign-out that ends the flow', async () => {
+  // It cannot be component state: the completion path ends in a sign-out, which unmounts the tree
+  // that would have held it. Persisted, so it also survives the user closing the app immediately
+  // after deleting — which someone who just deleted their account plausibly does.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: {
+        access_token: 'soon-deleted',
+        user: { id: 'user-a', email: 'r@example.com' },
+      },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+
+  await act(async () => { await auth!.finishAccountDeletion(); });
+
+  await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
+  expect(auth!.accountDeleted).toBe(true);
+  expect(await hasAccountDeleted()).toBe(true);
+
+  await act(async () => { auth!.dismissAccountDeleted(); });
+  await waitFor(() => expect(auth!.accountDeleted).toBe(false));
+  expect(await hasAccountDeleted()).toBe(false);
+});
+
+test('a cold start after a completed deletion still shows the acknowledgement', async () => {
+  // No intent marker survives a successful purge, so the acknowledgement has to be recorded
+  // separately or the app reopens straight onto the sign-in form as if nothing happened.
+  await markAccountDeleted();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-out'));
+
+  expect(auth!.accountDeleted).toBe(true);
 });
 
 test('cold start honors local deletion intent without a restorable session or reachable API', async () => {
