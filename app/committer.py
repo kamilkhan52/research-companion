@@ -101,5 +101,8 @@ def _commit(slug: str, notes_block: str, synthesis: str, summary: str = "") -> d
             raise
     sessions.mark_committed(slug)
     rev = _git("rev-parse", "--short", "HEAD")
-    log.info("commit slug=%s rev=%s: %s", slug, rev, msg)
+    # The human/LLM-authored message can contain private research content. Git retains it as part
+    # of the approved project record, but operational logs need only enough identity to locate the
+    # commit there.
+    log.info("commit slug=%s rev=%s", slug, rev)
     return {"committed": True, "rev": rev, "message": msg}
