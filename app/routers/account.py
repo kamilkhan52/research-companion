@@ -152,6 +152,7 @@ def report_content(body: ContentReportRequest, request: Request):
             paper_slug=body.paper_slug,
             reference=body.reference,
             reporter_note=body.reporter_note,
+            email=user.get("email"),
         )
     except content_reports.ContentReportError as exc:
         # 422 rather than 500: every one of these is something the caller can correct or a limit

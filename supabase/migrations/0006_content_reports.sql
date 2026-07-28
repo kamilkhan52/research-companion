@@ -21,9 +21,13 @@ create table if not exists rc_content_reports (
     id            uuid primary key default gen_random_uuid(),
     reporter_id   uuid not null references rc_users (id) on delete cascade,
     -- Where the content was, not what it said. Nullable because not every surface is per-paper.
+    -- 255 because that is what a project id actually is: `projects._PID_MAX_LENGTH` and
+    -- `rc_projects.id`'s own CHECK both allow it, and `slugify` does not truncate. A tighter
+    -- ceiling here made a LEGITIMATE project unreportable — the insert raised, the route returned
+    -- 503 "please try again", and retrying could never succeed. Keep this in step with those two.
     project_id    text
                   constraint rc_content_reports_project_id_bounded
-                  check (project_id is null or length(project_id) <= 128),
+                  check (project_id is null or length(project_id) <= 255),
     paper_slug    text
                   constraint rc_content_reports_paper_slug_bounded
                   check (paper_slug is null or length(paper_slug) <= 256),

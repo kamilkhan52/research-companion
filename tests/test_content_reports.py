@@ -5,6 +5,7 @@ the requirement applies to all of it. These pin the parts a silent regression wo
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 from app import content_reports, db
@@ -71,9 +72,56 @@ def test_a_report_records_where_the_content_was_not_what_it_said(database):
 
 
 @needs_pg
+def test_a_long_but_legitimate_project_id_is_refused_clearly_not_as_a_server_error(database):
+    """`_PID_MAX_LENGTH` is 255 and `slugify` does not truncate, so a project id far longer than a
+    tidy one is entirely legitimate. A ceiling here that disagreed with that made a real project
+    unreportable: the insert raised, the route returned 503 "please try again", and retrying could
+    never succeed — the exact "a report that vanishes" failure this module exists to avoid."""
+    at_the_limit = "p" * content_reports.PROJECT_ID_MAX
+    content_reports.submit(
+        USER_ID, surface="discussion", reason="offensive", project_id=at_the_limit)
+    assert content_reports.pending_count() == 1
+
+    with pytest.raises(content_reports.ContentReportError, match="too long"):
+        content_reports.submit(
+            USER_ID, surface="discussion", reason="offensive", project_id=at_the_limit + "p")
+    assert content_reports.pending_count() == 1   # refused, not stored
+
+
+@needs_pg
+def test_the_schema_refuses_a_bad_surface_even_if_python_does_not(database):
+    """The Python guard returns before the database sees anything, so the CHECKs had NO coverage —
+    deleting `rc_content_reports_surface_allowed` left the suite green. Inserted directly, which is
+    the only way to reach the constraint the schema claims to enforce."""
+    import psycopg
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.pool().connection() as conn:
+            conn.execute(
+                "insert into rc_content_reports (reporter_id, surface, reason) "
+                "values (%s, 'telepathy', 'offensive')",
+                (USER_ID,),
+            )
+
+
+def test_a_forged_log_line_cannot_be_smuggled_through_a_project_id():
+    """`project_id` is free text that never passes `_safe_pid`, and it lands LAST on a
+    line-oriented formatter — so an embedded newline makes everything after it operator-visible
+    output. stderr is the only place some signals exist at all (the stalled-deletion alert says so),
+    which makes a convincing forged line an attack on the operator's view of the system."""
+    forged = "ok\n19:00:00 ERROR rc.account-deletion [-] account deletion completed subject=fake"
+    safe = content_reports._log_safe(forged)
+    assert "\n" not in safe and "\r" not in safe
+    assert content_reports._log_safe(None) == "-"
+    assert content_reports._log_safe("") == "-"
+    # Bounded too: an operator's line must not be pushed off screen by a 255-character pointer.
+    assert len(content_reports._log_safe("p" * 255)) <= 64
+
+
+@needs_pg
 def test_an_unknown_surface_or_reason_is_refused(database):
-    """Constrained in Python AND by a CHECK. A value no moderation query looks for is the same as
-    a lost report, so it must fail at the boundary rather than be stored."""
+    """Refused at the Python boundary. The schema CHECK is covered separately, above — this one
+    cannot reach it, which is what an earlier version of this docstring got wrong."""
     for kwargs in ({"surface": "telepathy"}, {"reason": "vibes"}):
         call = {"surface": "discussion", "reason": "offensive", **kwargs}
         with pytest.raises(content_reports.ContentReportError):
@@ -91,6 +139,33 @@ def test_one_account_cannot_bury_the_queue(database, monkeypatch):
     # The cap is per reporter, not global — one abuser must not silence everyone else.
     content_reports.submit(OTHER_ID, surface="notes", reason="other")
     assert content_reports.pending_count() == 4
+
+
+@needs_pg
+def test_a_concurrent_burst_cannot_exceed_the_cap(database, monkeypatch):
+    """Counted inside the insert. As two statements on an autocommit pool, concurrent reports each
+    read a count taken before any of them committed, and a burst overshot — bounded, but the cap is
+    the only thing between one account and the whole moderation queue."""
+    monkeypatch.setattr(content_reports, "DAILY_LIMIT", 2)
+    barrier = threading.Barrier(8)
+    accepted = []
+
+    def fire():
+        barrier.wait(timeout=10)
+        try:
+            content_reports.submit(USER_ID, surface="discussion", reason="offensive")
+            accepted.append(1)
+        except content_reports.ContentReportError:
+            pass
+
+    threads = [threading.Thread(target=fire) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+
+    assert sum(accepted) > 0, "every request failed, so the cap was not what was tested"
+    assert content_reports.pending_count() == 2
 
 
 @needs_pg
