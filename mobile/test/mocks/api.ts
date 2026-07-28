@@ -6,6 +6,9 @@ const unexpected = (name: string) =>
 export const getAuthConfig = unexpected('getAuthConfig');
 export const getAccountDeletion = jest.fn(async () => ({ deletion: null }));
 export const startAccountDeletion = unexpected('startAccountDeletion');
+// Defaults to failing loudly: a test that reports content without saying so is a test that
+// silently exercises the network path it thinks it stubbed.
+export const reportContent = unexpected('reportContent');
 export const getHealth = jest.fn(async () => ({ ok: true, title: 'Test', dev: false }));
 export const getSettings = unexpected('getSettings');
 export const saveSettings = unexpected('saveSettings');

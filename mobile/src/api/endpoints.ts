@@ -17,6 +17,7 @@ import type {
   AuthorBoardResponse,
   AuthorProfileJob,
   ChatJob,
+  ContentReportRequest,
   DiscoveryJob,
   DiscoveryResponse,
   HiddenRecommendation,
@@ -56,6 +57,8 @@ export const getAccountDeletion = () =>
   apiGet<{ deletion: AccountDeletion | null }>('/api/account/deletion');
 export const startAccountDeletion = () =>
   apiPost<{ deletion: AccountDeletion }>('/api/account/deletion', { confirmation: 'DELETE' });
+export const reportContent = (body: ContentReportRequest) =>
+  apiPost<{ report: { id: string; created_at: string } }>('/api/reports/content', body);
 export const getHealth = () => apiGet<{ ok: boolean; title: string; dev: boolean }>('/api/health');
 export const getSettings = () => apiGet<Settings>('/api/settings');
 export const saveSettings = (body: Partial<Settings> & Record<string, unknown>) =>
