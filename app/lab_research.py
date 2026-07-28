@@ -154,7 +154,8 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     except Exception as exc:
         # A blown request budget (or any run crash) is an honest not-found for THIS run,
         # cached without a fingerprint upstream so the author retries next pass.
-        raise RuntimeError(f"lab research run failed: {str(exc)[:200]}") from exc
+        raise RuntimeError(
+            "The model provider could not complete lab research.") from exc
     # This is a paid multi-request run outside app.llm, so record its tokens against the
     # active project explicitly (cost stays 0 — OpenRouter's exact usage.cost isn't exposed
     # through the Pydantic AI path; tokens keep the spend visible in /usage).
@@ -272,4 +273,3 @@ def labs_board(board: list[dict]) -> dict:
         ),
         "researched_at": researched_at,
     }
-

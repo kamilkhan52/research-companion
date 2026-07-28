@@ -5,7 +5,9 @@ and that the result parses into a Turn via the existing text protocol."""
 from __future__ import annotations
 
 import asyncio
+import logging
 
+import pytest
 from app import agent, agent_harness
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
@@ -160,6 +162,54 @@ def test_agentic_turn_falls_back_to_single_shot_on_tool_failure(temp_project, mo
 
     assert called["slug"] == "a"
     assert turn.canonical == "single-shot answer"
+
+
+def test_agentic_fallback_log_excludes_provider_message(
+        temp_project, monkeypatch, caplog):
+    add_paper(temp_project, "a", "Paper A", full_text="text")
+    secret = "PRIVATE_PROMPT_ECHO_agent"
+
+    def exploding_model(messages, info):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        agent, "run_turn",
+        lambda slug, history, model=None: agent.Turn(
+            role="assistant", canonical="fallback", state_signal="in_discussion"))
+    logger = logging.getLogger("rc.agent_harness")
+    previous = logger.propagate
+    logger.propagate = True
+    caplog.set_level(logging.WARNING, logger="rc.agent_harness")
+    try:
+        turn = agent_harness.run_turn_agentic(
+            "a", [{"role": "user", "content": "go"}],
+            model=FunctionModel(exploding_model))
+    finally:
+        logger.propagate = previous
+
+    assert turn.canonical == "fallback"
+    assert all(secret not in record.getMessage() for record in caplog.records)
+
+
+def test_agentic_stream_error_excludes_provider_message(temp_project):
+    add_paper(temp_project, "a", "Paper A", full_text="text")
+    secret = "PRIVATE_PAPER_TEXT_agent_stream"
+
+    async def exploding_stream(messages, info):
+        if False:
+            yield ""
+        raise RuntimeError(secret)
+
+    model = FunctionModel(function=lambda m, i: None, stream_function=exploding_stream)
+
+    async def _collect():
+        return [event async for event in agent_harness.stream_agentic_events(
+            "a", [{"role": "user", "content": "go"}], model=model)]
+
+    with pytest.raises(agent.AgentError) as err:
+        asyncio.run(_collect())
+    assert "model provider" in str(err.value)
+    assert secret not in str(err.value)
 
 
 def test_looping_model_hits_the_request_cap_then_falls_back(temp_project, monkeypatch):

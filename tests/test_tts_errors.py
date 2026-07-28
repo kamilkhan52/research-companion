@@ -44,6 +44,15 @@ def test_bad_key_points_at_settings(monkeypatch):
     assert "Settings" in str(err.value)
 
 
+def test_unknown_status_excludes_provider_body(monkeypatch):
+    secret = "PRIVATE_PAPER_TEXT_tts"
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(418, text=secret))
+    with pytest.raises(tts.TTSError) as err:
+        tts.openai_speech("hello")
+    assert "418" in str(err.value)
+    assert secret not in str(err.value)
+
+
 def test_success_returns_audio_bytes(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, content=b"mp3!"))
     assert tts.openai_speech("hello") == b"mp3!"

@@ -177,7 +177,7 @@ def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Clien
                            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                            json={"query": queries[0] if queries else objective, "limit": 5})
         if resp.status_code != 200:
-            raise ToolError(f"firecrawl {resp.status_code}: {resp.text[:120]}")
+            raise ToolError(f"firecrawl HTTP {resp.status_code}")
         data = (resp.json() or {}).get("data") or []
         # v2 groups results by source ({"web": [...], "news": [...]}); v1 returned a flat list.
         results = data.get("web") or data.get("news") or [] if isinstance(data, dict) else data
@@ -189,7 +189,7 @@ def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Clien
                        f"{(r.get('description') or '')[:300]}")
         return "\n".join(out)
     except httpx.HTTPError as e:
-        raise ToolError(f"firecrawl request failed: {e}") from e
+        raise ToolError(f"firecrawl transport failed ({type(e).__name__})") from e
     finally:
         if own:
             client.close()
@@ -208,12 +208,12 @@ def _firecrawl_fetch(urls: list[str], objective: str, *, client: httpx.Client | 
                                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                                json={"url": url, "formats": ["markdown"]})
             if resp.status_code != 200:
-                raise ToolError(f"firecrawl {resp.status_code}: {resp.text[:120]}")
+                raise ToolError(f"firecrawl HTTP {resp.status_code}")
             md = ((resp.json() or {}).get("data") or {}).get("markdown", "")
             chunks.append(f"# {url}\n\n{md}")
         return "\n\n---\n\n".join(chunks)
     except httpx.HTTPError as e:
-        raise ToolError(f"firecrawl request failed: {e}") from e
+        raise ToolError(f"firecrawl transport failed ({type(e).__name__})") from e
     finally:
         if own:
             client.close()
@@ -272,7 +272,7 @@ def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | No
                                      **arguments}}})
         data = _read_jsonrpc(call)
         if data.get("error"):
-            raise ToolError(f"parallel: {data['error'].get('message', 'unknown')}")
+            raise ToolError("parallel provider error")
         result = data.get("result") or {}
         content = _parse_mcp_content(result)
         # Parallel reports failures (e.g. 402 out-of-credit) as an isError tool result or as
@@ -280,10 +280,10 @@ def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | No
         # letting the provider chain fall through to the next provider.
         if result.get("isError") or content.startswith("Error executing tool") \
                 or "Insufficient credit" in content:
-            raise ToolError(content[:150])
+            raise ToolError("parallel provider error")
         return content
     except httpx.HTTPError as e:
-        raise ToolError(f"parallel request failed: {e}") from e
+        raise ToolError(f"parallel transport failed ({type(e).__name__})") from e
     finally:
         if own:
             client.close()
@@ -335,7 +335,7 @@ def _ddg_search(objective: str, queries: list[str], *, client: httpx.Client | No
             out.append(f"- {t}\n  {_ddg_unwrap(href)}\n  {snip[:300]}")
         return "\n".join(out)
     except httpx.HTTPError as e:
-        raise ToolError(f"duckduckgo request failed: {e}") from e
+        raise ToolError(f"duckduckgo transport failed ({type(e).__name__})") from e
     finally:
         if own:
             client.close()

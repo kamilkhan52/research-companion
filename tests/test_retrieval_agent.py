@@ -62,6 +62,19 @@ def test_hunt_failure_reports_not_ok():
     assert "FAILED" in result["summary"]
 
 
+def test_hunt_provider_error_excludes_upstream_message():
+    secret = "PRIVATE_PROMPT_ECHO_pdf_hunt"
+
+    def model_fn(messages, info):
+        raise RuntimeError(secret)
+
+    events = _collect("Unfindable Paper", FunctionModel(model_fn))
+    result = events[-1]
+    assert result["type"] == "result" and result["ok"] is False
+    assert "model provider" in result["summary"]
+    assert secret not in result["summary"]
+
+
 @pytest.mark.parametrize("exc,expected", [
     (safe_fetch.UnsafeURLError("non-public address"), "Refused"),
     (safe_fetch.FetchTooLargeError("over the limit"), "Download failed"),

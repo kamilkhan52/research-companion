@@ -214,7 +214,8 @@ def external_sources(
     try:
         result = research_fn(title, store.entry_markdown(slug))
     except Exception as exc:
-        log.warning("external context research agent failed slug=%s: %s", slug, str(exc)[:200])
+        log.warning("external context research agent failed slug=%s (error=%s)",
+                    slug, type(exc).__name__)
         return []
     chunks = _source_chunks(str(result or ""), "web", "external_web_context", 12)
     if len(_external_cache) >= _EXTERNAL_CACHE_MAX:
