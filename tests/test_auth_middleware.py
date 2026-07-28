@@ -67,9 +67,9 @@ def test_bad_credentials_are_401_and_log_no_identity(monkeypatch, capfd):
     assert "rejected non-allowlisted" not in capfd.readouterr().err
 
 
-def test_query_string_bearer_tokens_are_never_accepted(monkeypatch):
-    """Access logs include query strings. Even a valid bearer must therefore fail when supplied
-    as `?token=`; protected native media attaches the same credential as a header."""
+def test_query_string_bearer_tokens_are_only_a_legacy_media_fallback(monkeypatch):
+    """Current clients use headers. Keep one narrow fallback so an already-installed client does
+    not lose every cover during a non-atomic mobile/backend rollout."""
     from app.main import app
 
     seen = []
@@ -86,8 +86,31 @@ def test_query_string_bearer_tokens_are_never_accepted(monkeypatch):
     client = TestClient(app)
     assert client.get("/api/settings?token=valid-header-token").status_code == 401
     assert seen == [""]
+    # Authentication succeeded; the missing project then produces the expected route-level 404.
+    assert client.get(
+        "/api/projects/missing/papers/paper/cover.png?token=valid-header-token",
+    ).status_code == 404
+    assert seen[-1] == "valid-header-token"
     assert client.get(
         "/api/settings", headers={"Authorization": "Bearer valid-header-token"}).status_code == 200
+
+
+def test_query_tokens_are_removed_from_the_access_log_scope():
+    """Uvicorn formats its access target from this scope after the response."""
+    from app.main import _query_token_and_redact
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/projects/p/papers/s/cover.png",
+        "query_string": b"v=7&token=secret-jwt&download=1",
+        "headers": [],
+    }
+    request = Request(scope)
+
+    assert _query_token_and_redact(request) == "secret-jwt"
+    assert scope["query_string"] == b"v=7&download=1"
 
 
 def test_the_health_probe_stays_open_so_clients_can_bootstrap(monkeypatch):

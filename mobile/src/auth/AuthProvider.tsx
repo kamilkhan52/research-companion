@@ -22,7 +22,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { stopPlaybackForSessionEnd } from '@/audio/AudioProvider';
 import { getAuthConfig } from '@/api/endpoints';
-import { setToken, subscribeBaseUrl } from '@/api/config';
+import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
 import type { AuthConfig } from '@/api/types';
 
 import { secureSessionStore } from './secureSessionStore';
@@ -207,6 +207,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    setMediaCacheNamespace(session?.user?.id);
     setEmail(session?.user?.email ?? null);
     const next = session?.access_token ? 'signed-in' : 'signed-out';
     // Compared against a ref, not inside the setState updater. React may invoke an updater more

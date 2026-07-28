@@ -97,7 +97,7 @@ the server inventory below.
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
 | In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
-| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors, **full human/LLM commit summaries (which can contain private research content)**; a rate-limited raw UUID for allowlist rejection. Protected mobile media now uses authorization headers and the backend rejects query-string bearer tokens; pre-fix staging logs may still contain expired Supabase JWTs | Not configured in this repository | **Launch blocker:** remove or safely redact commit-summary content, audit historical log exposure, then confirm retention and deletion capability with the hosting setup |
+| Backend/Fly logs | Request paths/statuses, project IDs/slugs, model and operation names, job IDs, timings, truncated errors, **full human/LLM commit summaries (which can contain private research content)**; a rate-limited raw UUID for allowlist rejection. Protected mobile media now uses authorization headers. A temporary old-client fallback still accepts query tokens only on cover/figure GETs and removes them from this app's access-log scope, but an upstream proxy can observe the original target; pre-fix staging logs may also contain expired Supabase JWTs | Not configured in this repository | **Launch blocker:** retire the compatibility fallback after the mobile rollout, remove or safely redact commit-summary content, audit historical log exposure, then confirm retention and deletion capability with the hosting setup |
 
 Project repositories are currently flat under `PROJECTS_ROOT/<pid>` and protected by mandatory
 Postgres ownership checks. They are not filesystem-namespaced by user. Access isolation is
@@ -224,8 +224,10 @@ rules as the privacy policy.
 - [ ] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
-- [x] Remove reusable bearer tokens from media query strings: protected mobile images use
-      `Authorization`, audio already did, and the backend rejects query-token authentication.
+- [ ] Finish removing reusable bearer tokens from media query strings: protected mobile images
+      use `Authorization` and per-user cache keys, and audio already uses headers. After the
+      updated mobile release is no longer distributed/supported, remove the narrowly scoped
+      old-client cover/figure query-token fallback.
 - [ ] Audit historical staging logs and rotate any still-live credential found there; define log
       destination, retention, access, and deletion behavior; remove/redact commit summaries and
       sanitize provider errors.

@@ -8,8 +8,10 @@ the auth middleware, include every router, then mount the SPA shell last so /api
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,16 +120,40 @@ if _CORS_ORIGINS:
 
 # Routes that must stay open even when auth is on (so clients can bootstrap login).
 _AUTH_EXEMPT = {"/api/health", "/api/auth/config"}
+# One-release compatibility bridge for installed clients that cannot move in lockstep with the
+# backend. Only the two GET image routes emitted by the old mobile bundle qualify; ordinary API,
+# audio, SSE, and mutation routes never do. Remove after the header-authenticated mobile release
+# is no longer distributed/supported.
+_LEGACY_QUERY_MEDIA = re.compile(
+    r"^/api/projects/[^/]+/papers/[^/]+/(?:cover\.png|figures/[^/]+)$")
+
+
+def _query_token_and_redact(request: Request) -> str:
+    """Return one legacy `token` value and remove every copy from the ASGI query string.
+
+    Uvicorn builds its access-log request target from the scope after the response. Mutating the
+    scope here therefore keeps this app's access log credential-free even during the compatibility
+    window. An upstream proxy can still observe the original request target, which is why this
+    fallback is temporary rather than a permanent media-auth mechanism.
+    """
+    raw = request.scope.get("query_string", b"")
+    if not raw or b"token" not in raw.lower():
+        return ""
+    pairs = parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+    values = [value for key, value in pairs if key == "token"]
+    request.scope["query_string"] = urlencode(
+        [(key, value) for key, value in pairs if key != "token"], doseq=True).encode()
+    return values[0] if len(values) == 1 else ""
 
 
 @app.middleware("http")
 async def authenticate(request: Request, call_next):
-    """Gate /api/* per app.auth.mode(). Tokens arrive only as
-    `Authorization: Bearer <t>`. Query-string bearer tokens are deliberately unsupported:
-    uvicorn access logs include the query string, so accepting `?token=<t>` turns ordinary request
-    logging into a credential leak. Native images and audio can both attach request headers.
-    OPTIONS, the exempt routes, and non-/api routes (static SPA shell) are always allowed. The
-    verified user (if any) is stashed on request.state.user for handlers/future per-user data.
+    """Gate /api/* per app.auth.mode(). Current clients use `Authorization: Bearer <t>`.
+    During one mobile-release compatibility window, old clients may use `?token=<t>` only for
+    protected cover/figure GETs; the token is stripped from this process's access-log target.
+    Native images and audio can attach request headers. OPTIONS, the exempt routes, and non-/api
+    routes (static SPA shell) are always allowed. The verified user (if any) is stashed on
+    request.state.user for handlers/future per-user data.
 
     Two distinct denials: 401 for bad/missing credentials, 403 for a valid user who is not on this
     instance's allowlist (see auth.allowed_users)."""
@@ -135,7 +161,11 @@ async def authenticate(request: Request, call_next):
     if auth.enabled() and request.method != "OPTIONS" \
             and request.url.path.startswith("/api/") and request.url.path not in _AUTH_EXEMPT:
         hdr = request.headers.get("authorization", "")
+        query_token = _query_token_and_redact(request)
         token = hdr[7:].strip() if hdr[:7].lower() == "bearer " else ""
+        if not token and request.method in {"GET", "HEAD"} \
+                and _LEGACY_QUERY_MEDIA.fullmatch(request.url.path):
+            token = query_token
         try:
             request.state.user = auth.check(token)
         except auth.NotAllowlisted as rejected:

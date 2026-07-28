@@ -469,8 +469,8 @@ export const figureAssetSource = (
   asset: string,
   version?: number | null,
 ) => {
-  const source = authenticatedMediaSource(
-    `${P(pid)}/papers/${encodeURIComponent(slug)}/figures/${encodeURIComponent(asset)}`,
+  const versionQuery = version ? `?v=${version}` : '';
+  return authenticatedMediaSource(
+    `${P(pid)}/papers/${encodeURIComponent(slug)}/figures/${encodeURIComponent(asset)}${versionQuery}`,
   );
-  return version ? { ...source, uri: `${source.uri}?v=${version}` } : source;
 };

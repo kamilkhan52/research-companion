@@ -2,7 +2,7 @@
 // configured base, and turns non-2xx responses into a typed ApiError carrying the backend's
 // {detail} message. Streaming (SSE) lives in stream.ts; audio URLs in audio.ts.
 
-import { getBaseUrl, getToken } from './config';
+import { getBaseUrl, getMediaCacheNamespace, getToken } from './config';
 
 export class ApiError extends Error {
   status: number;
@@ -33,8 +33,16 @@ export function authHeaders(): Record<string, string> {
 export function authenticatedMediaSource(path: string): {
   uri: string;
   headers: Record<string, string>;
+  cacheKey: string;
 } {
-  return { uri: apiUrl(path), headers: authHeaders() };
+  const uri = apiUrl(path);
+  return {
+    uri,
+    headers: authHeaders(),
+    // Explicit because iOS and Android image caches do not consistently include request headers
+    // in their cache identity. The namespace is a Supabase user id, never a bearer credential.
+    cacheKey: `${uri}::${getMediaCacheNamespace()}`,
+  };
 }
 
 async function parseError(res: Response): Promise<never> {

@@ -6,7 +6,8 @@
 // degrades gracefully to caption + source link rather than showing a broken-image box.
 
 import { useState } from 'react';
-import { Image, Linking, Pressable, StyleSheet, View } from 'react-native';
+import { Image } from 'expo-image';
+import { Linking, Pressable, StyleSheet, View } from 'react-native';
 
 import { figureAssetSource } from '@/api/endpoints';
 import type { PaperFigure } from '@/api/types';
@@ -46,7 +47,7 @@ export function FigureCard({
           <Image
             source={source}
             style={[styles.image, aspectRatio ? { aspectRatio } : { height: 220 }]}
-            resizeMode="contain"
+            contentFit="contain"
             onError={() => setFailed(true)}
           />
         </Pressable>
