@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 
 import pytest
 from app import account_deletion, auth, config, db, jobs, supabase_admin, tenancy
 from app.jobs import Job, JobRegistry
+from fastapi.responses import StreamingResponse
 from starlette.testclient import TestClient
 
 USER_ID = "715ed5db-f090-4b8c-a067-640ecee36aa0"
@@ -201,6 +203,53 @@ def test_start_requires_exact_confirmation_and_recent_session(monkeypatch):
         "/api/account/deletion", headers=headers, json={"confirmation": "DELETE"},
     )
     assert stale.status_code == 401
+
+
+def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):
+    """Middleware dispatch returns before an SSE body is consumed. The request drain must follow
+    the body iterator or account deletion can remove a project under a still-writing stream."""
+    from app.main import app
+
+    _authenticated(monkeypatch)
+    monkeypatch.setattr(account_deletion, "is_blocked", lambda _uid: False)
+    started = threading.Event()
+    release = threading.Event()
+    path = "/api/test/account-deletion-stream-lifetime"
+
+    if not any(getattr(route, "path", None) == path for route in app.routes):
+        @app.get(path)
+        def _test_stream():
+            def body():
+                started.set()
+                yield b"started"
+                release.wait(5)
+                yield b"done"
+
+            return StreamingResponse(body())
+    # The production static mount is intentionally last at app assembly time; this test-only route
+    # is registered later, so move it ahead of that catch-all mount.
+    test_route = next(route for route in app.routes if getattr(route, "path", None) == path)
+    app.routes.remove(test_route)
+    app.routes.insert(0, test_route)
+
+    def consume():
+        with TestClient(app).stream(
+            "GET", path, headers={"Authorization": "Bearer valid"},
+        ) as response:
+            assert response.status_code == 200
+            b"".join(response.iter_bytes())
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    assert started.wait(2)
+    assert config.active_request_count(USER_ID) == 1
+    config.mark_user_deleting(USER_ID)
+    assert config.active_request_count(USER_ID) == 1
+
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert config.active_request_count(USER_ID) == 0
 
 
 TEST_DB = os.environ.get("RC_TEST_DATABASE_URL", "").strip()

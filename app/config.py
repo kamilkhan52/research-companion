@@ -222,6 +222,12 @@ def admit_user_request(user_id: str) -> bool:
         return True
 
 
+def track_user_request(user_id: str) -> None:
+    """Count an already-authorized deletion start/status request without reopening admission."""
+    with _user_admission_lock:
+        _active_user_requests[user_id] = _active_user_requests.get(user_id, 0) + 1
+
+
 def release_user_request(user_id: str) -> None:
     with _user_admission_lock:
         remaining = _active_user_requests.get(user_id, 0) - 1

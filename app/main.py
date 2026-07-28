@@ -211,7 +211,13 @@ async def authenticate(request: Request, call_next):
     # assuming it. Reset in `finally` because this coroutine's context outlives the response.
     user_id = (request.state.user or {}).get("user_id")
     request_admitted = False
-    if user_id and request.url.path != _ACCOUNT_DELETION_PATH:
+    if user_id and request.url.path == _ACCOUNT_DELETION_PATH:
+        # Start/status must remain reachable through the tombstone. Still count their full response
+        # body lifetime so the worker cannot delete the Auth identity before the accepted start
+        # response has actually reached the client.
+        config.track_user_request(user_id)
+        request_admitted = True
+    elif user_id:
         try:
             blocked = account_deletion.is_blocked(user_id)
         except Exception:
@@ -231,7 +237,25 @@ async def authenticate(request: Request, call_next):
 
     token = config.set_active_user(user_id)
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        if request_admitted:
+            # `call_next` returns as soon as a StreamingResponse object exists, not when its body
+            # generator has stopped. Releasing here would let account deletion remove a project
+            # under a legacy SSE turn or retrieval stream that is still writing. Wrap the actual
+            # body lifetime so disconnect, completion, and generator failure all release the
+            # admission count exactly once.
+            original_body = response.body_iterator
+
+            async def tracked_body():
+                try:
+                    async for chunk in original_body:
+                        yield chunk
+                finally:
+                    config.release_user_request(user_id)
+
+            response.body_iterator = tracked_body()
+            request_admitted = False
+        return response
     finally:
         config.reset_active_user(token)
         if request_admitted:
