@@ -78,6 +78,7 @@ def slugify(name: str) -> str:
 # trust boundary for EVERY caller that turns an untrusted id into a path: `use_project` (the
 # route pid) and the audio billing `project` both flow through here.
 _PID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_TRASH_ENTRY_RE = re.compile(r"(.+)-\d{8}-\d{6}")
 
 #: A path segment cannot exceed this on any filesystem we run on, so an id longer than it could
 #: never have been a real directory — and accepting one lets a value through this boundary that
@@ -214,6 +215,38 @@ def list_projects() -> list[dict]:
         })
     out.sort(key=lambda p: (not p["favorite"], p.get("created_at") or "", p["name"]))
     return out
+
+
+def project_id_from_trash_name(trash_name: str) -> str:
+    """Validate a concrete trash directory name and return its original project id."""
+    match = _TRASH_ENTRY_RE.fullmatch(trash_name)
+    if not match:
+        raise ProjectError(f"Invalid project trash entry: {trash_name!r}")
+    return _safe_pid(match.group(1))
+
+
+def trashed_project_entries() -> list[str]:
+    """Safe recoverable `.trash/<pid>-<timestamp>` directory names.
+
+    This is an operator/account-deletion enumeration seam, not a project registry: entries remain
+    unreachable through normal APIs. Return the concrete entry, not just the project id: before
+    tombstones existed, a deleted id could be reused and have more than one incarnation in trash.
+    Ignore hand-written or malformed names rather than turning arbitrary names into database/path
+    identifiers.
+    """
+    trash = config.PROJECTS_ROOT / ".trash"
+    if not trash.is_dir():
+        return []
+    found: set[str] = set()
+    for entry in trash.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            project_id_from_trash_name(entry.name)
+        except ProjectError:
+            continue
+        found.add(entry.name)
+    return sorted(found)
 
 
 def recent_sessions(limit: int = 20, only_pids: set[str] | None = None) -> list[dict]:
@@ -618,25 +651,25 @@ def delete_project(pid: str) -> None:
         trash = config.PROJECTS_ROOT / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        # Release the ownership row BEFORE the directory moves, then put it back if the move
-        # fails. Trashing the directory is what frees the id for `_unique_id` to hand out again, so
-        # releasing afterwards leaves a window where the id is available while the old row still
-        # exists — the next project to take it would silently belong to the previous owner.
+        trash_name = f"{pid}-{stamp}"
+        # Retire the ownership row BEFORE the directory moves, then put it back if the move fails.
+        # A retired row permanently reserves the id, and clearing its live owner before the move
+        # also makes the project unreachable as soon as deletion begins.
         #
         # But releasing first alone just trades that for a worse failure: if the move then fails,
         # the project is still on disk and its owner can no longer open it. So the row is restored
         # on failure. Neither ordering is safe by itself; the compensation is what makes it safe.
-        former_owner = tenancy.release(pid)
+        former_owner = tenancy.release(pid, trash_name)
         try:
-            shutil.move(str(project_path(pid)), str(trash / f"{pid}-{stamp}"))
+            shutil.move(str(project_path(pid)), str(trash / trash_name))
         except Exception:
             if former_owner:
                 # `restore`, not `record_project`: the row still exists as a tombstone, so an
                 # insert would conflict rather than give the project back to its owner.
-                tenancy.restore(pid, former_owner)
+                tenancy.restore(pid, former_owner, trash_name)
             raise
-        # A later project with the same name can reuse this pid. Do not let terminal in-memory
-        # results/proposals from the deleted project become visible in that new project.
+        # The tombstone prevents this pid from being reused. Still release terminal in-memory
+        # results/proposals now so deleted project content is not retained unnecessarily.
         jobs.forget_finished_for_project(pid)
     finally:
         config.unmark_project_deleting(pid)

@@ -80,9 +80,21 @@ def test_delete_moves_to_trash_and_hides_from_registry(root):
     assert projects.list_projects() == []
     trashed = list((root / ".trash").iterdir())
     assert len(trashed) == 1 and trashed[0].name.startswith(f"{pid}-")
+    assert projects.trashed_project_entries() == [trashed[0].name]
     # Soft delete: the moved dir keeps its contents (and git history), so it's recoverable.
     assert (trashed[0] / "reading-list.md").exists()
     assert (trashed[0] / ".git").is_dir()
+
+
+def test_trash_enumeration_ignores_malformed_entries(root):
+    trash = root / ".trash"
+    (trash / "project-with-hyphens-20260728-010203").mkdir(parents=True)
+    (trash / "missing-timestamp").mkdir()
+    (trash / ".hidden-20260728-010203").mkdir()
+    (trash / "not-a-directory-20260728-010203").write_text("x")
+
+    assert projects.trashed_project_entries() == [
+        "project-with-hyphens-20260728-010203"]
 
 
 def test_delete_forgets_terminal_jobs_before_project_id_can_be_reused(root):

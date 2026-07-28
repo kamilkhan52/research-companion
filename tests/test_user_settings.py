@@ -29,8 +29,9 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setenv("RC_DATABASE_URL", TEST_DB)
     db.close()
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_user_settings, rc_projects, rc_users, "
-                     "rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_user_settings, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
     db.migrate()
     tenancy.ensure_user(ALICE, "alice@example.com")
     tenancy.ensure_user(BOB, "bob@example.com")

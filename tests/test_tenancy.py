@@ -13,6 +13,7 @@ import os
 import psycopg
 import pytest
 from app import db, tenancy
+from scripts import adopt_projects as adopt_script
 
 OWNER = "f4a33e1b-b3c4-4eb2-a0ea-d110b36a072e"
 OTHER = "c3fa116b-f010-4d95-8aae-6dc13e1292a4"
@@ -115,6 +116,17 @@ def test_uuid_validation_rejects_what_would_become_a_cast_error():
     assert not db.is_uuid("f4a33e1b-b3c4-4eb2-a0ea")
 
 
+def test_legacy_trash_mapping_arguments_are_concrete_and_per_owner():
+    value = f"old-project-20260728-010203={OWNER}"
+    assert adopt_script._explicit_trash_owners(
+        ["adopt_projects.py", "--trash-owner", value],
+    ) == {"old-project-20260728-010203": OWNER}
+    with pytest.raises(ValueError, match="expected"):
+        adopt_script._explicit_trash_owners(
+            ["adopt_projects.py", "--trash-owner", "old-project=not-a-user"],
+        )
+
+
 def test_boot_migrations_do_not_run_without_a_database(monkeypatch):
     monkeypatch.delenv("RC_DATABASE_URL", raising=False)
     from app import main
@@ -147,6 +159,9 @@ def test_everything_is_a_no_op_without_a_database(monkeypatch):
     tenancy.record_project("x", OWNER)
     assert tenancy.owner_of("x") is None
     assert tenancy.projects_owned_by(OWNER) == set()
+    assert tenancy.deleted_owner_of("x") is None
+    assert tenancy.trash_owner_of("x-20260728-010203") is None
+    assert tenancy.trash_entries_owned_by(OWNER) == set()
     with pytest.raises(tenancy.TenancyError):
         tenancy.backfill(OWNER, ["x"])  # backfill is explicit, so silence would be wrong here
 
@@ -164,7 +179,9 @@ def database(monkeypatch):
     monkeypatch.setenv("RC_DATABASE_URL", TEST_DB)
     db.close()
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
     db.migrate()
     yield
     db.close()
@@ -181,7 +198,9 @@ def test_a_poisoned_ledger_row_cannot_suppress_a_column_only_migration(database)
     schema check should look at. Nothing skips on the ledger at all now.
     """
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_user_settings, rc_projects, rc_users cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_user_settings, rc_projects, "
+            "rc_users cascade")
         conn.execute("delete from rc_schema_migrations")
         conn.execute("insert into rc_schema_migrations (name) values ('0002_retire_ids.sql')")
 
@@ -353,16 +372,18 @@ def test_every_table_is_off_the_supabase_data_api(database):
     with db.pool().connection() as conn:
         rows = conn.execute(
             "select relname, relrowsecurity from pg_class "
-            "where relname in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "where relname in ('rc_users', 'rc_projects', 'rc_project_trash', "
+            "'rc_user_settings', "
             "'rc_schema_migrations')").fetchall()
-    assert len(rows) == 4, rows
+    assert len(rows) == 5, rows
     assert all(enabled for _name, enabled in rows), rows
 
     # And no policy has been added that would re-open one: RLS with zero policies is the denial.
     with db.pool().connection() as conn:
         policies = conn.execute(
             "select tablename, policyname from pg_policies "
-            "where tablename in ('rc_users', 'rc_projects', 'rc_user_settings', "
+            "where tablename in ('rc_users', 'rc_projects', 'rc_project_trash', "
+            "'rc_user_settings', "
             "'rc_schema_migrations')").fetchall()
     assert policies == [], policies
 
@@ -520,7 +541,9 @@ def test_two_processes_migrating_at_once_do_not_fight(database):
     import concurrent.futures
 
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool_:
         results = [f.result() for f in [pool_.submit(db.migrate) for _ in range(4)]]
@@ -631,19 +654,119 @@ def test_a_trailing_newline_is_not_a_project_id():
 
 @needs_pg
 def test_release_returns_the_owner_it_just_cleared(database):
-    """`release` retires the row and must hand back who owned it, so a failed delete can restore it.
-
-    It does that with `update ... returning (select owner_id ...)`, which relies on Postgres
-    evaluating the subquery against the statement's snapshot — i.e. seeing the value BEFORE the
-    update. That is subtle and could plausibly differ across versions, and if it ever returned null
-    the compensating restore in `delete_project` would silently do nothing while looking correct.
-    """
+    """`release` retires the row, records its exact trash incarnation, and returns its owner."""
     tenancy.ensure_user(OWNER)
     tenancy.record_project("doomed", OWNER)
 
-    assert tenancy.release("doomed") == OWNER
+    trash_name = "doomed-20260728-010203"
+    assert tenancy.release("doomed", trash_name) == OWNER
     assert tenancy.owner_of("doomed") is None          # retired: nobody owns it
     assert tenancy.id_is_recorded("doomed") is True    # but the id stays taken
+    assert tenancy.deleted_owner_of("doomed") == OWNER
+    assert tenancy.trash_owner_of(trash_name) == OWNER
+    assert tenancy.trash_entries_owned_by(OWNER) == {trash_name}
 
-    tenancy.restore("doomed", OWNER)
+    tenancy.restore("doomed", OWNER, trash_name)
     assert tenancy.owner_of("doomed") == OWNER
+    assert tenancy.deleted_owner_of("doomed") is None
+    assert tenancy.trash_entries_owned_by(OWNER) == set()
+
+
+@needs_pg
+def test_record_project_refuses_a_retired_id(database):
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("retired", OWNER)
+    tenancy.release("retired", "retired-20260728-010203")
+
+    with pytest.raises(tenancy.TenancyError, match="retired"):
+        tenancy.record_project("retired", OWNER)
+
+
+@needs_pg
+def test_trash_backfill_tracks_exact_entries_even_when_a_project_id_is_live(database):
+    tenancy.ensure_user(OWNER)
+    tenancy.ensure_user(OTHER)
+    other_name = "other-trash-20260728-010203"
+    tenancy.backfill_trashed(OTHER, [other_name])
+    # Before tombstones, a deleted id could be reused by a new live project.
+    tenancy.record_project("still-live", OWNER)
+
+    result = tenancy.backfill_trashed(
+        OWNER,
+        [
+            "preownership-trash-20260728-010203",
+            "still-live-20260728-010203",
+            other_name,
+        ],
+    )
+
+    assert result["adopted"] == [
+        "preownership-trash-20260728-010203",
+        "still-live-20260728-010203",
+    ]
+    assert result["already_attributed"] == []
+    assert result["attributed_elsewhere"] == [other_name]
+    assert tenancy.owner_of("still-live") == OWNER
+    assert tenancy.trash_entries_owned_by(OWNER) == {
+        "preownership-trash-20260728-010203",
+        "still-live-20260728-010203",
+    }
+
+    rerun = tenancy.backfill_trashed(
+        OWNER,
+        [
+            "preownership-trash-20260728-010203",
+            "still-live-20260728-010203",
+        ],
+    )
+    assert rerun["adopted"] == []
+    assert rerun["already_attributed"] == [
+        "preownership-trash-20260728-010203",
+        "still-live-20260728-010203",
+    ]
+
+
+@needs_pg
+def test_old_release_statement_preserves_owner_during_rolling_migration(database):
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("old-worker", OWNER)
+
+    # Exact statement shipped before deleted_owner_id/rc_project_trash existed.
+    with db.pool().connection() as conn:
+        conn.execute(
+            "update rc_projects set owner_id = null, deleted_at = now() "
+            "where id = 'old-worker'")
+
+    assert tenancy.owner_of("old-worker") is None
+    assert tenancy.deleted_owner_of("old-worker") == OWNER
+    one_entry = ["old-worker-20260728-010203"]
+    assert adopt_script._trash_assignments(one_entry, {}) == (
+        {one_entry[0]: OWNER},
+        [],
+    )
+
+    # More than one historical incarnation cannot safely inherit the one transition owner.
+    ambiguous = [*one_entry, "old-worker-20260729-010203"]
+    assert adopt_script._trash_assignments(ambiguous, {}) == ({}, sorted(ambiguous))
+    assert adopt_script._trash_assignments(
+        ambiguous,
+        {ambiguous[0]: OWNER},
+    ) == ({ambiguous[0]: OWNER}, [ambiguous[1]])
+
+    # An already-attributed incarnation still counts: it must not make the other one look unique.
+    tenancy.ensure_user(OTHER)
+    tenancy.backfill_trashed(OTHER, [ambiguous[0]])
+    assert adopt_script._trash_assignments(ambiguous, {}) == ({}, [ambiguous[1]])
+
+
+@needs_pg
+def test_a_trashed_project_blocks_orphaning_its_former_owner(database):
+    import psycopg
+
+    tenancy.ensure_user(OWNER)
+    tenancy.record_project("trashed", OWNER)
+    tenancy.release("trashed", "trashed-20260728-010203")
+
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        with db.pool().connection() as conn:
+            conn.execute("delete from rc_users where id = %s", (OWNER,))

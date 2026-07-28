@@ -89,11 +89,11 @@ the server inventory below.
 |---|---|---|---|
 | Supabase Auth | Identity/provider metadata, login credentials/session machinery | Provider-managed; exact retention must be verified | No deletion workflow exists yet |
 | Postgres `rc_users` | Verified Supabase UUID, email, creation time | Indefinite while account exists | Blocked by owned-project `RESTRICT`; must be coordinated |
-| Postgres `rc_projects` | Project ID, owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion | Active projects are enumerable; tombstone design needs an account-deletion rule |
+| Postgres `rc_projects` / `rc_project_trash` | Project ID, live owner UUID, transition former-owner UUID, concrete trash-directory name and owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion; exact trash entry retained until permanent purge | Active and trashed project incarnations are enumerable by account; tombstone retention after account deletion still needs a rule |
 | Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | `ON DELETE CASCADE`, but parent account deletion is absent |
 | Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active repos can be enumerated by owner; no account deletion coordinator |
 | Project `.state/` | Session index, discovery results, graph/metadata caches, usage totals, covers, figures, branches/drafts, and transient job state | Indefinite/rebuildable; no general TTL | Removed only when the containing project is permanently removed |
-| `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite; no purge policy | **Blocker:** ownership is cleared before the directory moves, so former-user association is not retained |
+| `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite; no purge policy | New deletes atomically record the exact directory in `rc_project_trash`; a transition trigger preserves old-worker deletes. Ambiguous legacy entries require an explicit per-directory owner mapping. Permanent account deletion/purge is not implemented |
 | `.app-state/users/<user-hash>/` | Per-user narration text/cache and generated MP3 files | Indefinite; no eviction yet | Path is attributable and can be removed recursively |
 | `.app-state/` global files | Operator keys/settings, prompt state, unattributed legacy usage/audio | Indefinite/operator managed | Not safely attributable to one account; production must not put signed-in user work here |
 | In-process `JobRegistry` dictionaries | Running and retained terminal job payloads, including generated responses, proposed notes, narration, and segment text | Bounded by count/scope, not age; survives until eviction or process restart | Project-scoped entries can be found from owned project IDs; audio entries use `user:<user-hash>` and require an explicit per-user purge |
@@ -104,10 +104,14 @@ Postgres ownership checks. They are not filesystem-namespaced by user. Access is
 implemented, but account deletion must enumerate ownership before removing paths.
 
 Ordinary project deletion is intentionally recoverable: it moves the entire repository to
-`.trash` and clears the ownership row. That is appropriate for an accidental project deletion but
-not sufficient for an account-deletion request. Worse, after the owner is cleared there is no
-durable link from a trashed repository back to the account that owned it. M2.5 must fix that before
-any privacy policy promises complete account-data deletion.
+`.trash`, clears the live authorization owner, and records the exact destination directory and
+former owner in `rc_project_trash`. That table never grants project access; it exists so account
+deletion can enumerate concrete repository incarnations even when a pre-tombstone project ID was
+later reused. A database trigger preserves the former owner if an old worker runs its pre-migration
+release statement during deployment. `scripts/adopt_projects.py` binds that transition owner only
+when exactly one matching directory exists; ambiguous older entries require an explicit repeated
+`--trash-owner <directory>=<owner-uuid>` mapping and are never bulk-assigned to `RC_ADOPT_OWNER`.
+The remaining M2.5 work is the permanent, retryable account-deletion coordinator.
 
 Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
 records operation, model, tokens, cost, timestamps, and pending OpenRouter generation IDs. M3 will
@@ -217,8 +221,9 @@ rules as the privacy policy.
 
 ## Blocking checks before policy drafting/submission
 
-- [ ] Preserve owner attribution for recoverable `.trash` entries, then add a permanent
-      account-deletion path that includes existing trash.
+- [x] Preserve exact, non-authorizing former-owner attribution for recoverable `.trash` entries;
+      ambiguous legacy directories require explicit per-entry mappings.
+- [ ] Add a permanent account-deletion path that includes active and existing trashed projects.
 - [ ] Decide whether project-ID tombstones survive account deletion and document why they are
       non-content anti-ABA/security records.
 - [ ] Implement and test Supabase Auth deletion with least-privilege server credentials.

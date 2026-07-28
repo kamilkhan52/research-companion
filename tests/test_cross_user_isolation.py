@@ -37,7 +37,9 @@ def two_users(tmp_path, monkeypatch):
     monkeypatch.setenv("RC_DATABASE_URL", TEST_DB)
     db.close()
     with db.pool().connection() as conn:
-        conn.execute("drop table if exists rc_projects, rc_users, rc_schema_migrations cascade")
+        conn.execute(
+            "drop table if exists rc_project_trash, rc_projects, rc_users, "
+            "rc_schema_migrations cascade")
     db.migrate()
 
     tenancy.ensure_user(ALICE, "alice@example.com")
@@ -310,11 +312,32 @@ def test_a_deleted_project_id_is_never_handed_out_again(two_users, client_as):
 
     # Retired: nobody owns it, and it is not reachable.
     assert tenancy.owner_of(pid) is None
+    assert tenancy.deleted_owner_of(pid) == ALICE
+    trash_entries = projects.trashed_project_entries()
+    assert len(trash_entries) == 1
+    assert tenancy.trash_entries_owned_by(ALICE) == {trash_entries[0]}
     assert client_as(ALICE).get(f"/api/projects/{pid}/state").status_code == 404
 
     # And the id is not available to the next project of the same name — not even to Alice.
     recreated = projects.create_project("Alice Reading")
     assert recreated["id"] != pid, "a deleted project's id was handed out again"
+
+
+@needs_pg
+def test_a_failed_trash_move_restores_live_owner_and_clears_deleted_owner(
+        two_users, monkeypatch):
+    pid = two_users["alice"]
+
+    def fail_move(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(projects.shutil, "move", fail_move)
+    with pytest.raises(OSError, match="disk unavailable"):
+        projects.delete_project(pid)
+
+    assert tenancy.owner_of(pid) == ALICE
+    assert tenancy.deleted_owner_of(pid) is None
+    assert tenancy.trash_entries_owned_by(ALICE) == set()
 
 
 @needs_pg
