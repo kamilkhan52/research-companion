@@ -204,6 +204,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    *  which, on a server switch, would send the old project's JWT to the new host. */
   const generation = useRef(0);
 
+  /** Local deletion recovery must not depend on a restorable Supabase session or reachable API. */
+  const recoverLocalDeletion = useCallback(async (): Promise<boolean> => {
+    if (!(await hasAccountDeletionIntent().catch(() => false))) return false;
+    queryClient.clear();
+    await stopPlaybackForSessionEnd().catch(() => {});
+    try {
+      await clearDeletedAccountStorage();
+      await clearAccountDeletionIntent();
+    } catch {
+      // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
+      setError(
+        'Some deleted-account data could not be cleared from this device. '
+        + 'Clear the app’s data before another person uses it.',
+      );
+    }
+    return true;
+  }, [queryClient]);
+
   /** The one place a session becomes an API token. Every path that changes the session — restore,
    *  sign-in, refresh, sign-out — goes through here, because `src/api/client.ts` reads the token
    *  synchronously from module state and would otherwise keep sending a stale one. An expired
@@ -223,22 +241,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
-    if (!session && await hasAccountDeletionIntent().catch(() => false)) {
+    if (!session) {
       // Auth identity deletion can make refresh impossible before the app next opens. The local
       // intent is therefore an independent recovery signal: purge private device state even when
       // no JWT remains with which to observe the server's completed tombstone.
-      queryClient.clear();
-      await stopPlaybackForSessionEnd().catch(() => {});
-      try {
-        await clearDeletedAccountStorage();
-        await clearAccountDeletionIntent();
-      } catch {
-        // Keep the marker so the next launch retries. The signed-out UI also carries a warning.
-        setError(
-          'Some deleted-account data could not be cleared from this device. '
-          + 'Clear the app’s data before another person uses it.',
-        );
-      }
+      await recoverLocalDeletion();
     }
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
     setUserId(session?.user?.id ?? null);
@@ -253,7 +260,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
     statusRef.current = next;
     setStatus(next);
-  }, [queryClient]);
+  }, [queryClient, recoverLocalDeletion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -274,7 +281,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // Distinct from signed-out: the server may be down or the URL wrong. Telling the user to
         // sign in would be a lie, and would hide the actual problem behind a login form.
-        if (!cancelled) setStatus('unreachable');
+        if (!cancelled) {
+          await recoverLocalDeletion();
+          setStatus('unreachable');
+        }
         return;
       }
       if (cancelled) return;
@@ -329,12 +339,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const message = await completeFromUrl(parked);
         if (!cancelled && message) setError(message);
       }
-    })().catch((caught) => {
+    })().catch(async (caught) => {
       // Without this the app sits on the loading spinner forever with no message: `status` never
       // leaves 'unknown', and an unhandled rejection in a fire-and-forget async IIFE is invisible.
       if (cancelled) return;
-      setError(caught instanceof Error ? caught.message : 'Could not start sign-in.');
-      setStatus('unreachable');
+      const recoveringDeletion = await recoverLocalDeletion();
+      if (!recoveringDeletion) {
+        setError(caught instanceof Error ? caught.message : 'Could not start sign-in.');
+      }
+      setStatus(recoveringDeletion ? 'signed-out' : 'unreachable');
     });
 
     return () => {
@@ -345,7 +358,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       client.current?.auth.stopAutoRefresh();
       client.current = null;
     };
-  }, [adoptSession, attempt]);
+  }, [adoptSession, attempt, recoverLocalDeletion]);
 
   // Pointing the app at a different server means a different Supabase project, and a JWT minted
   // by the old project is meaningless to the new one — worse, sending it there hands a bearer

@@ -206,15 +206,14 @@ test('finishing deletion uses local sign-out and clears the API token', async ()
   await waitFor(() => expect(getByText('signed-out')).toBeTruthy());
 });
 
-test('a signed-out cold start honors local deletion intent after Auth identity is gone', async () => {
+test('cold start honors local deletion intent without a restorable session or reachable API', async () => {
   await AsyncStorage.setItem('rc.activeProject', 'private-project');
   await AsyncStorage.setItem('rc.draft.v1:private-project:paper', 'private draft');
   await markAccountDeletionIntent();
-  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
-  mockAuth.getSession.mockResolvedValue({ data: { session: null } });
+  jest.spyOn(endpoints, 'getAuthConfig').mockRejectedValue(new Error('server unavailable'));
 
   const { getByText } = await renderProvider();
-  await waitFor(() => getByText('signed-out'));
+  await waitFor(() => getByText('unreachable'));
   expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
   expect(await AsyncStorage.getItem('rc.draft.v1:private-project:paper')).toBeNull();
   expect(await hasAccountDeletionIntent()).toBe(false);
