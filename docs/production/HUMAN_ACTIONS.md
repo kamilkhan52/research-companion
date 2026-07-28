@@ -405,6 +405,16 @@ The app requires login, so Play review needs working test credentials.
 ### H19 — Final release authorization · `todo`
 Promotion to the production track. Never automate this.
 
+### H23 — Supabase server secret for account deletion · `todo` — blocks M2.5 deletion verification
+Create or retrieve a server-side Supabase secret/service-role key for each environment, then set it
+directly as the Fly secret `RC_SUPABASE_SECRET_KEY` on that environment. Do not paste the value into
+chat, source, a PR, or a client configuration. Supabase requires this privileged server credential
+to delete an Auth identity; the publishable anon key cannot perform that operation.
+
+Wait until the account-deletion coordinator has landed before setting it. Then verify deletion
+with a disposable staging account before production configuration. The backend treats an already
+missing Auth identity as success so the final step is safe to retry.
+
 ---
 
 ## Standing rules

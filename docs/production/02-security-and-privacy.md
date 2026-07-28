@@ -226,7 +226,9 @@ rules as the privacy policy.
 - [ ] Add a permanent account-deletion path that includes active and existing trashed projects.
 - [ ] Decide whether project-ID tombstones survive account deletion and document why they are
       non-content anti-ABA/security records.
-- [ ] Implement and test Supabase Auth deletion with least-privilege server credentials.
+- [x] Implement and test a narrow server-only Supabase Auth deletion client; the coordinator still
+      must call it, and H23 must supply the secret directly to each Fly environment before
+      end-to-end verification.
 - [ ] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
