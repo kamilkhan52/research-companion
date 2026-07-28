@@ -213,17 +213,22 @@ def stop() -> None:
     _release_shared()
 
 
+def _probe_locked(lease: ExclusiveLease) -> None:
+    """Health-check the lease session. The caller must already hold ``lease.io_lock``."""
+    if lease.lost.is_set():
+        raise DeployGuardLost("exclusive deploy guard was lost")
+    try:
+        _execute_bounded(lease.conn, "select 1")
+    except Exception as exc:
+        lease.lost.set()
+        raise DeployGuardLost("exclusive deploy guard was lost") from exc
+
+
 def _assert_exclusive(lease: ExclusiveLease) -> None:
     if lease.lost.is_set():
         raise DeployGuardLost("exclusive deploy guard was lost")
     with lease.io_lock:
-        if lease.lost.is_set():
-            raise DeployGuardLost("exclusive deploy guard was lost")
-        try:
-            _execute_bounded(lease.conn, "select 1")
-        except Exception as exc:
-            lease.lost.set()
-            raise DeployGuardLost("exclusive deploy guard was lost") from exc
+        _probe_locked(lease)
 
 
 def assert_exclusive(lease: ExclusiveLease | None) -> None:
@@ -240,7 +245,15 @@ def assert_exclusive(lease: ExclusiveLease | None) -> None:
 def _watch_exclusive(lease: ExclusiveLease) -> None:
     while not lease.stop.wait(_CHECK_S):
         try:
-            _assert_exclusive(lease)
+            with lease.io_lock:
+                # Re-check UNDER the lock, not just at the top of the loop. `release_exclusive`
+                # sets `stop` before it takes this lock and closes the connection while holding
+                # it, so a watchdog that woke a moment earlier and blocked here would come back
+                # to a closed session, read that as a lost guard, and SIGTERM a process whose
+                # deletion had in fact just succeeded.
+                if lease.stop.is_set():
+                    return
+                _probe_locked(lease)
         except Exception as exc:  # noqa: BLE001 — losing the guard is process-fatal
             lease.lost.set()
             try:

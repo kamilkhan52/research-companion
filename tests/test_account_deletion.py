@@ -361,6 +361,84 @@ def test_exclusive_guard_loss_is_fatal_once(monkeypatch):
     assert signals == [(os.getpid(), deploy_guard.signal.SIGTERM)]
 
 
+def test_watchdog_waking_into_a_normal_release_does_not_terminate(monkeypatch):
+    """A successful deletion must not SIGTERM the process on its way out.
+
+    `release_exclusive` sets `stop`, then takes the lease's io lock and closes the connection
+    while holding it. A watchdog that woke just before `stop` was set is already past the loop
+    condition and blocks on that lock; when it gets it, the session is closed. Reading that as a
+    lost guard kills a process whose deletion actually succeeded.
+    """
+    class Cursor:
+        def fetchone(self):
+            return (True,)
+
+    class Conn:
+        def __init__(self):
+            self.closed = False
+
+        def execute(self, _query, _params=None):
+            if self.closed:
+                raise OSError("connection is closed")
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    class CountingLock:
+        """A real lock that reports how many acquisitions have been *attempted*."""
+
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.attempts = 0
+            self._attempts_lock = threading.Lock()
+
+        def acquire(self, *args, **kwargs):
+            with self._attempts_lock:
+                self.attempts += 1
+            return self._lock.acquire(*args, **kwargs)
+
+        def release(self):
+            self._lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_exc):
+            self.release()
+
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(deploy_guard.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(deploy_guard, "_CHECK_S", 0.01)
+
+    conn = Conn()
+    lease = deploy_guard.ExclusiveLease(conn)
+    io_lock = CountingLock()
+    lease.io_lock = io_lock
+
+    # Stand in for `release_exclusive` holding the lock across its unlock-and-close.
+    io_lock.acquire()
+    watchdog = threading.Thread(target=deploy_guard._watch_exclusive, args=(lease,), daemon=True)
+    watchdog.start()
+
+    # Wait for the watchdog to be genuinely blocked on the lock rather than sleeping through it.
+    deadline = time.monotonic() + 5
+    while io_lock.attempts < 2:
+        assert time.monotonic() < deadline, "watchdog never reached the io lock"
+        time.sleep(0.01)
+
+    # Now finish the release exactly as `release_exclusive` does.
+    lease.stop.set()
+    conn.close()
+    io_lock.release()
+
+    watchdog.join(timeout=5)
+    assert not watchdog.is_alive()
+    assert signals == []
+    assert lease.lost.is_set() is False
+
+
 def test_exclusivity_lost_in_the_overlap_window_removes_nothing(monkeypatch):
     """The lease is acquired BEFORE the 310-second overlap wait and proven again after it.
 
