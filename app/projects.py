@@ -742,14 +742,26 @@ def delete_project(pid: str) -> None:
         config.unmark_project_deleting(pid)
 
 
-def adopt_existing(src: Path, name: str, move: bool = True) -> str:
+def adopt_existing(
+    src: Path,
+    name: str,
+    move: bool = True,
+    *,
+    provisional_owner_id: str | None = None,
+) -> str:
     """Bring a pre-existing store dir (the legacy ./project) under PROJECTS_ROOT as a project,
     preserving its git history. Adds project.json + .gitignore(.state/) and commits them.
     move=False copies instead (useful for testing without disturbing the original)."""
     import shutil
+    if provisional_owner_id is not None and not db.is_uuid(provisional_owner_id):
+        raise ProjectError("Invalid provisional project owner.")
     config.PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
     pid = _unique_id(slugify(name))
     dst = project_path(pid)
+    # Mark the source before moving it, so even a process death immediately after publication
+    # leaves the only copy attributable. `.state` is working state and remains git-ignored.
+    (src / ".state").mkdir(exist_ok=True)
+    _write_provisional_owner(src, provisional_owner_id)
     if move:
         shutil.move(str(src), str(dst))
     else:
