@@ -19,7 +19,7 @@ let mockAuthState = {
   error: null as string | null,
   signInWithGoogle,
   signInWithMagicLink,
-  refreshSession: jest.fn(async () => undefined),
+  reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
   finishAccountDeletion: jest.fn(async () => undefined),
   signOut: jest.fn(async () => undefined),
   retry,
@@ -48,7 +48,7 @@ beforeEach(() => {
     error: null,
     signInWithGoogle,
     signInWithMagicLink,
-    refreshSession: jest.fn(async () => undefined),
+    reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
     finishAccountDeletion: jest.fn(async () => undefined),
     signOut: jest.fn(async () => undefined),
     retry,
@@ -158,6 +158,21 @@ test('a failed deleted-account cleanup is not mislabeled as a sign-in-link error
   expect(view.queryByText('That sign-in link couldn’t be used')).toBeNull();
 });
 
+test('failed deletion cleanup blocks even an auth-disabled app', async () => {
+  mockAuthState = {
+    ...mockAuthState,
+    status: 'cleanup-required',
+    mode: 'open',
+    error: 'Some deleted-account data remains.',
+  };
+  const view = await renderGate();
+
+  expect(view.getByText('Local data needs attention')).toBeTruthy();
+  expect(view.queryByText('Private library')).toBeNull();
+  fireEvent.press(view.getByText('Try cleanup again'));
+  expect(retry).toHaveBeenCalledTimes(1);
+});
+
 test('an accepted email request advances to the check-inbox state', async () => {
   const view = await renderGate();
   fireEvent.press(view.getByText('I already have an account'));
@@ -252,14 +267,16 @@ test('a paused deletion retries without requiring a now-impossible Auth refresh'
   };
   jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: failed });
   jest.mocked(api.startAccountDeletion).mockResolvedValue({
-    deletion: { ...failed, status: 'pending', attempts: 2, error_code: null },
+    // The coordinator returns the row read before its worker flips status, so a successfully
+    // accepted retry can still echo the prior error.
+    deletion: failed,
   });
 
   const view = await renderGate();
   await waitFor(() => expect(view.getByText('Retry deletion')).toBeTruthy());
   fireEvent.press(view.getByText('Retry deletion'));
 
-  expect(mockAuthState.refreshSession).not.toHaveBeenCalled();
+  expect(mockAuthState.reauthenticateForDeletion).not.toHaveBeenCalled();
   expect(api.startAccountDeletion).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(view.getByText('Deleting your account')).toBeTruthy());
   await view.unmountAsync();

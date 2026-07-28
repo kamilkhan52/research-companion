@@ -47,10 +47,12 @@ adoption script repairs only unambiguous or explicitly mapped legacy trash. The 
 project-content work is now implemented by a durable, retry-safe coordinator: it closes request
 and job admission, drains actual worker threads, permanently removes active/trash/user-cache data,
 retains only content-free project-ID and subject tombstones, and deletes Supabase Auth last.
-The mobile path now adds recent-session refresh for initial authorization, exact typed confirmation,
-durable progress/retry after restart, a local recovery intent for post-Auth cleanup, and
-account-linked device/cache cleanup. The gate now moves to the public web request surface, H23
-server-secret configuration, and a disposable-account staging deletion test.
+The mobile path now adds a recent signed Supabase user-presence event for initial authorization
+(never an automatic token refresh), exact typed confirmation, durable progress/retry after restart,
+a local recovery intent for post-Auth cleanup, and fail-closed account-linked device/cache cleanup.
+The backend also ages every destructive attempt past Fly's rolling-deploy kill window. The gate now
+moves to the public web request surface, H23 server-secret configuration, and a disposable-account
+staging deletion test.
 
 **M2.5 compliance inventory started 2026-07-28.** The code-derived storage/processor inventory and
 provisional Play Data Safety matrix now live in

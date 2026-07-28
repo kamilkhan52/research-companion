@@ -59,11 +59,19 @@ export function AccountDeletionGuard({ children }: { children: ReactNode }) {
     setRetrying(true);
     setRetryError(null);
     try {
-      // The initial request required a freshly minted JWT. Once the server has a durable
-      // tombstone, retry is already authorized and must also work when Auth identity deletion
-      // succeeded but its response was lost—at which point refresh is impossible.
+      // Once the server has a durable tombstone, retry is already authorized and must also work
+      // when Auth identity deletion succeeded but its response was lost.
       const next = await startAccountDeletion();
-      queryClient.setQueryData(queryKey, next);
+      // request() returns the durable row it read BEFORE starting the worker. For a retry that can
+      // still say "error", which would disable the interval below and strand the client on stale
+      // failure UI while deletion succeeds. POST acceptance means the worker is queued, so adopt a
+      // pending projection until the next authoritative poll observes draining/error/completion.
+      queryClient.setQueryData(queryKey, {
+        ...next,
+        deletion: next.deletion?.status === 'error'
+          ? { ...next.deletion, status: 'pending', error_code: null }
+          : next.deletion,
+      });
     } catch (caught) {
       setRetryError(caught instanceof Error ? caught.message : 'Could not retry deletion.');
     } finally {

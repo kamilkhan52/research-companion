@@ -19,21 +19,31 @@ import { Button, Card, Icon, Screen, Text } from '@/ui';
 export default function DeleteAccountScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { userId, email, refreshSession } = useAuth();
+  const { userId, email, reauthenticateForDeletion } = useAuth();
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [confirmation, setConfirmation] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const confirmed = confirmation === 'DELETE';
 
   async function submit() {
     if (!confirmed || submitting) return;
     setSubmitting(true);
     setError(null);
+    setNotice(null);
     try {
-      // The backend accepts deletion only with a token minted in the last five minutes.
-      await refreshSession();
+      // The backend verifies a recent signed Supabase AMR user-presence event. Refreshing an access
+      // token is intentionally insufficient because it can happen automatically in the background.
+      const reauthenticated = await reauthenticateForDeletion();
+      if (reauthenticated === 'cancelled') return;
+      if (reauthenticated === 'email-sent') {
+        setNotice(
+          'Check your email and open the secure sign-in link. Then return here and confirm again.',
+        );
+        return;
+      }
       // Must land before the POST. Supabase identity deletion can make session restoration
       // impossible before the app next opens; this marker lets signed-out bootstrap still purge
       // account-linked device state. An explicit server rejection removes it below.
@@ -94,6 +104,11 @@ export default function DeleteAccountScreen() {
           {error ? (
             <Text variant="caption" color={t.danger} style={{ marginTop: space.md }}>
               {error}
+            </Text>
+          ) : null}
+          {notice ? (
+            <Text variant="caption" color={t.mint} style={{ marginTop: space.md }}>
+              {notice}
             </Text>
           ) : null}
           <Button

@@ -263,8 +263,9 @@ rules as the privacy policy.
       end-to-end verification.
 - [x] Add one atomic user-deletion admission gate plus explicit running/terminal job cleanup for
       all owned project scopes and the hashed per-user audio scope.
-- [x] Add an authenticated in-app deletion path with recent-session refresh, exact confirmation,
-      restart-safe polling/retry, and account-linked local cache/session cleanup.
+- [x] Add an authenticated in-app deletion path with recent signed Supabase user presence, exact
+      confirmation, restart-safe polling/retry, and fail-closed account-linked local cache/session
+      cleanup.
 - [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
 - [ ] Finish removing reusable bearer tokens from media query strings: protected mobile images
       use `Authorization` and per-user cache keys, and audio already uses headers. After the

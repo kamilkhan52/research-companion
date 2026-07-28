@@ -34,7 +34,13 @@ import { secureSessionStore } from './secureSessionStore';
 
 /** `unknown` until /api/auth/config answers — the app must not decide it is signed out while it
  *  still does not know whether auth is even on. */
-export type AuthStatus = 'unknown' | 'disabled' | 'signed-out' | 'signed-in' | 'unreachable';
+export type AuthStatus =
+  | 'unknown'
+  | 'disabled'
+  | 'signed-out'
+  | 'signed-in'
+  | 'unreachable'
+  | 'cleanup-required';
 
 interface AuthState {
   status: AuthStatus;
@@ -47,8 +53,8 @@ interface AuthState {
   signInWithGoogle: () => Promise<void>;
   /** True when Supabase accepted the email and the UI may advance to "check your inbox". */
   signInWithMagicLink: (email: string) => Promise<boolean>;
-  /** Mint a new access token immediately before a destructive, recent-session operation. */
-  refreshSession: () => Promise<void>;
+  /** Establish recent user presence before the first irreversible deletion request. */
+  reauthenticateForDeletion: () => Promise<'authenticated' | 'email-sent' | 'cancelled'>;
   /** Remove the deleted identity's session and account-linked device state without a server call. */
   finishAccountDeletion: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -115,6 +121,10 @@ async function consumePendingSignIn(): Promise<boolean> {
   const pending = await SecureStore.getItemAsync(PENDING_SIGN_IN_KEY).catch(() => null);
   if (pending) await SecureStore.deleteItemAsync(PENDING_SIGN_IN_KEY).catch(() => {});
   return Boolean(pending);
+}
+
+async function clearPendingSignIn(): Promise<void> {
+  await SecureStore.deleteItemAsync(PENDING_SIGN_IN_KEY).catch(() => {});
 }
 
 /** A storage key unique per Supabase project, by construction.
@@ -205,8 +215,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const generation = useRef(0);
 
   /** Local deletion recovery must not depend on a restorable Supabase session or reachable API. */
-  const recoverLocalDeletion = useCallback(async (): Promise<boolean> => {
-    if (!(await hasAccountDeletionIntent().catch(() => false))) return false;
+  const recoverLocalDeletion = useCallback(async (): Promise<'none' | 'cleared' | 'failed'> => {
+    if (!(await hasAccountDeletionIntent().catch(() => false))) return 'none';
     queryClient.clear();
     await stopPlaybackForSessionEnd().catch(() => {});
     try {
@@ -218,8 +228,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         'Some deleted-account data could not be cleared from this device. '
         + 'Clear the app’s data before another person uses it.',
       );
+      return 'failed';
     }
-    return true;
+    return 'cleared';
   }, [queryClient]);
 
   /** The one place a session becomes an API token. Every path that changes the session — restore,
@@ -245,7 +256,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Auth identity deletion can make refresh impossible before the app next opens. The local
       // intent is therefore an independent recovery signal: purge private device state even when
       // no JWT remains with which to observe the server's completed tombstone.
-      await recoverLocalDeletion();
+      const recovery = await recoverLocalDeletion();
+      if (recovery === 'failed') {
+        setUserId(null);
+        setEmail(null);
+        statusRef.current = 'cleanup-required';
+        setStatus('cleanup-required');
+        return;
+      }
     }
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
     setUserId(session?.user?.id ?? null);
@@ -282,8 +300,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Distinct from signed-out: the server may be down or the URL wrong. Telling the user to
         // sign in would be a lie, and would hide the actual problem behind a login form.
         if (!cancelled) {
-          await recoverLocalDeletion();
-          setStatus('unreachable');
+          const recovery = await recoverLocalDeletion();
+          setStatus(recovery === 'failed' ? 'cleanup-required' : 'unreachable');
         }
         return;
       }
@@ -291,6 +309,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMode(config.mode);
 
       if (!config.enabled) {
+        // A server switch can land here after an ambiguous deletion POST on the previous server.
+        // The non-identifying intent is device-global and must win before this early return mounts
+        // an auth-disabled app around account-linked drafts or protected media caches.
+        const recovery = await recoverLocalDeletion();
+        if (recovery === 'failed') {
+          if (!cancelled) setStatus('cleanup-required');
+          return;
+        }
         await setToken(null);
         if (!cancelled) setStatus('disabled');
         return;
@@ -298,6 +324,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Both values are required: mode() keys off the URL alone server-side, so a missing anon key
       // still reports "supabase" while leaving the client unable to construct anything.
       if (config.mode !== 'supabase' || !config.supabase_url || !config.supabase_anon_key) {
+        const recovery = await recoverLocalDeletion();
+        if (recovery === 'failed') {
+          if (!cancelled) setStatus('cleanup-required');
+          return;
+        }
         if (!cancelled) setStatus('signed-out');
         return;
       }
@@ -343,11 +374,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Without this the app sits on the loading spinner forever with no message: `status` never
       // leaves 'unknown', and an unhandled rejection in a fire-and-forget async IIFE is invisible.
       if (cancelled) return;
-      const recoveringDeletion = await recoverLocalDeletion();
-      if (!recoveringDeletion) {
+      const recovery = await recoverLocalDeletion();
+      if (recovery === 'none') {
         setError(caught instanceof Error ? caught.message : 'Could not start sign-in.');
       }
-      setStatus(recoveringDeletion ? 'signed-out' : 'unreachable');
+      setStatus(
+        recovery === 'failed'
+          ? 'cleanup-required'
+          : recovery === 'cleared' ? 'signed-out' : 'unreachable',
+      );
     });
 
     return () => {
@@ -473,11 +508,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       options: { redirectTo: redirectUri(), skipBrowserRedirect: true },
     });
     if (oauthError || !data?.url) {
+      await clearPendingSignIn();
       setError(oauthError?.message ?? 'Could not start Google sign-in.');
       return;
     }
     const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
-    if (result.type !== 'success') return;  // user dismissed; not an error worth showing
+    if (result.type !== 'success') {
+      await clearPendingSignIn();
+      return;  // user dismissed; not an error worth showing
+    }
     const message = await completeFromUrl(result.url);
     if (message) setError(message);
   }, [completeFromUrl]);
@@ -520,22 +559,84 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [adoptSession]);
 
-  const refreshSession = useCallback(async () => {
+  const reauthenticateForDeletion = useCallback(async () => {
     setError(null);
     const supabase = client.current;
     const mine = generation.current;
     if (!supabase) throw new Error('Your sign-in session is unavailable.');
-    const { data, error: refreshError } = await supabase.auth.refreshSession();
-    if (refreshError || !data.session) {
-      const message = refreshError?.message ?? 'Sign in again before deleting this account.';
-      setError(message);
-      throw new Error(message);
+
+    const current = (await supabase.auth.getSession()).data.session;
+    if (!current || current.user.id !== userId) {
+      throw new Error('Your sign-in session changed. Return to Settings and try again.');
     }
-    // Do not rely on the auth-state listener racing the deletion POST. The backend deliberately
-    // requires an iat no more than five minutes old, so the request must not leave until the
-    // freshly minted token is the synchronous token used by api/client.ts.
-    await adoptSession(data.session, mine);
-  }, [adoptSession]);
+    const lastSignIn = Date.parse(current.user.last_sign_in_at ?? '');
+    const signInAge = Date.now() - lastSignIn;
+    // Stay comfortably inside the backend's five-minute AMR window so network/UI latency cannot
+    // turn a client-approved destructive action into a confusing 401.
+    if (Number.isFinite(lastSignIn) && signInAge >= -60_000 && signInAge < 4 * 60 * 1000) {
+      await adoptSession(current, mine);
+      return 'authenticated';
+    }
+
+    const providers = current.user.app_metadata?.providers;
+    const provider = current.user.app_metadata?.provider;
+    const usesGoogle = provider === 'google'
+      || (Array.isArray(providers) && providers.includes('google'));
+    if (!usesGoogle) {
+      if (!current.user.email) throw new Error('This account has no verified email address.');
+      await markSignInPending();
+      const { error: otpError } = await supabase.auth.signInWithOtp({
+        email: current.user.email,
+        options: { emailRedirectTo: redirectUri() },
+      });
+      if (otpError) {
+        await clearPendingSignIn();
+        throw new Error(otpError.message);
+      }
+      return 'email-sent';
+    }
+
+    await markSignInPending();
+    const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUri(),
+        skipBrowserRedirect: true,
+        // Google documents select_account as an explicit authentication prompt. It prevents an
+        // automatic refresh/cookie redirect from being mistaken for recent user presence.
+        queryParams: { prompt: 'select_account' },
+      },
+    });
+    if (oauthError || !data?.url) {
+      await clearPendingSignIn();
+      throw new Error(oauthError?.message ?? 'Could not confirm your Google account.');
+    }
+    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUri());
+    if (result.type !== 'success') {
+      await clearPendingSignIn();
+      return 'cancelled';
+    }
+    const message = await completeFromUrl(result.url);
+    if (message) throw new Error(message);
+    const verified = (await supabase.auth.getSession()).data.session;
+    if (!verified || verified.user.id !== userId) {
+      // The provider chooser may select another Google account. Never reinterpret confirmation
+      // for account A as authorization to delete B.
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+      await adoptSession(null, mine);
+      throw new Error('Choose the same Google account that is signed in to Paradigm.');
+    }
+    const verifiedSignInAge = Date.now() - Date.parse(verified.user.last_sign_in_at ?? '');
+    if (
+      !Number.isFinite(verifiedSignInAge)
+      || verifiedSignInAge < -60_000
+      || verifiedSignInAge >= 4 * 60 * 1000
+    ) {
+      throw new Error('Google did not confirm a recent sign-in. Try again.');
+    }
+    await adoptSession(verified, mine);
+    return 'authenticated';
+  }, [adoptSession, completeFromUrl, userId]);
 
   const finishAccountDeletion = useCallback(async () => {
     setError(null);
@@ -567,12 +668,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AuthState>(
     () => ({
       status, mode, userId, email, error,
-      signInWithGoogle, signInWithMagicLink, refreshSession, finishAccountDeletion, signOut,
+      signInWithGoogle, signInWithMagicLink, reauthenticateForDeletion,
+      finishAccountDeletion, signOut,
       retry: () => setAttempt((n) => n + 1),
     }),
     [
       status, mode, userId, email, error, signInWithGoogle, signInWithMagicLink,
-      refreshSession, finishAccountDeletion, signOut,
+      reauthenticateForDeletion, finishAccountDeletion, signOut,
     ],
   );
 

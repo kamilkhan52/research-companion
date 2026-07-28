@@ -9,7 +9,8 @@ import { hasAccountDeletionIntent } from '@/auth/accountCleanup';
 import { ThemeProvider } from '@/theme/ThemeProvider';
 import { createTestQueryClient } from './queryClient';
 
-const mockRefreshSession = jest.fn(async () => undefined);
+const mockReauthenticate = jest.fn(async () =>
+  'authenticated' as 'authenticated' | 'email-sent' | 'cancelled');
 const mockBack = jest.fn();
 
 jest.mock('expo-router', () => ({
@@ -19,7 +20,7 @@ jest.mock('@/auth/AuthProvider', () => ({
   useAuth: () => ({
     userId: 'user-a',
     email: 'reader@example.com',
-    refreshSession: mockRefreshSession,
+    reauthenticateForDeletion: mockReauthenticate,
   }),
 }));
 
@@ -48,7 +49,7 @@ async function renderScreen() {
   );
 }
 
-test('requires exact confirmation and adopts a fresh session before deletion starts', async () => {
+test('requires exact confirmation and recent user presence before deletion starts', async () => {
   const view = await renderScreen();
   const input = view.getByLabelText('Type DELETE to confirm account deletion');
   const button = view.getByText('Permanently delete account');
@@ -63,12 +64,26 @@ test('requires exact confirmation and adopts a fresh session before deletion sta
   fireEvent.press(button);
 
   await waitFor(() => expect(api.startAccountDeletion).toHaveBeenCalledTimes(1));
-  expect(mockRefreshSession).toHaveBeenCalledTimes(1);
+  expect(mockReauthenticate).toHaveBeenCalledTimes(1);
   expect(AsyncStorage.setItem).toHaveBeenCalledWith('rc.accountDeletionIntent.v1', '1');
-  expect(mockRefreshSession.mock.invocationCallOrder[0])
+  expect(mockReauthenticate.mock.invocationCallOrder[0])
     .toBeLessThan(jest.mocked(api.startAccountDeletion).mock.invocationCallOrder[0]);
   expect(jest.mocked(AsyncStorage.setItem).mock.invocationCallOrder[0])
     .toBeLessThan(jest.mocked(api.startAccountDeletion).mock.invocationCallOrder[0]);
+});
+
+test('an email reauthentication pauses before creating a deletion intent', async () => {
+  mockReauthenticate.mockResolvedValueOnce('email-sent');
+  const view = await renderScreen();
+  fireEvent.changeText(
+    view.getByLabelText('Type DELETE to confirm account deletion'),
+    'DELETE',
+  );
+  fireEvent.press(view.getByText('Permanently delete account'));
+
+  await waitFor(() => expect(view.getByText(/Check your email/)).toBeTruthy());
+  expect(api.startAccountDeletion).not.toHaveBeenCalled();
+  expect(await hasAccountDeletionIntent()).toBe(false);
 });
 
 test('an explicit server rejection removes the pre-request recovery marker', async () => {

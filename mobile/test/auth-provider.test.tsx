@@ -25,10 +25,6 @@ const mockAuth = {
     return { data: { subscription: { unsubscribe: jest.fn() } } };
   }),
   getSession: jest.fn(async (): Promise<{ data: { session: unknown } }> => ({ data: { session: null } })),
-  refreshSession: jest.fn(async (): Promise<{
-    data: { session: unknown };
-    error: { message: string } | null;
-  }> => ({ data: { session: null }, error: null })),
   signOut: jest.fn(async () => ({ error: null })),
   exchangeCodeForSession: jest.fn(async () => ({ error: null })),
   setSession: jest.fn(async () => ({ error: null })),
@@ -119,7 +115,6 @@ beforeEach(async () => {
   jest.requireMock('expo-secure-store').getItemAsync.mockResolvedValue('pending');
   authStateCallback = undefined;
   mockAuth.getSession.mockResolvedValue({ data: { session: null } });
-  mockAuth.refreshSession.mockResolvedValue({ data: { session: null }, error: null });
   mockAuth.signInWithOtp.mockResolvedValue({ error: null });
   jest.spyOn(apiConfig, 'setToken').mockResolvedValue(undefined);
   jest.spyOn(apiConfig, 'subscribeBaseUrl').mockImplementation(() => jest.fn());
@@ -153,19 +148,70 @@ test('a token refresh replaces the stored token', async () => {
   await waitFor(() => expect(apiConfig.setToken).toHaveBeenCalledWith('second-jwt'));
 });
 
-test('a sensitive action waits until an explicitly refreshed token is adopted', async () => {
+test('account deletion reauthentication requires Google account selection and adopts its token', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  const oldSession = {
+    access_token: 'old-jwt',
+    user: {
+      id: 'user-a',
+      email: 'r@example.com',
+      last_sign_in_at: '2026-07-20T00:00:00Z',
+      app_metadata: { provider: 'google', providers: ['google'] },
+    },
+  };
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: oldSession },
+  });
+  const WebBrowser = jest.requireMock('expo-web-browser');
+  WebBrowser.openAuthSessionAsync.mockResolvedValue({
+    type: 'success', url: `${redirectUri()}?code=reauth-code`,
+  });
+  const freshSession = {
+    access_token: 'fresh-jwt',
+    user: {
+      ...oldSession.user,
+      last_sign_in_at: new Date().toISOString(),
+    },
+  };
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() { auth = useAuth(); return <Text>{auth.status}</Text>; }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in'));
+  mockAuth.getSession
+    .mockResolvedValueOnce({ data: { session: oldSession } })
+    .mockResolvedValueOnce({ data: { session: freshSession } });
+
+  await act(async () => {
+    await auth!.reauthenticateForDeletion();
+  });
+
+  expect(mockAuth.signInWithOAuth).toHaveBeenCalledWith({
+    provider: 'google',
+    options: expect.objectContaining({
+      redirectTo: redirectUri(),
+      skipBrowserRedirect: true,
+      queryParams: { prompt: 'select_account' },
+    }),
+  });
+  expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('reauth-code');
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith('fresh-jwt');
+});
+
+test('recent email authentication is accepted without sending another link', async () => {
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
   mockAuth.getSession.mockResolvedValue({
-    data: { session: { access_token: 'old-jwt', user: { email: 'r@example.com' } } },
-  });
-  mockAuth.refreshSession.mockResolvedValue({
     data: {
       session: {
-        access_token: 'fresh-jwt',
-        user: { id: 'user-a', email: 'r@example.com' },
+        access_token: 'recent-jwt',
+        user: {
+          id: 'user-a',
+          email: 'r@example.com',
+          last_sign_in_at: new Date().toISOString(),
+          app_metadata: { provider: 'email', providers: ['email'] },
+        },
       },
     },
-    error: null,
   });
 
   let auth: ReturnType<typeof useAuth> | undefined;
@@ -173,12 +219,13 @@ test('a sensitive action waits until an explicitly refreshed token is adopted', 
   const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-in'));
 
+  let result: Awaited<ReturnType<NonNullable<typeof auth>['reauthenticateForDeletion']>>;
   await act(async () => {
-    await auth!.refreshSession();
+    result = await auth!.reauthenticateForDeletion();
   });
 
-  expect(mockAuth.refreshSession).toHaveBeenCalledTimes(1);
-  expect(apiConfig.setToken).toHaveBeenLastCalledWith('fresh-jwt');
+  expect(result!).toBe('authenticated');
+  expect(mockAuth.signInWithOtp).not.toHaveBeenCalled();
 });
 
 test('finishing deletion uses local sign-out and clears the API token', async () => {
@@ -246,12 +293,29 @@ test('an unreachable server is not reported as signed out', async () => {
 });
 
 test('a backend with auth disabled clears any stale token and lets the app through', async () => {
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await markAccountDeletionIntent();
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue({ mode: 'open', enabled: false });
   const { getByText } = await renderProvider();
   await waitFor(() => getByText('disabled'));
   // A token left from a previous authenticated server would be sent to one that never asked for
   // it — harmless today, but it is a credential travelling somewhere it has no business going.
   expect(apiConfig.setToken).toHaveBeenCalledWith(null);
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await hasAccountDeletionIntent()).toBe(false);
+});
+
+test('an auth-disabled server cannot mount content when deletion cleanup fails', async () => {
+  const ExpoImage = jest.requireMock('expo-image').Image;
+  ExpoImage.clearDiskCache.mockResolvedValueOnce(false);
+  await AsyncStorage.setItem('rc.activeProject', 'private-project');
+  await markAccountDeletionIntent();
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue({ mode: 'open', enabled: false });
+
+  const { getByText } = await renderProvider();
+
+  await waitFor(() => getByText('cleanup-required'));
+  expect(await hasAccountDeletionIntent()).toBe(true);
 });
 
 test('supabase mode without an anon key does not pretend to be signed in', async () => {

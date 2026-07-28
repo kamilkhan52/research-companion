@@ -22,7 +22,7 @@ import {
 import { getBaseUrl, setBaseUrl } from '@/api/config';
 import { useAuth } from '@/auth/AuthProvider';
 import { AccountDeletionGuard } from '@/components/AccountDeletionGuard';
-import { Button, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
+import { Button, Card, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 
@@ -41,6 +41,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       </Screen>
     );
   }
+  if (status === 'cleanup-required') return <LocalCleanupRequired />;
   // `disabled` is a local backend with no auth configured — the normal development case, and the
   // only one where showing content without a token is correct.
   if (status === 'disabled') return <>{children}</>;
@@ -48,6 +49,31 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <AccountDeletionGuard>{children}</AccountDeletionGuard>;
   }
   return <SignedOutExperience />;
+}
+
+function LocalCleanupRequired() {
+  const t = useTheme();
+  const { error, retry } = useAuth();
+  return (
+    <Screen edges={['top', 'bottom']}>
+      <View style={common.centered}>
+        <Card style={{ margin: space.xl }}>
+          <Icon name="alert-triangle" size={28} color={t.danger} />
+          <Text variant="title" style={{ marginTop: space.lg }}>
+            Local data needs attention
+          </Text>
+          <Text color={t.muted} style={{ marginTop: space.sm }}>
+            {error ?? 'Some deleted-account data could not be cleared from this device.'}
+          </Text>
+          <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
+            Paradigm will not load private content while cleanup is incomplete. Clear the app’s
+            storage in device settings, or try the cleanup again.
+          </Text>
+          <Button title="Try cleanup again" onPress={retry} style={{ marginTop: space.lg }} />
+        </Card>
+      </View>
+    </Screen>
+  );
 }
 
 function SignedOutExperience() {
