@@ -136,6 +136,84 @@ def test_put_registers_a_terminal_job_without_a_thread():
     assert reg.active_for("k") is None        # a done job isn't "running"
 
 
+def test_cancelled_worker_blocks_project_deletion_until_its_thread_exits():
+    """Cancellation is immediate client state, not proof that the worker has stopped touching
+    files. Project deletion must follow actual thread liveness or it can move the repository while
+    a cancelled worker is still unwinding and let that worker recreate a partial live directory."""
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("cancel-drain")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def work(_job):
+        entered.set()
+        release.wait(5)
+
+    job = reg.start_or_join(
+        "k", lambda: SampleJob(id=new_id()), work, project_id="drain-project")
+    assert entered.wait(2)
+    assert reg.cancel(job.id, project_id="drain-project").status == "cancelled"
+    assert jobs.any_running_for_project("drain-project") == "cancel-drain"
+
+    # A terminal cleanup sweep must not erase the only record that the live worker still exists.
+    jobs.forget_finished_for_project("drain-project")
+    assert job.id in reg.jobs
+
+    release.set()
+    deadline = time.time() + 5
+    while jobs.any_running_for_project("drain-project") and time.time() < deadline:
+        time.sleep(0.01)
+    assert jobs.any_running_for_project("drain-project") is None
+
+    jobs.forget_finished_for_project("drain-project")
+    assert job.id not in reg.jobs
+
+
+def test_scope_drain_cancels_managed_workers_but_keeps_raw_orphans_visible():
+    """Account deletion drains many project and user-audio scopes at once. Managed workers get a
+    cooperative cancellation request; raw deadline orphans cannot be killed, so their liveness
+    record must remain until the owning adapter marks it done."""
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("account-drain")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def work(_job):
+        entered.set()
+        release.wait(5)
+
+    managed = reg.start_or_join(
+        "managed", lambda: SampleJob(id="managed"), work, project_id="project-a")
+    assert entered.wait(2)
+
+    orphan = SampleJob(id="orphan")
+    setattr(orphan, jobs._PID_ATTR, "project-a")
+    reg.jobs[orphan.id] = orphan
+
+    other = SampleJob(id="other")
+    setattr(other, jobs._PID_ATTR, "project-b")
+    reg.jobs[other.id] = other
+
+    assert jobs.request_cancellation_for_scopes({"project-a", "user:abc"}) == 1
+    assert managed.status == "cancelled"
+    assert orphan.status == "running"  # hiding an unkillable thread would make deletion unsafe
+    assert other.status == "running"   # an unrelated account is untouched
+    assert jobs.any_active_for_scopes({"project-a"}) == "account-drain"
+
+    release.set()
+    deadline = time.time() + 5
+    while getattr(managed, jobs._WORKER_ACTIVE_ATTR, True) and time.time() < deadline:
+        time.sleep(0.01)
+    orphan.status = "done"  # its external adapter observed the raw thread exit
+    assert jobs.any_active_for_scopes({"project-a"}) is None
+
+    jobs.forget_inactive_for_scopes({"project-a"})
+    assert managed.id not in reg.jobs and orphan.id not in reg.jobs
+    assert other.id in reg.jobs
+
+
 # ---- project isolation ----
 
 def test_dedup_is_scoped_by_project():
