@@ -38,7 +38,8 @@ interface AuthState {
   email: string | null;
   error: string | null;
   signInWithGoogle: () => Promise<void>;
-  signInWithMagicLink: (email: string) => Promise<void>;
+  /** True when Supabase accepted the email and the UI may advance to "check your inbox". */
+  signInWithMagicLink: (email: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   retry: () => void;
 }
@@ -436,13 +437,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithMagicLink = useCallback(async (address: string) => {
     setError(null);
     const supabase = client.current;
-    if (!supabase || !address.trim()) return;
+    if (!supabase || !address.trim()) return false;
     await markSignInPending();
     const { error: otpError } = await supabase.auth.signInWithOtp({
       email: address.trim(),
       options: { emailRedirectTo: redirectUri() },
     });
-    setError(otpError?.message ?? 'Check your email for the sign-in link.');
+    if (otpError) {
+      setError(otpError.message);
+      return false;
+    }
+    return true;
   }, []);
 
   const signOut = useCallback(async () => {

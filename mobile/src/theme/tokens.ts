@@ -35,6 +35,11 @@ export interface ThemePalette {
   amber: string;
   danger: string;
   scrim: string;
+  /** Fixed Google Identity button colors; these follow Google's approved light/dark themes. */
+  googleButtonBg: string;
+  googleButtonBorder: string;
+  googleButtonText: string;
+  googleLogoBg: string;
   // Washes/tints that used to live as inline rgba literals (T.5 promotion — the literal
   // guard keeps them here). Wash = a soft fill behind selected/accented content.
   mintWash: string;
@@ -64,6 +69,10 @@ const dim: ThemePalette = {
   amber: '#E4B85C',
   danger: '#E5738C',
   scrim: 'rgba(0,0,0,0.55)',
+  googleButtonBg: '#131314',
+  googleButtonBorder: '#8E918F',
+  googleButtonText: '#E3E3E3',
+  googleLogoBg: '#FFFFFF',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
   violetWash: 'rgba(155, 138, 251, 0.14)',
@@ -90,6 +99,10 @@ const black: ThemePalette = {
   amber: '#E4B85C',
   danger: '#E5738C',
   scrim: 'rgba(0,0,0,0.65)',
+  googleButtonBg: '#131314',
+  googleButtonBorder: '#8E918F',
+  googleButtonText: '#E3E3E3',
+  googleLogoBg: '#FFFFFF',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
   violetWash: 'rgba(155, 138, 251, 0.14)',
@@ -116,6 +129,10 @@ const light: ThemePalette = {
   amber: '#8F6411',
   danger: '#C2385A',
   scrim: 'rgba(20, 24, 32, 0.45)',
+  googleButtonBg: '#FFFFFF',
+  googleButtonBorder: '#747775',
+  googleButtonText: '#1F1F1F',
+  googleLogoBg: '#FFFFFF',
   mintWash: 'rgba(21, 121, 95, 0.10)',
   mintWashStrong: 'rgba(21, 121, 95, 0.16)',
   violetWash: 'rgba(106, 85, 224, 0.12)',
@@ -138,6 +155,7 @@ export const fonts = {
   bodyMedium: 'Manrope_500Medium',
   bodySemiBold: 'Manrope_600SemiBold',
   bodyBold: 'Manrope_700Bold',
+  googleButton: 'GoogleSans_500Medium',
   // Newsreader — editorial headings and long-form reading moments.
   serif: 'Newsreader_400Regular',
   serifItalic: 'Newsreader_400Regular_Italic',
