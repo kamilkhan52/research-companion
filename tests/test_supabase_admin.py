@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from app import auth, supabase_admin
@@ -37,6 +39,7 @@ def test_delete_user_sends_the_secret_only_to_the_admin_endpoint():
     )
     assert request.headers["authorization"] == f"Bearer {SECRET}"
     assert request.headers["apikey"] == SECRET
+    assert json.loads(request.content) == {"should_soft_delete": False}
 
 
 @pytest.mark.parametrize("status", [200, 204, 404])

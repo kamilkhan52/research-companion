@@ -85,7 +85,12 @@ def delete_user(user_id: str, *, client: httpx.Client | None = None) -> None:
     try:
         try:
             response = requester.request(
-                "DELETE", url, headers=headers, follow_redirects=False)
+                "DELETE",
+                url,
+                headers=headers,
+                json={"should_soft_delete": False},
+                follow_redirects=False,
+            )
         except httpx.HTTPError as exc:
             raise SupabaseDeleteError(f"network:{type(exc).__name__}") from None
         if response.status_code in {200, 204, 404}:
