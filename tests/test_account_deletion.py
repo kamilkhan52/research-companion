@@ -204,6 +204,19 @@ def test_start_requires_exact_confirmation_and_recent_session(monkeypatch):
     )
     assert stale.status_code == 401
 
+    # Once the recent session has authorized and persisted deletion, retry is not a second
+    # destructive decision. It must still work if Supabase identity deletion already succeeded
+    # and a refresh token can no longer mint a new JWT.
+    monkeypatch.setattr(
+        account_deletion,
+        "status_for",
+        lambda _uid: {"status": "error", "error_code": "deleting_identity:network:Timeout"},
+    )
+    retry = client.post(
+        "/api/account/deletion", headers=headers, json={"confirmation": "DELETE"},
+    )
+    assert retry.status_code == 202
+
 
 def test_streaming_request_stays_admitted_until_its_body_stops(monkeypatch):
     """Middleware dispatch returns before an SSE body is consumed. The request drain must follow

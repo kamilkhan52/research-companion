@@ -57,7 +57,19 @@ def delete_account(body: DeleteAccountRequest, request: Request):
     user = _user(request)
     if body.confirmation != "DELETE":
         raise HTTPException(status_code=422, detail='Type "DELETE" to confirm.')
-    _require_recent_session(user)
+    # Recent authentication authorizes the irreversible operation exactly once. After the durable
+    # tombstone exists, POST is only an idempotent retry/resume—even if the Auth DELETE succeeded
+    # but its response was lost, making a token refresh impossible because the identity is gone.
+    # Requiring recent iat again in that state can permanently strand the retry.
+    try:
+        existing = account_deletion.status_for(user["user_id"])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Account deletion status is temporarily unavailable.",
+        ) from exc
+    if existing is None:
+        _require_recent_session(user)
     try:
         state = account_deletion.request(user["user_id"])
     except account_deletion.AccountDeletionUnavailable as exc:
