@@ -340,10 +340,13 @@ def discard_provisional_project(pid: str, owner_id: str) -> None:
         raise ProjectError("Project no longer has provisional ownership.") from exc
     if recorded != owner_id:
         raise ProjectError("Project provisional ownership changed.")
-    if root.is_symlink():
-        root.unlink()
-    else:
-        shutil.rmtree(root)
+    try:
+        if root.is_symlink():
+            root.unlink()
+        else:
+            shutil.rmtree(root)
+    except OSError as exc:
+        raise ProjectError("Could not remove the provisionally owned project.") from exc
 
 
 def create_project(
