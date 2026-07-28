@@ -63,7 +63,39 @@ follow-ups. The mobile half (#254) is the only piece still open.
 | #252 | `jobs.py` — a cancelled worker stays visible to a deletion drain until its thread really exits | ✅ merged (`25abcff`) |
 | #253 | `account_deletion.py` + `deploy_guard.py` — the durable coordinator and cross-process exclusion | ✅ merged (`787c3d2`) |
 | #257 | Three tests from #253's review that were weaker than they read | ✅ merged |
-| #254 | The Expo client: start deletion, follow it, purge local state | open, CI green, awaiting review |
+| #254 | The Expo client: start deletion, follow it, purge local state | ✅ merged (`8456045`) |
+
+**M2.5's account deletion is code-complete and deployed to staging (version 17, 2026-07-28).**
+Migrations `0004` and `0005` applied on boot, the Data API lockout re-asserted on 6/6 tables, and
+`/api/account/deletion` is in the deployed OpenAPI. What remains before the deletion path can be
+exercised end to end is **H23**: `RC_SUPABASE_SECRET_KEY` is not set on staging, so
+`supabase_admin.configured()` is False and `request()` refuses before writing a tombstone. That
+refusal is itself a designed, testable path — the client clears its local marker and reports it —
+but the identity-deletion step cannot run until Kamil sets the key.
+
+**The mobile review found two P0s, and neither was about deleting an account.** Both were in
+`AccountDeletionGuard`'s render conditions and affected *every signed-in user*:
+
+1. `refetchInterval` returns 30s whenever there is no deletion, and the loading condition included
+   `query.isFetching && !deletion` — true on exactly those polls. Rendering a different element
+   unmounts `children`, and everything under `AuthGate` is provider state, so the router stack
+   reset to the root route, drafts and open sheets were destroyed, and `AudioProvider`'s mount
+   effect paused playback. Every 30 seconds, for the life of the session.
+2. `retry: false` plus an unconditional `query.isError` meant one dropped packet replaced the app
+   with an error card, and a cold start offline made the client unusable.
+
+Both are the same mistake in two places: treating a *revalidation* as a *first load*. Fail-closed
+on first load is deliberate and kept; applying it to a later poll, while holding a good answer from
+seconds ago and with the backend 423ing every other route once a tombstone exists, is not the same
+thing. Worth carrying forward — the guard pattern will recur for quota and subscription state.
+
+Three more from that round, each fixed: a pre-persistence 503 could be misread as ambiguous because
+the route returned `str(exc)` for a class with two messages (now one stable detail, logged
+specifically, so the client's match is complete *by construction*); a device that did not initiate
+the deletion never wrote the marker its own fail-closed retry depends on; and the cross-user
+isolation test stayed green under a shared query key. A terminal "your account was deleted"
+acknowledgement was added on Kamil's call — persisted, because the completion path ends in a
+sign-out that unmounts the tree that would have held it.
 
 **Reviews for this stack ran as Claude subagents, not Codex.** The Codex account hit its usage limit
 on 2026-07-28 (resets Aug 3) and Kamil disabled automatic Codex PR review the same day. Cold
@@ -89,6 +121,53 @@ Fail-stop is kept, but it now has to be *earned*: `_recover_shared` tries to re-
 30s and that attempt is itself the test — a blip recovers, a peer genuinely holding exclusivity
 keeps failing `pg_try_advisory_lock_shared` and the process still terminates. The budget stays well
 under the 310s overlap window a deleter already waits for exactly this reason.
+
+### Next steps, in order
+
+1. **H23 — set `RC_SUPABASE_SECRET_KEY` on staging** (Kamil; it is a service-role credential and
+   never passes through an agent). Until then account deletion refuses before persistence and the
+   Play-required path cannot be demonstrated. `flyctl secrets set` on
+   `research-companion-staging`; the key is the Supabase project's `service_role` secret.
+2. **Device pass against staging** — see the runbook below. The local Mac instance runs
+   `auth.mode() == "open"`, where `AuthGate` renders children directly, so **none of the
+   deletion work is reachable there**; the phone must point at the staging origin.
+3. **A disposable-account deletion test on staging**, once H23 lands: create a throwaway Supabase
+   user, give it a project, delete the account, and confirm the project tree, the user's audio
+   directory, the Postgres rows and the Auth identity are all gone.
+4. **An operator signal for a stalled deletion** (see the known gap below). This is the last thing
+   between M2.5's deletion work and a truthful Data safety declaration.
+5. **The remaining M2.5 compliance items** — privacy policy and terms at public URLs, in-app links
+   to both, the AI-content report action, and the Data safety answers themselves. The one
+   declaration blocker still open is transport encryption: the mobile source defaults to an
+   `http://` tailnet URL and backend retrieval permits public `http://`, so "all data encrypted in
+   transit" must wait for an AAB pinned to the production HTTPS origin.
+6. **Then M2.5's build** — one production-profile EAS build onto a closed track, which starts the
+   12-tester / 14-continuous-day clock. That clock is the longest-lead item in the whole plan.
+
+### Device-test runbook (verified 2026-07-28)
+
+The trap this exists to prevent: a Metro server can be running, healthy, and serving *the wrong
+worktree*. On 2026-07-28 it was being kept alive by a launchd agent, `com.paradigm.metro.auth-ui`,
+pinned to `.claude/worktrees/m2-auth-ui` — ten commits behind `main` — and it respawned twice after
+being killed before the agent was found. Its plist lived in `/private/tmp`, not
+`~/Library/LaunchAgents`, so it did not show up in the obvious place. `launchctl list | grep -i
+metro` is what finds it.
+
+So: **prove what is served, never that a server is up.**
+
+- Metro's actual working directory: `lsof -a -p $(lsof -ti :8081) -d cwd`.
+- Route modules are **absent from `index.bundle`** — `AuthGate` lives in `_layout`, so fetch
+  `http://127.0.0.1:8081/src/app/_layout.bundle?platform=android&dev=true&minify=false` and grep
+  it for a string only the new code contains. On 2026-07-28: `Your account was deleted` and
+  `accountDeletedNotice.v1` both present, and the same key present in `delete-account.bundle`.
+- Backend: `curl http://100.83.161.127:8000/api/health`; Metro over the tailnet:
+  `curl http://100.83.161.127:8081/status`. Both must answer from the phone's network, not just
+  loopback.
+- The phone is `oneplus-15` (`100.79.189.127`) and was directly connected on the tailnet.
+
+**For anything auth-gated, point the app at staging** — Settings → server URL →
+`https://research-companion-staging.fly.dev`. `app.json`'s baked `extra.apiBaseUrl` is the Mac's
+tailnet address, which is the open-auth instance.
 
 **Known gap, not yet closed:** `_owned_data` raising `ambiguous-transition-trash` is the correct
 fail-closed choice, but it leaves the account in a permanent 423 with a retry that can never
