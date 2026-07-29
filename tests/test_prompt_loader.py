@@ -113,6 +113,19 @@ def test_default_research_prompts_are_self_contained_and_never_defer_visuals():
     assert "never defer the reader\nto inspect it later or invent unseen content" in reading_method
 
 
+def test_shared_research_guidance_forbids_drawing_visuals_as_text_art():
+    """A described figure is useful; a drawn one is not. Text art wraps into noise at a phone-width
+    column and is spoken character by character in narration, so the rule belongs in the SHARED
+    block rather than the analysis prompt: `test_analysis_and_narration_compose_self_contained_
+    guidance` pins that both paths compose this text, so a reading-only rule would still reach the
+    ear."""
+    shared = prompts.DEFAULTS["self_contained_research"]
+
+    assert "never try to draw them" in shared
+    for banned in ("ASCII art", "box-drawing", "flowcharts"):
+        assert banned in shared, banned
+
+
 def test_default_analysis_prompts_expose_the_inline_figure_card_contract():
     analysis = prompts.DEFAULTS["analysis_system"]
     opening = prompts.DEFAULTS["opening_message"]
