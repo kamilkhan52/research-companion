@@ -118,6 +118,54 @@ def test_web_search_falls_through_to_working_provider(temp_project, monkeypatch)
     assert out == "Web results: the answer"
 
 
+def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monkeypatch):
+    """The chain used to catch only ToolError.
+
+    A provider raising anything else — a malformed payload giving KeyError, an httpx error
+    escaping a helper — propagated out of web_search, killed the agent's tool call, and left the
+    later providers untried. That is precisely the failure the chain exists to prevent, and every
+    provider parses untrusted upstream JSON, so it was reachable from any of them.
+    """
+    monkeypatch.setattr(research_tools, "_firecrawl_search",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyError("results")))
+    monkeypatch.setattr(research_tools, "_parallel_search",
+                        lambda *a, **k: (_ for _ in ()).throw(ValueError("bad json")))
+    monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "Web results: recovered")
+
+    out = research_tools.web_search("anything", ["q"])
+
+    assert out == "Web results: recovered"
+
+
+def test_an_unwrapped_exception_is_named_when_every_provider_fails(temp_project, monkeypatch):
+    """Swallowing a bug must not make it invisible — the diagnostic names the exception type."""
+    monkeypatch.setattr(research_tools, "_firecrawl_search",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyError("results")))
+    monkeypatch.setattr(research_tools, "_parallel_search",
+                        lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("no credit")))
+    monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "")
+
+    out = research_tools.web_search("anything", ["q"])
+
+    assert "no provider available" in out.lower()
+    assert "KeyError" in out                 # the bug is still visible
+    assert "no credit" in out                # the expected failure keeps its own message
+    assert "DuckDuckGo (empty)" in out       # a provider that answered nothing is not omitted
+
+
+def test_the_module_docstring_does_not_promise_a_brave_key(temp_project):
+    """It claimed web_search "needs a Brave Search API key" while no Brave code has ever existed
+    and both web tools in fact fall through to a keyless provider.
+
+    Asserts the absence of the CLAIM rather than of the word: the corrected docstring names Brave
+    once, in a note explaining that the old sentence was wrong.
+    """
+    doc = research_tools.__doc__ or ""
+    assert "needs a Brave Search API key" not in doc
+    assert "keyless DuckDuckGo" in doc                    # what it actually does
+    assert "never been any Brave code" in doc             # the note saying the old claim was false
+
+
 def test_web_search_all_providers_down_returns_readable_error(temp_project, monkeypatch):
     boom = lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("down"))  # noqa: E731
     for name in ("_firecrawl_search", "_parallel_search", "_ddg_search"):
