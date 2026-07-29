@@ -78,17 +78,38 @@ def _flatten_content(content) -> str:
     return content or ""
 
 
-def _empty_response_message(finish_reason, usage: dict) -> str:
+# Which Settings control picks the model for a given `operation`, so the error can name the one
+# the reader would actually change. Anything absent falls back to the plain analysis model, which
+# is what these operations use.
+_MODEL_SETTING_FOR = {
+    "narration": "Narration model",
+    "listening_preview": "Listening-preview model",
+}
+
+
+def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") -> str:
+    """Explain an empty completion in terms of something the reader can DO.
+
+    The previous wording advised raising `max_tokens` or lowering the model's reasoning effort.
+    Neither is reachable from the app: `max_tokens` is a hardcoded argument here, and reasoning
+    effort is not a setting at all. A reader who hit this — as happened on production narration
+    with a reasoning model on 2026-07-29 — was told to adjust two things that do not exist,
+    while the one fix that works (choose a model that does not spend its whole budget thinking)
+    went unmentioned.
+    """
+    setting = _MODEL_SETTING_FOR.get(operation, "Analysis model")
     reasoning_tokens = ((usage.get("completion_tokens_details") or {}).get("reasoning_tokens"))
     if reasoning_tokens:
-        hint = (f" — it spent {reasoning_tokens} tokens on hidden reasoning before running out "
-                "of output budget; raise max_tokens or lower the model's reasoning effort")
-    elif finish_reason == "length":
-        hint = " — it ran out of output tokens"
-    else:
-        hint = ""
-    return (f"The model returned an empty response (finish_reason={finish_reason}){hint}. "
-            "Try again, or pick a different model in Settings.")
+        return (f"The model returned an empty response (finish_reason={finish_reason}) — it spent "
+                f"{reasoning_tokens} tokens on hidden reasoning and had none left for the answer. "
+                f"This model reasons too much for this job: choose a non-reasoning model under "
+                f"“{setting}” in Settings.")
+    if finish_reason == "length":
+        return (f"The model returned an empty response (finish_reason={finish_reason}) — it ran "
+                f"out of output tokens. Try again; if it keeps happening, pick a different model "
+                f"under “{setting}” in Settings.")
+    return (f"The model returned an empty response (finish_reason={finish_reason}). Try again, or "
+            f"pick a different model under “{setting}” in Settings.")
 
 
 # The routing constraint that makes the privacy policy true.
@@ -250,7 +271,8 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
         raise LLMError("OpenRouter returned an unexpected response. Retry shortly.") from e
     content = _flatten_content(message.get("content"))
     if not content.strip() and not allow_empty:
-        raise LLMError(_empty_response_message(choice.get("finish_reason"), data.get("usage") or {}))
+        raise LLMError(_empty_response_message(
+            choice.get("finish_reason"), data.get("usage") or {}, operation))
     return content
 
 
