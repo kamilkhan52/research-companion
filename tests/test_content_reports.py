@@ -143,12 +143,26 @@ def test_one_account_cannot_bury_the_queue(database, monkeypatch):
 
 @needs_pg
 def test_a_concurrent_burst_cannot_exceed_the_cap(database, monkeypatch):
-    """Counted inside the insert. As two statements on an autocommit pool, concurrent reports each
-    read a count taken before any of them committed, and a burst overshot — bounded, but the cap is
-    the only thing between one account and the whole moderation queue."""
+    """The cap is the only thing between one account and the whole moderation queue, so it has to
+    hold under simultaneous requests, not merely sequential ones.
+
+    Folding the count into the insert is NOT sufficient and this test is what proved it: under READ
+    COMMITTED the sub-select reads a snapshot from statement start, so a burst landed 3 rows under a
+    cap of 2. `submit` now takes a per-reporter advisory lock for the transaction.
+
+    Keep this test even though it is a WEAK check of that fix: the overshoot is timing-dependent and
+    does not reproduce on a fast local Postgres (the unfixed code passes here 3/3, and failed in
+    CI). It is a canary, not a proof — `test_the_cap_is_serialized_per_reporter` below is the
+    deterministic one.
+
+    Six threads, not eight: the pool's `max_size` is 8, and a burst that needs every connection at
+    once times out acquiring one — which fails the test without ever exercising the cap.
+    """
     monkeypatch.setattr(content_reports, "DAILY_LIMIT", 2)
-    barrier = threading.Barrier(8)
+    threads_n = 6
+    barrier = threading.Barrier(threads_n)
     accepted = []
+    unexpected = []
 
     def fire():
         barrier.wait(timeout=10)
@@ -157,14 +171,60 @@ def test_a_concurrent_burst_cannot_exceed_the_cap(database, monkeypatch):
             accepted.append(1)
         except content_reports.ContentReportError:
             pass
+        except Exception as e:  # noqa: BLE001 — a pool timeout must not read as "the cap held"
+            unexpected.append(repr(e))
 
-    threads = [threading.Thread(target=fire) for _ in range(8)]
+    threads = [threading.Thread(target=fire) for _ in range(threads_n)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(20)
+        t.join(30)
 
-    assert sum(accepted) > 0, "every request failed, so the cap was not what was tested"
+    assert not unexpected, f"submit failed for a reason other than the cap: {unexpected}"
+    # Both halves matter: the second alone would pass if every request had been refused, and the
+    # first alone would pass if the cap had let all six through.
+    assert sum(accepted) == 2, f"expected exactly the cap to be accepted, got {sum(accepted)}"
+    assert content_reports.pending_count() == 2
+
+
+@needs_pg
+def test_the_cap_is_serialized_per_reporter_and_only_per_reporter(database):
+    """The deterministic half of the burst test above, which only reproduces under CI's timing.
+
+    Holds the reporter's advisory lock from OUTSIDE and asserts that `submit` for that reporter
+    blocks on it, while `submit` for a different reporter sails past. That is the whole property:
+    the cap check and the insert are one critical section per account, and accounts do not contend
+    with each other. Remove the `pg_advisory_xact_lock` line from `submit` and the first assertion
+    fails immediately — which the burst test cannot promise on this machine.
+    """
+    finished = threading.Event()
+
+    with db.pool().connection() as holder:
+        # Session-scoped, so it outlives the statement and blocks the transaction-scoped lock
+        # `submit` takes. Same key derivation, computed by the database exactly as `submit` does.
+        holder.execute("select pg_advisory_lock(%s, hashtext(%s))",
+                       (content_reports._LOCK_CLASS, USER_ID))
+
+        def blocked_submit():
+            content_reports.submit(USER_ID, surface="discussion", reason="offensive")
+            finished.set()
+
+        worker = threading.Thread(target=blocked_submit, daemon=True)
+        worker.start()
+
+        assert not finished.wait(timeout=2.0), (
+            "submit did not wait on the reporter's lock, so the cap check and the insert are not "
+            "one critical section")
+
+        # A different reporter must not be stuck behind the first — one abuser cannot stall
+        # everyone else's reports.
+        content_reports.submit(OTHER_ID, surface="notes", reason="other")
+
+        holder.execute("select pg_advisory_unlock(%s, hashtext(%s))",
+                       (content_reports._LOCK_CLASS, USER_ID))
+        assert finished.wait(timeout=10.0), "submit never completed after the lock was released"
+        worker.join(timeout=10)
+
     assert content_reports.pending_count() == 2
 
 
