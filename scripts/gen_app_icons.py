@@ -1,4 +1,4 @@
-"""Generate the Paradigm “P” icon set.
+"""Generate the Scholiast “P” icon set.
 
 The mark is one warm-paper editorial P on a flat Scholar Dark canvas. Pure numpy
 + stdlib zlib PNG writer: no font rasterizer or image library, so every platform

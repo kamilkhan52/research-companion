@@ -6,7 +6,7 @@ This project uses Figma as the working design surface for mobile UI redesigns. T
 - **File key:** `O62BbV7CcCOf3O55HKAjtK`
 - **Primary page:** `02 · Mobile Screens`
 - **Design-system page:** `01 · Design System`
-- **Icon page:** `03 · App Icon — Paradigm`
+- **Icon page:** `03 · App Icon — Scholiast`
 
 Do not commit Figma access tokens or paste them into docs. Store the token in the local shell, MCP config, or a password manager.
 
@@ -93,7 +93,7 @@ The design-system page also contains the implemented comparison sections:
 The icon page contains:
 
 - `Icon comps — top 3 (R7.10)` — superseded exploration retained for history
-- `Paradigm P · Final (R7.10)` — the current P-only launcher, compact-size, adaptive-safe-zone,
+- `Scholiast P · Final (R7.10)` — the current P-only launcher, compact-size, adaptive-safe-zone,
   and monochrome proofs
 
 Keep future work organized in named sections. Do not place loose components or frames directly on blank canvas unless they are labels for an existing frame group.
@@ -107,7 +107,7 @@ The current authorized Figma work has matching production implementation:
 | `14 · Player Jump Controls · Selected Design` | Implemented and merged in [#182](https://github.com/kamilkhan52/research-companion/pull/182): selected K1 layout with 64×52 outer ±15-second controls, 52×52 sentence controls, and a 72×72 play control |
 | `Palette refinement · Dim / Black / Light` | Implemented and merged in [#182](https://github.com/kamilkhan52/research-companion/pull/182) |
 | `Density · Comfortable / Tight` | Implemented and merged in [#189](https://github.com/kamilkhan52/research-companion/pull/189) |
-| `Paradigm P · Final (R7.10)` | Initial mark implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182); every proof and platform asset simplified to the P alone in [#194](https://github.com/kamilkhan52/research-companion/pull/194) |
+| `Scholiast P · Final (R7.10)` | Initial mark implemented in [#182](https://github.com/kamilkhan52/research-companion/pull/182); every proof and platform asset simplified to the P alone in [#194](https://github.com/kamilkhan52/research-companion/pull/194) |
 
 No authorized recent Figma graphic was left unimplemented at this audit. The launcher icon is
 a native resource, so its on-device verification requires a rebuild/reinstall rather than a

@@ -1,13 +1,22 @@
-# Paradigm — app icon design (R7.10, redo brief)
+# Scholiast — app icon design (R7.10, redo brief)
 
 The first pass (6 codex generations → a Fable×codex top-three → Figma vector comps on page
-"03 · App Icon — Paradigm") was useful groundwork but is being **redone** with Kamil in the
+"03 · App Icon — Scholiast") was useful groundwork but is being **redone** with Kamil in the
 generation loop and a firmer foundation: agreed app-icon best practices, and a sharper reading
-of the Paradigm philosophy, *before* we prompt codex. This document is that foundation.
+of the Scholiast philosophy, *before* we prompt codex. This document is that foundation.
 
-## What "Paradigm" means (and how it should feel, not read)
+> **Renamed 2026-07-29: the app is now Scholiast, not Paradigm.** This section below is kept as
+> written because it is the reasoning the existing icon work was built on, and discarding it would
+> leave those comps unexplained. But read it as history: the Kuhn argument belongs to the old name.
+> A *scholiast* is the ancient commentator who wrote explanatory notes in the margins of a
+> manuscript — a different and more literal image (margin, gloss, annotation, the reader in
+> conversation with a text) which is arguably closer to what the app does. **Any new icon work
+> should start from the scholiast idea, not the paradigm-shift one.** See `10-roadmap.md` step 3
+> for why the rename happened.
 
-The app is **Paradigm**, after Kuhn's *The Structure of Scientific Revolutions*: normal
+## What the name means (and how it should feel, not read)
+
+*Historical — written when the app was called Paradigm.* The app was **Paradigm**, after Kuhn's *The Structure of Scientific Revolutions*: normal
 science proceeds inside a shared frame; anomalies accumulate; the frame itself then
 reorganizes — the same facts snap into a new structure. That is the app's theory of *reading*:
 you work through a corpus with an interlocutor until your map of a field reorganizes.
@@ -79,8 +88,8 @@ Kamil wants to be involved at the generation step — that is the real point of 
       reference)
 - [x] Best-practices research + philosophy brief (this doc)
 - [x] Kamil approved the new editorial **P** direction in the round-10 device pass
-- [x] Final editable Figma board: `Paradigm P · Final (R7.10)` on page
-      `03 · App Icon — Paradigm`
+- [x] Final editable Figma board: `Scholiast P · Final (R7.10)` on page
+      `03 · App Icon — Scholiast`
 - [x] Primary, warm-paper launcher context, 128/64/32 proofs, Android 66% safe-zone proof,
       and monochrome fallback
 - [x] Deterministic canonical SVG plus generic/iOS, Android adaptive foreground,
