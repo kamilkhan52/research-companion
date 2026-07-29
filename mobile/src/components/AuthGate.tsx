@@ -5,7 +5,6 @@
 // — telling someone to sign in when the real problem is a wrong server URL or a stopped backend
 // sends them to fix the wrong thing, and there is no password they can type that will help.
 
-import * as Linking from 'expo-linking';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -25,6 +24,18 @@ import { AccountDeletionGuard } from '@/components/AccountDeletionGuard';
 import { Button, Card, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+
+/** Whether to offer the "change server" controls at all.
+ *
+ *  Kamil's device-pass note: these are development affordances — pointing the app at localhost,
+ *  the tailnet, or a quick tunnel — and a released build has exactly one correct server baked
+ *  into app.json. Showing a reader a server-URL field invites them to break their own install.
+ *
+ *  Gated on `__DEV__`, a BUILD-time constant, and deliberately not on the backend's `dev` flag
+ *  from /api/health: that flag can only be read from a server we can reach, and the one moment
+ *  a server control could matter is when we cannot reach one. A server-provided gate would be
+ *  unreadable in exactly the state it is meant to govern. */
+const SERVER_TOOLS_VISIBLE = __DEV__;
 
 type AuthFlow = 'welcome' | 'sign-in' | 'create-account' | 'check-inbox';
 type EntryFlow = Extract<AuthFlow, 'sign-in' | 'create-account'>;
@@ -117,11 +128,18 @@ function SignedOutExperience() {
   const [changingServer, setChangingServer] = useState(false);
   const [sentEmail, setSentEmail] = useState('');
 
+  // In development this is the editable URL field. In a release build it must NOT be: the server
+  // is baked into app.json, and letting someone save a different one here is how they strand
+  // themselves — a wrong-but-reachable URL leaves them on a screen whose escape hatches are all
+  // hidden (welcome gear, unsupported-server button, Settings). Not offering the edit is what
+  // makes the stranded state unreachable, rather than adding another way out of it.
   if (status === 'unreachable' || changingServer) {
-    return (
+    return SERVER_TOOLS_VISIBLE ? (
       <ServerUrlRecovery
         onCancel={changingServer ? () => setChangingServer(false) : undefined}
       />
+    ) : (
+      <ServerUnreachable />
     );
   }
 
@@ -190,12 +208,14 @@ function Welcome({
   return (
     <AuthCanvas>
       <View style={styles.welcomeContent}>
-        <IconButton
-          name="settings"
-          accessibilityLabel="Server settings"
-          onPress={onChangeServer}
-          style={styles.welcomeServerButton}
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <IconButton
+            name="settings"
+            accessibilityLabel="Server settings"
+            onPress={onChangeServer}
+            style={styles.welcomeServerButton}
+          />
+        ) : null}
         <Brand />
         <View style={styles.welcomeCopy}>
           <Text variant="editorial" style={styles.heroTitle}>
@@ -525,7 +545,6 @@ function CheckInbox({
   const styles = useThemedStyles(makeStyles);
   const { error, retry, signInWithMagicLink } = useAuth();
   const [resending, setResending] = useState(false);
-  const [mailError, setMailError] = useState<string | null>(null);
 
   async function resend() {
     setResending(true);
@@ -533,15 +552,6 @@ function CheckInbox({
       await signInWithMagicLink(email);
     } finally {
       setResending(false);
-    }
-  }
-
-  async function openEmail() {
-    setMailError(null);
-    try {
-      await Linking.openURL('mailto:');
-    } catch {
-      setMailError('Could not open an email app on this device.');
     }
   }
 
@@ -573,12 +583,10 @@ function CheckInbox({
         Open the link in the email to verify your account and continue.
       </Text>
 
-      <Button
-        title="Open email app"
-        icon="mail"
-        onPress={() => void openEmail()}
-        style={{ marginTop: space.xl }}
-      />
+      {/* No "Open email app" button. `Linking.openURL('mailto:')` is a COMPOSE intent, not an
+          inbox one — on Outlook it opened a blank new-message screen, which is the opposite of
+          what someone waiting for a verification link needs. Android exposes no portable
+          open-my-inbox intent, so the honest move is to not offer the button at all. */}
 
       <View style={styles.actionList}>
         <ActionRow
@@ -593,26 +601,25 @@ function CheckInbox({
           title="Use a different email"
           subtitle="Change the address"
           onPress={onDifferentEmail}
+          // Closes the list when the development-only "Change server" row below is absent —
+          // otherwise ActionRow keeps drawing a divider under the last visible row.
+          last={!SERVER_TOOLS_VISIBLE}
         />
-        <ActionRow
-          icon="external-link"
-          title="Change server"
-          subtitle="Use another Scholiast server"
-          onPress={onChangeServer}
-          last
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <ActionRow
+            icon="external-link"
+            title="Change server"
+            subtitle="Use another Scholiast server"
+            onPress={onChangeServer}
+            last
+          />
+        ) : null}
       </View>
 
-      <InfoCard
-        icon="shield"
-        title="Secure and private"
-        body="Links expire quickly and can only be used once."
-        accent={t.mint}
-      />
 
-      {error || mailError ? (
+      {error ? (
         <Text variant="caption" color={t.danger} style={styles.error}>
-          {mailError ?? error}
+          {error}
         </Text>
       ) : null}
 
@@ -646,18 +653,48 @@ function UnsupportedServer({ onChangeServer }: { onChangeServer: () => void }) {
           using Supabase sign-in, or run the backend without authentication.
         </Text>
         <Button title="Check again" onPress={retry} />
-        <Button
-          title="Change server"
-          variant="ghost"
-          onPress={onChangeServer}
-          style={{ marginTop: space.md }}
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <Button
+            title="Change server"
+            variant="ghost"
+            onPress={onChangeServer}
+            style={{ marginTop: space.md }}
+          />
+        ) : null}
       </View>
     </AuthCanvas>
   );
 }
 
 /** Shown when the backend cannot be reached: the reason, plus the one setting that can fix it. */
+/** The release-build answer to "cannot reach the server".
+ *
+ *  Deliberately has NO url field. The server is baked into app.json, so an unreachable server is
+ *  an outage or a dead network — not something the reader can fix by typing. Offering an editor
+ *  here only lets them save a wrong URL and strand themselves somewhere with no way back. */
+function ServerUnreachable() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { retry } = useAuth();
+  return (
+    <AuthCanvas>
+      <View style={styles.centerCard}>
+        <View style={styles.stateIcon}>
+          <Icon name="alert-triangle" size={28} color={t.amber} />
+        </View>
+        <Text variant="editorial" style={{ textAlign: 'center' }}>
+          Can’t reach Scholiast
+        </Text>
+        <Text variant="body" color={t.muted} style={styles.stateBody}>
+          Check your connection and try again. If this keeps happening, the service may be
+          temporarily unavailable.
+        </Text>
+        <Button title="Try again" onPress={retry} />
+      </View>
+    </AuthCanvas>
+  );
+}
+
 function ServerUrlRecovery({ onCancel }: { onCancel?: () => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -841,34 +878,6 @@ function ConstellationNode({
   );
 }
 
-function InfoCard({
-  icon,
-  title,
-  body,
-  accent,
-}: {
-  icon: IconName;
-  title: string;
-  body: string;
-  accent: string;
-}) {
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={styles.infoCard}>
-      <View style={[styles.infoAccent, { backgroundColor: accent }]} />
-      <Icon name={icon} size={19} color={accent} />
-      <View style={common.flex}>
-        <Text variant="heading" color={accent}>
-          {title}
-        </Text>
-        <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
-          {body}
-        </Text>
-      </View>
-    </View>
-  );
-}
 
 function ActionRow({
   icon,
@@ -1076,26 +1085,6 @@ const makeStyles = (t: ThemePalette) =>
     },
     orLine: { flex: 1, height: 1, backgroundColor: t.line },
     switchMode: { alignItems: 'center', paddingVertical: space.xl },
-    infoCard: {
-      minHeight: 92,
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: space.md,
-      borderWidth: 1,
-      borderColor: t.line,
-      borderRadius: radius.md,
-      backgroundColor: t.surface,
-      padding: space.lg,
-      overflow: 'hidden',
-    },
-    infoAccent: {
-      position: 'absolute',
-      left: 0,
-      top: space.lg,
-      bottom: space.lg,
-      width: 3,
-      borderRadius: 2,
-    },
     error: { textAlign: 'center', marginTop: space.md },
     serverLink: { alignItems: 'center', paddingVertical: space.xl },
     mailIllustration: {
