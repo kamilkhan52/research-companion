@@ -136,15 +136,17 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
 
 1. ~~**Approve the policy text**~~ — **APPROVED 2026-07-29**, with governing law corrected to
    California. H11 is closed.
-2. **Buy a domain and configure custom SMTP** (Kamil, H25 + H2b) — **the new top blocker, and it
-   was not in this list yesterday.** Supabase's built-in email service delivers ONLY to
-   pre-authorized project members and is capped at 2 messages/hour, so the 12 testers cannot
-   receive magic links, sign-up confirmations, or password resets *at all* — they are rejected,
-   not delayed. This makes the previously-deferred custom domain (H2b) a prerequisite, because
-   every SMTP provider needs a verified sending domain. Resend's free tier covers a closed test
-   many times over. Found from Kamil noticing his own magic links always land in junk, which is
-   the same cause in its mild form.
-3. **Rebrand to Scholiast — and it MUST precede the first AAB upload, which is a one-way door.**
+2. ~~**Buy a domain and configure custom SMTP**~~ — **DONE 2026-07-29.** `scholiast.io` on
+   Cloudflare, Resend verified, DMARC published, production Supabase wired to it. This was found
+   only because Kamil mentioned in passing that his magic links land in junk: Supabase's built-in
+   mail service delivers ONLY to project team members, so the 12 testers could not have received
+   anything at all. It would have surfaced the day he invited people, after the AAB and the store
+   setup. **The lesson worth keeping: a user's throwaway remark about their own experience is
+   worth chasing to its cause.** Details in H25.
+3. ~~**Rebrand to Scholiast**~~ — **SHIPPED 2026-07-29 (#272)**, including the package name while
+   it was still changeable. One thing remains and it is Kamil's: **H27**, adding `scholiast://auth`
+   to Supabase Redirect URLs on both projects, keeping the old scheme until no old build is
+   installed. Without it, sign-in silently does nothing on a new build. Original entry:
    Decided 2026-07-29: the app becomes **Scholiast** (a scholiast is the ancient commentator who
    wrote explanatory notes in the margins of manuscripts — what this app does), on **`scholiast.io`**,
    which is both the sending domain for auth email and eventually the web app's origin.
