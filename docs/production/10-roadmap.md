@@ -11,10 +11,13 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-28)
+## Current position (updated 2026-07-29)
 
-**M2's backend is complete.** M1 is code-complete (#218–#224); what remains of it is the production
-Fly app + secrets, all of which needs Kamil. M2 then landed in five slices:
+**M1 is complete: production is deployed.** `https://research-companion.fly.dev` is live in `sjc`
+with its volume attached and auth enforcing — the origin the AAB, Play's policy URLs and the
+Supabase redirects all needed. The remaining gap is H28 (the database URL), not the deployment.
+
+**M2's backend is complete.** M1 was code-complete at #218–#224; M2 then landed in five slices:
 
 | PR | Slice | Status |
 |---|---|---|
@@ -174,10 +177,26 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    treaty would dissolve that territory, but the treaty stalled in early 2026 and ICANN's policy
    gives a five-year phase-out. There is no `scholiast` `.com` to hold as a fallback.
 
-4. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
-   the AAB has to point at a production HTTPS origin, and that origin does not exist yet. The
-   legal URLs Play needs will be on that origin too. **Region is `sjc`** — set in `fly.toml` and
-   fixed at volume-creation time, so it cannot be corrected later without recreating the volume.
+4. ~~**The production Fly app + secrets**~~ (the M1 remainder) — **DEPLOYED 2026-07-29**, and the
+   production origin now exists: **`https://research-companion.fly.dev`** (machine in `sjc`, volume
+   `rc_data` attached, 512 MB swap live, health check passing). Verified from outside: `/legal/*`
+   public and branded Scholiast, every `/api/*` route rejecting unauthenticated callers,
+   `/api/auth/config` pointing at the **production** Supabase project `aumedoefxacycwfrlcml` rather
+   than staging's, and the SPA serving with `<title>Scholiast</title>`.
+
+   The database is connected: all six migrations applied, and the P0-18 lockout verified directly
+   against `pg_class` and `information_schema.role_table_grants` rather than from the log line —
+   7 `rc_*` tables, RLS on all of them, 0 policies, 0 `anon`/`authenticated` grants.
+
+   Getting there cost one round trip (H28): the production Postgres password contained a literal
+   `@`, and `urlsplit` splits the authority on the LAST `@` while libpq splits on the FIRST, so the
+   two disagreed about the host. `app/db.py`'s ambiguity guard caught it at boot and kept serving
+   rather than crash-looping. Worth keeping because it is a property of the URL *format*, not a
+   typo: any generated password containing `@` reproduces it.
+
+   H27 is done — `scholiast://auth` is on both Supabase projects. **The one thing left before a
+   build is the allowlist bootstrap** (H26), which needs a single sign-in attempt from Kamil against
+   the production origin.
 5. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
 6. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing

@@ -61,7 +61,65 @@ tester clock.
 **Report back:** the platform, the app subdomain it assigns, and how deploy credentials should be
 provided (a scoped deploy token in an EAS/CI secret, never the repo).
 
-### H27 — Add the new deep-link scheme to Supabase, or sign-in breaks · `todo` — 2 minutes, BOTH projects
+### H28 — The production database password contains `@`, so nothing reaches Postgres · ✅ `DONE 2026-07-29`
+**Resolved.** Kamil rotated the password and re-set the secret; the machine restarted and connected
+on the next boot. Verified from the logs and then independently against the live schema:
+
+- `db: pool opened on db.aumedoefxacycwfrlcml.supabase.co:5432/postgres`
+- all six migrations applied in order, `0001_ownership.sql` … `0006_content_reports.sql`
+- `data-api lockout asserted on 7/7 table(s)` — and, checked directly against `pg_class` and
+  `information_schema.role_table_grants` rather than trusting that log line: **7 `rc_*` tables, all
+  with RLS enabled, 0 policies, and 0 `anon`/`authenticated` grants**, which is exactly the P0-18
+  end state. PostgreSQL 17.6.
+- the deploy guard acquired at boot (its failure path logs; success is silent)
+
+`OPENAI_API_KEY` is now set too, so narration has a key.
+
+Original diagnosis follows, because the ambiguity is a property of the URL format and will recur
+for anyone who generates a password containing `@`.
+
+Production deployed cleanly on 2026-07-29 and then refused to connect to Postgres. `app/db.py`
+caught it at boot and kept serving rather than crash-looping (deliberate — a refusal to start is a
+crash loop on Fly), logging on repeat:
+
+> `RC_DATABASE_URL is ambiguous: the URL parser and libpq read a different host, port or database
+> from it.`
+
+**This is not a bug in the URL you pasted; it is a genuine ambiguity in the URL format.** The two
+parsers split the authority on different `@` characters — `urlsplit` uses the LAST one, libpq the
+FIRST — so a password containing a literal `@` sends them to different hosts. Confirmed on the
+machine: `urlsplit` reads host `db.aumedoefxacycwfrlcml.supabase.co`, libpq reads host
+`52@db.aumedoefxacycwfrlcml.supabase.co`. The guard exists precisely so this fails loudly instead
+of connecting somewhere unintended.
+
+**Fix — rotate the password rather than escaping it.** Percent-encoding the `@` as `%40` would also
+work, but Supabase → Settings → Database → **Reset database password**, generating one with no
+`@ / ? # :`, is less error-prone and moots the incidental disclosure below. Then re-set the secret
+with the *direct* connection (port 5432, never 6543):
+
+```
+flyctl secrets set -a research-companion RC_DATABASE_URL='postgresql://...'
+```
+
+Single-quote it in the shell so no character is expanded, and re-set nothing else — `flyctl secrets
+set` replaces only the names you pass.
+
+**Incidental disclosure, why the rotation is the recommended fix:** diagnosing this printed libpq's
+misparsed *host*, which necessarily contained the two password characters preceding the `@`. Three
+characters of the old password are therefore in an agent transcript. That is not an exploitable
+leak on its own, but the fix costs nothing extra, so rotate.
+
+**Ordering — do NOT run H26's allowlist bootstrap until this is fixed.** With no database,
+`tenancy.enabled()` is False and the app falls back to single-tenant behaviour where every project
+is reachable. Signing in and creating projects in that state produces projects with **no ownership
+rows**; once the database connects, an unowned project is reachable by nobody, which looks exactly
+like data loss and needs `RC_ADOPT_OWNER` to undo. Fix the URL, confirm migrations ran, *then*
+bootstrap the allowlist.
+
+**Report back:** that the secret is re-set. I will redeploy, confirm the migrations run, and then
+walk the allowlist bootstrap.
+
+### H27 — Add the new deep-link scheme to Supabase, or sign-in breaks · ✅ `DONE 2026-07-29` — 2 minutes, BOTH projects
 The rebrand changed `mobile/app.json`'s `"scheme"` from `researchcompanion` to `scholiast`, so the
 OAuth/magic-link callback the app registers is now **`scholiast://auth`** instead of
 `researchcompanion://auth`. Supabase only honours a redirect that is on its allowlist, and silently
@@ -75,7 +133,27 @@ any device — including the one on Kamil's phone right now. Removing it early b
 app; leaving it costs nothing.
 **Report back:** added on both.
 
-### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `todo`
+### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `in progress`
+**Status 2026-07-29:** all secrets set, and **production is deployed, serving, and connected to its
+database** at `https://research-companion.fly.dev` (machine `822716c7e945d8`, `sjc`, volume
+attached, 512 MB swap live, health check passing, `/legal/*` public, `/api/*` rejecting
+unauthenticated callers, `/api/auth/config` correctly reporting the **production** Supabase project,
+migrations applied, tenancy lockout verified against the live schema — see H28).
+
+**All that remains of H26 is the allowlist bootstrap below**, which needs one sign-in attempt from
+Kamil. `RC_ALLOWED_USERS` is currently the placeholder `bootstrap`, so the instance is deployed but
+reachable by nobody — which is the correct state to be in while waiting.
+
+**Use email + password for the bootstrap attempt, not the magic link.** Password sign-in returns a
+session directly with no deep-link redirect, so it does not depend on which scheme the installed
+build registers. Signing *up* on the production project will send a confirmation mail through
+Resend, which incidentally gives H25 its first real end-to-end delivery test. The installed dev
+build predates the rebrand and still registers `researchcompanion://auth`; that is allowlisted in
+Supabase alongside the new scheme, so OAuth would work too.
+
+Point the app at production first: **Settings → server URL → `https://research-companion.fly.dev`**
+(it overrides `app.json`'s `extra.apiBaseUrl`, which is the tailnet address).
+
 The app `research-companion` exists and its volume is created: **`rc_data`, 20 GB, `sjc`, encrypted,
 scheduled snapshots on with 5-day retention** (`vol_rnzpyx8xp2j10xpr`, created 2026-07-29). A volume
 cannot change region, so `sjc` is now fixed for production.
@@ -115,6 +193,12 @@ there is no way to read the right id off the response. So:
 `flyctl secrets set` **replaces, it does not append**, and `secrets list` shows only names — so to
 add a second user later you must set the whole comma-separated list again. See
 `fly-secrets-are-replace-not-append` for the incident this comes from.
+
+**Not a blocker, but audio is dead until it is set:** there is no `OPENAI_API_KEY` on production (nor
+on staging). `app/tts.py` reads `openai_api_key`, which `config.py` seeds from that environment
+variable, so narration will fail until it exists. It is an *operator* setting, so it can equally be
+entered once in the app's Settings screen after sign-in — which keeps it out of both the repo and
+this file. Decide which; just do not discover it during the tester round.
 
 **Report back:** that secrets are set, and I will deploy and verify.
 
