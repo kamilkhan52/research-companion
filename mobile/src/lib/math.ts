@@ -69,15 +69,22 @@ export interface MathFit {
  *   - fits as-is                       → natural size, centered (scroll:false)
  *   - moderately too wide (≥ minScale) → scaled down to fit exactly, centered (scroll:false)
  *   - far too wide (< minScale)        → natural size, horizontal scroll (scroll:true)
- * SVG scales losslessly, so shrinking a slightly-oversized formula reads better than a
- * scroll strip; reserve scrolling for long derivations that would otherwise become unreadably
- * tiny. `availW` of 0 (pre-layout) renders natural size — the first onLayout settles it.
+ * SVG scales losslessly, so shrinking a *slightly* oversized formula reads better than a scroll
+ * strip — a swipe affordance for a 3% overflow is worse than just fitting it. `availW` of 0
+ * (pre-layout) renders natural size — the first onLayout settles it.
+ *
+ * `minScale` is a legibility floor, not a layout preference. Display math renders at fontSize
+ * 17, so the old 0.6 floor let anything up to 1.67x the column width shrink to ~10px before it
+ * would scroll — which on a phone is the common case for a real equation, and it was reported
+ * as equations simply not fitting. 0.9 keeps the smallest shrunk formula at ~15px and sends
+ * everything wider to the scroll strip at full size, because reading one line by swiping beats
+ * reading all of it too small to parse.
  */
 export function fitMathBlock(
   naturalW: number,
   naturalH: number,
   availW: number,
-  minScale = 0.6,
+  minScale = 0.9,
 ): MathFit {
   if (!availW || naturalW <= availW) return { width: naturalW, height: naturalH, scroll: false };
   const scale = availW / naturalW;

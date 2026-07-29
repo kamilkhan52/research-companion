@@ -45,6 +45,36 @@ default models · **#282** the "paper summary" rename · **#283** sign-in screen
    only then flip the default. This may make item 3 redundant — do item 3 anyway, because a
    tester's first listening session should not be annoying even if the system is replaced later.
 
+**Open defect found 2026-07-29 after the production project copy: sharing a project loses all
+reading *progress*, and any discussion that was never committed.** Kamil's production corpus showed
+0 papers In Progress against 40 locally. Two independent causes, both in `projects.py`:
+
+- `.state/sessions.json` is gitignored, so it never travels, and it is the *only* source of
+  `Paper.session_state`. Every paper therefore reads as untouched and nothing groups as In Progress.
+  Be precise about the blast radius here: an **already-committed transcript still travels in the
+  bundle and is still reachable** — `hasStartedDiscussion` renders a thread whenever
+  `transcriptLength > 0`, with no reference to session state — so for most papers the conversation
+  survived and only its status was missing. It also carries each session's `opening` prompt and
+  `threads` map, which is why a rebuild-from-transcripts shortcut cannot be faithful.
+- `export_bundle` exports `HEAD` only, so the working tree does not travel at all — and invariant 4
+  leaves a great deal uncommitted on purpose (`store.add_entry` does not commit, and retrieved
+  `corpus/*.md` plus live `sessions/*.jsonl` wait for an approval). **This** is where content was
+  genuinely lost: 6 in-progress papers arrived with no transcript at all, and `embedded-llms` came
+  over as an empty skeleton with 0 reading-list entries because every file in it was uncommitted.
+
+Production was repaired by hand and verified equal to local (same paper and in-progress counts on
+all five projects, via the app's own `list_papers` inside the container); the same repair was needed
+for staging on 2026-07-27, so this is the **second** occurrence.
+
+**The designed fix, not yet built:** carry the working state as a second ref in the same bundle —
+`git bundle create out HEAD refs/rc/working-state` — rather than adding an endpoint or a tar
+upload. That reuses the whole existing trust boundary (`_reject_hostile_tree`, disabled
+hooks/filters, the size caps) instead of reintroducing the untrusted-archive bug class that the
+bundle choice deliberately avoided. It must be a **whitelist** — `.state/sessions.json`,
+`.state/branches/`, untracked `corpus/`/`sessions/`, modified tracked files — never all of
+`.state/`, which is 207 MB of one 214 MB project. Note `sessions.json` also stores each session's
+`opening` prompt and `threads` map, so a rebuild-from-transcripts shortcut cannot be faithful.
+
 **Known and deliberately not fixed**, so nobody rediscovers it as new: the Library's
 "Continue reading" card is a `Pressable` with `IconButton`s nested inside it (dismiss, and the
 pre-existing external-link button). TalkBack/VoiceOver can swallow nested accessible controls. It

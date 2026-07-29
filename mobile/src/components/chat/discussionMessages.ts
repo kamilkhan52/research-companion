@@ -10,6 +10,36 @@ import type { StreamItem, TranscriptEntry } from '@/api/types';
 export const DISCUSSION_USER: User = { _id: 'user' };
 export const ANALYST_USER: User = { _id: 'analyst', name: 'Analyst' };
 
+/** The backend's id for a paper's primary discussion (`app.sessions.MAIN_THREAD`). */
+export const MAIN_THREAD = 'main';
+/** The cross-paper review pseudo-session (`app.models.REVIEW_SLUG`), which is not a paper. */
+export const REVIEW_SLUG = '_review';
+
+/** Whether this turn is the paper summary: the comprehensive opening account of the paper
+ *  itself, which the reader never asked for and which is not a reply to anything.
+ *
+ *  Three things must hold, and each rules out a reachable turn that is NOT a summary:
+ *   - the index, obviously;
+ *   - the thread, because `assistant_index` counts assistant turns within ONE conversation and a
+ *     side thread is its own conversation with its own index 0 — an ordinary answer to whatever
+ *     the reader raised there;
+ *   - the slug, because the review pseudo-session (`kind: "review"`, one main thread) also opens
+ *     with a main-thread index 0 that is a corpus-wide review, not an account of any paper.
+ */
+export function isPaperSummaryTurn(
+  entry: TranscriptEntry | undefined,
+  threadId: string,
+  slug: string,
+): boolean {
+  return (
+    !!entry
+    && entry.role === 'assistant'
+    && entry.assistant_index === 0
+    && threadId === MAIN_THREAD
+    && slug !== REVIEW_SLUG
+  );
+}
+
 /** Synthetic row mirroring the live turn's interleaved text/tool items. */
 export const STREAMING_MESSAGE_ID = 'live-turn';
 /** Optimistic echo of the user text just sent, until the transcript refetch records it. */

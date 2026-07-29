@@ -124,15 +124,25 @@ test('fitMathBlock fits, scales, or scrolls a display equation by width', () => 
   // Pre-layout (availW 0) and equations that fit render natural size, no scroll.
   expect(fitMathBlock(200, 40, 0)).toEqual({ width: 200, height: 40, scroll: false });
   expect(fitMathBlock(200, 40, 300)).toEqual({ width: 200, height: 40, scroll: false });
-  // Moderately too wide → scaled to fit exactly (width == avail), height scaled, still no scroll.
-  const scaled = fitMathBlock(400, 40, 300); // scale 0.75 ≥ 0.6
+  // Barely too wide → scaled to fit exactly (width == avail), height scaled, still no scroll.
+  const scaled = fitMathBlock(320, 40, 300); // scale 0.9375 ≥ 0.9
   expect(scaled.scroll).toBe(false);
   expect(scaled.width).toBeCloseTo(300);
-  expect(scaled.height).toBeCloseTo(30);
+  expect(scaled.height).toBeCloseTo(37.5);
   // Far too wide (scale < minScale) → natural size + horizontal scroll.
   expect(fitMathBlock(1000, 40, 300)).toEqual({ width: 1000, height: 40, scroll: true });
-  // The minScale boundary is inclusive (scale exactly 0.6 still scales rather than scrolls).
-  expect(fitMathBlock(500, 40, 300).scroll).toBe(false);
+  // The minScale boundary is inclusive (scale exactly 0.9 still scales rather than scrolls).
+  expect(fitMathBlock(300, 40, 270).scroll).toBe(false);
+});
+
+test('an equation half again wider than the column scrolls at full size, not shrunk to fit', () => {
+  // The reported defect: display math renders at fontSize 17, so the previous 0.6 floor shrank
+  // anything up to 1.67x the column — this 1.5x case became ~11px rather than scrolling. It must
+  // now keep its natural width (that width delta is exactly what makes the strip scrollable).
+  const fit = fitMathBlock(450, 40, 300);
+  expect(fit.scroll).toBe(true);
+  expect(fit.width).toBe(450);
+  expect(fit.height).toBe(40);
 });
 
 // Keep the import "used" — the mock above replaces getSvgXml but the actual texToSvg/texToPlain
