@@ -372,8 +372,17 @@ Read them on staging: <https://research-companion-staging.fly.dev/legal/privacy>
 **What needs your judgement, not an agent's.** Publishing these is a legal statement about your
 product. Four specific things to look at rather than a general "read it all":
 
-1. **Governing law is Colorado, USA**, and liability is capped at the greater of twelve months of
-   fees or $20. Both are assumptions about you, not facts I could verify.
+1. **Governing law is California, USA** (corrected 2026-07-28 — Kamil lives in California, not
+   Colorado, which an earlier draft assumed), and liability is capped at the greater of twelve
+   months of fees or $20.
+   *Two consequences worth knowing.* CCPA/CPRA attaches to businesses meeting thresholds — roughly
+   $25M revenue, or personal information on 100k+ California consumers, or half of revenue from
+   selling it. None apply here, so no CCPA-specific disclosures are added; the policy's rights
+   section is written generally and already says the app does not sell data. Revisit at M10 if the
+   user base grows.
+   *And:* the staging Fly region is `dfw`, chosen as nearest to **Colorado**. **Production has not
+   been created yet, so pick `sjc` (San Jose) for it** — a free improvement while the choice is
+   still open. Not worth moving staging, which already has a volume there.
 2. **The terms say the AI output can be confidently wrong** and must not be relied on for research,
    teaching or clinical use. That is deliberately blunt. It is honest and it is also a disclaimer
    you may want a lawyer to phrase differently.
