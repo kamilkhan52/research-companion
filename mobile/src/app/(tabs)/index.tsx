@@ -280,7 +280,7 @@ export default function LibraryScreen() {
         {header}
         <Empty
           heading="Connect to your server"
-          body="Set your backend URL (the Cloudflare tunnel link) in Settings to load your library."
+          body="Set your Scholiast server URL in Settings to load your library."
           action={<Button title="Open Settings" onPress={() => router.push('/settings')} />}
         />
       </Screen>

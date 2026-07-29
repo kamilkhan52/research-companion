@@ -204,13 +204,13 @@ export default function SettingsScreen() {
           {/* Server connection */}
           <Section title="Connection">
             <Text variant="body" color={t.muted} style={{ marginBottom: space.md }}>
-              Connect your backend to sync projects, papers, audio, and notes — the Cloudflare
-              tunnel link (e.g. https://name.trycloudflare.com).
+              The Scholiast server this app talks to for projects, papers, audio, and notes. It
+              comes preset, so change it only to reach a different server.
             </Text>
             <Field
               value={url}
               onChangeText={setUrl}
-              placeholder="https://…trycloudflare.com"
+              placeholder="https://your-server.example.com"
               autoCapitalize="none"
               keyboardType="url"
             />
