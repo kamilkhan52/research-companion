@@ -1,8 +1,11 @@
 import {
   ANALYST_USER,
   DISCUSSION_USER,
+  MAIN_THREAD,
   PENDING_MESSAGE_ID,
+  REVIEW_SLUG,
   STREAMING_MESSAGE_ID,
+  isPaperSummaryTurn,
   toDiscussionMessages,
 } from '@/components/chat/discussionMessages';
 import type { StreamItem, TranscriptEntry } from '@/api/types';
@@ -78,6 +81,39 @@ describe('toDiscussionMessages', () => {
     const out = toDiscussionMessages([user('opening'), assistant('a0', 0)], null, null);
     expect(out).toHaveLength(2);
     expect(out.every((m) => m.entry !== undefined)).toBe(true);
+  });
+});
+
+// ---- the paper summary gets its own treatment (distinct card, not a reply) ----
+
+describe('isPaperSummaryTurn', () => {
+  const PAPER = 'attention-is-all-you-need';
+
+  it('marks the opening assistant turn of the main discussion', () => {
+    expect(isPaperSummaryTurn(assistant('the summary', 0), MAIN_THREAD, PAPER)).toBe(true);
+  });
+
+  it('does NOT mark a side thread\'s opening turn, which is an ordinary answer', () => {
+    // Each thread is its own conversation with its own assistant_index 0, so an index-only
+    // test would dress up the first reply in every comment thread as a paper summary.
+    expect(isPaperSummaryTurn(assistant('answer to a comment', 0), 'abc123', PAPER)).toBe(false);
+  });
+
+  it('does NOT mark the review pseudo-session, which is not a paper at all', () => {
+    // `_review` is the corpus-wide review discussion (backend kind: "review"), and it opens with
+    // a main-thread assistant_index 0 like any paper — but that turn reviews the reading list,
+    // so labelling it "Paper summary" would name a paper it is not about.
+    expect(isPaperSummaryTurn(assistant('a review of the corpus', 0), MAIN_THREAD, REVIEW_SLUG))
+      .toBe(false);
+  });
+
+  it('does not mark later turns in the main discussion', () => {
+    expect(isPaperSummaryTurn(assistant('a follow-up answer', 1), MAIN_THREAD, PAPER)).toBe(false);
+  });
+
+  it('does not mark user turns or the synthetic rows that carry no entry', () => {
+    expect(isPaperSummaryTurn(user('opening'), MAIN_THREAD, PAPER)).toBe(false);
+    expect(isPaperSummaryTurn(undefined, MAIN_THREAD, PAPER)).toBe(false);
   });
 });
 

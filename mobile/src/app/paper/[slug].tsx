@@ -65,6 +65,7 @@ import { isHandoffEligible } from '@/audio/handoffState';
 import { usePreviewCues } from '@/audio/usePreviewCues';
 import {
   toDiscussionMessages,
+  isPaperSummaryTurn,
   DISCUSSION_USER,
   type DiscussionMessage,
 } from '@/components/chat/discussionMessages';
@@ -147,6 +148,20 @@ const USER_ROW: ViewStyle = {
 const ROW_STYLES_PROP = {
   containerStyle: { left: FULL_WIDTH_ROW, right: USER_ROW } as LeftRightStyle<ViewStyle>,
 };
+
+// A full-width band must be square on every corner, and `borderRadius: 0` alone does not achieve
+// that. The library groups consecutive messages from the same user and adds corner-SPECIFIC radii
+// for the grouping (`containerToNext_left: borderBottomLeftRadius: 3`, `containerToPrevious_left:
+// borderTopLeftRadius: 3` in lib/Bubble/styles.js), and React Native resolves a specific corner
+// ahead of the generic `borderRadius` no matter which style object comes last in the array. Two
+// adjacent assistant rows therefore kept a 3px notch on the left edge. Zero all four explicitly.
+const SQUARE_CORNERS = {
+  borderRadius: 0,
+  borderTopLeftRadius: 0,
+  borderTopRightRadius: 0,
+  borderBottomLeftRadius: 0,
+  borderBottomRightRadius: 0,
+} as const;
 
 /** A durable discussion state is sufficient to render the existing thread even before its
  * transcript refetch settles. In particular, never send an in-flight/empty first turn back to
@@ -1741,6 +1756,7 @@ function DiscussionThread({
       return (
         <AssistantBody
           entry={msg.entry}
+          isSummary={isPaperSummaryTurn(msg.entry, threadId, slug)}
           audioId={branchAudioId(pid, slug, msg.entry, threadId)}
           title={title}
           favorites={favorites}
@@ -1769,9 +1785,14 @@ function DiscussionThread({
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
       {...props}
-      wrapperStyle={{ left: styles.analystBubble, right: styles.userBubble }}
+      wrapperStyle={{
+        left: isPaperSummaryTurn(props.currentMessage?.entry, threadId, slug)
+          ? styles.summaryBubble
+          : styles.analystBubble,
+        right: styles.userBubble,
+      }}
     />
-  ), [styles]);
+  ), [styles, threadId, slug]);
 
   const renderSend = useCallback(() => {
     // While a response is generating, the send slot becomes Stop (polish plan F.1): the
@@ -2682,6 +2703,7 @@ interface SourceCandidate {
 
 function AssistantBody({
   entry,
+  isSummary = false,
   audioId,
   title,
   favorites,
@@ -2694,6 +2716,8 @@ function AssistantBody({
   sentenceAnnotations,
 }: {
   entry: Extract<TranscriptEntry, { role: 'assistant' }>;
+  /** The opening account of the paper, styled as an artifact rather than a reply. */
+  isSummary?: boolean;
   audioId: string;
   title: string;
   favorites: FavoriteModel[];
@@ -2759,6 +2783,14 @@ function AssistantBody({
 
   return (
     <View style={styles.assistantBody}>
+      {isSummary ? (
+        <View style={styles.summaryHeader}>
+          <Icon name="file-text" size={13} color={t.mint} />
+          <Text variant="caption" color={t.mint} style={styles.summaryLabel}>
+            Paper summary
+          </Text>
+        </View>
+      ) : null}
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
         <AgentTrail trail={entry.agent_trail} />
       ) : null}
@@ -3056,7 +3088,30 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     borderColor: t.line,
     // Bubble's own base style sets borderRadius: 15 (lib/Bubble/styles.js) — zero it, or a
     // full-width band shows rounded notches against both screen edges.
-    borderRadius: 0,
+    ...SQUARE_CORNERS,
+  },
+  // The paper summary is the one turn that is not a reply, so it reads as the document the
+  // discussion is about: a raised fill against the ordinary `surface` bands, and a mint rule
+  // along the top. Only the TOP border is accented — a left/right accent would show as a
+  // rounded notch against the screen edges, which is the same reason `analystBubble` is square.
+  summaryBubble: {
+    backgroundColor: t.elevated,
+    borderTopWidth: 2,
+    borderTopColor: t.mint,
+    borderBottomWidth: 1,
+    borderBottomColor: t.line,
+    ...SQUARE_CORNERS,
+  },
+  summaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: tight ? 6 : space.sm,
+  },
+  summaryLabel: {
+    fontFamily: fonts.body,
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   userBubble: {
     backgroundColor: t.elevated,
