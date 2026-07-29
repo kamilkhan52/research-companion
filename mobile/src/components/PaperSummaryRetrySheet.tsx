@@ -23,7 +23,7 @@ export const OPENING_TEMPLATE_OPTIONS: {
   { key: 'custom', title: 'Customize prompt', description: 'Edit the complete opening instruction and control it directly.', icon: 'edit-3' },
 ];
 
-export interface FirstResponseRetryConfig {
+export interface PaperSummaryRetryConfig {
   prompt: string;
   mode: ReadingMode;
   model?: string;
@@ -42,7 +42,7 @@ function matchingTemplate(
   return match ?? 'custom';
 }
 
-export function FirstResponseRetrySheet({
+export function PaperSummaryRetrySheet({
   visible,
   onClose,
   currentPrompt,
@@ -61,7 +61,7 @@ export function FirstResponseRetrySheet({
   selectedModel: string | null;
   defaultModelLabel: string;
   favorites: FavoriteModel[];
-  onRetry: (config: FirstResponseRetryConfig) => void;
+  onRetry: (config: PaperSummaryRetryConfig) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -107,7 +107,7 @@ export function FirstResponseRetrySheet({
       scrollable
       style={styles.sheet}
     >
-      <Text variant="overline" color={t.violet}>Retry first response</Text>
+      <Text variant="overline" color={t.violet}>Retry paper summary</Text>
       <Text variant="serifTitle" style={styles.title}>Choose how the discussion begins</Text>
       <Text variant="caption" style={styles.intro}>
         The existing response stays available as another branch.
@@ -144,7 +144,7 @@ export function FirstResponseRetrySheet({
       <Pressable
         onPress={() => setShowModels((open) => !open)}
         accessibilityRole="button"
-        accessibilityLabel={`Model for retried first response. ${modelLabel}. ${showModels ? 'Hide choices' : 'Change'}`}
+        accessibilityLabel={`Model for retried paper summary. ${modelLabel}. ${showModels ? 'Hide choices' : 'Change'}`}
         style={({ pressed }) => [styles.modelRow, pressed && { opacity: 0.82 }]}
       >
         <View style={styles.modelIcon}>
@@ -178,10 +178,10 @@ export function FirstResponseRetrySheet({
       ) : null}
 
       <Button
-        title="Retry first response"
+        title="Retry paper summary"
         icon="rotate-ccw"
         accessibilityRole="button"
-        accessibilityLabel="Retry first response"
+        accessibilityLabel="Retry paper summary"
         disabled={!prompt.trim()}
         onPress={() => onRetry({
           prompt: prompt.trim(),

@@ -40,7 +40,7 @@ same single-project assumptions as `store`, `sessions`, and `graph_store`.
 Every mobile add surface goes through `useAddPaper`:
 
 1. `POST /api/projects/{pid}/paper-matches` runs the read-only preflight.
-2. With no match, the existing metadata-only add proceeds and offers first analysis.
+2. With no match, the existing metadata-only add proceeds and offers paper summary.
 3. With a match, the add mutation pauses behind the global `ExistingPaperOfferHost`.
 4. The sheet shows which project owns each copy and whether full text, committed Notes, and
    discussion history are reusable.

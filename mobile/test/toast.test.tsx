@@ -11,8 +11,8 @@ import { ToastProvider, useToast } from '@/ui/Toast';
 
 const mockOffer = jest.fn();
 const mockReuse = jest.fn(async (_offer: unknown) => ({ action: 'cancelled', paper: null }));
-jest.mock('@/components/InitialAnalysisOffer', () => ({
-  offerInitialAnalysis: (offer: unknown) => mockOffer(offer),
+jest.mock('@/components/PaperSummaryOffer', () => ({
+  offerPaperSummary: (offer: unknown) => mockOffer(offer),
 }));
 jest.mock('@/components/ExistingPaperOffer', () => ({
   requestExistingPaperReuse: (offer: unknown) => mockReuse(offer),

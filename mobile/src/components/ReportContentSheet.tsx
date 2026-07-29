@@ -70,7 +70,7 @@ export function ReportContentSheet({
   // that can be tens of seconds on a bad connection — reporting a SECOND turn hit the guard below,
   // returned silently, and dismissed: no request, no toast, and a reader who believes they filed
   // something. Exactly the failure this file is written to avoid, introduced by the guard meant to
-  // avoid it. The same idiom as `FirstResponseRetrySheet`, which had it and this did not.
+  // avoid it. The same idiom as `PaperSummaryRetrySheet`, which had it and this did not.
   useEffect(() => {
     if (visible) setSending(false);
   }, [visible]);

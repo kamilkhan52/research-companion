@@ -154,7 +154,7 @@ export const moveProject = (
 // ---------- background retrieval + auto-analysis (R7.8) ----------
 
 /** Start (or join) connection-independent retrieval. With auto_analyze the server chains the
- *  first analysis turn onto a successful fetch — the whole flow survives the app closing. */
+ *  paper summary turn onto a successful fetch — the whole flow survives the app closing. */
 export const startRetrievalJob = (
   pid: string,
   slug: string,

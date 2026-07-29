@@ -22,7 +22,7 @@ export function createQueryClient(): QueryClient {
  *
  *  A holder rather than a plain singleton, because the client is replaced when the server changes
  *  (see `useServerScopedQueryClient`). Module-level code that cannot call `useQueryClient()` —
- *  `InitialAnalysisOffer` and `ExistingPaperOffer` run their chains outside React — must read it
+ *  `PaperSummaryOffer` and `ExistingPaperOffer` run their chains outside React — must read it
  *  through `getActiveQueryClient()` at the moment of use.
  *
  *  Getting this wrong is not theoretical: exporting a second, unrendered client meant their

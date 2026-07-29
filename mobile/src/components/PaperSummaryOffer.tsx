@@ -1,5 +1,5 @@
 // R7.8 — "analyze it while I keep browsing". After any paper is added, offer to kick off its
-// first analysis in the background: the user picks a Reading Mode (or "Not now"), the server
+// paper summary in the background: the user picks a Reading Mode (or "Not now"), the server
 // chains retrieval → session start → first turn (→ audio in listening mode) as durable jobs,
 // and a quiet watcher here polls the chain to fire completion/error toasts. The offer arrives
 // through a module-level emitter (the Toast pattern) so every add site — Discover, graph
@@ -26,7 +26,7 @@ export interface AnalysisOffer {
 // Imperative bridge: the mounted provider registers its dispatcher here so useAddPaper's
 // onSuccess (plain mutation code) can raise the offer.
 let dispatch: ((offer: AnalysisOffer) => void) | null = null;
-export function offerInitialAnalysis(offer: AnalysisOffer) {
+export function offerPaperSummary(offer: AnalysisOffer) {
   dispatch?.(offer);
 }
 
@@ -114,7 +114,7 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
     }
     refreshSession(offer.pid, offer.slug);
     if (chat.status === 'done') {
-      showToast(`First analysis ready · ${name}`);
+      showToast(`Paper summary ready · ${name}`);
     } else if (chat.status === 'error') {
       showToast(`Analysis failed for “${name}” — open it to retry`);
     }
@@ -123,7 +123,7 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
   }
 }
 
-export function InitialAnalysisOfferHost() {
+export function PaperSummaryOfferHost() {
   const { listeningMode } = useListeningMode();
   const [offer, setOffer] = useState<AnalysisOffer | null>(null);
 
@@ -156,7 +156,7 @@ export function InitialAnalysisOfferHost() {
     <OptionsSheet
       visible={!!offer}
       onClose={() => setOffer(null)}
-      title="Start the first analysis?"
+      title="Start the paper summary?"
       subtitle={offer?.title}
       options={options}
     />
