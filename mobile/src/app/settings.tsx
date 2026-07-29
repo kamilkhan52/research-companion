@@ -8,6 +8,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -512,6 +513,12 @@ export default function SettingsScreen() {
               ) : null}
             </SharedWritableContext.Provider>
           )}
+
+          {/* Outside every conditional above on purpose. Play's User Data policy requires the
+              privacy policy to be reachable from inside the app, and the branches above hide
+              themselves when there is no server URL or /api/settings will not load — which is
+              exactly when a reader is most likely to go looking. These links need neither. */}
+          <LegalSection />
         </ScrollView>
       </KeyboardAvoidingView>
     </Screen>
@@ -605,6 +612,45 @@ function LockedRow({ label }: { label: string }) {
       <Text variant="heading">{label}</Text>
       <Text variant="caption">Locked until connected</Text>
     </Card>
+  );
+}
+
+/** Privacy policy and terms, opened in the system browser against the connected server.
+ *
+ *  The pages are served by the backend (`app/routers/legal.py`), not bundled, so a policy
+ *  correction reaches every installed client on the next deploy instead of waiting for a store
+ *  release — which matters because the policy has to keep matching the Data safety declarations.
+ *
+ *  Without a server URL there is nothing to point at, so the links say so rather than silently
+ *  failing: a dead privacy link is a Play violation, an explained one is not. */
+function LegalSection() {
+  const t = useTheme();
+  const { toast } = useToast();
+  const connected = hasBaseUrl();
+
+  const open = (path: string) => {
+    const url = `${getBaseUrl()}${path}`;
+    Linking.openURL(url).catch(() => toast(`Could not open ${url}`));
+  };
+
+  return (
+    <Section title="About">
+      {connected ? (
+        <>
+          <Button title="Privacy Policy" variant="ghost" onPress={() => open('/legal/privacy')} />
+          <Button
+            title="Terms of Service"
+            variant="ghost"
+            onPress={() => open('/legal/terms')}
+            style={{ marginTop: space.sm }}
+          />
+        </>
+      ) : (
+        <Text variant="caption" color={t.muted}>
+          Connect to a server above to read the privacy policy and terms.
+        </Text>
+      )}
+    </Section>
   );
 }
 

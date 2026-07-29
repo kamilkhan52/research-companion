@@ -88,8 +88,10 @@ def test_favorite_model_families_resolve_current_chat_variants(monkeypatch, favo
         "Gemini Pro": "google/gemini-3.1-pro-preview",
         "Gemini Flash": "google/gemini-3.6-flash",
         "Grok": "x-ai/grok-4.5",
-        "Qwen Max": "qwen/qwen3.7-max",
         "Kimi K3": "moonshotai/kimi-k3",
+        # No "Qwen Max": it has no endpoint satisfying `llm.PRIVACY_ROUTING`, so it was removed
+        # from the favourites on 2026-07-28. The qwen entries stay in the fixture ABOVE on
+        # purpose — this asserts the family is gone, not that the catalogue lacks the models.
     }
 
 

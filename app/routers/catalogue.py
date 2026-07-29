@@ -47,7 +47,11 @@ FAVORITE_FAMILIES = [
     {"label": "Gemini Flash",  "inc": ["google/", "gemini", "flash"], "exc": ["lite", "thinking"]},
     {"label": "Grok",          "inc": ["x-ai/", "grok"],
      "exc": ["build", "code", "multi-agent"]},
-    {"label": "Qwen Max",      "inc": ["qwen/", "max"], "exc": ["coder", "thinking", "vl"]},
+    # Qwen Max was here until 2026-07-28 and was removed, not merely deprioritised: it is the one
+    # favourite family with NO endpoint satisfying `llm.PRIVACY_ROUTING`, so every request for it
+    # now 404s with "no endpoints found matching your data policy". Offering a model that cannot
+    # run is worse than offering one fewer. Re-add it if a zero-retention provider appears — the
+    # check is a single request with the `provider` block set.
     {"label": "GLM",           "inc": ["z-ai/", "glm"], "exc": ["air", "flash"]},
     {"label": "Kimi K3",       "inc": ["moonshotai/", "kimi"], "exc": ["code"]},
     {"label": "DeepSeek V4 Pro", "inc": ["deepseek", "v4"], "exc": []},

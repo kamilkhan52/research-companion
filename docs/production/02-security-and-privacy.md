@@ -169,12 +169,28 @@ exception and the actual provider terms/configuration support that classificatio
 | OpenAlex | arXiv/DOI plus operator contact in User-Agent when configured | Author/affiliation metadata | `app/openalex.py` |
 | arXiv/ar5iv and user-selected public hosts | Paper identifier or requested public URL; standard request metadata | Retrieve paper text, HTML, figures, or PDF | `app/retriever.py`, `app/figures.py`, `app/safe_fetch.py` |
 
-OpenRouter is not only an API endpoint. The current clients send a model ID but no `provider`
-routing constraint, so OpenRouter may choose among endpoints eligible to serve that model; the
-provider-like prefix in a model ID does not prove which organization receives the payload. Before
-submission, either pin an approved endpoint-routing policy or enumerate and review every endpoint
-OpenRouter can select for every allowed model. The provider actually serving the call belongs in
-the privacy-policy processor list and contract review.
+OpenRouter is not only an API endpoint, and this was the largest unresolved gap in the inventory
+until 2026-07-28. The clients used to send a model ID with no `provider` routing constraint, so
+OpenRouter could choose among any endpoints eligible to serve that model; the provider-like prefix
+in a model ID names the model's author, not the organization that receives the payload. Measured
+that day: `openai/gpt-5.6-sol` went to OpenAI unconstrained and Azure constrained;
+`deepseek/deepseek-v4-pro` went to StreamLake and SiliconFlow respectively. An unconstrained
+request therefore could not be described truthfully in a privacy policy at all.
+
+**Resolved by pinning, not by enumeration.** `llm.PRIVACY_ROUTING` — `{"data_collection": "deny",
+"zdr": true}` — now rides on every request from both turn paths: the raw client in `llm.py` and,
+critically, `agent_harness`'s Pydantic AI model via `extra_body`, since the agentic loop is the
+default. The two keys are different guarantees and both are required: `data_collection: "deny"`
+excludes providers that may store or train on inputs, `zdr` requires zero retention at rest, and a
+provider can satisfy one while failing the other. It is deliberately not environment-configurable,
+because `/legal/privacy` states it as an unconditional promise.
+
+Cost, measured across the twelve favourite families: eleven still resolve. Only **Qwen Max** has no
+conforming endpoint, and it was removed from `FAVORITE_FAMILIES` rather than left to 404 on every
+use. OpenRouter answers the no-conforming-endpoint case with a 404 — the same status as an unknown
+model — so `llm._is_data_policy_refusal` separates them and the reader is told the real reason.
+`tests/test_privacy_routing.py` asserts the constraint on both paths and, in the other direction,
+that the policy page still makes the claim.
 
 Provider failures are reduced to operationally useful metadata—provider, model, HTTP status,
 attempt count, and exception class—before they reach logs or user/job error surfaces. Raw response
@@ -280,14 +296,22 @@ rules as the privacy policy.
       provider/model/status/attempt/error-class diagnostics.
 - [ ] Confirm Google OAuth scopes and which identity fields Supabase retains.
 - [ ] Review current data-processing/retention/training terms and configuration for Fly, Supabase,
-      OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,
+      OpenRouter plus every inference endpoint eligible for every allowed model — **narrowed, not
+      closed, by `llm.PRIVACY_ROUTING`**: the eligible set is now only endpoints OpenRouter
+      classifies as no-training and zero-retention, so what remains is verifying that
+      classification rather than enumerating every provider — OpenAI,
       Firecrawl, Parallel, DuckDuckGo, Semantic Scholar, OpenAlex, arXiv, and ar5iv.
 - [ ] Point the release AAB exclusively at the production HTTPS origin; remove unneeded Android
       cleartext support and verify the merged manifest/runtime configuration. Server-side
       `http://` fetching is deliberately NOT part of this item — see the corrected row above.
 - [x] Implement an in-app offensive-AI-content report action and durable report store — #263 (table, module, `POST /api/reports/content`) and #264 (the row on the per-message long-press menu, which is what the policy's "without needing to exit the app" actually requires). The operator review queue is still M7; `content_reports.pending_count()` is the seam it builds on.
-- [ ] Implement in-app privacy and terms links plus the public deletion page. The in-app
-      account-deletion path is implemented.
+- [x] Implement in-app privacy and terms links plus the public deletion page — all three documents
+      are served by `app/routers/legal.py` at `/legal/privacy`, `/legal/terms` and
+      `/legal/delete-account`, public by construction (the auth middleware only guards `/api/`) and
+      registered before the SPA mount, which would otherwise swallow them. Settings links to the
+      first two, outside every conditional on that screen so they survive an unreachable server.
+      Served rather than bundled so a policy correction ships with a deploy instead of a store
+      release. **Still needs H11**: the text is drafted, not approved.
 - [ ] Add the M3 usage-event/reservation and M4–M5 billing changes to this inventory before their
       releases reach Play.
 - [ ] Have the developer approve the privacy policy/terms and make the final Play Console

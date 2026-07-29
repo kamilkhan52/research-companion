@@ -129,21 +129,30 @@ staging), ~~the device pass~~, ~~a real account deletion end to end~~ (Kamil del
 email account on staging and it ran to completion), ~~the stalled-deletion operator signal~~ (#262),
 and ~~the in-app AI-content report action~~ (#263 backend, #264 client).
 
-1. **Trim `RC_ALLOWED_USERS` on staging** (Kamil). It currently holds two ids because a device pass
-   needed a second account and the list had to be rewritten wholesale — `flyctl secrets set`
-   replaces and `secrets list` shows only names, so it cannot be appended to. Decide which id
-   stays. While there, confirm `RC_OPERATOR_USERS` holds a **current** staging uuid: the ids in
-   these documents predated the 2026-07-25 Supabase split and one of them caused an outage.
-2. **The remaining M2.5 compliance items, all needing Kamil's text or accounts** — privacy policy
-   and terms at public URLs, in-app links to both, the public account-deletion page, and the Data
-   safety answers in Play Console. `02-security-and-privacy.md` holds the code-derived inventory
-   those answers must match.
-3. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
-   the AAB has to point at a production HTTPS origin, and that origin does not exist yet.
+Also done since: ~~the allowlist trim~~ (Kamil confirmed the variables are correct on 2026-07-28),
+and ~~the legal surface~~ — privacy policy, terms and the public deletion page are served at
+`/legal/*`, linked from Settings, and the privacy policy's central claim is now enforced in code
+(see `llm.PRIVACY_ROUTING` below).
+
+1. **Approve the policy text** (Kamil, H11). Drafted and live on staging; four specific judgement
+   calls are listed under H11 in `HUMAN_ACTIONS.md` rather than "read it all". This is the only
+   remaining M2.5 item that is purely a decision.
+2. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
+   the AAB has to point at a production HTTPS origin, and that origin does not exist yet. The
+   legal URLs Play needs will be on that origin too.
+3. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
+   code-derived inventory they must match, and the policy now published must match both.
 4. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing
    at that origin and cleartext removed, which is the last piece of "encrypted in transit" and also
    starts the 12-tester / 14-continuous-day clock. That clock is the longest-lead item in the plan,
    so everything above is on its critical path.
+
+**On tester sequencing (Kamil's call, 2026-07-28):** he wants to test himself before involving
+friends, which is right — a bad first impression from twelve people is expensive. The agreed shape
+is to do that testing **on the closed track with himself as the only tester**, not on staging: an
+install from Play exercises app signing, the production origin, and store distribution, none of
+which staging touches. The 14-day clock is effectively gated on the twelfth tester opting in, so
+being first on the track costs nothing and finds a real class of bug earlier.
 
 Deferred deliberately, with the reasoning recorded where it belongs: the operator review queue for
 content reports (M7 — `content_reports.pending_count()` is its seam), audio cache eviction, and

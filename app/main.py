@@ -29,6 +29,7 @@ from .routers import (
     discovery,
     figures_api,
     graph,
+    legal,
     notes,
     projects_api,
     session,
@@ -329,6 +330,9 @@ async def authenticate(request: Request, call_next):
 # matter — every path template is distinct — but all must be registered before the static mount.
 app.include_router(system.router)
 app.include_router(account.router)
+# Public, unauthenticated, and registered before the SPA mount below, which would otherwise swallow
+# these paths. Play requires the privacy and deletion URLs to work with no app and no sign-in.
+app.include_router(legal.router)
 app.include_router(settings.router)
 app.include_router(catalogue.router)
 app.include_router(covers.router)

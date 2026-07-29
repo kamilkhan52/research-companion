@@ -360,17 +360,40 @@ permissions needed.
 form and a published privacy policy — only *internal* testing is exempt, and internal testing does
 not satisfy the 12-tester rule. So these gate the tester clock.
 
-### H11 — Approve privacy policy and terms of service · `todo` — blocks M2.5
-An agent drafts both from the data inventory, which is an **M2.5 deliverable** (not M7 — M7 depends
-on M2.5, so sourcing the policy from M7 would deadlock). Publishing them is a legal statement about
-your product and must be your decision. Consider review if the subscription terms are non-trivial.
+### H11 — Approve privacy policy and terms of service · 🟡 `drafted 2026-07-28 — awaiting your approval`
+Both are written and live, sourced from the data inventory in `02-security-and-privacy.md`:
+
+- `/legal/privacy` — `app/legal/privacy.html`
+- `/legal/terms` — `app/legal/terms.html`
+- `/legal/delete-account` — `app/legal/delete-account.html`
+
+Read them on staging: <https://research-companion-staging.fly.dev/legal/privacy>.
+
+**What needs your judgement, not an agent's.** Publishing these is a legal statement about your
+product. Four specific things to look at rather than a general "read it all":
+
+1. **Governing law is Colorado, USA**, and liability is capped at the greater of twelve months of
+   fees or $20. Both are assumptions about you, not facts I could verify.
+2. **The terms say the AI output can be confidently wrong** and must not be relied on for research,
+   teaching or clinical use. That is deliberately blunt. It is honest and it is also a disclaimer
+   you may want a lawyer to phrase differently.
+3. **The privacy policy promises that no provider retains or trains on paper text.** That promise is
+   now enforced in code (`llm.PRIVACY_ROUTING`) and tested, but it rests on OpenRouter's
+   classification of its providers — we verify the routing, not the providers' internals.
+4. **You are named as the developer** with `thelocalscientist@gmail.com` as the public contact.
+
 Expect to revise once at M3 (usage events) and once at M5 (billing data), since Data safety answers
 must keep matching the policy.
-**Report back:** approved text and the public URLs.
+**Report back:** approval, or the specific changes you want.
 
-### H12 — Support contact · `todo`
-A monitored email or support surface, required by the Play listing.
-**Report back:** the address.
+### H12 — Support contact · ✅ `done` (2026-07-28)
+`thelocalscientist@gmail.com` — not a personal address, already controlled, in use now as the
+privacy contact on all three legal pages and the address the deletion page tells readers to write
+to. It is the address the Play listing should use.
+
+*It is a real obligation, not a form field:* the deletion page promises a reply and completion
+within 30 days, so this inbox has to be watched. Revisit if a custom domain lands (H2b) — but
+changing it later means editing the published policy, so prefer keeping it.
 
 ### H13 — Data Safety declarations · `todo`
 The agent produces the truthful inventory; **you** make the declarations in Play Console — they are
