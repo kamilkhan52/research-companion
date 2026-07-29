@@ -122,28 +122,41 @@ Fail-stop is kept, but it now has to be *earned*: `_recover_shared` tries to re-
 keeps failing `pg_try_advisory_lock_shared` and the process still terminates. The budget stays well
 under the 310s overlap window a deleter already waits for exactly this reason.
 
-### Next steps, in order
+### Next steps, in order (revised 2026-07-28, after the device pass)
 
-1. **H23 — set `RC_SUPABASE_SECRET_KEY` on staging** (Kamil; it is a service-role credential and
-   never passes through an agent). Until then account deletion refuses before persistence and the
-   Play-required path cannot be demonstrated. `flyctl secrets set` on
-   `research-companion-staging`; the key is the Supabase project's `service_role` secret.
-2. **Device pass against staging** — see the runbook below. The local Mac instance runs
-   `auth.mode() == "open"`, where `AuthGate` renders children directly, so **none of the
-   deletion work is reachable there**; the phone must point at the staging origin.
-3. **A disposable-account deletion test on staging**, once H23 lands: create a throwaway Supabase
-   user, give it a project, delete the account, and confirm the project tree, the user's audio
-   directory, the Postgres rows and the Auth identity are all gone.
-4. ~~**An operator signal for a stalled deletion**~~ — done (#262). A deletion that has failed
-   `STALL_ATTEMPTS` times is reported `stalled`, logged once for the operator, and the client stops
-   claiming it is progressing.
-5. **The remaining M2.5 compliance items** — privacy policy and terms at public URLs, in-app links
-   to both, the AI-content report action, and the Data safety answers themselves. The one
-   declaration blocker still open is transport encryption: the mobile source defaults to an
-   `http://` tailnet URL and backend retrieval permits public `http://`, so "all data encrypted in
-   transit" must wait for an AAB pinned to the production HTTPS origin.
-6. **Then M2.5's build** — one production-profile EAS build onto a closed track, which starts the
-   12-tester / 14-continuous-day clock. That clock is the longest-lead item in the whole plan.
+Done since the last revision, so nobody re-does them: ~~H23~~ (`RC_SUPABASE_SECRET_KEY` is set on
+staging), ~~the device pass~~, ~~a real account deletion end to end~~ (Kamil deleted a throwaway
+email account on staging and it ran to completion), ~~the stalled-deletion operator signal~~ (#262),
+and ~~the in-app AI-content report action~~ (#263 backend, #264 client).
+
+1. **Trim `RC_ALLOWED_USERS` on staging** (Kamil). It currently holds two ids because a device pass
+   needed a second account and the list had to be rewritten wholesale — `flyctl secrets set`
+   replaces and `secrets list` shows only names, so it cannot be appended to. Decide which id
+   stays. While there, confirm `RC_OPERATOR_USERS` holds a **current** staging uuid: the ids in
+   these documents predated the 2026-07-25 Supabase split and one of them caused an outage.
+2. **The remaining M2.5 compliance items, all needing Kamil's text or accounts** — privacy policy
+   and terms at public URLs, in-app links to both, the public account-deletion page, and the Data
+   safety answers in Play Console. `02-security-and-privacy.md` holds the code-derived inventory
+   those answers must match.
+3. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
+   the AAB has to point at a production HTTPS origin, and that origin does not exist yet.
+4. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing
+   at that origin and cleartext removed, which is the last piece of "encrypted in transit" and also
+   starts the 12-tester / 14-continuous-day clock. That clock is the longest-lead item in the plan,
+   so everything above is on its critical path.
+
+Deferred deliberately, with the reasoning recorded where it belongs: the operator review queue for
+content reports (M7 — `content_reports.pending_count()` is its seam), audio cache eviction, and
+P0-17 (`DeliveryReq.model` bypassing settings, which is M3's tier check).
+
+**A correction worth carrying:** an earlier version of this list said "encrypted in transit" was
+blocked partly by `safe_fetch` permitting `http://` paper URLs. Checked against Google's live
+definition on 2026-07-28, that question is scoped to the app's own transmission from device to
+server, so a backend fetching a third-party document is out of scope. Acting on the old wording
+would have broken retrieval for http-only academic hosts for no compliance gain. This is the second
+time in one day a document here read as authoritative and was stale — the other cost an outage — so
+treat anything environment- or policy-specific in `docs/` as needing re-verification, per the policy
+verification rule at the end of this file.
 
 ### Device-test runbook (verified 2026-07-28)
 

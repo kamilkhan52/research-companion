@@ -189,7 +189,7 @@ before 2026-07-28 still require audit under the log-retention launch check.
 | Question | Current truthful answer | Submission target / blocker |
 |---|---|---|
 | Does the app collect or share any required user data types? | **Yes** | Stable |
-| Is all collected data encrypted in transit? | **Do not answer Yes for the current source build.** `mobile/app.json` still permits cleartext and defaults to an `http://` Tailscale address. The tailnet encrypts transport below HTTP, but the Play artifact must use the production HTTPS origin and remove unnecessary cleartext support before this claim is made. Separately, `safe_fetch` permits user-supplied and agent-selected `http://` source/PDF URLs, so research URLs and requests can also leave the backend in plaintext. | Verify the exact AAB points only to HTTPS **and** require HTTPS for server-side user/agent source fetches (or retain a No answer); exercise every collection path |
+| Is all collected data encrypted in transit? | **Not yet for the current source build**, and for one reason only: `mobile/app.json` permits cleartext and defaults to an `http://` Tailscale address, so the Play artifact must point at the production HTTPS origin with cleartext removed. **Corrected 2026-07-28:** an earlier version of this row also cited `safe_fetch` permitting `http://` source/PDF URLs. That does not bear on this question. Google's definition is scoped to the app's own transmission — "encryption in transit to protect the flow of user data **from the end user's device to the server**" — so a backend fetching a third-party document is out of scope. Acting on the old wording would have broken retrieval for http-only academic hosts and bought nothing. Server-side cleartext fetching remains a real security question; it is simply not this question. | Verify the exact AAB points only to HTTPS and exercise every collection path. Do NOT gate this answer on `safe_fetch` |
 | Can users request data deletion? | **No, not yet** | Implement authenticated in-app account deletion plus a public web request path; verify deletion end to end |
 | Is data shared with third parties? | **Unresolved.** The app transfers content to several providers, but Play exempts qualifying service providers and some user-initiated transfers from “sharing.” | Review the current contracts/terms and configurations for every recipient above; answer per data type, not by assumption |
 | Is data sold or used for advertising/marketing? | **No in product code** | Confirm provider terms do not permit sale/cross-customer advertising use |
@@ -283,9 +283,9 @@ rules as the privacy policy.
       OpenRouter plus every inference endpoint eligible for every allowed model, OpenAI,
       Firecrawl, Parallel, DuckDuckGo, Semantic Scholar, OpenAlex, arXiv, and ar5iv.
 - [ ] Point the release AAB exclusively at the production HTTPS origin; remove unneeded Android
-      cleartext support, require HTTPS for server-side user/agent-selected source fetches, and
-      verify the merged manifest/runtime configuration.
-- [ ] Implement an in-app offensive-AI-content report action and durable report store.
+      cleartext support and verify the merged manifest/runtime configuration. Server-side
+      `http://` fetching is deliberately NOT part of this item — see the corrected row above.
+- [x] Implement an in-app offensive-AI-content report action and durable report store — #263 (table, module, `POST /api/reports/content`) and #264 (the row on the per-message long-press menu, which is what the policy's "without needing to exit the app" actually requires). The operator review queue is still M7; `content_reports.pending_count()` is the seam it builds on.
 - [ ] Implement in-app privacy and terms links plus the public deletion page. The in-app
       account-deletion path is implemented.
 - [ ] Add the M3 usage-event/reservation and M4–M5 billing changes to this inventory before their

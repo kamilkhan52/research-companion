@@ -424,7 +424,7 @@ The app requires login, so Play review needs working test credentials.
 ### H19 — Final release authorization · `todo`
 Promotion to the production track. Never automate this.
 
-### H23 — Supabase server secret for account deletion · `todo` — blocks M2.5 deletion verification
+### H23 — Supabase server secret for account deletion · `done` (staging, 2026-07-28)
 Create or retrieve a server-side Supabase secret/service-role key for each environment, then set it
 directly as the Fly secret `RC_SUPABASE_SECRET_KEY` on that environment. Do not paste the value into
 chat, source, a PR, or a client configuration. Supabase requires this privileged server credential
@@ -434,7 +434,9 @@ Wait until the account-deletion coordinator has landed before setting it. Then v
 with a disposable staging account before production configuration. The backend treats an already
 missing Auth identity as success so the final step is safe to retry.
 
-**Ready as of 2026-07-28 — this is now the blocker, not the prerequisite.** The coordinator (#253)
+**Done on staging 2026-07-28.** The key is set, and a throwaway email account was deleted end to end on a device: the flow ran to completion, the client cleared its local state, and the acknowledgement screen appeared. Production still needs its own key when that app exists.
+
+Original note, kept for the production repeat: The coordinator (#253)
 and the mobile client (#254) are merged and deployed to staging at version 17; migrations `0004`
 and `0005` applied on boot. `flyctl secrets list -a research-companion-staging` shows every other
 secret present and this one absent.
