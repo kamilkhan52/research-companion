@@ -24,6 +24,14 @@ CONTINUATION_POLL_SECONDS = 0.25
 # Segment completion remains the preferred synthesis cue trigger, but a single slow segment
 # must not leave the listener in silence until the stitched track is ready.
 SYNTHESIS_KEEPALIVE_SECONDS = 18.0
+# Cues per wait, counted across BOTH producers (see `budget_exhausted`). Uncapped, a long
+# synthesis produced ~17, and each is expensive in a way the cue itself never reveals: it re-sends
+# the whole grounded-source set plus both cue histories — ~11,373 prompt tokens to produce ~86,
+# which is 4.4x the analysis turn's own prompt, or $0.087 per turn
+# (docs/production/20-pricing-analysis.md §8). The cap is most of that saving; reaching the
+# $0.0016 quoted there also needs the cue prompt trimmed to ~4K tokens, which is separate work.
+# The listener gains nothing from the seventeenth either: by then more talking reads as stalling.
+MAX_CUES_PER_WAIT = 6
 log = logging_config.get("preview")
 
 GenerateFn = Callable[[list[dict], str | None], str]
@@ -45,6 +53,8 @@ class PreviewJob(Job):
     cue: str | None = None
     url: str | None = None
     model: str | None = None
+    #: The preparation progress this cue was given (see `last_reported_progress`).
+    progress_signature: str = ""
     suppressed: bool = False
     played: bool = False
     played_at: str | None = None
@@ -251,6 +261,45 @@ def _progress_source(progress: dict) -> dict | None:
     return {"id": "progress0001", "text": text, "kind": "preparation_progress"}
 
 
+def progress_signature(progress: dict) -> str:
+    """What the listener could actually notice changing between two cues.
+
+    Only these fields drive progress language, so two cues with the same signature have nothing new
+    to report about preparation — and a cue that restates it says "still synthesizing, 3 of 12" for
+    the second time running, which is the repetition readers notice fastest.
+    """
+    return "|".join(
+        str(progress.get(field)) for field in ("phase", "segments_done", "segments_total")
+    )
+
+
+def budget_exhausted(existing_job_ids: list[str]) -> bool:
+    """Whether this wait has already spent its cue allowance.
+
+    Deliberately counts cues for the WHOLE wait, and lives here so both producers share it. Cues
+    are started from two places — `chat_jobs._maybe_start_preview` while analysis streams, and the
+    coordinator once analysis is done — and a cap enforced in only the second is not a cap at all:
+    a long analysis can spend the entire budget before the coordinator ever receives
+    `existing_job_ids`, and the coordinator cannot refund it.
+    """
+    return len(existing_job_ids) >= MAX_CUES_PER_WAIT
+
+
+def last_reported_progress(job_ids: list[str]) -> str | None:
+    """The progress signature of the most recent cue that actually got made.
+
+    Derived from job state rather than remembered by the caller, because `start_job` returns as
+    soon as the worker thread is admitted: a cue that fails afterwards would otherwise still
+    "claim" its progress, and the next cue would be told the count is stale when the listener
+    never heard it announced. Cues that errored are skipped for exactly that reason.
+    """
+    for job_id in reversed(job_ids):
+        cue_job = get_job(job_id)
+        if cue_job is not None and cue_job.status == "done" and cue_job.progress_signature:
+            return cue_job.progress_signature
+    return None
+
+
 def _number_tokens(text: str) -> set[str]:
     values = re.findall(r"(?<!\w)[+-]?(?:\d[\d,]*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+|%)?", text)
     return {value.lower().replace(",", "") for value in values}
@@ -372,6 +421,7 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
               progress: dict | None = None,
               *, played_cues: list[str] | None = None,
               generated_cues: list[str] | None = None,
+              progress_is_new: bool = True,
               generate_fn: GenerateFn | None = None,
               synth_fn: SynthFn | None = None) -> PreviewJob:
     if not sentences:
@@ -389,7 +439,12 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
         }
         for item in sentences
     ]
-    progress_item = _progress_source(progress_copy)
+    # Preparation progress is citable ONLY when it has moved since the last cue. Handing the model
+    # an unchanged count invites it to restate it, which is how the wait came to sound like
+    # "synthesis is underway, N parts remaining" three times with the same N. When it has not
+    # moved there is nothing honest left to say about timing, so the cue must earn its place with
+    # substance instead.
+    progress_item = _progress_source(progress_copy) if progress_is_new else None
     if progress_item:
         sentence_copy.append(progress_item)
     key = f"{chat_job_id}:{ordinal}"
@@ -409,6 +464,11 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
                   "tell the researcher to read the response or look at the screen; they are "
                   "waiting for automatic audio playback. Keep cue text at or below "
                   f"{MAX_CUE_CHARS} characters."
+                + ("" if progress_is_new else
+                   "\nPreparation has not advanced since the last cue. Do not mention progress, "
+                   "timing, how much is left, or that anything is still being prepared — the "
+                   "listener was told already and nothing has changed. Say something substantive "
+                   "about the material instead.")
             )},
             {"role": "user", "content": json.dumps({
                 # Kept for compatibility with existing user-edited preview prompts.
@@ -419,7 +479,9 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
                 "previous_cue": previous_cue,
                 "played_cues": played_copy,
                 "generated_cues": generated_copy,
-                "preparation_progress": progress_copy,
+                # Withheld rather than merely forbidden when it has not moved: a model handed a
+                # concrete count tends to use it whatever the instruction says.
+                "preparation_progress": progress_copy if progress_is_new else {},
             }, ensure_ascii=False)},
         ]
         raw = generate_fn(messages, model)
@@ -457,6 +519,9 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
             chat_job_id=chat_job_id,
             ordinal=ordinal,
             sentence_ids=[item["id"] for item in sentence_copy],
+            # Recorded even when withheld from the prompt: what matters later is which progress
+            # this cue was ABOUT, and a stale-progress cue is still about the same state.
+            progress_signature=progress_signature(progress_copy),
         ),
         work,
     )
@@ -549,7 +614,8 @@ def start_coordinator(
                 phase == "audio_synthesis"
                 and elapsed >= max(cadence_seconds, SYNTHESIS_KEEPALIVE_SECONDS)
             )
-            if elapsed >= cadence_seconds and (progressed or keepalive_due):
+            if (elapsed >= cadence_seconds and (progressed or keepalive_due)
+                    and not budget_exhausted(cue_ids)):
                 last_started = now
                 if phase == "audio_synthesis":
                     last_synth_done = synth_done
@@ -563,6 +629,9 @@ def start_coordinator(
                         progress,
                         played_cues=played_cues,
                         generated_cues=generated_cues,
+                        progress_is_new=(
+                            progress_signature(progress) != last_reported_progress(cue_ids)
+                        ),
                     )
                     cue_ids.append(cue.id)
                     publish(cue_ids, phase, progress, False)
