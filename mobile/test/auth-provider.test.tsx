@@ -45,9 +45,13 @@ const mockAuth = {
   signInWithPassword: jest.fn(
     async (_c?: unknown): Promise<{ error: { message: string } | null }> => ({ error: null }),
   ),
+  // `user` is optional here because Supabase's obfuscated "this address already exists" response
+  // carries a user with an empty `identities` array and no session — see the tests below.
   signUp: jest.fn(
-    async (_c?: unknown): Promise<{ data: { session: unknown }; error: { message: string } | null }> =>
-      ({ data: { session: { access_token: 'a' } }, error: null }),
+    async (_c?: unknown): Promise<{
+      data: { session: unknown; user?: { identities?: unknown[] } | null };
+      error: { message: string } | null;
+    }> => ({ data: { session: { access_token: 'a' } }, error: null }),
   ),
   resetPasswordForEmail: jest.fn(
     async (_e?: unknown, _o?: unknown): Promise<{ error: { message: string } | null }> =>
@@ -919,6 +923,41 @@ test('a sign-up with no session means "confirm your email", not success', async 
   let result: string | undefined;
   await act(async () => {
     result = await auth().signUpWithPassword('r@example.com', 'a long enough password');
+  });
+
+  expect(result).toBe('confirm-email');
+});
+
+test('signing up with an address that already has an account is not "confirm your email"', async () => {
+  // Supabase does not error on a duplicate address. It returns an obfuscated user with an EMPTY
+  // `identities` array, no session, and sends NO mail — so the "check your inbox" branch would
+  // point the user at a message that is never coming. This is the shape that actually reached
+  // production on 2026-07-29.
+  mockAuth.signUp.mockResolvedValue({
+    data: { session: null, user: { identities: [] } }, error: null,
+  });
+  const { auth } = await renderForPassword();
+
+  let result: string | undefined;
+  await act(async () => {
+    result = await auth().signUpWithPassword('taken@example.com', 'a long enough password');
+  });
+
+  expect(result).toBe('already-registered');
+});
+
+test('a genuinely new address still reports "confirm your email"', async () => {
+  // The guard above keys on identities being EMPTY, not on the field being present. A real new
+  // sign-up also returns no session, so this is the case that must not regress into the
+  // already-registered branch — the two are distinguishable only by the identities array.
+  mockAuth.signUp.mockResolvedValue({
+    data: { session: null, user: { identities: [{ provider: 'email' }] } }, error: null,
+  });
+  const { auth } = await renderForPassword();
+
+  let result: string | undefined;
+  await act(async () => {
+    result = await auth().signUpWithPassword('brand-new@example.com', 'a long enough password');
   });
 
   expect(result).toBe('confirm-email');

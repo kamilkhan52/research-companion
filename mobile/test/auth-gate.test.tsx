@@ -11,7 +11,8 @@ const signInWithGoogle = jest.fn(async () => undefined);
 const signInWithMagicLink = jest.fn(async () => true);
 const signInWithPassword = jest.fn(async () => true);
 const signUpWithPassword =
-  jest.fn<Promise<'signed-in' | 'confirm-email' | 'failed'>, [string, string]>(
+  jest.fn<Promise<'signed-in' | 'confirm-email' | 'already-registered' | 'failed'>,
+    [string, string]>(
     async () => 'signed-in');
 const sendPasswordReset = jest.fn(async () => true);
 const retry = jest.fn();
@@ -417,6 +418,32 @@ test('a new account that needs confirmation is sent to the inbox, not left at th
   fireEvent.press(view.getByText('Create account'));
 
   await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
+});
+
+test('an address that already has an account is moved to sign-in, never to the inbox screen', async () => {
+  // The failure this pins: Supabase sends NO mail for a duplicate address, so "Check your inbox"
+  // is a dead end with no way forward. It is how the first production sign-up attempt failed.
+  signUpWithPassword.mockResolvedValue('already-registered');
+  const view = await renderGate();
+  fireEvent.press(view.getByText('Get started'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'taken@example.com');
+  fireEvent.changeText(
+    view.getByPlaceholderText(`At least ${MIN_PASSWORD_LENGTH} characters`), 'a good password');
+  fireEvent.press(view.getByText('Create account'));
+
+  await waitFor(() => expect(view.getByText('Welcome back')).toBeTruthy());
+  expect(view.queryByText('Check your inbox')).toBeNull();
+  // The address must survive the switch — retyping it is the whole friction being removed.
+  expect(view.getByDisplayValue('taken@example.com')).toBeTruthy();
+  // And the reset route must be named, because an account created by magic link or Google has no
+  // password yet; "sign in below" alone would be advice the user cannot act on. Matched on the
+  // phrase unique to the notice — a bare /Forgot your password/ also hits the button the notice
+  // quotes, so it would pass whether or not the notice said anything.
+  expect(view.getByText(/already has an account/)).toBeTruthy();
+  expect(view.getByText(/only ever used a sign-in link or Google/)).toBeTruthy();
+  // The button it points at has to actually be on this screen. Exact string, so it matches the
+  // control rather than the notice's quotation of it.
+  expect(view.getByText('Forgot your password?')).toBeTruthy();
 });
 
 test('a new account that is immediately usable does NOT show the inbox screen', async () => {

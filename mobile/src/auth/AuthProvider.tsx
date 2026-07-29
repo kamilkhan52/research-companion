@@ -46,7 +46,8 @@ export type AuthStatus =
   | 'unreachable'
   | 'cleanup-required';
 
-export type PasswordSignUpResult = 'signed-in' | 'confirm-email' | 'failed';
+export type PasswordSignUpResult =
+  'signed-in' | 'confirm-email' | 'already-registered' | 'failed';
 
 /** Supabase's own floor is 6. Eight is enforced here so the rejection is a clear message next to
  *  the field rather than a provider error after the round trip. */
@@ -618,6 +619,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setError(signUpError.message);
         return 'failed';
       }
+      // An address that ALREADY has a confirmed account does not come back as an error. Supabase
+      // returns an obfuscated user with an EMPTY `identities` array and sends no mail at all, so
+      // as not to confirm to a stranger that the address is registered. Treating that as
+      // `confirm-email` tells the user to watch an inbox nothing is coming to — which is exactly
+      // how the first production sign-up attempt failed on 2026-07-29, silently and with no way
+      // forward. Check it BEFORE the session check: this response has no session either.
+      //
+      // Surfacing it does not weaken the obfuscation. The empty array is already in the response
+      // body, so anyone able to call `signUp` can read it; hiding it in the UI protects nobody and
+      // costs a real user their only route in.
+      if (data.user && (data.user.identities?.length ?? 0) === 0) return 'already-registered';
       // Supabase returns a session only when email confirmation is OFF. With it on — which is the
       // safer project setting and the one to expect — `session` is null and the account is inert
       // until the address is confirmed. Reporting that as success would strand the user on a
