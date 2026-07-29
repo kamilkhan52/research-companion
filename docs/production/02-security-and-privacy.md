@@ -295,7 +295,14 @@ rules as the privacy policy.
 - [x] Add an authenticated in-app deletion path with recent signed Supabase user presence, exact
       confirmation, restart-safe polling/retry, and fail-closed account-linked local cache/session
       cleanup.
-- [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior.
+- [ ] Define and verify Fly volume snapshot/backup retention and deletion behavior. **Partly
+      answered 2026-07-29:** the production volume `rc_data` (`vol_rnzpyx8xp2j10xpr`, `sjc`, 20 GB)
+      was created with encryption on, **scheduled snapshots on, and 5-day retention** — these are
+      Fly's defaults, not a considered choice. What remains is deliberate: confirm 5 days is the
+      retention we want, and establish what a snapshot means for account deletion, since a snapshot
+      taken before a deletion still contains that user's data for its retention window. That last
+      point needs to be reflected in the privacy policy's deletion section if the answer is
+      anything other than "snapshots expire within days".
 - [ ] Finish removing reusable bearer tokens from media query strings: protected mobile images
       use `Authorization` and per-user cache keys, and audio already uses headers. After the
       updated mobile release is no longer distributed/supported, remove the narrowly scoped
