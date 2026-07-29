@@ -144,13 +144,41 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    every SMTP provider needs a verified sending domain. Resend's free tier covers a closed test
    many times over. Found from Kamil noticing his own magic links always land in junk, which is
    the same cause in its mild form.
-3. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
+3. **Rebrand to Scholiast — and it MUST precede the first AAB upload, which is a one-way door.**
+   Decided 2026-07-29: the app becomes **Scholiast** (a scholiast is the ancient commentator who
+   wrote explanatory notes in the margins of manuscripts — what this app does), on **`scholiast.io`**,
+   which is both the sending domain for auth email and eventually the web app's origin.
+
+   *Why the ordering is not negotiable:* `mobile/app.json` currently declares
+   `"package": "com.kamilkhan.researchcompanion"`. **An Android package name is permanent once
+   published** — a different package is a different Play listing, with new reviews, new installs,
+   and a fresh 12-tester clock. Nothing is published yet, so it is free to change today and frozen
+   forever after the first closed-track upload. Change it to **`io.scholiast.app`** (reverse-DNS of
+   a domain we own) in the same PR. `"scheme": "researchcompanion"` should go too — it is the
+   deep-link scheme auth redirects return on, changeable later but only in lockstep with Supabase's
+   redirect allowlist, so it is far cheaper now.
+
+   Surface: 22 files, but only four user-visible strings — `legal.APP_NAME`, `app.json`'s `name`,
+   and `RC_APP_TITLE` in both Fly configs. The rest is documentation.
+
+   *Name selection, so it is not re-litigated:* "Paradigm" is commercially crowded and
+   `paradigm.ai` / `getparadigm.com` / `useparadigm.com` are taken. "Scholia" was preferred but
+   `.com/.io/.ai/.app/.dev` are all taken AND an established Wikidata-based scholarly-profile tool
+   already uses that exact name in this exact field. "Scholiar" reads as a misspelling of scholar.
+   Scholiast is a real word meaning precisely the right thing; `scholiast.com`, `.app`, `.ai`,
+   `.net`, `.org`, `.co`, `thescholiast.com`, `scholiasts.com` and `getscholiast.com` are all taken
+   (checked against Verisign directly — an RDAP check wrongly reported one of these available), so
+   `.io` is the only clean option. Accepted risk: `.io` is the BIOT ccTLD and the UK–Mauritius
+   treaty would dissolve that territory, but the treaty stalled in early 2026 and ICANN's policy
+   gives a five-year phase-out. There is no `scholiast` `.com` to hold as a fallback.
+
+4. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
    the AAB has to point at a production HTTPS origin, and that origin does not exist yet. The
    legal URLs Play needs will be on that origin too. **Region is `sjc`** — set in `fly.toml` and
    fixed at volume-creation time, so it cannot be corrected later without recreating the volume.
-3. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
+5. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
-4. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing
+6. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing
    at that origin and cleartext removed, which is the last piece of "encrypted in transit" and also
    starts the 12-tester / 14-continuous-day clock. That clock is the longest-lead item in the plan,
    so everything above is on its critical path.
