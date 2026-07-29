@@ -54,12 +54,99 @@ tester clock.
 **Report back:** the platform, the app subdomain it assigns, and how deploy credentials should be
 provided (a scoped deploy token in an EAS/CI secret, never the repo).
 
-### H2b — Custom domain · `todo` — deferred to M10
-Buy before public launch, not now. **Cloudflare Registrar** sells at wholesale cost with no
-markup and free DNS; Namecheap is the usual alternative. Budget ~$10–15/year for a `.com`.
-A domain is just a name you rent annually and point at your host with a DNS record; Fly and
-Railway both issue the TLS certificate automatically once you add it. The app is named Paradigm,
-so name availability needs a search when we get there.
+### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `todo`
+The app `research-companion` exists and its volume is created: **`rc_data`, 20 GB, `sjc`, encrypted,
+scheduled snapshots on with 5-day retention** (`vol_rnzpyx8xp2j10xpr`, created 2026-07-29). A volume
+cannot change region, so `sjc` is now fixed for production.
+
+What is missing is secrets. Nothing else blocks a deploy. Run these yourself so no key passes
+through an agent transcript — values from the **production** Supabase project
+`aumedoefxacycwfrlcml`, not staging:
+
+```
+flyctl secrets set -a research-companion \
+  RC_SUPABASE_URL=... \
+  RC_SUPABASE_ANON_KEY=... \
+  RC_SUPABASE_SECRET_KEY=... \
+  RC_DATABASE_URL=... \
+  OPENROUTER_API_KEY=...
+```
+
+**`RC_DATABASE_URL` must not be the `:6543` transaction pooler** — `app/db.py` refuses it outright,
+because the app uses session-scoped advisory locks that a transaction pooler silently breaks. Use
+the session pooler or the direct connection.
+
+**Then the part that has bitten before.** `RC_ALLOWED_USERS` and `RC_OPERATOR_USERS` hold Supabase
+user UUIDs, and **UUIDs are per project** — your staging ids mean nothing to the production project,
+and the ids written in older revisions of this file are from a pre-split project. Setting a wrong
+one locks everybody out, operator included, and the 403 deliberately does not name the account, so
+there is no way to read the right id off the response. So:
+
+1. Deploy **without** the allowlist first. With `RC_ALLOWED_USERS` unset the app refuses to boot in
+   prod by design, so instead set it to a **throwaway placeholder** (`RC_ALLOWED_USERS=bootstrap`)
+   purely so the safety check passes.
+2. Sign in on the phone against the production origin. You will be refused — expected.
+3. Read your real production UUID from `flyctl logs -a research-companion | grep "rejected
+   non-allowlisted"`. That log line exists precisely for this moment.
+4. Set the real values: `flyctl secrets set -a research-companion RC_ALLOWED_USERS=<uuid>
+   RC_OPERATOR_USERS=<uuid> RC_ADOPT_OWNER=<uuid>`.
+
+`flyctl secrets set` **replaces, it does not append**, and `secrets list` shows only names — so to
+add a second user later you must set the whole comma-separated list again. See
+`fly-secrets-are-replace-not-append` for the incident this comes from.
+
+**Report back:** that secrets are set, and I will deploy and verify.
+
+### H25 — Custom SMTP, or the closed test cannot happen · `todo` — **BLOCKS M2.5**
+Found 2026-07-29 from an offhand remark by Kamil — *"the magic link has always gone to junk for me
+so far"*. Chasing that turned up something much worse than a spam-folder problem.
+
+**Supabase's built-in email service only delivers to pre-authorized addresses** — project team
+members. Every other recipient is rejected outright with "Email address not authorized." It is also
+capped at **2 messages per hour**, with no delivery SLA, and Supabase states plainly it is "not
+meant for production use" (checked against
+[supabase.com/docs/guides/auth/auth-smtp](https://supabase.com/docs/guides/auth/auth-smtp) on
+2026-07-29).
+
+So as things stand **the 12 testers cannot receive any auth email at all.** Not "it might land in
+spam" — rejected. That breaks magic-link sign-in, email confirmation on sign-up, and password reset,
+for everyone who is not Kamil. It is a hard blocker on the tester clock, which is the longest-lead
+item in the entire plan, and nothing in this document had caught it.
+
+Kamil's junk-folder experience is the *mild* version of the same cause, visible only because he is a
+team member and therefore authorized at all.
+
+**Fix:** configure custom SMTP on **both** Supabase projects (Authentication → Emails → SMTP
+Settings). Supabase names Resend, AWS SES, Postmark, SendGrid, ZeptoMail and Brevo as compatible.
+**Resend's free tier** is the obvious fit: 3,000 emails/month, 100/day, one verified domain — far
+more than a 12-person closed test needs. Custom SMTP also raises Supabase's own cap from 2/hour to
+30/hour (adjustable).
+
+**This is what makes H2b a blocker rather than polish.** Every provider requires a domain you
+control to send to arbitrary recipients; sandbox senders reach only your own address. So the domain
+has to be bought now.
+
+**Report back:** the domain, and confirmation that SMTP is configured on both projects.
+
+### H2b — Custom domain · `todo` — **PROMOTED to M2.5 blocker on 2026-07-29** (was deferred to M10)
+**No longer deferrable: H25 needs it.** Custom SMTP requires a verified sending domain, and without
+custom SMTP the closed test's testers cannot receive auth email at all. It is still NOT needed as
+the app's origin — `research-companion.fly.dev` remains fine for that, and for Play's policy URLs.
+It is needed as an *email* domain.
+
+**Cloudflare Registrar** sells at wholesale cost with no markup and free DNS; Namecheap is the usual
+alternative. Budget ~$10–15/year for a `.com`.
+
+**Availability, checked 2026-07-29:** `paradigm.ai` is **taken** (registered to Deep Vision
+Architects), so `info@paradigm.ai` was never available. `getparadigm.com` and `useparadigm.com` are
+also taken. **`readparadigm.com` and `paradigmreader.com` were both free.** Recheck before buying —
+availability moves.
+
+A domain is a name you rent annually; DNS records point it at things. For SMTP you add the
+provider's verification records (SPF/DKIM) rather than pointing it at Fly at all.
+
+*Also worth knowing:* "Paradigm" is crowded commercially, so the Play **store listing name** may
+need to differ from the internal codename. That is a launch-time decision, not a blocker now.
 **Report back:** the domain, once purchased.
 
 ### H3 — Play developer account situation · ✅ `answered` — **the tester requirement applies**
@@ -360,8 +447,12 @@ permissions needed.
 form and a published privacy policy — only *internal* testing is exempt, and internal testing does
 not satisfy the 12-tester rule. So these gate the tester clock.
 
-### H11 — Approve privacy policy and terms of service · 🟡 `drafted 2026-07-28 — awaiting your approval`
-Both are written and live, sourced from the data inventory in `02-security-and-privacy.md`:
+### H11 — Approve privacy policy and terms of service · ✅ `APPROVED by Kamil 2026-07-29`
+Approved as written, with governing law corrected to **California**. Re-approval is needed only if
+the text changes materially — expect that at M3 (usage events) and M5 (billing data), since the Data
+safety answers must keep matching.
+
+Both are live, sourced from the data inventory in `02-security-and-privacy.md`:
 
 - `/legal/privacy` — `app/legal/privacy.html`
 - `/legal/terms` — `app/legal/terms.html`
@@ -395,7 +486,13 @@ Expect to revise once at M3 (usage events) and once at M5 (billing data), since 
 must keep matching the policy.
 **Report back:** approval, or the specific changes you want.
 
-### H24 — Confirm email sign-up is enabled on both Supabase projects · `todo` — 2 minutes
+### H24 — Confirm email sign-up is enabled on both Supabase projects · ✅ `done` (Kamil, 2026-07-29)
+Both settings were already as needed. **Caveat that outranks this action:** whichever way "Confirm
+email" is set, delivery itself is broken for anyone but Kamil until **H25** (custom SMTP) is done —
+see below. If "Confirm email" is ON, sign-up is impossible for testers until then; if OFF, sign-up
+works but password reset still cannot reach them.
+
+*Original text:*
 Password sign-up and reset were added on 2026-07-28. They use the email provider that magic links
 already use, so nothing new needs enabling — but two settings decide whether they work, and both
 live in the dashboard rather than in code. In **each** project (prod `aumedoefxacycwfrlcml`,

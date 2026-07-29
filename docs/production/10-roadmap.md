@@ -134,12 +134,20 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
 `/legal/*`, linked from Settings, and the privacy policy's central claim is now enforced in code
 (see `llm.PRIVACY_ROUTING` below).
 
-1. **Approve the policy text** (Kamil, H11). Drafted and live on staging; four specific judgement
-   calls are listed under H11 in `HUMAN_ACTIONS.md` rather than "read it all". This is the only
-   remaining M2.5 item that is purely a decision.
-2. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
+1. ~~**Approve the policy text**~~ — **APPROVED 2026-07-29**, with governing law corrected to
+   California. H11 is closed.
+2. **Buy a domain and configure custom SMTP** (Kamil, H25 + H2b) — **the new top blocker, and it
+   was not in this list yesterday.** Supabase's built-in email service delivers ONLY to
+   pre-authorized project members and is capped at 2 messages/hour, so the 12 testers cannot
+   receive magic links, sign-up confirmations, or password resets *at all* — they are rejected,
+   not delayed. This makes the previously-deferred custom domain (H2b) a prerequisite, because
+   every SMTP provider needs a verified sending domain. Resend's free tier covers a closed test
+   many times over. Found from Kamil noticing his own magic links always land in junk, which is
+   the same cause in its mild form.
+3. **The production Fly app + secrets** (the M1 remainder). Nothing else can proceed to a build:
    the AAB has to point at a production HTTPS origin, and that origin does not exist yet. The
-   legal URLs Play needs will be on that origin too.
+   legal URLs Play needs will be on that origin too. **Region is `sjc`** — set in `fly.toml` and
+   fixed at volume-creation time, so it cannot be corrected later without recreating the volume.
 3. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
 4. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing

@@ -5,7 +5,15 @@
 # Secrets: flyctl secrets set -a research-companion KEY=value   (never put secrets in this file)
 
 app = "research-companion"
-primary_region = "dfw"          # nearest Fly region to Colorado; there is no Denver region
+# Kamil is in CALIFORNIA. `sjc` (San Jose) is the nearest region and was chosen deliberately on
+# 2026-07-29. Do not "align" this with staging's `dfw`: that value was picked when the plan wrongly
+# assumed Colorado, and staging keeps it only because it already has a volume there.
+#
+# The region is fixed at VOLUME-CREATION time, not at deploy time. A volume lives in one region and
+# cannot be moved, so changing this line after the volume exists silently does nothing — the machine
+# follows its volume. If this ever needs to change, the volume has to be recreated and the data
+# migrated. Verify with `flyctl volumes list -a research-companion` before deploying.
+primary_region = "sjc"
 
 # TOP-LEVEL, not inside [[vm]]. `flyctl config validate` accepts swap_size_mb nested under [[vm]]
 # and then silently ignores it — the first version of this file made that mistake and the deployed
