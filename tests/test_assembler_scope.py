@@ -1,5 +1,5 @@
-"""assembler prior_notes_scope: 'related' (default) includes only citation-related papers'
-Notes; 'all' includes every read paper's Notes — the single-project mode Kamil asked for."""
+"""assembler prior_notes_scope: 'all' (the default since 2026-07-29) includes every read paper's
+Notes; 'related' includes only citation-related papers' Notes."""
 from __future__ import annotations
 
 from app import assembler, config, graph_store, store
@@ -33,12 +33,39 @@ def test_both_contexts_carry_the_paper_link_instruction_and_targets(temp_project
         assert "link to its `link:` target" in ctx or "markdown link" in ctx
 
 
-def test_default_related_scope_excludes_unrelated_notes(temp_project, monkeypatch):
+def test_related_scope_excludes_unrelated_notes(temp_project, monkeypatch):
     _setup(temp_project)
     _settings(monkeypatch, "related")
     ctx = assembler.build_context("current")
     assert "Unrelated finding" not in ctx
     assert "Prior Notes from related papers" in ctx
+
+
+def test_the_configured_default_is_what_the_assembler_actually_does(temp_project, monkeypatch):
+    """The default lives in one constant, but four places used to spell it out independently.
+
+    Asserting the CONSTANT equals "all" would pass while the assembler still did something else,
+    so this drives the real code path with the setting absent and checks the resulting context.
+    """
+    _setup(temp_project)
+    _settings(monkeypatch, None)          # nothing stored — the default decides
+    ctx = assembler.build_context("current")
+
+    assert config.DEFAULT_PRIOR_NOTES_SCOPE == "all"
+    assert "Unrelated finding: X beats Y." in ctx      # an unrelated paper's Notes are carried
+    assert "every paper read so far" in ctx
+
+
+def test_an_unrecognized_scope_follows_the_default_rather_than_the_other_branch(
+        temp_project, monkeypatch):
+    """A two-way branch on a raw string sends anything unexpected down the arm that is not the
+    default. That silently matched the old default and would silently contradict the new one."""
+    _setup(temp_project)
+    _settings(monkeypatch, "banana")
+    ctx = assembler.build_context("current")
+
+    assert "Unrelated finding: X beats Y." in ctx
+    assert "every paper read so far" in ctx
 
 
 def test_all_scope_includes_every_read_papers_notes(temp_project, monkeypatch):

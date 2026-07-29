@@ -99,7 +99,10 @@ export default function SettingsScreen() {
   const [semanticScholarKey, setSemanticScholarKey] = useState('');
   const [voice, setVoice] = useState('');
   const [speechProvider, setSpeechProvider] = useState<'openai' | 'browser'>('openai');
-  const [priorScope, setPriorScope] = useState<'related' | 'all'>('related');
+  // Matches the server default (config.DEFAULT_PRIOR_NOTES_SCOPE). Only shown for the instant
+  // before settings load and overwrite it, but a mismatch here reads as the toggle flipping by
+  // itself.
+  const [priorScope, setPriorScope] = useState<'related' | 'all'>('all');
   // Device-local (AsyncStorage), applies immediately — not part of the server settings save.
   const { playbackMode, setPlaybackMode } = useListeningMode();
   const { allowAllFilter, setAllowAllFilter } = useGraphSettings();

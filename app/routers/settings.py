@@ -50,7 +50,7 @@ def read_settings(request: Request):
         "has_firecrawl_key": bool(fkey), "firecrawl_key_hint": (fkey[:6] + "…") if fkey else "",
         "has_semantic_scholar_key": bool(s2key),
         "semantic_scholar_key_hint": (s2key[:6] + "…") if s2key else "",
-        "prior_notes_scope": s.get("prior_notes_scope") or "related",
+        "prior_notes_scope": s.get("prior_notes_scope") or config.DEFAULT_PRIOR_NOTES_SCOPE,
         # So a client can render shared controls read-only rather than letting a reader fill in a
         # form that will 403 on submit. Reading settings stays open to everyone; these two flags
         # tell them what they may change, and the settings form has two halves that answer
@@ -108,7 +108,7 @@ def write_settings(req: SettingsReq, request: Request):
         "has_parallel_key": bool(merged.get("parallel_api_key")),
         "has_firecrawl_key": bool(merged.get("firecrawl_api_key")),
         "has_semantic_scholar_key": bool(merged.get("semantic_scholar_api_key")),
-        "prior_notes_scope": merged.get("prior_notes_scope") or "related",
+        "prior_notes_scope": merged.get("prior_notes_scope") or config.DEFAULT_PRIOR_NOTES_SCOPE,
     }
 
 
