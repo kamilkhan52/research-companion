@@ -53,9 +53,6 @@ jest.mock('@/api/config', () => ({
   setBaseUrl: (url: string) => mockSetBaseUrl(url),
 }));
 
-jest.mock('expo-linking', () => ({
-  openURL: jest.fn(async () => true),
-}));
 
 beforeEach(() => {
   jest.clearAllMocks();

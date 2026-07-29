@@ -5,7 +5,6 @@
 // — telling someone to sign in when the real problem is a wrong server URL or a stopped backend
 // sends them to fix the wrong thing, and there is no password they can type that will help.
 
-import * as Linking from 'expo-linking';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -129,11 +128,18 @@ function SignedOutExperience() {
   const [changingServer, setChangingServer] = useState(false);
   const [sentEmail, setSentEmail] = useState('');
 
+  // In development this is the editable URL field. In a release build it must NOT be: the server
+  // is baked into app.json, and letting someone save a different one here is how they strand
+  // themselves — a wrong-but-reachable URL leaves them on a screen whose escape hatches are all
+  // hidden (welcome gear, unsupported-server button, Settings). Not offering the edit is what
+  // makes the stranded state unreachable, rather than adding another way out of it.
   if (status === 'unreachable' || changingServer) {
-    return (
+    return SERVER_TOOLS_VISIBLE ? (
       <ServerUrlRecovery
         onCancel={changingServer ? () => setChangingServer(false) : undefined}
       />
+    ) : (
+      <ServerUnreachable />
     );
   }
 
@@ -595,6 +601,9 @@ function CheckInbox({
           title="Use a different email"
           subtitle="Change the address"
           onPress={onDifferentEmail}
+          // Closes the list when the development-only "Change server" row below is absent —
+          // otherwise ActionRow keeps drawing a divider under the last visible row.
+          last={!SERVER_TOOLS_VISIBLE}
         />
         {SERVER_TOOLS_VISIBLE ? (
           <ActionRow
@@ -658,6 +667,34 @@ function UnsupportedServer({ onChangeServer }: { onChangeServer: () => void }) {
 }
 
 /** Shown when the backend cannot be reached: the reason, plus the one setting that can fix it. */
+/** The release-build answer to "cannot reach the server".
+ *
+ *  Deliberately has NO url field. The server is baked into app.json, so an unreachable server is
+ *  an outage or a dead network — not something the reader can fix by typing. Offering an editor
+ *  here only lets them save a wrong URL and strand themselves somewhere with no way back. */
+function ServerUnreachable() {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { retry } = useAuth();
+  return (
+    <AuthCanvas>
+      <View style={styles.centerCard}>
+        <View style={styles.stateIcon}>
+          <Icon name="alert-triangle" size={28} color={t.amber} />
+        </View>
+        <Text variant="editorial" style={{ textAlign: 'center' }}>
+          Can’t reach Scholiast
+        </Text>
+        <Text variant="body" color={t.muted} style={styles.stateBody}>
+          Check your connection and try again. If this keeps happening, the service may be
+          temporarily unavailable.
+        </Text>
+        <Button title="Try again" onPress={retry} />
+      </View>
+    </AuthCanvas>
+  );
+}
+
 function ServerUrlRecovery({ onCancel }: { onCancel?: () => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -841,34 +878,6 @@ function ConstellationNode({
   );
 }
 
-function InfoCard({
-  icon,
-  title,
-  body,
-  accent,
-}: {
-  icon: IconName;
-  title: string;
-  body: string;
-  accent: string;
-}) {
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={styles.infoCard}>
-      <View style={[styles.infoAccent, { backgroundColor: accent }]} />
-      <Icon name={icon} size={19} color={accent} />
-      <View style={common.flex}>
-        <Text variant="heading" color={accent}>
-          {title}
-        </Text>
-        <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
-          {body}
-        </Text>
-      </View>
-    </View>
-  );
-}
 
 function ActionRow({
   icon,
@@ -1076,26 +1085,6 @@ const makeStyles = (t: ThemePalette) =>
     },
     orLine: { flex: 1, height: 1, backgroundColor: t.line },
     switchMode: { alignItems: 'center', paddingVertical: space.xl },
-    infoCard: {
-      minHeight: 92,
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: space.md,
-      borderWidth: 1,
-      borderColor: t.line,
-      borderRadius: radius.md,
-      backgroundColor: t.surface,
-      padding: space.lg,
-      overflow: 'hidden',
-    },
-    infoAccent: {
-      position: 'absolute',
-      left: 0,
-      top: space.lg,
-      bottom: space.lg,
-      width: 3,
-      borderRadius: 2,
-    },
     error: { textAlign: 'center', marginTop: space.md },
     serverLink: { alignItems: 'center', paddingVertical: space.xl },
     mailIllustration: {

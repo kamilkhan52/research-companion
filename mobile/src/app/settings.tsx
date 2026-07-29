@@ -269,8 +269,8 @@ export default function SettingsScreen() {
                   <Text variant="heading">Some settings are read-only</Text>
                   <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                     {canEditPrefs
-                      ? 'The API keys and prompts below are one shared configuration for everyone on this server, so only its operator can change them. The models, voice, and prior-notes setting are yours, as are playback, theme, layout, the map filter, and the server URL.'
-                      : 'The keys, models, voice, and prompts below are one shared configuration for everyone on this server, so only its operator can change them. Playback, theme, layout, the map filter, and the server URL are yours and still work.'}
+                      ? 'The API keys and prompts below are one shared configuration for everyone on this server, so only its operator can change them. The models, voice, and prior-notes setting are yours, as are playback, theme, layout, and the map filter.'
+                      : 'The keys, models, voice, and prompts below are one shared configuration for everyone on this server, so only its operator can change them. Playback, theme, layout, and the map filter are yours and still work.'}
                   </Text>
                 </Card>
               ) : null}
