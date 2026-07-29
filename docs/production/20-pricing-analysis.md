@@ -421,10 +421,21 @@ at 9 paying users rather than 16.
 
 These are prerequisites, not nice-to-haves. In priority order:
 
-1. **`app/llm.py` sends no provider routing preference.** Add `"provider": {"only": ["deepseek"],
-   "allow_fallbacks": false}` (or an explicit cheap-endpoint order) to the request body. **Worth
-   ~60% of the LLM bill.** Verified against the endpoints API: we are routing to endpoints
-   costing up to 4× first-party DeepSeek.
+1. **`app/llm.py` sends no provider routing preference.** ⚠️ **PARTLY STALE as of 2026-07-29 — do
+   not act on this without re-measuring.** `llm.py` now DOES send a `provider` block, but for
+   privacy rather than cost: `llm.PRIVACY_ROUTING` = `{"data_collection": "deny", "zdr": true}`,
+   which `/legal/privacy` states as an unconditional promise. That block already constrains which
+   endpoints are eligible, so the **"~60% of the LLM bill" figure below was measured against
+   unconstrained routing and no longer describes the gap.** Any cost-routing preference now has to
+   compose with the privacy constraint, not replace it — and a `{"only": ["deepseek"]}` that
+   dropped the privacy keys would make the published policy false.
+
+   Also since: **the default models are pinned to DeepSeek** (#281 — `config.DEFAULT_ANALYSIS_MODEL`
+   = `deepseek/deepseek-v4-pro`, `DEFAULT_NARRATION_MODEL` = `deepseek/deepseek-v4-flash`), which
+   captures much of what this item was reaching for at the settings layer rather than the routing
+   layer. Original text: add `"provider": {"only": ["deepseek"], "allow_fallbacks": false}` (or an
+   explicit cheap-endpoint order) to the request body. **Worth ~60% of the LLM bill.** Verified
+   against the endpoints API: we are routing to endpoints costing up to 4× first-party DeepSeek.
 
 2. **The default turn path cannot report cost** (`agent_harness._record_run_usage`, and
    `app/usage.py`'s "cost comes straight from OpenRouter" design note). 17 pending records and at
