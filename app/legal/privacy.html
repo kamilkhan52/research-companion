@@ -58,9 +58,11 @@ unsent drafts — stay on your device and are never sent to us.</p>
 <h3>Operational records</h3>
 
 <p>When the app does something that costs money or runs in the background, we record what ran: the
-operation, the model used, token counts, cost, timestamps, and job identifiers. This is how billing
-and usage limits work. Our server also writes ordinary operational logs — request paths and status
-codes, project and paper identifiers, model and operation names, timings, and error categories.</p>
+operation, the model used, token counts, cost, timestamps, and job identifiers. This is what usage
+limits and billing will be based on when paid plans begin. Our server also writes ordinary
+operational logs — request paths and status codes, project and paper identifiers, model and
+operation names, timings, error categories, and, when a sign-in is refused because the account is
+not on the tester list, that account's identifier.</p>
 
 <h3>Reports of AI content</h3>
 
@@ -115,17 +117,32 @@ request to a provider able to serve the model you selected.</p>
 <p>We instruct OpenRouter to route only to providers that do not retain the content we send and do
 not train on it. That restriction is applied on every request. It limits which providers can serve
 a request, and a model with no such provider available will not run rather than fall back to one
-that retains data.</p>
+that retains data. We rely on those providers' own representations about retention, as any customer
+must.</p>
 
-<p>Two honest caveats. First, we rely on those providers' own representations about retention, as
-any customer must. Second, if you ask the app to search the web or fetch a page, the search terms
-derived from your question go to the search provider, and the site you fetch sees an ordinary
-request from our server.</p>
+<p><strong>That restriction covers the models that generate discussion, and nothing else.</strong>
+Being precise about the exceptions matters more than a tidy claim:</p>
+
+<ul>
+  <li><strong>Narration.</strong> To read a passage aloud we send the narration text — written from
+      the paper and your discussion — to OpenAI's speech service. We have no zero-retention
+      arrangement there; it is subject to OpenAI's standard API terms, which retain inputs for a
+      limited period for abuse monitoring.</li>
+  <li><strong>Web search.</strong> If you ask the app to search or fetch a page, the search terms
+      derived from your question go to the search provider under that provider's ordinary terms.
+      Those terms are written by the model and routinely quote the paper.</li>
+  <li><strong>Fetching a paper.</strong> The site you fetch sees an ordinary request from our
+      server for that document.</li>
+</ul>
 
 <h2>Keeping it safe</h2>
 
-<p>Traffic between the app and our server is encrypted with TLS, as is traffic to every provider
-above. Your projects are readable only by your account: ownership is enforced in the database on
+<p>The app connects to our server over HTTPS, and our server reaches the providers above over HTTPS.
+One exception, which we would rather state than paper over: when you ask us to fetch a paper from a
+site you have named, some academic hosts still offer only unencrypted <code>http</code>, and we
+fetch those as given rather than refusing. Nothing of yours travels on such a request beyond the
+address of the document you asked for.
+Your projects are readable only by your account: ownership is enforced in the database on
 every request, and a project you do not own is indistinguishable from one that does not exist.
 Narrated audio is stored per account rather than in a shared pool. Provider API keys are held by the
 operator of the service and are never readable by users. Provider error responses are stripped
@@ -142,10 +159,12 @@ than claiming more than we can support.</p>
       is no automatic expiry: a reading library that quietly erased itself would be worse than
       useless.</li>
   <li><strong>Deleting a project</strong> moves it to a recoverable area rather than erasing it
-      immediately, so an accident is fixable. Deleting your account erases those copies too.</li>
+      immediately, so an accident is fixable. That copy currently has no expiry — it stays until you
+      delete your account, which erases it.</li>
   <li><strong>Generated audio</strong> is cached per account until your account is deleted.</li>
-  <li><strong>Operational logs</strong> are held by our hosting provider for a limited period and
-      are not used to reconstruct your reading.</li>
+  <li><strong>Operational logs</strong> are held by our hosting provider and are not used to
+      reconstruct your reading. We have not yet set a retention period for them; when we do, this
+      page will say what it is.</li>
   <li><strong>After you delete your account</strong> we keep two content-free records: a
       pseudonymous entry noting that a deletion happened and when, and the bare identifiers of
       projects that once existed, so an identifier cannot be reused to reach data that a stale

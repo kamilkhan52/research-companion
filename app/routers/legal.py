@@ -115,8 +115,10 @@ def _load(slug: str) -> str:
             .replace("{{LAST_UPDATED}}", LAST_UPDATED))
 
 
-# Rendered at import, so a missing fragment or an unfilled placeholder is a boot failure in CI
-# rather than a 500 served to whoever opens the policy URL.
+# Rendered at import, so a missing fragment is a boot failure — caught in CI, rather than a 500
+# served to whoever opens the policy URL. Note what this does NOT catch: `_load` substitutes four
+# known names, so an unknown `{{FOO}}` passes through silently and boots fine. The guard against
+# that is behavioural, in `test_legal.py::test_no_placeholder_survives_into_a_served_page`.
 _RENDERED = {slug: _shell(title, _load(slug)) for slug, title in _TITLES.items()}
 
 

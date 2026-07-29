@@ -22,6 +22,23 @@ def _capture(sent: list[dict]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+def test_the_routing_payload_is_json_serializable_and_a_fresh_copy():
+    """`PRIVACY_ROUTING` is a mapping proxy so nothing can quietly weaken it at runtime — but a
+    mapping proxy is NOT JSON-serializable, so putting it straight into a request body raises on
+    EVERY llm call in the app. `routing_payload()` exists for that; this pins both halves."""
+    import json
+
+    payload = llm.routing_payload()
+
+    assert json.loads(json.dumps({"provider": payload}))["provider"] == dict(llm.PRIVACY_ROUTING)
+    with pytest.raises(TypeError):
+        json.dumps({"provider": llm.PRIVACY_ROUTING})
+    # A fresh copy each call: one request body mutating its own `provider` must not reach the next.
+    assert payload is not llm.routing_payload()
+    with pytest.raises(TypeError):
+        llm.PRIVACY_ROUTING["zdr"] = False
+
+
 def test_both_keys_are_set_and_neither_alone_would_do():
     """`data_collection: deny` excludes training; `zdr` excludes retention at rest. A provider can
     satisfy one and fail the other, so the policy's wording requires both."""

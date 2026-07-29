@@ -137,7 +137,7 @@ def _openrouter_model(model_id: str | None = None) -> OpenAIChatModel:
     return OpenAIChatModel(
         model_id or settings.get("model"),
         provider=provider,
-        settings=OpenAIChatModelSettings(extra_body={"provider": llm.PRIVACY_ROUTING}),
+        settings=OpenAIChatModelSettings(extra_body={"provider": llm.routing_payload()}),
     )
 
 

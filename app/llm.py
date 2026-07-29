@@ -33,6 +33,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from types import MappingProxyType
 
 import httpx
 
@@ -108,7 +109,20 @@ def _empty_response_message(finish_reason, usage: dict) -> str:
 # a flag that relaxes it would make the published policy false on whichever deployment set it.
 # Cost, measured across the twelve favourite families: eleven still resolve; only Qwen Max has no
 # conforming endpoint, and it was dropped from the favourites for that reason.
-PRIVACY_ROUTING = {"data_collection": "deny", "zdr": True}
+#
+# Read-only because this one object would otherwise be shared by reference into every request body
+# and into `agent_harness`'s model settings. Nothing mutates it today; a mapping proxy means nothing
+# can start to, quietly, and weaken the promise for every subsequent request in the process.
+#
+# Callers must go through `routing_payload()`. A mapping proxy is NOT JSON-serializable, so putting
+# this object into a request body directly raises `TypeError: Object of type mappingproxy is not
+# JSON serializable` — on every LLM call in the app. Verified before shipping the immutability.
+PRIVACY_ROUTING = MappingProxyType({"data_collection": "deny", "zdr": True})
+
+
+def routing_payload() -> dict:
+    """A fresh, JSON-serializable copy of `PRIVACY_ROUTING` for one request body."""
+    return dict(PRIVACY_ROUTING)
 
 
 def _build_body(messages: list[dict], model: str | None, default_model: str | None,
@@ -119,7 +133,7 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "provider": PRIVACY_ROUTING,
+        "provider": routing_payload(),
         # Ask OpenRouter to return authoritative token counts + dollar cost in `usage` (for
         # streaming it arrives in a final usage-only chunk). See app/usage.py.
         "usage": {"include": True},
