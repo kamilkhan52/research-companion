@@ -149,6 +149,36 @@ def test_default_tts_model_is_the_cheaper_tts_1(monkeypatch):
         importlib.reload(config)
 
 
+def test_default_models_are_deepseek_not_a_frontier_model(monkeypatch):
+    """A caller who has expressed no preference — every tester, every future free-tier user — must
+    land on DeepSeek.
+
+    `20-pricing-analysis.md` prices both tiers as DeepSeek-only and measures a single
+    `claude-opus-4.6` call at $0.44, so ~20 turns burns a month of Basic revenue. Nothing meters or
+    caps a user yet, so the default IS the cost control. Like the tts-1 default above, the
+    difference is invisible in normal use: nothing fails, the bill just multiplies.
+
+    Same `load_dotenv` stubbing as that test, and for the same reason — Kamil's `.env` pins
+    `RC_MODEL`, so without this the assertion would read his machine instead of the code.
+    """
+    import dotenv
+
+    for var in ("RC_MODEL", "RC_NARRATION_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
+    try:
+        importlib.reload(config)
+        assert config._ENV_DEFAULTS["model"] == "deepseek/deepseek-v4-pro"
+        # Narration is Flash, not Pro: it only re-voices text the analysis turn already wrote, so
+        # latency beats depth, and audio prep is the slowest thing a reader waits on.
+        assert config._ENV_DEFAULTS["narration_model"] == "deepseek/deepseek-v4-flash"
+        assert "anthropic/" not in config._ENV_DEFAULTS["model"]
+        assert "anthropic/" not in config._ENV_DEFAULTS["narration_model"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_clearing_a_stored_tts_model_falls_back_to_the_default(tmp_path, monkeypatch):
     """`tts-1-hd` stays selectable, so a deliberate choice must outrank the default — which is also
     why changing the default does NOT change an instance that already stored one. `""` is the way

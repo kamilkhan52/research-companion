@@ -583,12 +583,32 @@ def state_dir() -> Path:
 # default spelled out in four places is one that eventually reports one thing and does another.
 DEFAULT_PRIOR_NOTES_SCOPE = "all"
 
+# The models a caller who has expressed no preference gets — which is every tester, and every
+# future free-tier user.
+#
+# These were `anthropic/claude-opus-4.6` and `anthropic/claude-haiku-4.5`, and that combination is
+# incompatible with the product it is about to ship inside. `docs/production/20-pricing-analysis.md`
+# prices BOTH tiers as DeepSeek-only and measures a single Opus call at **$0.44** — twenty turns
+# burns a month of Basic revenue — while nothing meters or caps a user yet (§8: TTS, web search and
+# per-user attribution are all unmetered). A default nobody chose should not be the expensive one.
+#
+# Analysis is V4 Pro; narration is V4 **Flash**, Kamil's call on 2026-07-29: narration only has to
+# faithfully re-voice text that the analysis turn already wrote, so latency matters more than depth
+# there, and audio prep is the slowest thing a reader waits on.
+#
+# Both were verified against the live OpenRouter catalogue AND called successfully under
+# `llm.PRIVACY_ROUTING` before being pinned — a model with no zero-retention endpoint 404s, and
+# pinning narration to one would have taken out all audio. `graph.resolve_model` already defaults
+# to DeepSeek V4 Pro, so no third default needed changing.
+DEFAULT_ANALYSIS_MODEL = "deepseek/deepseek-v4-pro"
+DEFAULT_NARRATION_MODEL = "deepseek/deepseek-v4-flash"
+
 _ENV_DEFAULTS = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
     # analysis model: reads the paper, writes the scholarly record
-    "model": os.environ.get("RC_MODEL", "anthropic/claude-opus-4.6"),
+    "model": os.environ.get("RC_MODEL", DEFAULT_ANALYSIS_MODEL),
     # narration model: faithfully adapts the canonical text for TTS (lighter/faster)
-    "narration_model": os.environ.get("RC_NARRATION_MODEL", "anthropic/claude-haiku-4.5"),
+    "narration_model": os.environ.get("RC_NARRATION_MODEL", DEFAULT_NARRATION_MODEL),
     # listening-preview model: defaults dynamically to narration_model when unset
     "preview_model": os.environ.get("RC_PREVIEW_MODEL", ""),
     # speech (audio) — OpenRouter has no TTS, so OpenAI uses its own key
