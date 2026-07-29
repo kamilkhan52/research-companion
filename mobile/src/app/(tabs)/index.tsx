@@ -50,6 +50,7 @@ import {
   DEFAULT_SORT_DIRECTION,
   usePaperSortPreference,
 } from '@/hooks/usePaperSortPreference';
+import { useContinueCardDismissal } from '@/hooks/useContinueCardDismissal';
 import {
   Button,
   Card,
@@ -218,9 +219,23 @@ export default function LibraryScreen() {
     const filtered = filter === 'all' ? papers : papers.filter((p) => filterBucket(p) === filter);
     return sortPapers(filtered, sort, sortDirection);
   }, [papers, filter, sort, sortDirection]);
-  const continueSession = recentQuery.data?.find(
+  const { isDismissed, dismiss: dismissContinue, loaded: dismissalLoaded } =
+    useContinueCardDismissal();
+  const recentSession = recentQuery.data?.find(
     (session) => session.kind === 'paper' && session.state !== 'committed',
   );
+  // Hidden when the reader dismissed THIS session, and hidden entirely for a project with no
+  // papers: a new project's whole job is to send the reader to discovery, and a resume card
+  // pointing into some other project is exactly the distraction that competes with it.
+  // `dismissalLoaded` gates the first paint so a dismissed card does not flash before storage
+  // answers.
+  const continueSession =
+    dismissalLoaded
+    && recentSession
+    && papers.length > 0
+    && !isDismissed(recentSession.project_id, recentSession.slug)
+      ? recentSession
+      : undefined;
 
   // The hero identifies exactly one likely next destination. Warm what the paper screen blocks
   // on — the transcript AND the opening draft — while the reader is still looking at the
@@ -316,7 +331,11 @@ export default function LibraryScreen() {
           />
         }>
         {continueSession ? (
-          <ContinueCard session={continueSession} onPress={() => openRecentSession(continueSession)} />
+          <ContinueCard
+            session={continueSession}
+            onPress={() => openRecentSession(continueSession)}
+            onDismiss={() => dismissContinue(continueSession.project_id, continueSession.slug)}
+          />
         ) : null}
 
         {activeProject && activeProject.paper_count > 0 ? (
@@ -388,9 +407,19 @@ export default function LibraryScreen() {
           <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
         ) : !activePid ? (
           <Empty
-            heading="No project selected"
-            body="Choose a research project, or create a new one to start reading."
-            action={<Button title="Choose project" onPress={() => setSwitcherOpen(true)} />}
+            heading={projects && projects.length === 0
+              ? 'Create your first project'
+              : 'No project selected'}
+            body={projects && projects.length === 0
+              ? 'A project is one reading list — a field, a question, a course. Papers, notes and '
+                + 'the reference graph all live inside it.'
+              : 'Choose a research project, or create a new one to start reading.'}
+            action={
+              <Button
+                title={projects && projects.length === 0 ? 'New project' : 'Choose project'}
+                onPress={() => setSwitcherOpen(true)}
+              />
+            }
           />
         ) : stateQuery.isLoading ? (
           <ActivityIndicator color={t.mint} style={{ paddingVertical: space.xxl }} />
@@ -636,16 +665,40 @@ function ProjectPill({
   );
 }
 
-function ContinueCard({ session, onPress }: { session: RecentSession; onPress: () => void }) {
+function ContinueCard({
+  session,
+  onPress,
+  onDismiss,
+}: {
+  session: RecentSession;
+  onPress: () => void;
+  onDismiss: () => void;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const paperUrl = fullPaperUrl(session);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.continueWrap, pressed && { opacity: 0.85 }]}>
       <Card style={styles.continueCard}>
-        <Text variant="title" color={t.mint}>
-          Continue reading
-        </Text>
+        <View style={styles.continueHead}>
+          <Text variant="title" color={t.mint}>
+            Continue reading
+          </Text>
+          <IconButton
+            name="x"
+            accessibilityLabel="Dismiss continue reading"
+            onPress={(event) => {
+              // Required, not defensive: the whole card is a Pressable that navigates, so without
+              // this the X both dismisses AND opens the paper it just dismissed. The sibling
+              // external-link button below already does exactly this for the same reason.
+              // Optional-chained because a press can arrive without an event object (React
+              // Native Testing Library's `fireEvent.press` does exactly that), and the dismissal
+              // must not throw just because nothing needed stopping.
+              event?.stopPropagation?.();
+              onDismiss();
+            }}
+          />
+        </View>
         <View style={styles.continueBody}>
           <PaperCover projectId={session.project_id} slug={session.slug} width={84} height={104} />
           <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
@@ -901,6 +954,7 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   continueWrap: { marginBottom: tight ? space.sm : space.md },
   continueCard: { gap: tight ? space.sm : space.md, borderColor: t.line2 },
+  continueHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   continueBody: { flexDirection: 'row', gap: tight ? space.md : space.lg },
   continueActions: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', gap: space.sm, marginTop: space.xs },
   resumeBtn: { height: 42, paddingHorizontal: space.lg },
