@@ -26,7 +26,7 @@ jobs:
       run:
         working-directory: mobile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # `node_modules` itself, not just npm's tarball cache. `setup-node`'s `cache: npm` only avoids
       # the DOWNLOAD; `npm ci` still deletes and rebuilds the tree, which measured 19s. Restoring the
       # built tree takes ~2s, which is what pulls this job back under two billed minutes.
@@ -37,11 +37,11 @@ jobs:
       # lockfile alone would serve a tree patched by an older version of that script.
       - name: Cache node_modules
         id: node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: mobile/node_modules
           key: mobile-node-modules-${{ runner.os }}-node20-${{ hashFiles('mobile/package-lock.json', 'mobile/scripts/patch-react-native-track-player.js') }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm

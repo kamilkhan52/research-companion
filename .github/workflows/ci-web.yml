@@ -26,17 +26,17 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Same reasoning as the mobile job, smaller absolute win (install measures 3s here). Kept for
       # symmetry so the two client jobs do not drift apart. No postinstall script in this package,
       # so the lockfile alone is the correct key.
       - name: Cache node_modules
         id: node_modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: web/node_modules
           key: web-node-modules-${{ runner.os }}-node20-${{ hashFiles('web/package-lock.json') }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
