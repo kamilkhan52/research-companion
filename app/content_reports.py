@@ -40,6 +40,10 @@ REFERENCE_MAX = 256
 # higher than the cost of storing a few duplicates — and counted over a rolling day rather than
 # reset at midnight, so it cannot be gamed by waiting for a boundary.
 DAILY_LIMIT = 50
+# Advisory-lock namespace for the per-reporter cap. Distinct from `deploy_guard._LOCK_CLASS`
+# (1_009_207) on purpose: advisory locks share one global space per database, so two features
+# picking the same class would block each other for no reason anybody could later explain.
+_LOCK_CLASS = 1_009_211
 
 
 class ContentReportError(RuntimeError):
@@ -88,12 +92,24 @@ def submit(
     # any other database path would otherwise have a valid JWT and a foreign-key violation.
     tenancy.ensure_user(user_id, email)
 
-    with db.pool().connection() as conn:
-        # Counted INSIDE the insert. As two statements on an autocommit pool there is no
-        # serialization between them, and concurrent reports each read a count taken before any of
-        # them committed — a burst overshot the cap. Bounded overshoot rather than a bypass, but
-        # one statement removes it, and the cap is the only thing standing between one account and
-        # the whole moderation queue.
+    with db.pool().connection() as conn, conn.transaction():
+        # Serialized per reporter, and this took three attempts to get right.
+        #
+        # Two statements on an autocommit pool obviously race. Folding the count INTO the insert
+        # looked like the fix and is not: under READ COMMITTED the sub-select still reads a snapshot
+        # taken when the statement began, so concurrent inserts each count the rows that existed
+        # before any of them committed and all of them pass a cap that only one should. That is not
+        # a theory — `test_a_concurrent_burst_cannot_exceed_the_cap` failed on CI against a real
+        # Postgres at 3 rows under a cap of 2, while passing locally because it SKIPPED with no
+        # database configured. The narrower window read as a fix for exactly as long as nothing
+        # measured it.
+        #
+        # So take a transaction-scoped advisory lock keyed on the reporter. It serializes only
+        # concurrent reports BY THE SAME ACCOUNT — different reporters hash to different keys and
+        # never wait on each other — and it is released by commit or rollback, so a failed insert
+        # cannot strand it. `hashtext` keys in SQL rather than Python so the two can never disagree
+        # about the hash.
+        conn.execute("select pg_advisory_xact_lock(%s, hashtext(%s))", (_LOCK_CLASS, user_id))
         row = conn.execute(
             "insert into rc_content_reports "
             "(reporter_id, project_id, paper_slug, reference, surface, reason, reporter_note) "
