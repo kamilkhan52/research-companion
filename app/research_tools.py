@@ -9,8 +9,11 @@ harness in a later step). Two families:
   * Web: fetch a URL's readable text, and search the web. These reach outside the corpus, so
     they carry real safety obligations, enforced here: http(s)-only, per-redirect-hop blocking
     of private/loopback/link-local/reserved addresses (SSRF — incl. cloud metadata at
-    169.254.169.254), hard byte/char caps, short timeouts, and text-only content. web_search
-    needs a Brave Search API key (settings/env), mirroring the existing per-provider key model.
+    169.254.169.254), hard byte/char caps, short timeouts, and text-only content. Both run a
+    PROVIDER CHAIN and fall through on failure, so neither requires a key: `web_search` tries
+    Firecrawl, then Parallel, then keyless DuckDuckGo; `web_fetch` tries Firecrawl, then Parallel,
+    then a direct guarded fetch. (Until 2026-07-29 this paragraph required a Brave Search API key.
+    There has never been any Brave code in the repo — grepping for it found only that sentence.)
 
 Everything is READ-ONLY: nothing here mutates project files, git, or settings. Tools return
 plain strings meant for the model to read; on bad input they return a helpful message rather
@@ -28,7 +31,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import config, graph_store, safe_fetch, sessions, store
+from . import config, graph_store, logging_config, safe_fetch, sessions, store
+
+log = logging_config.get("research_tools")
 
 # Caps: keep tool output bounded so a single call can't blow the model's context or stall a turn.
 MAX_PAPER_TEXT_CHARS = 16_000
@@ -389,14 +394,35 @@ def _direct_fetch(urls: list[str], objective: str) -> str:
 # ---- orchestrators: try providers in order, fall through on failure ----
 
 def _run_chain(providers: list[tuple[str, object]], *args) -> str:
+    """Try each provider in turn; the first non-empty result wins.
+
+    The point of the chain is that one provider's bad day is invisible to the reader, so a
+    provider that fails in ANY way has to fall through to the next one. Only `ToolError` used to
+    be caught, which meant anything a provider failed to wrap — a malformed payload raising
+    `KeyError`, an `httpx` error escaping a helper — propagated out of `web_search` entirely,
+    killed the agent's tool call, and left the remaining providers untried. That is the exact
+    failure the chain exists to prevent, and it was reachable from any provider's response.
+
+    An unexpected exception is still a bug, so it is logged and its type named in the
+    diagnostic rather than silently becoming a fallback.
+    """
     attempts = []
     for name, fn in providers:
         try:
             result = fn(*args)
-            if result and result.strip():
-                return _cap(result)
         except ToolError as e:
             attempts.append(f"{name} ({e})")
+            continue
+        except Exception as e:  # noqa: BLE001 — deliberate: see the docstring
+            log.warning("web provider %s raised an unwrapped %s", name, type(e).__name__)
+            attempts.append(f"{name} (unexpected {type(e).__name__})")
+            continue
+        if result and result.strip():
+            return _cap(result)
+        # Recorded rather than skipped silently: a provider that answers with nothing was
+        # previously missing from "Tried: …", so the diagnostic understated what had been
+        # attempted and made an empty answer look like a provider that never ran.
+        attempts.append(f"{name} (empty)")
     return "Web request failed — no provider available. Tried: " + "; ".join(attempts)
 
 
