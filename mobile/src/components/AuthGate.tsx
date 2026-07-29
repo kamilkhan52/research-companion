@@ -20,7 +20,7 @@ import {
 } from 'react-native';
 
 import { getBaseUrl, setBaseUrl } from '@/api/config';
-import { useAuth } from '@/auth/AuthProvider';
+import { MIN_PASSWORD_LENGTH, useAuth } from '@/auth/AuthProvider';
 import { AccountDeletionGuard } from '@/components/AccountDeletionGuard';
 import { Button, Card, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -248,9 +248,14 @@ function EmailEntry({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { error, signInWithGoogle, signInWithMagicLink } = useAuth();
+  const {
+    error, signInWithGoogle, signInWithMagicLink,
+    signInWithPassword, signUpWithPassword, sendPasswordReset,
+  } = useAuth();
   const [email, setEmail] = useState('');
-  const [busy, setBusy] = useState<'google' | 'magic' | null>(null);
+  const [password, setPassword] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<'google' | 'magic' | 'password' | 'reset' | null>(null);
   const creating = mode === 'create-account';
 
   async function runGoogle() {
@@ -265,9 +270,50 @@ function EmailEntry({
   async function sendLink() {
     const address = email.trim();
     if (!address) return;
+    setNotice(null);
     setBusy('magic');
     try {
       if (await signInWithMagicLink(address)) onEmailSent(address);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function submitPassword() {
+    const address = email.trim();
+    if (!address || !password) return;
+    setNotice(null);
+    setBusy('password');
+    try {
+      if (!creating) {
+        await signInWithPassword(address, password);
+        return;   // a success flips the whole gate; a failure surfaces through `error`
+      }
+      const result = await signUpWithPassword(address, password);
+      if (result === 'confirm-email') {
+        // NOT a sign-in. The account exists but is inert until the address is confirmed, so
+        // sending the user back to a password field would just reject the password they chose.
+        onEmailSent(address);
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function forgotPassword() {
+    const address = email.trim();
+    if (!address) {
+      setNotice('Enter your email address first.');
+      return;
+    }
+    setNotice(null);
+    setBusy('reset');
+    try {
+      if (await sendPasswordReset(address)) {
+        // Deliberately says nothing about whether that address has an account — the response is
+        // identical either way, so this message must be too.
+        setNotice(`If ${address} has an account, a reset link is on its way.`);
+      }
     } finally {
       setBusy(null);
     }
@@ -288,7 +334,7 @@ function EmailEntry({
       <Text variant="body" color={t.muted} style={styles.pageSubtitle}>
         {creating
           ? 'Start your research journey with Paradigm.'
-          : 'Sign in with a secure email link—no password to remember.'}
+          : 'Sign in with your password, or have us email you a link.'}
       </Text>
 
       <Text variant="label" color={t.text} style={styles.fieldLabel}>
@@ -307,20 +353,72 @@ function EmailEntry({
           autoCorrect={false}
           keyboardType="email-address"
           textContentType="emailAddress"
-          returnKeyType="send"
-          onSubmitEditing={() => void sendLink()}
+          returnKeyType="next"
+          style={styles.input}
+        />
+      </View>
+
+      <Text variant="label" color={t.text} style={styles.fieldLabel}>
+        Password
+      </Text>
+      <View style={styles.inputShell}>
+        <View style={styles.inputIcon}>
+          <Icon name="lock" size={15} color={t.mint} />
+        </View>
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          placeholder={creating ? `At least ${MIN_PASSWORD_LENGTH} characters` : 'Your password'}
+          placeholderTextColor={t.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+          // `newPassword` lets a password manager offer to generate and save one; `password` on
+          // sign-in lets it autofill. Getting these backwards is why saved credentials sometimes
+          // never reappear.
+          textContentType={creating ? 'newPassword' : 'password'}
+          returnKeyType="go"
+          onSubmitEditing={() => void submitPassword()}
           style={styles.input}
         />
       </View>
 
       <Button
-        title={creating ? 'Create account' : 'Email me a sign-in link'}
+        title={creating ? 'Create account' : 'Sign in'}
+        icon="lock"
+        onPress={() => void submitPassword()}
+        loading={busy === 'password'}
+        disabled={busy !== null || !email.trim() || !password}
+        style={{ marginTop: space.lg }}
+      />
+
+      <Button
+        title="Email me a sign-in link instead"
         icon="at-sign"
+        variant="ghost"
         onPress={() => void sendLink()}
         loading={busy === 'magic'}
         disabled={busy !== null || !email.trim()}
-        style={{ marginTop: space.lg }}
+        style={{ marginTop: space.sm }}
       />
+
+      {!creating ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => void forgotPassword()}
+          disabled={busy !== null}
+          style={styles.switchMode}>
+          <Text variant="caption" color={t.mint}>
+            {busy === 'reset' ? 'Sending…' : 'Forgot your password?'}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {notice ? (
+        <Text variant="caption" color={t.muted} style={styles.error}>
+          {notice}
+        </Text>
+      ) : null}
 
       <View style={styles.orRow}>
         <View style={styles.orLine} />

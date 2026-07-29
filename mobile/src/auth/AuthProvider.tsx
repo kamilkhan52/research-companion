@@ -46,6 +46,12 @@ export type AuthStatus =
   | 'unreachable'
   | 'cleanup-required';
 
+export type PasswordSignUpResult = 'signed-in' | 'confirm-email' | 'failed';
+
+/** Supabase's own floor is 6. Eight is enforced here so the rejection is a clear message next to
+ *  the field rather than a provider error after the round trip. */
+export const MIN_PASSWORD_LENGTH = 8;
+
 interface AuthState {
   status: AuthStatus;
   /** Non-null only in supabase mode once config has loaded. */
@@ -57,6 +63,13 @@ interface AuthState {
   signInWithGoogle: () => Promise<void>;
   /** True when Supabase accepted the email and the UI may advance to "check your inbox". */
   signInWithMagicLink: (email: string) => Promise<boolean>;
+  /** True once the session exists. Does not leave the app, so there is no inbox step. */
+  signInWithPassword: (email: string, password: string) => Promise<boolean>;
+  /** `confirm-email` means the account was created but is inert until the address is confirmed. */
+  signUpWithPassword: (email: string, password: string) => Promise<PasswordSignUpResult>;
+  /** True when Supabase accepted the request; it deliberately says nothing about whether the
+   *  address has an account, so the UI must not either. */
+  sendPasswordReset: (email: string) => Promise<boolean>;
   /** Establish recent user presence before the first irreversible deletion request. */
   reauthenticateForDeletion: () => Promise<'authenticated' | 'email-sent' | 'cancelled'>;
   /** Remove the deleted identity's session and account-linked device state without a server call. */
@@ -564,6 +577,70 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, []);
 
+  // Password auth exists for RELIABILITY, not parity. A magic link can land in spam, expire before
+  // it is opened, or be opened in a browser that is not the one holding the pending sign-in — and
+  // during the closed test a tester who cannot get in resets their own 14-continuous-day clock,
+  // which is the longest-lead item in the launch plan. A password has no delivery step.
+  //
+  // Neither of these leaves the app, so unlike the OAuth and magic-link paths there is no pending
+  // sign-in marker to set: that marker exists to survive a round trip through an external browser.
+  // The session arrives synchronously and `onAuthStateChange` adopts it.
+  const signInWithPassword = useCallback(async (address: string, password: string) => {
+    setError(null);
+    const supabase = client.current;
+    if (!supabase) return false;
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: address.trim(),
+      password,
+    });
+    if (signInError) {
+      setError(signInError.message);
+      return false;
+    }
+    return true;
+  }, []);
+
+  const signUpWithPassword = useCallback(
+    async (address: string, password: string): Promise<PasswordSignUpResult> => {
+      setError(null);
+      const supabase = client.current;
+      if (!supabase) return 'failed';
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return 'failed';
+      }
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: address.trim(),
+        password,
+        options: { emailRedirectTo: redirectUri() },
+      });
+      if (signUpError) {
+        setError(signUpError.message);
+        return 'failed';
+      }
+      // Supabase returns a session only when email confirmation is OFF. With it on — which is the
+      // safer project setting and the one to expect — `session` is null and the account is inert
+      // until the address is confirmed. Reporting that as success would strand the user on a
+      // sign-in screen that keeps rejecting a password they just chose.
+      return data.session ? 'signed-in' : 'confirm-email';
+    },
+    [],
+  );
+
+  const sendPasswordReset = useCallback(async (address: string) => {
+    setError(null);
+    const supabase = client.current;
+    if (!supabase || !address.trim()) return false;
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(address.trim(), {
+      redirectTo: redirectUri(),
+    });
+    if (resetError) {
+      setError(resetError.message);
+      return false;
+    }
+    return true;
+  }, []);
+
   const signOut = useCallback(async () => {
     setError(null);
     let failure: string | null = null;
@@ -726,6 +803,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       status, mode, userId, email, error,
       signInWithGoogle, signInWithMagicLink, reauthenticateForDeletion,
+      signInWithPassword, signUpWithPassword, sendPasswordReset,
       finishAccountDeletion, signOut,
       accountDeleted,
       dismissAccountDeleted: () => {
@@ -736,6 +814,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       status, mode, userId, email, error, signInWithGoogle, signInWithMagicLink,
+      signInWithPassword, signUpWithPassword, sendPasswordReset,
       reauthenticateForDeletion, finishAccountDeletion, signOut, accountDeleted,
     ],
   );

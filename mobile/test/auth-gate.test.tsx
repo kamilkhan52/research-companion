@@ -9,6 +9,11 @@ import { createTestQueryClient } from './queryClient';
 
 const signInWithGoogle = jest.fn(async () => undefined);
 const signInWithMagicLink = jest.fn(async () => true);
+const signInWithPassword = jest.fn(async () => true);
+const signUpWithPassword =
+  jest.fn<Promise<'signed-in' | 'confirm-email' | 'failed'>, [string, string]>(
+    async () => 'signed-in');
+const sendPasswordReset = jest.fn(async () => true);
 const retry = jest.fn();
 const mockSetBaseUrl = jest.fn(async (_url: string) => undefined);
 
@@ -20,6 +25,9 @@ let mockAuthState = {
   error: null as string | null,
   signInWithGoogle,
   signInWithMagicLink,
+  signInWithPassword,
+  signUpWithPassword,
+  sendPasswordReset,
   reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
   finishAccountDeletion: jest.fn(async () => undefined),
   signOut: jest.fn(async () => undefined),
@@ -28,8 +36,15 @@ let mockAuthState = {
   retry,
 };
 
+// This module is mocked wholesale, so anything AuthGate imports from it must be re-supplied here.
+// MIN_PASSWORD_LENGTH is one: without it both the component and this file would read `undefined`
+// and the placeholder assertions below would match each other vacuously. The REAL value, and the
+// enforcement that depends on it, are pinned in auth-provider.test.tsx against the real module.
+const MIN_PASSWORD_LENGTH = 8;
+
 jest.mock('@/auth/AuthProvider', () => ({
   useAuth: () => mockAuthState,
+  MIN_PASSWORD_LENGTH,
 }));
 
 jest.mock('@/api/config', () => ({
@@ -51,6 +66,9 @@ beforeEach(() => {
     error: null,
     signInWithGoogle,
     signInWithMagicLink,
+    signInWithPassword,
+    signUpWithPassword,
+    sendPasswordReset,
     reauthenticateForDeletion: jest.fn(async () => 'authenticated' as const),
     finishAccountDeletion: jest.fn(async () => undefined),
     signOut: jest.fn(async () => undefined),
@@ -59,6 +77,9 @@ beforeEach(() => {
     retry,
   };
   signInWithMagicLink.mockResolvedValue(true);
+  signInWithPassword.mockResolvedValue(true);
+  signUpWithPassword.mockResolvedValue('signed-in');
+  sendPasswordReset.mockResolvedValue(true);
   jest.mocked(api.getAccountDeletion).mockResolvedValue({ deletion: null });
 });
 
@@ -86,7 +107,7 @@ test('signed-out users start at the welcome screen and can choose sign in', asyn
   fireEvent.press(view.getByText('I already have an account'));
 
   expect(view.getByText('Welcome back')).toBeTruthy();
-  expect(view.getByText('Email me a sign-in link')).toBeTruthy();
+  expect(view.getByText('Email me a sign-in link instead')).toBeTruthy();
 });
 
 test('a completed deletion is acknowledged before the sign-in form comes back', async () => {
@@ -301,7 +322,7 @@ test('a cold-start callback error is visible on welcome with a recovery path', a
     .toBeTruthy();
 
   fireEvent.press(view.getByText('I already have an account'));
-  expect(view.getByText('Email me a sign-in link')).toBeTruthy();
+  expect(view.getByText('Email me a sign-in link instead')).toBeTruthy();
 });
 
 test('a failed deleted-account cleanup is not mislabeled as a sign-in-link error', async () => {
@@ -334,7 +355,7 @@ test('an accepted email request advances to the check-inbox state', async () => 
   const view = await renderGate();
   fireEvent.press(view.getByText('I already have an account'));
   fireEvent.changeText(view.getByPlaceholderText('name@example.com'), ' reader@example.com ');
-  fireEvent.press(view.getByText('Email me a sign-in link'));
+  fireEvent.press(view.getByText('Email me a sign-in link instead'));
 
   await waitFor(() => expect(signInWithMagicLink).toHaveBeenCalledWith('reader@example.com'));
   await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
@@ -344,20 +365,91 @@ test('an accepted email request advances to the check-inbox state', async () => 
 test('a rejected email request remains on the entry screen', async () => {
   signInWithMagicLink.mockResolvedValue(false);
   const view = await renderGate();
-  fireEvent.press(view.getByText('Get started'));
+  fireEvent.press(view.getByText('I already have an account'));
   fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
-  fireEvent.press(view.getByText('Create account'));
+  fireEvent.press(view.getByText('Email me a sign-in link instead'));
 
   await waitFor(() => expect(signInWithMagicLink).toHaveBeenCalled());
-  expect(view.getByText('Create your account')).toBeTruthy();
+  expect(view.getByText('Welcome back')).toBeTruthy();
   expect(view.queryByText('Check your inbox')).toBeNull();
+});
+
+test('signing in with a password does not go near the inbox', async () => {
+  const view = await renderGate();
+  fireEvent.press(view.getByText('I already have an account'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), ' reader@example.com ');
+  fireEvent.changeText(view.getByPlaceholderText('Your password'), 'correct horse battery');
+  fireEvent.press(view.getByText('Sign in'));
+
+  await waitFor(() =>
+    expect(signInWithPassword).toHaveBeenCalledWith('reader@example.com', 'correct horse battery'));
+  expect(signInWithMagicLink).not.toHaveBeenCalled();
+  expect(view.queryByText('Check your inbox')).toBeNull();
+});
+
+test('sign-in is refused until BOTH fields are filled', async () => {
+  // The whole point of adding passwords is that a tester can get in without an email round trip.
+  // A form that silently no-ops on submit would send them back to the inbox path it exists to
+  // avoid — and pressing a disabled button looks identical to a request that failed.
+  const view = await renderGate();
+  fireEvent.press(view.getByText('I already have an account'));
+
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
+  fireEvent.press(view.getByText('Sign in'));
+  await flushRender();
+  expect(signInWithPassword).not.toHaveBeenCalled();
+
+  fireEvent.changeText(view.getByPlaceholderText('Your password'), 'a password');
+  fireEvent.press(view.getByText('Sign in'));
+  await waitFor(() => expect(signInWithPassword).toHaveBeenCalled());
+});
+
+test('a new account that needs confirmation is sent to the inbox, not left at the form', async () => {
+  // Supabase returns no session when email confirmation is on, and the account is inert until the
+  // address is confirmed. Treating that as a plain failure would leave the user retyping a password
+  // that cannot work yet.
+  signUpWithPassword.mockResolvedValue('confirm-email');
+  const view = await renderGate();
+  fireEvent.press(view.getByText('Get started'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
+  fireEvent.changeText(
+    view.getByPlaceholderText(`At least ${MIN_PASSWORD_LENGTH} characters`), 'a good password');
+  fireEvent.press(view.getByText('Create account'));
+
+  await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
+});
+
+test('a new account that is immediately usable does NOT show the inbox screen', async () => {
+  signUpWithPassword.mockResolvedValue('signed-in');
+  const view = await renderGate();
+  fireEvent.press(view.getByText('Get started'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
+  fireEvent.changeText(
+    view.getByPlaceholderText(`At least ${MIN_PASSWORD_LENGTH} characters`), 'a good password');
+  fireEvent.press(view.getByText('Create account'));
+
+  await waitFor(() => expect(signUpWithPassword).toHaveBeenCalled());
+  await flushRender();
+  expect(view.queryByText('Check your inbox')).toBeNull();
+});
+
+test('a password reset never reveals whether the address has an account', async () => {
+  const view = await renderGate();
+  fireEvent.press(view.getByText('I already have an account'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'stranger@example.com');
+  fireEvent.press(view.getByText('Forgot your password?'));
+
+  await waitFor(() => expect(sendPasswordReset).toHaveBeenCalledWith('stranger@example.com'));
+  // The CONDITIONAL wording is the assertion: anything that confirmed the address exists would be
+  // an enumeration oracle, letting anyone test which emails are registered.
+  await view.findByText('If stranger@example.com has an account, a reset link is on its way.');
 });
 
 test('the inbox state supports resending and correcting the address', async () => {
   const view = await renderGate();
   fireEvent.press(view.getByText('I already have an account'));
   fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
-  fireEvent.press(view.getByText('Email me a sign-in link'));
+  fireEvent.press(view.getByText('Email me a sign-in link instead'));
   await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
 
   fireEvent.press(view.getByText('Resend email'));

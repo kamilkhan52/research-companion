@@ -11,7 +11,13 @@ import { Text } from 'react-native';
 import * as apiConfig from '@/api/config';
 import { subscribeBaseUrl } from '@/api/config';
 import * as endpoints from '@/api/endpoints';
-import { AuthProvider, redirectUri, sessionStorageKey, useAuth } from '@/auth/AuthProvider';
+import {
+  AuthProvider,
+  MIN_PASSWORD_LENGTH,
+  redirectUri,
+  sessionStorageKey,
+  useAuth,
+} from '@/auth/AuthProvider';
 import {
   hasAccountDeletionIntent,
   hasAccountDeleted,
@@ -36,6 +42,17 @@ const mockAuth = {
   signInWithOAuth: jest.fn(async () => ({
     data: { url: 'https://project.supabase.co/auth/v1/authorize?x=1' }, error: null,
   })),
+  signInWithPassword: jest.fn(
+    async (_c?: unknown): Promise<{ error: { message: string } | null }> => ({ error: null }),
+  ),
+  signUp: jest.fn(
+    async (_c?: unknown): Promise<{ data: { session: unknown }; error: { message: string } | null }> =>
+      ({ data: { session: { access_token: 'a' } }, error: null }),
+  ),
+  resetPasswordForEmail: jest.fn(
+    async (_e?: unknown, _o?: unknown): Promise<{ error: { message: string } | null }> =>
+      ({ error: null }),
+  ),
   startAutoRefresh: jest.fn(),
   stopAutoRefresh: jest.fn(),
 };
@@ -854,4 +871,94 @@ describe('a session ending silences playback, however it ends', () => {
     await waitFor(() => expect(apiConfig.setToken).toHaveBeenCalledWith('fresh-jwt'));
     expect(audio.stopPlaybackForSessionEnd).not.toHaveBeenCalled();
   });
+});
+
+// ---- password auth ----
+//
+// Added because a magic link has a delivery step that can fail (spam, expiry, a link opened in a
+// different browser from the one holding the pending sign-in), and during the closed test a tester
+// who cannot get in resets their own 14-continuous-day clock. These run against the REAL provider
+// with a mocked Supabase client, which is also what pins MIN_PASSWORD_LENGTH — auth-gate.test.tsx
+// mocks this whole module and re-supplies the constant, so it cannot check the real one.
+
+function PasswordProbe({ onReady }: { onReady: (auth: ReturnType<typeof useAuth>) => void }) {
+  const auth = useAuth();
+  onReady(auth);
+  return <Text>{auth.status}</Text>;
+}
+
+async function renderForPassword() {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  let latest: ReturnType<typeof useAuth> | undefined;
+  const view = await renderAsync(
+    withQuery(<AuthProvider><PasswordProbe onReady={(a) => { latest = a; }} /></AuthProvider>),
+  );
+  await waitFor(() => view.getByText('signed-out'));
+  return { view, auth: () => latest! };
+}
+
+test('a too-short password is refused here, without a round trip', async () => {
+  const { auth } = await renderForPassword();
+
+  let result: string | undefined;
+  await act(async () => { result = await auth().signUpWithPassword('r@example.com', 'short'); });
+
+  expect(result).toBe('failed');
+  // The point of the local check: no request is made at all, so the user gets the message beside
+  // the field instead of a provider error after a network hop.
+  expect(mockAuth.signUp).not.toHaveBeenCalled();
+  expect(MIN_PASSWORD_LENGTH).toBeGreaterThanOrEqual(8);
+});
+
+test('a sign-up with no session means "confirm your email", not success', async () => {
+  // Supabase returns session: null when email confirmation is ON, and the account is inert until
+  // confirmed. Reporting that as signed-in strands the user on a form rejecting their new password.
+  mockAuth.signUp.mockResolvedValue({ data: { session: null }, error: null });
+  const { auth } = await renderForPassword();
+
+  let result: string | undefined;
+  await act(async () => {
+    result = await auth().signUpWithPassword('r@example.com', 'a long enough password');
+  });
+
+  expect(result).toBe('confirm-email');
+});
+
+test('a sign-up that returns a session is immediately usable', async () => {
+  mockAuth.signUp.mockResolvedValue({
+    data: { session: { access_token: 'new-jwt' } }, error: null,
+  });
+  const { auth } = await renderForPassword();
+
+  let result: string | undefined;
+  await act(async () => {
+    result = await auth().signUpWithPassword('r@example.com', 'a long enough password');
+  });
+
+  expect(result).toBe('signed-in');
+});
+
+test('password sign-in trims the address and reports provider failure', async () => {
+  const { auth } = await renderForPassword();
+
+  let ok: boolean | undefined;
+  await act(async () => { ok = await auth().signInWithPassword('  r@example.com  ', 'pw'); });
+  expect(ok).toBe(true);
+  expect(mockAuth.signInWithPassword).toHaveBeenCalledWith(
+    { email: 'r@example.com', password: 'pw' });
+
+  mockAuth.signInWithPassword.mockResolvedValue({ error: { message: 'Invalid login credentials' } });
+  await act(async () => { ok = await auth().signInWithPassword('r@example.com', 'wrong'); });
+  expect(ok).toBe(false);
+});
+
+test('a password reset carries the app redirect, or it lands nowhere', async () => {
+  // Without redirectTo the reset link goes to Supabase's default site URL — a web page, on a phone
+  // that has no browser session — and the user can never finish the reset.
+  const { auth } = await renderForPassword();
+
+  await act(async () => { await auth().sendPasswordReset('r@example.com'); });
+
+  expect(mockAuth.resetPasswordForEmail).toHaveBeenCalledWith(
+    'r@example.com', { redirectTo: redirectUri() });
 });

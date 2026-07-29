@@ -25,8 +25,10 @@ policy, including a privacy request, write to
 
 <h3>Your account</h3>
 
-<p>You sign in either with Google or with a one-time link sent to your email address. We store the
-account identifier and email address that sign-in produces. Sign-in itself is handled by Supabase
+<p>You sign in with Google, with an email address and password, or with a one-time link sent to your
+email address. We store the account identifier and email address that sign-in produces. If you set a
+password, it is stored by our authentication provider as a salted hash — we never see it, and
+neither the app nor our server can read it back. Sign-in itself is handled by Supabase
 Auth, our authentication provider; if you use Google, Google returns a profile to Supabase that may
 include your name and profile picture, and Supabase retains that identity record even though the
 app itself reads only your account identifier and email address.</p>
