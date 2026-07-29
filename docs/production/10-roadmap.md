@@ -184,15 +184,19 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    `/api/auth/config` pointing at the **production** Supabase project `aumedoefxacycwfrlcml` rather
    than staging's, and the SPA serving with `<title>Scholiast</title>`.
 
-   **One thing is broken and it is H28:** the database is not connected, because the production
-   Postgres password contains a literal `@` and `urlsplit`/libpq split the authority on *different*
-   `@` characters. `app/db.py`'s ambiguity guard caught it and the app kept serving instead of
-   crash-looping. Until it is fixed, `tenancy.enabled()` is False and the instance is
-   single-tenant — so the allowlist bootstrap in H26 must wait, or projects get created with no
-   ownership rows and become unreachable the moment the database comes up. This is the guard
-   working as designed; note that the ambiguity is in the URL *format*, not in anything Kamil typed.
+   The database is connected: all six migrations applied, and the P0-18 lockout verified directly
+   against `pg_class` and `information_schema.role_table_grants` rather than from the log line —
+   7 `rc_*` tables, RLS on all of them, 0 policies, 0 `anon`/`authenticated` grants.
 
-   H27 is done — `scholiast://auth` is on both Supabase projects.
+   Getting there cost one round trip (H28): the production Postgres password contained a literal
+   `@`, and `urlsplit` splits the authority on the LAST `@` while libpq splits on the FIRST, so the
+   two disagreed about the host. `app/db.py`'s ambiguity guard caught it at boot and kept serving
+   rather than crash-looping. Worth keeping because it is a property of the URL *format*, not a
+   typo: any generated password containing `@` reproduces it.
+
+   H27 is done — `scholiast://auth` is on both Supabase projects. **The one thing left before a
+   build is the allowlist bootstrap** (H26), which needs a single sign-in attempt from Kamil against
+   the production origin.
 5. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
 6. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing

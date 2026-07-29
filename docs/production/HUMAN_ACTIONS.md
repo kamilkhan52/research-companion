@@ -61,7 +61,23 @@ tester clock.
 **Report back:** the platform, the app subdomain it assigns, and how deploy credentials should be
 provided (a scoped deploy token in an EAS/CI secret, never the repo).
 
-### H28 — The production database password contains `@`, so nothing reaches Postgres · `todo` — blocks everything below it
+### H28 — The production database password contains `@`, so nothing reaches Postgres · ✅ `DONE 2026-07-29`
+**Resolved.** Kamil rotated the password and re-set the secret; the machine restarted and connected
+on the next boot. Verified from the logs and then independently against the live schema:
+
+- `db: pool opened on db.aumedoefxacycwfrlcml.supabase.co:5432/postgres`
+- all six migrations applied in order, `0001_ownership.sql` … `0006_content_reports.sql`
+- `data-api lockout asserted on 7/7 table(s)` — and, checked directly against `pg_class` and
+  `information_schema.role_table_grants` rather than trusting that log line: **7 `rc_*` tables, all
+  with RLS enabled, 0 policies, and 0 `anon`/`authenticated` grants**, which is exactly the P0-18
+  end state. PostgreSQL 17.6.
+- the deploy guard acquired at boot (its failure path logs; success is silent)
+
+`OPENAI_API_KEY` is now set too, so narration has a key.
+
+Original diagnosis follows, because the ambiguity is a property of the URL format and will recur
+for anyone who generates a password containing `@`.
+
 Production deployed cleanly on 2026-07-29 and then refused to connect to Postgres. `app/db.py`
 caught it at boot and kept serving rather than crash-looping (deliberate — a refusal to start is a
 crash loop on Fly), logging on repeat:
@@ -118,12 +134,25 @@ app; leaving it costs nothing.
 **Report back:** added on both.
 
 ### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `in progress`
-**Status 2026-07-29:** all five secrets set by Kamil, and **production is deployed and serving** at
-`https://research-companion.fly.dev` (machine `822716c7e945d8`, `sjc`, volume attached, 512 MB swap
-live, health check passing, `/legal/*` public, `/api/*` rejecting unauthenticated callers,
-`/api/auth/config` correctly reporting the **production** Supabase project). One secret is wrong —
-see H28 — and the allowlist bootstrap below is **deliberately not started yet**, because it must
-happen after the database connects (reason in H28).
+**Status 2026-07-29:** all secrets set, and **production is deployed, serving, and connected to its
+database** at `https://research-companion.fly.dev` (machine `822716c7e945d8`, `sjc`, volume
+attached, 512 MB swap live, health check passing, `/legal/*` public, `/api/*` rejecting
+unauthenticated callers, `/api/auth/config` correctly reporting the **production** Supabase project,
+migrations applied, tenancy lockout verified against the live schema — see H28).
+
+**All that remains of H26 is the allowlist bootstrap below**, which needs one sign-in attempt from
+Kamil. `RC_ALLOWED_USERS` is currently the placeholder `bootstrap`, so the instance is deployed but
+reachable by nobody — which is the correct state to be in while waiting.
+
+**Use email + password for the bootstrap attempt, not the magic link.** Password sign-in returns a
+session directly with no deep-link redirect, so it does not depend on which scheme the installed
+build registers. Signing *up* on the production project will send a confirmation mail through
+Resend, which incidentally gives H25 its first real end-to-end delivery test. The installed dev
+build predates the rebrand and still registers `researchcompanion://auth`; that is allowlisted in
+Supabase alongside the new scheme, so OAuth would work too.
+
+Point the app at production first: **Settings → server URL → `https://research-companion.fly.dev`**
+(it overrides `app.json`'s `extra.apiBaseUrl`, which is the tailnet address).
 
 The app `research-companion` exists and its volume is created: **`rc_data`, 20 GB, `sjc`, encrypted,
 scheduled snapshots on with 5-day retention** (`vol_rnzpyx8xp2j10xpr`, created 2026-07-29). A volume
