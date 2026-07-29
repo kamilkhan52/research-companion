@@ -12,6 +12,31 @@ every agent session.
 
 ---
 
+## What is actually waiting on Kamil, as of 2026-07-29
+
+Everything in this short list blocks the closed track. Everything below it in this file is either
+done or a later milestone. Read this before the H-numbered sections.
+
+1. **His own sign-off on the app.** He has done one production device pass and produced a fix list
+   (tracked in `10-roadmap.md` → "Where this session left off"). Testers are gated on this, and
+   correctly so.
+2. **H13 — Data safety answers** in Play Console. `02-security-and-privacy.md` holds the
+   code-derived inventory the answers must match, and the published policy must match both.
+3. **The two provider keys.** `parallel_api_key` and `firecrawl_api_key` are set locally but not on
+   production, so the agent's web search falls back to scraped DuckDuckGo HTML. He is in
+   `RC_OPERATOR_USERS`, so the route is **in-app Settings → paste → Save**, which takes effect with
+   no machine restart and therefore cannot kill an in-flight job. `FIRECRAWL_API_KEY` /
+   `PARALLEL_API_KEY` as Fly secrets also work but restart the machine.
+4. **The web-search provider decision.** Measured 2026-07-29: the Parallel account is **out of
+   credit**, and its key being present is *worse than absent* — with the key every call 402s, while
+   the keyless anonymous endpoint returns real results. Top it up, drop it, or switch provider. Full
+   memo and the OpenRouter `web`-plugin alternative are in `web-search-provider-state` (agent
+   memory) and the session's scratchpad memo.
+
+**Not blocking, but decided and worth not re-litigating:** the AAB should NOT be rushed — see the
+correction under step 6 of `10-roadmap.md`'s next-steps list. Uploading early freezes the Android
+package name and banks no tester-clock time.
+
 ## Blocking now (M1)
 
 ### H1 — Fix GitHub Actions billing · ✅ `done` (2026-07-24)

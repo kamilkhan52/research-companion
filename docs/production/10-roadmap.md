@@ -11,11 +11,50 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-29)
+## Current position (updated 2026-07-29, end of the production-bring-up session)
 
-**M1 is complete: production is deployed.** `https://research-companion.fly.dev` is live in `sjc`
-with its volume attached and auth enforcing — the origin the AAB, Play's policy URLs and the
-Supabase redirects all needed. The remaining gap is H28 (the database URL), not the deployment.
+**M1 is complete and production is LIVE, running Kamil's real corpus.**
+`https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
+migrations applied, tenancy lockout verified against the live schema (7 `rc_*` tables, RLS on, 0
+policies, 0 `anon`/`authenticated` grants), two accounts allowlisted, five of his projects imported
+with full git history, and his own prompt overrides and model picks in place. H26/H27/H28 are all
+closed.
+
+**M2.5 is code-complete and the app has had its first real device pass.** What now gates the AAB is
+not engineering — it is Kamil's sign-off plus H13. See "Where this session left off" below.
+
+### Where this session left off (read this first)
+
+Merged this session, in order: **#274** deploy findings · **#275** duplicate-signup dead end ·
+**#276** default prior-notes scope · **#277** actionable empty-response error · **#278** stale
+server-URL copy · **#279** CI off Node 20 · **#280** provider-chain defects · **#281** DeepSeek
+default models · **#282** the "paper summary" rename · **#283** sign-in screen cleanup.
+**#284** (Library empty states) was open and in CI at hand-off.
+
+**Still queued from Kamil's device pass**, in his priority order:
+
+1. **Paper-summary visual treatment** — agreed shape: simple, no Figma round. Distinct card, no
+   avatar, pinned to the top, so the summary reads as an artifact rather than a reply.
+2. **Equations overflow the phone width.** Horizontal scroll on the single line is preferred over
+   shrinking to fit.
+3. **Listening cues repeat "Synthesis is underway"** at an unchanged segment count. Never repeat at
+   unchanged progress, and feed prior cues into generation so the phrasing varies too.
+4. **The agent must not draw terminal/ASCII art** — a prompt constraint. Real SVG rendering is a
+   later feature, not this.
+5. **Progressive narration**: make it robust behind the existing setting, prove it on device, and
+   only then flip the default. This may make item 3 redundant — do item 3 anyway, because a
+   tester's first listening session should not be annoying even if the system is replaced later.
+
+**Known and deliberately not fixed**, so nobody rediscovers it as new: the Library's
+"Continue reading" card is a `Pressable` with `IconButton`s nested inside it (dismiss, and the
+pre-existing external-link button). TalkBack/VoiceOver can swallow nested accessible controls. It
+predates #284 and wants one deliberate pass over the pattern rather than a per-button patch.
+
+**The cheap cost work that is NOT done** (from `20-pricing-analysis.md` §8, and the reason the AAB
+should not be rushed): `listening_preview` is measured at **17.3 cues per turn**, each sending
+~11,373 prompt tokens to produce 86 — 4.4× the analysis turn's own prompt. Capping at 6 cues takes
+it from $0.087/turn to $0.0016 at the same product surface. That is the single largest LLM saving
+available and it is config-level. Item 3/5 above is the natural place to land it.
 
 **M2's backend is complete.** M1 was code-complete at #218–#224; M2 then landed in five slices:
 
@@ -214,9 +253,28 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
 5. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
 6. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing
-   at that origin and cleartext removed, which is the last piece of "encrypted in transit" and also
-   starts the 12-tester / 14-continuous-day clock. That clock is the longest-lead item in the plan,
-   so everything above is on its critical path.
+   at that origin and cleartext removed, which is the last piece of "encrypted in transit".
+
+   **Correction, 2026-07-29 — earlier revisions of this file overstated the urgency of this step,
+   and the plan was ordered around the overstatement.** They said the AAB "starts the 12-tester /
+   14-continuous-day clock" and that everything else was therefore on its critical path. Checked
+   against Google's live requirement rather than repeated from memory: the rule is **12 testers who
+   have each been opted in continuously for at least 14 days**, where "opted in" means the person
+   opened the link, accepted, and installed from Play under that Google account. The clock is
+   counted per tester and therefore effectively starts when the **twelfth** tester is in — not at
+   upload.
+
+   So **uploading an AAB with only Kamil on the track banks no clock time whatsoever.** It buys
+   exactly one thing: permanently freezing `io.scholiast.app`. All cost, no benefit, taken early.
+   What actually starts the clock is recruiting the twelve people (H16) — and they cannot sensibly
+   be invited to something that has not passed its own author's sign-off.
+
+   Practical consequence: **do the device-pass fix list and the cheap metering work first.** With
+   no per-user cap, no TTS metering and no web-search metering (§8 of `20-pricing-analysis.md`),
+   twelve testers read against Kamil's personal provider keys with nothing bounding the spend. The
+   default models were pinned to DeepSeek in #281 for exactly this reason, which removes the worst
+   of it; the `listening_preview` cue cap removes most of the rest.
+   Source: <https://support.google.com/googleplay/android-developer/answer/14151465>.
 
 **On tester sequencing (Kamil's call, 2026-07-28):** he wants to test himself before involving
 friends, which is right — a bad first impression from twelve people is expensive. The agreed shape
