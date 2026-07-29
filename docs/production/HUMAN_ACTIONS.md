@@ -395,6 +395,22 @@ Expect to revise once at M3 (usage events) and once at M5 (billing data), since 
 must keep matching the policy.
 **Report back:** approval, or the specific changes you want.
 
+### H24 — Confirm email sign-up is enabled on both Supabase projects · `todo` — 2 minutes
+Password sign-up and reset were added on 2026-07-28. They use the email provider that magic links
+already use, so nothing new needs enabling — but two settings decide whether they work, and both
+live in the dashboard rather than in code. In **each** project (prod `aumedoefxacycwfrlcml`,
+staging `iqsiabkdbczvgyccswcy`) → Authentication → Providers → Email:
+
+- **"Allow new users to sign up" must be ON**, or `signUp` fails for everyone and the create-account
+  screen is dead.
+- **"Confirm email"** is your choice. ON (Supabase's default) is safer and is what the code expects
+  by default: sign-up returns no session, and the app sends the user to the check-inbox screen.
+  OFF signs them straight in. Both paths are implemented and tested; nothing breaks either way.
+
+Also confirm the app's redirect URL is still in the allowlist — password reset uses the same
+`researchcompanion://auth` target as magic links, so if links work, resets will.
+**Report back:** which setting you chose for "Confirm email", so the tester instructions match.
+
 ### H12 — Support contact · ✅ `done` (2026-07-28)
 `thelocalscientist@gmail.com` — not a personal address, already controlled, in use now as the
 privacy contact on all three legal pages and the address the deletion page tells readers to write
