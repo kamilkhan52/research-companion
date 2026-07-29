@@ -44,10 +44,15 @@ def build_context(slug: str) -> str:
                  + store.read_synthesis().strip())
     graph_data = graph_store.load()
 
-    # Which prior per-paper Notes to include: the citation-related selection (compact, the
-    # default), or every paper read so far (prior_notes_scope="all" — richer cross-paper
-    # grounding for a single-project workflow, at the cost of a larger context per turn).
-    scope = (config.load_settings().get("prior_notes_scope") or "related").strip().lower()
+    # Which prior per-paper Notes to include: every paper read so far (the default — richer
+    # cross-paper grounding, at the cost of a larger context per turn), or the compact
+    # citation-related selection (prior_notes_scope="related").
+    # Normalized rather than tested with `== "all"` against a raw value: the branch below is
+    # two-way, so before this an UNRECOGNIZED value silently took the "related" arm — which
+    # happened to match the old default and would now contradict the new one.
+    scope = (config.load_settings().get("prior_notes_scope") or "").strip().lower()
+    if scope not in ("all", "related"):
+        scope = config.DEFAULT_PRIOR_NOTES_SCOPE
     if scope == "all":
         prior = [(p.title, store.read_notes(p.slug))
                  for p in store.list_papers() if p.slug != slug and store.has_notes(p.slug)]

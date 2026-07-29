@@ -568,6 +568,21 @@ def state_dir() -> Path:
 
 # ---- app-global settings (UI-overridable) ----
 
+# Which prior per-paper Notes go into every paper turn's context:
+#   "related" = only citation-related papers (compact)
+#   "all"     = every paper read so far — richer cross-paper grounding, larger context per turn
+#
+# `all` is the default (changed 2026-07-29, Kamil's call). Reading a corpus *as a corpus* is what
+# this app is for, and the citation-graph selection only sees links the graph already knows about,
+# so a paper related by topic rather than by citation was invisible to the very feature meant to
+# situate it. The cost is real — every committed Notes block enters every turn — and it scales with
+# the project, so this is the setting to revisit first if turn cost becomes a problem.
+#
+# Named rather than inlined because the same fallback was written out at FOUR call sites that must
+# agree: here, the assembler that acts on it, and the two settings responses that report it. A
+# default spelled out in four places is one that eventually reports one thing and does another.
+DEFAULT_PRIOR_NOTES_SCOPE = "all"
+
 _ENV_DEFAULTS = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
     # analysis model: reads the paper, writes the scholarly record
@@ -590,10 +605,8 @@ _ENV_DEFAULTS = {
     "semantic_scholar_api_key": (
         os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "") or os.environ.get("S2_API_KEY", "")
     ),
-    # which prior per-paper Notes go into every paper turn's context:
-    #   "related" = only citation-related papers (compact); "all" = every paper read so far
-    #   (richer cross-paper grounding for a single-project workflow; larger context per turn)
-    "prior_notes_scope": os.environ.get("RC_PRIOR_NOTES_SCOPE", "related"),
+    # see DEFAULT_PRIOR_NOTES_SCOPE above for what the two values mean and why "all" is default
+    "prior_notes_scope": os.environ.get("RC_PRIOR_NOTES_SCOPE", DEFAULT_PRIOR_NOTES_SCOPE),
 }
 
 
