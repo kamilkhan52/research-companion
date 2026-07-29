@@ -133,7 +133,29 @@ any device — including the one on Kamil's phone right now. Removing it early b
 app; leaving it costs nothing.
 **Report back:** added on both.
 
-### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `in progress`
+### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · ✅ `DONE 2026-07-29`
+**Complete.** Secrets set, production deployed, and the allowlist bootstrapped. `RC_ALLOWED_USERS`
+now holds **two** production accounts — `kaamilkhaan52@gmail.com`
+(`481cd897-29f9-4368-9453-1ef9efaac407`) and `kamilkhan52@outlook.com`
+(`b8f19707-4b13-4cbb-834a-93cd6d06f489`) — while `RC_OPERATOR_USERS` and `RC_ADOPT_OWNER` hold only
+the first. Keeping the second account non-operator is deliberate: it is the only way to exercise the
+operator-only routes (usage, covers) from the side a tester will actually see.
+
+**The UUIDs came from the Supabase admin API, not from log-scraping.** `GET /auth/v1/admin/users`
+with the service key lists ids and emails directly, which is both more reliable than catching a
+`rejected non-allowlisted` line in a log buffer that only holds a few minutes, and does not depend
+on the user attempting a sign-in first. Prefer it. Then verify the values *inside the running
+process* — `auth.allowed_users()` / `auth.operator_users()` / `tenancy.adopt_owner()` over
+`fly ssh console` — because `flyctl secrets list` shows only names, and a trailing newline or a
+staging-era id looks identical there. That check is what the 2026-07-28 lockout lacked.
+
+Confirmed empirically while doing it: `flyctl secrets set` replaces **per name**, so setting
+`RC_ALLOWED_USERS` alone left `RC_OPERATOR_USERS` and `RC_ADOPT_OWNER` untouched. It is the value of
+a single name that is replaced wholesale, not the secret set.
+
+Original brief follows.
+
+### H26 (original) — Production secrets and bootstrap order
 **Status 2026-07-29:** all secrets set, and **production is deployed, serving, and connected to its
 database** at `https://research-companion.fly.dev` (machine `822716c7e945d8`, `sjc`, volume
 attached, 512 MB swap live, health check passing, `/legal/*` public, `/api/*` rejecting
@@ -203,6 +225,20 @@ this file. Decide which; just do not discover it during the tester round.
 **Report back:** that secrets are set, and I will deploy and verify.
 
 ### H25 — Custom SMTP · ✅ `DONE 2026-07-29` — was the top M2.5 blocker
+**Confirmed delivering in production 2026-07-29.** Resend's own send log is the evidence, and it is
+the place to look first whenever "the email did not arrive":
+
+```
+GET https://api.resend.com/emails   (Authorization: Bearer <key from ~/.resend-key>)
+```
+
+It showed both a Supabase invitation and an app sign-up **"Confirm your email address"** to a fresh
+address, each `last_event: delivered`, from `"Kamil Khan" <team@scholiast.io>`. So the app's own
+sign-up mail path works end to end, not just the dashboard's invite button.
+
+That log is also what proved the sign-up failure below was **not** a delivery problem: the address
+that "never got an email" has no entry at all, because no message was ever handed to Resend.
+
 **Resolved.** `scholiast.io` registered at Cloudflare Registrar (Cloudflare nameservers), Resend
 free tier verified for sending, and the Resend↔Supabase integration connected on the **production**
 project with sender `team@scholiast.io`. Records live and resolving publicly:

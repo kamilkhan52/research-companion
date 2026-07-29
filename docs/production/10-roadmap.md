@@ -194,9 +194,23 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    rather than crash-looping. Worth keeping because it is a property of the URL *format*, not a
    typo: any generated password containing `@` reproduces it.
 
-   H27 is done — `scholiast://auth` is on both Supabase projects. **The one thing left before a
-   build is the allowlist bootstrap** (H26), which needs a single sign-in attempt from Kamil against
-   the production origin.
+   H27 is done, and so is the allowlist bootstrap: two production accounts are allowlisted, one of
+   them deliberately non-operator so the operator-only routes get exercised from a tester's side.
+   M1 is closed.
+
+   **Bootstrapping it surfaced a real client bug, now fixed.** Signing up with an address that
+   already has an account left the user on "Check your inbox" waiting for mail that was never sent.
+   Supabase does not error on a duplicate address — it returns an obfuscated user with an empty
+   `identities` array and sends nothing, so as not to confirm to a stranger that the address is
+   registered. The client read "no session" as "confirmation pending". A tester who signed up
+   twice, or who used Google first and email second, would have hit a dead end with no way
+   forward and nothing in any log to explain it.
+
+   Two things generalise. First, **an auth provider's silent-success path is a failure mode**: the
+   only signals were an absent Resend send and an empty array in a response body. Second, the fix
+   surfaces the duplicate to the user, which nominally defeats Supabase's anti-enumeration — but
+   the empty array is already in the response, so anyone able to call `signUp` can read it.
+   Withholding it in the UI protects nobody and costs a real user their only route in.
 5. **Data safety answers in Play Console** (Kamil, H13). `02-security-and-privacy.md` holds the
    code-derived inventory they must match, and the policy now published must match both.
 6. **Then the AAB and the closed track** — one production-profile EAS build with `app.json` pointing

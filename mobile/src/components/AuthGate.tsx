@@ -290,6 +290,17 @@ function EmailEntry({
         return;   // a success flips the whole gate; a failure surfaces through `error`
       }
       const result = await signUpWithPassword(address, password);
+      if (result === 'already-registered') {
+        // No mail was sent and none is coming, so "check your inbox" would be a lie. Move them to
+        // the sign-in form with the address they typed still in place. The reset hint matters:
+        // an account created by magic link or Google has no password to sign in with yet.
+        onChangeMode('sign-in');
+        setNotice(
+          `${address} already has an account. Sign in below — or use “Forgot your password?” to `
+          + 'set a password if you have only ever used a sign-in link or Google.',
+        );
+        return;
+      }
       if (result === 'confirm-email') {
         // NOT a sign-in. The account exists but is inert until the address is confirmed, so
         // sending the user back to a password field would just reject the password they chose.
