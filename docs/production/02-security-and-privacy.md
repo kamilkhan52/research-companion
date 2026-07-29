@@ -206,8 +206,8 @@ before 2026-07-28 still require audit under the log-retention launch check.
 |---|---|---|
 | Does the app collect or share any required user data types? | **Yes** | Stable |
 | Is all collected data encrypted in transit? | **Not yet for the current source build**, and for one reason only: `mobile/app.json` permits cleartext and defaults to an `http://` Tailscale address, so the Play artifact must point at the production HTTPS origin with cleartext removed. **Corrected 2026-07-28:** an earlier version of this row also cited `safe_fetch` permitting `http://` source/PDF URLs. That does not bear on this question. Google's definition is scoped to the app's own transmission — "encryption in transit to protect the flow of user data **from the end user's device to the server**" — so a backend fetching a third-party document is out of scope. Acting on the old wording would have broken retrieval for http-only academic hosts and bought nothing. Server-side cleartext fetching remains a real security question; it is simply not this question. | Verify the exact AAB points only to HTTPS and exercise every collection path. Do NOT gate this answer on `safe_fetch` |
-| Can users request data deletion? | **No, not yet** | Implement authenticated in-app account deletion plus a public web request path; verify deletion end to end |
-| Is data shared with third parties? | **Unresolved.** The app transfers content to several providers, but Play exempts qualifying service providers and some user-initiated transfers from “sharing.” | Review the current contracts/terms and configurations for every recipient above; answer per data type, not by assumption |
+| Can users request data deletion? | **Yes** (as of 2026-07-28) | Both paths exist and are verified: in-app under Settings → Delete account, run end to end on staging against a real account; and a public web path at `/legal/delete-account`, reachable with no app and no sign-in, which states the steps, what is erased, and what survives. Play requires **both**, and this row was the last thing gating the answer |
+| Is data shared with third parties? | **Narrower, still unresolved.** The app transfers content to several providers, but Play exempts qualifying service providers and some user-initiated transfers from “sharing.” | `llm.PRIVACY_ROUTING` shrinks the discussion-model question to endpoints OpenRouter classifies as no-training and zero-retention, so what remains there is verifying that classification rather than enumerating providers. It does **not** cover narration (OpenAI TTS), web search (Firecrawl/Parallel/DuckDuckGo), or scholarly metadata — those still need the service-provider determination, per data type |
 | Is data sold or used for advertising/marketing? | **No in product code** | Confirm provider terms do not permit sale/cross-customer advertising use |
 
 ### Data types
@@ -232,6 +232,18 @@ optional is valid only when every user can use the app without providing that da
 | Audio files — Other audio files | **No** | — | — | Narration is generated output downloaded to the user, not user-provided audio collected by the app |
 | Web browsing — Web browsing history | **No** | — | — | A user may submit one source URL, but the app does not collect browser history or sites visited |
 | Financial info / Purchase history | **No for M2.5** | — | — | Revisit with RevenueCat/Play Billing in M4–M5 |
+
+**Passwords have no row, and that is not an omission.** Email + password sign-in was added
+2026-07-28, and Play's taxonomy has **no data type for passwords or authentication credentials**
+(checked against Google's Data safety guidance the same day). The account itself is already declared
+under *Email address* and *User IDs*. Do not invent a row for it, and do not read its absence as a
+gap when re-checking this table.
+
+**Content reports are covered by the *Other user-generated content* row**, not a row of their own.
+A report stores a reporter id, a pointer to the reported turn (project, paper, position), a fixed
+reason, and the reporter's free-text note. The note is the only user-authored content in it, and it
+is user-generated content collected by the app. The reported text itself is not copied — it stays in
+the project's git transcript, which the *Other user-generated content* row already covers.
 
 Do not import this table blindly into Play Console. The final declaration describes the sum of all
 versions still distributed on Play, and the exact artifact's SDK graph and runtime configuration
@@ -314,6 +326,8 @@ rules as the privacy policy.
       release. **Still needs H11**: the text is drafted, not approved.
 - [ ] Add the M3 usage-event/reservation and M4–M5 billing changes to this inventory before their
       releases reach Play.
+- [x] Answer "can users request data deletion?" — **yes**, both paths, verified end to end. This was
+      the last blocker on that Data safety answer.
 - [ ] Have the developer approve the privacy policy/terms and make the final Play Console
       attestations (H11/H13).
 
