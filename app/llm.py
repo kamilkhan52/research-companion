@@ -242,7 +242,9 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
             data_policy=_is_data_policy_refusal(r.status_code, r.text))
         if r.status_code not in _RETRY_STATUS:
             break  # fatal: don't count attempts we never made
-    # `attempts` is what we actually tried (1 for a fatal first response, `tries` if exhausted).
+    # `attempts` is what we actually tried (1 if the first HTTP response was fatal, `tries` if
+    # exhausted). "first HTTP response" is deliberate wording: this has nothing to do with a
+    # paper summary, and a find-and-replace over "first response" must not touch it.
     log.error("openrouter failed after %d attempt(s) (model=%s): %s",
               attempts, body.get("model"), last)
     raise LLMError(friendly)

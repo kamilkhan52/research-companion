@@ -2,9 +2,9 @@ import { fireEvent, fireEventAsync, renderAsync, screen } from '@testing-library
 
 import type { ReadingMode } from '@/api/types';
 import {
-  FirstResponseRetrySheet,
-  type FirstResponseRetryConfig,
-} from '@/components/FirstResponseRetrySheet';
+  PaperSummaryRetrySheet,
+  type PaperSummaryRetryConfig,
+} from '@/components/PaperSummaryRetrySheet';
 
 const templates: Record<ReadingMode, string> = {
   balanced: 'Balanced opening',
@@ -13,9 +13,9 @@ const templates: Record<ReadingMode, string> = {
   detailed: 'Detailed opening',
 };
 
-function render(onRetry = jest.fn<void, [FirstResponseRetryConfig]>()) {
+function render(onRetry = jest.fn<void, [PaperSummaryRetryConfig]>()) {
   return renderAsync(
-    <FirstResponseRetrySheet
+    <PaperSummaryRetrySheet
       visible
       onClose={() => {}}
       currentPrompt={templates.balanced}
@@ -42,14 +42,14 @@ test('shows explanatory copy only for the selected prompt type', async () => {
 });
 
 test('keeps model choices tucked away until Change and sends the selected preset', async () => {
-  const onRetry = jest.fn<void, [FirstResponseRetryConfig]>();
+  const onRetry = jest.fn<void, [PaperSummaryRetryConfig]>();
   await render(onRetry);
 
   expect(screen.queryByText('Project default')).toBeNull();
-  await fireEventAsync.press(screen.getByLabelText(/Model for retried first response.*Change/));
+  await fireEventAsync.press(screen.getByLabelText(/Model for retried paper summary.*Change/));
   await fireEventAsync.press(screen.getByText('Pro'));
   await fireEventAsync.press(screen.getByText('Technical'));
-  await fireEventAsync.press(screen.getByRole('button', { name: 'Retry first response' }));
+  await fireEventAsync.press(screen.getByRole('button', { name: 'Retry paper summary' }));
 
   expect(onRetry).toHaveBeenCalledWith({
     prompt: templates.technical,
@@ -59,12 +59,12 @@ test('keeps model choices tucked away until Change and sends the selected preset
 });
 
 test('custom retry exposes a keyboard-aware prompt field and uses balanced mode', async () => {
-  const onRetry = jest.fn<void, [FirstResponseRetryConfig]>();
+  const onRetry = jest.fn<void, [PaperSummaryRetryConfig]>();
   await render(onRetry);
 
   await fireEventAsync.press(screen.getByText('Customize prompt'));
   fireEvent.changeText(screen.getByLabelText('Custom opening prompt'), 'Start with the proof.');
-  await fireEventAsync.press(screen.getByRole('button', { name: 'Retry first response' }));
+  await fireEventAsync.press(screen.getByRole('button', { name: 'Retry paper summary' }));
 
   expect(onRetry).toHaveBeenCalledWith({
     prompt: 'Start with the proof.',

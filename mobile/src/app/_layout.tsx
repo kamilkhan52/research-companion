@@ -36,7 +36,7 @@ import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-c
 import { loadConfig, subscribeBaseUrl } from '@/api/config';
 import { createQueryClient, setActiveQueryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
-import { InitialAnalysisOfferHost } from '@/components/InitialAnalysisOffer';
+import { PaperSummaryOfferHost } from '@/components/PaperSummaryOffer';
 import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
@@ -122,8 +122,8 @@ function ThemedShell() {
         <StackNowPlaying />
         {/* Cross-project duplicate preflight raised by useAddPaper from every add surface. */}
         <ExistingPaperOfferHost />
-        {/* Global "start the first analysis?" offer, raised by useAddPaper from any add site. */}
-        <InitialAnalysisOfferHost />
+        {/* Global "start the paper summary?" offer, raised by useAddPaper from any add site. */}
+        <PaperSummaryOfferHost />
       </View>
     </NavThemeProvider>
   );

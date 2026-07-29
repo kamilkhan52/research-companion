@@ -78,11 +78,11 @@ import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
-  FirstResponseRetrySheet,
+  PaperSummaryRetrySheet,
   OPENING_TEMPLATE_OPTIONS,
-  type FirstResponseRetryConfig,
+  type PaperSummaryRetryConfig,
   type OpeningTemplateKey,
-} from '@/components/FirstResponseRetrySheet';
+} from '@/components/PaperSummaryRetrySheet';
 import {
   LinkHandlerContext,
   Markdown,
@@ -1564,7 +1564,7 @@ function DiscussionThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paths.retry, pid, queryClient, slug, state, stream.run, threadId, transcript]);
 
-  const handleFirstRetry = useCallback((config: FirstResponseRetryConfig) => {
+  const handleFirstRetry = useCallback((config: PaperSummaryRetryConfig) => {
     setFirstRetryOpen(false);
     handleRetry(0, config);
   }, [handleRetry]);
@@ -1680,7 +1680,7 @@ function DiscussionThread({
         if (entry.assistant_index === 0) {
           options.push({
             key: 'retry-first',
-            title: 'Retry first response',
+            title: 'Retry paper summary',
             subtitle: 'Choose prompt type and model',
             icon: 'rotate-ccw',
             section: true,
@@ -2012,7 +2012,7 @@ function DiscussionThread({
       paperSlug={slug}
       reference={reporting}
     />
-    <FirstResponseRetrySheet
+    <PaperSummaryRetrySheet
       visible={firstRetryOpen}
       onClose={() => setFirstRetryOpen(false)}
       currentPrompt={opening.data?.prompt}
@@ -2454,7 +2454,7 @@ export function ComposeFirst({
           <Pressable
             onPress={onPickModel}
             accessibilityRole="button"
-            accessibilityLabel={`Model for first response. ${modelLabel}`}
+            accessibilityLabel={`Model for paper summary. ${modelLabel}`}
             style={({ pressed }) => [
               styles.firstModelRow,
               pressed && { opacity: 0.82 },

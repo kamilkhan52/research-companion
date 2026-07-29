@@ -511,7 +511,7 @@ test('regeneration replaces stale slot audio and queues the new handoff version'
     </ProjectProvider>,
   );
   audio.enqueueJob(
-    { id: 'turn-1', title: 'Paper', text: 'First response.' },
+    { id: 'turn-1', title: 'Paper', text: 'Paper summary.' },
     'audio-job',
     'project-a',
     'chat-job-1',

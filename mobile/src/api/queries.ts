@@ -12,7 +12,7 @@ import {
   requestExistingPaperReuse,
   type AddPaperOutcome,
 } from '@/components/ExistingPaperOffer';
-import { offerInitialAnalysis } from '@/components/InitialAnalysisOffer';
+import { offerPaperSummary } from '@/components/PaperSummaryOffer';
 import { showToast } from '@/ui/Toast';
 
 /** Reactive base URL — re-renders consumers when it changes (e.g. saved in Settings). */
@@ -496,9 +496,9 @@ export function useAddPaper(pid: string) {
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
       if (res.action !== 'added') return;  // reused papers already carry their reading work
-      // Instead of a bare "added" toast, offer to kick the first analysis off in the
+      // Instead of a bare "added" toast, offer to kick the paper summary off in the
       // background (R7.8). The offer sheet has its own "Not now".
-      offerInitialAnalysis({
+      offerPaperSummary({
         pid,
         slug: res.paper.slug,
         title: res.paper.title,

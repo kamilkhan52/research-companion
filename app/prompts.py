@@ -47,10 +47,10 @@ We will read research papers as research academics. This involves:
 - Be critical. If something does not seem sound in light of our assumptions or prior
   discussions, point it out.
 
-The first response after the paper is shared should be a comprehensive summary of the problem
-definition, solution/contributions, methodology, experimental setup, and evaluation.
+The paper summary — your first turn after the paper is shared — should comprehensively cover the
+problem definition, solution/contributions, methodology, experimental setup, and evaluation.
 When the supplied project context shows that later papers in this project cite the current
-paper, the first response should also explain how those papers use it and what that reveals about
+paper, the paper summary should also explain how those papers use it and what that reveals about
 the current paper's role in the project. Distinguish substantive use from background citation and
 do not infer relationships beyond the supplied citation evidence.
 
@@ -305,7 +305,7 @@ _OPENING_MESSAGE = (
     "[BEGIN PAPER FULL TEXT]\n"
     "{full_text}\n"
     "[END PAPER FULL TEXT]\n\n"
-    "Produce your first response now: the comprehensive opening summary as specified in the "
+    "Produce the paper summary now: the comprehensive opening account specified in the "
     "reading method (problem definition, solution/contributions, methodology, experimental "
     "setup, and evaluation), situating the paper relative to the others on our list. "
     "If the reading context includes papers in this project that cite this work, explicitly "

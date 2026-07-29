@@ -57,7 +57,7 @@ For every scenario:
     - UX follow-up: remove the explanatory subtitle about connecting the message to the paper/previous discussion; keep only a short, truthful activity phrase.
     - Implementation follow-up: confirm whether the subtitle is hardcoded. Prefer compact state/tool-driven templates; a model-generated fallback should be tightly bounded if used.
 
-- [x] **D03 — First response cannot draft Notes without permission** ([#196](https://github.com/kamilkhan52/research-companion/pull/196))
+- [x] **D03 — Paper summary cannot draft Notes without permission** ([#196](https://github.com/kamilkhan52/research-companion/pull/196))
   - Start a new paper discussion and let the opening response finish.
   - It must remain an ordinary discussion response even if the model emits Notes-like sections.
   - Then choose Finish reading and confirm that an explicitly requested Notes proposal still opens
@@ -125,7 +125,7 @@ For every scenario:
     - Product direction: use one compact, uniform Add entry point—preferably a round + button opening Add options—and consider replacing the standalone Discover tab with this Add flow.
     - Remove oversized “Have a specific paper? Add by name or link?” surfaces wherever they appear.
     - Explicit add-by-link/title flow should navigate directly to the live discussion after analysis starts. Reopening an already-started analysis must show its running state/thread, never the Reading Mode start screen again.
-    - The first-response bubble begins with a preferred rounded shape but ends with a squarer presentation; preserve the initial visual treatment throughout.
+    - The paper-summary bubble begins with a preferred rounded shape but ends with a squarer presentation; preserve the initial visual treatment throughout.
 
 - [x] **D10 — Hierarchical sort directions remain clean** ([#183](https://github.com/kamilkhan52/research-companion/pull/183))
   - Open each sort category and its second-level directions, then Back out without changing it.
@@ -154,7 +154,7 @@ For every scenario:
   - **Result:** FAIL
   - **Notes / evidence:**
     - Canonical-title approval is not reflected immediately in the currently open discussion.
-    - After the first response was generated and the title update approved, the paper list eventually showed the new title; reopening the paper then showed Reading Mode selection and the existing thread appeared lost/detached.
+    - After the paper summary was generated and the title update approved, the paper list eventually showed the new title; reopening the paper then showed Reading Mode selection and the existing thread appeared lost/detached.
     - Manual Rename preserves the discussion/history, but mid-string editing is broken: deleting or typing in the middle moves the cursor one position left after every keypress. Editing from the end behaves normally.
     - After intentionally keeping a manually renamed title that differs from the source, every discussion open prompts to change it back. “Keep it” should persist once and suppress the same future prompt.
     - Delete availability from both menu and swipe was not explicitly re-verified during this pass.
@@ -272,13 +272,13 @@ For every scenario:
   - **Notes / evidence:**
     - Developer graph rebuild and Labs empty-state behavior worked.
 
-- [x] **D23 — First-response Retry exposes prompt and model configuration** ([#185](https://github.com/kamilkhan52/research-companion/pull/185))
-  - Retry the first response, change reading mode and optionally the one-shot model, and generate.
+- [x] **D23 — Paper-summary Retry exposes prompt and model configuration** ([#185](https://github.com/kamilkhan52/research-companion/pull/185))
+  - Retry the paper summary, change reading mode and optionally the one-shot model, and generate.
   - The compact sheet should reveal descriptions/options only when needed. Switching retry branches
     should restore each branch's prompt/mode; later-response retry must not rewrite first-turn setup.
   - **Result:** PASS
   - **Notes / evidence:**
-    - First-response Retry, reading-mode/model configuration, branch restoration, and later-response retry behavior worked.
+    - Paper-summary Retry, reading-mode/model configuration, branch restoration, and later-response retry behavior worked.
 
 - [x] **D24 — Independent threads on one paper** ([#187](https://github.com/kamilkhan52/research-companion/pull/187))
   - Start a new thread with arbitrary text, switch between it and main, and run replies/tool use.
@@ -308,16 +308,16 @@ For every scenario:
     - Append the structured comments to the outgoing user message on the backend so the agent receives the same context without cluttering typed text.
 
 - [x] **D27 — Figures prefetch and inline cards** ([#176](https://github.com/kamilkhan52/research-companion/pull/176))
-  - Fetch a figure-rich arXiv paper and start its first analysis.
+  - Fetch a figure-rich arXiv paper and start its paper summary.
   - One or two genuinely central `Figure N` references should render the matching cached card near
     first mention, with image/caption/source. Missing or failed assets must degrade cleanly.
   - **Result:** FAIL
   - **Notes / evidence:**
-    - Inline figure cards can render correctly, and after manually changing the custom prompt the first response did include figures.
+    - Inline figure cards can render correctly, and after manually changing the custom prompt the paper summary did include figures.
     - Default prompt coverage appears insufficient. The observed custom prompt said: “Figures: Always note and highlight any figures referenced in the section you are discussing so I can go the paper and look at the figure for reference.” That wording likely asks the model to mention figure references rather than produce UI-renderable figure cards.
-    - Ensure all summary/first-response prompts clearly request 1–3 central figures when available and specify the exact UI-renderable figure-reference format.
+    - Ensure all summary/paper-summary prompts clearly request 1–3 central figures when available and specify the exact UI-renderable figure-reference format.
     - Figure cards currently appear after the prose that discusses the figure. Prefer placing the card immediately before, or exactly at, the first figure discussion.
-    - Ask the implementation agent to verify prompt correctness and coverage across all first-response/summary paths.
+    - Ask the implementation agent to verify prompt correctness and coverage across all paper-summary/summary paths.
     - Product naming: call the first paper response **Summary** everywhere: backend, docs, code, frontend, and user-facing agent responses.
 
 

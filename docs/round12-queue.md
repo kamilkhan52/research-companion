@@ -24,7 +24,7 @@ Update the Status column as items land.
 
 | # | Item | Source | Status |
 |---|------|--------|--------|
-| R12.1 | Figure-card visibility: prompt coverage on all first-response/summary paths, explicit "show figures" handling, native-arXiv HTML image-path fix; card placement at/before first mention; rename first response to **Summary** everywhere | D27 + in-flight work | in progress |
+| R12.1 | Figure-card visibility: prompt coverage on all paper-summary/summary paths, explicit "show figures" handling, native-arXiv HTML image-path fix; card placement at/before first mention; rename paper summary to **Summary** everywhere | D27 + in-flight work | in progress |
 | R12.2 | Resuming a paper (Continue Reading or any entry) opens the **last-opened thread**, not the first | usage notes | queued |
 | R12.3 | **Hide** action on recommended papers so Discover recommendations stay relevant | usage notes | queued |
 | R12.4 | Default sort = **Last Interacted, most recent first**; persist per-project sort (D10 note) | usage notes + D10 | queued |

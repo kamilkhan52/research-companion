@@ -13,7 +13,7 @@ shipped R12.13 behavior. Historical file/line references remain useful root-caus
 
 Four coupled sub-issues, from most to least important:
 
-1. **Live discussion detaches on canonical-title approval.** After the first response generated
+1. **Live discussion detaches on canonical-title approval.** After the paper summary generated
    and the title update was approved, the Library eventually showed the new title, but reopening
    the paper showed the **Reading Mode selection** (ComposeFirst) and the existing thread
    "appeared lost/detached."

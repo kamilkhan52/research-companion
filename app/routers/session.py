@@ -114,7 +114,7 @@ class RequestChangesReq(DeliveryReq):
 class RetryReq(DeliveryReq):
     slug: str
     assistant_index: int
-    # The first response can be retried with the same prompt-type/model choices as session
+    # The paper summary can be retried with the same prompt-type/model choices as session
     # start. These are branch-scoped; later-turn retries cannot change the opening context.
     prompt: str | None = None
     mode: Literal["balanced", "background", "technical", "detailed"] | None = None
@@ -383,7 +383,7 @@ def _get_session(slug: str, thread_id: str):
 @project_router.get("/opening_draft/{slug}")
 def opening_draft(slug: str, thread_id: str = sessions.MAIN_THREAD):
     """The editable first-prompt + default model for the compose-first screen. Returns the
-    session's edited opening if one exists (for first-response retry), else the default."""
+    session's edited opening if one exists (for paper-summary retry), else the default."""
     with sessions.thread_scope(_thread_id(thread_id)):
         model = config.load_settings().get("model")
         stored = sessions.get_opening(slug)
@@ -484,14 +484,14 @@ def start_paper(req: StartReq):
 
 
 class RetrievalJobReq(StartReq):
-    # R7.8: chain the paper's FIRST analysis onto a successful retrieval, so "add paper →
+    # R7.8: chain the paper's PAPER SUMMARY onto a successful retrieval, so "add paper →
     # analyzed and narrated" is one durable server-side flow the user can walk away from.
     auto_analyze: bool = False
     mode: Literal["balanced", "background", "technical", "detailed"] | None = None
     delivery_mode: Literal["reading", "listening"] = "reading"
 
 
-def _first_analysis_hook(req: RetrievalJobReq):
+def _paper_summary_hook(req: RetrievalJobReq):
     """The after-retrieval continuation: start the session with the chosen Reading Mode's
     opening template and spawn the normal chat turn job. Runs inside the retrieval worker
     (project contextvar rebound by the registry) or, for an already-retrieved paper, on the
@@ -520,9 +520,9 @@ def _first_analysis_hook(req: RetrievalJobReq):
 @project_router.post("/retrieval/jobs")
 def start_retrieval_job(req: RetrievalJobReq):
     """Start or join connection-independent paper retrieval and return immediately. With
-    auto_analyze, a successful retrieval flows straight into the first analysis turn; the
+    auto_analyze, a successful retrieval flows straight into the paper summary turn; the
     spawned chat job's id lands on the retrieval snapshot (`analysis_job_id`)."""
-    hook = _first_analysis_hook(req) if req.auto_analyze else None
+    hook = _paper_summary_hook(req) if req.auto_analyze else None
     try:
         # start_retrieval owns the whole chain: worker-side on a fresh job, attach-on-join for
         # a retrieval already running, and inline for the already-retrieved short-circuit.
@@ -756,7 +756,7 @@ def _prep_retry(req: RetryReq) -> None:
         if req.assistant_index != 0:
             raise HTTPException(
                 status_code=400,
-                detail="Opening prompt and reading mode can only change on the first response.",
+                detail="Opening prompt and reading mode can only change for the paper summary.",
             )
         context = {
             "opening": req.prompt if req.prompt is not None else sessions.get_opening(req.slug),
@@ -791,7 +791,7 @@ def _prep_request_changes(req: RequestChangesReq) -> None:
 
 @project_router.post("/chat/start_stream")
 def chat_start_stream(req: ChatStartReq):
-    """Fire the first response for any chat (paper or review) with the edited opening prompt
+    """Fire the paper summary for any chat (paper or review) with the edited opening prompt
     and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
     thread_id = _thread_id(req.thread_id)
     with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \

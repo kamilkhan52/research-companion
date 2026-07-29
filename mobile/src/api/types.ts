@@ -154,7 +154,7 @@ export interface ProjectState {
 export type ReadingMode = 'balanced' | 'background' | 'technical' | 'detailed';
 
 /** Snapshot of a background paper-retrieval job (POST/GET /retrieval/jobs). With
- *  auto_analyze, a successful retrieval chains into the first analysis turn and the spawned
+ *  auto_analyze, a successful retrieval chains into the paper summary turn and the spawned
  *  chat job's id appears as analysis_job_id (R7.8). */
 export interface RetrievalJob {
   id: string;

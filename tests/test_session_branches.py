@@ -84,7 +84,7 @@ def test_repeated_retries_accumulate_ordinals(temp_project):
     assert sessions.transcript(slug)[-1]["canonical"] == "v2"
 
 
-def test_first_response_branches_restore_their_opening_prompt_and_mode(temp_project):
+def test_paper_summary_branches_restore_their_opening_prompt_and_mode(temp_project):
     slug = "opening"
     sessions.start_session(slug, "Paper", opening="Original opening")
     sessions.set_reading_mode(slug, "background")
@@ -108,7 +108,7 @@ def test_first_response_branches_restore_their_opening_prompt_and_mode(temp_proj
     assert sessions.get_reading_mode(slug) == "technical"
 
 
-def test_failed_first_response_retry_rolls_back_opening_context(temp_project):
+def test_failed_paper_summary_retry_rolls_back_opening_context(temp_project):
     slug = "opening"
     sessions.start_session(slug, "Paper", opening="Original opening")
     _assistant(slug, "original response")
@@ -124,7 +124,7 @@ def test_failed_first_response_retry_rolls_back_opening_context(temp_project):
     assert sessions.get_reading_mode(slug) == "balanced"
 
 
-def test_retry_request_can_change_context_only_for_the_first_response(temp_project):
+def test_retry_request_can_change_context_only_for_the_paper_summary(temp_project):
     slug = "opening"
     sessions.start_session(slug, "Paper", opening="Original opening")
     _assistant(slug, "original response")

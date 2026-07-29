@@ -474,7 +474,7 @@ export function Discussion({ slug, onNavigate }: Props) {
         <div className="btn-row"><button className="btn primary" onClick={() => {
           setView('chat');
           void submitJob(() => startJob(activePid!, { slug, prompt: draft.prompt, mode: readingMode, ...delivery }));
-        }} disabled={working}>Generate first response</button></div>
+        }} disabled={working}>Generate paper summary</button></div>
       </div></div>
     );
   }

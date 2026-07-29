@@ -31,7 +31,7 @@ class RetrievalJob(Job):
     matched_title: str | None = None
     arxiv_id: str | None = None
     source: str | None = None
-    # Auto-analysis chain (R7.8): when the caller asked for a first analysis, the chat job it
+    # Auto-analysis chain (R7.8): when the caller asked for a paper summary, the chat job it
     # spawned after successful retrieval — pollers follow this id to know when the opening
     # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
     analysis_job_id: str | None = None
