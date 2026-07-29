@@ -147,7 +147,32 @@ provider's verification records (SPF/DKIM) rather than pointing it at Fly at all
 
 *Also worth knowing:* "Paradigm" is crowded commercially, so the Play **store listing name** may
 need to differ from the internal codename. That is a launch-time decision, not a blocker now.
-**Report back:** the domain, once purchased.
+**DECIDED 2026-07-29: buy `scholiast.io` at Cloudflare Registrar, and rebrand the app to
+Scholiast.** The domain is not only for email — it becomes the web app's origin too, which is why a
+`.io` was accepted despite the ccTLD question (see the roadmap's step 3 for the full name-selection
+reasoning, so it is not re-litigated).
+
+**Cloudflare Registrar, for one decisive reason:** its API tokens can be scoped to
+`Zone → DNS → Edit` on a single zone, so the credential handed to an agent is structurally incapable
+of transferring or deleting the domain. Porkbun's key is an account key with a domain allowlist —
+it can change nameservers and start a transfer. Namecheap still gates API access behind 20+ domains
+or $50 on account and issues an account-wide key. Route 53 scopes well via IAM but costs ~80% more.
+Cloudflare's "must use our nameservers" requirement is the point here, not a drawback: it guarantees
+the zone lives where the scoped API reaches.
+
+Kamil's steps: (1) create the account and **verify the email** — ICANN suspends domains that skip
+it; (2) Domain Registration → Register Domains → buy `scholiast.io`, expect ~$35–45/yr at cost;
+(3) My Profile → API Tokens → Create Token → "Edit zone DNS" template, narrowed to
+`Include → Specific zone → scholiast.io`; **write the token to `~/.cloudflare-token` with
+`umask 077` rather than pasting it into a chat**, and report only the Zone ID, which is not secret;
+(4) resend.com → free account → Domains → Add Domain → `send.scholiast.io`; (5) Resend →
+Integrations → **Connect to Supabase**, which writes the SMTP settings into Supabase directly.
+
+The agent then creates SPF/DKIM/DMARC via the Cloudflare API, polls Resend until the domain reports
+verified, and later points the apex at Fly with TLS. Use the `send.` subdomain, not the apex, so
+auth-mail reputation stays separate from anything sent later.
+
+**Report back:** the Zone ID, and that the token file exists.
 
 ### H3 — Play developer account situation · ✅ `answered` — **the tester requirement applies**
 Account created 2026-07, type **Personal**, currently pending verification.
