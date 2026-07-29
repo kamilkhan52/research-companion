@@ -39,6 +39,11 @@ export interface ThemePalette {
   googleButtonBg: string;
   googleButtonBorder: string;
   googleButtonText: string;
+  /** Plate behind the Google "G". Must match `googleButtonBg` or be `transparent` — anything
+   *  else renders as a visible patch around the mark. It was `#FFFFFF` in all three palettes,
+   *  which is invisible on the white light-theme button and a white square on the dark one
+   *  (`#131314`). The logo asset is RGBA with a real alpha channel, so the dark themes need no
+   *  plate at all, which is also what Google's own dark button specifies. */
   googleLogoBg: string;
   // Washes/tints that used to live as inline rgba literals (T.5 promotion — the literal
   // guard keeps them here). Wash = a soft fill behind selected/accented content.
@@ -72,7 +77,7 @@ const dim: ThemePalette = {
   googleButtonBg: '#131314',
   googleButtonBorder: '#8E918F',
   googleButtonText: '#E3E3E3',
-  googleLogoBg: '#FFFFFF',
+  googleLogoBg: 'transparent',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
   violetWash: 'rgba(155, 138, 251, 0.14)',
@@ -102,7 +107,7 @@ const black: ThemePalette = {
   googleButtonBg: '#131314',
   googleButtonBorder: '#8E918F',
   googleButtonText: '#E3E3E3',
-  googleLogoBg: '#FFFFFF',
+  googleLogoBg: 'transparent',
   mintWash: 'rgba(101, 214, 180, 0.10)',
   mintWashStrong: 'rgba(101, 214, 180, 0.14)',
   violetWash: 'rgba(155, 138, 251, 0.14)',

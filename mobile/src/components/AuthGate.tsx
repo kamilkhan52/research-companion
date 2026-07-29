@@ -26,6 +26,18 @@ import { Button, Card, Icon, IconButton, Screen, Text, type IconName } from '@/u
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 
+/** Whether to offer the "change server" controls at all.
+ *
+ *  Kamil's device-pass note: these are development affordances — pointing the app at localhost,
+ *  the tailnet, or a quick tunnel — and a released build has exactly one correct server baked
+ *  into app.json. Showing a reader a server-URL field invites them to break their own install.
+ *
+ *  Gated on `__DEV__`, a BUILD-time constant, and deliberately not on the backend's `dev` flag
+ *  from /api/health: that flag can only be read from a server we can reach, and the one moment
+ *  a server control could matter is when we cannot reach one. A server-provided gate would be
+ *  unreadable in exactly the state it is meant to govern. */
+const SERVER_TOOLS_VISIBLE = __DEV__;
+
 type AuthFlow = 'welcome' | 'sign-in' | 'create-account' | 'check-inbox';
 type EntryFlow = Extract<AuthFlow, 'sign-in' | 'create-account'>;
 
@@ -190,12 +202,14 @@ function Welcome({
   return (
     <AuthCanvas>
       <View style={styles.welcomeContent}>
-        <IconButton
-          name="settings"
-          accessibilityLabel="Server settings"
-          onPress={onChangeServer}
-          style={styles.welcomeServerButton}
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <IconButton
+            name="settings"
+            accessibilityLabel="Server settings"
+            onPress={onChangeServer}
+            style={styles.welcomeServerButton}
+          />
+        ) : null}
         <Brand />
         <View style={styles.welcomeCopy}>
           <Text variant="editorial" style={styles.heroTitle}>
@@ -525,7 +539,6 @@ function CheckInbox({
   const styles = useThemedStyles(makeStyles);
   const { error, retry, signInWithMagicLink } = useAuth();
   const [resending, setResending] = useState(false);
-  const [mailError, setMailError] = useState<string | null>(null);
 
   async function resend() {
     setResending(true);
@@ -533,15 +546,6 @@ function CheckInbox({
       await signInWithMagicLink(email);
     } finally {
       setResending(false);
-    }
-  }
-
-  async function openEmail() {
-    setMailError(null);
-    try {
-      await Linking.openURL('mailto:');
-    } catch {
-      setMailError('Could not open an email app on this device.');
     }
   }
 
@@ -573,12 +577,10 @@ function CheckInbox({
         Open the link in the email to verify your account and continue.
       </Text>
 
-      <Button
-        title="Open email app"
-        icon="mail"
-        onPress={() => void openEmail()}
-        style={{ marginTop: space.xl }}
-      />
+      {/* No "Open email app" button. `Linking.openURL('mailto:')` is a COMPOSE intent, not an
+          inbox one — on Outlook it opened a blank new-message screen, which is the opposite of
+          what someone waiting for a verification link needs. Android exposes no portable
+          open-my-inbox intent, so the honest move is to not offer the button at all. */}
 
       <View style={styles.actionList}>
         <ActionRow
@@ -594,25 +596,21 @@ function CheckInbox({
           subtitle="Change the address"
           onPress={onDifferentEmail}
         />
-        <ActionRow
-          icon="external-link"
-          title="Change server"
-          subtitle="Use another Scholiast server"
-          onPress={onChangeServer}
-          last
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <ActionRow
+            icon="external-link"
+            title="Change server"
+            subtitle="Use another Scholiast server"
+            onPress={onChangeServer}
+            last
+          />
+        ) : null}
       </View>
 
-      <InfoCard
-        icon="shield"
-        title="Secure and private"
-        body="Links expire quickly and can only be used once."
-        accent={t.mint}
-      />
 
-      {error || mailError ? (
+      {error ? (
         <Text variant="caption" color={t.danger} style={styles.error}>
-          {mailError ?? error}
+          {error}
         </Text>
       ) : null}
 
@@ -646,12 +644,14 @@ function UnsupportedServer({ onChangeServer }: { onChangeServer: () => void }) {
           using Supabase sign-in, or run the backend without authentication.
         </Text>
         <Button title="Check again" onPress={retry} />
-        <Button
-          title="Change server"
-          variant="ghost"
-          onPress={onChangeServer}
-          style={{ marginTop: space.md }}
-        />
+        {SERVER_TOOLS_VISIBLE ? (
+          <Button
+            title="Change server"
+            variant="ghost"
+            onPress={onChangeServer}
+            style={{ marginTop: space.md }}
+          />
+        ) : null}
       </View>
     </AuthCanvas>
   );

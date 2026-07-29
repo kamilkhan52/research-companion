@@ -420,6 +420,33 @@ test('a new account that needs confirmation is sent to the inbox, not left at th
   await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
 });
 
+test('the inbox screen offers no "open email app" button and no security reassurance card', async () => {
+  // Both removed after Kamil's device pass.
+  //
+  // "Open email app" ran `Linking.openURL('mailto:')`, which is a COMPOSE intent, not an inbox
+  // one — on Outlook it opened a blank new message, the opposite of what someone waiting for a
+  // verification link needs. Android exposes no portable open-my-inbox intent, so the button
+  // cannot be fixed, only removed.
+  //
+  // "Secure and private / Links expire quickly" was reassurance nobody asked for on the screen
+  // where the reader is trying to do one thing.
+  signUpWithPassword.mockResolvedValue('confirm-email');
+  const view = await renderGate();
+  fireEvent.press(view.getByText('Get started'));
+  fireEvent.changeText(view.getByPlaceholderText('name@example.com'), 'reader@example.com');
+  fireEvent.changeText(
+    view.getByPlaceholderText(`At least ${MIN_PASSWORD_LENGTH} characters`), 'a good password');
+  fireEvent.press(view.getByText('Create account'));
+
+  // Guard: assert we are actually ON the screen, so the three absence checks below cannot pass
+  // simply because the render never got there.
+  await waitFor(() => expect(view.getByText('Check your inbox')).toBeTruthy());
+
+  expect(view.queryByText('Open email app')).toBeNull();
+  expect(view.queryByText('Secure and private')).toBeNull();
+  expect(view.queryByText(/Links expire quickly/)).toBeNull();
+});
+
 test('an address that already has an account is moved to sign-in, never to the inbox screen', async () => {
   // The failure this pins: Supabase sends NO mail for a duplicate address, so "Check your inbox"
   // is a dead end with no way forward. It is how the first production sign-up attempt failed.
