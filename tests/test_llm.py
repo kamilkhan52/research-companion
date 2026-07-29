@@ -98,6 +98,42 @@ def test_complete_empty_response_raises_with_reasoning_hint(key, monkeypatch):
     assert "4096 tokens on hidden reasoning" in str(ei.value)
 
 
+def test_the_empty_response_advice_is_something_a_reader_can_actually_do(key, monkeypatch):
+    """The message used to say "raise max_tokens or lower the model's reasoning effort".
+
+    `max_tokens` is a hardcoded argument in this module and reasoning effort is not a setting at
+    all, so both were instructions to adjust controls that do not exist. Asserting the new wording
+    alone would not stop the old advice coming back alongside it, so this asserts the absence too.
+    """
+    payload = _one_choice("", finish_reason="length",
+                          usage={"completion_tokens_details": {"reasoning_tokens": 8000}})
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, payload))
+    with pytest.raises(llm.LLMError) as ei:
+        llm.complete([{"role": "user", "content": "hi"}], operation="narration")
+    msg = str(ei.value)
+
+    assert "max_tokens" not in msg          # not reachable from the app
+    assert "reasoning effort" not in msg    # not a setting either
+    assert "Settings" in msg
+    # And it must name the control that actually governs THIS call, not the analysis model.
+    assert "Narration model" in msg
+
+
+def test_the_empty_response_names_the_setting_for_the_operation_that_failed(key, monkeypatch):
+    """One generic "pick a different model" sent readers to the wrong control: narration and the
+    listening preview have their own model pickers, and changing the analysis model does nothing
+    for either."""
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, _one_choice("")))
+    cases = {"narration": "Narration model",
+             "listening_preview": "Listening-preview model",
+             "analysis": "Analysis model",
+             "graph_extraction": "Analysis model"}   # unlisted operations use the analysis model
+    for operation, expected in cases.items():
+        with pytest.raises(llm.LLMError) as ei:
+            llm.complete([{"role": "user", "content": "hi"}], operation=operation)
+        assert expected in str(ei.value), f"{operation} should point at {expected!r}"
+
+
 def test_complete_allow_empty_returns_empty_string(key, monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, _one_choice("")))
     assert llm.complete([{"role": "user", "content": "hi"}], allow_empty=True) == ""
