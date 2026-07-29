@@ -28,6 +28,7 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.eligibleListeningHandoffs', '["job-a"]'],
     ['rc.handledAudioHandoffs', '["job-b"]'],
     ['rc.playbackSnapshot.v1', '{"title":"private narration"}'],
+    ['rc.continueCard.dismissed.v1', 'project-a memory-paper'],
     ['rc.baseUrl', 'https://staging.example.com'],
     ['rc.themeMode', 'light'],
     ['rc.layoutDensity', 'tight'],
@@ -47,6 +48,7 @@ test('deletion purges account research state but keeps device preferences and se
     'rc.eligibleListeningHandoffs',
     'rc.handledAudioHandoffs',
     'rc.playbackSnapshot.v1',
+    'rc.continueCard.dismissed.v1',
   ])).toEqual([
     ['rc.activeProject', null],
     ['rc.draft.v1:project-a:paper', null],
@@ -55,6 +57,7 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.eligibleListeningHandoffs', null],
     ['rc.handledAudioHandoffs', null],
     ['rc.playbackSnapshot.v1', null],
+    ['rc.continueCard.dismissed.v1', null],
   ]);
   expect(Image.clearMemoryCache).toHaveBeenCalledTimes(1);
   expect(Image.clearDiskCache).toHaveBeenCalledTimes(1);

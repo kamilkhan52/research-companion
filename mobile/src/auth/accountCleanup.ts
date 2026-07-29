@@ -45,6 +45,9 @@ const ACCOUNT_KEYS = new Set([
   // AudioProvider normally removes this first; keep it here too so a player reset/storage failure
   // cannot leave private narration text, URLs, and titles behind.
   'rc.playbackSnapshot.v1',
+  // Which paper's resume card the reader dismissed — a project id and a paper slug, i.e. the
+  // deleted account's research state, which is exactly what this purge is for.
+  'rc.continueCard.dismissed.v1',
 ]);
 const ACCOUNT_PREFIXES = [
   'rc.draft.v1:',

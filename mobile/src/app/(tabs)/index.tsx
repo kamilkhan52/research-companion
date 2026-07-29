@@ -687,7 +687,16 @@ function ContinueCard({
           <IconButton
             name="x"
             accessibilityLabel="Dismiss continue reading"
-            onPress={onDismiss}
+            onPress={(event) => {
+              // Required, not defensive: the whole card is a Pressable that navigates, so without
+              // this the X both dismisses AND opens the paper it just dismissed. The sibling
+              // external-link button below already does exactly this for the same reason.
+              // Optional-chained because a press can arrive without an event object (React
+              // Native Testing Library's `fireEvent.press` does exactly that), and the dismissal
+              // must not throw just because nothing needed stopping.
+              event?.stopPropagation?.();
+              onDismiss();
+            }}
           />
         </View>
         <View style={styles.continueBody}>
