@@ -33,6 +33,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from types import MappingProxyType
 
 import httpx
 
@@ -90,6 +91,40 @@ def _empty_response_message(finish_reason, usage: dict) -> str:
             "Try again, or pick a different model in Settings.")
 
 
+# The routing constraint that makes the privacy policy true.
+#
+# Every request carries a paper's full text, the reader's questions, and their notes. Without a
+# `provider` block OpenRouter may route that to ANY endpoint eligible to serve the model — the
+# provider-like prefix in a model id ("anthropic/", "openai/") names the model's author, not the
+# organisation that receives the payload. Measured 2026-07-28: `openai/gpt-5.6-sol` routed to
+# OpenAI unconstrained and to Azure constrained, and `deepseek/deepseek-v4-pro` to StreamLake and
+# SiliconFlow respectively. So an unconstrained request cannot honestly be described in a privacy
+# policy at all.
+#
+# The two keys are NOT the same guarantee and both are needed: `data_collection: "deny"` excludes
+# providers that may store or train on inputs, while `zdr` requires zero retention at rest — a
+# provider can satisfy one and fail the other (30-day logs, no training).
+#
+# Deliberately not env-configurable. `/legal/privacy` states this as an unconditional promise, and
+# a flag that relaxes it would make the published policy false on whichever deployment set it.
+# Cost, measured across the twelve favourite families: eleven still resolve; only Qwen Max has no
+# conforming endpoint, and it was dropped from the favourites for that reason.
+#
+# Read-only because this one object would otherwise be shared by reference into every request body
+# and into `agent_harness`'s model settings. Nothing mutates it today; a mapping proxy means nothing
+# can start to, quietly, and weaken the promise for every subsequent request in the process.
+#
+# Callers must go through `routing_payload()`. A mapping proxy is NOT JSON-serializable, so putting
+# this object into a request body directly raises `TypeError: Object of type mappingproxy is not
+# JSON serializable` — on every LLM call in the app. Verified before shipping the immutability.
+PRIVACY_ROUTING = MappingProxyType({"data_collection": "deny", "zdr": True})
+
+
+def routing_payload() -> dict:
+    """A fresh, JSON-serializable copy of `PRIVACY_ROUTING` for one request body."""
+    return dict(PRIVACY_ROUTING)
+
+
 def _build_body(messages: list[dict], model: str | None, default_model: str | None,
                 temperature: float, max_tokens: int, reasoning: dict | None,
                 stream: bool) -> dict:
@@ -98,6 +133,7 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "provider": routing_payload(),
         # Ask OpenRouter to return authoritative token counts + dollar cost in `usage` (for
         # streaming it arrives in a final usage-only chunk). See app/usage.py.
         "usage": {"include": True},
@@ -109,11 +145,27 @@ def _build_body(messages: list[dict], model: str | None, default_model: str | No
     return body
 
 
-def _friendly_http_error(status: int, model: str | None) -> str:
+def _is_data_policy_refusal(status: int, text: str) -> bool:
+    """Did OpenRouter refuse because `PRIVACY_ROUTING` left no eligible endpoint?
+
+    It answers 404 with "No endpoints found matching your data policy", which is indistinguishable
+    by status from the unknown-model 404 — and telling a reader their model "doesn't exist" when it
+    exists but has no zero-retention provider sends them to fix the wrong thing.
+
+    Matches the response text; never echoes it. An upstream body can quote prompts or paper text,
+    which is why neither this message nor the logs include it.
+    """
+    return status == 404 and "data policy" in text.lower()
+
+
+def _friendly_http_error(status: int, model: str | None, *, data_policy: bool = False) -> str:
     """The user-facing message for an OpenRouter HTTP failure. Quota, key, and rate problems
     read in the app's voice with the action to take. Provider payloads are deliberately excluded
     from both this message and logs: an upstream error can echo prompts or paper text."""
     name = model or "the selected model"
+    if data_policy:
+        return (f"No provider for {name} meets this app's privacy requirement — that your paper "
+                "text is never retained or trained on. Pick a different model in Settings.")
     if status == 401:
         return "OpenRouter rejected the API key. Check it in Settings."
     if status == 402:
@@ -164,7 +216,9 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
                           body.get("model"))
                 raise LLMError("OpenRouter returned an invalid response. Retry shortly.") from e
         last = f"HTTP {r.status_code}"
-        friendly = _friendly_http_error(r.status_code, body.get("model"))
+        friendly = _friendly_http_error(
+            r.status_code, body.get("model"),
+            data_policy=_is_data_policy_refusal(r.status_code, r.text))
         if r.status_code not in _RETRY_STATUS:
             break  # fatal: don't count attempts we never made
     # `attempts` is what we actually tried (1 for a fatal first response, `tries` if exhausted).
@@ -243,7 +297,12 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                               timeout=timeout) as r:
                 if r.status_code != 200:
                     last = f"HTTP {r.status_code}"
-                    friendly = _friendly_http_error(r.status_code, body.get("model"))
+                    # `r.read()` because a streaming response has no body until it is pulled;
+                    # without it the data-policy 404 would read as "model doesn't exist".
+                    friendly = _friendly_http_error(
+                        r.status_code, body.get("model"),
+                        data_policy=_is_data_policy_refusal(r.status_code, r.read().decode(
+                            "utf-8", "replace")))
                     if r.status_code in _RETRY_STATUS:
                         continue  # not billed — safe to retry, nothing to account
                     log.error("openrouter stream fatal (model=%s): %s", body.get("model"), last)

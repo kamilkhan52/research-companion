@@ -1,0 +1,79 @@
+<p>This page explains how to delete your {{APP_NAME}} account and everything attached to it. You do
+not need the app installed to read it or to make the request.</p>
+
+<p><strong>Deleting your account is permanent.</strong> Your papers, discussions, notes and their
+history are erased, and we cannot restore them afterwards. If you want to keep any of it, save it
+before you start.</p>
+
+<h2>In the app — the fastest way</h2>
+
+<ol>
+  <li>Open {{APP_NAME}} and go to <strong>Settings</strong>.</li>
+  <li>Choose <strong>Delete account</strong>.</li>
+  <li>Sign in again when asked. This is deliberate: a recent sign-in proves it is really you, and a
+      stored session is not enough.</li>
+  <li>Type the confirmation exactly as shown, and confirm.</li>
+</ol>
+
+<p>Deletion starts immediately and usually finishes within about ten minutes — it deliberately waits
+out a safety window first, so that a deployment happening at the same moment cannot leave half of it
+done. It continues on our server
+even if you close the app, and it resumes by itself if something fails partway. You will be signed
+out, and the app will show that the account was deleted.</p>
+
+<h2>By email — if you cannot reach the app</h2>
+
+<p>Write to <a href="mailto:{{SUPPORT_EMAIL}}?subject=Delete%20my%20account">{{SUPPORT_EMAIL}}</a>
+with the subject <em>Delete my account</em>, <strong>from the email address the account uses</strong>.
+That is how we confirm the request is yours, so a message from any other address cannot be
+actioned.</p>
+
+<p>We will confirm and complete the deletion within 30 days, and in practice much sooner. We will
+reply when it is done.</p>
+
+<h2>What is deleted</h2>
+
+<ul>
+  <li>Every project you own, with its full history — reading lists, retrieved and uploaded paper
+      text, discussion transcripts, notes and syntheses, figures, covers and caches.</li>
+  <li>Projects you had previously deleted and that were still recoverable.</li>
+  <li>Your settings: model, voice, speech and reading preferences.</li>
+  <li>Narrated audio generated for you.</li>
+  <li>Any reports you filed about AI-generated content, including the notes you wrote on them.</li>
+  <li>Your account record, and finally your sign-in identity itself, so the account can no longer be
+      used to sign in.</li>
+  <li>On your device: your session, cached images and audio, and local app state — cleared when the
+      deletion is confirmed.</li>
+</ul>
+
+<p>Work in progress is handled too. Anything still running for your account is stopped before the
+data it touches is removed, so nothing gets written back after deletion.</p>
+
+<h2>What is kept, and why</h2>
+
+<p>Two records survive, and neither contains your reading, your notes, or your email address:</p>
+
+<ul>
+  <li><strong>A pseudonymous deletion record</strong> — that a deletion happened, and when. It holds
+      a one-way identifier rather than your account identifier. It exists so a repeated or
+      interrupted request cannot resurrect an account we have already erased.</li>
+  <li><strong>The bare identifiers of projects that once existed</strong> — the name of the slot, not
+      its contents. Reusing an identifier would let an old authorisation reach a new project, so we
+      retire identifiers permanently instead of freeing them.</li>
+</ul>
+
+<p>Beyond our own systems: operational logs held by our hosting provider expire on that provider's
+schedule, and content already sent to other providers is subject to their retention. For the models
+that generate discussion we restrict routing to providers that do not retain it; for narration and
+web search we have no such guarantee. None of it can be recalled by us. The
+<a href="/legal/privacy">Privacy Policy</a> sets out which is which.</p>
+
+<h2>Deleting less than everything</h2>
+
+<p>You do not have to delete your account to get rid of a piece of work. Deleting a single project
+in the app removes it from your library and keeps a recoverable copy so a mistake can be undone.
+That copy has no automatic expiry today — it stays until you delete your account, which erases it.</p>
+
+<h2>Questions</h2>
+
+<p>{{DEVELOPER}} · <a href="mailto:{{SUPPORT_EMAIL}}">{{SUPPORT_EMAIL}}</a></p>

@@ -31,12 +31,12 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from . import agent as agent_mod
-from . import config, logging_config, prompts, research_tools, sessions, usage
+from . import config, llm, logging_config, prompts, research_tools, sessions, usage
 from .models import Turn
 
 log = logging_config.get("agent_harness")
@@ -130,7 +130,15 @@ def _openrouter_model(model_id: str | None = None) -> OpenAIChatModel:
     if not key:
         raise agent_mod.AgentError("No OpenRouter API key set. Add it in Settings.")
     provider = OpenAIProvider(base_url=config.OPENROUTER_BASE, api_key=key)
-    return OpenAIChatModel(model_id or settings.get("model"), provider=provider)
+    # `llm.PRIVACY_ROUTING` on this path too, and it is the one that matters most: the agentic loop
+    # is the DEFAULT turn path (`RC_AGENTIC=0` opts out), so covering only `llm.py` would leave the
+    # promise on /legal/privacy false for almost every real request. Pydantic AI owns the request
+    # body, so the constraint rides in `extra_body` rather than being merged by us.
+    return OpenAIChatModel(
+        model_id or settings.get("model"),
+        provider=provider,
+        settings=OpenAIChatModelSettings(extra_body={"provider": llm.routing_payload()}),
+    )
 
 
 def model_override(model_id: str | None) -> Model | None:
