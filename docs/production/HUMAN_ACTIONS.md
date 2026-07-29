@@ -38,6 +38,13 @@ Fly region to Colorado; there is no Denver region.
 The plan assumes a container with a persistent volume; Fly was chosen because volumes are
 first-class and the `*.fly.dev` subdomain ships with TLS.
 
+**Superseded 2026-07-29 — a domain WAS needed, for a reason this paragraph did not anticipate.**
+The claim below is correct about the *origin*: `research-companion.fly.dev` is a real HTTPS origin
+and suffices for Supabase redirects, Play's policy URLs, reviewer access, and the closed test. What
+it missed is EMAIL. Supabase's built-in mail service only delivers to project team members, so
+custom SMTP is required before any tester can sign in — and every SMTP provider needs a verified
+sending domain. `scholiast.io` was bought for that (H25/H2b). Original text follows.
+
 **You do not need to buy a domain to start.** The host's own subdomain
 (`paradigm.fly.dev` or similar) is a real HTTPS origin and is sufficient for Supabase redirect
 URLs, the Play-required privacy-policy and account-deletion URLs, Play reviewer access, and the
@@ -111,7 +118,38 @@ add a second user later you must set the whole comma-separated list again. See
 
 **Report back:** that secrets are set, and I will deploy and verify.
 
-### H25 — Custom SMTP, or the closed test cannot happen · `todo` — **BLOCKS M2.5**
+### H25 — Custom SMTP · ✅ `DONE 2026-07-29` — was the top M2.5 blocker
+**Resolved.** `scholiast.io` registered at Cloudflare Registrar (Cloudflare nameservers), Resend
+free tier verified for sending, and the Resend↔Supabase integration connected on the **production**
+project with sender `team@scholiast.io`. Records live and resolving publicly:
+
+| Record | Name | Purpose |
+|---|---|---|
+| TXT | `resend._domainkey.scholiast.io` | DKIM — signs as the apex, so DMARC aligns |
+| TXT | `send.scholiast.io` | SPF for the bounce/return-path |
+| MX | `send.scholiast.io` | bounce handling |
+| TXT | `_dmarc.scholiast.io` | `v=DMARC1; p=none` — added by the agent |
+
+Resend's own layout turned out better than the plan: DKIM on the apex gives alignment while SPF/MX
+sit on a `send.` subdomain, so the sender reads `team@scholiast.io` AND the apex SPF slot stays
+free for a future mailbox provider. There is only ever ONE SPF record per name, so that matters.
+
+DMARC is `p=none` (observe-only) deliberately — tighten to `quarantine` after watching real
+delivery. No `rua` report address: sending reports to an address at another domain needs
+authorisation at that domain, which we cannot set.
+
+**Staging is deliberately left on Supabase's built-in email.** Kamil is a project team member,
+which is the one case the built-in service does deliver to, so staging keeps working without
+consuming the free tier's single-domain slot.
+
+Credentials, never in the repo: Cloudflare DNS-edit token (single zone) at `~/.cloudflare-token`,
+Resend key at `~/.resend-key`. Zone id `239faeab9fbd56a4404a0477af4826db`.
+**Gotcha for future sessions:** Cloudflare's `/user/tokens/verify` answers "Invalid API Token" for a
+correctly-narrow token, because it needs a `User → API Tokens → Read` permission such a token should
+NOT have. Test against the zone endpoint instead; the verify endpoint is a misleading health check.
+
+*Original problem statement follows, kept because the lesson generalises.*
+
 Found 2026-07-29 from an offhand remark by Kamil — *"the magic link has always gone to junk for me
 so far"*. Chasing that turned up something much worse than a spam-folder problem.
 
@@ -142,7 +180,7 @@ has to be bought now.
 
 **Report back:** the domain, and confirmation that SMTP is configured on both projects.
 
-### H2b — Custom domain · `todo` — **PROMOTED to M2.5 blocker on 2026-07-29** (was deferred to M10)
+### H2b — Custom domain · ✅ `DONE 2026-07-29` — `scholiast.io`
 **No longer deferrable: H25 needs it.** Custom SMTP requires a verified sending domain, and without
 custom SMTP the closed test's testers cannot receive auth email at all. It is still NOT needed as
 the app's origin — `research-companion.fly.dev` remains fine for that, and for Play's policy URLs.
