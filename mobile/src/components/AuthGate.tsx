@@ -72,7 +72,7 @@ function LocalCleanupRequired() {
             {error ?? 'Some deleted-account data could not be cleared from this device.'}
           </Text>
           <Text variant="caption" color={t.muted} style={{ marginTop: space.md }}>
-            Paradigm will not load private content while cleanup is incomplete. Clear the app’s
+            Scholiast will not load private content while cleanup is incomplete. Clear the app’s
             storage in device settings, or try the cleanup again.
           </Text>
           <Button title="Try cleanup again" onPress={retry} style={{ marginTop: space.lg }} />
@@ -333,7 +333,7 @@ function EmailEntry({
       </Text>
       <Text variant="body" color={t.muted} style={styles.pageSubtitle}>
         {creating
-          ? 'Start your research journey with Paradigm.'
+          ? 'Start your research journey with Scholiast.'
           : 'Sign in with your password, or have us email you a link.'}
       </Text>
 
@@ -437,7 +437,7 @@ function EmailEntry({
         onPress={() => onChangeMode(creating ? 'sign-in' : 'create-account')}
         style={styles.switchMode}>
         <Text variant="caption" color={t.muted}>
-          {creating ? 'Already have an account? ' : 'New to Paradigm? '}
+          {creating ? 'Already have an account? ' : 'New to Scholiast? '}
           <Text variant="caption" color={t.mint}>
             {creating ? 'Sign in' : 'Create account'}
           </Text>
@@ -586,7 +586,7 @@ function CheckInbox({
         <ActionRow
           icon="external-link"
           title="Change server"
-          subtitle="Use another Paradigm server"
+          subtitle="Use another Scholiast server"
           onPress={onChangeServer}
           last
         />
@@ -751,7 +751,7 @@ function Brand() {
         P
       </Text>
       <Text variant="title" color={t.mint} style={{ fontFamily: fonts.bodyBold }}>
-        Paradigm
+        Scholiast
       </Text>
     </View>
   );

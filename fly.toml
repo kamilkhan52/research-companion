@@ -36,7 +36,7 @@ kill_timeout = 300
   # State lives on the mounted volume, NOT in the image (see Dockerfile / .dockerignore).
   RC_PROJECTS_ROOT = "/data/projects"
   RC_APP_STATE_DIR = "/data/.app-state"
-  RC_APP_TITLE = "Paradigm"
+  RC_APP_TITLE = "Scholiast"
   # Namespaces the Postgres process guard from staging if both use one Supabase cluster.
   RC_DEPLOY_GUARD_ID = "research-companion"
   # Must remain greater than kill_timeout. Postgres advisory locks confirm feature-aware peers

@@ -275,7 +275,7 @@ The account-deletion implementation is complete only when one idempotent workflo
 10. is safe to retry after a crash at every step; and
 11. produces an operator-auditable result without logging deleted content or credentials.
 
-The external deletion page must identify Paradigm, accept or initiate a deletion request without
+The external deletion page must identify Scholiast, accept or initiate a deletion request without
 requiring app installation, explain any identity-verification step, and link to the same retention
 rules as the privacy policy.
 

@@ -728,7 +728,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // for account A as authorization to delete B.
       await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
       await adoptSession(null, mine);
-      throw new Error('Choose the same Google account that is signed in to Paradigm.');
+      throw new Error('Choose the same Google account that is signed in to Scholiast.');
     }
     const verifiedSignInAge = Date.now() - Date.parse(verified.user.last_sign_in_at ?? '');
     if (

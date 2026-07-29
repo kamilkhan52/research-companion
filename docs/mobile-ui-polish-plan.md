@@ -14,9 +14,9 @@ so) — its endpoints must respect the CLAUDE.md invariants and ship with pytest
 
 ## Phase A — density & distinction polish (mobile only)
 
-1. **App title → "Paradigm".** The Library header's "Research Companion" wraps to two lines
-   and eats vertical space. Change the `TabHeader` title on `(tabs)/index.tsx` to `Paradigm`
-   (one line). Also set `app.json` `name`/display name to Paradigm — note: the launcher label
+1. **App title → "Scholiast".** The Library header's "Research Companion" wraps to two lines
+   and eats vertical space. Change the `TabHeader` title on `(tabs)/index.tsx` to `Scholiast`
+   (one line). Also set `app.json` `name`/display name to Scholiast — note: the launcher label
    only changes on the next dev-client rebuild (see Backlog); the in-app header changes
    immediately. Do NOT change the Expo `slug` (breaks the installed dev client's association).
 2. **Project pill slimming.** Once a project is selected, drop the `N papers · M complete`
@@ -132,7 +132,7 @@ canvas (`@shopify/react-native-skia`, which needs the dev-client rebuild batch b
 
 Everything requiring a native rebuild, grouped so the phone reinstalls once:
 
-- **Launcher identity**: app.json name "Paradigm" (from phase A) plus a new icon set in the
+- **Launcher identity**: app.json name "Scholiast" (from phase A) plus a new icon set in the
   design language — a mint/violet reference-graph constellation on the scholar-dark canvas
   (generic icon, adaptive foreground/background, themed monochrome, splash mark; generated
   by `scripts/gen_app_icons.py`, pure numpy, rerunnable). Splash + adaptive backgrounds are
@@ -146,7 +146,7 @@ Everything requiring a native rebuild, grouped so the phone reinstalls once:
 **Build step (user-run, once, after this phase merges):** from `mobile/` —
 `npx expo prebuild --platform android --clean && npx expo run:android` with the phone on USB,
 or `npx eas-cli build --profile development --platform android` if using EAS. Install the
-resulting build over the old one; the launcher then shows Paradigm with the new icon.
+resulting build over the old one; the launcher then shows Scholiast with the new icon.
 **Round 2 adds one rider to this batch**: `react-native-svg` (for equation rendering,
 Phase G) — behind a guarded require like haptics, so the same bundle hot-loads before the
 rebuild (unicode-fallback math) and gains SVG equations after.

@@ -7,7 +7,7 @@ spec a developer implements from, through the normal PR loop.
 
 ## The product moment
 
-Paradigm is a research-reading companion. The player is its focused listening surface: the
+Scholiast is a research-reading companion. The player is its focused listening surface: the
 user is often walking, phone in one hand, listening to a long spoken explanation of a
 paper. The screen shows a rolling transcript (current sentence highlighted and centered,
 neighbors dimmed, tap a line to jump) above a bottom transport block.

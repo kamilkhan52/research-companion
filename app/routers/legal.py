@@ -40,7 +40,7 @@ router = APIRouter()
 # policy requires and the support address on the store listing; it is deliberately not a personal
 # address, and deliberately not configurable by environment — a policy document whose contact
 # details vary by deployment is not a policy document.
-APP_NAME = "Paradigm"
+APP_NAME = "Scholiast"
 DEVELOPER = "Kamil Khan"
 SUPPORT_EMAIL = "thelocalscientist@gmail.com"
 LAST_UPDATED = "28 July 2026"

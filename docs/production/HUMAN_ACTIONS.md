@@ -54,6 +54,20 @@ tester clock.
 **Report back:** the platform, the app subdomain it assigns, and how deploy credentials should be
 provided (a scoped deploy token in an EAS/CI secret, never the repo).
 
+### H27 — Add the new deep-link scheme to Supabase, or sign-in breaks · `todo` — 2 minutes, BOTH projects
+The rebrand changed `mobile/app.json`'s `"scheme"` from `researchcompanion` to `scholiast`, so the
+OAuth/magic-link callback the app registers is now **`scholiast://auth`** instead of
+`researchcompanion://auth`. Supabase only honours a redirect that is on its allowlist, and silently
+redirects elsewhere if it is not — which looks exactly like sign-in doing nothing.
+
+In **each** project (prod `aumedoefxacycwfrlcml`, staging `iqsiabkdbczvgyccswcy`) →
+Authentication → URL Configuration → **Redirect URLs**, add `scholiast://auth`.
+
+**Keep `researchcompanion://auth` there too** until no build using the old scheme is installed on
+any device — including the one on Kamil's phone right now. Removing it early breaks the installed
+app; leaving it costs nothing.
+**Report back:** added on both.
+
 ### H26 — Production secrets, and the bootstrap order that avoids locking yourself out · `todo`
 The app `research-companion` exists and its volume is created: **`rc_data`, 20 GB, `sjc`, encrypted,
 scheduled snapshots on with 5-day retention** (`vol_rnzpyx8xp2j10xpr`, created 2026-07-29). A volume
@@ -145,7 +159,7 @@ availability moves.
 A domain is a name you rent annually; DNS records point it at things. For SMTP you add the
 provider's verification records (SPF/DKIM) rather than pointing it at Fly at all.
 
-*Also worth knowing:* "Paradigm" is crowded commercially, so the Play **store listing name** may
+*Also worth knowing:* "Scholiast" is crowded commercially, so the Play **store listing name** may
 need to differ from the internal codename. That is a launch-time decision, not a blocker now.
 **DECIDED 2026-07-29: buy `scholiast.io` at Cloudflare Registrar, and rebrand the app to
 Scholiast.** The domain is not only for email — it becomes the web app's origin too, which is why a

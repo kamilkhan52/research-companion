@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Paradigm",
+    "name": "Scholiast",
     "slug": "research-companion",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "researchcompanion",
+    "scheme": "scholiast",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/images/icon.png",
@@ -16,7 +16,7 @@
       }
     },
     "android": {
-      "package": "com.kamilkhan.researchcompanion",
+      "package": "io.scholiast.app",
       "permissions": [
         "POST_NOTIFICATIONS"
       ],
