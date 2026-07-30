@@ -178,3 +178,23 @@ def test_prompts_instruct_linking_web_found_papers():
     guidance = prompts.get("analyst_tool_guidance")
     assert "markdown link" in guidance
     assert "arxiv.org/abs" in guidance
+
+
+def test_narration_asks_for_no_hidden_reasoning(monkeypatch):
+    """Narration is a rewrite of an argument already made, not a problem to solve. The shipped
+    default narration model is a reasoning model, and on 2026-07-30 it spent 8,848 tokens thinking
+    and emitted nothing — the audio failed and the listener got silence. The app must not ship a
+    narration default that cannot narrate."""
+    captured = {}
+
+    def fake_complete(messages, **kwargs):
+        captured.update(kwargs)
+        return "spoken text"
+
+    monkeypatch.setattr(agent.prompts, "get", lambda key: f"<{key}>")
+    monkeypatch.setattr(agent.config, "load_settings", lambda: {"narration_model": "some/reasoner"})
+    monkeypatch.setattr(agent.llm, "complete", fake_complete)
+
+    assert agent.narrate("written response") == "spoken text"
+    assert captured["reasoning"] == {"enabled": False}
+    assert captured["model"] == "some/reasoner"

@@ -567,3 +567,43 @@ def test_unexpected_response_shape_never_reaches_errors_or_logs(key, monkeypatch
         llm.complete([{"role": "user", "content": "hi"}])
     assert secret not in str(err.value)
     assert all(secret not in m for m in _llm_msgs(rc_logs))
+
+
+def test_a_model_that_refuses_to_disable_reasoning_still_gets_its_completion(monkeypatch):
+    """Disabling reasoning is an optimization, not a requirement. OpenRouter documents models whose
+    reasoning is MANDATORY, the model is a user setting, and this repo has no verified evidence of
+    how such a model answers a request that tries to turn it off. Sending the hint must therefore
+    not be able to break narration — which is the very failure it was added to prevent."""
+    calls = []
+
+    def fake_post(body, key, timeout, tries):
+        calls.append(dict(body))
+        if "reasoning" in body:
+            raise llm.LLMError("OpenRouter said 400: reasoning cannot be disabled for this model")
+        return {"choices": [{"message": {"content": "spoken text"}, "finish_reason": "stop"}],
+                "usage": {}}
+
+    monkeypatch.setattr(llm, "_key_and_default_model", lambda: ("k", "m/model"))
+    monkeypatch.setattr(llm, "_post_with_retry", fake_post)
+
+    out = llm.complete([{"role": "user", "content": "x"}],
+                       reasoning=llm.no_reasoning_payload(), operation="narration")
+
+    assert out == "spoken text"
+    assert len(calls) == 2, "it must retry exactly once, without the hint"
+    assert "reasoning" in calls[0] and "reasoning" not in calls[1]
+
+
+def test_an_unrelated_failure_is_not_retried_as_a_reasoning_problem(monkeypatch):
+    calls = []
+
+    def fake_post(body, key, timeout, tries):
+        calls.append(dict(body))
+        raise llm.LLMError("OpenRouter is unavailable. Retry shortly.")
+
+    monkeypatch.setattr(llm, "_key_and_default_model", lambda: ("k", "m/model"))
+    monkeypatch.setattr(llm, "_post_with_retry", fake_post)
+
+    with pytest.raises(llm.LLMError):
+        llm.complete([{"role": "user", "content": "x"}], reasoning=llm.no_reasoning_payload())
+    assert len(calls) == 1

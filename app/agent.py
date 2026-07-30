@@ -180,12 +180,12 @@ def _parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
 
 def _complete(messages: list[dict], model: str | None = None,
               temperature: float = 0.3, max_tokens: int = 8000,
-              operation: str = "analysis") -> str:
+              operation: str = "analysis", reasoning: dict | None = None) -> str:
     """Non-streaming analysis/narration call via the shared llm client, translating its
     LLMError into this module's AgentError so main.py maps it to HTTP as before."""
     try:
         return llm.complete(messages, model=model, temperature=temperature,
-                            max_tokens=max_tokens, operation=operation)
+                            max_tokens=max_tokens, operation=operation, reasoning=reasoning)
     except llm.LLMError as e:
         raise AgentError(str(e)) from e
 
@@ -337,4 +337,8 @@ def narrate(canonical_text: str) -> str:
         )},
         {"role": "user", "content": canonical_text},
     ]
-    return _complete(messages, model=model, temperature=0.2, operation="narration").strip()
+    # Reasoning off: narration is a rewrite of an argument that has already been made, not a
+    # problem to solve, and a reasoning model can spend its whole budget thinking and return
+    # nothing — which is exactly how a listener ends up with silence (2026-07-30).
+    return _complete(messages, model=model, temperature=0.2, operation="narration",
+                     reasoning=llm.no_reasoning_payload()).strip()

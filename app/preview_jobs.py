@@ -24,14 +24,20 @@ CONTINUATION_POLL_SECONDS = 0.25
 # Segment completion remains the preferred synthesis cue trigger, but a single slow segment
 # must not leave the listener in silence until the stitched track is ready.
 SYNTHESIS_KEEPALIVE_SECONDS = 18.0
-# Cues per wait, counted across BOTH producers (see `budget_exhausted`). Uncapped, a long
-# synthesis produced ~17, and each is expensive in a way the cue itself never reveals: it re-sends
+# Cues per wait, counted across BOTH producers (see `budget_exhausted`). `None` = no cap.
+#
+# Capped at 6 on 2026-07-29 for cost: uncapped, a long synthesis produced ~17 cues, each re-sending
 # the whole grounded-source set plus both cue histories — ~11,373 prompt tokens to produce ~86,
 # which is 4.4x the analysis turn's own prompt, or $0.087 per turn
-# (docs/production/20-pricing-analysis.md §8). The cap is most of that saving; reaching the
-# $0.0016 quoted there also needs the cue prompt trimmed to ~4K tokens, which is separate work.
-# The listener gains nothing from the seventeenth either: by then more talking reads as stalling.
-MAX_CUES_PER_WAIT = 6
+# (docs/production/20-pricing-analysis.md §8).
+#
+# UNCAPPED AGAIN on 2026-07-30 at Kamil's explicit instruction, with the cost stated and accepted:
+# "I like cues coming through all the way until the audio is ready. silence is the worst here at
+# any cost." That is a product judgement about the listening experience, not an oversight — the
+# wait is dead air otherwise, and dead air is what makes a long preparation feel broken. The cheaper
+# lever remains available and does NOT cost silence: trimming the cue prompt to ~4K tokens is the
+# other half of §8's saving and is still unstarted.
+MAX_CUES_PER_WAIT: int | None = None
 log = logging_config.get("preview")
 
 GenerateFn = Callable[[list[dict], str | None], str]
@@ -72,7 +78,11 @@ class PreviewCoordinator(Job):
     progress: dict = field(default_factory=dict)
 
 
-_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=60)
+#: Retention has to outlast an UNCAPPED wait, not a typical one. Cue ids accumulate for the whole
+#: wait and `cue_history` reads them back out of this registry, so once finished jobs are evicted
+#: the "complete chronological history" the prompt promises quietly becomes partial — and the
+#: repetition the history exists to prevent comes back. 60 was chosen when waits were capped at 6.
+_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=400)
 _jobs = _registry.jobs
 _coordinator_registry: JobRegistry[PreviewCoordinator] = JobRegistry(
     "preview-coordinator", max_finished=20,
@@ -276,12 +286,16 @@ def progress_signature(progress: dict) -> str:
 def budget_exhausted(existing_job_ids: list[str]) -> bool:
     """Whether this wait has already spent its cue allowance.
 
-    Deliberately counts cues for the WHOLE wait, and lives here so both producers share it. Cues
-    are started from two places — `chat_jobs._maybe_start_preview` while analysis streams, and the
-    coordinator once analysis is done — and a cap enforced in only the second is not a cap at all:
-    a long analysis can spend the entire budget before the coordinator ever receives
-    `existing_job_ids`, and the coordinator cannot refund it.
+    Counts cues for the WHOLE wait, and lives here so both producers share it. Cues start from two
+    places — `chat_jobs._maybe_start_preview` while analysis streams, and the coordinator once
+    analysis is done — and a cap enforced in only the second is not a cap at all: a long analysis
+    can spend the entire budget before the coordinator ever receives `existing_job_ids`.
+
+    With `MAX_CUES_PER_WAIT` set to None there is no cap and cues continue until the audio is
+    ready, which is the current product decision (see the constant).
     """
+    if MAX_CUES_PER_WAIT is None:
+        return False
     return len(existing_job_ids) >= MAX_CUES_PER_WAIT
 
 
@@ -367,6 +381,13 @@ def _default_generate(messages: list[dict], model: str | None) -> str:
         model=model,
         temperature=0.2,
         max_tokens=180,
+        # Reasoning OFF, and this is the call where it matters most. `resolve_model` falls back to
+        # the NARRATION model when no preview model is set, which is the default state — so cues
+        # were being written by a reasoning model against a 180-token ceiling. It spends the
+        # ceiling thinking, returns nothing, the cue fails, and the listener gets the silence the
+        # cues exist to prevent. A cue is one or two grounded sentences under a latency budget;
+        # there is nothing here to reason about.
+        reasoning=llm.no_reasoning_payload(),
         operation="listening_preview",
     )
 
@@ -403,8 +424,20 @@ def acknowledge_played(job_id: str) -> dict | None:
     return _registry.snapshot(job_id)
 
 
+#: How many recent cues are shown to the next one. Not a cost lever first — though it is one: with
+#: no cap on cue count, sending every prior cue makes each request grow with the wait. It is mainly
+#: honesty. Retention can evict the oldest jobs, so "every cue so far" is a promise this cannot
+#: keep, and a bounded window is a promise it can. A listener will not notice cue 30 echoing cue 2;
+#: they notice cue 4 echoing cue 3, and the window covers that comfortably.
+CUE_HISTORY_WINDOW = 12
+
+
 def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
-    """Return complete chronological (played, generated) histories for a preview wait."""
+    """The recent chronological (played, generated) cue histories for a wait.
+
+    Bounded to `CUE_HISTORY_WINDOW`. Anything older may have been pruned from the registry anyway,
+    so claiming completeness would be false as well as expensive.
+    """
     generated: list[str] = []
     played: list[str] = []
     for job_id in job_ids:
@@ -414,7 +447,7 @@ def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
         generated.append(cue_job.cue)
         if getattr(cue_job, "played", False):
             played.append(cue_job.cue)
-    return played, generated
+    return played[-CUE_HISTORY_WINDOW:], generated[-CUE_HISTORY_WINDOW:]
 
 
 def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cue: str = "",

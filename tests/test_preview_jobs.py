@@ -480,10 +480,48 @@ def test_analysis_phase_cues_also_stop_at_the_shared_cap(temp_project, monkeypat
     assert started == [1, 2], f"analysis cues must stop at the shared cap, got {started}"
 
 
+def test_no_cap_means_cues_continue_until_the_audio_is_ready(temp_project, monkeypatch):
+    """The default is UNCAPPED (Kamil, 2026-07-30: "silence is the worst here at any cost"), so
+    cues must keep coming for as long as the wait lasts. The cap remains implemented for when a
+    quota needs it, and this pins both halves: None keeps going, a number stops."""
+    audio_uncapped = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 0, "segments_total": 99,
+    })()
+    seen = []
+
+    def uncapped_start(chat_id, ordinal, sources, previous, progress, **history):
+        cue = type("Cue", (), {"id": f"u-{ordinal}", "status": "done", "cue": f"c{ordinal}",
+                               "progress_signature": preview_jobs.progress_signature(progress)})()
+        seen.append(ordinal)
+        uncapped_start.cues[cue.id] = cue
+        return cue
+    uncapped_start.cues = {}
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio_uncapped)
+    monkeypatch.setattr(preview_jobs, "start_job", uncapped_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: uncapped_start.cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(preview_jobs, "MAX_CUES_PER_WAIT", None)
+
+    preview_jobs.start_coordinator(
+        "chat-uncapped", "audio-uncapped",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [], lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+    deadline = time.time() + 3
+    while len(seen) < 9 and time.time() < deadline:
+        audio_uncapped.segments_done += 1
+        time.sleep(0.01)
+    audio_uncapped.status = "done"
+
+    assert len(seen) >= 9, f"uncapped cues must keep coming, got {len(seen)}"
+
+
 def test_cues_stop_at_the_cap_and_the_coordinator_still_settles(temp_project, monkeypatch):
-    """Uncapped, a long synthesis generated ~17 cues, each re-sending the whole source set and
-    both histories. The cap must bound them without stranding the listener: readiness still
-    settles the coordinator once audio is available."""
+    """The cap still works when one is set — kept because a quota may need it later, and because
+    a cap that stranded the listener would be worse than the cost it saves."""
     audio = type("Audio", (), {
         "status": "running", "stage": "synthesizing",
         "segments_done": 0, "segments_total": 99,
@@ -741,3 +779,51 @@ def test_preview_poll_route_is_project_scoped(temp_project):
         config.reset_active_project(token)
     assert exc_info.value.status_code == 404
     assert played_exc.value.status_code == 404
+
+
+def test_cue_generation_asks_for_no_hidden_reasoning(temp_project, monkeypatch):
+    """Cues run on `resolve_model`, which falls back to the NARRATION model when no preview model
+    is set — the default state, and that default is a reasoning model. Against `max_tokens=180` it
+    spends the whole ceiling thinking and returns nothing, so the cue fails and the listener gets
+    exactly the silence cues exist to prevent (observed 2026-07-30: two cues, then nothing)."""
+    seen = {}
+
+    def fake_complete(messages, **kwargs):
+        seen.update(kwargs)
+        return json.dumps({"cue": "A grounded cue.", "source_sentence_ids": ["s0001"]})
+
+    monkeypatch.setattr(preview_jobs.llm, "complete", fake_complete)
+    preview_jobs._default_generate([{"role": "user", "content": "x"}], "some/model")
+
+    assert seen["reasoning"] == {"enabled": False}
+    assert seen["max_tokens"] == 180
+
+
+def test_cue_history_is_bounded_so_an_uncapped_wait_cannot_outgrow_it(temp_project, monkeypatch):
+    """With no cap on cue count, sending every prior cue would grow each request with the wait —
+    and worse, the registry evicts finished jobs, so "every cue so far" is a promise the code
+    cannot keep. A bounded window is one it can."""
+    cues = {}
+    for i in range(1, 31):
+        job_id = f"cue-{i}"
+        cues[job_id] = type("Cue", (), {
+            "id": job_id, "status": "done", "cue": f"cue text {i}", "played": True,
+            "progress_signature": "",
+        })()
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: cues.get(job_id))
+
+    played, generated = preview_jobs.cue_history(list(cues))
+
+    assert len(played) == preview_jobs.CUE_HISTORY_WINDOW
+    assert len(generated) == preview_jobs.CUE_HISTORY_WINDOW
+    # The window keeps the most RECENT cues — repeating the one just spoken is what a listener
+    # actually notices, so those are the ones the next cue must be able to see.
+    assert played[-1] == "cue text 30"
+    assert played[0] == f"cue text {30 - preview_jobs.CUE_HISTORY_WINDOW + 1}"
+
+
+def test_retention_outlasts_a_long_uncapped_wait(temp_project):
+    """Cue ids accumulate for the whole wait and `cue_history` reads them back out of the
+    registry. 60 was sized when waits were capped at 6; uncapped, a long synthesis would evict its
+    own history mid-wait and silently reintroduce the repetition the history prevents."""
+    assert preview_jobs._registry._max_finished >= 400

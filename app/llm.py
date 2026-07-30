@@ -138,12 +138,34 @@ def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") 
 # Callers must go through `routing_payload()`. A mapping proxy is NOT JSON-serializable, so putting
 # this object into a request body directly raises `TypeError: Object of type mappingproxy is not
 # JSON serializable` — on every LLM call in the app. Verified before shipping the immutability.
+#: Turn a model's hidden reasoning OFF for jobs that do not need it.
+#:
+#: Sent as a HINT, never as a requirement: OpenRouter documents models whose reasoning is
+#: mandatory, and this repo has no verified evidence of how they answer a request that tries to
+#: disable it. Since the model is a USER SETTING, we cannot know whether today's choice is one of
+#: them — so `complete()` retries once without this key if a request is rejected in a way that
+#: mentions reasoning. A best-effort saving must not be able to break narration outright.
+#:
+#: Why this exists: narration is a rewrite, not a problem to think about — take one finished
+#: analysis and adapt it for the ear. But the default narration model is DeepSeek v4 Flash, a
+#: reasoning model, and on 2026-07-30 it spent **8,848 tokens on hidden reasoning and emitted
+#: nothing**, so the audio failed and the listener got silence after two cues. The diagnostic told
+#: Kamil to pick a non-reasoning model, which is real advice but the wrong default: the app should
+#: not ship a narration default that cannot narrate. Same reasoning for preview cues, which are one
+#: or two sentences under a latency budget.
+NO_REASONING = MappingProxyType({"enabled": False})
+
 PRIVACY_ROUTING = MappingProxyType({"data_collection": "deny", "zdr": True})
 
 
 def routing_payload() -> dict:
     """A fresh, JSON-serializable copy of `PRIVACY_ROUTING` for one request body."""
     return dict(PRIVACY_ROUTING)
+
+
+def no_reasoning_payload() -> dict:
+    """A fresh, JSON-serializable copy of `NO_REASONING` for one request body."""
+    return dict(NO_REASONING)
 
 
 def _build_body(messages: list[dict], model: str | None, default_model: str | None,
@@ -250,6 +272,20 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
     raise LLMError(friendly)
 
 
+def _rejected_for_reasoning(message: str) -> bool:
+    """Whether a failure looks like the provider objecting to the `reasoning` field itself.
+
+    Deliberately loose. The alternative is enumerating provider-specific wordings, which would go
+    stale silently and leave narration broken for the exact users this is meant to help; a false
+    positive only costs one extra request that was already failing.
+    """
+    lowered = message.lower()
+    return "reasoning" in lowered and any(
+        marker in lowered for marker in ("400", "422", "not support", "unsupported", "invalid",
+                                         "required", "mandatory", "cannot be disabled")
+    )
+
+
 def complete(messages: list[dict], *, model: str | None = None, temperature: float = 0.3,
              max_tokens: int = 8000, reasoning: dict | None = None,
              timeout: float = DEFAULT_TIMEOUT, tries: int = _DEFAULT_TRIES,
@@ -262,7 +298,18 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
     key, default_model = _key_and_default_model()
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=False)
-    data = _post_with_retry(body, key, timeout, tries)
+    try:
+        data = _post_with_retry(body, key, timeout, tries)
+    except LLMError as e:
+        # Disabling reasoning is an optimization, not a requirement. A model whose reasoning is
+        # mandatory may refuse the request outright, and that must not be how narration fails —
+        # the whole point of sending it was to stop a reasoning model producing silence. Drop the
+        # hint and try once more; if it fails again the error is genuinely about something else.
+        if reasoning is None or not _rejected_for_reasoning(str(e)):
+            raise
+        log.info("retrying without the reasoning hint (model=%s)", body.get("model"))
+        body.pop("reasoning", None)
+        data = _post_with_retry(body, key, timeout, tries)
     usage.record(operation, body.get("model"), data.get("usage"))  # any 200 was billed
     try:
         choice = data["choices"][0]
