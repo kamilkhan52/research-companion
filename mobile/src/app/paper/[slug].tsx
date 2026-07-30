@@ -78,7 +78,7 @@ import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
-import { retrievalSteps } from '@/lib/retrievalSteps';
+import { retrievalProgress } from '@/lib/retrievalSteps';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
   PaperSummaryRetrySheet,
@@ -2569,21 +2569,11 @@ export function ComposeFirst({
               the fetch is or whether it has stalled. The steps persist; the detail line under
               them is the only part that changes. */}
           {retrievalJob || isRetrieved ? (
-            <ProgressSteps
-              dotSize={20}
-              style={{ marginTop: space.sm }}
-              steps={retrievalSteps(retrievalJob, isRetrieved)}
-            />
+            <FetchProgress job={retrievalJob} isRetrieved={isRetrieved} />
           ) : null}
 
           {retrievalJob?.items?.length ? (
             <AgentTrail trail={retrievalJob.items} />
-          ) : null}
-
-          {retrievalJob?.enrichment?.status === 'running' ? (
-            <Text variant="caption" color={t.muted}>
-              {retrievalJob.enrichment.step}
-            </Text>
           ) : null}
 
           {retrieveError ? (
@@ -3292,3 +3282,22 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   });
 };
+
+/** The staged fetch card: two honest stages plus the one line that actually changes. */
+function FetchProgress({ job, isRetrieved }: {
+  job: Parameters<typeof retrievalProgress>[0];
+  isRetrieved: boolean;
+}) {
+  const t = useTheme();
+  const { steps, detail } = retrievalProgress(job, isRetrieved);
+  return (
+    <>
+      <ProgressSteps dotSize={20} style={{ marginTop: space.sm }} steps={steps} />
+      {detail ? (
+        <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+          {detail}
+        </Text>
+      ) : null}
+    </>
+  );
+}

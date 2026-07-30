@@ -1,39 +1,54 @@
-import { retrievalSteps } from '@/lib/retrievalSteps';
+import { retrievalProgress } from '@/lib/retrievalSteps';
 import type { RetrievalJob } from '@/api/types';
 
-const job = (phase: RetrievalJob['phase'], status: RetrievalJob['status'] = 'running') =>
-  ({ phase, status }) as Pick<RetrievalJob, 'status' | 'phase'>;
-const states = (...args: Parameters<typeof retrievalSteps>) =>
-  retrievalSteps(...args).map((s) => s.state);
+type Job = Parameters<typeof retrievalProgress>[0];
+const job = (over: Partial<NonNullable<Job>> = {}): Job => ({
+  status: 'running', phase: 'resolving', detail: '', enrichment: null, ...over,
+} as NonNullable<Job>);
 
-test('walks forward through the server\'s own phases', () => {
-  expect(states(job('resolving'), false)).toEqual(['active', 'pending', 'pending']);
-  expect(states(job('hunting'), false)).toEqual(['done', 'active', 'pending']);
+const states = (...args: Parameters<typeof retrievalProgress>) =>
+  retrievalProgress(...args).steps.map((s) => s.state);
+
+test('fetching shows the first stage moving and the second waiting', () => {
+  expect(states(job(), false)).toEqual(['active', 'pending']);
 });
 
-test('a retrieved paper reads as finished whatever the job says', () => {
-  expect(states(job('hunting'), true)).toEqual(['done', 'done', 'done']);
-  expect(states(null, true)).toEqual(['done', 'done', 'done']);
+test('the common successful path is not misrepresented as finer-grained than it is', () => {
+  // A normal retrieval sits in `resolving` through download AND extraction, then jumps to done.
+  // Three stages would spend that whole time showing step 1 spinning and steps 2-3 pending,
+  // which looks stalled. Two stages tell the truth.
+  expect(retrievalProgress(job({ phase: 'resolving' }), false).steps).toHaveLength(2);
 });
 
-test('nothing is active before a fetch has started', () => {
-  expect(states(null, false)).toEqual(['pending', 'pending', 'pending']);
+test('waiting for the reader to confirm a source shows NOTHING active', () => {
+  // `active` renders a spinner. The job has finished and is waiting on a person, so a spinner
+  // would claim work is happening on its own.
+  const p = retrievalProgress(job({ phase: 'confirmation', status: 'done' }), false);
+  expect(p.steps.map((s) => s.state)).toEqual(['pending', 'pending']);
+  expect(p.detail).toMatch(/confirm the source/i);
 });
 
-test('a failed fetch stops spinning instead of looking like work in progress', () => {
-  // The failure this guards: a card that keeps a step "active" after the job died reads as
-  // "still working", which is the opposite of what the reader needs to know.
-  expect(states(job('hunting', 'error'), false)).toEqual(['pending', 'pending', 'pending']);
-  expect(states(job('resolving', 'cancelled'), false)).toEqual(['pending', 'pending', 'pending']);
+test('enrichment is a named stage, not text that appears and vanishes', () => {
+  // The actual complaint: "Mapping references" showed up as bare text after the fetch already
+  // looked done. It comes from a separate canonical job surfaced as `enrichment`.
+  const p = retrievalProgress(
+    job({ status: 'done', phase: 'done', enrichment: { status: 'running', step: 'Mapping references…' } }),
+    true,
+  );
+  expect(p.steps.map((s) => s.state)).toEqual(['done', 'active']);
+  expect(p.detail).toBe('Mapping references…');
 });
 
-test('waiting for the reader to confirm a source still shows the fetch as live', () => {
-  // `confirmation` is a question, not a stage — the step stays at "Located" and the detail line
-  // carries the question, rather than inventing a fourth step that looks like autonomous progress.
-  expect(states(job('confirmation', 'done'), false)).toEqual(['done', 'active', 'pending']);
+test('a retrieved paper with no enrichment reported is finished, not waiting forever', () => {
+  expect(states(job({ status: 'done', phase: 'done' }), true)).toEqual(['done', 'done']);
+  expect(states(null, true)).toEqual(['done', 'done']);
 });
 
-test('labels are stable and in order, so the card does not reshuffle', () => {
-  expect(retrievalSteps(job('resolving'), false).map((s) => s.label))
-    .toEqual(['Identified', 'Located', 'Ready']);
+test('a failed fetch stops moving instead of looking like work in progress', () => {
+  expect(states(job({ status: 'error' }), false)).toEqual(['pending', 'pending']);
+  expect(states(job({ status: 'cancelled' }), false)).toEqual(['pending', 'pending']);
+});
+
+test('nothing has started before a fetch begins', () => {
+  expect(states(null, false)).toEqual(['pending', 'pending']);
 });
