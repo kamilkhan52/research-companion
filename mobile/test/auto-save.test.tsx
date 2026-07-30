@@ -15,7 +15,7 @@ test('does not save on mount — opening the screen must not write settings nobo
 
 test('saves once after the value settles, coalescing rapid changes', async () => {
   const save = jest.fn().mockResolvedValue(undefined);
-  const { rerender } = renderHook<AutoSaveState, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
     initialProps: { v: { voice: 'alloy' } },
   });
   rerender({ v: { voice: 'echo' } });
@@ -28,7 +28,7 @@ test('saves once after the value settles, coalescing rapid changes', async () =>
 
 test('does not re-save a value that came back to what was already stored', async () => {
   const save = jest.fn().mockResolvedValue(undefined);
-  const { rerender } = renderHook<AutoSaveState, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
     initialProps: { v: { voice: 'alloy' } },
   });
   rerender({ v: { voice: 'echo' } });
@@ -46,13 +46,13 @@ test('a FAILED save is retried by the next change rather than being skipped', as
   const save = jest.fn()
     .mockRejectedValueOnce(new Error('offline'))
     .mockResolvedValue(undefined);
-  const { rerender, result } = renderHook<AutoSaveState, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
+  const { rerender, result } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
     initialProps: { v: { voice: 'alloy' } },
   });
 
   rerender({ v: { voice: 'echo' } });
   await flush();
-  await waitFor(() => expect(result.current).toBe('error'));
+  await waitFor(() => expect(result.current.state).toBe('error'));
 
   rerender({ v: { voice: 'nova' } });
   await flush();
@@ -62,21 +62,69 @@ test('a FAILED save is retried by the next change rather than being skipped', as
 
 test('reports its state so the screen can show saving/saved', async () => {
   const save = jest.fn().mockResolvedValue(undefined);
-  const { rerender, result } = renderHook<AutoSaveState, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
+  const { rerender, result } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(({ v }) => useAutoSave(v, save), {
     initialProps: { v: { voice: 'alloy' } },
   });
-  expect(result.current).toBe('idle');
+  expect(result.current.state).toBe('idle');
   rerender({ v: { voice: 'echo' } });
   await flush();
-  await waitFor(() => expect(result.current).toBe('saved'));
+  await waitFor(() => expect(result.current.state).toBe('saved'));
 });
 
 test('writes nothing at all while disabled', async () => {
   const save = jest.fn().mockResolvedValue(undefined);
-  const { rerender } = renderHook<AutoSaveState, { v: { voice: string } }>(({ v }) => useAutoSave(v, save, { enabled: false }), {
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(({ v }) => useAutoSave(v, save, { enabled: false }), {
     initialProps: { v: { voice: 'alloy' } },
   });
   rerender({ v: { voice: 'echo' } });
   await flush();
   expect(save).not.toHaveBeenCalled();
+});
+
+
+test('a slow save cannot overwrite a newer one — writes are serialized', async () => {
+  // Debouncing alone does not prevent this: if B is slow and C is fast, C lands first and B lands
+  // second, so the SERVER keeps the older value while the screen says "Saved".
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const save = jest.fn()
+    .mockImplementationOnce((v: { voice: string }) => new Promise<void>((resolve) => {
+      releaseFirst = () => { order.push(v.voice); resolve(); };
+    }))
+    .mockImplementation(async (v: { voice: string }) => { order.push(v.voice); });
+
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(
+    ({ v }) => useAutoSave(v, save), { initialProps: { v: { voice: 'alloy' } } },
+  );
+
+  rerender({ v: { voice: 'echo' } });
+  await flush();                       // 'echo' starts and hangs
+  rerender({ v: { voice: 'nova' } });
+  await flush();                       // must NOT start while 'echo' is in flight
+  expect(save).toHaveBeenCalledTimes(1);
+
+  await act(async () => { releaseFirst(); });
+  await flush();
+
+  expect(order).toEqual(['echo', 'nova']);   // newest value lands last
+});
+
+test('re-choosing the SAME option after a failure retries it', async () => {
+  // Picking the same chip again is not a state change, so nothing re-triggers the effect. Without
+  // a retry the preference is stuck until some unrelated setting changes.
+  const save = jest.fn()
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue(undefined);
+  const { rerender, result } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(
+    ({ v }) => useAutoSave(v, save), { initialProps: { v: { voice: 'alloy' } } },
+  );
+
+  rerender({ v: { voice: 'echo' } });
+  await flush();
+  await waitFor(() => expect(result.current.state).toBe('error'));
+
+  await act(async () => { result.current.retry(); });
+  await waitFor(() => expect(result.current.state).toBe('saved'));
+  expect(save).toHaveBeenCalledTimes(2);
+  expect(save).toHaveBeenLastCalledWith({ voice: 'echo' });
 });

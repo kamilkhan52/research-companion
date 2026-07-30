@@ -143,6 +143,10 @@ export default function SettingsScreen() {
   // query) would otherwise re-fire this and silently overwrite whatever the user is mid-typing
   // into model/narrationModel/voice with the last-saved server values.
   const initializedRef = useRef(false);
+  // State, not just the ref: auto-save must not baseline until the server's values have been
+  // applied to these fields. Enabling it a render earlier makes that application look like an
+  // edit, and merely opening Settings writes them straight back.
+  const [initialized, setInitialized] = useState(false);
   useEffect(() => {
     if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
@@ -152,6 +156,7 @@ export default function SettingsScreen() {
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
       setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
       initializedRef.current = true;
+      setInitialized(true);
     }
   }, [settings.data]);
 
@@ -182,18 +187,32 @@ export default function SettingsScreen() {
     prior_notes_scope: priorScope,
   }), [model, narrationModel, previewModel, speechProvider, voice, priorScope]);
 
-  const prefsSaveState = useAutoSave(
+  const prefsSave = useAutoSave(
     prefsPayload,
     (payload) => saveSettings.mutateAsync(payload),
-    { enabled: canEditPrefs && settings.isSuccess },
+    { enabled: canEditPrefs && initialized },
   );
 
-  /** Save one operator key once its field is finished with, not per keystroke. */
-  const saveKeyOnBlur = useCallback(async (field: string, value: string, clear: () => void) => {
-    if (!isOperator || !value.trim()) return;
-    await saveSettings.mutateAsync({ [field]: value.trim() });
-    clear();
-  }, [isOperator, saveSettings]);
+  // Keys are NOT auto-saved, and not saved on blur either. Blur means "focus moved", not "entry
+  // finished" — tapping the next field midway through replacing a key would persist the prefix and
+  // take that provider offline for everyone on the instance. That is materially easier to trigger
+  // than the button it replaced, which is the opposite of an improvement. So keys keep an explicit
+  // commit; it just appears only when there is actually a key to save.
+  const dirtyKeys = useMemo(() => ({
+    ...(apiKey.trim() ? { openrouter_api_key: apiKey.trim() } : {}),
+    ...(openaiKey.trim() ? { openai_api_key: openaiKey.trim() } : {}),
+    ...(firecrawlKey.trim() ? { firecrawl_api_key: firecrawlKey.trim() } : {}),
+    ...(semanticScholarKey.trim() ? { semantic_scholar_api_key: semanticScholarKey.trim() } : {}),
+  }), [apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
+
+  const saveKeys = useCallback(async () => {
+    if (!isOperator || Object.keys(dirtyKeys).length === 0) return;
+    await saveSettings.mutateAsync(dirtyKeys);
+    setApiKey('');
+    setOpenaiKey('');
+    setFirecrawlKey('');
+    setSemanticScholarKey('');
+  }, [isOperator, dirtyKeys, saveSettings]);
 
   return (
     <Screen edges={['top']}>
@@ -286,7 +305,6 @@ export default function SettingsScreen() {
                 <Field
                   value={apiKey}
                   onChangeText={setApiKey}
-                  onBlur={() => void saveKeyOnBlur('openrouter_api_key', apiKey, () => setApiKey(''))}
                   placeholder={settings.data?.has_key ? 'Replace key…' : 'sk-or-…'}
                   secureTextEntry
                   autoCapitalize="none"
@@ -363,7 +381,6 @@ export default function SettingsScreen() {
                     <Field
                       value={openaiKey}
                       onChangeText={setOpenaiKey}
-                      onBlur={() => void saveKeyOnBlur('openai_api_key', openaiKey, () => setOpenaiKey(''))}
                       placeholder={settings.data?.has_openai_key ? 'Replace key…' : 'sk-…'}
                       secureTextEntry
                       autoCapitalize="none"
@@ -439,7 +456,6 @@ export default function SettingsScreen() {
                 <Field
                   value={semanticScholarKey}
                   onChangeText={setSemanticScholarKey}
-                  onBlur={() => void saveKeyOnBlur('semantic_scholar_api_key', semanticScholarKey, () => setSemanticScholarKey(''))}
                   placeholder={settings.data?.has_semantic_scholar_key
                     ? 'Replace key…'
                     : 'Semantic Scholar API key'}
@@ -472,7 +488,6 @@ export default function SettingsScreen() {
                 <Field
                   value={firecrawlKey}
                   onChangeText={setFirecrawlKey}
-                  onBlur={() => void saveKeyOnBlur('firecrawl_api_key', firecrawlKey, () => setFirecrawlKey(''))}
                   placeholder={settings.data?.has_firecrawl_key ? 'Replace key…' : 'fc-…'}
                   secureTextEntry
                   autoCapitalize="none"
@@ -504,9 +519,18 @@ export default function SettingsScreen() {
                 />
               </Section>
 
+              {isOperator && Object.keys(dirtyKeys).length > 0 ? (
+                <Button
+                  title={saveSettings.isPending ? 'Saving…' : 'Save API keys'}
+                  onPress={() => void saveKeys()}
+                  loading={saveSettings.isPending}
+                  style={{ marginTop: space.sm }}
+                />
+              ) : null}
               {isOperator || canEditPrefs ? (
                 <AutoSaveStatus
-                  state={prefsSaveState}
+                  state={prefsSave.state}
+                  onRetry={prefsSave.retry}
                   pending={saveSettings.isPending}
                   error={saveSettings.isError ? (saveSettings.error as Error).message : null}
                 />
@@ -624,17 +648,22 @@ function LockedRow({ label }: { label: string }) {
  *  Without a server URL there is nothing to point at, so the links say so rather than silently
  *  failing: a dead privacy link is a Play violation, an explained one is not. */
 /** The quiet replacement for a Save button: says what just happened, asks for nothing. */
-function AutoSaveStatus({ state, pending, error }: {
+function AutoSaveStatus({ state, pending, error, onRetry }: {
   state: AutoSaveState;
   pending: boolean;
   error: string | null;
+  onRetry: () => void;
 }) {
   const t = useTheme();
-  if (error) {
+  if (error || state === 'error') {
+    // A failed auto-save has no button to press again, so it has to offer one — otherwise the
+    // preference is silently lost and the reader has no way to know or fix it.
     return (
-      <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-        {error}
-      </Text>
+      <Pressable onPress={onRetry} style={{ marginTop: space.sm }} accessibilityRole="button">
+        <Text variant="caption" color={t.danger}>
+          {error ?? "Couldn't save that setting."} Tap to retry.
+        </Text>
+      </Pressable>
     );
   }
   const busy = pending || state === 'saving';

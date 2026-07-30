@@ -6,7 +6,7 @@
 
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
-import { renderAsync, screen } from '@testing-library/react-native';
+import { act, fireEvent, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/settings';
@@ -50,10 +50,12 @@ const settings = {
   prior_notes_scope: 'related' as const,
 };
 
+let saveSettingsMutate: jest.Mock;
+
 function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boolean) {
   jest.spyOn(queries, 'useSettings').mockReturnValue({
     data: { ...settings, is_operator: isOperator, can_edit_preferences: canEditPreferences },
-    isLoading: false, isError: false,
+    isLoading: false, isError: false, isSuccess: true,
   } as never);
   jest.spyOn(queries, 'useFavoriteModels').mockReturnValue({ data: [] } as never);
   jest.spyOn(queries, 'usePrompts').mockReturnValue({
@@ -62,8 +64,9 @@ function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boole
   jest.spyOn(queries, 'useUsage').mockReturnValue({
     data: undefined, isLoading: false, isError: false,
   } as never);
+  saveSettingsMutate = jest.fn().mockResolvedValue(undefined);
   jest.spyOn(queries, 'useSaveSettings').mockReturnValue({
-    mutateAsync: jest.fn(), isPending: false, isError: false,
+    mutateAsync: saveSettingsMutate, isPending: false, isError: false,
   } as never);
   jest.spyOn(queries, 'useSavePrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
   jest.spyOn(queries, 'useResetPrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
@@ -195,4 +198,38 @@ test('a per-user flag that is absent falls back to the operator gate', async () 
   await renderScreen();
 
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(false);
+});
+
+// Auto-save turned "can this user write?" from a question about a button into a question about a
+// silent background mutation. That is worth its own test: a reader must not be able to trigger a
+// write of instance-wide settings just by being on the screen.
+test('a read-only reader triggers no settings write at all', async () => {
+  stubQueries(false);
+  await renderScreen();
+  await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+
+  expect(saveSettingsMutate).not.toHaveBeenCalled();
+  // And the contextual key-save action is absent for a non-operator.
+  expect(screen.queryByText('Save API keys')).toBeNull();
+});
+
+test('merely opening the screen as an operator writes nothing back', async () => {
+  // The subtle one: the screen applies the server's values to its own fields on first load. If
+  // auto-save baselines BEFORE that, the application looks like an edit and opening Settings
+  // silently rewrites every preference.
+  stubQueries(true);
+  await renderScreen();
+  await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+
+  expect(saveSettingsMutate).not.toHaveBeenCalled();
+});
+
+test('an operator changing a preference does get it saved', async () => {
+  // The guard on the two tests above: "never save" would satisfy both and break the feature.
+  stubQueries(true);
+  await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalled(), { timeout: 3000 });
+  expect(saveSettingsMutate.mock.calls[0][0]).toMatchObject({ prior_notes_scope: 'all' });
 });
