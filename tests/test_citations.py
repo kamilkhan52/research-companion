@@ -162,3 +162,77 @@ def test_a_failure_message_never_carries_the_api_key(caplog, monkeypatch):
 
     assert secret not in caplog.text
     assert "***" in caplog.text
+
+# ---- OpenAlex fallback: only a VERIFIED match may be recorded ------------------------------
+
+class _FakeOpenAlex:
+    """Returns one canned OpenAlex payload for every query."""
+
+    def __init__(self, results):
+        self.results = results
+        self.queries = []
+
+    def get(self, url, params=None, **_kw):
+        self.queries.append((params or {}).get("search"))
+        return httpx.Response(200, json={"results": self.results},
+                              request=httpx.Request("GET", url))
+
+
+def test_a_wrong_title_match_is_refused_rather_than_recorded():
+    """Measured against a real miss: OpenAlex answered "BERT: Pre-training of deep bidirectional
+    transformers" with TinyBERT. Recording that would put ~0 citations against a paper with over
+    a hundred thousand — and nothing downstream could tell it was wrong, which is why a missing
+    number is the safer failure."""
+    fake = _FakeOpenAlex([{"display_name": "TinyBERT: Distilling BERT for Natural Language "
+                                           "Understanding", "cited_by_count": 12}])
+
+    got = citations._openalex_citation_count(
+        "BERT: Pre-training of deep bidirectional transformers for language understanding", fake)
+
+    assert got is None
+
+
+def test_the_canonical_record_wins_over_a_duplicate():
+    """OpenAlex keeps duplicate records for one work, and the top relevance hit is not reliably
+    the canonical one — an exact-title match for "Attention Is All You Need" returned 6,598 while
+    the real record has far more. Citations accumulate on the canonical record, so take the max
+    among titles that genuinely match."""
+    fake = _FakeOpenAlex([
+        {"display_name": "Attention Is All You Need", "cited_by_count": 6598},
+        {"display_name": "Attention is all you need", "cited_by_count": 103000},
+        {"display_name": "Attention Is Not All You Need", "cited_by_count": 900_000},
+    ])
+
+    got = citations._openalex_citation_count("Attention Is All You Need", fake)
+
+    assert got == 103000, "a near-miss title must not win on citation count alone"
+
+
+def test_the_fallback_is_skipped_when_no_client_is_supplied():
+    # Keeps the existing tests (and any caller that does not want it) network-free.
+    nodes = [{"id": "a", "title": "A sufficiently long paper title"}]
+    cache: dict = {}
+    citations._fetch_missing(nodes, cache, _FakeOpenAlex([]), lambda _s: None)
+    assert cache == {} or "a" not in cache or cache.get("a") is None
+
+
+def test_a_truncated_stored_title_still_matches_the_full_record():
+    # Node titles come from reading-list entries and are often shortened; the full OpenAlex record
+    # is the same paper, and refusing it would lose exactly the long tail this fallback is for.
+    fake = _FakeOpenAlex([{
+        "display_name": "BERT: Pre-training of Deep Bidirectional Transformers for Language "
+                        "Understanding",
+        "cited_by_count": 118626,
+    }])
+    assert citations._openalex_citation_count(
+        "BERT: Pre-training of Deep Bidirectional Transformers", fake) == 118626
+
+
+def test_a_title_that_continues_into_a_different_paper_is_refused():
+    fake = _FakeOpenAlex([{
+        "display_name": "Attention Is All You Need But You Do Not Need All Of It For Inference "
+                        "Of Large Language Models",
+        "cited_by_count": 500,
+    }])
+    assert citations._openalex_citation_count("Attention Is All You Need", fake) is None
+
