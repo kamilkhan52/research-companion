@@ -45,13 +45,19 @@ def _node(nid, *, arxiv=None, title="A sufficiently long paper title", sig=0, ci
             "significant_cited_by_count": sig, "cited_by_project_count": cited}
 
 
+def _key(nid, **kw):
+    """The cache key for a node — its id PLUS the identity the count came from, so correcting a
+    wrong arXiv id cannot keep serving the previous paper's count."""
+    return citations._cache_key(_node(nid, **kw))
+
+
 def test_batch_ids_fill_cache_and_misses_are_recorded():
     nodes = [_node("a", arxiv="2205.14135"), _node("b", arxiv="9999.00000")]
     cache: dict = {}
     client = FakeClient(post_resp=_resp(200, [{"citationCount": 4626}, None]))
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
-    assert cache["a"] == 4626
-    assert cache["b"] is None  # unknown id recorded as a miss, so it isn't retried every build
+    assert cache[_key("a", arxiv="2205.14135")] == 4626
+    assert cache[_key("b", arxiv="9999.00000")] is None  # unknown id recorded as a miss, so it isn't retried every build
 
 
 def test_title_match_paced_and_stops_on_429():
@@ -65,14 +71,14 @@ def test_title_match_paced_and_stops_on_429():
                               "citationCount": 7}]}),  # must never be reached
     ])
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
-    assert cache["t1"] == 512   # highest-significance node looked up first
+    assert cache[_key("t1", sig=3)] == 512   # highest-significance node looked up first
     assert client.get_calls == 2  # stopped at the 429; t3 never queried
-    assert "t3" not in cache      # not recorded -> retried on a future build
+    assert _key("t3", sig=1) not in cache      # not recorded -> retried on a future build
 
 
 def test_annotate_applies_cache_and_never_raises():
     nodes = [_node("a", arxiv="2205.14135"), _node("b")]
-    cache = {"a": 4626}
+    cache = {_key("a", arxiv="2205.14135"): 4626}
 
     def boom(nodes, cache, client, sleep):
         raise RuntimeError("network exploded")
@@ -90,10 +96,10 @@ def test_annotate_applies_cache_and_never_raises():
 
 def test_cached_nodes_are_not_refetched():
     nodes = [_node("a", arxiv="2205.14135")]
-    cache = {"a": 100}
+    cache = {_key("a", arxiv="2205.14135"): 100}
     client = FakeClient(post_resp=_resp(500))  # would fail if called
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
-    assert cache["a"] == 100
+    assert cache[_key("a", arxiv="2205.14135")] == 100
 
 
 def test_citation_and_metadata_requests_share_one_pacer():
@@ -276,4 +282,27 @@ def test_a_semantic_scholar_title_match_for_a_DIFFERENT_paper_is_refused():
 
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
 
-    assert cache["t1"] is None, "a near match must not be recorded as this paper's count"
+    assert cache[_key("t1")] is None, "a near match must not be recorded as this paper's count"
+
+
+def test_the_openalex_stage_is_bounded_in_calls_and_time():
+    """Unbounded, this loop would make one request per unresolved node at a 30s timeout each —
+    hours inside a graph build — and blow through OpenAlex's anonymous budget collecting 429s."""
+    assert citations.OPENALEX_MAX_LOOKUPS <= 200
+    assert citations.OPENALEX_BUDGET_S <= 600
+
+
+def test_a_rate_limited_openalex_stops_the_stage(monkeypatch):
+    calls = []
+
+    class _Throttling:
+        def get(self, url, params=None, **_kw):
+            calls.append(url)
+            return httpx.Response(429, request=httpx.Request("GET", url))
+
+    nodes = [_node(f"n{i}", title=f"A distinct paper title number {i}") for i in range(5)]
+    cache: dict = {}
+    real_fetch_missing(nodes, cache, FakeClient(get_resps=[_resp(404)] * 5),
+                       sleep=lambda _s: None, openalex_client=_Throttling())
+
+    assert len(calls) == 1, "a 429 must stop the stage, not be collected five times"
