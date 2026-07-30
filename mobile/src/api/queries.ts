@@ -25,6 +25,9 @@ export const keys = {
   projects: ['projects'] as const,
   recentSessions: ['recentSessions'] as const,
   projectState: (pid: string) => ['project', pid, 'state'] as const,
+  /** Every session in a project. Reading-list membership and status changes affect the
+   *  `project_links` counts served with EVERY paper, not only the one that changed. */
+  sessionsIn: (pid: string) => ['project', pid, 'session'] as const,
   session: (pid: string, slug: string, threadId = 'main') =>
     threadId === 'main'
       ? ['project', pid, 'session', slug] as const
@@ -279,6 +282,8 @@ export function useSplitProject(pid: string | null) {
       if (pid && remove_from_source) {
         // The source lost papers (and possibly graph nodes/authors).
         qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+        // …which also changes the citation counts on the papers left behind.
+        qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       }
@@ -498,6 +503,7 @@ export function useAddPaper(pid: string) {
     onSuccess: (res, { arxivId, pdfUrl }) => {
       if (!res.paper) return;
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+      qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });  // membership → citation counts
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
       if (res.action !== 'added') return;  // reused papers already carry their reading work
@@ -517,6 +523,8 @@ export function useAddPaper(pid: string) {
 function invalidateAfterRemoval(qc: ReturnType<typeof useQueryClient>, pid: string | null) {
   if (!pid) return;
   qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+  // Removing a paper changes the citation counts shown on OTHER papers' reading-mode screens.
+  qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
   qc.invalidateQueries({ queryKey: keys.graph(pid) });
   qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
   qc.invalidateQueries({ queryKey: keys.projects });

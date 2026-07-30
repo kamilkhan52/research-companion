@@ -454,6 +454,9 @@ export default function DiscussionScreen() {
             void api.removePaper(pid, slug).then(
               () => {
                 void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+                // Deleting this paper changes the citation counts on every paper it cited or
+                // that cited it — screens that are not this one.
+                void qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
                 void qc.invalidateQueries({ queryKey: keys.recentSessions });
                 router.back();
               },
@@ -606,6 +609,7 @@ export default function DiscussionScreen() {
           pid={pid}
           slug={slug!}
           title={session.data?.paper.title ?? 'This paper'}
+          paper={session.data?.paper}
           stream={stream}
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
@@ -635,7 +639,9 @@ export default function DiscussionScreen() {
           headerHeight={headerHeight}
           reviewReadyNonce={reviewReadyNonce}
           onMutated={() => {
-            qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
+            // The whole project's sessions, not just this one: approving notes flips this paper
+            // to `read`, which changes the "N you've read" count shown on every paper it cites.
+            qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
         />
@@ -2090,6 +2096,7 @@ export function ComposeFirst({
   pid,
   slug,
   title,
+  paper,
   stream,
   chatStartPath,
   initialSource,
@@ -2103,6 +2110,7 @@ export function ComposeFirst({
   pid: string;
   slug: string;
   title: string;
+  paper?: Paper | null;
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
   initialSource?: string;
@@ -2451,6 +2459,7 @@ export function ComposeFirst({
         <Card style={styles.heroCard}>
           <Chip label={isRetrieved ? 'Paper ready' : 'Unread paper'} dot={false} />
           <Text variant="editorial">{title}</Text>
+          <PaperContext paper={paper} />
           <Text variant="body" color={t.muted}>
             Choose how the analyst should open the discussion.
           </Text>
@@ -3302,5 +3311,60 @@ function FetchProgress({ job, isRetrieved }: {
         </Text>
       ) : null}
     </>
+  );
+}
+
+/**
+ * What is known about a paper BEFORE reading it, so the reader can decide whether to spend a
+ * summary at all — and how to read one if they do.
+ *
+ * Everything here is deliberately available for an unopened paper: the abstract comes from the
+ * reading-list entry, the relevance counts from its citation annotations. Anything that only
+ * exists after retrieval or a graph build is omitted rather than shown empty — a row of blanks on
+ * exactly the papers the reader has not read is worse than no row at all, because it looks like
+ * the app failed rather than like the fact is simply not known yet.
+ */
+export function PaperContext({ paper }: { paper?: Paper | null }) {
+  const t = useTheme();
+  const [expanded, setExpanded] = useState(false);
+  if (!paper) return null;
+
+  const links = paper.project_links;
+  const facts: string[] = [];
+  if (paper.year) facts.push(String(paper.year));
+  if (paper.affiliations?.length) facts.push(paper.affiliations.join(' · '));
+  if (links?.cited_by_in_project) {
+    // The read count is called out because a citation from a paper the reader actually read is a
+    // stronger reason to care than one from another unread entry.
+    facts.push(links.cited_by_read
+      ? `Cited by ${links.cited_by_in_project} here, ${links.cited_by_read} you've read`
+      : `Cited by ${links.cited_by_in_project} here`);
+  }
+  // Outgoing links are context too, and were being computed and then dropped — so a paper that
+  // cites three others here, with no abstract yet, rendered as though nothing were known.
+  if (links?.cites_in_project) {
+    facts.push(`Cites ${links.cites_in_project} here`);
+  }
+
+  const abstract = (paper.abstract ?? '').trim();
+  if (!facts.length && !abstract) return null;
+
+  return (
+    <View style={{ gap: space.xs }}>
+      {facts.length ? (
+        <Text variant="caption" color={t.muted}>{facts.join('  ·  ')}</Text>
+      ) : null}
+      {abstract ? (
+        <Pressable
+          onPress={() => setExpanded((value) => !value)}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? 'Collapse the abstract' : 'Expand the abstract'}
+        >
+          <Text variant="body" color={t.muted} numberOfLines={expanded ? undefined : 3}>
+            {abstract}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }

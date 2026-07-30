@@ -368,6 +368,11 @@ def _get_session(slug: str, thread_id: str):
         affiliation_jobs.reconcile_pending([slug])
         paper = p.to_dict()
         paper.update(affiliations.paper_summary(slug))
+        # Context for the reading-mode screen: enough to decide whether this paper is worth
+        # a summary before spending one. Both are cheap and, crucially, available for a
+        # paper that has never been opened.
+        paper["abstract"] = store.abstract_for(slug)
+        paper["project_links"] = store.project_links(slug)
         paper["last_interacted_at"] = (sessions.index_entry(slug) or {}).get("updated_at")
     return {
         "paper": paper,

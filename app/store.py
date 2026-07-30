@@ -336,6 +336,42 @@ def entry_markdown(slug: str) -> str:
     return ""
 
 
+def project_links(slug: str) -> dict:
+    """How this paper connects to the rest of THIS project's reading list.
+
+    Derived from the reading list alone — the `<!-- cites: -->` annotations — so it is available
+    for a paper nobody has opened. That is the point: the reader is deciding whether a paper is
+    worth a summary, and "three papers you have already read cite this one" answers that better
+    than anything inside the paper does. A graph-derived count would be richer and is absent
+    exactly when it is most needed.
+
+    Reads `_parse_entries()` rather than `list_papers()` deliberately. `list_papers` builds a
+    `Paper` per entry, and that calls `source_url_for`, which reads each corpus file in full — so
+    using it here would add one whole-file read per paper in the project to EVERY paper open.
+    Only slug, status and cites are needed.
+
+    `cited_by_read` is separate because a citation from a paper the reader actually read is a
+    stronger signal than one from another unread entry. Self-references and repeated targets are
+    excluded: these numbers claim distinct linked papers, and counting a paper as its own citer
+    would render "Cited by 1 here" for an entry nothing points at.
+    """
+    entries = _parse_entries()
+    known = {e["slug"] for e in entries}
+    entry = next((e for e in entries if e["slug"] == slug), None)
+    if entry is None:
+        return {"cites_in_project": 0, "cited_by_in_project": 0, "cited_by_read": 0}
+    outgoing = {c for c in (entry["cites"] or []) if c in known and c != slug}
+    citers = [
+        e for e in entries
+        if e["slug"] != slug and slug in set(e["cites"] or [])
+    ]
+    return {
+        "cites_in_project": len(outgoing),
+        "cited_by_in_project": len(citers),
+        "cited_by_read": sum(1 for e in citers if e["status"] == "read"),
+    }
+
+
 def abstract_for(slug: str) -> str:
     """The stored abstract for one paper as a single line ("" when the entry has none)."""
     for e in _parse_entries():

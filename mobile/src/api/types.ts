@@ -53,6 +53,14 @@ export interface Paper {
   year?: number | null;
   /** The reader resolved the source-title suggestion (accepted it or explicitly kept theirs). */
   title_confirmed?: boolean;
+  /** The reading-list entry's abstract, when it has one. Served for a single paper, not lists. */
+  abstract?: string;
+  /** How this paper sits in THIS project's reading list — available before it is ever opened. */
+  project_links?: {
+    cites_in_project: number;
+    cited_by_in_project: number;
+    cited_by_read: number;
+  };
   /** Two most common current institutional affiliations, provider-first when available. */
   affiliations?: string[];
   /** Retrieval-triggered first-page enrichment lifecycle. */
