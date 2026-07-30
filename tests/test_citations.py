@@ -430,3 +430,57 @@ def test_cached_none_still_clears_a_stale_count():
         transport=httpx.MockTransport(lambda r: httpx.Response(500))))
 
     assert node["citation_count"] is None
+
+
+def test_hyphenation_differences_are_the_same_paper():
+    """Observed live: 1 of 4 rejected matches was a real paper lost to hyphenation alone."""
+    assert citations._same_paper_title(
+        "BART: Denoising sequence-to-sequence pretraining for natural language generation",
+        "BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation")
+
+
+def test_ignoring_word_breaks_still_rejects_a_near_miss():
+    """The reason the gate is exact: a near miss is more dangerous than a distant one, and this
+    relaxation must not open one. Any added or altered word changes the concatenation too."""
+    assert not citations._same_paper_title(
+        "Attention Is All You Need", "Attention Is Not All You Need")
+    assert not citations._same_paper_title(
+        "A Survey of Large Language Models", "A Survey of Large Language Models for Medicine")
+    assert not citations._same_paper_title(
+        "Pareto probing: Trading off accuracy for complexity",
+        "Pareto Probing: Trading-Off Accuracy and Complexity")
+
+
+def test_title_lookup_requests_only_supported_fields():
+    """`matchScore` is not a field this endpoint supports, and S2 answers an unsupported field
+    with 400 — so requesting it disabled EVERY title lookup, on every build, silently."""
+    seen: list[str] = []
+
+    def handler(request):
+        seen.append(dict(request.url.params).get("fields", ""))
+        return httpx.Response(200, json={"data": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([_node("a")], {}, client, sleep=lambda s: None)
+
+    assert seen, "no title lookup was attempted"
+    assert "matchScore" not in seen[0]
+
+
+def test_a_broken_request_is_reported_and_stops_the_step(caplog):
+    """A 400 is a broken request, not a missing paper. Treating it like a miss meant the step
+    burned its whole budget learning nothing and left no trace of why."""
+    nodes = [_node("a", sig=3), _node("b", sig=2), _node("c", sig=1)]
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(400, json={"error": "Unrecognized or unsupported fields: [nope]"})
+
+    with caplog.at_level(logging.WARNING), \
+            httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing(nodes, {}, client, sleep=lambda s: None)
+
+    assert calls["n"] == 1, "kept going after a broken request"
+    assert "400" in caplog.text
+    assert not any(citations.cache_key(n) in {} for n in nodes)

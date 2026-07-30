@@ -185,7 +185,15 @@ def _same_paper_title(query: str, candidate: str) -> bool:
     reached by identifier instead, which cannot be ambiguous.
     """
     q, c = _normalized_title(query), _normalized_title(candidate)
-    return bool(q) and q == c
+    if not q:
+        return False
+    # Compared with word breaks removed as well, so a hyphenation difference is not a mismatch:
+    # "BART: Denoising sequence-to-sequence pretraining" against the canonical "…Pre-training"
+    # is the same paper, and punctuation stripping alone still leaves "pretraining" != "pre
+    # training". This stays exact — it cannot admit a NEAR miss, because any added, dropped or
+    # altered word changes the concatenation too ("attentionisallyouneed" vs
+    # "attentionisnotallyouneed"). It only ignores where the spaces fall.
+    return q == c or q.replace(" ", "") == c.replace(" ", "")
 
 
 #: Returned instead of a count when OpenAlex rate-limits us, so the caller stops rather than
@@ -321,11 +329,25 @@ def _fetch_missing(
             lambda title=title: client.get(
                 S2_MATCH_URL,
                 headers=_headers(),
-                params={"query": title, "fields": "title,citationCount,matchScore"},
+                # Only fields this endpoint actually supports. `matchScore` was requested here
+                # and never read, and Semantic Scholar answers an unsupported field with
+                #   400 {"error":"Unrecognized or unsupported fields: [matchScore]"}
+                # — so EVERY title lookup 400'd. That is the whole reason coverage sat at 186/402:
+                # the only route for the ~190 papers with no arXiv id or DOI was returning nothing,
+                # for every node, on every build. Adding a field here without checking it against
+                # the endpoint's schema silently disables the entire step.
+                params={"query": title, "fields": "title,citationCount"},
             ),
             pacer=pacer,
         )
         if resp.status_code == 429:
+            break
+        if resp.status_code not in (200, 404):
+            # Anything else is a broken REQUEST, not a missing paper, and must be loud. Falling
+            # through silently is exactly how a 400 on every single lookup went unnoticed: the
+            # step looked like it was running, and simply resolved nothing.
+            log.warning("title lookup failed with HTTP %s: %s",
+                        resp.status_code, _redacted(resp.text)[:200])
             break
         if resp.status_code == 200:
             rows = (resp.json() or {}).get("data") or []
