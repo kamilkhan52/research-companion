@@ -665,8 +665,17 @@ def add_entry(title: str, group: str = "Unsorted", arxiv_id: str | None = None,
 def _add_entry_locked(title: str, group: str, arxiv_id: str | None,
                       abstract: str | None, year: int | None) -> str:
     slug = derive_slug(title)
-    if any(p.slug == slug for p in list_papers()):
+    papers = list_papers()
+    if any(p.slug == slug for p in papers):
         raise DuplicatePaperError(f"A paper with slug '{slug}' already exists in this project.")
+    # Title, not just slug. Once `rename_entry` pins a slug, the effective slug and the slug the
+    # title would derive are deliberately allowed to differ — so a slug check alone stops seeing a
+    # renamed paper, and adding it back under its own canonical title would admit a duplicate that
+    # then discusses the same paper twice under two slugs. `rename_entry` already refuses a
+    # colliding title case-folded; adding has to agree with it or the two disagree about identity.
+    folded = title.casefold()
+    if any(p.title.casefold() == folded for p in papers):
+        raise DuplicatePaperError("A paper with that title already exists in this project.")
 
     group = (group or "Unsorted").strip() or "Unsorted"
     heading = f"## {group}"
@@ -720,6 +729,14 @@ def rename_entry(slug: str, title: str) -> bool:
     The title line and cached corpus heading move together; the content below those headings
     (identity comments, abstract, full text, Notes) stays unchanged. Deterministic and
     offline. The caller owns human confirmation and the bounded git commit.
+
+    Keeping the slug stable takes an explicit act, which this function used to skip: a slug is
+    DERIVED from the title unless the entry pins one with `<!-- slug: ... -->`, so rewriting the
+    title silently re-derived it and detached everything addressed by the old one — `corpus/
+    <slug>.md`, `sessions/<slug>.jsonl`, and the paper's entry in `.state/sessions.json`. The
+    paper then reappeared as unread with its text and its whole discussion orphaned on disk,
+    which is exactly what happened to two of Kamil's papers on 2026-07-29 (a 16 KB transcript
+    among them). So an unpinned entry gets its CURRENT slug written in before the title changes.
     """
     title = re.sub(r"\s+", " ", title or "").strip()
     if not title:
@@ -743,6 +760,10 @@ def rename_entry(slug: str, title: str) -> bool:
         if not match:
             raise ValueError("Could not locate the paper title in the reading list.")
         lines[index] = f"{match.group(1)}**{title}**{match.group(2)}"
+        # Pin the slug the paper already has, so the new title cannot re-derive a different one.
+        # Written directly below the title, where the other identity comments live.
+        if not _SLUG_COMMENT_RE.search(target["block"]):
+            lines.insert(index + 1, f"<!-- slug: {slug} -->")
         atomic_write_text(rl, "\n".join(lines).rstrip() + "\n")
         _parse_cache.pop(str(rl), None)
 
