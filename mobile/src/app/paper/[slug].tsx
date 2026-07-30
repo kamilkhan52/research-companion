@@ -77,6 +77,8 @@ import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
+import { ProgressSteps } from '@/components/ProgressSteps';
+import { retrievalSteps } from '@/lib/retrievalSteps';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
   PaperSummaryRetrySheet,
@@ -2561,6 +2563,18 @@ export function ComposeFirst({
               <ActivityIndicator color={t.amber} size="small" />
             ) : null}
           </View>
+
+          {/* The staged card, for the same reason the graph build has one: a single line of
+              `detail` that appears and is replaced tells the reader nothing about how far along
+              the fetch is or whether it has stalled. The steps persist; the detail line under
+              them is the only part that changes. */}
+          {retrievalJob || isRetrieved ? (
+            <ProgressSteps
+              dotSize={20}
+              style={{ marginTop: space.sm }}
+              steps={retrievalSteps(retrievalJob, isRetrieved)}
+            />
+          ) : null}
 
           {retrievalJob?.items?.length ? (
             <AgentTrail trail={retrievalJob.items} />
