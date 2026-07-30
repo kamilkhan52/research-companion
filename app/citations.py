@@ -89,6 +89,9 @@ def _external_id(node: dict) -> str | None:
 
 log = logging_config.get("citations")
 
+#: Distinguishes "no cache entry" from an entry whose value is None. See `annotate_nodes`.
+_UNCACHED = object()
+
 def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | None = None,
                    sleep=time.sleep) -> None:
     """Set node["citation_count"] (int, or None when unknown) on every node, fetching what the
@@ -113,7 +116,17 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         if own:
             client.close()
     for n in nodes:
-        n["citation_count"] = cache.get(cache_key(n))
+        # Absent from the cache is NOT the same as cached-as-None, and conflating them loses data.
+        # A cached None is a definitive miss: we asked and nothing matched, so it is authoritative
+        # and must be able to clear a stale count. Absent means we never got an answer this run —
+        # rate limited, past the lookup budget, or the cache was pruned — and overwriting a count
+        # we already had with None on that basis threw away 54 of 402 resolved nodes in one
+        # rebuild, silently, because counts accumulate over several runs and the cache does not.
+        cached = cache.get(cache_key(n), _UNCACHED)
+        if cached is not _UNCACHED:
+            n["citation_count"] = cached
+        elif not isinstance(n.get("citation_count"), int):
+            n["citation_count"] = None
     resolved = sum(1 for n in nodes if n.get("citation_count") is not None)
     if nodes and not resolved:
         # The one outcome worth a warning on its own: the enrichment ran and produced nothing.

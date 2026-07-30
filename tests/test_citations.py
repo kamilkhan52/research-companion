@@ -398,3 +398,35 @@ def test_annotated_title_is_looked_up_cleaned_and_verified():
 
     assert sent == [canonical], "the annotation must be stripped before the request"
     assert cache[citations.cache_key(node)] == 29621
+
+
+def test_rebuild_does_not_erase_counts_the_cache_no_longer_holds():
+    """A run that resolves nothing must not wipe counts an earlier run established.
+
+    Counts accumulate across rebuilds — each run is bounded by a lookup budget and gets
+    rate-limited — while the cache does not survive as reliably. Copying the cache over the nodes
+    unconditionally turned one rebuild of a real 402-node graph from 240 resolved into 186.
+    """
+    nodes = [
+        {"id": "known", "title": "A Paper With A Sufficiently Long Title", "citation_count": 1234},
+        {"id": "fresh", "title": "Another Paper With A Long Enough Title"},
+    ]
+    citations.annotate_nodes(nodes, {}, client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(429))))
+
+    assert nodes[0]["citation_count"] == 1234, "an unanswered run erased a known count"
+    assert nodes[1]["citation_count"] is None
+
+
+def test_cached_none_still_clears_a_stale_count():
+    """The other half: a cached None IS authoritative and must be able to clear a count.
+
+    Without this, the preservation above would pin a wrong number forever — exactly what
+    `cache_key` exists to prevent when a paper's identifier is corrected.
+    """
+    node = {"id": "n1", "title": "A Paper With A Sufficiently Long Title", "citation_count": 999}
+    cache = {citations.cache_key(node): None}
+    citations.annotate_nodes([node], cache, client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(500))))
+
+    assert node["citation_count"] is None
