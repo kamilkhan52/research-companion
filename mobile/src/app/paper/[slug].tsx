@@ -2541,12 +2541,12 @@ export function ComposeFirst({
               <Text variant="heading">
                 {isRetrieved
                   ? 'Full text ready'
+                  : retrievalJob?.phase === 'confirmation'
+                    ? 'Confirm the paper source'
                   : retrievalJob?.status === 'running'
                     ? retrievalJob.phase === 'hunting'
                       ? 'Finding a public PDF'
                       : 'Resolving the paper'
-                    : retrievalJob?.phase === 'confirmation'
-                      ? 'Confirm the paper source'
                     : retrieveError
                       ? 'Paper not fetched'
                       : 'Full text not fetched'}
@@ -2559,7 +2559,10 @@ export function ComposeFirst({
                     : 'Fetch now, or Start reading to fetch automatically.'}
               </Text>
             </View>
-            {retrievalJob?.status === 'running' ? (
+            {/* Not while waiting on a confirmation: the job is finished and the reader has to
+                choose a source, so a spinner would claim work is still happening. There is a
+                reachable window where status is still `running` with the phase already set. */}
+            {retrievalJob?.status === 'running' && retrievalJob.phase !== 'confirmation' ? (
               <ActivityIndicator color={t.amber} size="small" />
             ) : null}
           </View>

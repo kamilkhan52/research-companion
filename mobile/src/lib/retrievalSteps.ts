@@ -37,18 +37,32 @@ export function retrievalProgress(
   const fetching = job?.status === 'running' && !awaitingChoice;
 
   const fetchState: ProgressStepState = isRetrieved ? 'done' : fetching ? 'active' : 'pending';
-  const contextState: ProgressStepState = enrichment?.status === 'running'
-    ? 'active'
-    // With the text in hand and no enrichment reported, there is nothing further to wait for.
-    : (isRetrieved && (!enrichment || enrichment.status === 'done')) ? 'done' : 'pending';
 
-  return {
-    steps: [
-      { key: 'text', label: 'Full text', state: fetchState },
-      { key: 'context', label: 'Paper context', state: contextState },
-    ],
-    detail: detailFor(job, isRetrieved, awaitingChoice),
-  };
+  const steps: ProgressStepItem[] = [{ key: 'text', label: 'Full text', state: fetchState }];
+  // The context stage is shown only when there is something real to say about it. With no job in
+  // hand — pruned after a restart, or a paper retrieved long ago — we know nothing about whether
+  // enrichment ran, and a green check would be an assertion we cannot support. Omitting the stage
+  // is honest; inventing a state is not.
+  if (job) {
+    steps.push({ key: 'context', label: 'Paper context', state: contextStateFor(job, isRetrieved) });
+  }
+
+  return { steps, detail: detailFor(job, isRetrieved, awaitingChoice) };
+}
+
+function contextStateFor(
+  job: NonNullable<Pick<RetrievalJob, 'status' | 'phase' | 'detail' | 'enrichment'>>,
+  isRetrieved: boolean,
+): ProgressStepState {
+  const status = job.enrichment?.status;
+  if (status === 'running') return 'active';
+  // `error`/`cancelled` are real states this can be in, and neither is "still working". They stay
+  // un-ticked with the reason in the detail line — a stage sitting on `pending` forever with no
+  // explanation is the same unanswered question the card exists to fix.
+  if (status === 'error' || status === 'cancelled') return 'pending';
+  if (status === 'done') return 'done';
+  // No enrichment reported yet: finished only once the text is actually in hand.
+  return isRetrieved ? 'done' : 'pending';
 }
 
 function detailFor(
@@ -60,6 +74,8 @@ function detailFor(
   // Enrichment wins once the text is in: it is the part still moving, and naming it is the whole
   // point — "Mapping references…" as a labelled stage rather than a line that appears and goes.
   if (job?.enrichment?.status === 'running' && job.enrichment.step) return job.enrichment.step;
+  if (job?.enrichment?.status === 'error') return 'Paper context could not be prepared.';
+  if (job?.enrichment?.status === 'cancelled') return 'Paper context preparation was stopped.';
   if (job?.status === 'running') return job.detail || 'This continues if you leave the screen.';
   if (isRetrieved) return null;
   return null;

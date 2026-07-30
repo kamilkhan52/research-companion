@@ -41,7 +41,29 @@ test('enrichment is a named stage, not text that appears and vanishes', () => {
 
 test('a retrieved paper with no enrichment reported is finished, not waiting forever', () => {
   expect(states(job({ status: 'done', phase: 'done' }), true)).toEqual(['done', 'done']);
-  expect(states(null, true)).toEqual(['done', 'done']);
+});
+
+test('with no job at all the context stage is omitted rather than guessed', () => {
+  // A job pruned after a restart, or a paper fetched long ago, tells us nothing about whether
+  // enrichment ever ran. A green check would assert something we cannot support.
+  const p = retrievalProgress(null, true);
+  expect(p.steps.map((s) => s.key)).toEqual(['text']);
+  expect(p.steps[0].state).toBe('done');
+});
+
+test('a FAILED enrichment does not sit silently on pending', () => {
+  // `enrichment.status` can be error or cancelled. Leaving the stage un-ticked with no reason is
+  // the same unanswered question this card exists to fix.
+  const failed = retrievalProgress(
+    job({ status: 'done', phase: 'done', enrichment: { status: 'error', step: '' } }), true,
+  );
+  expect(failed.steps[1].state).toBe('pending');
+  expect(failed.detail).toMatch(/could not be prepared/i);
+
+  const stopped = retrievalProgress(
+    job({ status: 'done', phase: 'done', enrichment: { status: 'cancelled', step: '' } }), true,
+  );
+  expect(stopped.detail).toMatch(/was stopped/i);
 });
 
 test('a failed fetch stops moving instead of looking like work in progress', () => {
@@ -50,5 +72,5 @@ test('a failed fetch stops moving instead of looking like work in progress', () 
 });
 
 test('nothing has started before a fetch begins', () => {
-  expect(states(null, false)).toEqual(['pending', 'pending']);
+  expect(states(null, false)).toEqual(['pending']);
 });
