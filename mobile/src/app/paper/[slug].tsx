@@ -77,6 +77,8 @@ import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
+import { ProgressSteps } from '@/components/ProgressSteps';
+import { retrievalProgress } from '@/lib/retrievalSteps';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
   PaperSummaryRetrySheet,
@@ -2539,12 +2541,12 @@ export function ComposeFirst({
               <Text variant="heading">
                 {isRetrieved
                   ? 'Full text ready'
+                  : retrievalJob?.phase === 'confirmation'
+                    ? 'Confirm the paper source'
                   : retrievalJob?.status === 'running'
                     ? retrievalJob.phase === 'hunting'
                       ? 'Finding a public PDF'
                       : 'Resolving the paper'
-                    : retrievalJob?.phase === 'confirmation'
-                      ? 'Confirm the paper source'
                     : retrieveError
                       ? 'Paper not fetched'
                       : 'Full text not fetched'}
@@ -2557,19 +2559,24 @@ export function ComposeFirst({
                     : 'Fetch now, or Start reading to fetch automatically.'}
               </Text>
             </View>
-            {retrievalJob?.status === 'running' ? (
+            {/* Not while waiting on a confirmation: the job is finished and the reader has to
+                choose a source, so a spinner would claim work is still happening. There is a
+                reachable window where status is still `running` with the phase already set. */}
+            {retrievalJob?.status === 'running' && retrievalJob.phase !== 'confirmation' ? (
               <ActivityIndicator color={t.amber} size="small" />
             ) : null}
           </View>
 
-          {retrievalJob?.items?.length ? (
-            <AgentTrail trail={retrievalJob.items} />
+          {/* The staged card, for the same reason the graph build has one: a single line of
+              `detail` that appears and is replaced tells the reader nothing about how far along
+              the fetch is or whether it has stalled. The steps persist; the detail line under
+              them is the only part that changes. */}
+          {retrievalJob || isRetrieved ? (
+            <FetchProgress job={retrievalJob} isRetrieved={isRetrieved} />
           ) : null}
 
-          {retrievalJob?.enrichment?.status === 'running' ? (
-            <Text variant="caption" color={t.muted}>
-              {retrievalJob.enrichment.step}
-            </Text>
+          {retrievalJob?.items?.length ? (
+            <AgentTrail trail={retrievalJob.items} />
           ) : null}
 
           {retrieveError ? (
@@ -3278,3 +3285,22 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   });
 };
+
+/** The staged fetch card: two honest stages plus the one line that actually changes. */
+function FetchProgress({ job, isRetrieved }: {
+  job: Parameters<typeof retrievalProgress>[0];
+  isRetrieved: boolean;
+}) {
+  const t = useTheme();
+  const { steps, detail } = retrievalProgress(job, isRetrieved);
+  return (
+    <>
+      <ProgressSteps dotSize={20} style={{ marginTop: space.sm }} steps={steps} />
+      {detail ? (
+        <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+          {detail}
+        </Text>
+      ) : null}
+    </>
+  );
+}
