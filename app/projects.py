@@ -402,19 +402,113 @@ def create_project(
 MAX_BUNDLE_BYTES = 200 * 1024 * 1024
 
 
-def export_bundle(pid: str) -> bytes:
-    """The project's approved record, as a git bundle. Working state (`.state/`) never travels.
+#: The ref carrying unapproved working state alongside the approved history. A second ref rather
+#: than a second file or endpoint, so the bundle stays one artifact and the whole existing trust
+#: boundary (`git bundle verify`, `_reject_hostile_tree`, disabled hooks/filters, the expansion
+#: caps) applies to it unchanged — choosing an archive format here would reintroduce exactly the
+#: path-traversal bug class that picking bundles avoided.
+WORKING_STATE_REF = "refs/rc/working-state"
 
-    Exports **HEAD only**, not `--all`. `--all` sweeps in every ref the repo happens to carry —
-    `refs/stash` above all, which can hold working material that was never approved, and which is
-    exactly the thing this app's whole "agent proposes, human commits" rule exists to keep out of
-    the record. The shareable project is the committed history of the current branch, nothing else.
+#: What counts as working state worth moving. `.state/` is emphatically NOT one thing, and the
+#: sizes are what settle it (measured on a real project):
+#:
+#:   authored, unreproducible ......  sessions.json 48K, branches/ 0B
+#:   derived, reproducible .........  audio 83M, figures 104M, covers 9.2M, reference-graph 7M,
+#:                                    paper-metadata 2.5M, graph-corpus 1.6M, discovery 160K
+#:   instance-local, must not move .  usage.json (billing), settings.json, provisional-owner
+#:
+#: So we carry ~48K and let the destination REGENERATE the rest from the committed corpus — which
+#: it can, because every derived artifact is a pure function of committed content plus the network.
+#: Carrying all of `.state/` would move 207 MB of one 214 MB project to reproduce something the
+#: destination can rebuild, and would also carry another instance's usage ledger into a billing
+#: record that is not its own.
+_WORKING_STATE_PATHS = (".state/sessions.json", ".state/branches")
+
+#: Working-tree paths that carry unapproved *content*: a retrieved paper and a live discussion sit
+#: here until a human approves them (invariant 4 — `store.add_entry` deliberately does not commit),
+#: so HEAD-only export loses them. `reading-list.md` is tracked, so its uncommitted edits come from
+#: the diff below rather than from this list.
+_WORKING_TREE_DIRS = ("corpus", "sessions")
+
+
+def _working_state_files(root: Path) -> list[str]:
+    """Repo-relative paths of everything that should travel outside the committed history."""
+    out: list[str] = []
+    for rel in _WORKING_STATE_PATHS:
+        path = root / rel
+        if path.is_file():
+            out.append(rel)
+        elif path.is_dir():
+            out.extend(
+                str(child.relative_to(root)) for child in sorted(path.rglob("*")) if child.is_file()
+            )
+    return out
+
+
+def export_bundle(pid: str) -> bytes:
+    """The project as a git bundle: its approved history, plus a working-state ref.
+
+    `HEAD` carries the approved record — never `--all`, which sweeps in every ref the repo happens
+    to carry, `refs/stash` above all, and that can hold material a human never approved.
+
+    `WORKING_STATE_REF` carries what HEAD structurally cannot: reading progress, and the retrieved
+    papers and live discussions that invariant 4 leaves uncommitted on purpose. Without it a shared
+    project arrives looking untouched — every paper unread, and any paper whose text or transcript
+    was still awaiting approval simply missing. That is not a hypothetical; it happened on both
+    transfers of Kamil's corpus (2026-07-27 staging, 2026-07-29 production).
+
+    The ref is built as a commit with NO parent and no relation to the branch, so nothing here ever
+    joins the approval history: it is a payload that happens to be addressed by git.
     """
     if not exists(pid):
         raise ProjectError(f"Unknown project: {pid}")
+    root = project_path(pid)
     with tempfile.TemporaryDirectory() as tmp:
+        refs = ["HEAD"]
+        # A private index, so building the payload cannot disturb the project's real staging area
+        # (a human may have staged something; export must never be destructive).
+        index = Path(tmp) / "working.index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        paths = _working_state_files(root)
+        # Uncommitted edits to tracked files (a reading list with entries added but not approved).
+        modified = [
+            line for line in _git(pid, "diff", "--name-only", "HEAD").splitlines() if line.strip()
+        ]
+        # Retrieved papers and live transcripts still awaiting approval.
+        untracked = [
+            line for line in _git(
+                pid, "ls-files", "--others", "--exclude-standard", "--", *_WORKING_TREE_DIRS,
+            ).splitlines() if line.strip()
+        ]
+        payload = sorted({*paths, *modified, *untracked})
+        if payload:
+            try:
+                subprocess.run(["git", "add", "--force", "--", *payload], cwd=str(root), env=env,
+                               check=True, capture_output=True, text=True)
+                tree = subprocess.run(["git", "write-tree"], cwd=str(root), env=env, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+                commit = subprocess.run(
+                    ["git", *config.git_identity_args(), "commit-tree", tree, "-m",
+                     "working state (not part of the approval history)"],
+                    cwd=str(root), env=env, check=True, capture_output=True, text=True,
+                ).stdout.strip()
+                _git(pid, "update-ref", WORKING_STATE_REF, commit)
+                refs.append(WORKING_STATE_REF)
+            except subprocess.CalledProcessError as e:
+                # Never fail an export over working state: the approved history is the thing that
+                # must always be shareable, and a partial share beats a refused one.
+                log.warning("could not build working state for %s: %s", pid,
+                            (e.stderr or "")[:200])
         out = Path(tmp) / "project.bundle"
-        _git(pid, "bundle", "create", str(out), "HEAD")
+        try:
+            _git(pid, "bundle", "create", str(out), *refs)
+        finally:
+            # The ref exists only long enough for `bundle create` to read it. Left behind it would
+            # keep a whole snapshot of the working tree reachable in the source repo after every
+            # share, so the object store would grow with each export and never be collected.
+            if WORKING_STATE_REF in refs:
+                subprocess.run(["git", "update-ref", "-d", WORKING_STATE_REF],
+                               cwd=str(root), capture_output=True)
         return out.read_bytes()
 
 
@@ -457,7 +551,7 @@ def _is_state_path(path: str) -> bool:
     return path.split("/", 1)[0].casefold() == ".state"
 
 
-def _reject_hostile_tree(repo: Path) -> None:
+def _reject_hostile_tree(repo: Path, rev: str = "HEAD", *, allow_state: bool = False) -> None:
     """Refuse a bundle whose tree would put something dangerous on disk.
 
     `git bundle verify` checks INTEGRITY, not safety, and git's own path rules only stop `..` and
@@ -471,7 +565,7 @@ def _reject_hostile_tree(repo: Path) -> None:
     prefix test.
     """
     listing = subprocess.run(
-        ["git", "ls-tree", "-r", "-l", "-z", "--full-tree", "HEAD"],
+        ["git", "ls-tree", "-r", "-l", "-z", "--full-tree", rev],
         cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
     if listing.returncode != 0:
         raise ProjectError("Could not read the bundle's contents.")
@@ -497,7 +591,11 @@ def _reject_hostile_tree(repo: Path) -> None:
             raise ProjectError(f"Refusing bundle: it contains a symlink ({path}).")
         if mode == _GITLINK_MODE:
             raise ProjectError(f"Refusing bundle: it contains a submodule ({path}).")
-        if _is_state_path(path):
+        # A project must never TRACK `.state/` — that is derived, instance-local bulk, and the
+        # committed history is not where it belongs. The working-state ref is the deliberate
+        # exception: carrying `.state/sessions.json` is its entire purpose, and what may actually
+        # land from it is narrowed separately by `_accepts_working_path`.
+        if _is_state_path(path) and not allow_state:
             raise ProjectError(f"Refusing bundle: it tracks working state ({path}).")
         if PurePosixPath(path).name in _GIT_CONTROL_FILES:
             raise ProjectError(f"Refusing bundle: it carries git configuration ({path}).")
@@ -513,6 +611,121 @@ def _reject_hostile_tree(repo: Path) -> None:
             if total > MAX_CHECKOUT_BYTES:
                 raise ProjectError("Refusing bundle: it expands to more than "
                                    f"{MAX_CHECKOUT_BYTES // (1024 * 1024)} MB.")
+
+
+def _accepts_working_path(rel: str) -> bool:
+    """Whether an incoming working-state path may be written into a fresh import.
+
+    An allowlist, not a denylist, and narrower than what export produces: the export side runs on
+    OUR data, this side runs on a stranger's bundle.
+
+    Containment is checked FIRST and lexically, because every rule below it is a prefix test and a
+    prefix test proves nothing about where a path lands — `corpus/../../../other/reading-list.md`
+    begins with `corpus/` and leaves the project entirely. Today such an entry also fails earlier,
+    because blobs are read as `<ref>:<path>` and git normalises that path and refuses it; that is
+    an accident of addressing, not a decision, and reading by object id instead would remove it
+    silently. So the rule is enforced here too.
+
+    The rest is about paths that look ordinary but change how the instance behaves: `project.json`
+    would override the sanitized metadata the importer just rebuilt, owner included, and
+    `.gitignore`/`.gitattributes` would let the sender decide what this instance tracks and which
+    filters run.
+    """
+    if not rel or rel.startswith("/") or "\\" in rel or "\0" in rel:
+        return False
+    parts = PurePosixPath(rel).parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        return False
+    if parts[0] == ".git":
+        return False
+    if rel in _GIT_CONTROL_FILES or rel == META or rel == ".gitignore":
+        return False
+    if rel in ("reading-list.md", "working-notes.md", "reading-method.md",
+               ".state/sessions.json"):
+        return True
+    return rel.startswith(("corpus/", "sessions/", ".state/branches/"))
+
+
+def _ensure_state_ignored(repo: Path) -> None:
+    """Guarantee the imported project ignores `.state/`, whatever its `.gitignore` said.
+
+    Appends rather than replaces: a project's own ignore rules are legitimate content, and only
+    this one line is a safety property of the app rather than a preference of the sender.
+    """
+    path = repo / ".gitignore"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    if any(line.strip() in (".state", ".state/") for line in existing.splitlines()):
+        return
+    atomic_write_text(path, (existing.rstrip() + "\n" if existing.strip() else "") + ".state/\n")
+
+
+def _materialize_working_state(repo: Path, bundle: Path) -> int:
+    """Write the working-state ref's files into the checkout. Returns how many landed.
+
+    Blobs are written directly rather than checked out, and that is the whole point: `git checkout
+    <ref> -- .` would stage them, so an imported project would arrive with its unapproved papers
+    and transcripts sitting in the index, ready to be swept into the next commit. Invariant 4 says
+    a human approves before anything joins the record, so this content has to land as exactly what
+    it is — modified and untracked working-tree files — and the index must stay untouched.
+
+    Absent ref, hostile tree, or unreadable blob: the import still succeeds with the approved
+    history alone. Losing progress is bad; refusing a valid project because its optional payload
+    was odd would be worse.
+    """
+    # `git clone` maps only `refs/heads/*`, so a ref outside that namespace is silently dropped —
+    # which is why it lives outside it (nothing here should ever look like a branch someone could
+    # check out). Fetch it explicitly from the same already-verified bundle.
+    subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", "-q",
+                    str(bundle), f"{WORKING_STATE_REF}:{WORKING_STATE_REF}"],
+                   cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
+    probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", WORKING_STATE_REF],
+                           cwd=str(repo), capture_output=True, text=True, env=_SAFE_GIT_ENV)
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return 0
+    _reject_hostile_tree(repo, WORKING_STATE_REF, allow_state=True)
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--name-only", "--full-tree", WORKING_STATE_REF],
+        cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
+    if listing.returncode != 0:
+        return 0
+    written = 0
+    for raw in listing.stdout.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            rel = raw.decode()
+        except UnicodeDecodeError:
+            continue
+        if not _accepts_working_path(rel):
+            log.info("import: working-state path refused: %s", rel[:120])
+            continue
+        blob = subprocess.run(["git", "cat-file", "blob", f"{WORKING_STATE_REF}:{rel}"],
+                              cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
+        if blob.returncode != 0:
+            continue
+        # Second, independent containment check at the point of the write. The allowlist already
+        # refuses traversal, but it is a string rule and this is the operation that would actually
+        # escape, so it does not get to be the only thing between a stranger's bundle and the
+        # filesystem. Lexical (abspath, not resolve): no symlink chasing, same rule as
+        # `project_path`.
+        target = repo / rel
+        if os.path.commonpath((os.path.abspath(target),
+                               os.path.abspath(repo))) != os.path.abspath(repo):
+            log.warning("import: refusing working-state path outside the project: %s", rel[:120])
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(blob.stdout)
+        written += 1
+    # The ref itself must not survive into the imported repo: it is a transport detail, and leaving
+    # it behind would make the next export of THIS project re-emit a stale snapshot alongside a
+    # freshly built one.
+    subprocess.run(["git", "update-ref", "-d", WORKING_STATE_REF],
+                   cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
+    log.info("import: materialized %d working-state files", written)
+    return written
 
 
 def _assert_project_shape(repo: Path) -> None:
@@ -628,6 +841,16 @@ def import_bundle(
                                   cwd=str(repo), capture_output=True, text=True, env=_SAFE_GIT_ENV)
         if checkout.returncode != 0:
             raise ProjectError(f"Could not import the bundle: {checkout.stderr.strip()}")
+
+        # The sender controls HEAD, including its `.gitignore`. `_reject_hostile_tree` refuses a
+        # bundle that TRACKS `.state/`, but a `.gitignore` that simply omits (or negates) it is
+        # ordinary-looking and passes — and then the next approval's `git add -A` stages the
+        # `.state/` this import is about to write, including the provisional-owner marker and any
+        # retry branches. That breaks invariant 4 at the next commit rather than at import, which
+        # is worse: it looks like the reader approved it. Rebuild the rule rather than trust it,
+        # the same way the metadata is rebuilt.
+        _ensure_state_ignored(repo)
+        _materialize_working_state(repo, bundle)
 
         _assert_project_shape(repo)
         try:

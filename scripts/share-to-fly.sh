@@ -37,10 +37,18 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 bundle="$tmp/$PID.bundle"
 
-# HEAD only, matching export_bundle: `--all` would sweep in refs/stash, which can hold working
-# material that was never approved — exactly what "agent proposes, human commits" keeps out.
+# Built by `projects.export_bundle` rather than by a `git bundle create` of its own, so this route
+# carries the same thing the HTTP route does: HEAD (never `--all` — that would sweep in refs/stash,
+# which can hold material nobody approved) PLUS the working-state ref holding reading progress and
+# the retrieved papers and live transcripts that invariant 4 leaves uncommitted. A hand-rolled
+# HEAD-only bundle here is precisely how both of the real transfers arrived looking untouched.
 echo "→ bundling $PID"
-git -C "$REPO" bundle create "$bundle" HEAD 2>/dev/null
+here_root="$(cd "$(dirname "$0")/.." && pwd)"
+RC_ENV="${RC_ENV:-dev}" RC_PROJECTS_ROOT="$ROOT" "$here_root/.venv/bin/python" -c '
+import pathlib, sys
+from app import projects
+pathlib.Path(sys.argv[1]).write_bytes(projects.export_bundle(sys.argv[2]))
+' "$bundle" "$PID"
 git bundle verify "$bundle" >/dev/null 2>&1 || { echo "   bundle failed verification" >&2; exit 1; }
 echo "   $(du -h "$bundle" | cut -f1), history intact"
 
