@@ -217,9 +217,10 @@ test('a read-only reader cannot trigger a settings write even by trying', async 
   expect(screen.queryByText('Save API keys')).toBeNull();
 });
 
-test('a half-typed API key cannot be saved', async () => {
+test('an obviously incomplete API key cannot be saved', async () => {
   // The backend accepts any string, so a prefix stored as a key takes that provider offline for
-  // everyone on the instance until somebody works out why.
+  // everyone on the instance until somebody works out why. The floor catches the obvious accident;
+  // it cannot tell a complete key from a long prefix, and this test does not claim it can.
   stubQueries(true);
   await renderScreen();
 
@@ -252,4 +253,20 @@ test('an operator changing a preference does get it saved', async () => {
   await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalled(), { timeout: 3000 });
   // One FIELD per request: an overlapping write cannot clobber unrelated preferences.
   expect(saveSettingsMutate.mock.calls[0][0]).toEqual({ prior_notes_scope: 'all' });
+});
+
+test('the voice picker and the model text fields still persist', async () => {
+  // Removing the Save button silently orphaned these: the pickers were wired to commit, the text
+  // inputs and the voice list were not, so a custom model id or a voice change was simply lost.
+  stubQueries(true);
+  await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('nova')); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalledWith({ tts_voice: 'nova' }));
+
+  saveSettingsMutate.mockClear();
+  const modelField = screen.getByPlaceholderText('anthropic/claude-opus-…');
+  await act(async () => { fireEvent.changeText(modelField, 'vendor/custom-model'); });
+  await act(async () => { fireEvent(modelField, 'blur'); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalledWith({ model: 'vendor/custom-model' }));
 });

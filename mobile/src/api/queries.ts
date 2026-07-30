@@ -332,6 +332,11 @@ export function useDeleteProject() {
 export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
+    // A shared scope serializes these: TanStack runs mutations with the same scope id one at a
+    // time, in the order they were fired. Settings are now committed one field per request, so
+    // two rapid changes to the SAME preference would otherwise be two concurrent writes and the
+    // server would keep whichever happened to land last.
+    scope: { id: 'settings' },
     mutationFn: (body: Record<string, unknown>) => api.saveSettings(body),
     onSuccess: () => {
       showToast('Settings saved');

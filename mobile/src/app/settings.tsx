@@ -195,10 +195,11 @@ export default function SettingsScreen() {
   // take that provider offline for everyone on the instance. That is materially easier to trigger
   // than the button it replaced, which is the opposite of an improvement. So keys keep an explicit
   // commit; it just appears only when there is actually a key to save.
-  // A provider key is never this short, and the backend accepts any string — so `sk-` typed
-  // halfway would be stored and would take that provider offline for everyone until someone
-  // noticed. Deliberately a length floor rather than per-provider prefixes: those change, and a
-  // wrong prefix rule would reject a legitimate key, which is the worse failure.
+  // A floor, not validation. It stops the obvious accidents — an empty field, or `sk-` left
+  // behind — but no length check can tell a complete key from a long prefix, so a determined
+  // mis-paste still reaches the server. Deliberately not per-provider prefixes: those change,
+  // and wrongly rejecting a valid key is the worse failure. The real safeguard is that saving
+  // is explicit.
   const MIN_KEY_LENGTH = 16;
   const dirtyKeys = useMemo(() => {
     const usable = (value: string) => value.trim().length >= MIN_KEY_LENGTH;
@@ -214,6 +215,9 @@ export default function SettingsScreen() {
   const saveKeys = useCallback(async () => {
     const sent = dirtyKeys;
     if (!isOperator || Object.keys(sent).length === 0) return;
+    // Same mutation, so the shared status line's retry must resend THIS, not whatever
+    // preference happened to be committed last.
+    lastPayload.current = sent;
     await saveSettings.mutateAsync(sent);
     // Clear only fields whose value was actually sent AND is still what was sent: clearing
     // unconditionally would erase a key the operator started typing while the request was in
@@ -331,7 +335,13 @@ export default function SettingsScreen() {
                     whole mechanism. */}
                 <SharedWritableContext.Provider value={canEditPrefs}>
                 <Label text="Analysis model" />
-                <Field value={model} onChangeText={setModel} placeholder="anthropic/claude-opus-…" autoCapitalize="none" />
+                <Field
+                  value={model}
+                  onChangeText={setModel}
+                  onBlur={() => commitPref('model', model || null, () => {})}
+                  placeholder="anthropic/claude-opus-…"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={model}
@@ -339,7 +349,13 @@ export default function SettingsScreen() {
                 />
 
                 <Label text="Narration model" />
-                <Field value={narrationModel} onChangeText={setNarrationModel} placeholder="anthropic/claude-haiku-…" autoCapitalize="none" />
+                <Field
+                  value={narrationModel}
+                  onChangeText={setNarrationModel}
+                  onBlur={() => commitPref('narration_model', narrationModel || null, () => {})}
+                  placeholder="anthropic/claude-haiku-…"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={narrationModel}
@@ -347,7 +363,13 @@ export default function SettingsScreen() {
                 />
 
                 <Label text="Listening preview model" />
-                <Field value={previewModel} onChangeText={setPreviewModel} placeholder="Defaults to narration model" autoCapitalize="none" />
+                <Field
+                  value={previewModel}
+                  onChangeText={setPreviewModel}
+                  onBlur={() => commitPref('preview_model', previewModelPatch(previewModel), () => {})}
+                  placeholder="Defaults to narration model"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={previewModel}
@@ -406,7 +428,7 @@ export default function SettingsScreen() {
                       <ModelChips
                         models={(settings.data?.voices ?? []).map((v) => ({ label: v, id: v }))}
                         selected={voice}
-                        onPick={setVoice}
+                        onPick={(v) => commitPref('tts_voice', v || null, () => setVoice(v))}
                       />
                     </SharedWritableContext.Provider>
                   </>
