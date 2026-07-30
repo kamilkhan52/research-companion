@@ -336,6 +336,30 @@ def entry_markdown(slug: str) -> str:
     return ""
 
 
+def project_links(slug: str) -> dict:
+    """How this paper connects to the rest of THIS project's reading list.
+
+    Deliberately derived from the reading list alone — the `<!-- cites: -->` annotations — so it
+    is available for a paper nobody has opened yet. That is the whole point: the reader is
+    deciding whether a paper is worth a summary, and "three papers you have already read cite
+    this one" answers that better than anything inside the paper does. A graph-derived count would
+    be richer and is absent exactly when it is most needed.
+
+    `cited_by_read` is called out separately because a citation from a paper the reader has
+    actually read is a stronger signal than one from another unread entry.
+    """
+    papers = list_papers()
+    entry = next((p for p in papers if p.slug == slug), None)
+    if entry is None:
+        return {"cites_in_project": 0, "cited_by_in_project": 0, "cited_by_read": 0}
+    cited_by = [p for p in papers if slug in (p.cites or [])]
+    return {
+        "cites_in_project": sum(1 for c in (entry.cites or []) if any(p.slug == c for p in papers)),
+        "cited_by_in_project": len(cited_by),
+        "cited_by_read": sum(1 for p in cited_by if p.list_status == "read"),
+    }
+
+
 def abstract_for(slug: str) -> str:
     """The stored abstract for one paper as a single line ("" when the entry has none)."""
     for e in _parse_entries():
