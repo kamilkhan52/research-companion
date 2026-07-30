@@ -138,12 +138,31 @@ def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") 
 # Callers must go through `routing_payload()`. A mapping proxy is NOT JSON-serializable, so putting
 # this object into a request body directly raises `TypeError: Object of type mappingproxy is not
 # JSON serializable` — on every LLM call in the app. Verified before shipping the immutability.
+#: Turn a model's hidden reasoning OFF for jobs that do not need it. OpenRouter accepts this on
+#: every model that supports reasoning and ignores it on those that do not, so it is safe to send
+#: unconditionally — which matters, because the model here is a user setting and we cannot know
+#: whether today's choice reasons.
+#:
+#: Why this exists: narration is a rewrite, not a problem to think about — take one finished
+#: analysis and adapt it for the ear. But the default narration model is DeepSeek v4 Flash, a
+#: reasoning model, and on 2026-07-30 it spent **8,848 tokens on hidden reasoning and emitted
+#: nothing**, so the audio failed and the listener got silence after two cues. The diagnostic told
+#: Kamil to pick a non-reasoning model, which is real advice but the wrong default: the app should
+#: not ship a narration default that cannot narrate. Same reasoning for preview cues, which are one
+#: or two sentences under a latency budget.
+NO_REASONING = MappingProxyType({"enabled": False})
+
 PRIVACY_ROUTING = MappingProxyType({"data_collection": "deny", "zdr": True})
 
 
 def routing_payload() -> dict:
     """A fresh, JSON-serializable copy of `PRIVACY_ROUTING` for one request body."""
     return dict(PRIVACY_ROUTING)
+
+
+def no_reasoning_payload() -> dict:
+    """A fresh, JSON-serializable copy of `NO_REASONING` for one request body."""
+    return dict(NO_REASONING)
 
 
 def _build_body(messages: list[dict], model: str | None, default_model: str | None,
