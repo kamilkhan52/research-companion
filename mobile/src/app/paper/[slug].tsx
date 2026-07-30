@@ -454,6 +454,9 @@ export default function DiscussionScreen() {
             void api.removePaper(pid, slug).then(
               () => {
                 void qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+                // Deleting this paper changes the citation counts on every paper it cited or
+                // that cited it — screens that are not this one.
+                void qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
                 void qc.invalidateQueries({ queryKey: keys.recentSessions });
                 router.back();
               },

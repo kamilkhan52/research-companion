@@ -282,6 +282,8 @@ export function useSplitProject(pid: string | null) {
       if (pid && remove_from_source) {
         // The source lost papers (and possibly graph nodes/authors).
         qc.invalidateQueries({ queryKey: keys.projectState(pid) });
+        // …which also changes the citation counts on the papers left behind.
+        qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       }
