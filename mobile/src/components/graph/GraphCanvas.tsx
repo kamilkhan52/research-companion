@@ -3,9 +3,13 @@
 // already linked into the current build (expo-router's own Stack transitions depend on them),
 // so this ships with zero new native dependency / no EAS rebuild required.
 
-import { memo, useCallback, useEffect, useState, type ReactNode } from 'react';
-import { PixelRatio, Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  PixelRatio, Platform, Pressable, StyleSheet, View,
+  type LayoutChangeEvent, type ViewProps,
+} from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import type { AnimatedProps } from 'react-native-reanimated';
 import Animated, {
   cancelAnimation,
   runOnJS,
@@ -17,6 +21,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import type { GraphEdge, GraphNode } from '@/api/types';
+import { bucketScale, pickVisibleLabels, zoomBucket } from '@/graph/labelDeclutter';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
 import { Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -31,10 +36,17 @@ const MAX_SCALE = 2.5;
 const INITIAL_SCALE = 0.65;
 // Margin so the outermost nodes/labels aren't flush against the viewport edge.
 const FIT_PADDING = 0.92;
-// Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Labels below this zoom are
-// unreadable anyway, and each is a laid-out Text — shed them while zoomed out. Arrowheads
-// double the per-edge view count, so on dense graphs only significant edges keep theirs.
-const LABEL_MIN_SCALE = 0.5;
+// Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Arrowheads double the per-edge
+// view count, so on dense graphs only significant edges keep theirs.
+//
+// Labels used to be shed wholesale below `LABEL_MIN_SCALE = 0.5`. That constant is gone: with
+// constant-size labels the old premise ("below this zoom the text is unreadable") is false, and
+// on a phone the default fit scale is ~0.25, so it hid every label at the view you actually land
+// on. Overlap is handled by decluttering in screen space instead — see `pickVisibleLabels`. Cells
+// are sized from the real label box: `max(r * 3.6, 74)` wide by two 12px lines tall, which is why
+// they are so much wider than they are tall.
+const LABEL_CELL_W = 96;
+const LABEL_CELL_H = 30;
 const ARROWS_ON_ALL_EDGES_MAX = 120;
 // Momentum panning may not fling the canvas entirely off-screen: at least this many px of
 // it stay reachable in each axis when a decay settles.
@@ -238,13 +250,39 @@ export function GraphCanvas({
     ],
   }));
 
-  // Label level-of-detail: watch the UI-thread scale and flip ONE piece of JS state only
-  // when the readability threshold is crossed — not per frame.
-  const [labelsVisible, setLabelsVisible] = useState(INITIAL_SCALE >= LABEL_MIN_SCALE);
+  // ONE animated style shared by every label, not one per label. Reanimated attaches a single
+  // style object to many views (its ViewDescriptorsSet holds an array of view tags), so this is
+  // 2 worklets per frame — the canvas transform and this — rather than one per visible node.
+  // Giving each label its own useAnimatedStyle would be ~100 mappers per frame on a dense graph.
+  //
+  // The inverse scale cancels the canvas transform exactly, so a label's SCREEN size is constant
+  // at every zoom. Zooming then spreads the nodes without growing the text, which is what buys
+  // room for more labels. `transformOrigin` keeps the label pinned under its node as it shrinks.
+  const [labelBucket, setLabelBucket] = useState(() => zoomBucket(INITIAL_SCALE));
+  // Screen-space declutter. Priority is the node radius: a bigger circle is a more significant
+  // paper, so when two labels want the same cell the more important one keeps it. The selected
+  // node is pinned — the reader asked for that one, and it must never lose to a neighbour.
+  const labelledIds = useMemo(() => pickVisibleLabels(
+    nodes.map((n) => ({
+      id: n.id,
+      x: positions[n.id]?.x ?? 0,
+      y: positions[n.id]?.y ?? 0,
+      priority: nodeRadius(n),
+      pinned: n.id === selectedId,
+    })),
+    { scale: bucketScale(labelBucket), cellWidth: LABEL_CELL_W, cellHeight: LABEL_CELL_H },
+  ), [nodes, positions, selectedId, labelBucket]);
+
+  const labelCounterScale = useAnimatedStyle(() => ({
+    transform: [{ scale: 1 / scale.value }],
+  }));
+
+  // Which labels survive the declutter, recomputed only when a quantized zoom bucket changes —
+  // the same "one JS state flip, never per frame" discipline the old LOD boolean used.
   useAnimatedReaction(
-    () => scale.value >= LABEL_MIN_SCALE,
-    (visible, previous) => {
-      if (visible !== previous) runOnJS(setLabelsVisible)(visible);
+    () => zoomBucket(scale.value),
+    (bucket, previous) => {
+      if (bucket !== previous) runOnJS(setLabelBucket)(bucket);
     },
   );
 
@@ -291,7 +329,8 @@ export function GraphCanvas({
                 y={pos.y}
                 selected={node.id === selectedId}
                 dimmed={dimmed}
-                labelsVisible={labelsVisible}
+                showLabel={labelledIds.has(node.id)}
+                labelStyle={labelCounterScale}
                 onSelectNode={onSelectNode}
               />
             );
@@ -406,7 +445,8 @@ const NodeCircle = memo(function NodeCircle({
   y,
   selected,
   dimmed,
-  labelsVisible,
+  showLabel,
+  labelStyle,
   onSelectNode,
 }: {
   node: GraphNode;
@@ -414,7 +454,9 @@ const NodeCircle = memo(function NodeCircle({
   y: number;
   selected: boolean;
   dimmed: boolean;
-  labelsVisible: boolean;
+  showLabel: boolean;
+  /** The ONE shared counter-scale style; typed as the component prop accepts it. */
+  labelStyle: AnimatedProps<ViewProps>['style'];
   onSelectNode: (node: GraphNode) => void;
 }) {
   const t = useTheme();
@@ -427,7 +469,8 @@ const NodeCircle = memo(function NodeCircle({
   // Label only the nodes worth reading at a glance — project papers, significant refs, or the
   // selection. Skipping the long tail of external leaf citations removes hundreds of Text
   // layouts, the single biggest per-node cost when the whole graph is shown.
-  const showLabel = selected || (labelsVisible && (isProject || isSignificant));
+  // `showLabel` now arrives already decluttered; selection still forces it on.
+  const drawLabel = selected || showLabel;
 
   return (
     <Pressable
@@ -456,21 +499,28 @@ const NodeCircle = memo(function NodeCircle({
           }}
         />
       </View>
-      {showLabel ? (
-        <Text
-          numberOfLines={2}
-          variant="caption"
-          style={{
-            position: 'absolute',
-            top: r * 2 + 3,
-            width: labelWidth,
-            left: -(labelWidth - r * 2) / 2,
-            textAlign: 'center',
-            fontSize: 10,
-            lineHeight: 12,
-          }}>
-          {node.title}
-        </Text>
+      {drawLabel ? (
+        // The counter-scale lives on a wrapper, not on the Text: transforms do not affect layout,
+        // so the text wraps identically at every zoom and only its drawn size stays constant.
+        <Animated.View
+          style={[
+            {
+              position: 'absolute',
+              top: r * 2 + 3,
+              width: labelWidth,
+              left: -(labelWidth - r * 2) / 2,
+              transformOrigin: 'top center',
+            },
+            labelStyle,
+          ]}
+          pointerEvents="none">
+          <Text
+            numberOfLines={2}
+            variant="caption"
+            style={{ textAlign: 'center', fontSize: 10, lineHeight: 12 }}>
+            {node.title}
+          </Text>
+        </Animated.View>
       ) : null}
     </Pressable>
   );
