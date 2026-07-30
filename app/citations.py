@@ -132,6 +132,31 @@ def _normalized_title(title: str) -> str:
     return " ".join(re.sub(r"[^\w ]", " ", (title or "").lower(), flags=re.UNICODE).split())
 
 
+#: A trailing parenthetical that annotates rather than names: "(Radford et al., 2019)", "(2019)".
+#: Requires "et al" or a 4-digit year INSIDE the parentheses, so a parenthetical that is part of
+#: the title survives — "(GPT-4)", "(Extended Abstract)" have neither and are left alone.
+_TRAILING_ANNOTATION_RE = re.compile(
+    r"\s*\((?=[^()]*(?:\bet\s+al\b|\b(?:19|20)\d{2}\b))[^()]*\)\s*$", re.IGNORECASE)
+
+
+def lookup_title(title: str) -> str:
+    """The stored title reduced to what a bibliographic index will actually match.
+
+    Reading lists carry titles with the citation appended — "Language Models are Unsupervised
+    Multitask Learners (Radford et al., 2019)". Semantic Scholar's match endpoint answers those
+    with a hard 404: it is looking up a paper by title, and that is not the paper's title. Two of
+    the three annotated titles sampled from a real build 404'd raw and resolved correctly once the
+    annotation was removed (29,621 and 15,136 citations), so this is the difference between a
+    number and nothing at all.
+
+    Deliberately ONE narrow rule rather than general title cleaning. Every looser normalization
+    tried here has been wrong in the expensive direction — matching a neighbouring paper — and the
+    verification gate downstream compares against THIS cleaned form, so anything stripped here that
+    was really part of the title turns into a failed match, never a wrong number.
+    """
+    return _TRAILING_ANNOTATION_RE.sub("", title or "").strip()
+
+
 def _same_paper_title(query: str, candidate: str) -> bool:
     """Whether `candidate` names the same paper as `query`. Exact, after normalization.
 
@@ -270,13 +295,15 @@ def _fetch_missing(
     # 2) title match for id-less nodes — throttled without a key, so pace, cap to the nodes
     #    that actually influence recommendations (most-cited-in-project first), and stop at the
     #    first 429 (the endpoint stays throttled once it starts).
+    # The length floor applies to the title we will actually SEND: an annotation is not evidence
+    # that the title is specific enough to match on.
     titled = [n for n in missing if not _external_id(n) and cache_key(n) not in cache
-              and len(n.get("title", "")) >= 15]
+              and len(lookup_title(n.get("title", ""))) >= 15]
     titled.sort(key=lambda n: (n.get("significant_cited_by_count", 0),
                                n.get("cited_by_project_count", 0)), reverse=True)
     budget = MAX_TITLE_LOOKUPS_WITH_KEY if _api_key() else MAX_TITLE_LOOKUPS
     for n in titled[:budget]:
-        title = n["title"]
+        title = lookup_title(n["title"])
         resp = semantic_scholar.paced_request(
             lambda title=title: client.get(
                 S2_MATCH_URL,
@@ -334,7 +361,8 @@ def _fetch_missing(
             break
         count = _openalex_by_id(n, openalex_client, timeout=_budget())
         if count is None and _budget() > 0:
-            count = _openalex_citation_count(n["title"], openalex_client, timeout=_budget())
+            count = _openalex_citation_count(
+                lookup_title(n["title"]), openalex_client, timeout=_budget())
         if count is _THROTTLED:
             log.info("openalex fallback stopped: rate limited")
             break

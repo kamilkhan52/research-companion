@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 
 import httpx
+import pytest
 from app import citations, semantic_scholar
 from app.citations import _fetch_missing as real_fetch_missing
 
@@ -345,3 +346,55 @@ def test_an_exhausted_time_budget_stops_the_stage_immediately(monkeypatch):
                        sleep=lambda _s: None, openalex_client=_Slow())
 
     assert len(calls) == 1, f"budget exhausted after the first call, got {len(calls)}"
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # The real shape from a build: the citation appended to the title. Raw, these 404.
+        ("Language Models are Unsupervised Multitask Learners (Radford et al., 2019)",
+         "Language Models are Unsupervised Multitask Learners"),
+        ("Improving Language Understanding by Generative Pre-Training (Radford et al., 2018)",
+         "Improving Language Understanding by Generative Pre-Training"),
+        ("Attention Is All You Need (Vaswani et al.)", "Attention Is All You Need"),
+        ("Deep Residual Learning for Image Recognition (2015)",
+         "Deep Residual Learning for Image Recognition"),
+        # A parenthetical that is PART of the title has neither marker and must survive: stripping
+        # it would send a less specific query and match a neighbouring paper.
+        ("Language Models are Few-Shot Learners (GPT-3)",
+         "Language Models are Few-Shot Learners (GPT-3)"),
+        ("Attention Is All You Need (Extended Abstract)",
+         "Attention Is All You Need (Extended Abstract)"),
+        # Only a TRAILING annotation goes; one mid-title is content.
+        ("A Study of BERT (2018) and Its Successors", "A Study of BERT (2018) and Its Successors"),
+        ("Deep Residual Learning for Image Recognition",
+         "Deep Residual Learning for Image Recognition"),
+        ("", ""),
+    ],
+)
+def test_lookup_title_strips_only_trailing_annotations(stored, expected):
+    assert citations.lookup_title(stored) == expected
+
+
+def test_annotated_title_is_looked_up_cleaned_and_verified():
+    """The whole point: an annotated title must reach S2 clean AND pass the verification gate.
+
+    Asserted together because cleaning the query alone would still fail — the gate compares the
+    candidate against what we sent, so sending the clean title and verifying the annotated one
+    would 200 and then discard the answer.
+    """
+    stored = "Language Models are Unsupervised Multitask Learners (Radford et al., 2019)"
+    canonical = "Language Models are Unsupervised Multitask Learners"
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(dict(request.url.params)["query"])
+        return httpx.Response(200, json={"data": [{"title": canonical, "citationCount": 29621}]})
+
+    node = {"id": "gpt2", "title": stored}
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], cache, client, sleep=lambda s: None)
+
+    assert sent == [canonical], "the annotation must be stripped before the request"
+    assert cache[citations.cache_key(node)] == 29621
