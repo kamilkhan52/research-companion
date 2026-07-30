@@ -376,36 +376,13 @@ def test_lookup_title_strips_only_trailing_annotations(stored, expected):
     assert citations.lookup_title(stored) == expected
 
 
-def test_annotated_title_is_looked_up_cleaned_and_verified():
-    """The whole point: an annotated title must reach S2 clean AND pass the verification gate.
-
-    Asserted together because cleaning the query alone would still fail — the gate compares the
-    candidate against what we sent, so sending the clean title and verifying the annotated one
-    would 200 and then discard the answer.
-    """
-    stored = "Language Models are Unsupervised Multitask Learners (Radford et al., 2019)"
-    canonical = "Language Models are Unsupervised Multitask Learners"
-    sent: list[str] = []
-
-    def handler(request):
-        sent.append(dict(request.url.params)["query"])
-        return httpx.Response(200, json={"data": [{"title": canonical, "citationCount": 29621}]})
-
-    node = {"id": "gpt2", "title": stored}
-    cache: dict = {}
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        real_fetch_missing([node], cache, client, sleep=lambda s: None)
-
-    assert sent == [canonical], "the annotation must be stripped before the request"
-    assert cache[citations.cache_key(node)] == 29621
-
-
 def test_rebuild_does_not_erase_counts_the_cache_no_longer_holds():
     """A run that resolves nothing must not wipe counts an earlier run established.
 
-    Counts accumulate across rebuilds — each run is bounded by a lookup budget and gets
-    rate-limited — while the cache does not survive as reliably. Copying the cache over the nodes
-    unconditionally turned one rebuild of a real 402-node graph from 240 resolved into 186.
+    Scope is narrow and worth stating: the normal build path constructs fresh nodes, so this
+    branch does not fire there — the persisted cache is the durable store. It protects callers
+    that re-annotate nodes ALREADY holding counts, which is how a maintenance re-run over a real
+    402-node graph turned 240 resolved into 186.
     """
     nodes = [
         {"id": "known", "title": "A Paper With A Sufficiently Long Title", "citation_count": 1234},
@@ -432,11 +409,15 @@ def test_cached_none_still_clears_a_stale_count():
     assert node["citation_count"] is None
 
 
-def test_hyphenation_differences_are_the_same_paper():
-    """Observed live: 1 of 4 rejected matches was a real paper lost to hyphenation alone."""
-    assert citations._same_paper_title(
-        "BART: Denoising sequence-to-sequence pretraining for natural language generation",
-        "BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation")
+def test_word_breaks_are_not_ignored_even_though_it_costs_a_real_match():
+    """Deliberate trade, recorded so it is not "fixed" again.
+
+    Ignoring word breaks would recover "pretraining" vs "Pre-training" (a real BART match lost in
+    a live sample). It also makes "Resigning" == "Re-signing" and "A therapist's guide" == "A the
+    rapist's guide" — different words, and a wrong count is undetectable downstream while a
+    missing one is obvious."""
+    assert not citations._same_paper_title("Resigning contracts", "Re-signing contracts")
+    assert not citations._same_paper_title("A therapist's guide", "A the rapist's guide")
 
 
 def test_ignoring_word_breaks_still_rejects_a_near_miss():
@@ -472,6 +453,7 @@ def test_a_broken_request_is_reported_and_stops_the_step(caplog):
     burned its whole budget learning nothing and left no trace of why."""
     nodes = [_node("a", sig=3), _node("b", sig=2), _node("c", sig=1)]
     calls = {"n": 0}
+    cache: dict = {}
 
     def handler(request):
         calls["n"] += 1
@@ -479,8 +461,91 @@ def test_a_broken_request_is_reported_and_stops_the_step(caplog):
 
     with caplog.at_level(logging.WARNING), \
             httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        real_fetch_missing(nodes, {}, client, sleep=lambda s: None)
+        real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
 
     assert calls["n"] == 1, "kept going after a broken request"
     assert "400" in caplog.text
-    assert not any(citations.cache_key(n) in {} for n in nodes)
+    # Nothing may be recorded: a broken request is not evidence about any paper.
+    assert cache == {}
+
+
+def test_the_stored_title_is_tried_before_the_cleaned_one():
+    """A trailing parenthetical can be part of the REAL title — "The Blessings of Multiple Causes:
+    A Reply to Ogburn et al. (2019)" is an actual paper. Asking with the cleaned form first would
+    miss it, and could match a different paper genuinely called "…A Reply to Ogburn et al."."""
+    stored = "The Blessings of Multiple Causes: A Reply to Ogburn et al. (2019)"
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(dict(request.url.params)["query"])
+        return httpx.Response(200, json={"data": [{"title": stored, "citationCount": 42}]})
+
+    node = {"id": "b", "title": stored, "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], cache, client, sleep=lambda s: None)
+
+    assert sent == [stored], "the stored title must be tried first, and alone when it matches"
+    assert cache[citations.cache_key(node)] == 42
+
+
+def test_the_cleaned_title_is_tried_only_after_the_stored_one_misses():
+    stored = "Language Models are Unsupervised Multitask Learners (Radford et al., 2019)"
+    canonical = "Language Models are Unsupervised Multitask Learners"
+    sent: list[str] = []
+
+    def handler(request):
+        q = dict(request.url.params)["query"]
+        sent.append(q)
+        if q == stored:
+            return httpx.Response(404, json={"error": "Title match not found"})
+        return httpx.Response(200, json={"data": [{"title": canonical, "citationCount": 29621}]})
+
+    node = {"id": "gpt2", "title": stored, "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], cache, client, sleep=lambda s: None)
+
+    assert sent == [stored, canonical]
+    assert cache[citations.cache_key(node)] == 29621
+
+
+def test_a_transient_5xx_skips_the_paper_but_not_the_rest_of_the_pass():
+    """A 500 is about one request; a 4xx is about our code. Breaking on both let one flaky
+    response cost the other 399 lookups, and title match is the only route these papers have."""
+    nodes = [_node("a", sig=3), _node("b", sig=2), _node("c", sig=1)]
+    seen: list[str] = []
+
+    def handler(request):
+        seen.append(dict(request.url.params)["query"])
+        if len(seen) == 1:
+            return httpx.Response(503, text="upstream unavailable")
+        return httpx.Response(200, json={"data": [{"title": "A sufficiently long paper title",
+                                                   "citationCount": 7}]})
+
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
+
+    assert len(seen) == 3, "a transient failure ended the whole pass"
+    assert sum(1 for v in cache.values() if v == 7) == 2
+
+
+def test_a_title_too_generic_to_identify_a_paper_is_not_looked_up():
+    """"Artificial Intelligence" names hundreds of papers; whichever the index ranks first would
+    be cached as this node's count and never revisited."""
+    called = {"n": 0}
+
+    def handler(request):
+        called["n"] += 1
+        return httpx.Response(200, json={"data": [{"title": "Artificial Intelligence",
+                                                   "citationCount": 12345}]})
+
+    node = {"id": "ai", "title": "Artificial Intelligence", "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], {}, client, sleep=lambda s: None)
+
+    assert called["n"] == 0

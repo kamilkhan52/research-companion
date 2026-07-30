@@ -37,11 +37,14 @@ TIMEOUT_S = 30.0
 #: only as a fallback, and only with a match check — see `_openalex_citation_count`.
 OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 OPENALEX_SEARCH_URL = OPENALEX_WORKS_URL
-#: Word-count bounds for accepting a title as the same paper. See `_same_paper_title`: a stored
-#: title is often a truncation of the full one, but a title that continues for long enough is a
-#: different paper.
+#: How specific a title must be before it may stand in for a paper's identity. A title is NOT an
+#: identifier — distinct publications share exact titles, and "Artificial Intelligence" or "Deep
+#: Learning" would otherwise match whichever record the index ranks first and cache its count
+#: forever. Papers below this floor are reachable by arXiv id or DOI, which cannot be ambiguous;
+#: giving up on the rest is the cheap side of the trade, because a wrong count is undetectable
+#: downstream while a missing one is obvious.
+MIN_TITLE_CHARS = 15
 MIN_TITLE_WORDS = 4
-MAX_TITLE_TAIL_WORDS = 6
 #: Candidates to consider per title. More than one because OpenAlex holds duplicate records for
 #: the same paper — an exact-title match returned "Attention Is All You Need" with 6,598 citations
 #: while the canonical record has far more — so the best-matching title is not enough on its own.
@@ -119,9 +122,15 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         # Absent from the cache is NOT the same as cached-as-None, and conflating them loses data.
         # A cached None is a definitive miss: we asked and nothing matched, so it is authoritative
         # and must be able to clear a stale count. Absent means we never got an answer this run —
-        # rate limited, past the lookup budget, or the cache was pruned — and overwriting a count
-        # we already had with None on that basis threw away 54 of 402 resolved nodes in one
-        # rebuild, silently, because counts accumulate over several runs and the cache does not.
+        # rate limited, past the lookup budget, or the cache handed to us was empty — so a count
+        # the node already carried is kept rather than replaced with None.
+        #
+        # Scope, so this is not mistaken for more than it is: on the normal build path
+        # `graph.build_nodes_and_edges` constructs FRESH node dicts, so nothing is carried in and
+        # this branch does not fire. The durable store there is the persisted cache
+        # (`reference-graph.json` → `citations`, the dict this is called with), not the nodes.
+        # What this does protect is any caller that re-annotates nodes already holding counts —
+        # which is how a maintenance re-run erased 54 of 402 resolved counts in one pass.
         cached = cache.get(cache_key(n), _UNCACHED)
         if cached is not _UNCACHED:
             n["citation_count"] = cached
@@ -163,11 +172,21 @@ def lookup_title(title: str) -> str:
     number and nothing at all.
 
     Deliberately ONE narrow rule rather than general title cleaning. Every looser normalization
-    tried here has been wrong in the expensive direction — matching a neighbouring paper — and the
-    verification gate downstream compares against THIS cleaned form, so anything stripped here that
-    was really part of the title turns into a failed match, never a wrong number.
+    tried here has been wrong in the expensive direction — matching a neighbouring paper.
+
+    It is still not safe on its own, which is why callers try the ORIGINAL title first and only
+    fall back to this: a trailing parenthetical can be part of the real title. "The Blessings of
+    Multiple Causes: A Reply to Ogburn et al. (2019)" is an actual arXiv paper, and cleaning it
+    yields "…A Reply to Ogburn et al." — which would both miss the real record and, worse, match
+    some other paper that genuinely has the shortened title.
     """
     return _TRAILING_ANNOTATION_RE.sub("", title or "").strip()
+
+
+def _specific_enough(title: str) -> bool:
+    """Whether a title may be used as a paper's identity at all. See `MIN_TITLE_CHARS`."""
+    normalized = _normalized_title(lookup_title(title))
+    return len(normalized) >= MIN_TITLE_CHARS and len(normalized.split()) >= MIN_TITLE_WORDS
 
 
 def _same_paper_title(query: str, candidate: str) -> bool:
@@ -187,13 +206,12 @@ def _same_paper_title(query: str, candidate: str) -> bool:
     q, c = _normalized_title(query), _normalized_title(candidate)
     if not q:
         return False
-    # Compared with word breaks removed as well, so a hyphenation difference is not a mismatch:
-    # "BART: Denoising sequence-to-sequence pretraining" against the canonical "…Pre-training"
-    # is the same paper, and punctuation stripping alone still leaves "pretraining" != "pre
-    # training". This stays exact — it cannot admit a NEAR miss, because any added, dropped or
-    # altered word changes the concatenation too ("attentionisallyouneed" vs
-    # "attentionisnotallyouneed"). It only ignores where the spaces fall.
-    return q == c or q.replace(" ", "") == c.replace(" ", "")
+    # Word breaks are NOT ignored, though doing so would recover a hyphenation variant like
+    # "pretraining" vs "pre-training" (1 of 120 lookups in a live sample). Tried and reverted:
+    # concatenating collapses genuinely different words — "Resigning" == "Re-signing", and
+    # "A therapist's guide" == "A the rapist's guide". That trades a missing count for the chance
+    # of a WRONG one, which is the trade this whole predicate exists to refuse.
+    return q == c
 
 
 #: Returned instead of a count when OpenAlex rate-limits us, so the caller stops rather than
@@ -319,49 +337,73 @@ def _fetch_missing(
     # The length floor applies to the title we will actually SEND: an annotation is not evidence
     # that the title is specific enough to match on.
     titled = [n for n in missing if not _external_id(n) and cache_key(n) not in cache
-              and len(lookup_title(n.get("title", ""))) >= 15]
+              and _specific_enough(n.get("title", ""))]
     titled.sort(key=lambda n: (n.get("significant_cited_by_count", 0),
                                n.get("cited_by_project_count", 0)), reverse=True)
     budget = MAX_TITLE_LOOKUPS_WITH_KEY if _api_key() else MAX_TITLE_LOOKUPS
+    stop = False
     for n in titled[:budget]:
-        title = lookup_title(n["title"])
-        resp = semantic_scholar.paced_request(
-            lambda title=title: client.get(
-                S2_MATCH_URL,
-                headers=_headers(),
-                # Only fields this endpoint actually supports. `matchScore` was requested here
-                # and never read, and Semantic Scholar answers an unsupported field with
-                #   400 {"error":"Unrecognized or unsupported fields: [matchScore]"}
-                # — so EVERY title lookup 400'd. That is the whole reason coverage sat at 186/402:
-                # the only route for the ~190 papers with no arXiv id or DOI was returning nothing,
-                # for every node, on every build. Adding a field here without checking it against
-                # the endpoint's schema silently disables the entire step.
-                params={"query": title, "fields": "title,citationCount"},
-            ),
-            pacer=pacer,
-        )
-        if resp.status_code == 429:
+        if stop:
             break
-        if resp.status_code not in (200, 404):
-            # Anything else is a broken REQUEST, not a missing paper, and must be loud. Falling
-            # through silently is exactly how a 400 on every single lookup went unnoticed: the
-            # step looked like it was running, and simply resolved nothing.
-            log.warning("title lookup failed with HTTP %s: %s",
-                        resp.status_code, _redacted(resp.text)[:200])
-            break
-        if resp.status_code == 200:
+        # The stored title FIRST, then the annotation-stripped form. Order matters: a trailing
+        # parenthetical can be part of the real title ("…A Reply to Ogburn et al. (2019)"), and
+        # asking with the cleaned form first would both miss that paper and risk matching a
+        # different one that really is called "…A Reply to Ogburn et al.". The fallback only runs
+        # when the stored title finds nothing, so it costs a second request on misses alone.
+        stored = (n.get("title") or "").strip()
+        attempts = [stored]
+        cleaned = lookup_title(stored)
+        if cleaned != stored and len(cleaned) >= MIN_TITLE_CHARS:
+            attempts.append(cleaned)
+
+        for title in attempts:
+            resp = semantic_scholar.paced_request(
+                lambda title=title: client.get(
+                    S2_MATCH_URL,
+                    headers=_headers(),
+                    # Only fields this endpoint actually supports. `matchScore` was requested here
+                    # and never read, and Semantic Scholar answers an unsupported field with
+                    #   400 {"error":"Unrecognized or unsupported fields: [matchScore]"}
+                    # — so EVERY title lookup 400'd. That is the whole reason coverage sat at
+                    # 186/402: the only route for the ~190 papers with no arXiv id or DOI returned
+                    # nothing, for every node, on every build. Adding a field here without checking
+                    # it against the endpoint's schema silently disables the entire step.
+                    params={"query": title, "fields": "title,citationCount"},
+                ),
+                pacer=pacer,
+            )
+            if resp.status_code == 429:
+                stop = True
+                break
+            if resp.status_code >= 500:
+                # Transient and specific to this request. Skipping the NODE and carrying on is
+                # right; breaking out would let one flaky response cost the other 399 lookups,
+                # and there is no other route for these papers.
+                log.info("title lookup for %r got HTTP %s; skipping this paper",
+                         title[:60], resp.status_code)
+                break
+            if resp.status_code not in (200, 404):
+                # A 4xx is OUR request being wrong — systemic, identical for every node, and worth
+                # stopping on. Falling through silently is exactly how a 400 on every single
+                # lookup went unnoticed: the step looked like it ran, and resolved nothing.
+                log.warning("title lookup failed with HTTP %s: %s",
+                            resp.status_code, _redacted(resp.text)[:200])
+                stop = True
+                break
+            if resp.status_code == 404:
+                continue        # this phrasing found nothing; try the next one
             rows = (resp.json() or {}).get("data") or []
-            # Verified the same way as the OpenAlex fallback. This endpoint returns the CLOSEST
-            # title match, not a paper identity, and the count was previously taken on trust — a
-            # hazard at 25 lookups a build and sixteen times the exposure at 400. `matchScore` was
-            # requested and never read, which is the same mistake in a different form.
+            # This endpoint returns the CLOSEST title match, not a paper identity, so the count
+            # is only recorded when the title we sent comes back verbatim.
             if rows and isinstance(rows[0], dict) and _same_paper_title(
                     title, rows[0].get("title") or ""):
                 cache[cache_key(n)] = rows[0].get("citationCount")
-            else:
-                cache[cache_key(n)] = None
-        elif resp.status_code == 404:
-            cache[cache_key(n)] = None  # definitive miss — don't retry every build
+                break
+            cache[cache_key(n)] = None
+        else:
+            # Every phrasing 404'd or failed verification: a definitive miss, recorded so it is
+            # not retried on every build.
+            cache.setdefault(cache_key(n), None)
 
     # 3) OpenAlex for whatever Semantic Scholar still could not place. A different index with
     #    different coverage and no key requirement, so it reaches papers S2 simply does not hold —
@@ -372,7 +414,7 @@ def _fetch_missing(
         return          # no OpenAlex client supplied (tests inject one deliberately)
     still_missing = [
         n for n in nodes
-        if cache.get(cache_key(n)) is None and len(n.get("title", "")) >= 15
+        if cache.get(cache_key(n)) is None and _specific_enough(n.get("title", ""))
     ]
     deadline = time.monotonic() + OPENALEX_BUDGET_S
     for n in still_missing[:OPENALEX_MAX_LOOKUPS]:
