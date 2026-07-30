@@ -14,10 +14,33 @@ import { computeForceLayout, type LayoutResult } from '@/graph/layout';
 const SIGNIFICANCE_STEP = 2.6;
 const MAX_SIGNIFICANCE_WEIGHT = 8;
 
+// Global citations, on a log scale. Linear is unusable here: the range across a real project runs
+// from 0 to about 170,000, so one node would swallow the canvas and every other would be
+// identical. Each 10x adds one step, which is how people actually reason about citation counts —
+// the gap between 10 and 100 means what the gap between 10,000 and 100,000 means.
+//
+// Starts at 100 (`CITATION_LOG_FLOOR`) so an ordinary paper is not penalised for being recent or
+// niche, and caps at 5 steps (100 → 10,000,000) so the most-cited paper in a project is bigger
+// than its neighbours without being a different order of object.
+const CITATION_STEP = 2.2;
+const CITATION_LOG_FLOOR = 100;
+const MAX_CITATION_WEIGHT = 5;
+
+/** How much a node's global citation count adds to its radius. 0 when the count is unknown. */
+export function citationWeight(citationCount: number | null | undefined): number {
+  if (typeof citationCount !== 'number' || citationCount <= CITATION_LOG_FLOOR) return 0;
+  const steps = Math.log10(citationCount / CITATION_LOG_FLOOR);
+  return Math.min(steps, MAX_CITATION_WEIGHT);
+}
+
 export function nodeRadius(node: GraphNode): number {
   const base = node.kind === 'project' ? 20 : 11;
   const tier = Math.min(node.significant_cited_by_count, MAX_SIGNIFICANCE_WEIGHT);
-  return base + tier * SIGNIFICANCE_STEP;
+  // Two independent signals, deliberately kept separate: how much this paper matters INSIDE the
+  // project (how many of its papers cite it) and how much it matters outside it. A paper can be
+  // central to this reading list and little-cited elsewhere, or a famous paper nothing here
+  // builds on, and both facts are worth seeing.
+  return base + tier * SIGNIFICANCE_STEP + citationWeight(node.citation_count) * CITATION_STEP;
 }
 
 export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutResult {
