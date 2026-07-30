@@ -325,3 +325,23 @@ def test_the_skeleton_publish_reads_the_same_cache_key_as_the_writer():
     source = Path(__file__).resolve().parents[1].joinpath("app", "graph.py").read_text()
     assert "cache.get(citations.cache_key(node))" in source
     assert 'cache.get(node["id"])' not in source
+
+
+def test_an_exhausted_time_budget_stops_the_stage_immediately(monkeypatch):
+    """The budget was checked only between nodes, and each request was then granted a one-second
+    floor regardless — so an exhausted budget still bought more requests."""
+    clock = [1000.0]
+    monkeypatch.setattr(citations.time, "monotonic", lambda: clock[0])
+    calls = []
+
+    class _Slow:
+        def get(self, url, params=None, timeout=None, **_kw):
+            calls.append(timeout)
+            clock[0] += citations.OPENALEX_BUDGET_S     # first call eats the whole budget
+            return httpx.Response(200, json={"results": []}, request=httpx.Request("GET", url))
+
+    nodes = [_node(f"n{i}", title=f"A distinct paper title number {i}") for i in range(4)]
+    real_fetch_missing(nodes, {}, FakeClient(get_resps=[_resp(404)] * 4),
+                       sleep=lambda _s: None, openalex_client=_Slow())
+
+    assert len(calls) == 1, f"budget exhausted after the first call, got {len(calls)}"

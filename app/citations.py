@@ -317,13 +317,24 @@ def _fetch_missing(
         if time.monotonic() >= deadline:
             log.info("openalex fallback stopped at its time budget")
             break
-        # Each request gets only what is left of the budget, capped. httpx's timeout is
-        # per-operation — a server that trickles bytes never trips it — so the between-nodes
-        # deadline check alone does not bound total elapsed time.
-        remaining = max(1.0, min(OPENALEX_REQUEST_TIMEOUT_S, deadline - time.monotonic()))
-        count = _openalex_by_id(n, openalex_client, timeout=remaining)
-        if count is None:
-            count = _openalex_citation_count(n["title"], openalex_client, timeout=remaining)
+        # Each request gets only what is left of the budget, recomputed per request rather than
+        # shared between the two — reusing one value let a single node consume nearly twice its
+        # allowance — and with no floor, so an exhausted budget stops instead of granting another
+        # second.
+        #
+        # Honest limit: httpx's timeout is per-operation, so a server delivering one byte inside
+        # every interval can still outlast this. A true total-time bound needs the streaming
+        # reader `safe_fetch` implements for exactly that reason. Not used here because that guard
+        # exists for URLs an attacker chooses, and this is a fixed metadata endpoint whose replies
+        # are a few hundred bytes; the cost of being wrong is a slow build, not a compromise.
+        def _budget() -> float:
+            return min(OPENALEX_REQUEST_TIMEOUT_S, deadline - time.monotonic())
+
+        if _budget() <= 0:
+            break
+        count = _openalex_by_id(n, openalex_client, timeout=_budget())
+        if count is None and _budget() > 0:
+            count = _openalex_citation_count(n["title"], openalex_client, timeout=_budget())
         if count is _THROTTLED:
             log.info("openalex fallback stopped: rate limited")
             break
