@@ -165,7 +165,7 @@ exception and the actual provider terms/configuration support that classificatio
 | Firecrawl | Operator API credential; research objective/search query, or requested public URLs | Authentication; web search and extraction | `app/research_tools.py` |
 | DuckDuckGo | Search query | Keyless search fallback | `app/research_tools.py` |
 | Semantic Scholar | Optional operator API credential; paper title/arXiv/DOI/S2 identifier | Authentication; scholarly metadata, citation matching | `app/semantic_scholar.py`, `app/citations.py` |
-| OpenAlex | arXiv/DOI plus operator contact in User-Agent when configured | Author/affiliation metadata | `app/openalex.py` |
+| OpenAlex | arXiv/DOI, **paper titles** (citation-count matching — sent whenever an identifier is absent OR its lookup misses), plus operator contact in User-Agent when configured | Author/affiliation metadata; global citation counts | `app/openalex.py`, `app/citations.py` |
 | arXiv/ar5iv and user-selected public hosts | Paper identifier or requested public URL; standard request metadata | Retrieve paper text, HTML, figures, or PDF | `app/retriever.py`, `app/figures.py`, `app/safe_fetch.py` |
 
 OpenRouter is not only an API endpoint, and this was the largest unresolved gap in the inventory
