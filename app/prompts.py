@@ -574,7 +574,7 @@ Paper title: {title}"""
 _ANALYST_TOOL_GUIDANCE = """Your reading context ALREADY includes the working notes and the prior
 notes of related papers in this project — do not ask for those; they're in front of you. Use tools
 to go BEYOND that context:
-- web_search (Parallel): your main tool. Reach the open web for what the project doesn't contain —
+- web_search (Firecrawl): your main tool. Reach the open web for what the project doesn't contain —
   author background, a method's real-world adoption/impact, follow-up or competing work, papers not
   in the project, definitions, current facts. Pass an objective plus 1-3 short keyword queries; the
   excerpts are usually enough to answer.

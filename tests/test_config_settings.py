@@ -3,6 +3,7 @@ only touches the keys it names (no clobbering unrelated keys)."""
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 from app import config, preview_jobs
@@ -193,3 +194,34 @@ def test_clearing_a_stored_tts_model_falls_back_to_the_default(tmp_path, monkeyp
 
     config.save_settings({"tts_model": ""})
     assert config.load_settings()["tts_model"] == config._ENV_DEFAULTS["tts_model"]
+
+
+def test_a_retired_provider_key_is_deleted_from_the_settings_file(tmp_path, monkeypatch):
+    """Dropping a key from `_SETTING_KEYS` stops it being read or written, but `save_settings`
+    preserves unknown keys it finds — so a retired PROVIDER credential would sit in
+    `.app-state/settings.json` and every backup of it indefinitely. Removing an integration and
+    no longer holding its key are different claims."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({
+        "parallel_api_key": "retired-secret",
+        "openrouter_api_key": "still-needed",
+    }), encoding="utf-8")
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_file)
+
+    assert config.purge_retired_settings() == ["parallel_api_key"]
+
+    on_disk = json.loads(settings_file.read_text())
+    assert "parallel_api_key" not in on_disk
+    assert on_disk["openrouter_api_key"] == "still-needed", "live keys must survive the purge"
+    # Idempotent, and it does not rewrite a file with nothing to remove.
+    assert config.purge_retired_settings() == []
+
+
+def test_saving_settings_also_drops_a_retired_key(tmp_path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"parallel_api_key": "retired-secret"}), encoding="utf-8")
+    monkeypatch.setattr(config, "SETTINGS_FILE", settings_file)
+
+    config.save_settings({"model": "some/model"})
+
+    assert "parallel_api_key" not in json.loads(settings_file.read_text())

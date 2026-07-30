@@ -54,7 +54,7 @@ def test_every_setting_is_owned_by_exactly_one_side():
 def test_the_api_keys_are_not_user_settings():
     """The instance pays for these. A user who could write one could point the whole instance at
     an account they control, or simply take it offline for everyone."""
-    for key in ("openrouter_api_key", "openai_api_key", "parallel_api_key",
+    for key in ("openrouter_api_key", "openai_api_key",
                 "firecrawl_api_key", "semantic_scholar_api_key"):
         assert key in config.OPERATOR_SETTING_KEYS
         assert key not in config.USER_SETTING_KEYS

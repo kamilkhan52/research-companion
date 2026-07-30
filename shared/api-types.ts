@@ -709,7 +709,7 @@ export interface paths {
         /**
          * Opening Draft
          * @description The editable first-prompt + default model for the compose-first screen. Returns the
-         *     session's edited opening if one exists (for first-response retry), else the default.
+         *     session's edited opening if one exists (for paper-summary retry), else the default.
          */
         get: operations["opening_draft_api_projects__pid__opening_draft__slug__get"];
         put?: never;
@@ -770,7 +770,7 @@ export interface paths {
         /**
          * Start Retrieval Job
          * @description Start or join connection-independent paper retrieval and return immediately. With
-         *     auto_analyze, a successful retrieval flows straight into the first analysis turn; the
+         *     auto_analyze, a successful retrieval flows straight into the paper summary turn; the
          *     spawned chat job's id lands on the retrieval snapshot (`analysis_job_id`).
          */
         post: operations["start_retrieval_job_api_projects__pid__retrieval_jobs_post"];
@@ -894,7 +894,7 @@ export interface paths {
         put?: never;
         /**
          * Chat Start Stream
-         * @description Fire the first response for any chat (paper or review) with the edited opening prompt
+         * @description Fire the paper summary for any chat (paper or review) with the edited opening prompt
          *     and chosen model, streaming it. Restarts the session (used for start and first-retry).
          */
         post: operations["chat_start_stream_api_projects__pid__chat_start_stream_post"];
@@ -2394,8 +2394,6 @@ export interface components {
             tts_model?: string | null;
             /** Tts Voice */
             tts_voice?: string | null;
-            /** Parallel Api Key */
-            parallel_api_key?: string | null;
             /** Firecrawl Api Key */
             firecrawl_api_key?: string | null;
             /** Semantic Scholar Api Key */

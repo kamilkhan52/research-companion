@@ -1,5 +1,5 @@
 """`research_tools._direct_fetch` — the keyless web-fetch fallback the agent reaches when Firecrawl
-and Parallel are unavailable.
+is unavailable.
 
 It had no tests. That matters more than the usual coverage gap: it is the call site whose URLs come
 from an LLM acting on untrusted search results, and it is the one that must never RAISE — a

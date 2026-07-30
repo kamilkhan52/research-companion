@@ -53,7 +53,7 @@ def test_related_papers_uses_graph_edges(temp_project):
 
 # ---- web tools: fetch_url ----
 
-# ---- web tools: provider chain (Firecrawl -> Parallel -> DuckDuckGo) ----
+# ---- web tools: provider chain (Firecrawl -> DuckDuckGo) ----
 
 class _OneShot:
     """A fake httpx client returning one queued response for a single GET/POST."""
@@ -88,17 +88,6 @@ def test_firecrawl_search_raises_on_402_so_chain_falls_through(temp_project, mon
     assert secret not in str(err.value)
 
 
-def test_parallel_error_excludes_provider_message(temp_project, monkeypatch):
-    monkeypatch.setattr(research_tools, "_parallel_key", lambda: "parallel-test")
-    secret = "PRIVATE_PAPER_TEXT_parallel"
-    response = _resp(
-        200, text=f'{{"jsonrpc":"2.0","id":2,"error":{{"message":"{secret}"}}}}')
-    with pytest.raises(research_tools.ToolError) as err:
-        research_tools._parallel_search("q", ["q"], client=_OneShot(response))
-    assert "provider error" in str(err.value)
-    assert secret not in str(err.value)
-
-
 def test_ddg_search_parses_and_unwraps(temp_project):
     page = ('<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Farxiv.org%2Fabs%2F2501.01005">'
             'FlashInfer</a><a class="result__snippet">An attention engine</a>')
@@ -108,11 +97,9 @@ def test_ddg_search_parses_and_unwraps(temp_project):
 
 
 def test_web_search_falls_through_to_working_provider(temp_project, monkeypatch):
-    # Firecrawl + Parallel out of credit -> DuckDuckGo answers. The chain should return DDG's result.
+    # Firecrawl out of credit -> DuckDuckGo answers. The chain should return DDG's result.
     monkeypatch.setattr(research_tools, "_firecrawl_search",
                         lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("402")))
-    monkeypatch.setattr(research_tools, "_parallel_search",
-                        lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("no credit")))
     monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "Web results: the answer")
     out = research_tools.web_search("anything", ["q"])
     assert out == "Web results: the answer"
@@ -128,8 +115,6 @@ def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monke
     """
     monkeypatch.setattr(research_tools, "_firecrawl_search",
                         lambda *a, **k: (_ for _ in ()).throw(KeyError("results")))
-    monkeypatch.setattr(research_tools, "_parallel_search",
-                        lambda *a, **k: (_ for _ in ()).throw(ValueError("bad json")))
     monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "Web results: recovered")
 
     out = research_tools.web_search("anything", ["q"])
@@ -141,15 +126,12 @@ def test_an_unwrapped_exception_is_named_when_every_provider_fails(temp_project,
     """Swallowing a bug must not make it invisible — the diagnostic names the exception type."""
     monkeypatch.setattr(research_tools, "_firecrawl_search",
                         lambda *a, **k: (_ for _ in ()).throw(KeyError("results")))
-    monkeypatch.setattr(research_tools, "_parallel_search",
-                        lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("no credit")))
     monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "")
 
     out = research_tools.web_search("anything", ["q"])
 
     assert "no provider available" in out.lower()
-    assert "KeyError" in out                 # the bug is still visible
-    assert "no credit" in out                # the expected failure keeps its own message
+    assert "unexpected KeyError" in out      # the bug is still visible, and named as unexpected
     assert "DuckDuckGo (empty)" in out       # a provider that answered nothing is not omitted
 
 
@@ -168,15 +150,9 @@ def test_the_module_docstring_does_not_promise_a_brave_key(temp_project):
 
 def test_web_search_all_providers_down_returns_readable_error(temp_project, monkeypatch):
     boom = lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("down"))  # noqa: E731
-    for name in ("_firecrawl_search", "_parallel_search", "_ddg_search"):
+    for name in ("_firecrawl_search", "_ddg_search"):
         monkeypatch.setattr(research_tools, name, boom)
     out = research_tools.web_search("x", ["x"])
     assert "no provider available" in out.lower()
 
 
-def test_read_jsonrpc_parses_sse_framing():
-    # The Parallel MCP endpoint may reply as a single SSE message; the last data: line is payload.
-    sse = _resp(200, headers={"content-type": "text/event-stream"},
-                text='event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"hi"}]}}\n\n')
-    parsed = research_tools._read_jsonrpc(sse)
-    assert parsed["result"]["content"][0]["text"] == "hi"

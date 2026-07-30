@@ -94,7 +94,6 @@ export default function SettingsScreen() {
   const [narrationModel, setNarrationModel] = useState('');
   const [previewModel, setPreviewModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
-  const [parallelKey, setParallelKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
   const [semanticScholarKey, setSemanticScholarKey] = useState('');
   const [voice, setVoice] = useState('');
@@ -178,7 +177,6 @@ export default function SettingsScreen() {
     if (isOperator) {
       if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
       if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
-      if (parallelKey.trim()) payload.parallel_api_key = parallelKey.trim();
       if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
       if (semanticScholarKey.trim()) {
         payload.semantic_scholar_api_key = semanticScholarKey.trim();
@@ -467,22 +465,11 @@ export default function SettingsScreen() {
                   secureTextEntry
                   autoCapitalize="none"
                 />
-                <Label
-                  text="Parallel Search API key"
-                  hint={settings.data?.has_parallel_key ? `set (${settings.data.parallel_key_hint})` : 'not set'}
-                />
-                <Field
-                  value={parallelKey}
-                  onChangeText={setParallelKey}
-                  placeholder={settings.data?.has_parallel_key ? 'Replace key…' : 'Parallel API key'}
-                  secureTextEntry
-                  autoCapitalize="none"
-                />
                 <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Lets the analyst search the web and read outside papers mid-discussion (author
-                  info, adoption, follow-up work). It tries Firecrawl, then Parallel, then a
-                  keyless fallback — so search works even with no key, and upgrades when a key
-                  has credit. Reading your own project's papers needs no key.
+                  info, adoption, follow-up work). It uses Firecrawl, falling back to a keyless
+                  search when no key is set — so search works either way, and is better with one.
+                  Reading your own project's papers needs no key.
                 </Text>
               </Section>
 

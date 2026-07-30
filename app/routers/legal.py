@@ -43,7 +43,7 @@ router = APIRouter()
 APP_NAME = "Scholiast"
 DEVELOPER = "Kamil Khan"
 SUPPORT_EMAIL = "thelocalscientist@gmail.com"
-LAST_UPDATED = "28 July 2026"
+LAST_UPDATED = "30 July 2026"
 
 _PAGES_DIR = Path(__file__).resolve().parent.parent / "legal"
 
