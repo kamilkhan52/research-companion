@@ -447,6 +447,11 @@ def _maybe_start_preview(job: ChatJob, canonical: str) -> None:
     """Publish a cue job without waiting for it; any cue failure is isolated from analysis."""
     if not getattr(job, "_preview_enabled", False):
         return
+    # The cue allowance covers the whole wait, and this producer runs FIRST — a long analysis
+    # would otherwise spend the entire budget (and more) before the post-analysis coordinator,
+    # which is the other producer, ever sees these ids.
+    if preview_jobs.budget_exhausted(job.preview_job_ids):
+        return
     completed = preview_jobs.completed_sentences(canonical)
     next_index = getattr(job, "_preview_next_sentence", 0)
     if len(completed) <= next_index:

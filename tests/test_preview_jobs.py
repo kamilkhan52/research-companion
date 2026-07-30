@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from app import audio_jobs, config, preview_jobs, usage
+from app import audio_jobs, chat_jobs, config, preview_jobs, usage
 from app.routers import session as session_routes
 from fastapi import HTTPException
 
@@ -261,6 +261,7 @@ def test_coordinator_continues_cues_with_audio_progress_until_ready(
             "id": f"cue-{ordinal}",
             "status": "done",
             "cue": f"spoken {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
         })()
         cues[cue.id] = cue
         starts.append((config.active_project_id(), sources, previous, dict(progress)))
@@ -315,8 +316,10 @@ def test_synthesis_progress_triggers_a_cue_before_the_keepalive(temp_project, mo
     starts = []
 
     def fake_start(chat_id, ordinal, sources, previous, progress, **history):
-        cue = type("Cue", (), {"id": f"cue-{ordinal}", "status": "done",
-                               "cue": f"spoken {ordinal}"})()
+        cue = type("Cue", (), {
+            "id": f"cue-{ordinal}", "status": "done", "cue": f"spoken {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
+        })()
         starts.append(dict(progress))
         fake_start.cues[cue.id] = cue
         return cue
@@ -369,6 +372,7 @@ def test_synthesis_keepalive_continues_cues_during_a_slow_segment(temp_project, 
             "id": f"cue-{ordinal}",
             "status": "done",
             "cue": f"distinct grounded cue {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
         })()
         starts.append((previous, dict(progress)))
         cues[cue.id] = cue
@@ -399,6 +403,218 @@ def test_synthesis_keepalive_continues_cues_during_a_slow_segment(temp_project, 
     assert starts[0][1]["segments_done"] == starts[1][1]["segments_done"] == 1
     assert "distinct grounded cue 1" in starts[1][0]
     assert coordinator.status == "done"
+
+
+def test_an_errored_cue_does_not_claim_its_progress_as_already_reported(temp_project, monkeypatch):
+    """`start_job` returns as soon as the worker thread is admitted, so a cue that fails afterwards
+    must not make the count look stale — the listener never heard it announced."""
+    audio = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 1, "segments_total": 4,
+    })()
+    calls = []
+
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
+        # The first cue is admitted and then fails, exactly as a real LLM/TTS error would.
+        status = "error" if ordinal == 1 else "done"
+        cue = type("Cue", (), {
+            "id": f"cue-{ordinal}", "status": status, "cue": f"spoken {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
+        })()
+        calls.append(history.get("progress_is_new"))
+        fake_start.cues[cue.id] = cue
+        return cue
+    fake_start.cues = {}
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
+    monkeypatch.setattr(preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: fake_start.cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(preview_jobs, "SYNTHESIS_KEEPALIVE_SECONDS", 0.02)
+
+    preview_jobs.start_coordinator(
+        "chat-errored", "audio-errored",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [],
+        lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+
+    deadline = time.time() + 3
+    while len(calls) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    audio.status = "done"
+
+    assert calls[:2] == [True, True], (
+        "the cue after a FAILED one may still describe where preparation stands"
+    )
+
+
+def test_analysis_phase_cues_also_stop_at_the_shared_cap(temp_project, monkeypatch):
+    """The cap covers the whole wait. This producer runs BEFORE the coordinator, so a cap enforced
+    only in the coordinator is not a cap at all — a long analysis spends the budget first."""
+    monkeypatch.setattr(preview_jobs, "MAX_CUES_PER_WAIT", 2)
+    started = []
+
+    def fake_start(chat_id, ordinal, sentences, previous, progress, **kwargs):
+        cue = type("Cue", (), {"id": f"cue-{ordinal}", "status": "done", "cue": f"c{ordinal}"})()
+        started.append(ordinal)
+        return cue
+
+    monkeypatch.setattr(chat_jobs.preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(chat_jobs.preview_jobs, "get_job", lambda job_id: None)
+    monkeypatch.setattr(chat_jobs.preview_jobs, "cue_history", lambda ids: ([], []))
+    monkeypatch.setattr(chat_jobs, "PREVIEW_CADENCE_SECONDS", 0)
+
+    job = chat_jobs.ChatJob(id="chat-analysis-cap", slug="paper")
+    job._preview_enabled = True
+    job._preview_next_sentence = 0
+    job._preview_context = []
+    job._tool_activity = []
+
+    # Five rounds of fresh completed sentences: only the cap can stop the cues.
+    for index in range(5):
+        job._preview_last_started = 0
+        chat_jobs._maybe_start_preview(job, " ".join(f"Sentence {n}." for n in range(index + 2)))
+
+    assert started == [1, 2], f"analysis cues must stop at the shared cap, got {started}"
+
+
+def test_cues_stop_at_the_cap_and_the_coordinator_still_settles(temp_project, monkeypatch):
+    """Uncapped, a long synthesis generated ~17 cues, each re-sending the whole source set and
+    both histories. The cap must bound them without stranding the listener: readiness still
+    settles the coordinator once audio is available."""
+    audio = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 0, "segments_total": 99,
+    })()
+    starts = []
+
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
+        cue = type("Cue", (), {
+            "id": f"cue-{ordinal}", "status": "done", "cue": f"spoken {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
+        })()
+        starts.append(ordinal)
+        fake_start.cues[cue.id] = cue
+        return cue
+    fake_start.cues = {}
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
+    monkeypatch.setattr(preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: fake_start.cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(preview_jobs, "MAX_CUES_PER_WAIT", 3)
+
+    coordinator = preview_jobs.start_coordinator(
+        "chat-cap", "audio-cap",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [],
+        lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+
+    # Every tick is "real news" (a landed segment), so only the cap can stop the cues.
+    deadline = time.time() + 3
+    while len(starts) < 3 and time.time() < deadline:
+        audio.segments_done += 1
+        time.sleep(0.01)
+    for _ in range(20):           # keep the news coming well past the cap
+        audio.segments_done += 1
+        time.sleep(0.01)
+
+    assert starts == [1, 2, 3], f"cues must stop at the cap, got {starts}"
+
+    audio.status = "done"
+    deadline = time.time() + 2
+    while coordinator.status == "running" and time.time() < deadline:
+        time.sleep(0.01)
+    assert coordinator.status == "done", "the cap must not stop the coordinator from settling"
+
+
+def test_a_cue_is_told_progress_is_stale_when_the_count_has_not_moved(temp_project, monkeypatch):
+    """The reported repetition: successive cues restating "still synthesizing, N parts" with the
+    same N. A cue whose progress matches the previous cue's must not be given progress to cite."""
+    audio = type("Audio", (), {
+        "status": "running", "stage": "synthesizing",
+        "segments_done": 1, "segments_total": 4,
+    })()
+    calls = []
+
+    def fake_start(chat_id, ordinal, sources, previous, progress, **history):
+        cue = type("Cue", (), {
+            "id": f"cue-{ordinal}", "status": "done", "cue": f"spoken {ordinal}",
+            "progress_signature": preview_jobs.progress_signature(progress),
+        })()
+        calls.append(history.get("progress_is_new"))
+        fake_start.cues[cue.id] = cue
+        return cue
+    fake_start.cues = {}
+
+    monkeypatch.setattr(preview_jobs.audio_jobs, "get_job", lambda job_id: audio)
+    monkeypatch.setattr(preview_jobs, "start_job", fake_start)
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: fake_start.cues.get(job_id))
+    monkeypatch.setattr(preview_jobs, "CONTINUATION_POLL_SECONDS", 0.005)
+    monkeypatch.setattr(preview_jobs, "SYNTHESIS_KEEPALIVE_SECONDS", 0.02)
+
+    preview_jobs.start_coordinator(
+        "chat-stale", "audio-stale",
+        [{"id": "paper0001", "text": "Background.", "kind": "paper_background"}],
+        [],
+        lambda ids, phase, progress, complete: None,
+        cadence_seconds=0, last_started_at=0,
+    )
+
+    # The first cue reports real progress; the keepalive then fires with the count still flat.
+    deadline = time.time() + 3
+    while len(calls) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    audio.status = "done"
+
+    assert calls[0] is True, "the first cue may describe where preparation stands"
+    assert calls[1] is False, "a keepalive cue at an unchanged count must not restate progress"
+
+
+def test_stale_progress_is_withheld_from_the_model_entirely(temp_project):
+    """Not merely forbidden in the instructions: a model handed a concrete count tends to use it.
+    The progress source must be absent from the citable set and the payload."""
+    seen = {}
+
+    def fake_generate(messages, model):
+        seen["system"] = messages[0]["content"]
+        seen["user"] = json.loads(messages[1]["content"])
+        return json.dumps({"cue": "The method reuses cached attention.",
+                           "source_sentence_ids": ["s0001"]})
+
+    progress = {"phase": "audio_synthesis", "segments_done": 2, "segments_total": 9,
+                "remaining_known": True}
+    job = preview_jobs.start_job(
+        "chat-withhold", 2,
+        [{"id": "s0001", "text": "The method reuses cached attention.", "kind": "live_response"}],
+        "an earlier cue",
+        progress,
+        progress_is_new=False,
+        generate_fn=fake_generate,
+        synth_fn=lambda text: b"mp3",
+    )
+    settled = _wait(job.id)
+
+    assert settled.status == "done", settled.error
+    assert seen["user"]["preparation_progress"] == {}
+    assert not any(item["kind"] == "preparation_progress" for item in seen["user"]["grounded_sources"])
+    assert "not advanced since the last cue" in seen["system"]
+    # And the honest case still gets it, or cues could never mention progress at all.
+    job2 = preview_jobs.start_job(
+        "chat-withhold", 3,
+        [{"id": "s0001", "text": "The method reuses cached attention.", "kind": "live_response"}],
+        "an earlier cue",
+        progress,
+        progress_is_new=True,
+        generate_fn=fake_generate,
+        synth_fn=lambda text: b"mp3",
+    )
+    assert _wait(job2.id).status == "done"
+    assert any(item["kind"] == "preparation_progress" for item in seen["user"]["grounded_sources"])
 
 
 @pytest.mark.parametrize(

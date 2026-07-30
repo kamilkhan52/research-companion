@@ -471,6 +471,12 @@ the available source does not expose the needed visual or structural detail, sta
 and still explain the surrounding claim. Never invent unseen axes, values, shapes, relationships,
 or section content.
 
+Describe visuals in words; never try to draw them. Do not render figures, plots, architecture
+diagrams, timelines, or flowcharts as ASCII art, box-drawing characters, or any other picture made
+out of text. Such a sketch wraps into noise on a phone-width column, and in narration it is spoken
+character by character. A sentence saying what the figure establishes is worth more than a drawing
+of it, so spend the effort there instead.
+
 When adapting an existing response for narration, preserve those grounded descriptions in place.
 If the supplied response contains only a bare reference, state that its details are not present in
 the supplied passage and preserve the surrounding claim. Never tell the researcher to inspect it
