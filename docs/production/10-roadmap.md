@@ -31,19 +31,34 @@ server-URL copy · **#279** CI off Node 20 · **#280** provider-chain defects ·
 default models · **#282** the "paper summary" rename · **#283** sign-in screen cleanup.
 **#284** (Library empty states) was open and in CI at hand-off.
 
-**Still queued from Kamil's device pass**, in his priority order:
+**The device-pass queue is CODE-COMPLETE** — items 1–5 shipped as **#286** (paper-summary card +
+equation legibility), **#287** (cue cap + unchanged-progress + no ASCII art) and **#288**
+(progressive-narration coverage). What each turned out to be, because in three of the five the
+reported symptom had a different cause than the wording suggested:
 
-1. **Paper-summary visual treatment** — agreed shape: simple, no Figma round. Distinct card, no
-   avatar, pinned to the top, so the summary reads as an artifact rather than a reply.
-2. **Equations overflow the phone width.** Horizontal scroll on the single line is preferred over
-   shrinking to fit.
-3. **Listening cues repeat "Synthesis is underway"** at an unchanged segment count. Never repeat at
-   unchanged progress, and feed prior cues into generation so the phrasing varies too.
-4. **The agent must not draw terminal/ASCII art** — a prompt constraint. Real SVG rendering is a
-   later feature, not this.
-5. **Progressive narration**: make it robust behind the existing setting, prove it on device, and
-   only then flip the default. This may make item 3 redundant — do item 3 anyway, because a
-   tester's first listening session should not be annoying even if the system is replaced later.
+1. **Paper-summary card** — the "no avatar" and "pinned to top" halves needed *no work*
+   (`renderAvatar` is already null globally, and the summary is the topmost row in an inverted
+   list). The real work was `isPaperSummaryTurn` having to check thread AND slug, not just index:
+   every side thread has its own `assistant_index` 0, and so does the `_review` pseudo-session.
+2. **Equations** — the horizontal scroll strip already existed. The defect was the *threshold*:
+   `fitMathBlock`'s legibility floor of `0.6` shrank anything up to 1.67x the column to ~10px
+   before it would scroll. Now `0.9`.
+3. **Listening cues** — the prompt already forbade restating progress and it did not work, because
+   a model handed a concrete count will use it. Unchanged progress is now WITHHELD from the
+   payload. The cap had to be shared by both producers (`chat_jobs._maybe_start_preview` during
+   analysis, the coordinator after); capping only the coordinator was no cap at all.
+4. **No ASCII art** — in `self_contained_research`, the block both analysis and narration compose,
+   because a reading-only rule still reaches the ear.
+5. **Progressive narration** — **half done, and the remaining half is Kamil's.** The code was
+   already correct; #288 pins the two paths a device pass would misread as breakage (a cached job
+   exposing 0-of-N segments must fall through to the stitched track; a synthesis failure after
+   segments already played must surface rather than settle silently, and must drop its handoff
+   eligibility). **The default is deliberately still `full`** — flipping it is gated on a real
+   device pass against real synthesis latency.
+
+**Correction worth carrying forward:** the `$0.0016/turn` figure for cue costs is NOT achievable by
+the six-cue cap alone. `20-pricing-analysis.md` §8 requires the cap *and* trimming the cue prompt to
+~4K tokens; the trim is separate, unstarted work. The cap is most of the saving from $0.087.
 
 **Open defect found 2026-07-29 after the production project copy: sharing a project loses all
 reading *progress*, and any discussion that was never committed.** Kamil's production corpus showed
