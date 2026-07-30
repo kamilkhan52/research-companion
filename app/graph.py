@@ -1275,7 +1275,10 @@ def _persist_graph_snapshot(
         # stamped it semantic.
         cache = data.get("citations") or {}
         for node in nodes:
-            node["citation_count"] = cache.get(node["id"])
+            # Same key as `citations.annotate_nodes` writes: node id PLUS the identity the count
+            # came from. Reading by bare id here would resurrect a count cached against a paper's
+            # PREVIOUS arXiv id, which is exactly what the key change exists to prevent.
+            node["citation_count"] = cache.get(citations.cache_key(node))
         # Same free-from-cache treatment for authors: no network on skeleton publishes.
         openalex.annotate_project_authors(nodes, data.setdefault("openalex", {}), fetch=False)
         # And for LLM-extracted authors (R6.4) — a paper whose names came only from the

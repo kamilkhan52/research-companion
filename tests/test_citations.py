@@ -48,7 +48,7 @@ def _node(nid, *, arxiv=None, title="A sufficiently long paper title", sig=0, ci
 def _key(nid, **kw):
     """The cache key for a node — its id PLUS the identity the count came from, so correcting a
     wrong arXiv id cannot keep serving the previous paper's count."""
-    return citations._cache_key(_node(nid, **kw))
+    return citations.cache_key(_node(nid, **kw))
 
 
 def test_batch_ids_fill_cache_and_misses_are_recorded():
@@ -306,3 +306,22 @@ def test_a_rate_limited_openalex_stops_the_stage(monkeypatch):
                        sleep=lambda _s: None, openalex_client=_Throttling())
 
     assert len(calls) == 1, "a 429 must stop the stage, not be collected five times"
+
+
+def test_titles_differing_only_by_a_greek_letter_are_not_the_same_paper():
+    """ASCII-only normalization collapsed "α-divergence" and "β-divergence" into one title, so a
+    result for one could be cached against the other."""
+    assert not citations._same_paper_title(
+        "Alpha and beta divergences: α-divergence bounds", "Alpha and beta divergences: β-divergence bounds")
+    # …while ordinary punctuation and casing still do not decide a match.
+    assert citations._same_paper_title("Attention Is All You Need!", "attention is all you need")
+
+
+def test_the_skeleton_publish_reads_the_same_cache_key_as_the_writer():
+    """The skeleton path applies cached counts without any network. Reading by bare node id there
+    would resurrect a count cached against the paper's PREVIOUS arXiv id — the exact failure the
+    identity-aware key exists to prevent."""
+    from pathlib import Path
+    source = Path(__file__).resolve().parents[1].joinpath("app", "graph.py").read_text()
+    assert "cache.get(citations.cache_key(node))" in source
+    assert 'cache.get(node["id"])' not in source

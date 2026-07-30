@@ -53,6 +53,7 @@ OPENALEX_CANDIDATES = 5
 OPENALEX_MAX_LOOKUPS = 120
 OPENALEX_MIN_INTERVAL_S = 0.2
 OPENALEX_BUDGET_S = 180.0
+OPENALEX_REQUEST_TIMEOUT_S = 10.0
 #: Identify ourselves the way the existing OpenAlex integration does — from deployment
 #: configuration (`RC_CONTACT_EMAIL`), never a hardcoded address in the repo.
 
@@ -112,7 +113,7 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         if own:
             client.close()
     for n in nodes:
-        n["citation_count"] = cache.get(_cache_key(n))
+        n["citation_count"] = cache.get(cache_key(n))
     resolved = sum(1 for n in nodes if n.get("citation_count") is not None)
     if nodes and not resolved:
         # The one outcome worth a warning on its own: the enrichment ran and produced nothing.
@@ -125,7 +126,10 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
 
 def _normalized_title(title: str) -> str:
     """Lowercased alphanumeric words, so punctuation and casing do not decide a match."""
-    return " ".join(re.sub(r"[^a-z0-9 ]", " ", (title or "").lower()).split())
+    # Strips punctuation but KEEPS non-ASCII letters: an earlier version dropped them, so
+    # "α-divergence" and "β-divergence" normalized identically and one paper's count could be
+    # cached against the other.
+    return " ".join(re.sub(r"[^\w ]", " ", (title or "").lower(), flags=re.UNICODE).split())
 
 
 def _same_paper_title(query: str, candidate: str) -> bool:
@@ -151,7 +155,7 @@ def _same_paper_title(query: str, candidate: str) -> bool:
 _THROTTLED = object()
 
 
-def _cache_key(node: dict) -> str:
+def cache_key(node: dict) -> str:
     """Cache key for a node's citation count: its id PLUS the identity the count was resolved
     from.
 
@@ -164,7 +168,7 @@ def _cache_key(node: dict) -> str:
     return f"{node['id']}|{identity}"
 
 
-def _openalex_by_id(node: dict, client: httpx.Client):
+def _openalex_by_id(node: dict, client: httpx.Client, *, timeout: float = OPENALEX_REQUEST_TIMEOUT_S):
     """OpenAlex's count for a node with a known arXiv id or DOI.
 
     Tried before any title matching, because an identifier IS the paper — there is nothing to
@@ -176,7 +180,7 @@ def _openalex_by_id(node: dict, client: httpx.Client):
         return None
     try:
         resp = client.get(f"{OPENALEX_WORKS_URL}/{quote(lookup, safe=':./')}",
-                          params={"select": "cited_by_count"})
+                          params={"select": "cited_by_count"}, timeout=timeout)
         if resp.status_code == 429:
             return _THROTTLED
         if resp.status_code != 200:
@@ -187,7 +191,7 @@ def _openalex_by_id(node: dict, client: httpx.Client):
     return count if isinstance(count, int) else None
 
 
-def _openalex_citation_count(title: str, client: httpx.Client):
+def _openalex_citation_count(title: str, client: httpx.Client, *, timeout: float = OPENALEX_REQUEST_TIMEOUT_S):
     """OpenAlex's count for `title`, or None when nothing matches it closely enough.
 
     Two checks, both learned from real failures on this project's graph rather than added
@@ -209,6 +213,7 @@ def _openalex_citation_count(title: str, client: httpx.Client):
             OPENALEX_SEARCH_URL,
             params={"search": title, "per-page": OPENALEX_CANDIDATES,
                     "select": "display_name,cited_by_count"},
+            timeout=timeout,
         )
         if resp.status_code == 429:
             return _THROTTLED
@@ -239,7 +244,7 @@ def _fetch_missing(
     pacer: semantic_scholar.RequestPacer | None = None,
     openalex_client: httpx.Client | None = None,
 ) -> None:
-    missing = [n for n in nodes if _cache_key(n) not in cache]
+    missing = [n for n in nodes if cache_key(n) not in cache]
 
     # 1) batch by external id — cheap, do every node that has one.
     with_ids = [(n, _external_id(n)) for n in missing]
@@ -260,12 +265,12 @@ def _fetch_missing(
             break
         for (n, _eid), row in zip(chunk, resp.json(), strict=False):
             # null row = S2 doesn't know this id: record the miss so we don't retry every build.
-            cache[_cache_key(n)] = row.get("citationCount") if isinstance(row, dict) else None
+            cache[cache_key(n)] = row.get("citationCount") if isinstance(row, dict) else None
 
     # 2) title match for id-less nodes — throttled without a key, so pace, cap to the nodes
     #    that actually influence recommendations (most-cited-in-project first), and stop at the
     #    first 429 (the endpoint stays throttled once it starts).
-    titled = [n for n in missing if not _external_id(n) and _cache_key(n) not in cache
+    titled = [n for n in missing if not _external_id(n) and cache_key(n) not in cache
               and len(n.get("title", "")) >= 15]
     titled.sort(key=lambda n: (n.get("significant_cited_by_count", 0),
                                n.get("cited_by_project_count", 0)), reverse=True)
@@ -290,11 +295,11 @@ def _fetch_missing(
             # requested and never read, which is the same mistake in a different form.
             if rows and isinstance(rows[0], dict) and _same_paper_title(
                     title, rows[0].get("title") or ""):
-                cache[_cache_key(n)] = rows[0].get("citationCount")
+                cache[cache_key(n)] = rows[0].get("citationCount")
             else:
-                cache[_cache_key(n)] = None
+                cache[cache_key(n)] = None
         elif resp.status_code == 404:
-            cache[_cache_key(n)] = None  # definitive miss — don't retry every build
+            cache[cache_key(n)] = None  # definitive miss — don't retry every build
 
     # 3) OpenAlex for whatever Semantic Scholar still could not place. A different index with
     #    different coverage and no key requirement, so it reaches papers S2 simply does not hold —
@@ -305,19 +310,23 @@ def _fetch_missing(
         return          # no OpenAlex client supplied (tests inject one deliberately)
     still_missing = [
         n for n in nodes
-        if cache.get(_cache_key(n)) is None and len(n.get("title", "")) >= 15
+        if cache.get(cache_key(n)) is None and len(n.get("title", "")) >= 15
     ]
     deadline = time.monotonic() + OPENALEX_BUDGET_S
     for n in still_missing[:OPENALEX_MAX_LOOKUPS]:
         if time.monotonic() >= deadline:
             log.info("openalex fallback stopped at its time budget")
             break
-        count = _openalex_by_id(n, openalex_client)
+        # Each request gets only what is left of the budget, capped. httpx's timeout is
+        # per-operation — a server that trickles bytes never trips it — so the between-nodes
+        # deadline check alone does not bound total elapsed time.
+        remaining = max(1.0, min(OPENALEX_REQUEST_TIMEOUT_S, deadline - time.monotonic()))
+        count = _openalex_by_id(n, openalex_client, timeout=remaining)
         if count is None:
-            count = _openalex_citation_count(n["title"], openalex_client)
+            count = _openalex_citation_count(n["title"], openalex_client, timeout=remaining)
         if count is _THROTTLED:
             log.info("openalex fallback stopped: rate limited")
             break
         if isinstance(count, int):
-            cache[_cache_key(n)] = count
+            cache[cache_key(n)] = count
         sleep(OPENALEX_MIN_INTERVAL_S)

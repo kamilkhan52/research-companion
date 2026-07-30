@@ -4,7 +4,7 @@ that's the whole point of keying extraction by content hash: unchanged papers mu
 re-"extracted" on a second build."""
 from __future__ import annotations
 
-from app import graph, graph_store, sessions, store
+from app import citations, graph, graph_store, sessions, store
 
 from tests.conftest import add_paper
 
@@ -246,8 +246,10 @@ def test_skeleton_snapshot_uses_cached_citation_counts(temp_project):
     papers = store.list_papers(sessions.session_states())
 
     # Seed the persisted citation cache before the build (as a prior enriched build would).
+    # Keyed the way `citations.annotate_nodes` writes it — node id PLUS the identity the count
+    # came from — so a count cached against a paper's PREVIOUS arXiv id cannot be resurrected.
     data = graph_store.load()
-    data["citations"]["a"] = 1234
+    data["citations"][citations.cache_key({"id": "a", "title": "Paper A"})] = 1234
     graph_store.save(data)
 
     events = list(graph.build_graph(papers, extract_fn=fake_extractor([])))
