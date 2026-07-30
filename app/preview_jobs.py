@@ -78,7 +78,11 @@ class PreviewCoordinator(Job):
     progress: dict = field(default_factory=dict)
 
 
-_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=60)
+#: Retention has to outlast an UNCAPPED wait, not a typical one. Cue ids accumulate for the whole
+#: wait and `cue_history` reads them back out of this registry, so once finished jobs are evicted
+#: the "complete chronological history" the prompt promises quietly becomes partial — and the
+#: repetition the history exists to prevent comes back. 60 was chosen when waits were capped at 6.
+_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=400)
 _jobs = _registry.jobs
 _coordinator_registry: JobRegistry[PreviewCoordinator] = JobRegistry(
     "preview-coordinator", max_finished=20,
@@ -420,8 +424,20 @@ def acknowledge_played(job_id: str) -> dict | None:
     return _registry.snapshot(job_id)
 
 
+#: How many recent cues are shown to the next one. Not a cost lever first — though it is one: with
+#: no cap on cue count, sending every prior cue makes each request grow with the wait. It is mainly
+#: honesty. Retention can evict the oldest jobs, so "every cue so far" is a promise this cannot
+#: keep, and a bounded window is a promise it can. A listener will not notice cue 30 echoing cue 2;
+#: they notice cue 4 echoing cue 3, and the window covers that comfortably.
+CUE_HISTORY_WINDOW = 12
+
+
 def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
-    """Return complete chronological (played, generated) histories for a preview wait."""
+    """The recent chronological (played, generated) cue histories for a wait.
+
+    Bounded to `CUE_HISTORY_WINDOW`. Anything older may have been pruned from the registry anyway,
+    so claiming completeness would be false as well as expensive.
+    """
     generated: list[str] = []
     played: list[str] = []
     for job_id in job_ids:
@@ -431,7 +447,7 @@ def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
         generated.append(cue_job.cue)
         if getattr(cue_job, "played", False):
             played.append(cue_job.cue)
-    return played, generated
+    return played[-CUE_HISTORY_WINDOW:], generated[-CUE_HISTORY_WINDOW:]
 
 
 def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cue: str = "",

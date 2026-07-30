@@ -797,3 +797,33 @@ def test_cue_generation_asks_for_no_hidden_reasoning(temp_project, monkeypatch):
 
     assert seen["reasoning"] == {"enabled": False}
     assert seen["max_tokens"] == 180
+
+
+def test_cue_history_is_bounded_so_an_uncapped_wait_cannot_outgrow_it(temp_project, monkeypatch):
+    """With no cap on cue count, sending every prior cue would grow each request with the wait —
+    and worse, the registry evicts finished jobs, so "every cue so far" is a promise the code
+    cannot keep. A bounded window is one it can."""
+    cues = {}
+    for i in range(1, 31):
+        job_id = f"cue-{i}"
+        cues[job_id] = type("Cue", (), {
+            "id": job_id, "status": "done", "cue": f"cue text {i}", "played": True,
+            "progress_signature": "",
+        })()
+    monkeypatch.setattr(preview_jobs, "get_job", lambda job_id: cues.get(job_id))
+
+    played, generated = preview_jobs.cue_history(list(cues))
+
+    assert len(played) == preview_jobs.CUE_HISTORY_WINDOW
+    assert len(generated) == preview_jobs.CUE_HISTORY_WINDOW
+    # The window keeps the most RECENT cues — repeating the one just spoken is what a listener
+    # actually notices, so those are the ones the next cue must be able to see.
+    assert played[-1] == "cue text 30"
+    assert played[0] == f"cue text {30 - preview_jobs.CUE_HISTORY_WINDOW + 1}"
+
+
+def test_retention_outlasts_a_long_uncapped_wait(temp_project):
+    """Cue ids accumulate for the whole wait and `cue_history` reads them back out of the
+    registry. 60 was sized when waits were capped at 6; uncapped, a long synthesis would evict its
+    own history mid-wait and silently reintroduce the repetition the history prevents."""
+    assert preview_jobs._registry._max_finished >= 400
