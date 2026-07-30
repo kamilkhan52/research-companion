@@ -330,3 +330,34 @@ def test_remove_batch_refuses_while_a_job_runs(temp_project):
     finally:
         jobs._ALL_REGISTRIES.remove(reg)
     assert {p.slug for p in store.list_papers()} == {"a"}  # nothing removed
+
+
+def test_rename_pins_the_slug_so_the_discussion_cannot_be_orphaned(temp_project):
+    """The 2026-07-29 data-loss bug. A slug is DERIVED from the title unless pinned, so renaming
+    an unpinned paper re-derived it and detached `corpus/<slug>.md`, `sessions/<slug>.jsonl` and
+    the paper's `.state/sessions.json` entry. The paper came back as unread with a 16 KB
+    transcript orphaned on disk."""
+    store.add_entry("Transformers")
+    original = store.list_papers()[0].slug
+    assert original == "transformers"
+    store.corpus_path(original).write_text("# Transformers\n\nFull text.", encoding="utf-8")
+
+    assert store.rename_entry(original, "HuggingFace's Transformers: State-of-the-art NLP") is True
+
+    papers = store.list_papers()
+    assert len(papers) == 1
+    assert papers[0].slug == original, "the slug must survive a rename, or the paper loses its work"
+    assert papers[0].title == "HuggingFace's Transformers: State-of-the-art NLP"
+    # The paper still resolves to its own text rather than to a path nothing wrote.
+    assert store.corpus_path(papers[0].slug).exists()
+    assert papers[0].retrieved is True
+
+
+def test_a_second_rename_does_not_add_a_second_slug_pin(temp_project):
+    store.add_entry("Transformers")
+    store.rename_entry("transformers", "First Canonical Title")
+    store.rename_entry("transformers", "Second Canonical Title")
+
+    entry = store.entry_markdown("transformers")
+    assert entry.count("<!-- slug:") == 1
+    assert store.list_papers()[0].slug == "transformers"
