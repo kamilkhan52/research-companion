@@ -148,7 +148,10 @@ export default function SettingsScreen() {
   // edit, and merely opening Settings writes them straight back.
   const [initialized, setInitialized] = useState(false);
   useEffect(() => {
-    if (settings.data && !initializedRef.current) {
+    // `!settings.isFetching` matters: on a remount React Query can hand over STALE cached
+    // data synchronously while it refetches. Baselining from that and then ignoring the
+    // fresh response means the next edit posts the stale payload back over newer values.
+    if (settings.data && !settings.isFetching && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
       setPreviewModel(previewModelDraft(settings.data.preview_model));
@@ -176,8 +179,8 @@ export default function SettingsScreen() {
   // dragging through a segmented control is one write rather than five.
   //
   // API KEYS ARE DELIBERATELY NOT IN HERE. They are typed, so an auto-save keyed on change would
-  // send a stream of partial secrets to the server on the way to the real one. They save on blur
-  // instead — one write, after the field is finished with.
+  // send a stream of partial secrets to the server on the way to the real one. They keep an explicit
+  // commit instead, which only appears once a field holds a plausible key.
   const prefsPayload = useMemo(() => ({
     model: model || null,
     narration_model: narrationModel || null,
@@ -198,21 +201,38 @@ export default function SettingsScreen() {
   // take that provider offline for everyone on the instance. That is materially easier to trigger
   // than the button it replaced, which is the opposite of an improvement. So keys keep an explicit
   // commit; it just appears only when there is actually a key to save.
-  const dirtyKeys = useMemo(() => ({
-    ...(apiKey.trim() ? { openrouter_api_key: apiKey.trim() } : {}),
-    ...(openaiKey.trim() ? { openai_api_key: openaiKey.trim() } : {}),
-    ...(firecrawlKey.trim() ? { firecrawl_api_key: firecrawlKey.trim() } : {}),
-    ...(semanticScholarKey.trim() ? { semantic_scholar_api_key: semanticScholarKey.trim() } : {}),
-  }), [apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
+  // A provider key is never this short, and the backend accepts any string — so `sk-` typed
+  // halfway would be stored and would take that provider offline for everyone until someone
+  // noticed. Deliberately a length floor rather than per-provider prefixes: those change, and a
+  // wrong prefix rule would reject a legitimate key, which is the worse failure.
+  const MIN_KEY_LENGTH = 16;
+  const dirtyKeys = useMemo(() => {
+    const usable = (value: string) => value.trim().length >= MIN_KEY_LENGTH;
+    return {
+      ...(usable(apiKey) ? { openrouter_api_key: apiKey.trim() } : {}),
+      ...(usable(openaiKey) ? { openai_api_key: openaiKey.trim() } : {}),
+      ...(usable(firecrawlKey) ? { firecrawl_api_key: firecrawlKey.trim() } : {}),
+      ...(usable(semanticScholarKey)
+        ? { semantic_scholar_api_key: semanticScholarKey.trim() } : {}),
+    };
+  }, [apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
 
   const saveKeys = useCallback(async () => {
-    if (!isOperator || Object.keys(dirtyKeys).length === 0) return;
-    await saveSettings.mutateAsync(dirtyKeys);
-    setApiKey('');
-    setOpenaiKey('');
-    setFirecrawlKey('');
-    setSemanticScholarKey('');
-  }, [isOperator, dirtyKeys, saveSettings]);
+    const sent = dirtyKeys;
+    if (!isOperator || Object.keys(sent).length === 0) return;
+    await saveSettings.mutateAsync(sent);
+    // Clear only fields whose value was actually sent AND is still what was sent: clearing
+    // unconditionally would erase a key the operator started typing while the request was in
+    // flight, which is a silent loss of exactly the thing this screen is for.
+    const clearIfUnchanged = (
+      value: string, sentValue: string | undefined, clear: () => void,
+    ) => { if (sentValue && value.trim() === sentValue) clear(); };
+    clearIfUnchanged(apiKey, sent.openrouter_api_key, () => setApiKey(''));
+    clearIfUnchanged(openaiKey, sent.openai_api_key, () => setOpenaiKey(''));
+    clearIfUnchanged(firecrawlKey, sent.firecrawl_api_key, () => setFirecrawlKey(''));
+    clearIfUnchanged(semanticScholarKey, sent.semantic_scholar_api_key,
+                     () => setSemanticScholarKey(''));
+  }, [isOperator, dirtyKeys, saveSettings, apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
 
   return (
     <Screen edges={['top']}>

@@ -43,6 +43,10 @@ export function useAutoSave<T>(
   // inside `flush` closes over a stale copy, which re-fired immediately instead of taking
   // the delayed retry path — turning a bounded retry into an instant one.
   const justFailed = useRef(false);
+  // Retries already spent on the CURRENT value. Reset whenever the value changes, so a
+  // permanently failing save stops after one attempt instead of becoming a request every
+  // `retryDelayMs` forever — which is what scheduling a fresh timer from the catch did.
+  const retriesUsed = useRef(0);
   const mounted = useRef(true);
   const saveRef = useRef(save);
   saveRef.current = save;
@@ -68,17 +72,23 @@ export function useAutoSave<T>(
       .catch(() => {
         justFailed.current = true;
         if (mounted.current) setState('error');
-        // One delayed retry. Bounded on purpose: a permanently failing save must not become a
-        // request loop, so anything past this waits for the value to change again.
-        if (retryTimer.current) clearTimeout(retryTimer.current);
-        retryTimer.current = setTimeout(() => {
-          if (mounted.current) flush();
-        }, retryDelayMs);
+        // Exactly one automatic retry per value. Anything further waits for the value to change
+        // or for the reader to tap retry; otherwise a save that always fails is a request loop.
+        if (retriesUsed.current < 1) {
+          retriesUsed.current += 1;
+          if (retryTimer.current) clearTimeout(retryTimer.current);
+          retryTimer.current = setTimeout(() => {
+            justFailed.current = false;
+            flush();
+          }, retryDelayMs);
+        }
       })
       .finally(() => {
         inFlight.current = false;
         // Changes that arrived mid-flight are saved now, so the server ends on the newest value.
-        if (mounted.current && !justFailed.current && latest.current
+        // NOT gated on `mounted`: the screen closing does not un-choose the setting, and a queued
+        // value dropped here leaves the server on the older one. Only setState is mount-gated.
+        if (!justFailed.current && latest.current
             && latest.current.serialized !== lastSaved.current) {
           flush();
         }
@@ -93,6 +103,9 @@ export function useAutoSave<T>(
       lastSaved.current = serialized;               // baseline; never written back
       return undefined;
     }
+    if (!latest.current || latest.current.serialized !== serialized) {
+      retriesUsed.current = 0;          // a new value earns a fresh attempt
+    }
     latest.current = { serialized, value };
     if (serialized === lastSaved.current) return undefined;
 
@@ -104,6 +117,7 @@ export function useAutoSave<T>(
   const retry = useCallback(() => {
     if (retryTimer.current) clearTimeout(retryTimer.current);
     justFailed.current = false;
+    retriesUsed.current = 0;            // an explicit tap is not an automatic retry
     flush();
   }, [flush]);
 

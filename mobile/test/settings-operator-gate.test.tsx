@@ -55,7 +55,7 @@ let saveSettingsMutate: jest.Mock;
 function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boolean) {
   jest.spyOn(queries, 'useSettings').mockReturnValue({
     data: { ...settings, is_operator: isOperator, can_edit_preferences: canEditPreferences },
-    isLoading: false, isError: false, isSuccess: true,
+    isLoading: false, isError: false, isSuccess: true, isFetching: false,
   } as never);
   jest.spyOn(queries, 'useFavoriteModels').mockReturnValue({ data: [] } as never);
   jest.spyOn(queries, 'usePrompts').mockReturnValue({
@@ -203,14 +203,32 @@ test('a per-user flag that is absent falls back to the operator gate', async () 
 // Auto-save turned "can this user write?" from a question about a button into a question about a
 // silent background mutation. That is worth its own test: a reader must not be able to trigger a
 // write of instance-wide settings just by being on the screen.
-test('a read-only reader triggers no settings write at all', async () => {
+test('a read-only reader cannot trigger a settings write even by trying', async () => {
+  // Mounting and waiting is not enough: that passes even if the permission gate were removed,
+  // because nothing changes after baselining. The reader has to ATTEMPT an edit.
   stubQueries(false);
   await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
   await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
 
   expect(saveSettingsMutate).not.toHaveBeenCalled();
-  // And the contextual key-save action is absent for a non-operator.
   expect(screen.queryByText('Save API keys')).toBeNull();
+});
+
+test('a half-typed API key cannot be saved', async () => {
+  // The backend accepts any string, so a prefix stored as a key takes that provider offline for
+  // everyone on the instance until somebody works out why.
+  stubQueries(true);
+  await renderScreen();
+
+  const keyField = screen.getAllByPlaceholderText(/Replace key|sk-or-/)[0];
+
+  await act(async () => { fireEvent.changeText(keyField, 'sk-'); });
+  expect(screen.queryByText('Save API keys')).toBeNull();
+
+  await act(async () => { fireEvent.changeText(keyField, 'sk-or-v1-abcdefghijklmnop'); });
+  expect(screen.getByText('Save API keys')).toBeTruthy();
 });
 
 test('merely opening the screen as an operator writes nothing back', async () => {

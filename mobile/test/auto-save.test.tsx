@@ -128,3 +128,37 @@ test('re-choosing the SAME option after a failure retries it', async () => {
   expect(save).toHaveBeenCalledTimes(2);
   expect(save).toHaveBeenLastCalledWith({ voice: 'echo' });
 });
+
+test('a permanently failing save retries once, not forever', async () => {
+  // Scheduling a fresh timer from the catch means the retry's own rejection schedules another —
+  // one request every retryDelayMs, indefinitely, for a save that can never succeed.
+  const save = jest.fn().mockRejectedValue(new Error('offline'));
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(
+    ({ v }) => useAutoSave(v, save, { retryDelayMs: 1000 }), { initialProps: { v: { voice: 'alloy' } } },
+  );
+
+  rerender({ v: { voice: 'echo' } });
+  await flush();
+  for (let i = 0; i < 6; i += 1) {
+    await act(async () => { jest.advanceTimersByTime(1200); });
+  }
+
+  expect(save).toHaveBeenCalledTimes(2);   // the original attempt plus exactly one retry
+});
+
+test('a new value after a failed one earns a fresh attempt', async () => {
+  const save = jest.fn().mockRejectedValue(new Error('offline'));
+  const { rerender } = renderHook<ReturnType<typeof useAutoSave<{ voice: string }>>, { v: { voice: string } }>(
+    ({ v }) => useAutoSave(v, save, { retryDelayMs: 1000 }), { initialProps: { v: { voice: 'alloy' } } },
+  );
+
+  rerender({ v: { voice: 'echo' } });
+  await flush();
+  await act(async () => { jest.advanceTimersByTime(1200); });
+  const afterFirst = save.mock.calls.length;
+
+  rerender({ v: { voice: 'nova' } });
+  await flush();
+  expect(save.mock.calls.length).toBeGreaterThan(afterFirst);
+  expect(save).toHaveBeenLastCalledWith({ voice: 'nova' });
+});
