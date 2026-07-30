@@ -16,6 +16,7 @@ import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { canStartGraphBuild } from '@/graph/buildAvailability';
 import { pageSignificant, significantNodes } from '@/graph/filter';
+import { readableError } from '@/api/errorMessage';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
@@ -291,9 +292,13 @@ export default function GraphScreen() {
         <Centered text="No active project selected." />
       ) : graphQuery.isLoading ? (
         <Centered loading />
-      ) : graphQuery.isError ? (
+      ) : graphQuery.isError && !graph ? (
+        // Only when there is nothing to show. React Query keeps `data` when a REFETCH fails, and
+        // this branch used to run first — so one dropped DNS lookup replaced a fully built graph
+        // with an error page, and the next successful poll silently restored it. A refresh that
+        // fails must not discard a graph the reader already has; it becomes the banner below.
         <Centered
-          text={(graphQuery.error as Error)?.message ?? 'Could not load the graph.'}
+          text={readableError(graphQuery.error, 'Could not load the graph.')}
           action={<Button title="Retry" variant="ghost" onPress={() => graphQuery.refetch()} />}
         />
       ) : !graph ? (
@@ -354,6 +359,15 @@ export default function GraphScreen() {
           ) : null}
 
           {build.error ? <ErrorBanner detail={build.error} onDismiss={build.clearError} /> : null}
+          {/* A refresh that failed while the graph is still on screen. Non-blocking on purpose:
+              the reader keeps the map they already have, and the next successful poll clears
+              this by itself — which is exactly what was observed happening. */}
+          {graphQuery.isError && graph ? (
+            <ErrorBanner
+              detail={readableError(graphQuery.error, 'Could not refresh the graph.')}
+              onDismiss={() => graphQuery.refetch()}
+            />
+          ) : null}
         </>
       )}
 
