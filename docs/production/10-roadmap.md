@@ -332,6 +332,37 @@ Deferred deliberately, with the reasoning recorded where it belongs: the operato
 content reports (M7 — `content_reports.pending_count()` is its seam), audio cache eviction, and
 P0-17 (`DeliveryReq.model` bypassing settings, which is M3's tier check).
 
+### R14 device-pass list — status 2026-07-30
+
+Kamil's 2026-07-30 pass produced six items. **Five are shipped; only discovery remains**, and he
+asked explicitly to stop before it so it can be designed properly rather than patched.
+
+| # | Item | State |
+|---|------|-------|
+| 1 | Graph showed a raw `UnknownHostException` after a successful build, and a failed refresh blanked already-loaded data | Shipped — **device-confirmed** |
+| 2 | Settings auto-save; keyboard hiding the Save button and the privacy/terms links | Shipped — **device-confirmed** |
+| 3 | Paper context (affiliation, citations, relevance) on the reading-mode screen | Shipped — **not yet device-confirmed** |
+| 4 | "Fetch & start reading" progress as staged card rather than vanishing text | Shipped — **device-confirmed** |
+| 5 | Graph label overlap; constant-size labels; nodes separating on zoom | Shipped — **device-confirmed** (#301) |
+| 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **NEXT, untouched** |
+
+**Citation enrichment, which item 5 depended on, went 46% → 90% (186 → 361 of 402).** The cap was
+not coverage of the indexes: `app/citations.py` requested `fields=...,matchScore` from Semantic
+Scholar's `paper/search/match`, which rejects an unsupported field with `400 {"error":"Unrecognized
+or unsupported fields: [matchScore]"}`. Every title lookup had been failing — and title lookup is
+the only route for the ~190 nodes with no arXiv id or DOI. The loop handled 200/404/429 and let
+everything else fall through, so a total failure was indistinguishable from "paper not in the
+index". PR #302; non-200/404 now logs and stops.
+
+Two facts from that work that change planning assumptions:
+
+- **OpenAlex is metered now** and answers `429 "Insufficient budget. This request costs $0.001 but
+  you only have $0"` for search *and* by-DOI lookups. Step 3 of `_fetch_missing` contributes
+  nothing today. Whether to pay for it is a product decision, so the code is left in place rather
+  than removed — but **do not plan discovery around free OpenAlex access** without re-checking.
+- **Semantic Scholar with the key is not the constraint**: 0 of 120 requests were rate-limited, and
+  84% of attempted title lookups verified. Discovery can lean on it.
+
 **A correction worth carrying:** an earlier version of this list said "encrypted in transit" was
 blocked partly by `safe_fetch` permitting `http://` paper URLs. Checked against Google's live
 definition on 2026-07-28, that question is scoped to the app's own transmission from device to
