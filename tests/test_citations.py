@@ -58,9 +58,11 @@ def test_title_match_paced_and_stops_on_429():
     nodes = [_node("t1", sig=3), _node("t2", sig=2), _node("t3", sig=1)]
     cache: dict = {}
     client = FakeClient(get_resps=[
-        _resp(200, {"data": [{"citationCount": 512, "matchScore": 0.99}]}),
+        _resp(200, {"data": [{"title": "A sufficiently long paper title",
+                              "citationCount": 512, "matchScore": 0.99}]}),
         _resp(429),
-        _resp(200, {"data": [{"citationCount": 7}]}),  # must never be reached
+        _resp(200, {"data": [{"title": "A sufficiently long paper title",
+                              "citationCount": 7}]}),  # must never be reached
     ])
     real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
     assert cache["t1"] == 512   # highest-significance node looked up first
@@ -216,16 +218,40 @@ def test_the_fallback_is_skipped_when_no_client_is_supplied():
     assert cache == {} or "a" not in cache or cache.get("a") is None
 
 
-def test_a_truncated_stored_title_still_matches_the_full_record():
-    # Node titles come from reading-list entries and are often shortened; the full OpenAlex record
-    # is the same paper, and refusing it would lose exactly the long tail this fallback is for.
+def test_a_truncated_stored_title_is_refused_by_title_and_reached_by_id_instead():
+    """An earlier version accepted a short trailing difference so truncated titles would match.
+    That is loose in the direction that costs: it also accepts "A Survey of Large Language Models"
+    against "… for Medicine". Identifiers cannot be ambiguous, so truncation is handled there."""
     fake = _FakeOpenAlex([{
         "display_name": "BERT: Pre-training of Deep Bidirectional Transformers for Language "
                         "Understanding",
         "cited_by_count": 118626,
     }])
     assert citations._openalex_citation_count(
-        "BERT: Pre-training of Deep Bidirectional Transformers", fake) == 118626
+        "BERT: Pre-training of Deep Bidirectional Transformers", fake) is None
+
+
+def test_a_paper_with_an_identifier_is_resolved_without_any_title_guessing():
+    class _ById:
+        def get(self, url, params=None, **_kw):
+            assert "W" in url or "arxiv" in url.lower() or "10." in url
+            return httpx.Response(200, json={"cited_by_count": 118626},
+                                  request=httpx.Request("GET", url))
+
+    node = {"id": "bert", "title": "BERT: Pre-training of Deep Bidirectional Transformers",
+            "arxiv_id": "1810.04805"}
+    assert citations._openalex_by_id(node, _ById()) == 118626
+
+
+def test_a_longer_related_title_is_not_the_same_paper():
+    # Both were accepted by the short-tail rule, and the max-count rule would then have picked
+    # whichever had more citations — the most damaging possible false positive.
+    for other in (
+        "A Survey of Large Language Models for Medicine",
+        "A Survey of Large Language Models Part II",
+    ):
+        fake = _FakeOpenAlex([{"display_name": other, "cited_by_count": 9_000}])
+        assert citations._openalex_citation_count("A Survey of Large Language Models", fake) is None
 
 
 def test_a_title_that_continues_into_a_different_paper_is_refused():
@@ -236,3 +262,18 @@ def test_a_title_that_continues_into_a_different_paper_is_refused():
     }])
     assert citations._openalex_citation_count("Attention Is All You Need", fake) is None
 
+
+
+def test_a_semantic_scholar_title_match_for_a_DIFFERENT_paper_is_refused():
+    """The title endpoint returns the CLOSEST match, not a paper identity. Taking its count on
+    trust was a hazard at 25 lookups a build and is sixteen times the exposure at 400."""
+    nodes = [_node("t1")]
+    cache: dict = {}
+    client = FakeClient(get_resps=[
+        _resp(200, {"data": [{"title": "A completely different paper about something else",
+                              "citationCount": 99_999, "matchScore": 0.4}]}),
+    ])
+
+    real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
+
+    assert cache["t1"] is None, "a near match must not be recorded as this paper's count"

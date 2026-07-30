@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import re
 import time
+from urllib.parse import quote
 
 import httpx
 
 from . import logging_config, semantic_scholar
+from . import openalex as openalex_mod
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 S2_MATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search/match"
@@ -33,7 +35,8 @@ TIMEOUT_S = 30.0
 
 #: OpenAlex covers papers Semantic Scholar cannot resolve from a title, and needs no key. Used
 #: only as a fallback, and only with a match check — see `_openalex_citation_count`.
-OPENALEX_SEARCH_URL = "https://api.openalex.org/works"
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+OPENALEX_SEARCH_URL = OPENALEX_WORKS_URL
 #: Word-count bounds for accepting a title as the same paper. See `_same_paper_title`: a stored
 #: title is often a truncation of the full one, but a title that continues for long enough is a
 #: different paper.
@@ -43,8 +46,8 @@ MAX_TITLE_TAIL_WORDS = 6
 #: the same paper — an exact-title match returned "Attention Is All You Need" with 6,598 citations
 #: while the canonical record has far more — so the best-matching title is not enough on its own.
 OPENALEX_CANDIDATES = 5
-#: OpenAlex asks callers to identify themselves; requests that do are served from a faster pool.
-OPENALEX_HEADERS = {"User-Agent": "Scholiast (https://scholiast.io; mailto:kaamilkhaan52@gmail.com)"}
+#: Identify ourselves the way the existing OpenAlex integration does — from deployment
+#: configuration (`RC_CONTACT_EMAIL`), never a hardcoded address in the repo.
 
 
 def _api_key() -> str:
@@ -88,7 +91,7 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
     before = len(cache)
     # OpenAlex gets its own client: a different host, and it asks callers to identify themselves
     # so requests land in its faster "polite pool" rather than the anonymous one.
-    openalex = httpx.Client(timeout=TIMEOUT_S, headers=OPENALEX_HEADERS)
+    openalex = httpx.Client(timeout=TIMEOUT_S, headers=openalex_mod._headers())
     try:
         _fetch_missing(nodes, cache, client, sleep, openalex_client=openalex)
     except Exception as e:  # noqa: BLE001 — enrichment must never fail the build
@@ -119,28 +122,42 @@ def _normalized_title(title: str) -> str:
 
 
 def _same_paper_title(query: str, candidate: str) -> bool:
-    """Whether `candidate` names the same paper as `query`.
+    """Whether `candidate` names the same paper as `query`. Exact, after normalization.
 
-    Word-level rather than fuzzy, and that is the point. A character-ratio test rated
-    "Attention Is All You Need" and "Attention Is *Not* All You Need" as a 0.93 match — and since
-    the fallback takes the highest count among matches, a near-miss title is MORE dangerous than a
-    distant one, not less. One inserted word can change a title into a different paper's.
+    A character-ratio test rated "Attention Is All You Need" and "Attention Is *Not* All You Need"
+    a 0.93 match, and because this fallback takes the highest count among matches, a NEAR-miss is
+    more dangerous than a distant one — it is both plausible and wrong.
 
-    So: the same words, or the candidate is the query plus a short tail. The tail allows a node
-    whose stored title was truncated ("BERT: Pre-training of deep bidirectional transformers") to
-    match the full record, while a genuinely longer, different title does not.
+    An earlier version also accepted a short trailing difference, to catch stored titles that were
+    truncated. That is too loose in the direction that costs: it accepts "A Survey of Large
+    Language Models" against "A Survey of Large Language Models for Medicine", and a base paper
+    against its "… Part II". Coverage bought that way is coverage of the wrong numbers, and once
+    cached under the node id it is never revisited. Papers whose stored title is truncated are
+    reached by identifier instead, which cannot be ambiguous.
     """
-    q, c = _normalized_title(query).split(), _normalized_title(candidate).split()
-    if not q or not c:
-        return False
-    if q == c:
-        return True
-    shorter, longer = (q, c) if len(q) <= len(c) else (c, q)
-    return (
-        len(shorter) >= MIN_TITLE_WORDS
-        and longer[:len(shorter)] == shorter
-        and len(longer) - len(shorter) <= MAX_TITLE_TAIL_WORDS
-    )
+    q, c = _normalized_title(query), _normalized_title(candidate)
+    return bool(q) and q == c
+
+
+def _openalex_by_id(node: dict, client: httpx.Client) -> int | None:
+    """OpenAlex's count for a node with a known arXiv id or DOI.
+
+    Tried before any title matching, because an identifier IS the paper — there is nothing to
+    verify and nothing to get wrong. It also recovers exactly the cases the strict title rule
+    gives up on, such as a stored title that was truncated.
+    """
+    lookup = openalex_mod._work_lookup_id(arxiv_id=node.get("arxiv_id"), doi=node.get("doi"))
+    if not lookup:
+        return None
+    try:
+        resp = client.get(f"{OPENALEX_WORKS_URL}/{quote(lookup, safe=':./')}",
+                          params={"select": "cited_by_count"})
+        if resp.status_code != 200:
+            return None
+        count = (resp.json() or {}).get("cited_by_count")
+    except Exception:  # noqa: BLE001 — a fallback that fails is just an unresolved node
+        return None
+    return count if isinstance(count, int) else None
 
 
 def _openalex_citation_count(title: str, client: httpx.Client) -> int | None:
@@ -230,7 +247,7 @@ def _fetch_missing(
             lambda title=title: client.get(
                 S2_MATCH_URL,
                 headers=_headers(),
-                params={"query": title, "fields": "citationCount,matchScore"},
+                params={"query": title, "fields": "title,citationCount,matchScore"},
             ),
             pacer=pacer,
         )
@@ -238,7 +255,12 @@ def _fetch_missing(
             break
         if resp.status_code == 200:
             rows = (resp.json() or {}).get("data") or []
-            if rows and isinstance(rows[0], dict):
+            # Verified the same way as the OpenAlex fallback. This endpoint returns the CLOSEST
+            # title match, not a paper identity, and the count was previously taken on trust — a
+            # hazard at 25 lookups a build and sixteen times the exposure at 400. `matchScore` was
+            # requested and never read, which is the same mistake in a different form.
+            if rows and isinstance(rows[0], dict) and _same_paper_title(
+                    title, rows[0].get("title") or ""):
                 cache[n["id"]] = rows[0].get("citationCount")
             else:
                 cache[n["id"]] = None
@@ -257,6 +279,8 @@ def _fetch_missing(
         if cache.get(n["id"]) is None and len(n.get("title", "")) >= 15
     ]
     for n in still_missing[:MAX_TITLE_LOOKUPS_WITH_KEY]:
-        count = _openalex_citation_count(n["title"], openalex_client)
+        count = _openalex_by_id(n, openalex_client)
+        if count is None:
+            count = _openalex_citation_count(n["title"], openalex_client)
         if count is not None:
             cache[n["id"]] = count
