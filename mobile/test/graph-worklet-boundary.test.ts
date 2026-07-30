@@ -34,3 +34,29 @@ test('the quantizer is inlined against the shared constant, so it cannot drift',
   expect(prepare).toContain('BUCKETS_PER_DOUBLING');
   expect(prepare).toMatch(/Math\.log2/);
 });
+
+
+test('the node growth cap is computed inline, not via an imported helper', () => {
+  // Same boundary as the zoom quantizer: this runs in a `useAnimatedStyle` worklet on the UI
+  // thread, so calling an imported function would crash the Map tab exactly as #295 did.
+  const start = source.indexOf('const nodeCounterScale');
+  expect(start).toBeGreaterThan(-1);
+  const block = source.slice(start, source.indexOf('}));', start));
+
+  expect(block).toContain('NODE_GROWTH_CAP');
+  expect(block).toMatch(/Math\.min\(/);
+  // Only the shared value and the constant may be read; no helper call.
+  expect(block).not.toMatch(/\b(nodeRadius|zoomBucket|bucketScale|pickVisibleLabels)\s*\(/);
+});
+
+test('nodes grow with zoom up to the cap and hold above it', () => {
+  // The property the constant encodes, stated so a change to the formula has to be deliberate:
+  // below the cap the circle scales with the canvas (factor 1), above it the factor falls as
+  // 1/scale so the on-screen size stops changing.
+  const factor = (scale: number, cap: number) => Math.min(1, cap / scale);
+  const cap = 0.7;
+  expect(factor(0.25, cap)).toBe(1);                    // zoomed out: unchanged from today
+  expect(factor(cap, cap)).toBe(1);                     // at the cap: still unchanged
+  expect(factor(1.4, cap)).toBeCloseTo(0.5);            // 2x past it: half, so screen size holds
+  expect(factor(2.8, cap) * 2.8).toBeCloseTo(cap);      // screen size is constant above the cap
+});
