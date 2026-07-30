@@ -361,3 +361,18 @@ def test_a_second_rename_does_not_add_a_second_slug_pin(temp_project):
     entry = store.entry_markdown("transformers")
     assert entry.count("<!-- slug:") == 1
     assert store.list_papers()[0].slug == "transformers"
+
+
+def test_adding_a_renamed_paper_s_canonical_title_is_refused_as_a_duplicate(temp_project):
+    """Once a rename pins the slug, the effective slug and the slug the title would derive are
+    deliberately allowed to differ — so a slug-only duplicate check stops seeing the paper, and
+    the same paper could be added a second time under its own canonical title."""
+    store.add_entry("Transformers")
+    store.rename_entry("transformers", "HuggingFace's Transformers: State-of-the-art NLP")
+
+    with pytest.raises(store.DuplicatePaperError):
+        store.add_entry("HuggingFace's Transformers: State-of-the-art NLP")
+    with pytest.raises(store.DuplicatePaperError):
+        store.add_entry("huggingface's transformers: STATE-OF-THE-ART nlp")   # case-folded
+
+    assert len(store.list_papers()) == 1
