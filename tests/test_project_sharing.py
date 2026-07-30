@@ -7,6 +7,7 @@ a background job, and why the record travels as history rather than as a directo
 """
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -398,3 +399,131 @@ def test_share_to_fly_never_puts_the_name_in_the_remote_command():
     remote_command = script[script.index("flyctl ssh console"):]
     assert "$NAME" not in remote_command, "the raw name must not reach the remote shell"
     assert "--name-b64" in remote_command and "$name_b64" in remote_command
+
+
+# ---- what HEAD structurally cannot carry: reading progress and unapproved content ----------
+#
+# Both real transfers of Kamil's corpus (staging 2026-07-27, production 2026-07-29) arrived
+# looking untouched, because the two things a reader would call "my work in progress" are exactly
+# the two things a HEAD-only bundle omits: `.state/sessions.json`, which is gitignored and is the
+# ONLY source of `Paper.session_state`; and the retrieved papers and live transcripts that
+# invariant 4 deliberately leaves uncommitted until a human approves them.
+
+
+def _project_with_work(tmp_projects, name="In Progress"):
+    """A project shaped like one someone has actually been reading in."""
+    pid = _make_project(tmp_projects, name)
+    root = projects.project_path(pid)
+    (root / "reading-list.md").write_text(
+        "# Reading list\n\n**Attention Is All You Need** — *unread*\n", encoding="utf-8")
+    projects._git(pid, "add", "-A")
+    projects._git(pid, "commit", "-q", "-m", "Add a paper")
+    # Uncommitted on purpose: a retrieved paper, a live transcript, and a reading-list entry added
+    # but never approved.
+    (root / "corpus").mkdir(exist_ok=True)
+    (root / "sessions").mkdir(exist_ok=True)
+    (root / "corpus" / "attention.md").write_text("Full text.", encoding="utf-8")
+    (root / "sessions" / "attention.jsonl").write_text('{"role":"user"}\n', encoding="utf-8")
+    (root / "reading-list.md").write_text(
+        "# Reading list\n\n**Attention Is All You Need** — *unread*\n"
+        "**A Second Paper** — *unread*\n", encoding="utf-8")
+    state = root / ".state"
+    state.mkdir(exist_ok=True)
+    (state / "sessions.json").write_text('{"attention": {"state": "in_discussion"}}', encoding="utf-8")
+    return pid
+
+
+def test_reading_progress_and_unapproved_work_travel_with_the_project(tmp_projects):
+    source = _project_with_work(tmp_projects)
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Moved")
+    dest = projects.project_path(imported["id"])
+
+    # The progress index: without this every paper reads as untouched at the destination.
+    assert '"in_discussion"' in (dest / ".state" / "sessions.json").read_text()
+    # The unapproved content HEAD never saw.
+    assert (dest / "corpus" / "attention.md").read_text() == "Full text."
+    assert (dest / "sessions" / "attention.jsonl").exists()
+    assert "A Second Paper" in (dest / "reading-list.md").read_text()
+
+
+def test_unapproved_work_arrives_unstaged_so_no_commit_can_sweep_it_in(tmp_projects):
+    """Invariant 4: a human approves before anything joins the record. Blobs are written directly
+    rather than checked out for exactly this reason — `git checkout <ref> -- .` would stage them,
+    and the next commit would silently absorb papers and transcripts nobody approved."""
+    source = _project_with_work(tmp_projects)
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Unstaged")
+    pid = imported["id"]
+
+    staged = projects._git(pid, "diff", "--cached", "--name-only").strip()
+    assert staged == "", f"nothing may arrive staged, found: {staged}"
+    # It is present as working-tree content, which is what it actually is.
+    status = projects._git(pid, "status", "--porcelain")
+    assert "?? corpus/" in status or "?? corpus/attention.md" in status
+    assert " M reading-list.md" in status
+
+
+def test_regenerable_caches_and_the_usage_ledger_still_stay_behind(tmp_projects):
+    """The whitelist is the point: `.state/` is 207 MB of one 214 MB project, nearly all of it
+    derived from committed content (covers, figures, graphs) and reproducible at the destination.
+    `usage.json` is worse than large — it is another instance's billing record."""
+    source = _project_with_work(tmp_projects)
+    state = projects.project_path(source) / ".state"
+    (state / "usage.json").write_text('{"cost": 999}', encoding="utf-8")
+    (state / "covers").mkdir(exist_ok=True)
+    (state / "covers" / "attention.png").write_bytes(b"\x89PNG-not-really")
+    (state / "reference-graph.json").write_text("{}", encoding="utf-8")
+
+    imported = projects.import_bundle(projects.export_bundle(source), "No Caches")
+    dest_state = projects.project_path(imported["id"]) / ".state"
+
+    assert not (dest_state / "usage.json").exists()
+    assert not (dest_state / "covers" / "attention.png").exists()
+    assert not (dest_state / "reference-graph.json").exists()
+    # …while the small authored part did travel.
+    assert (dest_state / "sessions.json").exists()
+
+
+def test_working_state_cannot_override_the_importer_s_own_metadata(tmp_projects):
+    """The sender controls this payload. `project.json` is the interesting target: the importer
+    rebuilds it (id, name, owner) precisely so a bundle cannot choose them, and a working-state
+    file must not smuggle it back in."""
+    source = _project_with_work(tmp_projects)
+    root = projects.project_path(source)
+    (root / "project.json").write_text('{"id": "hijacked", "name": "Hijacked"}', encoding="utf-8")
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Legitimate Name")
+
+    assert imported["id"] != "hijacked"
+    assert imported["name"] == "Legitimate Name"
+    on_disk = json.loads((projects.project_path(imported["id"]) / "project.json").read_text())
+    assert on_disk["id"] == imported["id"]
+    assert on_disk["name"] == "Legitimate Name"
+
+
+def test_the_transport_ref_does_not_survive_into_the_imported_project(tmp_projects):
+    """Left behind, the next export of the imported project would emit a stale snapshot next to
+    the freshly built one."""
+    source = _project_with_work(tmp_projects)
+    imported = projects.import_bundle(projects.export_bundle(source), "Clean Refs")
+
+    refs = projects._git(imported["id"], "for-each-ref", "--format=%(refname)")
+    assert projects.WORKING_STATE_REF not in refs
+
+
+def test_export_leaves_the_source_project_untouched(tmp_projects):
+    """Export builds a commit out of the working tree. It must do that in a private index: a human
+    may have staged something, and sharing a project is not a reason to disturb their staging area
+    — or to leave the transport ref lying around mid-session."""
+    source = _project_with_work(tmp_projects)
+    projects._git(source, "add", "--", "corpus/attention.md")   # deliberately staged by "a human"
+    before = projects._git(source, "status", "--porcelain")
+
+    projects.export_bundle(source)
+
+    assert projects._git(source, "status", "--porcelain") == before
+    # And the transport ref is not left reachable: it pins a snapshot of the whole working tree,
+    # so keeping one per export would grow the source repo on every share.
+    assert projects.WORKING_STATE_REF not in projects._git(
+        source, "for-each-ref", "--format=%(refname)")
