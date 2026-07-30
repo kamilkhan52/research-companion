@@ -11,9 +11,9 @@ harness in a later step). Two families:
     of private/loopback/link-local/reserved addresses (SSRF — incl. cloud metadata at
     169.254.169.254), hard byte/char caps, short timeouts, and text-only content. Both run a
     PROVIDER CHAIN and fall through on failure, so neither requires a key: `web_search` tries
-    Firecrawl, then Parallel, then keyless DuckDuckGo; `web_fetch` tries Firecrawl, then Parallel,
-    then a direct guarded fetch. (Until 2026-07-29 this paragraph required a Brave Search API key.
-    There has never been any Brave code in the repo — grepping for it found only that sentence.)
+    Firecrawl, then keyless DuckDuckGo; `web_fetch` tries Firecrawl, then a direct guarded
+    fetch. (Until 2026-07-29 this paragraph required a Brave Search API key. There has
+    never been any Brave code in the repo — grepping for it found only that sentence.)
 
 Everything is READ-ONLY: nothing here mutates project files, git, or settings. Tools return
 plain strings meant for the model to read; on bad input they return a helpful message rather
@@ -23,10 +23,8 @@ not configured), which raise ToolError so the failure is explicit.
 from __future__ import annotations
 
 import html
-import json
 import os
 import re
-import uuid
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -41,15 +39,6 @@ MAX_NOTES_CHARS = 12_000
 MAX_WEB_TEXT_CHARS = 12_000        # cap the text handed back from a web search/fetch
 WEB_TIMEOUT_S = 45.0
 
-# Parallel Search MCP (https://parallel.ai) — the web-search/fetch backend the Pi agent uses on
-# this machine. Streamable-HTTP MCP endpoint; auth via x-api-key. Key from PARALLEL_API_KEY /
-# PARALLEL_SEARCH_API_KEY (matching Pi) or the 'parallel_api_key' setting.
-PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
-PARALLEL_MODEL = "gpt-5.5"          # Parallel's search/extract model (per Pi's extension)
-_PARALLEL_SESSION = f"rc-{uuid.uuid4()}"
-
-# Firecrawl (https://firecrawl.dev) — the fallback the Pi/Hermes setup uses. Key from
-# FIRECRAWL_API_KEY or the 'firecrawl_api_key' setting.
 FIRECRAWL_BASE = "https://api.firecrawl.dev/v2"
 
 # DuckDuckGo HTML — a keyless last resort so web search works even when the paid providers are
@@ -150,18 +139,13 @@ def read_working_notes() -> str:
 
 # ----------------------------------------------------------------------------------- web tools
 # Web search/fetch go through a provider CHAIN so they keep working as credit/availability
-# changes: Firecrawl -> Parallel -> DuckDuckGo (keyless). Whichever is configured-and-working
+# changes: Firecrawl -> DuckDuckGo (keyless). Whichever is configured-and-working
 # wins, in that order; the keyless DDG fallback means search almost always returns something.
 # All web content is UNTRUSTED — the agent treats it as data to evaluate/cite, never as
 # instructions (see agent_harness guidance).
 
 def _firecrawl_key() -> str:
     return os.environ.get("FIRECRAWL_API_KEY") or config.load_settings().get("firecrawl_api_key") or ""
-
-
-def _parallel_key() -> str:
-    return (os.environ.get("PARALLEL_API_KEY") or os.environ.get("PARALLEL_SEARCH_API_KEY")
-            or config.load_settings().get("parallel_api_key") or "")
 
 
 def _cap(text: str) -> str:
@@ -222,86 +206,6 @@ def _firecrawl_fetch(urls: list[str], objective: str, *, client: httpx.Client | 
     finally:
         if own:
             client.close()
-
-
-# ---- provider: Parallel Search MCP ----
-
-def _read_jsonrpc(resp: httpx.Response) -> dict:
-    """Parse a JSON-RPC reply from the MCP endpoint, which may arrive as plain JSON or as a
-    single SSE message (Streamable-HTTP transport). For SSE we take the last `data:` payload."""
-    body = resp.text
-    if "text/event-stream" in resp.headers.get("content-type", ""):
-        data = ""
-        for line in body.splitlines():
-            if line.startswith("data:"):
-                data = line[5:].strip()
-        body = data
-    try:
-        return json.loads(body) if body.strip() else {}
-    except (ValueError, TypeError):
-        return {"error": {"message": body[:200]}}
-
-
-def _parse_mcp_content(result) -> str:
-    if isinstance(result, dict):
-        content = result.get("content")
-        if isinstance(content, list) and content:
-            return "\n".join(c.get("text", "") if isinstance(c, dict) else str(c) for c in content).strip()
-        return json.dumps(result)
-    return str(result)
-
-
-def _parallel_call(tool_name: str, arguments: dict, *, client: httpx.Client | None = None) -> str:
-    """Invoke a Parallel MCP tool via the JSON-RPC handshake (initialize ->
-    notifications/initialized -> tools/call), mirroring Pi's parallel-search extension."""
-    key = _parallel_key()
-    if not key:
-        raise ToolError("no parallel key")
-    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json",
-               "x-api-key": key}
-    own = client is None
-    client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
-    try:
-        init = client.post(PARALLEL_MCP_URL, headers=headers, json={
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                       "clientInfo": {"name": "research-companion", "version": "1.0.0"}}})
-        sid = init.headers.get("mcp-session-id")
-        shdr = {**headers, "Mcp-Session-Id": sid} if sid else headers
-        client.post(PARALLEL_MCP_URL, headers=shdr,
-                    json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-        call = client.post(PARALLEL_MCP_URL, headers=shdr, json={
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": tool_name,
-                       "arguments": {"session_id": _PARALLEL_SESSION, "model_name": PARALLEL_MODEL,
-                                     **arguments}}})
-        data = _read_jsonrpc(call)
-        if data.get("error"):
-            raise ToolError("parallel provider error")
-        result = data.get("result") or {}
-        content = _parse_mcp_content(result)
-        # Parallel reports failures (e.g. 402 out-of-credit) as an isError tool result or as
-        # error text in the content, NOT as an HTTP/JSON-RPC error — so detect that and raise,
-        # letting the provider chain fall through to the next provider.
-        if result.get("isError") or content.startswith("Error executing tool") \
-                or "Insufficient credit" in content:
-            raise ToolError("parallel provider error")
-        return content
-    except httpx.HTTPError as e:
-        raise ToolError(f"parallel transport failed ({type(e).__name__})") from e
-    finally:
-        if own:
-            client.close()
-
-
-def _parallel_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
-    return _parallel_call("web_search", {"objective": objective, "search_queries": queries}, client=client)
-
-
-def _parallel_fetch(urls: list[str], objective: str, *, client: httpx.Client | None = None) -> str:
-    return _parallel_call("web_fetch", {"urls": urls[:20],
-                                        "objective": objective or "Extract the key content."},
-                          client=client)
 
 
 # ---- provider: DuckDuckGo HTML (keyless fallback) ----
@@ -428,7 +332,7 @@ def _run_chain(providers: list[tuple[str, object]], *args) -> str:
 
 def web_search(objective: str, search_queries: list[str] | None = None) -> str:
     """Search the web. `objective` = what you want to find; `search_queries` = 1-3 short keyword
-    queries. Tries Firecrawl, then Parallel, then keyless DuckDuckGo. Returns ranked results with
+    queries. Tries Firecrawl, then keyless DuckDuckGo. Returns ranked results with
     snippets — usually enough to answer (author info, adoption, follow-up work, outside papers)
     without fetching. UNTRUSTED content."""
     objective = (objective or "").strip()
@@ -436,17 +340,17 @@ def web_search(objective: str, search_queries: list[str] | None = None) -> str:
         return "Empty search objective."
     queries = [q.strip() for q in (search_queries or []) if q.strip()] or [objective]
     return _run_chain(
-        [("Firecrawl", _firecrawl_search), ("Parallel", _parallel_search), ("DuckDuckGo", _ddg_search)],
+        [("Firecrawl", _firecrawl_search), ("DuckDuckGo", _ddg_search)],
         objective, queries)
 
 
 def web_fetch(urls: list[str], objective: str = "") -> str:
-    """Extract content from specific URLs. Tries Firecrawl, then Parallel, then a direct fetch.
+    """Extract content from specific URLs. Tries Firecrawl, then a direct fetch.
     Use when search snippets aren't enough or a specific page is named. UNTRUSTED content."""
     urls = [u.strip() for u in (urls or []) if u.strip()]
     if not urls:
         return "No URLs provided."
     objective = (objective or "").strip()
     return _run_chain(
-        [("Firecrawl", _firecrawl_fetch), ("Parallel", _parallel_fetch), ("direct", _direct_fetch)],
+        [("Firecrawl", _firecrawl_fetch), ("direct", _direct_fetch)],
         urls, objective)

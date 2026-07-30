@@ -616,9 +616,8 @@ _ENV_DEFAULTS = {
     "speech_provider": os.environ.get("RC_SPEECH_PROVIDER", "openai"),  # openai | browser
     "tts_model": os.environ.get("RC_TTS_MODEL", "tts-1"),
     "tts_voice": os.environ.get("RC_TTS_VOICE", "alloy"),
-    # web search/fetch for the agent's research tools — a provider chain (Firecrawl -> Parallel
-    # -> keyless DuckDuckGo). Keys optional; also read from env at call time (see research_tools).
-    "parallel_api_key": os.environ.get("PARALLEL_API_KEY", "") or os.environ.get("PARALLEL_SEARCH_API_KEY", ""),
+    # web search/fetch for the agent's research tools — Firecrawl, then keyless DuckDuckGo.
+    # Optional; also read from env at call time (see research_tools).
     "firecrawl_api_key": os.environ.get("FIRECRAWL_API_KEY", ""),
     # scholarly metadata/citation edges. The approved account limit is cumulative across
     # endpoints; app.semantic_scholar applies the shared below-1-RPS pacer.
@@ -631,7 +630,7 @@ _ENV_DEFAULTS = {
 
 
 _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_model", "openai_api_key",
-                 "speech_provider", "tts_model", "tts_voice", "parallel_api_key",
+                 "speech_provider", "tts_model", "tts_voice",
                  "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
 
 # Who owns which setting.
