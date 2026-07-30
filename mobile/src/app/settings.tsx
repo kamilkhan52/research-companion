@@ -4,7 +4,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo} from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -20,6 +20,8 @@ import {
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
 import { useAudio } from '@/audio/AudioProvider';
 import { useAuth } from '@/auth/AuthProvider';
+import { useAutoSave, type AutoSaveState } from '@/hooks/useAutoSave';
+import { useKeyboardInset } from '@/hooks/useKeyboardInset';
 import {
   useFavoriteModels,
   usePrompts,
@@ -73,6 +75,10 @@ export default function SettingsScreen() {
   const favorites = useFavoriteModels();
   const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
+  // The bottom of this screen — the privacy policy and terms links Play requires to be
+  // reachable — sat under the keyboard while typing. KeyboardAvoidingView alone does not
+  // fix it: its behavior is iOS-only here, and Android edge-to-edge does not resize.
+  const keyboardInset = useKeyboardInset();
   // Everything under /api/settings and /api/prompts is INSTANCE-wide: one key, one model, one
   // voice, one set of prompts, shared by every user. Only the named operator may write them
   // (RC_OPERATOR_USERS); the server 403s everyone else. Default true so a backend older than the
@@ -160,34 +166,34 @@ export default function SettingsScreen() {
     }
   }
 
-  async function handleSaveSettings() {
-    // Send only what this caller may write. A key in the payload from someone who is not the
-    // operator 403s the WHOLE request, taking their voice change down with it.
-    const payload: Record<string, unknown> = {};
-    if (canEditPrefs) {
-      Object.assign(payload, {
-        model: model || null,
-        narration_model: narrationModel || null,
-        preview_model: previewModelPatch(previewModel),
-        speech_provider: speechProvider,
-        tts_voice: voice || null,
-        prior_notes_scope: priorScope,
-      });
-    }
-    if (isOperator) {
-      if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
-      if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
-      if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
-      if (semanticScholarKey.trim()) {
-        payload.semantic_scholar_api_key = semanticScholarKey.trim();
-      }
-    }
-    if (Object.keys(payload).length === 0) return;
-    await saveSettings.mutateAsync(payload);
-    setApiKey('');
-    setOpenaiKey('');
-    setSemanticScholarKey('');
-  }
+  // Preferences auto-save: they are picked from controls, so there is no "finished typing"
+  // moment to wait for and a Save button is just a step that can be forgotten. Debounced, so
+  // dragging through a segmented control is one write rather than five.
+  //
+  // API KEYS ARE DELIBERATELY NOT IN HERE. They are typed, so an auto-save keyed on change would
+  // send a stream of partial secrets to the server on the way to the real one. They save on blur
+  // instead — one write, after the field is finished with.
+  const prefsPayload = useMemo(() => ({
+    model: model || null,
+    narration_model: narrationModel || null,
+    preview_model: previewModelPatch(previewModel),
+    speech_provider: speechProvider,
+    tts_voice: voice || null,
+    prior_notes_scope: priorScope,
+  }), [model, narrationModel, previewModel, speechProvider, voice, priorScope]);
+
+  const prefsSaveState = useAutoSave(
+    prefsPayload,
+    (payload) => saveSettings.mutateAsync(payload),
+    { enabled: canEditPrefs && settings.isSuccess },
+  );
+
+  /** Save one operator key once its field is finished with, not per keystroke. */
+  const saveKeyOnBlur = useCallback(async (field: string, value: string, clear: () => void) => {
+    if (!isOperator || !value.trim()) return;
+    await saveSettings.mutateAsync({ [field]: value.trim() });
+    clear();
+  }, [isOperator, saveSettings]);
 
   return (
     <Screen edges={['top']}>
@@ -198,7 +204,9 @@ export default function SettingsScreen() {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: space.xxl * 2 + keyboardInset }]}
+          keyboardShouldPersistTaps="handled">
           {/* Server connection — development only. A released build has exactly one correct
               server baked into app.json, and offering a reader a URL field invites them to break
               their own install. Same `__DEV__` build-time gate as AuthGate's SERVER_TOOLS_VISIBLE,
@@ -278,6 +286,7 @@ export default function SettingsScreen() {
                 <Field
                   value={apiKey}
                   onChangeText={setApiKey}
+                  onBlur={() => void saveKeyOnBlur('openrouter_api_key', apiKey, () => setApiKey(''))}
                   placeholder={settings.data?.has_key ? 'Replace key…' : 'sk-or-…'}
                   secureTextEntry
                   autoCapitalize="none"
@@ -354,6 +363,7 @@ export default function SettingsScreen() {
                     <Field
                       value={openaiKey}
                       onChangeText={setOpenaiKey}
+                      onBlur={() => void saveKeyOnBlur('openai_api_key', openaiKey, () => setOpenaiKey(''))}
                       placeholder={settings.data?.has_openai_key ? 'Replace key…' : 'sk-…'}
                       secureTextEntry
                       autoCapitalize="none"
@@ -429,6 +439,7 @@ export default function SettingsScreen() {
                 <Field
                   value={semanticScholarKey}
                   onChangeText={setSemanticScholarKey}
+                  onBlur={() => void saveKeyOnBlur('semantic_scholar_api_key', semanticScholarKey, () => setSemanticScholarKey(''))}
                   placeholder={settings.data?.has_semantic_scholar_key
                     ? 'Replace key…'
                     : 'Semantic Scholar API key'}
@@ -461,6 +472,7 @@ export default function SettingsScreen() {
                 <Field
                   value={firecrawlKey}
                   onChangeText={setFirecrawlKey}
+                  onBlur={() => void saveKeyOnBlur('firecrawl_api_key', firecrawlKey, () => setFirecrawlKey(''))}
                   placeholder={settings.data?.has_firecrawl_key ? 'Replace key…' : 'fc-…'}
                   secureTextEntry
                   autoCapitalize="none"
@@ -493,19 +505,11 @@ export default function SettingsScreen() {
               </Section>
 
               {isOperator || canEditPrefs ? (
-                <>
-                  <Button
-                    title="Save settings"
-                    onPress={handleSaveSettings}
-                    loading={saveSettings.isPending}
-                    style={{ marginTop: space.sm }}
-                  />
-                  {saveSettings.isError ? (
-                    <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-                      {(saveSettings.error as Error).message}
-                    </Text>
-                  ) : null}
-                </>
+                <AutoSaveStatus
+                  state={prefsSaveState}
+                  pending={saveSettings.isPending}
+                  error={saveSettings.isError ? (saveSettings.error as Error).message : null}
+                />
               ) : null}
             </SharedWritableContext.Provider>
           )}
@@ -619,6 +623,29 @@ function LockedRow({ label }: { label: string }) {
  *
  *  Without a server URL there is nothing to point at, so the links say so rather than silently
  *  failing: a dead privacy link is a Play violation, an explained one is not. */
+/** The quiet replacement for a Save button: says what just happened, asks for nothing. */
+function AutoSaveStatus({ state, pending, error }: {
+  state: AutoSaveState;
+  pending: boolean;
+  error: string | null;
+}) {
+  const t = useTheme();
+  if (error) {
+    return (
+      <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
+        {error}
+      </Text>
+    );
+  }
+  const busy = pending || state === 'saving';
+  if (!busy && state !== 'saved') return null;
+  return (
+    <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
+      {busy ? 'Saving…' : 'Saved'}
+    </Text>
+  );
+}
+
 function LegalSection() {
   const t = useTheme();
   const { toast } = useToast();

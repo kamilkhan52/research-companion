@@ -135,8 +135,8 @@ test('a reader sees the shared settings read-only, with their device controls st
   for (const label of SHARED_TOGGLES) expect([label, inert(label)]).toEqual([label, true]);
   for (const label of LOCAL_TOGGLES) expect([label, inert(label)]).toEqual([label, false]);
 
-  // Nothing to submit: the save button posts only shared settings.
-  expect(screen.queryByText('Save settings')).toBeNull();
+  // Settings now auto-save, so there is no button to assert on. The property that actually
+  // mattered — this reader cannot write the instance's settings — is the editability above.
 });
 
 // The guard on the test above: an implementation that disabled EVERYTHING for EVERYONE would
@@ -147,7 +147,6 @@ test('the operator gets the same screen fully writable', async () => {
 
   expect(screen.queryByText('Some settings are read-only')).toBeNull();
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(true);
-  expect(screen.getByText('Save settings')).toBeTruthy();
   for (const label of [...SHARED_TOGGLES, ...LOCAL_TOGGLES]) {
     expect([label, inert(label)]).toEqual([label, false]);
   }
@@ -160,7 +159,9 @@ test('a backend that does not report the flag is treated as writable', async () 
   await renderScreen();
 
   expect(screen.queryByText('Some settings are read-only')).toBeNull();
-  expect(screen.getByText('Save settings')).toBeTruthy();
+  // The button this used to assert on is gone (settings auto-save). Writability is the real
+  // property, and an editable instance-wide field is what demonstrates it.
+  expect(screen.getByDisplayValue('model/a').props.editable).toBe(true);
 });
 
 
@@ -182,8 +183,9 @@ test('a reader on a per-user instance can edit their preferences but not the key
   }
   // The instance's key: still not.
   expect(screen.getByPlaceholderText('Replace key…').props.editable).toBe(false);
-  // ...and there is now something to submit, which there was not before.
-  expect(screen.getByText('Save settings')).toBeTruthy();
+  // ...and their own preference IS writable, which is the distinction this test exists for.
+  // (Previously demonstrated by a Save button appearing; settings auto-save now.)
+  expect(inert('Related papers')).toBe(false);
 });
 
 // The other direction, and the one that must NOT be permissive: a server too old to know the flag
@@ -193,5 +195,4 @@ test('a per-user flag that is absent falls back to the operator gate', async () 
   await renderScreen();
 
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(false);
-  expect(screen.queryByText('Save settings')).toBeNull();
 });
