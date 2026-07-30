@@ -66,7 +66,8 @@ function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boole
   } as never);
   saveSettingsMutate = jest.fn().mockResolvedValue(undefined);
   jest.spyOn(queries, 'useSaveSettings').mockReturnValue({
-    mutateAsync: saveSettingsMutate, isPending: false, isError: false,
+    mutate: saveSettingsMutate, mutateAsync: saveSettingsMutate,
+    isPending: false, isError: false,
   } as never);
   jest.spyOn(queries, 'useSavePrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
   jest.spyOn(queries, 'useResetPrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
@@ -210,7 +211,7 @@ test('a read-only reader cannot trigger a settings write even by trying', async 
   await renderScreen();
 
   await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
 
   expect(saveSettingsMutate).not.toHaveBeenCalled();
   expect(screen.queryByText('Save API keys')).toBeNull();
@@ -237,7 +238,7 @@ test('merely opening the screen as an operator writes nothing back', async () =>
   // silently rewrites every preference.
   stubQueries(true);
   await renderScreen();
-  await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
 
   expect(saveSettingsMutate).not.toHaveBeenCalled();
 });
@@ -249,5 +250,6 @@ test('an operator changing a preference does get it saved', async () => {
 
   await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
   await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalled(), { timeout: 3000 });
-  expect(saveSettingsMutate.mock.calls[0][0]).toMatchObject({ prior_notes_scope: 'all' });
+  // One FIELD per request: an overlapping write cannot clobber unrelated preferences.
+  expect(saveSettingsMutate.mock.calls[0][0]).toEqual({ prior_notes_scope: 'all' });
 });

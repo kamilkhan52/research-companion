@@ -20,7 +20,6 @@ import {
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
 import { useAudio } from '@/audio/AudioProvider';
 import { useAuth } from '@/auth/AuthProvider';
-import { useAutoSave, type AutoSaveState } from '@/hooks/useAutoSave';
 import { useKeyboardInset } from '@/hooks/useKeyboardInset';
 import {
   useFavoriteModels,
@@ -143,15 +142,8 @@ export default function SettingsScreen() {
   // query) would otherwise re-fire this and silently overwrite whatever the user is mid-typing
   // into model/narrationModel/voice with the last-saved server values.
   const initializedRef = useRef(false);
-  // State, not just the ref: auto-save must not baseline until the server's values have been
-  // applied to these fields. Enabling it a render earlier makes that application look like an
-  // edit, and merely opening Settings writes them straight back.
-  const [initialized, setInitialized] = useState(false);
   useEffect(() => {
-    // `!settings.isFetching` matters: on a remount React Query can hand over STALE cached
-    // data synchronously while it refetches. Baselining from that and then ignoring the
-    // fresh response means the next edit posts the stale payload back over newer values.
-    if (settings.data && !settings.isFetching && !initializedRef.current) {
+    if (settings.data && !initializedRef.current) {
       setModel(settings.data.model ?? '');
       setNarrationModel(settings.data.narration_model ?? '');
       setPreviewModel(previewModelDraft(settings.data.preview_model));
@@ -159,7 +151,6 @@ export default function SettingsScreen() {
       setSpeechProvider((settings.data.speech_provider as 'openai' | 'browser') ?? 'openai');
       setPriorScope(settings.data.prior_notes_scope === 'all' ? 'all' : 'related');
       initializedRef.current = true;
-      setInitialized(true);
     }
   }, [settings.data]);
 
@@ -174,27 +165,30 @@ export default function SettingsScreen() {
     }
   }
 
-  // Preferences auto-save: they are picked from controls, so there is no "finished typing"
-  // moment to wait for and a Save button is just a step that can be forgotten. Debounced, so
-  // dragging through a segmented control is one write rather than five.
+  // Preferences save the moment they are chosen, one FIELD per request.
   //
-  // API KEYS ARE DELIBERATELY NOT IN HERE. They are typed, so an auto-save keyed on change would
-  // send a stream of partial secrets to the server on the way to the real one. They keep an explicit
-  // commit instead, which only appears once a field holds a plausible key.
-  const prefsPayload = useMemo(() => ({
-    model: model || null,
-    narration_model: narrationModel || null,
-    preview_model: previewModelPatch(previewModel),
-    speech_provider: speechProvider,
-    tts_voice: voice || null,
-    prior_notes_scope: priorScope,
-  }), [model, narrationModel, previewModel, speechProvider, voice, priorScope]);
+  // The first version of this debounced the whole preferences payload and wrote it as one object.
+  // That needs a baseline (what does the server already have?), serialization (two whole-payload
+  // writes must not overlap or the older one wins), retry bookkeeping, and mount gating — and
+  // three review rounds each found a new interaction between those. The requirement never asked
+  // for any of it.
+  //
+  // Committing one field per change removes all of it. There is nothing to baseline, because
+  // nothing is written unless the reader acts. Overlapping requests cannot clobber each other,
+  // because each carries only the field it changed. Retry and in-flight state belong to the
+  // mutation, which outlives this screen, so closing it mid-save is not a special case.
+  const lastPayload = useRef<Record<string, unknown> | null>(null);
 
-  const prefsSave = useAutoSave(
-    prefsPayload,
-    (payload) => saveSettings.mutateAsync(payload),
-    { enabled: canEditPrefs && initialized },
-  );
+  const commitPref = useCallback((field: string, value: unknown, apply: () => void) => {
+    apply();
+    if (!canEditPrefs) return;
+    lastPayload.current = { [field]: value };
+    saveSettings.mutate(lastPayload.current);
+  }, [canEditPrefs, saveSettings]);
+
+  const retrySave = useCallback(() => {
+    if (lastPayload.current) saveSettings.mutate(lastPayload.current);
+  }, [saveSettings]);
 
   // Keys are NOT auto-saved, and not saved on blur either. Blur means "focus moved", not "entry
   // finished" — tapping the next field midway through replacing a key would persist the prefix and
@@ -224,15 +218,17 @@ export default function SettingsScreen() {
     // Clear only fields whose value was actually sent AND is still what was sent: clearing
     // unconditionally would erase a key the operator started typing while the request was in
     // flight, which is a silent loss of exactly the thing this screen is for.
-    const clearIfUnchanged = (
-      value: string, sentValue: string | undefined, clear: () => void,
-    ) => { if (sentValue && value.trim() === sentValue) clear(); };
-    clearIfUnchanged(apiKey, sent.openrouter_api_key, () => setApiKey(''));
-    clearIfUnchanged(openaiKey, sent.openai_api_key, () => setOpenaiKey(''));
-    clearIfUnchanged(firecrawlKey, sent.firecrawl_api_key, () => setFirecrawlKey(''));
-    clearIfUnchanged(semanticScholarKey, sent.semantic_scholar_api_key,
-                     () => setSemanticScholarKey(''));
-  }, [isOperator, dirtyKeys, saveSettings, apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
+    // Functional updates, so each field is compared against its CURRENT value rather than the one
+    // captured before the await — otherwise a key the operator started typing while the request
+    // was in flight is silently wiped by the reply to the older one.
+    const clearIfStillSent = (sentValue: string | undefined) => (current: string) => (
+      sentValue && current.trim() === sentValue ? '' : current
+    );
+    setApiKey(clearIfStillSent(sent.openrouter_api_key));
+    setOpenaiKey(clearIfStillSent(sent.openai_api_key));
+    setFirecrawlKey(clearIfStillSent(sent.firecrawl_api_key));
+    setSemanticScholarKey(clearIfStillSent(sent.semantic_scholar_api_key));
+  }, [isOperator, dirtyKeys, saveSettings]);
 
   return (
     <Screen edges={['top']}>
@@ -339,7 +335,7 @@ export default function SettingsScreen() {
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={model}
-                  onPick={setModel}
+                  onPick={(m) => commitPref('model', m || null, () => setModel(m))}
                 />
 
                 <Label text="Narration model" />
@@ -347,7 +343,7 @@ export default function SettingsScreen() {
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={narrationModel}
-                  onPick={setNarrationModel}
+                  onPick={(m) => commitPref('narration_model', m || null, () => setNarrationModel(m))}
                 />
 
                 <Label text="Listening preview model" />
@@ -355,13 +351,13 @@ export default function SettingsScreen() {
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={previewModel}
-                  onPick={setPreviewModel}
+                  onPick={(m) => commitPref('preview_model', previewModelPatch(m), () => setPreviewModel(m))}
                 />
 
                 <Label text="Prior notes in paper context" />
                 <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => setPriorScope('related')} />
-                  <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => setPriorScope('all')} />
+                  <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => commitPref('prior_notes_scope', 'related', () => setPriorScope('related'))} />
+                  <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => commitPref('prior_notes_scope', 'all', () => setPriorScope('all'))} />
                 </View>
                 <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Which per-paper Notes the analyst sees during a discussion. "All read papers"
@@ -390,8 +386,8 @@ export default function SettingsScreen() {
                 <SharedWritableContext.Provider value={canEditPrefs}>
                   <Label text="Speech provider" />
                   <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
-                    <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => setSpeechProvider('openai')} />
-                    <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => setSpeechProvider('browser')} />
+                    <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => commitPref('speech_provider', 'openai', () => setSpeechProvider('openai'))} />
+                    <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => commitPref('speech_provider', 'browser', () => setSpeechProvider('browser'))} />
                   </View>
                 </SharedWritableContext.Provider>
 
@@ -549,8 +545,7 @@ export default function SettingsScreen() {
               ) : null}
               {isOperator || canEditPrefs ? (
                 <AutoSaveStatus
-                  state={prefsSave.state}
-                  onRetry={prefsSave.retry}
+                  onRetry={retrySave}
                   pending={saveSettings.isPending}
                   error={saveSettings.isError ? (saveSettings.error as Error).message : null}
                 />
@@ -668,14 +663,13 @@ function LockedRow({ label }: { label: string }) {
  *  Without a server URL there is nothing to point at, so the links say so rather than silently
  *  failing: a dead privacy link is a Play violation, an explained one is not. */
 /** The quiet replacement for a Save button: says what just happened, asks for nothing. */
-function AutoSaveStatus({ state, pending, error, onRetry }: {
-  state: AutoSaveState;
+function AutoSaveStatus({ pending, error, onRetry }: {
   pending: boolean;
   error: string | null;
   onRetry: () => void;
 }) {
   const t = useTheme();
-  if (error || state === 'error') {
+  if (error) {
     // A failed auto-save has no button to press again, so it has to offer one — otherwise the
     // preference is silently lost and the reader has no way to know or fix it.
     return (
@@ -686,11 +680,10 @@ function AutoSaveStatus({ state, pending, error, onRetry }: {
       </Pressable>
     );
   }
-  const busy = pending || state === 'saving';
-  if (!busy && state !== 'saved') return null;
+  if (!pending) return null;
   return (
     <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
-      {busy ? 'Saving…' : 'Saved'}
+      Saving…
     </Text>
   );
 }
