@@ -206,6 +206,16 @@ export default function GraphScreen() {
     setSelectedNode(rec);
   }
 
+  // A refresh that failed while something useful is already on screen — a built graph, or an
+  // empty project mid-build. Non-blocking on purpose: the reader keeps what they have and the
+  // next successful poll clears it by itself, which is exactly what was observed happening.
+  const refreshFailed = graphQuery.isRefetchError ? (
+    <ErrorBanner
+      detail={readableError(graphQuery.error, 'Could not refresh the graph.')}
+      onDismiss={() => graphQuery.refetch()}
+    />
+  ) : null;
+
   return (
     <Screen edges={['top']}>
       <TabHeader
@@ -292,17 +302,24 @@ export default function GraphScreen() {
         <Centered text="No active project selected." />
       ) : graphQuery.isLoading ? (
         <Centered loading />
-      ) : graphQuery.isError && !graph ? (
-        // Only when there is nothing to show. React Query keeps `data` when a REFETCH fails, and
-        // this branch used to run first — so one dropped DNS lookup replaced a fully built graph
-        // with an error page, and the next successful poll silently restored it. A refresh that
-        // fails must not discard a graph the reader already has; it becomes the banner below.
+      ) : graphQuery.isLoadingError ? (
+        // `isLoadingError`, not `isError`: this branch is only for a query that has NEVER
+        // succeeded. React Query keeps `data` when a REFETCH fails and reports `isError` anyway,
+        // and this branch used to run first — so one dropped DNS lookup replaced a fully built
+        // graph with an error page, and the next successful poll silently restored it.
+        //
+        // `!graph` is not enough either: a project that is still building answers successfully
+        // with `graph: null` plus live build status, so a failed refetch there would hide the
+        // progress the reader is waiting on. A refresh failure is a banner, never a replacement.
         <Centered
           text={readableError(graphQuery.error, 'Could not load the graph.')}
           action={<Button title="Retry" variant="ghost" onPress={() => graphQuery.refetch()} />}
         />
       ) : !graph ? (
-        <EmptyBuildState status={status} build={build} />
+        <>
+          {refreshFailed}
+          <EmptyBuildState status={status} build={build} />
+        </>
       ) : (
         <>
           {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
@@ -359,15 +376,7 @@ export default function GraphScreen() {
           ) : null}
 
           {build.error ? <ErrorBanner detail={build.error} onDismiss={build.clearError} /> : null}
-          {/* A refresh that failed while the graph is still on screen. Non-blocking on purpose:
-              the reader keeps the map they already have, and the next successful poll clears
-              this by itself — which is exactly what was observed happening. */}
-          {graphQuery.isError && graph ? (
-            <ErrorBanner
-              detail={readableError(graphQuery.error, 'Could not refresh the graph.')}
-              onDismiss={() => graphQuery.refetch()}
-            />
-          ) : null}
+          {refreshFailed}
         </>
       )}
 
