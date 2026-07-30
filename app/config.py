@@ -629,6 +629,13 @@ _ENV_DEFAULTS = {
 }
 
 
+#: Settings that used to exist and must be actively removed, not merely ignored. Dropping a key
+#: from `_SETTING_KEYS` stops it being read or written, but `save_settings` preserves unknown keys
+#: it finds in the file, so a retired PROVIDER KEY would sit in `.app-state/settings.json` (and
+#: every backup of it) forever — a live credential for a service the app no longer calls, which is
+#: precisely the kind of thing that should not outlive its use.
+RETIRED_SETTING_KEYS = ("parallel_api_key",)
+
 _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_model", "openai_api_key",
                  "speech_provider", "tts_model", "tts_voice",
                  "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
@@ -725,6 +732,8 @@ def save_settings(patch: dict) -> dict:
     any other value => set it. Serialized under _settings_lock so concurrent saves don't clobber."""
     with _settings_lock:
         current = _read_settings_file()
+        for retired in RETIRED_SETTING_KEYS:
+            current.pop(retired, None)
         for key in _SETTING_KEYS:
             if key not in patch or patch[key] is None:
                 continue
@@ -735,6 +744,25 @@ def save_settings(patch: dict) -> dict:
         # 0o600: this file holds API keys.
         atomic_write_text(SETTINGS_FILE, json.dumps(current, indent=2), mode=0o600)
     return load_settings()
+
+
+def purge_retired_settings() -> list[str]:
+    """Delete retired keys from the settings file. Returns the ones actually removed.
+
+    Called at startup rather than left to `save_settings`, because a deployment that never saves
+    settings again would keep the dead credential indefinitely — and "we removed the integration"
+    is not the same claim as "we no longer hold the key". Rewrites only when there is something to
+    remove, so a normal boot does not touch the file.
+    """
+    with _settings_lock:
+        current = _read_settings_file()
+        removed = [key for key in RETIRED_SETTING_KEYS if key in current]
+        if not removed:
+            return []
+        for key in removed:
+            current.pop(key, None)
+        atomic_write_text(SETTINGS_FILE, json.dumps(current, indent=2), mode=0o600)
+    return removed
 
 
 def has_api_key() -> bool:

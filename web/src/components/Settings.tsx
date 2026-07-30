@@ -8,7 +8,7 @@ interface SettingsData {
   has_key: boolean; key_hint: string; model: string; narration_model: string;
   speech_provider: string; has_openai_key: boolean; openai_key_hint: string;
   tts_voice: string; tts_model: string; prior_notes_scope?: 'related' | 'all'; preview_model?: string;
-  voices?: string[]; has_parallel_key?: boolean; parallel_key_hint?: string; has_firecrawl_key?: boolean; firecrawl_key_hint?: string;
+  voices?: string[]; has_firecrawl_key?: boolean; firecrawl_key_hint?: string;
   /** Whether THIS caller may write these settings. Everything else here is instance-wide — one
    *  key, one model, one voice for every user — so only the operator (RC_OPERATOR_USERS) may
    *  change it; the server 403s anyone else. Optional, and defaulted to `true` below, because a
@@ -27,7 +27,6 @@ export function Settings({ onClose }: Props) {
   const [message, setMessage] = useState('');
   const [openrouterKey, setOpenrouterKey] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
-  const [parallelKey, setParallelKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
   const [model, setModel] = useState('');
   const [narrationModel, setNarrationModel] = useState('');
@@ -84,7 +83,6 @@ export function Settings({ onClose }: Props) {
     if (canEditShared) {
       if (openrouterKey) patch.openrouter_api_key = openrouterKey;
       if (openaiKey) patch.openai_api_key = openaiKey;
-      if (parallelKey) patch.parallel_api_key = parallelKey;
       if (firecrawlKey) patch.firecrawl_api_key = firecrawlKey;
     }
     // Device-local preference first: it belongs to this browser, not to the instance, so it must
@@ -98,7 +96,7 @@ export function Settings({ onClose }: Props) {
     }
     try {
       await apiPost('/api/settings', patch);
-      setOpenrouterKey(''); setOpenaiKey(''); setParallelKey(''); setFirecrawlKey(''); setMessage('Saved.');
+      setOpenrouterKey(''); setOpenaiKey(''); setFirecrawlKey(''); setMessage('Saved.');
     } catch (caught) { setMessage(caught instanceof Error ? caught.message : 'Save failed');
     } finally { setSaving(false); }
   }
@@ -122,7 +120,6 @@ export function Settings({ onClose }: Props) {
         {speechProvider === 'openai' && <><label className="field"><span>OpenAI API key (speech only)</span><input type="password" value={openaiKey} onChange={(event) => setOpenaiKey(event.target.value)} placeholder="sk-…" disabled={!canEditShared} /><small className="muted">{data?.has_openai_key ? `key set: ${data.openai_key_hint}` : 'no key set'}</small></label><div className="settings-row"><label className="field"><span>Voice</span><select value={voice} onChange={(event) => setVoice(event.target.value)} disabled={!canEditPrefs}>{(data?.voices?.length ? data.voices : ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).map((name) => <option key={name} value={name}>{name}</option>)}</select></label><label className="field"><span>TTS model</span><select value={ttsModel} onChange={(event) => setTtsModel(event.target.value)} disabled={!canEditPrefs}>{['gpt-4o-mini-tts', 'tts-1-hd', 'tts-1'].map((name) => <option key={name} value={name}>{name}</option>)}</select></label></div></>}
         <label className="field check"><input type="checkbox" checked={autoplay} onChange={(event) => setAutoplay(event.target.checked)} /> Autoplay narration after each reply</label>
         <hr className="settings-hr" />
-        <label className="field"><span>Parallel API key (web search)</span><input type="password" value={parallelKey} onChange={(event) => setParallelKey(event.target.value)} placeholder="optional — leave blank to keep current" disabled={!canEditShared} /><small className="muted">{data?.has_parallel_key ? `key set: ${data.parallel_key_hint}` : 'no key set'}</small></label>
         <label className="field"><span>Firecrawl API key (web fetch)</span><input type="password" value={firecrawlKey} onChange={(event) => setFirecrawlKey(event.target.value)} placeholder="optional — leave blank to keep current" disabled={!canEditShared} /><small className="muted">{data?.has_firecrawl_key ? `key set: ${data.firecrawl_key_hint}` : 'no key set'}</small></label>
         <label className="field"><span>Prior notes scope</span><select value={priorNotesScope} onChange={(event) => setPriorNotesScope(event.target.value as 'related' | 'all')} disabled={!canEditPrefs}><option value="related">Related papers only</option><option value="all">All read papers</option></select></label>
         {prompts.length > 0 && <div className="prompts-status"><h4 className="settings-subhead">Prompt status</h4>{prompts.map((prompt) => <div className="prompts-row" key={prompt.key}><span>{prompt.label}</span><span className={`badge ${prompt.valid ? 'badge-green' : 'badge-amber'}`}>{prompt.valid ? 'valid' : 'INVALID'}</span></div>)}</div>}

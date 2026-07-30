@@ -22,16 +22,14 @@ done or a later milestone. Read this before the H-numbered sections.
    correctly so.
 2. **H13 — Data safety answers** in Play Console. `02-security-and-privacy.md` holds the
    code-derived inventory the answers must match, and the published policy must match both.
-3. **The two provider keys.** `parallel_api_key` and `firecrawl_api_key` are set locally but not on
-   production, so the agent's web search falls back to scraped DuckDuckGo HTML. He is in
-   `RC_OPERATOR_USERS`, so the route is **in-app Settings → paste → Save**, which takes effect with
-   no machine restart and therefore cannot kill an in-flight job. `FIRECRAWL_API_KEY` /
-   `PARALLEL_API_KEY` as Fly secrets also work but restart the machine.
-4. **The web-search provider decision.** Measured 2026-07-29: the Parallel account is **out of
-   credit**, and its key being present is *worse than absent* — with the key every call 402s, while
-   the keyless anonymous endpoint returns real results. Top it up, drop it, or switch provider. Full
-   memo and the OpenRouter `web`-plugin alternative are in `web-search-provider-state` (agent
-   memory) and the session's scratchpad memo.
+3. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
+   route for him: he is in `RC_OPERATOR_USERS`, and it takes effect with no machine restart and so
+   cannot kill an in-flight job. `FIRECRAWL_API_KEY` as a Fly secret also works but restarts the
+   machine. **Parallel was removed entirely** (PR #290) — its account was out of credit, and its
+   key being present was measurably worse than no key, because the keyless anonymous tier works.
+4. **Web search is now Firecrawl, then keyless DuckDuckGo.** Decided 2026-07-29: one clean
+   method, on the plan Kamil already pays for. Note the research memo recommended the opposite
+   (Parallel over Firecrawl) on result shape — see PR #290 if tool-round counts become a problem.
 
 **Not blocking, but decided and worth not re-litigating:** the AAB should NOT be rushed — see the
 correction under step 6 of `10-roadmap.md`'s next-steps list. Uploading early freezes the Android

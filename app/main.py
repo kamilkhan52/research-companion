@@ -47,6 +47,12 @@ _log = logging_config.get("auth")
 # the permissive state (auth.mode() falls back to "open"; an unset allowlist means "everyone").
 auth.assert_environment_safe(config.env_name())
 
+# Retired provider keys are deleted from the settings file on boot. Dropping a key from the code
+# stops it being used; it does not stop it being HELD, and a credential for an integration we no
+# longer call should not survive in `.app-state/settings.json` and its backups.
+for _retired in config.purge_retired_settings():
+    _log.info("removed retired setting %s from the settings file", _retired)
+
 def _apply_migrations() -> None:
     """Bring the schema up to date on boot, when a database is configured at all.
 
