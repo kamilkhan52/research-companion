@@ -339,24 +339,36 @@ def entry_markdown(slug: str) -> str:
 def project_links(slug: str) -> dict:
     """How this paper connects to the rest of THIS project's reading list.
 
-    Deliberately derived from the reading list alone — the `<!-- cites: -->` annotations — so it
-    is available for a paper nobody has opened yet. That is the whole point: the reader is
-    deciding whether a paper is worth a summary, and "three papers you have already read cite
-    this one" answers that better than anything inside the paper does. A graph-derived count would
-    be richer and is absent exactly when it is most needed.
+    Derived from the reading list alone — the `<!-- cites: -->` annotations — so it is available
+    for a paper nobody has opened. That is the point: the reader is deciding whether a paper is
+    worth a summary, and "three papers you have already read cite this one" answers that better
+    than anything inside the paper does. A graph-derived count would be richer and is absent
+    exactly when it is most needed.
 
-    `cited_by_read` is called out separately because a citation from a paper the reader has
-    actually read is a stronger signal than one from another unread entry.
+    Reads `_parse_entries()` rather than `list_papers()` deliberately. `list_papers` builds a
+    `Paper` per entry, and that calls `source_url_for`, which reads each corpus file in full — so
+    using it here would add one whole-file read per paper in the project to EVERY paper open.
+    Only slug, status and cites are needed.
+
+    `cited_by_read` is separate because a citation from a paper the reader actually read is a
+    stronger signal than one from another unread entry. Self-references and repeated targets are
+    excluded: these numbers claim distinct linked papers, and counting a paper as its own citer
+    would render "Cited by 1 here" for an entry nothing points at.
     """
-    papers = list_papers()
-    entry = next((p for p in papers if p.slug == slug), None)
+    entries = _parse_entries()
+    known = {e["slug"] for e in entries}
+    entry = next((e for e in entries if e["slug"] == slug), None)
     if entry is None:
         return {"cites_in_project": 0, "cited_by_in_project": 0, "cited_by_read": 0}
-    cited_by = [p for p in papers if slug in (p.cites or [])]
+    outgoing = {c for c in (entry["cites"] or []) if c in known and c != slug}
+    citers = [
+        e for e in entries
+        if e["slug"] != slug and slug in set(e["cites"] or [])
+    ]
     return {
-        "cites_in_project": sum(1 for c in (entry.cites or []) if any(p.slug == c for p in papers)),
-        "cited_by_in_project": len(cited_by),
-        "cited_by_read": sum(1 for p in cited_by if p.list_status == "read"),
+        "cites_in_project": len(outgoing),
+        "cited_by_in_project": len(citers),
+        "cited_by_read": sum(1 for e in citers if e["status"] == "read"),
     }
 
 

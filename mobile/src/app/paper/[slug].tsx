@@ -636,7 +636,9 @@ export default function DiscussionScreen() {
           headerHeight={headerHeight}
           reviewReadyNonce={reviewReadyNonce}
           onMutated={() => {
-            qc.invalidateQueries({ queryKey: keys.session(pid, slug!, activeThread) });
+            // The whole project's sessions, not just this one: approving notes flips this paper
+            // to `read`, which changes the "N you've read" count shown on every paper it cites.
+            qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });
             qc.invalidateQueries({ queryKey: keys.projectState(pid) });
           }}
         />
@@ -3334,6 +3336,11 @@ export function PaperContext({ paper }: { paper?: Paper | null }) {
     facts.push(links.cited_by_read
       ? `Cited by ${links.cited_by_in_project} here, ${links.cited_by_read} you've read`
       : `Cited by ${links.cited_by_in_project} here`);
+  }
+  // Outgoing links are context too, and were being computed and then dropped — so a paper that
+  // cites three others here, with no abstract yet, rendered as though nothing were known.
+  if (links?.cites_in_project) {
+    facts.push(`Cites ${links.cites_in_project} here`);
   }
 
   const abstract = (paper.abstract ?? '').trim();

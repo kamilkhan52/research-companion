@@ -55,3 +55,12 @@ test('omits the citation line when the paper is unconnected in this project', as
   expect(screen.queryByText(/Cited by/)).toBeNull();
   expect(screen.getByText('2020')).toBeTruthy();
 });
+
+test('a paper known only by what it cites is not treated as unknown', async () => {
+  // `cites_in_project` was computed and then never rendered, so this paper — which the reader can
+  // usefully place in their reading list — showed nothing at all.
+  await renderAsync(<PaperContext paper={paper({
+    project_links: { cites_in_project: 3, cited_by_in_project: 0, cited_by_read: 0 },
+  })} />);
+  expect(screen.getByText('Cites 3 here')).toBeTruthy();
+});

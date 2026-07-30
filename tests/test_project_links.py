@@ -64,3 +64,38 @@ def test_an_unknown_slug_answers_with_zeroes_rather_than_raising(temp_project):
     assert store.project_links("nothing-here") == {
         "cites_in_project": 0, "cited_by_in_project": 0, "cited_by_read": 0,
     }
+
+
+def test_a_self_reference_is_not_a_citation(temp_project):
+    """`<!-- cites: orca -->` on Orca itself would otherwise render "Cited by 1 here" for a paper
+    nothing points at — a claim about other papers, made from the paper's own annotation."""
+    add_paper(temp_project, "orca", "Orca", full_text="t")
+    _cite("orca", ["orca"])
+
+    assert store.project_links("orca") == {
+        "cites_in_project": 0, "cited_by_in_project": 0, "cited_by_read": 0,
+    }
+
+
+def test_a_repeated_target_counts_once(temp_project):
+    # The number claims distinct linked papers, not annotation entries.
+    add_paper(temp_project, "orca", "Orca", full_text="t")
+    add_paper(temp_project, "vllm", "vLLM", full_text="t")
+    _cite("vllm", ["orca", "orca"])
+
+    assert store.project_links("vllm")["cites_in_project"] == 1
+    assert store.project_links("orca")["cited_by_in_project"] == 1
+
+
+def test_reads_no_corpus_files(temp_project, monkeypatch):
+    """The reason this uses `_parse_entries` and not `list_papers`: the latter builds a Paper per
+    entry, which calls `source_url_for`, which reads each corpus file IN FULL. On a 200-paper
+    project that is 200 whole-file reads added to every paper open."""
+    add_paper(temp_project, "orca", "Orca", full_text="t")
+    add_paper(temp_project, "vllm", "vLLM", full_text="t")
+
+    called = []
+    monkeypatch.setattr(store, "source_url_for", lambda slug: called.append(slug) or "")
+    store.project_links("orca")
+
+    assert called == [], f"project_links must not touch corpus files, read: {called}"
