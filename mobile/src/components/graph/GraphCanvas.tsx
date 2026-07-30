@@ -21,7 +21,9 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import type { GraphEdge, GraphNode } from '@/api/types';
-import { bucketScale, pickVisibleLabels, zoomBucket } from '@/graph/labelDeclutter';
+import {
+  BUCKETS_PER_DOUBLING, bucketScale, pickVisibleLabels, zoomBucket,
+} from '@/graph/labelDeclutter';
 import { nodeRadius, useGraphLayout } from '@/hooks/useGraphLayout';
 import { Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -280,7 +282,18 @@ export function GraphCanvas({
   // Which labels survive the declutter, recomputed only when a quantized zoom bucket changes —
   // the same "one JS state flip, never per frame" discipline the old LOD boolean used.
   useAnimatedReaction(
-    () => zoomBucket(scale.value),
+    () => {
+      'worklet';
+      // Written out rather than calling `zoomBucket`. This runs on the UI thread, and calling a
+      // plain imported function from there is a hard crash — "[Worklets] Tried to synchronously
+      // call a non-worklet function" — which is exactly how this shipped broken. Marking the
+      // import as a worklet would also work, but nothing else in this codebase does that, so
+      // there is no evidence the build transforms cross-module worklets; an inline one needs no
+      // such assumption. `BUCKETS_PER_DOUBLING` is shared so the two cannot disagree.
+      const value = scale.value;
+      if (!(value > 0)) return 0;
+      return Math.round(Math.log2(value) * BUCKETS_PER_DOUBLING);
+    },
     (bucket, previous) => {
       if (bucket !== previous) runOnJS(setLabelBucket)(bucket);
     },

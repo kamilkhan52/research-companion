@@ -73,16 +73,27 @@ export function pickVisibleLabels(
 }
 
 /**
+ * Buckets per doubling of zoom. Shared so the UI-thread quantizer in `GraphCanvas` and the
+ * JS-side `bucketScale` below cannot drift apart — see the comment at that reaction for why the
+ * quantizer is written out there instead of calling `zoomBucket`.
+ */
+export const BUCKETS_PER_DOUBLING = 4;
+
+/**
  * A coarse bucket for a zoom level, so the declutter recomputes on meaningful zoom changes rather
  * than on every frame of a pinch. Logarithmic because zoom is multiplicative: the same number of
  * buckets then covers each doubling.
+ *
+ * Plain JS, deliberately NOT a worklet: it is used from the JS thread and from tests. The UI
+ * thread needs the same quantization, and gets it from an inline worklet rather than by calling
+ * this — a non-worklet function called on the UI thread is a hard crash, not a slow path.
  */
-export function zoomBucket(scale: number, perDoubling = 4): number {
+export function zoomBucket(scale: number, perDoubling = BUCKETS_PER_DOUBLING): number {
   if (!(scale > 0)) return 0;
   return Math.round(Math.log2(scale) * perDoubling);
 }
 
 /** The scale a bucket represents — used to compute the declutter for that bucket. */
-export function bucketScale(bucket: number, perDoubling = 4): number {
+export function bucketScale(bucket: number, perDoubling = BUCKETS_PER_DOUBLING): number {
   return 2 ** (bucket / perDoubling);
 }

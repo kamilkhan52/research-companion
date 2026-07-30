@@ -1,5 +1,5 @@
 import {
-  bucketScale, pickVisibleLabels, zoomBucket, type LabelCandidate,
+  BUCKETS_PER_DOUBLING, bucketScale, pickVisibleLabels, zoomBucket, type LabelCandidate,
 } from '@/graph/labelDeclutter';
 
 const at = (id: string, x: number, y: number, priority = 1, pinned = false): LabelCandidate =>
@@ -78,4 +78,15 @@ describe('zoomBucket', () => {
     expect(zoomBucket(0)).toBe(0);
     expect(Number.isFinite(bucketScale(zoomBucket(0)))).toBe(true);
   });
+});
+
+test('the UI-thread quantizer and the JS one cannot drift apart', () => {
+  // GraphCanvas writes this formula out inline because it runs on the UI thread, where calling an
+  // imported non-worklet function is a hard crash. This encodes the inline version literally: if
+  // `zoomBucket` changes and the worklet does not (or vice versa), this goes red.
+  for (const scale of [0.1, 0.25, 0.5, 0.92, 1, 1.4, 2, 3.7, 8]) {
+    expect(zoomBucket(scale)).toBe(Math.round(Math.log2(scale) * BUCKETS_PER_DOUBLING));
+  }
+  // Both guard a non-positive scale the same way rather than returning -Infinity.
+  expect(zoomBucket(0)).toBe(0);
 });
