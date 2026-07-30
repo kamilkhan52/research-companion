@@ -4,7 +4,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo} from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -20,6 +20,7 @@ import {
 import { getBaseUrl, hasBaseUrl, setBaseUrl } from '@/api/config';
 import { useAudio } from '@/audio/AudioProvider';
 import { useAuth } from '@/auth/AuthProvider';
+import { useKeyboardInset } from '@/hooks/useKeyboardInset';
 import {
   useFavoriteModels,
   usePrompts,
@@ -73,6 +74,10 @@ export default function SettingsScreen() {
   const favorites = useFavoriteModels();
   const prompts = usePrompts(activePid);
   const saveSettings = useSaveSettings();
+  // The bottom of this screen — the privacy policy and terms links Play requires to be
+  // reachable — sat under the keyboard while typing. KeyboardAvoidingView alone does not
+  // fix it: its behavior is iOS-only here, and Android edge-to-edge does not resize.
+  const keyboardInset = useKeyboardInset();
   // Everything under /api/settings and /api/prompts is INSTANCE-wide: one key, one model, one
   // voice, one set of prompts, shared by every user. Only the named operator may write them
   // (RC_OPERATOR_USERS); the server 403s everyone else. Default true so a backend older than the
@@ -160,34 +165,74 @@ export default function SettingsScreen() {
     }
   }
 
-  async function handleSaveSettings() {
-    // Send only what this caller may write. A key in the payload from someone who is not the
-    // operator 403s the WHOLE request, taking their voice change down with it.
-    const payload: Record<string, unknown> = {};
-    if (canEditPrefs) {
-      Object.assign(payload, {
-        model: model || null,
-        narration_model: narrationModel || null,
-        preview_model: previewModelPatch(previewModel),
-        speech_provider: speechProvider,
-        tts_voice: voice || null,
-        prior_notes_scope: priorScope,
-      });
-    }
-    if (isOperator) {
-      if (apiKey.trim()) payload.openrouter_api_key = apiKey.trim();
-      if (openaiKey.trim()) payload.openai_api_key = openaiKey.trim();
-      if (firecrawlKey.trim()) payload.firecrawl_api_key = firecrawlKey.trim();
-      if (semanticScholarKey.trim()) {
-        payload.semantic_scholar_api_key = semanticScholarKey.trim();
-      }
-    }
-    if (Object.keys(payload).length === 0) return;
-    await saveSettings.mutateAsync(payload);
-    setApiKey('');
-    setOpenaiKey('');
-    setSemanticScholarKey('');
-  }
+  // Preferences save the moment they are chosen, one FIELD per request.
+  //
+  // The first version of this debounced the whole preferences payload and wrote it as one object.
+  // That needs a baseline (what does the server already have?), serialization (two whole-payload
+  // writes must not overlap or the older one wins), retry bookkeeping, and mount gating — and
+  // three review rounds each found a new interaction between those. The requirement never asked
+  // for any of it.
+  //
+  // Committing one field per change removes all of it. There is nothing to baseline, because
+  // nothing is written unless the reader acts. Overlapping requests cannot clobber each other,
+  // because each carries only the field it changed. Retry and in-flight state belong to the
+  // mutation, which outlives this screen, so closing it mid-save is not a special case.
+  const lastPayload = useRef<Record<string, unknown> | null>(null);
+
+  const commitPref = useCallback((field: string, value: unknown, apply: () => void) => {
+    apply();
+    if (!canEditPrefs) return;
+    lastPayload.current = { [field]: value };
+    saveSettings.mutate(lastPayload.current);
+  }, [canEditPrefs, saveSettings]);
+
+  const retrySave = useCallback(() => {
+    if (lastPayload.current) saveSettings.mutate(lastPayload.current);
+  }, [saveSettings]);
+
+  // Keys are NOT auto-saved, and not saved on blur either. Blur means "focus moved", not "entry
+  // finished" — tapping the next field midway through replacing a key would persist the prefix and
+  // take that provider offline for everyone on the instance. That is materially easier to trigger
+  // than the button it replaced, which is the opposite of an improvement. So keys keep an explicit
+  // commit; it just appears only when there is actually a key to save.
+  // A floor, not validation. It stops the obvious accidents — an empty field, or `sk-` left
+  // behind — but no length check can tell a complete key from a long prefix, so a determined
+  // mis-paste still reaches the server. Deliberately not per-provider prefixes: those change,
+  // and wrongly rejecting a valid key is the worse failure. The real safeguard is that saving
+  // is explicit.
+  const MIN_KEY_LENGTH = 16;
+  const dirtyKeys = useMemo(() => {
+    const usable = (value: string) => value.trim().length >= MIN_KEY_LENGTH;
+    return {
+      ...(usable(apiKey) ? { openrouter_api_key: apiKey.trim() } : {}),
+      ...(usable(openaiKey) ? { openai_api_key: openaiKey.trim() } : {}),
+      ...(usable(firecrawlKey) ? { firecrawl_api_key: firecrawlKey.trim() } : {}),
+      ...(usable(semanticScholarKey)
+        ? { semantic_scholar_api_key: semanticScholarKey.trim() } : {}),
+    };
+  }, [apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
+
+  const saveKeys = useCallback(async () => {
+    const sent = dirtyKeys;
+    if (!isOperator || Object.keys(sent).length === 0) return;
+    // Same mutation, so the shared status line's retry must resend THIS, not whatever
+    // preference happened to be committed last.
+    lastPayload.current = sent;
+    await saveSettings.mutateAsync(sent);
+    // Clear only fields whose value was actually sent AND is still what was sent: clearing
+    // unconditionally would erase a key the operator started typing while the request was in
+    // flight, which is a silent loss of exactly the thing this screen is for.
+    // Functional updates, so each field is compared against its CURRENT value rather than the one
+    // captured before the await — otherwise a key the operator started typing while the request
+    // was in flight is silently wiped by the reply to the older one.
+    const clearIfStillSent = (sentValue: string | undefined) => (current: string) => (
+      sentValue && current.trim() === sentValue ? '' : current
+    );
+    setApiKey(clearIfStillSent(sent.openrouter_api_key));
+    setOpenaiKey(clearIfStillSent(sent.openai_api_key));
+    setFirecrawlKey(clearIfStillSent(sent.firecrawl_api_key));
+    setSemanticScholarKey(clearIfStillSent(sent.semantic_scholar_api_key));
+  }, [isOperator, dirtyKeys, saveSettings]);
 
   return (
     <Screen edges={['top']}>
@@ -198,7 +243,9 @@ export default function SettingsScreen() {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: space.xxl * 2 + keyboardInset }]}
+          keyboardShouldPersistTaps="handled">
           {/* Server connection — development only. A released build has exactly one correct
               server baked into app.json, and offering a reader a URL field invites them to break
               their own install. Same `__DEV__` build-time gate as AuthGate's SERVER_TOOLS_VISIBLE,
@@ -288,33 +335,51 @@ export default function SettingsScreen() {
                     whole mechanism. */}
                 <SharedWritableContext.Provider value={canEditPrefs}>
                 <Label text="Analysis model" />
-                <Field value={model} onChangeText={setModel} placeholder="anthropic/claude-opus-…" autoCapitalize="none" />
+                <Field
+                  value={model}
+                  onChangeText={setModel}
+                  onBlur={() => commitPref('model', model || null, () => {})}
+                  placeholder="anthropic/claude-opus-…"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={model}
-                  onPick={setModel}
+                  onPick={(m) => commitPref('model', m || null, () => setModel(m))}
                 />
 
                 <Label text="Narration model" />
-                <Field value={narrationModel} onChangeText={setNarrationModel} placeholder="anthropic/claude-haiku-…" autoCapitalize="none" />
+                <Field
+                  value={narrationModel}
+                  onChangeText={setNarrationModel}
+                  onBlur={() => commitPref('narration_model', narrationModel || null, () => {})}
+                  placeholder="anthropic/claude-haiku-…"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={narrationModel}
-                  onPick={setNarrationModel}
+                  onPick={(m) => commitPref('narration_model', m || null, () => setNarrationModel(m))}
                 />
 
                 <Label text="Listening preview model" />
-                <Field value={previewModel} onChangeText={setPreviewModel} placeholder="Defaults to narration model" autoCapitalize="none" />
+                <Field
+                  value={previewModel}
+                  onChangeText={setPreviewModel}
+                  onBlur={() => commitPref('preview_model', previewModelPatch(previewModel), () => {})}
+                  placeholder="Defaults to narration model"
+                  autoCapitalize="none"
+                />
                 <ModelChips
                   models={favorites.data ?? []}
                   selected={previewModel}
-                  onPick={setPreviewModel}
+                  onPick={(m) => commitPref('preview_model', previewModelPatch(m), () => setPreviewModel(m))}
                 />
 
                 <Label text="Prior notes in paper context" />
                 <View style={{ flexDirection: 'row', gap: space.sm }}>
-                  <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => setPriorScope('related')} />
-                  <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => setPriorScope('all')} />
+                  <Toggle label="Related papers" active={priorScope === 'related'} onPress={() => commitPref('prior_notes_scope', 'related', () => setPriorScope('related'))} />
+                  <Toggle label="All read papers" active={priorScope === 'all'} onPress={() => commitPref('prior_notes_scope', 'all', () => setPriorScope('all'))} />
                 </View>
                 <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Which per-paper Notes the analyst sees during a discussion. "All read papers"
@@ -343,8 +408,8 @@ export default function SettingsScreen() {
                 <SharedWritableContext.Provider value={canEditPrefs}>
                   <Label text="Speech provider" />
                   <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.md }}>
-                    <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => setSpeechProvider('openai')} />
-                    <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => setSpeechProvider('browser')} />
+                    <Toggle label="OpenAI" active={speechProvider === 'openai'} onPress={() => commitPref('speech_provider', 'openai', () => setSpeechProvider('openai'))} />
+                    <Toggle label="Browser" active={speechProvider === 'browser'} onPress={() => commitPref('speech_provider', 'browser', () => setSpeechProvider('browser'))} />
                   </View>
                 </SharedWritableContext.Provider>
 
@@ -363,7 +428,7 @@ export default function SettingsScreen() {
                       <ModelChips
                         models={(settings.data?.voices ?? []).map((v) => ({ label: v, id: v }))}
                         selected={voice}
-                        onPick={setVoice}
+                        onPick={(v) => commitPref('tts_voice', v || null, () => setVoice(v))}
                       />
                     </SharedWritableContext.Provider>
                   </>
@@ -492,20 +557,20 @@ export default function SettingsScreen() {
                 />
               </Section>
 
+              {isOperator && Object.keys(dirtyKeys).length > 0 ? (
+                <Button
+                  title={saveSettings.isPending ? 'Saving…' : 'Save API keys'}
+                  onPress={() => void saveKeys()}
+                  loading={saveSettings.isPending}
+                  style={{ marginTop: space.sm }}
+                />
+              ) : null}
               {isOperator || canEditPrefs ? (
-                <>
-                  <Button
-                    title="Save settings"
-                    onPress={handleSaveSettings}
-                    loading={saveSettings.isPending}
-                    style={{ marginTop: space.sm }}
-                  />
-                  {saveSettings.isError ? (
-                    <Text variant="caption" color={t.danger} style={{ marginTop: space.sm }}>
-                      {(saveSettings.error as Error).message}
-                    </Text>
-                  ) : null}
-                </>
+                <AutoSaveStatus
+                  onRetry={retrySave}
+                  pending={saveSettings.isPending}
+                  error={saveSettings.isError ? (saveSettings.error as Error).message : null}
+                />
               ) : null}
             </SharedWritableContext.Provider>
           )}
@@ -619,6 +684,32 @@ function LockedRow({ label }: { label: string }) {
  *
  *  Without a server URL there is nothing to point at, so the links say so rather than silently
  *  failing: a dead privacy link is a Play violation, an explained one is not. */
+/** The quiet replacement for a Save button: says what just happened, asks for nothing. */
+function AutoSaveStatus({ pending, error, onRetry }: {
+  pending: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const t = useTheme();
+  if (error) {
+    // A failed auto-save has no button to press again, so it has to offer one — otherwise the
+    // preference is silently lost and the reader has no way to know or fix it.
+    return (
+      <Pressable onPress={onRetry} style={{ marginTop: space.sm }} accessibilityRole="button">
+        <Text variant="caption" color={t.danger}>
+          {error ?? "Couldn't save that setting."} Tap to retry.
+        </Text>
+      </Pressable>
+    );
+  }
+  if (!pending) return null;
+  return (
+    <Text variant="caption" color={t.muted} style={{ marginTop: space.sm }}>
+      Saving…
+    </Text>
+  );
+}
+
 function LegalSection() {
   const t = useTheme();
   const { toast } = useToast();

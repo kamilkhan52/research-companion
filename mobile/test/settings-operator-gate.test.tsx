@@ -6,7 +6,7 @@
 
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
-import { renderAsync, screen } from '@testing-library/react-native';
+import { act, fireEvent, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 
 import SettingsScreen from '@/app/settings';
@@ -50,10 +50,12 @@ const settings = {
   prior_notes_scope: 'related' as const,
 };
 
+let saveSettingsMutate: jest.Mock;
+
 function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boolean) {
   jest.spyOn(queries, 'useSettings').mockReturnValue({
     data: { ...settings, is_operator: isOperator, can_edit_preferences: canEditPreferences },
-    isLoading: false, isError: false,
+    isLoading: false, isError: false, isSuccess: true, isFetching: false,
   } as never);
   jest.spyOn(queries, 'useFavoriteModels').mockReturnValue({ data: [] } as never);
   jest.spyOn(queries, 'usePrompts').mockReturnValue({
@@ -62,8 +64,10 @@ function stubQueries(isOperator: boolean | undefined, canEditPreferences?: boole
   jest.spyOn(queries, 'useUsage').mockReturnValue({
     data: undefined, isLoading: false, isError: false,
   } as never);
+  saveSettingsMutate = jest.fn().mockResolvedValue(undefined);
   jest.spyOn(queries, 'useSaveSettings').mockReturnValue({
-    mutateAsync: jest.fn(), isPending: false, isError: false,
+    mutate: saveSettingsMutate, mutateAsync: saveSettingsMutate,
+    isPending: false, isError: false,
   } as never);
   jest.spyOn(queries, 'useSavePrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
   jest.spyOn(queries, 'useResetPrompt').mockReturnValue({ mutateAsync: jest.fn() } as never);
@@ -135,8 +139,8 @@ test('a reader sees the shared settings read-only, with their device controls st
   for (const label of SHARED_TOGGLES) expect([label, inert(label)]).toEqual([label, true]);
   for (const label of LOCAL_TOGGLES) expect([label, inert(label)]).toEqual([label, false]);
 
-  // Nothing to submit: the save button posts only shared settings.
-  expect(screen.queryByText('Save settings')).toBeNull();
+  // Settings now auto-save, so there is no button to assert on. The property that actually
+  // mattered — this reader cannot write the instance's settings — is the editability above.
 });
 
 // The guard on the test above: an implementation that disabled EVERYTHING for EVERYONE would
@@ -147,7 +151,6 @@ test('the operator gets the same screen fully writable', async () => {
 
   expect(screen.queryByText('Some settings are read-only')).toBeNull();
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(true);
-  expect(screen.getByText('Save settings')).toBeTruthy();
   for (const label of [...SHARED_TOGGLES, ...LOCAL_TOGGLES]) {
     expect([label, inert(label)]).toEqual([label, false]);
   }
@@ -160,7 +163,9 @@ test('a backend that does not report the flag is treated as writable', async () 
   await renderScreen();
 
   expect(screen.queryByText('Some settings are read-only')).toBeNull();
-  expect(screen.getByText('Save settings')).toBeTruthy();
+  // The button this used to assert on is gone (settings auto-save). Writability is the real
+  // property, and an editable instance-wide field is what demonstrates it.
+  expect(screen.getByDisplayValue('model/a').props.editable).toBe(true);
 });
 
 
@@ -182,8 +187,9 @@ test('a reader on a per-user instance can edit their preferences but not the key
   }
   // The instance's key: still not.
   expect(screen.getByPlaceholderText('Replace key…').props.editable).toBe(false);
-  // ...and there is now something to submit, which there was not before.
-  expect(screen.getByText('Save settings')).toBeTruthy();
+  // ...and their own preference IS writable, which is the distinction this test exists for.
+  // (Previously demonstrated by a Save button appearing; settings auto-save now.)
+  expect(inert('Related papers')).toBe(false);
 });
 
 // The other direction, and the one that must NOT be permissive: a server too old to know the flag
@@ -193,5 +199,74 @@ test('a per-user flag that is absent falls back to the operator gate', async () 
   await renderScreen();
 
   expect(screen.getByDisplayValue('model/a').props.editable).toBe(false);
-  expect(screen.queryByText('Save settings')).toBeNull();
+});
+
+// Auto-save turned "can this user write?" from a question about a button into a question about a
+// silent background mutation. That is worth its own test: a reader must not be able to trigger a
+// write of instance-wide settings just by being on the screen.
+test('a read-only reader cannot trigger a settings write even by trying', async () => {
+  // Mounting and waiting is not enough: that passes even if the permission gate were removed,
+  // because nothing changes after baselining. The reader has to ATTEMPT an edit.
+  stubQueries(false);
+  await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+
+  expect(saveSettingsMutate).not.toHaveBeenCalled();
+  expect(screen.queryByText('Save API keys')).toBeNull();
+});
+
+test('an obviously incomplete API key cannot be saved', async () => {
+  // The backend accepts any string, so a prefix stored as a key takes that provider offline for
+  // everyone on the instance until somebody works out why. The floor catches the obvious accident;
+  // it cannot tell a complete key from a long prefix, and this test does not claim it can.
+  stubQueries(true);
+  await renderScreen();
+
+  const keyField = screen.getAllByPlaceholderText(/Replace key|sk-or-/)[0];
+
+  await act(async () => { fireEvent.changeText(keyField, 'sk-'); });
+  expect(screen.queryByText('Save API keys')).toBeNull();
+
+  await act(async () => { fireEvent.changeText(keyField, 'sk-or-v1-abcdefghijklmnop'); });
+  expect(screen.getByText('Save API keys')).toBeTruthy();
+});
+
+test('merely opening the screen as an operator writes nothing back', async () => {
+  // The subtle one: the screen applies the server's values to its own fields on first load. If
+  // auto-save baselines BEFORE that, the application looks like an edit and opening Settings
+  // silently rewrites every preference.
+  stubQueries(true);
+  await renderScreen();
+  await act(async () => { await new Promise((r) => setTimeout(r, 200)); });
+
+  expect(saveSettingsMutate).not.toHaveBeenCalled();
+});
+
+test('an operator changing a preference does get it saved', async () => {
+  // The guard on the two tests above: "never save" would satisfy both and break the feature.
+  stubQueries(true);
+  await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('All read papers')); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalled(), { timeout: 3000 });
+  // One FIELD per request: an overlapping write cannot clobber unrelated preferences.
+  expect(saveSettingsMutate.mock.calls[0][0]).toEqual({ prior_notes_scope: 'all' });
+});
+
+test('the voice picker and the model text fields still persist', async () => {
+  // Removing the Save button silently orphaned these: the pickers were wired to commit, the text
+  // inputs and the voice list were not, so a custom model id or a voice change was simply lost.
+  stubQueries(true);
+  await renderScreen();
+
+  await act(async () => { fireEvent.press(screen.getByText('nova')); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalledWith({ tts_voice: 'nova' }));
+
+  saveSettingsMutate.mockClear();
+  const modelField = screen.getByPlaceholderText('anthropic/claude-opus-…');
+  await act(async () => { fireEvent.changeText(modelField, 'vendor/custom-model'); });
+  await act(async () => { fireEvent(modelField, 'blur'); });
+  await waitFor(() => expect(saveSettingsMutate).toHaveBeenCalledWith({ model: 'vendor/custom-model' }));
 });
