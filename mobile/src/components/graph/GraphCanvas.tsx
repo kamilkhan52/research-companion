@@ -298,6 +298,14 @@ export function GraphCanvas({
     transform: [{ scale: Math.min(1, NODE_GROWTH_CAP / scale.value) }],
   }));
 
+  // How much the circle has shrunk, as a plain number. The label sits below the circle at a fixed
+  // `top`, and once the cap engages the circle contracts toward its centre — so without this the
+  // label is stranded in empty space, up to ~80px away on a large node at full zoom. The lift is
+  // per-node (it scales with each radius), which as an animated style would mean ~100 worklets a
+  // frame. It is derived from the label bucket instead: already recomputed on zoom changes, so
+  // this costs nothing and is exact wherever the zoom settles.
+  const nodeShrink = Math.min(1, NODE_GROWTH_CAP / bucketScale(labelBucket));
+
   // Which labels survive the declutter, recomputed only when a quantized zoom bucket changes —
   // the same "one JS state flip, never per frame" discipline the old LOD boolean used.
   useAnimatedReaction(
@@ -364,6 +372,7 @@ export function GraphCanvas({
                 showLabel={labelledIds.has(node.id)}
                 labelStyle={labelCounterScale}
                 circleStyle={nodeCounterScale}
+                nodeShrink={nodeShrink}
                 onSelectNode={onSelectNode}
               />
             );
@@ -481,6 +490,7 @@ const NodeCircle = memo(function NodeCircle({
   showLabel,
   labelStyle,
   circleStyle,
+  nodeShrink,
   onSelectNode,
 }: {
   node: GraphNode;
@@ -493,6 +503,8 @@ const NodeCircle = memo(function NodeCircle({
   labelStyle: AnimatedProps<ViewProps>['style'];
   /** The ONE shared node-growth cap style. */
   circleStyle: AnimatedProps<ViewProps>['style'];
+  /** How far the circle has contracted, so the label can follow its edge. */
+  nodeShrink: number;
   onSelectNode: (node: GraphNode) => void;
 }) {
   const t = useTheme();
@@ -542,7 +554,8 @@ const NodeCircle = memo(function NodeCircle({
           style={[
             {
               position: 'absolute',
-              top: r * 2 + 3,
+              // Follow the circle's actual bottom edge, which the growth cap moves.
+              top: r + r * nodeShrink + 3,
               width: labelWidth,
               left: -(labelWidth - r * 2) / 2,
               transformOrigin: 'top center',

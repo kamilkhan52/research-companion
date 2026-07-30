@@ -30,6 +30,18 @@ def _api_key() -> str:
     return semantic_scholar.api_key()
 
 
+def _redacted(message: str) -> str:
+    """A failure message with the configured API key removed.
+
+    Not theoretical: a malformed key makes h11 raise `Illegal header value b'<the whole key>'`,
+    so logging the exception text verbatim would write the operator's Semantic Scholar key into
+    the logs — and the messages worth logging are exactly the ones raised while that key is in
+    an outgoing header.
+    """
+    key = _api_key()
+    return message.replace(key, "***") if key else message
+
+
 def _headers() -> dict:
     key = _api_key()
     return {"x-api-key": key} if key else {}
@@ -59,7 +71,8 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
         # Logged, not just swallowed. A build that quietly resolved NOTHING is
         # indistinguishable from one that was never asked to, and that is exactly how a graph
         # of 402 papers ended up with zero citation counts and no trace of why.
-        log.warning("citation enrichment stopped early (%s): %s", type(e).__name__, str(e)[:200])
+        log.warning("citation enrichment stopped early (%s): %s",
+                    type(e).__name__, _redacted(str(e))[:200])
     finally:
         if own:
             client.close()

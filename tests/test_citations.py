@@ -145,3 +145,20 @@ def test_a_failed_fetch_is_logged_rather_than_only_swallowed(caplog, monkeypatch
     assert nodes[0]["citation_count"] is None
     assert "RuntimeError" in caplog.text
     assert "semantic scholar exploded" in caplog.text
+
+
+def test_a_failure_message_never_carries_the_api_key(caplog, monkeypatch):
+    """A malformed key makes h11 raise `Illegal header value b'<the whole key>'`, and the messages
+    worth logging are exactly the ones raised while that key is in an outgoing header."""
+    secret = "s2-key-abcdefghijklmnop"
+    monkeypatch.setattr(citations, "_api_key", lambda: secret)
+
+    def boom(*_a, **_k):
+        raise ValueError(f"Illegal header value b'{secret}'")
+    monkeypatch.setattr(citations, "_fetch_missing", boom)
+
+    with caplog.at_level(logging.WARNING):
+        citations.annotate_nodes([{"id": "a", "title": "A paper"}], {})
+
+    assert secret not in caplog.text
+    assert "***" in caplog.text
