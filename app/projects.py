@@ -616,19 +616,50 @@ def _reject_hostile_tree(repo: Path, rev: str = "HEAD", *, allow_state: bool = F
 def _accepts_working_path(rel: str) -> bool:
     """Whether an incoming working-state path may be written into a fresh import.
 
-    An allowlist, not a denylist, and narrower than what export produces. The export side runs on
-    OUR data; this side runs on a stranger's bundle, and the interesting attacks are not exotic
-    paths (`_reject_hostile_tree` already refuses those) but ordinary-looking ones that change how
-    the instance behaves: `project.json` would override the sanitized metadata the importer just
-    rebuilt — including the owner — and `.gitignore`/`.gitattributes` would let the sender decide
-    what this instance tracks and which filters run.
+    An allowlist, not a denylist, and narrower than what export produces: the export side runs on
+    OUR data, this side runs on a stranger's bundle.
+
+    Containment is checked FIRST and lexically, because every rule below it is a prefix test and a
+    prefix test proves nothing about where a path lands — `corpus/../../../other/reading-list.md`
+    begins with `corpus/` and leaves the project entirely. Today such an entry also fails earlier,
+    because blobs are read as `<ref>:<path>` and git normalises that path and refuses it; that is
+    an accident of addressing, not a decision, and reading by object id instead would remove it
+    silently. So the rule is enforced here too.
+
+    The rest is about paths that look ordinary but change how the instance behaves: `project.json`
+    would override the sanitized metadata the importer just rebuilt, owner included, and
+    `.gitignore`/`.gitattributes` would let the sender decide what this instance tracks and which
+    filters run.
     """
+    if not rel or rel.startswith("/") or "\\" in rel or "\0" in rel:
+        return False
+    parts = PurePosixPath(rel).parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        return False
+    if parts[0] == ".git":
+        return False
     if rel in _GIT_CONTROL_FILES or rel == META or rel == ".gitignore":
         return False
     if rel in ("reading-list.md", "working-notes.md", "reading-method.md",
                ".state/sessions.json"):
         return True
     return rel.startswith(("corpus/", "sessions/", ".state/branches/"))
+
+
+def _ensure_state_ignored(repo: Path) -> None:
+    """Guarantee the imported project ignores `.state/`, whatever its `.gitignore` said.
+
+    Appends rather than replaces: a project's own ignore rules are legitimate content, and only
+    this one line is a safety property of the app rather than a preference of the sender.
+    """
+    path = repo / ".gitignore"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    if any(line.strip() in (".state", ".state/") for line in existing.splitlines()):
+        return
+    atomic_write_text(path, (existing.rstrip() + "\n" if existing.strip() else "") + ".state/\n")
 
 
 def _materialize_working_state(repo: Path, bundle: Path) -> int:
@@ -675,7 +706,16 @@ def _materialize_working_state(repo: Path, bundle: Path) -> int:
                               cwd=str(repo), capture_output=True, env=_SAFE_GIT_ENV)
         if blob.returncode != 0:
             continue
+        # Second, independent containment check at the point of the write. The allowlist already
+        # refuses traversal, but it is a string rule and this is the operation that would actually
+        # escape, so it does not get to be the only thing between a stranger's bundle and the
+        # filesystem. Lexical (abspath, not resolve): no symlink chasing, same rule as
+        # `project_path`.
         target = repo / rel
+        if os.path.commonpath((os.path.abspath(target),
+                               os.path.abspath(repo))) != os.path.abspath(repo):
+            log.warning("import: refusing working-state path outside the project: %s", rel[:120])
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob.stdout)
         written += 1
@@ -802,6 +842,14 @@ def import_bundle(
         if checkout.returncode != 0:
             raise ProjectError(f"Could not import the bundle: {checkout.stderr.strip()}")
 
+        # The sender controls HEAD, including its `.gitignore`. `_reject_hostile_tree` refuses a
+        # bundle that TRACKS `.state/`, but a `.gitignore` that simply omits (or negates) it is
+        # ordinary-looking and passes — and then the next approval's `git add -A` stages the
+        # `.state/` this import is about to write, including the provisional-owner marker and any
+        # retry branches. That breaks invariant 4 at the next commit rather than at import, which
+        # is worse: it looks like the reader approved it. Rebuild the rule rather than trust it,
+        # the same way the metadata is rebuilt.
+        _ensure_state_ignored(repo)
         _materialize_working_state(repo, bundle)
 
         _assert_project_shape(repo)

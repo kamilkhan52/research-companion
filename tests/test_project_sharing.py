@@ -527,3 +527,93 @@ def test_export_leaves_the_source_project_untouched(tmp_projects):
     # so keeping one per export would grow the source repo on every share.
     assert projects.WORKING_STATE_REF not in projects._git(
         source, "for-each-ref", "--format=%(refname)")
+
+
+def test_a_forged_working_state_path_cannot_write_outside_the_project(tmp_projects, tmp_path):
+    """End-to-end proof that a hand-crafted traversal entry lands nothing outside the project.
+
+    The tree is built from RAW object bytes because that is what the attack requires: `git mktree`
+    and `update-index` both refuse a `..` component, so no ordinary git command produces this, but
+    a bundle is only bytes.
+
+    Note WHY this currently cannot escape, because it is not the allowlist: `git ls-tree -r` does
+    list `corpus/../escaped.md`, but blobs are read as `<ref>:<path>`, and git normalises that path
+    and refuses it — so the read fails before any write. That is an accident of how the blob is
+    addressed, not a decision, and reading by object id instead would remove it silently. The
+    allowlist and the containment check at the write are the deliberate barriers, covered directly
+    by `test_working_path_allowlist_refuses_traversal_and_git_internals`.
+    """
+    source = _project_with_work(tmp_projects)
+    root = projects.project_path(source)
+
+    def write_object(kind: str, payload: bytes) -> str:
+        # --literally: skip the sanity checks that would otherwise refuse these names.
+        return subprocess.run(
+            ["git", "hash-object", "-w", "-t", kind, "--stdin", "--literally"],
+            cwd=str(root), input=payload, capture_output=True, check=True,
+        ).stdout.decode().strip()
+
+    blob = write_object("blob", b"owned")
+    tree = write_object("tree", b"100644 escaped.md\0" + bytes.fromhex(blob))
+    for _ in range(2):                       # corpus/../../escaped.md
+        tree = write_object("tree", b"40000 ..\0" + bytes.fromhex(tree))
+    tree = write_object("tree", b"40000 corpus\0" + bytes.fromhex(tree))
+    commit = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                             "commit-tree", tree, "-m", "hostile"], cwd=str(root),
+                            capture_output=True, text=True, check=True).stdout.strip()
+    projects._git(source, "update-ref", projects.WORKING_STATE_REF, commit)
+
+    bundle = tmp_path / "hostile.bundle"
+    subprocess.run(["git", "bundle", "create", str(bundle), "HEAD",
+                    projects.WORKING_STATE_REF], cwd=str(root), capture_output=True, check=True)
+
+    imported = projects.import_bundle(bundle.read_bytes(), "Hostile")
+
+    dest = projects.project_path(imported["id"])
+    assert not (dest.parent / "escaped.md").exists()
+    assert not (dest.parent.parent / "escaped.md").exists()
+    assert not (tmp_projects / "escaped.md").exists()
+    assert not (tmp_path / "escaped.md").exists()
+
+
+def test_working_path_allowlist_refuses_traversal_and_git_internals():
+    """The guard itself, not the end-to-end outcome. Every prefix rule below it is a `startswith`
+    test, and a prefix test says nothing about where a path lands."""
+    accepts = projects._accepts_working_path
+
+    assert accepts("corpus/attention.md") is True
+    assert accepts("sessions/attention.jsonl") is True
+    assert accepts(".state/sessions.json") is True
+    assert accepts("reading-list.md") is True
+
+    for escape in ("corpus/../../escaped.md", "corpus/../.git/index", "sessions/../../../x.md",
+                   "../escaped.md", "/etc/passwd", "corpus/./../../x.md"):
+        assert accepts(escape) is False, escape
+    for internal in (".git/config", ".git/hooks/pre-commit", ".gitignore", ".gitattributes",
+                     "project.json"):
+        assert accepts(internal) is False, internal
+    assert accepts("") is False
+
+
+def test_an_imported_project_ignores_state_even_if_the_bundle_said_otherwise(tmp_projects):
+    """A sender-controlled `.gitignore` that omits `.state/` passes every existing check — it is
+    ordinary content — and then the next approval's `git add -A` stages the `.state/` the import
+    just wrote, provisional-owner marker included. Invariant 4 would break at that commit, looking
+    like the reader approved it."""
+    source = _project_with_work(tmp_projects)
+    root = projects.project_path(source)
+    (root / ".gitignore").write_text("*.tmp\n", encoding="utf-8")   # note: no .state/
+    # Only the ignore file: committing everything would TRACK .state and be refused outright by
+    # _reject_hostile_tree, which is a different (already-covered) protection.
+    projects._git(source, "add", "--", ".gitignore")
+    projects._git(source, "commit", "-q", "-m", "weaken gitignore")
+
+    imported = projects.import_bundle(projects.export_bundle(source), "Ignored State")
+    pid = imported["id"]
+
+    assert ".state/" in (projects.project_path(pid) / ".gitignore").read_text()
+    # The project's own rule is kept, not replaced.
+    assert "*.tmp" in (projects.project_path(pid) / ".gitignore").read_text()
+    # And the imported working state is genuinely untracked, which is the property that matters.
+    projects._git(pid, "add", "-A")
+    assert ".state/" not in projects._git(pid, "diff", "--cached", "--name-only")
