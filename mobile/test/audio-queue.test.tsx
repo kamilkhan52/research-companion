@@ -367,6 +367,120 @@ test('progressive narration starts segment one before the final segment is ready
   await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(2));
 });
 
+test('progressive falls back to the stitched track when a cached job exposes no segments', async () => {
+  // The likeliest way progressive "breaks" without any code being wrong: re-listening to
+  // narration whose combined mp3 is cached but whose per-segment files are not (narration from
+  // before segment caching, or segments evicted). `audio_jobs` keeps the zero-cost cache hit and
+  // registers a DONE job straight from the cache rather than re-synthesizing to backfill —
+  // `segments = _segment_metadata(parts, existing_only=True)` is empty and `segments_done =
+  // len(segments)` is therefore 0 of N, not N of N. Progressive must play the finished track;
+  // silence here would look exactly like a broken feature on device.
+  await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
+  const cachedNoSegments: AudioJob = {
+    ...doneJob,
+    segments_done: 0,
+    segments_total: 2,
+    url: '/api/audio/abc.mp3',
+    segments: [],
+  };
+  jest.mocked(api.getAudioJob).mockResolvedValueOnce({ job: cachedNoSegments });
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValue([]);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-cached', title: 'Paper', text: 'Canonical response.' },
+    'audio-job',
+    'project-a',
+    'chat-job-cached',
+  );
+
+  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+  // The whole track, addressed by the slot id — not a segment.
+  expect(TrackPlayer.add).toHaveBeenCalledWith(expect.objectContaining({
+    id: 'turn-cached',
+    url: expect.stringContaining('/api/audio/abc.mp3'),
+  }));
+  expect(TrackPlayer.add).not.toHaveBeenCalledWith(
+    expect.objectContaining({ segmentIndex: expect.anything() }),
+  );
+});
+
+test('progressive surfaces a synthesis failure that happens after segments already played', async () => {
+  // Partial audio is the dangerous shape: the listener has heard something, so silence afterwards
+  // reads as "it finished" rather than "it broke". The error must reach errorById even though
+  // playback already started, which is why the job-status check precedes the segments-played
+  // early return.
+  await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
+  const firstSegment: AudioJob = {
+    ...doneJob,
+    status: 'running',
+    finished_at: null,     // a running job has not finished; doneJob's timestamp would be a lie
+    segments_done: 1,
+    segments_total: 3,
+    url: null,
+    segments: [{ index: 0, text: 'First sentence.', url: '/api/audio/seg1.mp3' }],
+  };
+  // A later segment throwing keeps the earlier ones and leaves `url` null (audio_jobs only sets
+  // it once every part is synthesized), so partial-then-error is a real server shape.
+  const failed: AudioJob = {
+    ...firstSegment,
+    status: 'error',
+    url: null,
+    error: 'TTS provider refused the request.',
+  };
+  jest.mocked(api.getAudioJob)
+    .mockResolvedValueOnce({ job: firstSegment })
+    .mockResolvedValueOnce({ job: failed });
+  await registerEligibleHandoff('chat-job-partial');
+  jest.mocked(TrackPlayer.getActiveTrackIndex).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getQueue).mockResolvedValue([]);
+  jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined);
+  jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValue({ state: State.Ready });
+
+  let audio!: ReturnType<typeof useAudio>;
+  function Capture() {
+    audio = useAudio();
+    return null;
+  }
+  await renderAsync(
+    <ProjectProvider>
+      <ListeningProvider>
+        <AudioProvider><Capture /></AudioProvider>
+      </ListeningProvider>
+    </ProjectProvider>,
+  );
+  audio.enqueueJob(
+    { id: 'turn-partial', title: 'Paper', text: 'Canonical response.' },
+    'audio-job',
+    'project-a',
+    'chat-job-partial',
+  );
+
+  // The first segment really did play, so this is the partial case and not a plain failure.
+  await waitFor(() => expect(TrackPlayer.play).toHaveBeenCalledTimes(1));
+  await waitFor(
+    () => expect(audio.errorById['turn-partial']).toContain('TTS provider refused'),
+    { timeout: 3000 },
+  );
+  // A terminally failed narration must also stop being an eligible handoff, or a provider
+  // remount would "recover" by replaying the partial audio that just failed.
+  await waitFor(() => expect(isHandoffEligible('chat-job-partial')).resolves.toBe(false));
+});
+
 test('manual Listen also begins from the first progressive segment', async () => {
   // Progressive playback is opt-in now (Settings -> Audio); 'full' is the default.
   await AsyncStorage.setItem('rc.audioPlayback', 'progressive');
