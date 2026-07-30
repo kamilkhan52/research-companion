@@ -3,6 +3,8 @@
 fake httpx client — zero network."""
 from __future__ import annotations
 
+import logging
+
 import httpx
 from app import citations, semantic_scholar
 from app.citations import _fetch_missing as real_fetch_missing
@@ -114,3 +116,49 @@ def test_citation_and_metadata_requests_share_one_pacer():
     )
 
     assert sleeps == [1.1]
+
+
+def test_an_enrichment_that_resolves_nothing_says_so(caplog, monkeypatch):
+    """A build that quietly resolved zero citation counts is indistinguishable from one that was
+    never asked to — which is exactly how a 402-node graph ended up with no counts and no trace
+    of why. The zero case gets its own warning."""
+    monkeypatch.setattr(citations, "_fetch_missing", lambda *a, **k: None)
+    nodes = [{"id": "a", "title": "A paper"}, {"id": "b", "title": "Another"}]
+
+    with caplog.at_level(logging.WARNING):
+        citations.annotate_nodes(nodes, {})
+
+    assert any('resolved 0 of 2' in r.getMessage() for r in caplog.records), caplog.text
+
+
+def test_a_failed_fetch_is_logged_rather_than_only_swallowed(caplog, monkeypatch):
+    """It must still not fail the build — citation counts are an enrichment — but a silent
+    exception left no way to find out why the counts were missing."""
+    def boom(*_a, **_k):
+        raise RuntimeError("semantic scholar exploded")
+    monkeypatch.setattr(citations, "_fetch_missing", boom)
+    nodes = [{"id": "a", "title": "A paper"}]
+
+    with caplog.at_level(logging.WARNING):
+        citations.annotate_nodes(nodes, {})   # must not raise
+
+    assert nodes[0]["citation_count"] is None
+    assert "RuntimeError" in caplog.text
+    assert "semantic scholar exploded" in caplog.text
+
+
+def test_a_failure_message_never_carries_the_api_key(caplog, monkeypatch):
+    """A malformed key makes h11 raise `Illegal header value b'<the whole key>'`, and the messages
+    worth logging are exactly the ones raised while that key is in an outgoing header."""
+    secret = "s2-key-abcdefghijklmnop"
+    monkeypatch.setattr(citations, "_api_key", lambda: secret)
+
+    def boom(*_a, **_k):
+        raise ValueError(f"Illegal header value b'{secret}'")
+    monkeypatch.setattr(citations, "_fetch_missing", boom)
+
+    with caplog.at_level(logging.WARNING):
+        citations.annotate_nodes([{"id": "a", "title": "A paper"}], {})
+
+    assert secret not in caplog.text
+    assert "***" in caplog.text

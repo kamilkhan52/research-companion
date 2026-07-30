@@ -34,3 +34,40 @@ test('the quantizer is inlined against the shared constant, so it cannot drift',
   expect(prepare).toContain('BUCKETS_PER_DOUBLING');
   expect(prepare).toMatch(/Math\.log2/);
 });
+
+
+test('the node growth cap is computed inline, not via an imported helper', () => {
+  // Same boundary as the zoom quantizer: this runs in a `useAnimatedStyle` worklet on the UI
+  // thread, so calling an imported function would crash the Map tab exactly as #295 did.
+  const start = source.indexOf('const nodeCounterScale');
+  expect(start).toBeGreaterThan(-1);
+  const block = source.slice(start, source.indexOf('}));', start));
+
+  expect(block).toContain('NODE_GROWTH_CAP');
+  expect(block).toMatch(/Math\.min\(/);
+  // No CALL to anything but Math.*: an allow-list, because banning a list of known helper names
+  // would let an arbitrary new import through while reproducing the same crash.
+  const calls = [...block.matchAll(/([A-Za-z_$][\w$.]*)\s*\(/g)].map((m) => m[1]);
+  const disallowed = calls.filter((name) => !name.startsWith('Math.') && name !== 'useAnimatedStyle');
+  expect(disallowed).toEqual([]);
+});
+
+test('nodes grow with zoom up to the cap and hold above it', () => {
+  // The property the constant encodes, stated so a change to the formula has to be deliberate:
+  // below the cap the circle scales with the canvas (factor 1), above it the factor falls as
+  // 1/scale so the on-screen size stops changing.
+  const factor = (scale: number, cap: number) => Math.min(1, cap / scale);
+  const cap = 0.7;
+  expect(factor(0.25, cap)).toBe(1);                    // zoomed out: unchanged from today
+  expect(factor(cap, cap)).toBe(1);                     // at the cap: still unchanged
+  expect(factor(1.4, cap)).toBeCloseTo(0.5);            // 2x past it: half, so screen size holds
+  expect(factor(2.8, cap) * 2.8).toBeCloseTo(cap);      // screen size is constant above the cap
+});
+
+
+test('the label lift follows the circle rather than the uncapped radius', () => {
+  // The circle contracts toward its centre once the cap engages; a label anchored at the old
+  // `r * 2` is left stranded in empty space — ~80px on a large node at full zoom.
+  expect(source).toContain('r + r * nodeShrink + 3');
+  expect(source).not.toMatch(/top:\s*r \* 2 \+ 3/);
+});

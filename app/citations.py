@@ -17,7 +17,7 @@ import time
 
 import httpx
 
-from . import semantic_scholar
+from . import logging_config, semantic_scholar
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
 S2_MATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search/match"
@@ -28,6 +28,18 @@ TIMEOUT_S = 30.0
 
 def _api_key() -> str:
     return semantic_scholar.api_key()
+
+
+def _redacted(message: str) -> str:
+    """A failure message with the configured API key removed.
+
+    Not theoretical: a malformed key makes h11 raise `Illegal header value b'<the whole key>'`,
+    so logging the exception text verbatim would write the operator's Semantic Scholar key into
+    the logs — and the messages worth logging are exactly the ones raised while that key is in
+    an outgoing header.
+    """
+    key = _api_key()
+    return message.replace(key, "***") if key else message
 
 
 def _headers() -> dict:
@@ -43,6 +55,8 @@ def _external_id(node: dict) -> str | None:
     return None
 
 
+log = logging_config.get("citations")
+
 def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | None = None,
                    sleep=time.sleep) -> None:
     """Set node["citation_count"] (int, or None when unknown) on every node, fetching what the
@@ -50,15 +64,28 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
     store). Never raises: citation counts are an enrichment, not a build dependency."""
     own = client is None
     client = client or httpx.Client(timeout=TIMEOUT_S)
+    before = len(cache)
     try:
         _fetch_missing(nodes, cache, client, sleep)
-    except Exception:
-        pass  # enrichment only — a failed/interrupted fetch must never fail the build
+    except Exception as e:  # noqa: BLE001 — enrichment must never fail the build
+        # Logged, not just swallowed. A build that quietly resolved NOTHING is
+        # indistinguishable from one that was never asked to, and that is exactly how a graph
+        # of 402 papers ended up with zero citation counts and no trace of why.
+        log.warning("citation enrichment stopped early (%s): %s",
+                    type(e).__name__, _redacted(str(e))[:200])
     finally:
         if own:
             client.close()
     for n in nodes:
         n["citation_count"] = cache.get(n["id"])
+    resolved = sum(1 for n in nodes if n.get("citation_count") is not None)
+    if nodes and not resolved:
+        # The one outcome worth a warning on its own: the enrichment ran and produced nothing.
+        log.warning("citation enrichment resolved 0 of %d nodes (cache %d -> %d)",
+                    len(nodes), before, len(cache))
+    else:
+        log.info("citation counts: %d of %d nodes (cache %d -> %d)",
+                 resolved, len(nodes), before, len(cache))
 
 
 def _fetch_missing(

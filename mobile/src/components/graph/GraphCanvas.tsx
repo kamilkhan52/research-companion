@@ -47,6 +47,16 @@ const FIT_PADDING = 0.92;
 // on. Overlap is handled by decluttering in screen space instead — see `pickVisibleLabels`. Cells
 // are sized from the real label box: `max(r * 3.6, 74)` wide by two 12px lines tall, which is why
 // they are so much wider than they are tall.
+// Zoom at which node circles STOP growing. Nodes scale with the canvas below this and hold their
+// size above it, so zooming in past it keeps spreading the graph apart without inflating the
+// circles — which is what makes a dense cluster readable instead of a bigger dense cluster.
+//
+// A cap rather than the constant screen size labels get. Labels are the same size whatever the
+// zoom because text below a certain size is simply unreadable. Circles are not: at the default fit
+// (~0.25) a constant-size node would draw four times larger than today, on the very view where the
+// graph is densest, so overlap would get worse before it got better. Growing up to a ceiling gets
+// the zoomed-in benefit with no regression to the view you land on.
+const NODE_GROWTH_CAP = 0.7;
 const LABEL_CELL_W = 96;
 const LABEL_CELL_H = 30;
 const ARROWS_ON_ALL_EDGES_MAX = 120;
@@ -279,6 +289,23 @@ export function GraphCanvas({
     transform: [{ scale: 1 / scale.value }],
   }));
 
+  // Node circles: grow with the canvas up to NODE_GROWTH_CAP, then hold. One shared style for
+  // every node, for the same reason the labels have one — a per-node animated style would be
+  // ~100 worklets a frame. Origin stays centred: the circle marks a position that means something
+  // (X is time, Y is citation impact) and edges are drawn to that point, so shrinking toward any
+  // other origin would detach a node from its own edges.
+  const nodeCounterScale = useAnimatedStyle(() => ({
+    transform: [{ scale: Math.min(1, NODE_GROWTH_CAP / scale.value) }],
+  }));
+
+  // How much the circle has shrunk, as a plain number. The label sits below the circle at a fixed
+  // `top`, and once the cap engages the circle contracts toward its centre — so without this the
+  // label is stranded in empty space, up to ~80px away on a large node at full zoom. The lift is
+  // per-node (it scales with each radius), which as an animated style would mean ~100 worklets a
+  // frame. It is derived from the label bucket instead: already recomputed on zoom changes, so
+  // this costs nothing and is exact wherever the zoom settles.
+  const nodeShrink = Math.min(1, NODE_GROWTH_CAP / bucketScale(labelBucket));
+
   // Which labels survive the declutter, recomputed only when a quantized zoom bucket changes —
   // the same "one JS state flip, never per frame" discipline the old LOD boolean used.
   useAnimatedReaction(
@@ -344,6 +371,8 @@ export function GraphCanvas({
                 dimmed={dimmed}
                 showLabel={labelledIds.has(node.id)}
                 labelStyle={labelCounterScale}
+                circleStyle={nodeCounterScale}
+                nodeShrink={nodeShrink}
                 onSelectNode={onSelectNode}
               />
             );
@@ -460,6 +489,8 @@ const NodeCircle = memo(function NodeCircle({
   dimmed,
   showLabel,
   labelStyle,
+  circleStyle,
+  nodeShrink,
   onSelectNode,
 }: {
   node: GraphNode;
@@ -470,6 +501,10 @@ const NodeCircle = memo(function NodeCircle({
   showLabel: boolean;
   /** The ONE shared counter-scale style; typed as the component prop accepts it. */
   labelStyle: AnimatedProps<ViewProps>['style'];
+  /** The ONE shared node-growth cap style. */
+  circleStyle: AnimatedProps<ViewProps>['style'];
+  /** How far the circle has contracted, so the label can follow its edge. */
+  nodeShrink: number;
   onSelectNode: (node: GraphNode) => void;
 }) {
   const t = useTheme();
@@ -491,8 +526,8 @@ const NodeCircle = memo(function NodeCircle({
       hitSlop={6}
       accessibilityLabel={`${node.title}${isProject ? ' (in this project)' : ' (external reference)'}`}
       style={{ position: 'absolute', left: x - r, top: y - r, width: r * 2, height: r * 2, opacity: dimmed ? 0.16 : 1 }}>
-      <View
-        style={{
+      <Animated.View
+        style={[circleStyle, {
           width: r * 2,
           height: r * 2,
           borderRadius: r,
@@ -501,7 +536,7 @@ const NodeCircle = memo(function NodeCircle({
           borderColor: selected ? t.amber : isSignificant ? accent : t.line2,
           alignItems: 'center',
           justifyContent: 'center',
-        }}>
+        }]}>
         <View
           style={{
             width: r * 1.15,
@@ -511,7 +546,7 @@ const NodeCircle = memo(function NodeCircle({
             opacity: isProject ? 1 : 0.85,
           }}
         />
-      </View>
+      </Animated.View>
       {drawLabel ? (
         // The counter-scale lives on a wrapper, not on the Text: transforms do not affect layout,
         // so the text wraps identically at every zoom and only its drawn size stays constant.
@@ -519,7 +554,8 @@ const NodeCircle = memo(function NodeCircle({
           style={[
             {
               position: 'absolute',
-              top: r * 2 + 3,
+              // Follow the circle's actual bottom edge, which the growth cap moves.
+              top: r + r * nodeShrink + 3,
               width: labelWidth,
               left: -(labelWidth - r * 2) / 2,
               transformOrigin: 'top center',
