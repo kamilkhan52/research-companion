@@ -346,7 +346,7 @@ asked explicitly to stop before it so it can be designed properly rather than pa
 | 5 | Graph label overlap; constant-size labels; nodes separating on zoom | Shipped — **device-confirmed** (#301) |
 | 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **NEXT, untouched** |
 
-**Citation enrichment, which item 5 depended on, went 46% → 90% (186 → 361 of 402).** The cap was
+**Citation enrichment, which item 5 depended on, went 46% → 92% (186 → 369 of 402, verified after the review changes).** The cap was
 not coverage of the indexes: `app/citations.py` requested `fields=...,matchScore` from Semantic
 Scholar's `paper/search/match`, which rejects an unsupported field with `400 {"error":"Unrecognized
 or unsupported fields: [matchScore]"}`. Every title lookup had been failing — and title lookup is
