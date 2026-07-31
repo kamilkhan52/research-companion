@@ -321,8 +321,13 @@ def test_run_discovery_event_sequence_and_result_shape():
     assert types.count("search") == 2
     # The funnel's own stages are reported so a client can show real progress rather than a
     # spinner: recall -> gate -> cheap screens -> enrichment.
-    assert types[-10:] == ["library", "gathered", "gated", "finds", "triage",
-                           "citations", "scoring", "finds", "evidence", "done"]
+    # `finds` events interleave (the live reel) and are asserted separately below; the STAGE
+    # order is what this pins.
+    assert [x for x in types if x != "finds"][-8:] == [
+        "library", "gathered", "gated", "triage", "citations", "scoring", "evidence", "done"]
+    # The reel is refreshed at every stage that changes what we know, so it keeps moving through
+    # the long screening passes instead of freezing on one set of titles.
+    assert types.count("finds") >= 3
 
     result = events[-1]["result"]
     assert result["goals"] == "understand 3D DRAM"
@@ -666,7 +671,7 @@ def test_good_finds_are_emitted_before_any_model_has_judged_them(temp_project):
         citations_fn=fake_citations({})))
 
     finds = [e for e in events if e["type"] == "finds"]
-    assert [f["stage"] for f in finds] == ["grounded", "ranked"]
+    assert [f["stage"] for f in finds] == ["grounded", "screened", "ranked"]
 
     early = finds[0]
     assert early["items"][0]["title"] == "Sparse attention for long-context transformers"
@@ -676,7 +681,7 @@ def test_good_finds_are_emitted_before_any_model_has_judged_them(temp_project):
     types = [e["type"] for e in events]
     assert types.index("finds") < types.index("citations")
 
-    assert finds[1]["items"][0]["provisional"] is False
+    assert finds[-1]["items"][0]["provisional"] is False
 
 
 def test_a_find_carries_only_what_the_card_renders(temp_project):
@@ -843,3 +848,37 @@ def test_a_failed_query_plan_degrades_to_the_readers_own_words(temp_project):
     assert result["suggestions"], "the run should have completed on the fallback plan"
     assert any("Compute Express Link" in q for q in searched)
     assert any("Query planning failed" in d for d in result["degraded"]), result["degraded"]
+
+
+def test_the_first_finds_arrive_before_the_slow_grounded_recall(temp_project):
+    """The reel should start almost immediately, not a minute in. Keyword hits are relevant by
+    construction and land within seconds; grounded recall (anchor resolution + citation chase)
+    takes far longer. Emitting only after recall left the panel empty through the longest part
+    of the run, which is exactly when the reader most needs to see something happening."""
+    order: list[str] = []
+
+    def slow_recall(papers):
+        order.append("recall")
+        return [], {"degraded": []}
+
+    def search(query, n):
+        return [_cand("7777.00001", "Compute Express Link memory pooling")]
+
+    events = list(discovery.run_discovery(
+        "Compute Express Link", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=fake_cheap_llm({"Compute Express Link": 9}), library_fn=lambda: [],
+        recall_fn=slow_recall, citations_fn=fake_citations({"7777.00001": 3})))
+
+    first_finds = next(i for i, e in enumerate(events) if e["type"] == "finds")
+    library_at = next(i for i, e in enumerate(events) if e["type"] == "library")
+    assert first_finds < library_at, "the reel waited for grounded recall"
+    assert events[first_finds]["stage"] == "searching"
+    assert events[first_finds]["items"][0]["title"] == "Compute Express Link memory pooling"
+
+
+def test_the_reel_is_long_enough_to_scroll_without_visibly_repeating():
+    """The client shows two rows and loops the reel; a five-item reel repeats every few seconds."""
+    many = [{"title": f"Compute Express Link paper {i}", "channels": ["graph"]}
+            for i in range(40)]
+    assert len(discovery._preview(many, focus="Compute Express Link")) == discovery.PREVIEW_FINDS
+    assert discovery.PREVIEW_FINDS >= 8

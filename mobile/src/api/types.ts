@@ -798,7 +798,7 @@ export interface DiscoveryJob {
   /** A few good finds, refreshed as the funnel narrows — shown while the run is in flight. */
   finds: DiscoveryFind[];
   /** `grounded` finds are chosen on provenance alone, before any model has judged them. */
-  finds_stage: '' | 'grounded' | 'ranked';
+  finds_stage: '' | 'searching' | 'grounded' | 'screened' | 'ranked';
   result: DiscoveryResult | null;
   error: string | null;
   started_at: string;

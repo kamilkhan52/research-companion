@@ -974,6 +974,14 @@ def run_discovery(
             f"{type(e).__name__}: {str(e)[:120]}")
         log.info("lexical lane failed (%s); continuing on the grounded channels", lexical_error)
 
+    # The FIRST finds, as early as there is anything real to show. Keyword hits are relevant by
+    # construction and arrive within seconds, whereas grounded recall takes a minute or more — so
+    # emitting here is the difference between a reel that starts almost immediately and one that
+    # sits empty through the longest part of the run.
+    if lexical:
+        yield {"type": "finds", "stage": "searching",
+               "items": _preview(lexical, focus=f"{focus} {goals}", provisional=True)}
+
     # The library-grounded channels. They are additive: a brand-new project has no papers and no
     # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
     # which is the case the feature was originally built for and must not regress.
@@ -1019,6 +1027,9 @@ def run_discovery(
     # then honoured that rejection on later runs, so un-hiding a paper could never bring it back.
     _record_verdicts(ledger, triaged, gated, kind="cheap", model=CHEAP_MODEL,
                      profile=profile_hash, today=today)
+
+    yield {"type": "finds", "stage": "screened",
+           "items": _preview(triaged, focus=f"{focus} {goals}", provisional=True)}
 
     yield {"type": "citations", "count": len(triaged)}
     add_citation_counts(triaged, citations_fn)
@@ -1075,9 +1086,11 @@ def run_discovery(
     }}
 
 
-#: How many live finds the client shows while a run is in flight. Small on purpose: this is a
-#: reassurance signal, not the result list, and every item is polled repeatedly.
-PREVIEW_FINDS = 5
+#: How many live finds ride on the job snapshot. The client shows only two at a time and scrolls
+#: through them, so this is the length of the reel rather than the number on screen — too few and
+#: the loop visibly repeats. Still bounded: it is polled repeatedly for the length of a run, and
+#: each entry is trimmed to the handful of fields the row renders.
+PREVIEW_FINDS = 12
 
 
 _PREVIEW_STOPWORDS = frozenset({
