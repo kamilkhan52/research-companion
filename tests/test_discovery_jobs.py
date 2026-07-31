@@ -90,3 +90,50 @@ def test_snapshot_excludes_pid_and_is_none_without_a_job(temp_project):
     snap = discovery_jobs.snapshot(temp_project)
     assert "pid" not in snap
     assert snap["status"] == "done"
+
+
+def test_live_finds_reach_the_snapshot_without_advancing_the_timeline(temp_project):
+    """The Discover screen shows good finds while a run is in flight. Two things must hold: the
+    finds reach the polled snapshot, and a `finds` event does NOT move the phase — it arrives
+    DURING a phase, and advancing the timeline on it would make the progress steps jump."""
+    def run_with_finds(goals: str, **kwargs):
+        yield {"type": "queries", "focus": "f", "queries": []}
+        yield {"type": "gathered", "count": 800}
+        yield {"type": "gated", "kept": 700, "counts": {}}
+        yield {"type": "finds", "stage": "grounded",
+               "items": [{"title": "Early Find", "reason": "Cites a paper on your list",
+                          "provisional": True}]}
+        yield {"type": "triage", "count": 700}
+        yield {"type": "done", "result": {"goals": goals, "suggestions": [],
+                                          "candidate_count": 0, "top_n": 5}}
+
+    seen: list[tuple[str, int]] = []
+    job = discovery_jobs.start_discovery(temp_project, "goals", run_fn=run_with_finds)
+    deadline = time.time() + 5.0
+    while time.time() < deadline and job.status == "running":
+        snap = discovery_jobs.snapshot(temp_project)
+        if snap:
+            seen.append((snap["phase"], len(snap.get("finds") or [])))
+        time.sleep(0.005)
+    _wait_until_done(temp_project)
+
+    final = discovery_jobs.snapshot(temp_project)
+    assert final["finds"][0]["title"] == "Early Find"
+    assert final["finds"][0]["provisional"] is True
+    assert final["finds_stage"] == "grounded"
+    # "finds" is never itself a phase — the client's step mapping has no entry for it.
+    assert "finds" not in {phase for phase, _ in seen}
+
+
+def test_the_snapshot_carries_the_counts_the_progress_steps_render(temp_project):
+    def run(goals: str, **kwargs):
+        yield {"type": "library", "papers": 53}
+        yield {"type": "gathered", "count": 809}
+        yield {"type": "gated", "kept": 408, "counts": {}}
+        yield {"type": "done", "result": {"goals": goals, "suggestions": [],
+                                          "candidate_count": 0, "top_n": 5}}
+
+    discovery_jobs.start_discovery(temp_project, "goals", run_fn=run)
+    _wait_until_done(temp_project)
+    snap = discovery_jobs.snapshot(temp_project)
+    assert (snap["library"], snap["gathered"], snap["screened"]) == (53, 809, 408)

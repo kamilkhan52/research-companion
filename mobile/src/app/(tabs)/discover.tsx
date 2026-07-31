@@ -1,12 +1,18 @@
-// Discover — scan scholarly sources for papers relevant to what you want to explore, at any
-// project (not just when starting one). A clean text field ("what would you like to explore?")
-// starts a server-side discovery job (app/discovery.py): LLM-planned broad+narrow arXiv and
-// Semantic Scholar searches, Map-style citation/authorship enrichment, and a relevance-first
-// ranking. The screen polls the job for live phase progress (job survives
-// backgrounding — see useDiscoveryRun), then shows the top suggestions with the rest behind
-// "show more". A "specific paper" box covers the other entry path: paste a title or an
-// arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt) takes over
-// on the paper's Discussion screen.
+// Discover — find papers worth reading next, at any project (not just when starting one).
+//
+// A text field ("what would you like to explore?") starts a server-side job (app/discovery.py)
+// that runs a funnel: papers that cite the reader's OWN library, plus their reference graph's
+// existing recommendations, plus keyword search, are merged, passed through a free deterministic
+// gate, then screened by two batched cheap-model passes before being ranked.
+//
+// That takes minutes, so this screen does two things while it waits. `ProgressPanel` maps the
+// job's ten server phases onto five steps a reader can follow, carrying real counts. `LiveFinds`
+// shows papers as they turn up — the first batch comes from the reader's own library and needs
+// no model to be worth showing, so something real appears seconds in rather than a spinner.
+//
+// Adding a paper you already know is the other entry path: an "or" field under the query takes a
+// title, DOI, or arXiv/PDF link, and the existing retrieval flow (deterministic -> agentic hunt)
+// takes over on the paper's Discussion screen. It is hidden while a search runs.
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
@@ -28,6 +34,7 @@ import { ProgressSteps } from '@/components/ProgressSteps';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
+import { discoverProgress } from '@/lib/discoverProgress';
 import { fullPaperUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Icon, Screen, Text } from '@/ui';
@@ -53,17 +60,13 @@ export default function DiscoverScreen() {
   const setGoals = goalsDraft.setValue;
   const [showAll, setShowAll] = useState(false);
   // Focus mode: once a search is running (or results exist) the goals editor collapses to a
-  // compact summary and the "specific paper" box folds behind a toggle — the ranked list is
-  // the point of the screen then. Both stay one tap away.
+  // compact summary — the ranked list is the point of the screen then, and it stays one tap away.
   const [editingGoals, setEditingGoals] = useState(false);
-  const [showSpecific, setShowSpecific] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
-
-  // The Library's empty-project hub can deep-link directly into this entry path. Tabs may stay
-  // mounted between navigations, so react to param changes rather than only using an initializer.
-  useEffect(() => {
-    if (specific === '1') setShowSpecific(true);
-  }, [specific]);
+  // ONE instance for the screen. The field renders in two mutually exclusive positions (inside
+  // the query card, and below a collapsed summary); two hook instances meant switching between
+  // them unmounted one mid-debounce and silently dropped what the reader had typed.
+  const addByRef = useAddByReference(pid);
 
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
@@ -86,7 +89,12 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
-  const specificEntry = specific === '1' && !hasRunContext;
+  // The deep link means "adding a known paper IS the task", so it holds regardless of whether a
+  // search has run — and unlike the ordinary inline field it is NOT hidden during a run, because
+  // the reader navigated here specifically to add a paper. Gating it on `!hasRunContext` meant a
+  // project with cached results silently fell back to the ordinary field, and a project mid-run
+  // showed no way to add a paper at all.
+  const specificEntry = specific === '1';
 
   async function runDiscovery() {
     const text = goals.trim();
@@ -109,7 +117,7 @@ export default function DiscoverScreen() {
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {specificEntry && pid ? (
             <>
-              <SpecificPaper pid={pid} />
+              <SpecificPaper add={addByRef} />
               <Button
                 title="Discover papers instead"
                 icon="compass"
@@ -144,6 +152,9 @@ export default function DiscoverScreen() {
               {editingGoals && !runState.running ? (
                 <Button title="Cancel" variant="ghost" onPress={() => setEditingGoals(false)} />
               ) : null}
+              {/* Only when it matters: a reader watching a search run does not want a second
+                  way to add a paper competing for attention. */}
+              {addByRef && !runState.running ? <AddByReferenceInline add={addByRef} /> : null}
             </Card>
           ) : (
             // Compact goals summary — the search is the focus now; tap to edit & search again.
@@ -170,7 +181,10 @@ export default function DiscoverScreen() {
           {/* Keep the panel after an in-session run finishes so the fully-checked
               "Search complete" state (frame 02) actually renders above the results. */}
           {runState.job && (runState.running || runState.job.status === 'done') ? (
-            <ProgressPanel job={runState.job} />
+            <>
+              <ProgressPanel job={runState.job} />
+              {runState.running ? <LiveFinds job={runState.job} /> : null}
+            </>
           ) : null}
 
           {runState.error ? (
@@ -211,19 +225,11 @@ export default function DiscoverScreen() {
             </View>
           ) : null}
 
-          {/* On a fresh screen the specific-paper box is a primary entry option; once a
-              search owns the screen it folds behind a toggle. */}
-          {pid && !specificEntry ? (
-            hasRunContext && !showSpecific ? (
-              <Button
-                title="Have a specific paper? Add by name or link"
-                variant="ghost"
-                onPress={() => setShowSpecific(true)}
-                style={{ marginTop: space.xl }}
-              />
-            ) : (
-              <SpecificPaper pid={pid} />
-            )
+          {/* Adding a known paper now lives inline under the query (see AddByReferenceInline),
+              so nothing is repeated down here. The compact summary state has no query box of its
+              own, so it keeps the affordance — still hidden while a search runs. */}
+          {addByRef && !specificEntry && !showEditor && !runState.running ? (
+            <AddByReferenceInline add={addByRef} />
           ) : null}
         </ScrollView>
 
@@ -242,30 +248,19 @@ export default function DiscoverScreen() {
 
 // ---------- live phase progress (mirrors the job's phase field) ----------
 
-const PHASE_ORDER = ['queries', 'searching', 'citations', 'evidence', 'scoring', 'done'] as const;
-
-// The mint check timeline from Figma `02 · Discover` ("Planned → Reviewed → Checked →
-// Ranked"), with the live phase's detail line underneath — the polled job data the old
-// vertical panel showed, kept.
+// The mint check timeline from Figma `02 · Discover`, with the live phase's detail line
+// underneath. The detail lines carry REAL counts now — a run takes minutes, and "1,204 papers
+// found" is the difference between progress and a spinner. The phase mapping lives in
+// `lib/discoverProgress` so it can be tested without rendering.
 function ProgressPanel({ job }: { job: DiscoveryJob }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const current = PHASE_ORDER.indexOf(job.phase);
-  const steps = [
-    { key: 'queries', label: 'Planned', detail: job.focus },
-    {
-      key: 'searching',
-      label: 'Searched',
-      detail: job.total_queries
-        ? `${job.searched}/${job.total_queries} searches · ${job.found} papers`
-        : 'Searching scholarly sources…',
-    },
-    { key: 'citations', label: 'Impact', detail: `Citation evidence for ${job.found} papers` },
-    { key: 'evidence', label: 'Evidence', detail: 'Checking authors, venues, and institutions' },
-    { key: 'scoring', label: 'Ranked', detail: 'Ranking by fit and evidence' },
-  ];
-  const active = steps[Math.min(Math.max(current, 0), steps.length - 1)];
-  const done = job.phase === 'done' || job.status === 'done';
+  // The furthest step reached so far. Held here rather than derived, so an unrecognised phase
+  // (older client, newer server) holds position instead of rewinding the timeline to "Planned".
+  const furthest = useRef(0);
+  const { steps, detail, done, step } = discoverProgress(job, furthest.current);
+  furthest.current = job.status === 'running' ? step : 0;
+
   return (
     <Card style={styles.progressPanel}>
       <Text variant="serifTitle" color={t.mint}>
@@ -274,18 +269,56 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
       <ProgressSteps
         dotSize={28}
         style={styles.stepsRow}
-        steps={steps.map((step, i) => ({
-          key: step.key,
-          label: step.label,
-          state: done || i < current ? 'done' : i === current ? 'active' : 'pending',
-        }))}
+        steps={steps.map((step) => ({ key: step.key, label: step.label, state: step.state }))}
       />
-      {!done && active?.detail ? (
+      {detail ? (
         <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center' }}>
-          {active.detail}
+          {detail}
         </Text>
       ) : null}
     </Card>
+  );
+}
+
+// ---------- live finds ----------
+
+// A run takes minutes, so the screen shows what it is finding as it goes. The first batch comes
+// from the reader's own library and reference graph, which need no model to be worth showing —
+// they appear seconds in. They are labelled provisional, because a paper shown here and then
+// absent from the results must read as the search narrowing rather than as a bug.
+function LiveFinds({ job }: { job: DiscoveryJob }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const finds = job.finds ?? [];
+  if (!finds.length) return null;
+  const provisional = job.finds_stage === 'grounded';
+
+  return (
+    <View style={styles.finds}>
+      <View style={styles.findsHead}>
+        <Icon name="compass" size={14} color={t.mint} />
+        <Text variant="overline" color={t.mint}>
+          {provisional ? 'Turning up so far' : 'Best matches so far'}
+        </Text>
+      </View>
+      {finds.map((find, i) => (
+        <View key={`${find.title}:${i}`} style={styles.findRow}>
+          <Text variant="body" numberOfLines={2}>
+            {find.title}
+          </Text>
+          {find.reason ? (
+            <Text variant="caption" color={t.muted} numberOfLines={1} style={{ marginTop: 2 }}>
+              {find.reason}
+            </Text>
+          ) : null}
+        </View>
+      ))}
+      <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
+        {provisional
+          ? 'From your library and its references — still checking these against your topic.'
+          : 'Ranked so far; the final list is still being assembled.'}
+      </Text>
+    </View>
   );
 }
 
@@ -491,19 +524,21 @@ function SuggestionCard({
 
 // ---------- bring a specific paper (name / arXiv link / PDF link) ----------
 
-function SpecificPaper({ pid }: { pid: string }) {
+// Adding a known paper by title / arXiv id / DOI / PDF link. Shared by the compact field under
+// the search box and the full card the `?specific=1` deep link opens, so the reference parsing
+// below — which is subtle and was got wrong once — exists in exactly one place.
+function useAddByReference(pid: string | null) {
   const router = useRouter();
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-  const addPaper = useAddPaper(pid);
-  const textDraft = usePersistedDraft(draftKey(pid, 'discover', 'specific-paper'), '');
+  const addPaper = useAddPaper(pid ?? '');
+  const textDraft = usePersistedDraft(
+    pid ? draftKey(pid, 'discover', 'specific-paper') : null, '');
   const text = textDraft.value;
   const setText = textDraft.setValue;
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
     const s = text.trim();
-    if (!s) return;
+    if (!s || !pid) return;
     setErr(null);
     await textDraft.markSubmitted();
     // A paper name adds it by title (retrieval resolves it on open, escalating to the agentic
@@ -541,33 +576,86 @@ function SpecificPaper({ pid }: { pid: string }) {
     }
   }
 
+  return { text, setText, submit, err, pending: addPaper.isPending };
+}
+
+// The compact form, shown under the search box. Replaces a "Have a specific paper? Add by name
+// or link" button that sat below the results: it was a second call to action competing with the
+// search, and it stayed on screen while a search was running, when it is the last thing the
+// reader wants. Now it is an "or" beneath the query, and it disappears during a run.
+function AddByReferenceInline({ add }: { add: ReturnType<typeof useAddByReference> }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
   return (
-    <Card style={{ marginTop: space.xl, gap: space.sm }}>
-      <Text variant="title">Have a specific paper?</Text>
+    <View style={{ marginTop: space.md }}>
+      <View style={styles.orRow}>
+        <View style={styles.orLine} />
+        <Text variant="overline" color={t.muted}>
+          or
+        </Text>
+        <View style={styles.orLine} />
+      </View>
+      <TextInput
+        value={add.text}
+        onChangeText={add.setText}
+        style={styles.referenceInput}
+        placeholder="Add a paper you already know — title, DOI, or arXiv link"
+        placeholderTextColor={t.muted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="go"
+        onSubmitEditing={add.submit}
+      />
+      {add.text.trim() ? (
+        <Button
+          title="Add to library"
+          variant="ghost"
+          onPress={add.submit}
+          loading={add.pending}
+          style={{ marginTop: space.xs }}
+        />
+      ) : null}
+      {add.err ? (
+        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
+          {add.err}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+// The full card, kept for the `?specific=1` deep link, where adding a known paper IS the task.
+function SpecificPaper({ add }: { add: ReturnType<typeof useAddByReference> }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+
+  return (
+    <Card style={{ gap: space.sm }}>
+      <Text variant="title">Add a paper you already know</Text>
       <Text variant="caption">
         Paste a paper title, an arXiv link or id, or a direct PDF link. It’s added to your
         library and fetched when you open it — with an agentic web hunt if it’s hard to find.
       </Text>
       <TextInput
-        value={text}
-        onChangeText={setText}
+        value={add.text}
+        onChangeText={add.setText}
         style={styles.specificInput}
         placeholder="Paste arXiv link, DOI, or title"
         placeholderTextColor={t.muted}
         autoCapitalize="none"
         autoCorrect={false}
-        onSubmitEditing={submit}
+        onSubmitEditing={add.submit}
       />
       <Button
         title="Add to library"
         variant="ghost"
-        onPress={submit}
-        loading={addPaper.isPending}
-        disabled={!text.trim()}
+        onPress={add.submit}
+        loading={add.pending}
+        disabled={!add.text.trim()}
       />
-      {err ? (
+      {add.err ? (
         <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
-          {err}
+          {add.err}
         </Text>
       ) : null}
     </Card>
@@ -576,6 +664,30 @@ function SpecificPaper({ pid }: { pid: string }) {
 
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   body: { padding: space.md, paddingBottom: space.xxl },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm },
+  orLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.line2 },
+  referenceInput: {
+    backgroundColor: t.elevated,
+    borderWidth: 1,
+    borderColor: t.line2,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    color: t.text,
+    fontFamily: fonts.body,
+    fontSize: 14,
+  },
+  finds: {
+    marginTop: space.sm,
+    padding: space.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
+    gap: space.xs,
+  },
+  findsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: space.xs },
+  findRow: { paddingVertical: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.line2 },
   goalsInput: {
     backgroundColor: t.elevated,
     borderWidth: 1,
