@@ -394,8 +394,16 @@ the call is what costs money:
 | PDF / XML download | $0.01 | not used |
 
 Daily free allowance is **$0.10/day with no key, and $1/day with a free API key** — 10×, free to
-obtain, passed as an `api_key=` **query parameter**. We send no key today, only a `mailto:`
-User-Agent (`openalex._headers`).
+obtain, passed as an `api_key=` **query parameter**.
+
+**The key is wired and live (PR #304, 2026-07-30).** `openalex.api_key()` reads `OPENALEX_API_KEY`
+then the settings document's `openalex_api_key` (operator-owned); `openalex.make_client()` is the
+one constructor and attaches it via `httpx.Auth`, **not** client `params=` — httpx lets a
+request-level param of the same name override a client-level one, so `params=` would let any call
+site silently blank the key. Production carries it as a Fly secret, verified on the machine (free
+by-id → 1969, metered search → 224356). **Staging does not have it.** The secret was staged with
+`flyctl secrets set --stage` and applied by the deploy, costing one machine restart instead of two —
+worth repeating whenever a secret and a deploy land together, since a restart kills in-flight jobs.
 
 **So the `429 "…costs $0.001 but you only have $0"` was self-inflicted, not a policy wall.**
 `citations.OPENALEX_MAX_LOOKUPS = 120` metered *searches* is $0.12 — one enrichment pass exhausts
@@ -404,9 +412,10 @@ looked permanently dead. Re-tested unkeyed on a fresh day: search returned **200
 
 Two consequences for planning:
 
-1. **A free API key is the whole fix for the budget**, and identifier lookups do not draw it down at
-   all. Affiliation enrichment (discovery's evidence step) uses the **free** by-id shape, so with a
-   key it can run at effectively unlimited volume.
+1. **The key was the whole fix for the budget**, and identifier lookups do not draw it down at
+   all. Affiliation enrichment (discovery's evidence step) uses the **free** by-id shape, so it can
+   run at effectively unlimited volume. Note `/works?filter=` is $0.0001 — **10× cheaper than
+   search** and currently unused by us; it is the obvious shape for a high-recall funnel.
 2. **Independent bug: arXiv DOIs resolve unreliably.** `openalex._work_lookup_id` maps an arXiv id
    to `doi:10.48550/arXiv.<id>`. Of five well-known papers, **two 404** under that DOI — including
    "Attention Is All You Need", which *is* in OpenAlex (`W2626778328`, 6,598 citations) under a
