@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 
 import httpx
+import pytest
 from app import citations, semantic_scholar
 from app.citations import _fetch_missing as real_fetch_missing
 
@@ -345,3 +346,206 @@ def test_an_exhausted_time_budget_stops_the_stage_immediately(monkeypatch):
                        sleep=lambda _s: None, openalex_client=_Slow())
 
     assert len(calls) == 1, f"budget exhausted after the first call, got {len(calls)}"
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # The real shape from a build: the citation appended to the title. Raw, these 404.
+        ("Language Models are Unsupervised Multitask Learners (Radford et al., 2019)",
+         "Language Models are Unsupervised Multitask Learners"),
+        ("Improving Language Understanding by Generative Pre-Training (Radford et al., 2018)",
+         "Improving Language Understanding by Generative Pre-Training"),
+        ("Attention Is All You Need (Vaswani et al.)", "Attention Is All You Need"),
+        ("Deep Residual Learning for Image Recognition (2015)",
+         "Deep Residual Learning for Image Recognition"),
+        # A parenthetical that is PART of the title has neither marker and must survive: stripping
+        # it would send a less specific query and match a neighbouring paper.
+        ("Language Models are Few-Shot Learners (GPT-3)",
+         "Language Models are Few-Shot Learners (GPT-3)"),
+        ("Attention Is All You Need (Extended Abstract)",
+         "Attention Is All You Need (Extended Abstract)"),
+        # Only a TRAILING annotation goes; one mid-title is content.
+        ("A Study of BERT (2018) and Its Successors", "A Study of BERT (2018) and Its Successors"),
+        ("Deep Residual Learning for Image Recognition",
+         "Deep Residual Learning for Image Recognition"),
+        ("", ""),
+    ],
+)
+def test_lookup_title_strips_only_trailing_annotations(stored, expected):
+    assert citations.lookup_title(stored) == expected
+
+
+def test_rebuild_does_not_erase_counts_the_cache_no_longer_holds():
+    """A run that resolves nothing must not wipe counts an earlier run established.
+
+    Scope is narrow and worth stating: the normal build path constructs fresh nodes, so this
+    branch does not fire there — the persisted cache is the durable store. It protects callers
+    that re-annotate nodes ALREADY holding counts, which is how a maintenance re-run over a real
+    402-node graph turned 240 resolved into 186.
+    """
+    nodes = [
+        {"id": "known", "title": "A Paper With A Sufficiently Long Title", "citation_count": 1234},
+        {"id": "fresh", "title": "Another Paper With A Long Enough Title"},
+    ]
+    citations.annotate_nodes(nodes, {}, client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(429))))
+
+    assert nodes[0]["citation_count"] == 1234, "an unanswered run erased a known count"
+    assert nodes[1]["citation_count"] is None
+
+
+def test_cached_none_still_clears_a_stale_count():
+    """The other half: a cached None IS authoritative and must be able to clear a count.
+
+    Without this, the preservation above would pin a wrong number forever — exactly what
+    `cache_key` exists to prevent when a paper's identifier is corrected.
+    """
+    node = {"id": "n1", "title": "A Paper With A Sufficiently Long Title", "citation_count": 999}
+    cache = {citations.cache_key(node): None}
+    citations.annotate_nodes([node], cache, client=httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(500))))
+
+    assert node["citation_count"] is None
+
+
+def test_word_breaks_are_not_ignored_even_though_it_costs_a_real_match():
+    """Deliberate trade, recorded so it is not "fixed" again.
+
+    Ignoring word breaks would recover "pretraining" vs "Pre-training" (a real BART match lost in
+    a live sample). It also makes "Resigning" == "Re-signing" and "A therapist's guide" == "A the
+    rapist's guide" — different words, and a wrong count is undetectable downstream while a
+    missing one is obvious."""
+    assert not citations._same_paper_title("Resigning contracts", "Re-signing contracts")
+    assert not citations._same_paper_title("A therapist's guide", "A the rapist's guide")
+
+
+def test_ignoring_word_breaks_still_rejects_a_near_miss():
+    """The reason the gate is exact: a near miss is more dangerous than a distant one, and this
+    relaxation must not open one. Any added or altered word changes the concatenation too."""
+    assert not citations._same_paper_title(
+        "Attention Is All You Need", "Attention Is Not All You Need")
+    assert not citations._same_paper_title(
+        "A Survey of Large Language Models", "A Survey of Large Language Models for Medicine")
+    assert not citations._same_paper_title(
+        "Pareto probing: Trading off accuracy for complexity",
+        "Pareto Probing: Trading-Off Accuracy and Complexity")
+
+
+def test_title_lookup_requests_only_supported_fields():
+    """`matchScore` is not a field this endpoint supports, and S2 answers an unsupported field
+    with 400 — so requesting it disabled EVERY title lookup, on every build, silently."""
+    seen: list[str] = []
+
+    def handler(request):
+        seen.append(dict(request.url.params).get("fields", ""))
+        return httpx.Response(200, json={"data": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([_node("a")], {}, client, sleep=lambda s: None)
+
+    assert seen, "no title lookup was attempted"
+    assert "matchScore" not in seen[0]
+
+
+def test_a_broken_request_is_reported_and_stops_the_step(caplog):
+    """A 400 is a broken request, not a missing paper. Treating it like a miss meant the step
+    burned its whole budget learning nothing and left no trace of why."""
+    nodes = [_node("a", sig=3), _node("b", sig=2), _node("c", sig=1)]
+    calls = {"n": 0}
+    cache: dict = {}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(400, json={"error": "Unrecognized or unsupported fields: [nope]"})
+
+    with caplog.at_level(logging.WARNING), \
+            httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
+
+    assert calls["n"] == 1, "kept going after a broken request"
+    assert "400" in caplog.text
+    # Nothing may be recorded: a broken request is not evidence about any paper.
+    assert cache == {}
+
+
+def test_the_stored_title_is_tried_before_the_cleaned_one():
+    """A trailing parenthetical can be part of the REAL title — "The Blessings of Multiple Causes:
+    A Reply to Ogburn et al. (2019)" is an actual paper. Asking with the cleaned form first would
+    miss it, and could match a different paper genuinely called "…A Reply to Ogburn et al."."""
+    stored = "The Blessings of Multiple Causes: A Reply to Ogburn et al. (2019)"
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(dict(request.url.params)["query"])
+        return httpx.Response(200, json={"data": [{"title": stored, "citationCount": 42}]})
+
+    node = {"id": "b", "title": stored, "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], cache, client, sleep=lambda s: None)
+
+    assert sent == [stored], "the stored title must be tried first, and alone when it matches"
+    assert cache[citations.cache_key(node)] == 42
+
+
+def test_the_cleaned_title_is_tried_only_after_the_stored_one_misses():
+    stored = "Language Models are Unsupervised Multitask Learners (Radford et al., 2019)"
+    canonical = "Language Models are Unsupervised Multitask Learners"
+    sent: list[str] = []
+
+    def handler(request):
+        q = dict(request.url.params)["query"]
+        sent.append(q)
+        if q == stored:
+            return httpx.Response(404, json={"error": "Title match not found"})
+        return httpx.Response(200, json={"data": [{"title": canonical, "citationCount": 29621}]})
+
+    node = {"id": "gpt2", "title": stored, "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], cache, client, sleep=lambda s: None)
+
+    assert sent == [stored, canonical]
+    assert cache[citations.cache_key(node)] == 29621
+
+
+def test_a_transient_5xx_skips_the_paper_but_not_the_rest_of_the_pass():
+    """A 500 is about one request; a 4xx is about our code. Breaking on both let one flaky
+    response cost the other 399 lookups, and title match is the only route these papers have."""
+    nodes = [_node("a", sig=3), _node("b", sig=2), _node("c", sig=1)]
+    seen: list[str] = []
+
+    def handler(request):
+        seen.append(dict(request.url.params)["query"])
+        if len(seen) == 1:
+            return httpx.Response(503, text="upstream unavailable")
+        return httpx.Response(200, json={"data": [{"title": "A sufficiently long paper title",
+                                                   "citationCount": 7}]})
+
+    cache: dict = {}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing(nodes, cache, client, sleep=lambda s: None)
+
+    assert len(seen) == 3, "a transient failure ended the whole pass"
+    assert sum(1 for v in cache.values() if v == 7) == 2
+
+
+def test_a_title_too_generic_to_identify_a_paper_is_not_looked_up():
+    """"Artificial Intelligence" names hundreds of papers; whichever the index ranks first would
+    be cached as this node's count and never revisited."""
+    called = {"n": 0}
+
+    def handler(request):
+        called["n"] += 1
+        return httpx.Response(200, json={"data": [{"title": "Artificial Intelligence",
+                                                   "citationCount": 12345}]})
+
+    node = {"id": "ai", "title": "Artificial Intelligence", "kind": "external",
+            "significant_cited_by_count": 0, "cited_by_project_count": 1}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        real_fetch_missing([node], {}, client, sleep=lambda s: None)
+
+    assert called["n"] == 0
