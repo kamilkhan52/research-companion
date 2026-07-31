@@ -566,3 +566,83 @@ def test_concurrent_hides_lose_no_entries(temp_project):
     for t in threads:
         t.join()
     assert len(discovery.load_hidden()) == 8
+
+
+def test_the_gate_never_fabricates_a_model_rejection(temp_project):
+    """The deterministic gate's own drops must not be written to the ledger as cheap-model
+    rejections. They were, and the gate then honoured them on later runs — so a paper the user
+    un-hid could never come back, and an already-known paper stayed suppressed even after being
+    removed from the reading list. Nothing surfaced the mistake; the ledger simply looked right."""
+    from app import discovery_ledger
+
+    def search(query, n):
+        return [_cand("7777.00001", "Kept"), _cand("7777.00002", "HiddenByUser")]
+
+    discovery.hide_candidate({"arxiv_id": "7777.00002", "title": "HiddenByUser"})
+
+    list(discovery.run_discovery(
+        "goals", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=fake_cheap_llm({"Kept": 9}), library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=fake_citations({"7777.00001": 10, "7777.00002": 10})))
+
+    ledger = discovery_ledger.load()
+    hidden_entry = discovery_ledger.get(ledger, "arxiv:7777.00002")
+    assert hidden_entry is not None, "the candidate should still be remembered as seen"
+    assert hidden_entry.get("cheap") is None, (
+        "the gate's drop was recorded as a cheap-model verdict")
+    assert not discovery_ledger.cached_cheap_drop(hidden_entry, model=discovery.CHEAP_MODEL,
+                                                  profile="anything")
+
+
+def test_an_unchanged_rerun_does_not_re_buy_the_screening_it_already_paid_for(temp_project):
+    """The ledger's whole purpose. Without reuse a rerun pays for every batch a second time."""
+    def search(query, n):
+        return [_cand("7777.00001", "A"), _cand("7777.00002", "B")]
+
+    calls = {"n": 0}
+    scoring = fake_cheap_llm({"A": 8, "B": 7})
+
+    def counting_cheap(system, user, max_tokens):
+        calls["n"] += 1
+        return scoring(system, user, max_tokens)
+
+    def run():
+        return list(discovery.run_discovery(
+            "goals", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+            cheap_llm_fn=counting_cheap, library_fn=lambda: [],
+            recall_fn=lambda papers: ([], {"degraded": []}),
+            citations_fn=fake_citations({"7777.00001": 5, "7777.00002": 5})))[-1]["result"]
+
+    first = run()
+    after_first = calls["n"]
+    second = run()
+
+    assert after_first > 0
+    assert calls["n"] == after_first, "the rerun re-bought screening it had already cached"
+    assert second["audit"]["title_triage"]["reused"] == 2
+    assert second["audit"]["abstract_scoring"]["reused"] == 2
+    assert [s["title"] for s in second["suggestions"]] == [s["title"] for s in first["suggestions"]]
+
+
+def test_the_triage_cap_does_not_let_one_lane_starve_another():
+    """Goes through the stage, not the helper. Grounded candidates are merged first and a single
+    well-cited anchor can contribute hundreds of them, so applying the cap in input order fills
+    the whole budget from one lane and silently deletes the lexical results — the only lane a
+    project with no library has at all."""
+    grounded = [{"title": f"grounded {i}", "abstract": "a", "channels": ["cites"]}
+                for i in range(discovery.MAX_AFTER_TITLE_TRIAGE + 100)]
+    lexical = [{"title": f"lexical {i}", "abstract": "a", "channels": ["lexical"]}
+               for i in range(50)]
+
+    def keep_everything(system, user, max_tokens):
+        return "\n".join(f"{line.split('|', 1)[0]}|K|METHOD" for line in user.splitlines()
+                         if line.split("|", 1)[0].isdigit())
+
+    kept, audit = discovery.triage_titles(grounded + lexical, "FOCUS: x", keep_everything)
+
+    lanes = {c["channels"][0] for c in kept}
+    assert lanes == {"cites", "lexical"}, "one lane was starved out of the cap entirely"
+    assert len(kept) == discovery.MAX_AFTER_TITLE_TRIAGE
+    assert audit["kept"] == len(kept)          # the audit reports what went forward, not pre-cap
+    assert audit["dropped_by_cap"] > 0

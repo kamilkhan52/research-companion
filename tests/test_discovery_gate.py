@@ -187,3 +187,17 @@ def test_seeing_a_candidate_again_updates_rather_than_duplicates_it():
     assert entry["times_seen"] == 2
     assert entry["channels"] == ["cites", "graph"]
     assert entry["first_seen"] == "2026-07-01" and entry["last_seen"] == "2026-07-30"
+
+
+# ---------- isolation (found the hard way) ----------
+
+def test_per_project_state_never_resolves_into_the_developers_working_tree():
+    """A test without `temp_project` used to resolve `config.state_dir()` to `<repo>/project`,
+    because `project_dir` falls back to the legacy directory when no project is scoped. It wrote
+    a discovery ledger there and then READ it back on later runs — stale KEEP verdicts silently
+    satisfied a screening stage, so the pipeline skipped work and the failure looked like a bug
+    in the code under test. The conftest fixture closes it; this pins it shut."""
+    from app import config
+    resolved = config.state_dir().resolve()
+    repo_project = (config.BASE_DIR / "project").resolve()
+    assert repo_project not in resolved.parents and resolved != repo_project, resolved

@@ -51,7 +51,14 @@ def _app_state_is_never_the_real_one(tmp_path_factory, monkeypatch):
     # harmless while per-project state was only ever written behind `temp_project`; discovery's
     # candidate ledger made it visible by persisting a file there on an ordinary unit test.
     # Redirecting by default makes the isolation a property of the harness, not of remembering.
-    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path_factory.mktemp("projects"))
+    projects_root = tmp_path_factory.mktemp("projects")
+    monkeypatch.setattr(config, "PROJECTS_ROOT", projects_root)
+    # Redirecting PROJECTS_ROOT alone is NOT enough. With no project scoped, `config.project_dir`
+    # falls back to `BASE_DIR / "project"` — the developer's own working tree — whenever that
+    # legacy directory exists, which it does in this repo. So a test that resolves per-project
+    # state without `temp_project` wrote there and, worse, READ state accumulated by earlier runs:
+    # a stale discovery ledger silently satisfied a screening stage and made the pipeline skip it.
+    monkeypatch.setattr(config, "_LEGACY_PROJECT_DIR", str(projects_root / "legacy"))
 
 
 @pytest.fixture(autouse=True)

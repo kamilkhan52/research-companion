@@ -72,6 +72,12 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
     anchors: list[dict] = []
     unresolved: list[tuple[str, str]] = []       # (slug, arxiv_id) needing the S2 hop
 
+    # Resolution is free per call but NOT free in time: an unresolved paper costs an OpenAlex
+    # lookup and possibly a Semantic Scholar hop through the shared ~1 req/s pacer. A 400-paper
+    # library would therefore spend several minutes resolving anchors that `chase_citations` was
+    # only ever going to use MAX_ANCHORS of. Cached anchors stay free, so they are never budgeted.
+    budget = MAX_ANCHORS
+
     for paper in papers:
         slug = getattr(paper, "slug", "") or ""
         arxiv_id = getattr(paper, "arxiv_id", "") or ""
@@ -82,8 +88,9 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
             anchors.append({"slug": slug, "openalex_id": cached,
                             "title": getattr(paper, "title", "") or ""})
             continue
-        if not arxiv_id:
+        if not arxiv_id or budget <= 0:
             continue
+        budget -= 1
         work = _get_work(client, f"doi:{_arxiv_doi(arxiv_id)}")
         if work:
             cache[slug] = work["id"]
@@ -297,6 +304,29 @@ def graph_recommendations(graph_data: dict, limit: int = 200) -> list[dict]:
 
 # ---------- merge ----------
 
+def _identity_with_openalex(candidate: dict, identity_keys) -> list[str]:
+    """The pipeline's identity keys plus OpenAlex's own id.
+
+    Forward-citation results often carry no arXiv id and sometimes no DOI, so without this they
+    would fall back to matching on title alone — the weakest and most collision-prone alias.
+    """
+    keys = list(identity_keys(candidate))
+    work = str(candidate.get("openalex_id") or "").rsplit("/", 1)[-1]
+    if work:
+        keys.insert(0, f"openalex:{work.lower()}")
+    return list(dict.fromkeys(keys))
+
+
+def _strong_ids_conflict(a: dict, b: dict) -> bool:
+    """Whether two rows carry the SAME kind of strong identifier with different values."""
+    for field in ("doi", "arxiv_id", "openalex_id"):
+        left = str(a.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+        right = str(b.get(field) or "").strip().lower().rsplit("/", 1)[-1]
+        if left and right and left != right:
+            return True
+    return False
+
+
 def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> list[dict]:
     """Coalesce candidates from several channels, unioning channels and provenance.
 
@@ -308,8 +338,14 @@ def merge_candidates(groups: list[list[dict]], *, identity_keys, merge_fn) -> li
     order: list[str] = []
     for group in groups:
         for candidate in group:
-            keys = identity_keys(candidate)
+            keys = _identity_with_openalex(candidate, identity_keys)
             hit = next((merged[k] for k in keys if k in merged), None)
+            # A title alias is enough to FIND a possible match but not to trust one: distinct
+            # papers share exact titles, and merging them would blend two works into a hybrid
+            # whose screening verdict, citations and provenance describe neither. When both rows
+            # carry a strong identifier and they disagree, treat them as different papers.
+            if hit is not None and _strong_ids_conflict(hit, candidate):
+                hit = None
             if hit is None:
                 stored = dict(candidate)
                 merged_keys = keys or [f"title:{candidate.get('title', '')}"]

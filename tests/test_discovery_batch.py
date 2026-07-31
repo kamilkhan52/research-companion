@@ -142,3 +142,70 @@ def test_a_transport_failure_in_one_batch_does_not_discard_the_others():
     assert sorted(values) == [3, 4]                   # the second batch still produced verdicts
     assert audit["failed_open"] == 2
     assert any("TimeoutError" in note for note in audit["degraded"])
+
+
+# ---------- lane fairness and merge safety (Sol review, PR #306) ----------
+
+def test_one_recall_lane_cannot_starve_another_at_the_cap():
+    """A single well-cited anchor can contribute hundreds of forward citations, and grounded
+    candidates are merged first. Applying the cap in input order would fill the entire budget
+    from one lane and silently delete the lexical results — the only lane a project with no
+    library has at all."""
+    from app.discovery import _interleave_by_lane
+    grounded = [{"title": f"g{i}", "channels": ["cites"]} for i in range(500)]
+    lexical = [{"title": f"l{i}", "channels": ["lexical"]} for i in range(50)]
+
+    capped = _interleave_by_lane(grounded + lexical, 100)
+    lanes = {c["channels"][0] for c in capped}
+    assert lanes == {"cites", "lexical"}
+    assert sum(1 for c in capped if c["channels"][0] == "lexical") >= 40
+    assert len(capped) == 100
+
+
+def test_a_cap_larger_than_the_input_changes_nothing():
+    from app.discovery import _interleave_by_lane
+    items = [{"title": "a", "channels": ["cites"]}, {"title": "b", "channels": ["lexical"]}]
+    assert _interleave_by_lane(items, 10) == items
+
+
+def test_two_papers_sharing_a_title_are_not_merged_into_a_hybrid():
+    """Distinct works share exact titles. Merging them would blend two papers into one row whose
+    screening verdict, citations and provenance describe neither."""
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    same_title = "A Study of Scaling"
+    a = {"title": same_title, "doi": "10.1/aaa", "citation_count": 10}
+    b = {"title": same_title, "doi": "10.1/bbb", "citation_count": 9000}
+
+    merged = discovery_recall.merge_candidates(
+        [[a], [b]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 2, "two different DOIs were collapsed into one candidate"
+    assert {c["doi"] for c in merged} == {"10.1/aaa", "10.1/bbb"}
+
+
+def test_the_same_paper_from_two_channels_merges_and_unions_its_provenance():
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    from_cites = {"title": "T", "doi": "10.1/x", "channels": ["cites"],
+                  "provenance": [{"channel": "cites"}], "sources": ["openalex"]}
+    from_lexical = {"title": "T", "doi": "10.1/x", "channels": ["lexical"],
+                    "provenance": [{"channel": "lexical"}], "sources": ["arxiv"]}
+
+    merged = discovery_recall.merge_candidates(
+        [[from_cites], [from_lexical]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 1
+    assert set(merged[0]["channels"]) == {"cites", "lexical"}
+    assert len(merged[0]["provenance"]) == 2
+
+
+def test_an_openalex_only_row_matches_on_its_work_id_rather_than_its_title():
+    from app import discovery_recall
+    from app.discovery import _identity_keys, _merge_candidate
+
+    a = {"title": "Same Words", "openalex_id": "https://openalex.org/W1", "sources": ["openalex"]}
+    b = {"title": "Same Words", "openalex_id": "https://openalex.org/W2", "sources": ["openalex"]}
+    merged = discovery_recall.merge_candidates(
+        [[a], [b]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    assert len(merged) == 2

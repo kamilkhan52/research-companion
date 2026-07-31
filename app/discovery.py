@@ -713,10 +713,53 @@ def _profile_text(goals: str, papers: list) -> str:
     return "\n".join(lines)
 
 
-def triage_titles(candidates: list[dict], profile: str, cheap_llm) -> tuple[list[dict], dict]:
+def _interleave_by_lane(candidates: list[dict], limit: int) -> list[dict]:
+    """Take `limit` candidates round-robin across recall lanes, so no lane can starve the others.
+
+    Order alone is not a safe way to apply a cap here. Grounded candidates are merged first and a
+    single well-cited anchor can contribute hundreds of forward citations, so a plain `[:limit]`
+    would fill the whole budget from one lane and silently delete the lexical results — which are
+    the only lane a project with no library has at all.
+    """
+    if len(candidates) <= limit:
+        return candidates
+    lanes: dict[str, list[dict]] = {}
+    for candidate in candidates:
+        lane = (candidate.get("channels") or ["lexical"])[0]
+        lanes.setdefault(lane, []).append(candidate)
+
+    out: list[dict] = []
+    queues = list(lanes.values())
+    position = 0
+    while len(out) < limit and any(position < len(q) for q in queues):
+        for queue in queues:
+            if position < len(queue):
+                out.append(queue[position])
+                if len(out) >= limit:
+                    break
+        position += 1
+    return out
+
+
+def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: dict | None = None,
+                  cheap_model: str = "", profile_hash: str = "") -> tuple[list[dict], dict]:
     """Stage B — drop the obviously irrelevant on titles alone, biased hard toward keeping."""
     if not candidates:
         return [], {"stage": "title_triage", "items": 0}
+
+    # A candidate this exact model+profile already KEPT does not need re-judging. Reusing it is
+    # the ledger's whole purpose: without this a rerun re-buys every batch it already paid for.
+    cached_keep: dict[int, str] = {}
+    to_judge: list[dict] = []
+    for candidate in candidates:
+        entry = discovery_ledger.get(ledger or {}, _candidate_key(candidate))
+        cheap = (entry or {}).get("cheap") if entry else None
+        if (isinstance(cheap, dict) and cheap.get("verdict") == "K"
+                and cheap.get("model") == cheap_model
+                and cheap.get("profile_hash") == profile_hash):
+            cached_keep[id(candidate)] = str(cheap.get("tag") or "")
+        else:
+            to_judge.append(candidate)
 
     system = prompts.render("discover_title_triage") + "\n\n" + profile
 
@@ -725,13 +768,19 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm) -> tuple[list
         return f"{index}|{year}|{str(candidate.get('title') or '')[:220]}"
 
     values, audit = discovery_batch.run_batches(
-        candidates, batch_size=TITLE_BATCH_SIZE, system=system, render_item=render,
+        to_judge, batch_size=TITLE_BATCH_SIZE, system=system, render_item=render,
         llm_fn=lambda s, u: cheap_llm(s, u, TITLE_TRIAGE_MAX_TOKENS),
         min_fields=1, stage="title_triage")
+    audit["reused"] = len(cached_keep)
 
+    verdicts = {id(c): (values.get(i), True) for i, c in enumerate(to_judge, 1)}
     kept: list[dict] = []
-    for index, candidate in enumerate(candidates, 1):
-        fields = values.get(index)
+    for candidate in candidates:
+        if id(candidate) in cached_keep:
+            candidate["triage_tag"] = cached_keep[id(candidate)]
+            kept.append(candidate)
+            continue
+        fields, _ = verdicts.get(id(candidate), (None, False))
         # No answer means KEEP: an unjudged paper is uncertainty, and the whole point of the
         # instruction "when uncertain, reply K" is that this stage must not delete on silence.
         verdict = (fields[0].upper() if fields else "K")[:1]
@@ -742,14 +791,36 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm) -> tuple[list
         candidate["triage_tag"] = tag
         kept.append(candidate)
 
-    audit["kept"] = len(kept)
-    return kept[:MAX_AFTER_TITLE_TRIAGE], audit
+    capped = _interleave_by_lane(kept, MAX_AFTER_TITLE_TRIAGE)
+    audit["kept"] = len(capped)          # what actually goes forward, not the pre-cap count
+    audit["dropped_by_cap"] = len(kept) - len(capped)
+    return capped, audit
 
 
-def score_abstracts(candidates: list[dict], profile: str, cheap_llm) -> tuple[list[dict], dict]:
+def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
+                    ledger: dict | None = None, cheap_model: str = "",
+                    profile_hash: str = "") -> tuple[list[dict], dict]:
     """Stage C — a 0-10 relevance score and a role tag from the abstract."""
     if not candidates:
         return [], {"stage": "abstract_scoring", "items": 0}
+
+    # Same reuse as the title stage, and it matters more here: this is the larger of the two
+    # per-item prompts, so an unchanged rerun would otherwise re-buy the most expensive screen.
+    to_judge: list[dict] = []
+    reused = 0
+    for candidate in candidates:
+        entry = discovery_ledger.get(ledger or {}, _candidate_key(candidate))
+        cached = (entry or {}).get("abstract") if entry else None
+        if (isinstance(cached, dict) and cached.get("model") == cheap_model
+                and cached.get("profile_hash") == profile_hash
+                and isinstance(cached.get("relevance"), int)):
+            candidate["relevance"] = float(cached["relevance"])
+            candidate["role"] = str(cached.get("role") or "")
+            candidate.setdefault("screen_note", "")
+            reused += 1
+        else:
+            to_judge.append(candidate)
+    candidates_to_score = to_judge
 
     system = prompts.render("discover_abstract_scoring") + "\n\n" + profile
 
@@ -766,11 +837,12 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm) -> tuple[li
                 f"{str(candidate.get('abstract') or '')[:ABSTRACT_CHARS_FOR_SCREENING]}")
 
     values, audit = discovery_batch.run_batches(
-        candidates, batch_size=ABSTRACT_BATCH_SIZE, system=system, render_item=render,
+        candidates_to_score, batch_size=ABSTRACT_BATCH_SIZE, system=system, render_item=render,
         llm_fn=lambda s, u: cheap_llm(s, u, ABSTRACT_SCORING_MAX_TOKENS),
         min_fields=2, stage="abstract_scoring")
+    audit["reused"] = reused
 
-    for index, candidate in enumerate(candidates, 1):
+    for index, candidate in enumerate(candidates_to_score, 1):
         fields = values.get(index) or []
         candidate["relevance"] = _clamped_score(fields[0] if fields else None)
         candidate["role"] = (fields[1].upper() if len(fields) > 1 else "") or ""
@@ -904,15 +976,21 @@ def run_discovery(
 
     profile = _profile_text(goals, papers)
     yield {"type": "triage", "count": len(survivors)}
-    survivors, triage_audit = triage_titles(survivors, profile, cheap_llm)
-    _record_verdicts(ledger, survivors, candidates, kind="cheap", model=CHEAP_MODEL,
+    gated = survivors                       # the population the cheap screen actually judged
+    triaged, triage_audit = triage_titles(gated, profile, cheap_llm, ledger=ledger,
+                                          cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
+    # ONLY over `gated`. Passing the pre-gate list here recorded a fabricated model rejection for
+    # every candidate the deterministic gate had removed — including hidden ones — and the gate
+    # then honoured that rejection on later runs, so un-hiding a paper could never bring it back.
+    _record_verdicts(ledger, triaged, gated, kind="cheap", model=CHEAP_MODEL,
                      profile=profile_hash, today=today)
 
-    yield {"type": "citations", "count": len(survivors)}
-    add_citation_counts(survivors, citations_fn)
+    yield {"type": "citations", "count": len(triaged)}
+    add_citation_counts(triaged, citations_fn)
 
-    yield {"type": "scoring", "count": len(survivors)}
-    scored, abstract_audit = score_abstracts(survivors, profile, cheap_llm)
+    yield {"type": "scoring", "count": len(triaged)}
+    scored, abstract_audit = score_abstracts(triaged, profile, cheap_llm, ledger=ledger,
+                                             cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
     scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
     scored = scored[:MAX_AFTER_ABSTRACTS]
 
@@ -920,7 +998,7 @@ def run_discovery(
     authorships_fn(scored)
 
     ranked = blend_and_rank(scored)
-    _record_verdicts(ledger, ranked, candidates, kind="abstract", model=CHEAP_MODEL,
+    _record_verdicts(ledger, ranked, triaged, kind="abstract", model=CHEAP_MODEL,
                      profile=profile_hash, today=today)
     _persist_ledger(ledger)
 
