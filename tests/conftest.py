@@ -45,6 +45,13 @@ def _app_state_is_never_the_real_one(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(config, "SETTINGS_FILE", root / "settings.json")
     from app import audio_jobs
     monkeypatch.setattr(audio_jobs, "AUDIO_DIR", root / "audio")
+    # PROJECTS_ROOT gets the same treatment, and for the same reason. `temp_project` redirects it
+    # per-test, but a test that touches per-PROJECT state without that fixture resolves
+    # `config.state_dir()` to `<repo>/project/.state` — the developer's own tree. That was
+    # harmless while per-project state was only ever written behind `temp_project`; discovery's
+    # candidate ledger made it visible by persisting a file there on an ordinary unit test.
+    # Redirecting by default makes the isolation a property of the harness, not of remembering.
+    monkeypatch.setattr(config, "PROJECTS_ROOT", tmp_path_factory.mktemp("projects"))
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +90,17 @@ def _offline_citations(monkeypatch):
         "retrieve_missing_graph_paper",
         lambda paper, provider: {"needs_confirmation": True, "candidates": []},
     )
+    # Discovery's batched screening stages (slice 1) call a real model through `llm.complete`.
+    # Unlike the stubs above this RAISES rather than no-ops, on purpose: the batch runner fails
+    # open by design, so a silent stub would let a screening test pass while screening nothing —
+    # the test would be measuring the fallback. Tests that exercise a stage inject `cheap_llm_fn`.
+    from app import discovery
+    monkeypatch.setattr(discovery, "_cheap_llm", _refuse_network_llm)
+
+
+def _refuse_network_llm(*_args, **_kwargs):
+    raise AssertionError(
+        "discovery._cheap_llm reached the network in a test — inject cheap_llm_fn instead")
 
 
 @pytest.fixture

@@ -21,13 +21,17 @@ RunFn = Callable[..., "Iterator[dict]"]
 
 @dataclass
 class DiscoveryJob(Job):
-    phase: str = "queries"    # queries | searching | citations | evidence | scoring | done
+    # queries | searching | library | gated | triage | citations | scoring | evidence | done
+    phase: str = "queries"
     goals: str = ""
     focus: str = ""
     queries: list = field(default_factory=list)
     searched: int = 0         # arXiv queries completed / planned
     total_queries: int = 0
     found: int = 0            # unique candidates so far
+    library: int = 0          # papers on the reading list the grounded channels start from
+    gathered: int = 0         # unique candidates after every recall channel is merged
+    screened: int = 0         # survivors of the current funnel stage
     result: dict | None = None
 
     def to_dict(self) -> dict:
@@ -80,6 +84,19 @@ def _apply_event(job: DiscoveryJob, event: dict) -> None:
         job.searched = event["index"]
         job.total_queries = event["total"]
         job.found = event["found"]
+    elif etype == "library":
+        job.phase = "library"
+        job.library = event.get("papers", 0)
+    elif etype == "gathered":
+        job.phase = "gathered"
+        job.gathered = event.get("count", 0)
+        job.found = job.gathered
+    elif etype == "gated":
+        job.phase = "gated"
+        job.screened = event.get("kept", 0)
+    elif etype == "triage":
+        job.phase = "triage"
+        job.screened = event.get("count", job.screened)
     elif etype == "citations":
         job.phase = "citations"
         job.found = event.get("count", job.found)
