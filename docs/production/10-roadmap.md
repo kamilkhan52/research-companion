@@ -346,13 +346,32 @@ asked explicitly to stop before it so it can be designed properly rather than pa
 | 5 | Graph label overlap; constant-size labels; nodes separating on zoom | Shipped — **device-confirmed** (#301) |
 | 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **NEXT, untouched** |
 
-**Citation enrichment, which item 5 depended on, went 46% → 90% (186 → 361 of 402).** The cap was
+**Citation enrichment, which item 5 depended on, went 46% → 92% (186 → 369 of 402, verified after the review changes).** The cap was
 not coverage of the indexes: `app/citations.py` requested `fields=...,matchScore` from Semantic
 Scholar's `paper/search/match`, which rejects an unsupported field with `400 {"error":"Unrecognized
 or unsupported fields: [matchScore]"}`. Every title lookup had been failing — and title lookup is
 the only route for the ~190 nodes with no arXiv id or DOI. The loop handled 200/404/429 and let
 everything else fall through, so a total failure was indistinguishable from "paper not in the
-index". PR #302; non-200/404 now logs and stops.
+index". **PR #302, merged 2026-07-30.** A 4xx now logs and stops the step (it is systemic — our
+request is wrong for every node); a 5xx skips that paper and continues.
+
+Review (Sol) found five real defects in that PR, three introduced by the fix itself, and they are
+worth carrying forward as constraints rather than history:
+
+- **A title is not a paper identity.** Distinct publications share exact titles, so a title must
+  clear a character *and* a word-count floor before it may stand in for one. Matters more now than
+  before: the step went from always-400 to up to 400 successful lookups per build, so a wrong match
+  is cached and never revisited.
+- **Cleaning a title is only safe as a FALLBACK.** A trailing parenthetical can be part of the real
+  title ("The Blessings of Multiple Causes: A Reply to Ogburn et al. (2019)"). The stored title is
+  tried first; the cleaned form only when it finds nothing.
+- **Word breaks are not ignored, deliberately.** Doing so recovers a hyphenation variant
+  ("pretraining" / "Pre-training") but also equates "Resigning" with "Re-signing". A wrong count is
+  undetectable downstream; a missing one is obvious. Tested so it is not re-relaxed.
+
+**The citation cache lives under `citations` in `reference-graph.json`** (`app/graph.py:1254`), not
+`citation_cache` — a stale sibling key that also appears in the document. Maintenance scripts that
+target the wrong one appear to work and change nothing the app reads.
 
 Two facts from that work that change planning assumptions:
 
