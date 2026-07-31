@@ -60,7 +60,7 @@ ABSTRACT_CHARS_FOR_SCORING = 1200
 # verdict means without changing its cache key. Verified 2026-07-30: v4-flash is $0.14/M in,
 # $0.28/M out, passes `llm.PRIVACY_ROUTING`, and reconciles a numbered batch without index drift.
 CHEAP_MODEL = "deepseek/deepseek-v4-flash"
-TITLE_BATCH_SIZE = 150
+TITLE_BATCH_SIZE = 75
 ABSTRACT_BATCH_SIZE = 25
 TITLE_TRIAGE_MAX_TOKENS = 8_000
 ABSTRACT_SCORING_MAX_TOKENS = 8_000
@@ -944,11 +944,20 @@ def run_discovery(
     yield {"type": "queries", "focus": focus, "queries": queries}
 
     lexical: list[dict] = []
-    for event in collect_candidates(queries, search_fn, semantic_search_fn):
-        if event["type"] == "candidates":
-            lexical = event["candidates"]
-        else:
-            yield event
+    lexical_error = ""
+    try:
+        for event in collect_candidates(queries, search_fn, semantic_search_fn):
+            if event["type"] == "candidates":
+                lexical = event["candidates"]
+            else:
+                yield event
+    except DiscoveryError as e:
+        # An empty keyword search is no longer fatal. It was, when keyword search WAS the whole
+        # pipeline; now the library-grounded channels can carry a run on their own, and failing
+        # here would throw away good results because one generated query happened to match
+        # nothing. It still fails below if every channel came back empty.
+        lexical_error = str(e)
+        log.info("lexical lane found nothing (%s); continuing on the grounded channels", e)
 
     # The library-grounded channels. They are additive: a brand-new project has no papers and no
     # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
@@ -958,6 +967,9 @@ def run_discovery(
 
     candidates = discovery_recall.merge_candidates(
         [grounded, lexical], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    if not candidates:
+        raise DiscoveryError(lexical_error or (
+            "No papers found. Try rephrasing the goals with more specific terms."))
     yield {"type": "gathered", "count": len(candidates)}
 
     ledger = discovery_ledger.load()
@@ -973,6 +985,14 @@ def run_discovery(
         titles_match=graph.titles_match, ledger=ledger, cheap_model=CHEAP_MODEL,
         profile=profile_hash, today_year=datetime.now(UTC).year, identity_keys=_identity_keys)
     yield {"type": "gated", "kept": len(survivors), "counts": gate_counts}
+
+    # Early finds. These come from the grounded channels, so they need no model to be worth
+    # showing: a paper reached by forward-citation from the reader's own library, or already
+    # ranked by their reference graph, is interesting on provenance alone. Surfacing them here —
+    # seconds in, rather than after the whole funnel — is what makes a multi-minute run feel like
+    # it is finding things rather than hanging.
+    yield {"type": "finds", "stage": "grounded",
+           "items": _preview(survivors, focus=f"{focus} {goals}", provisional=True)}
 
     profile = _profile_text(goals, papers)
     yield {"type": "triage", "count": len(survivors)}
@@ -993,6 +1013,9 @@ def run_discovery(
                                              cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
     scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
     scored = scored[:MAX_AFTER_ABSTRACTS]
+
+    ranked_so_far = blend_and_rank(scored)
+    yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
 
     yield {"type": "evidence", "count": len(scored)}
     authorships_fn(scored)
@@ -1028,6 +1051,93 @@ def run_discovery(
         "suggestions": ranked,
         "generated_at": _now(),
     }}
+
+
+#: How many live finds the client shows while a run is in flight. Small on purpose: this is a
+#: reassurance signal, not the result list, and every item is polled repeatedly.
+PREVIEW_FINDS = 5
+
+
+_PREVIEW_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "from", "that", "this", "how", "why", "what", "into", "using",
+    "understand", "understanding", "learn", "learning", "about", "study", "based", "towards",
+    "paper", "papers", "research", "work", "approach", "method", "methods", "explore",
+})
+
+
+def _topic_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+            if len(w) > 3 and w not in _PREVIEW_STOPWORDS}
+
+
+def _preview(candidates: list[dict], *, focus: str = "",
+             provisional: bool = False) -> list[dict]:
+    """A few finds worth showing mid-run, trimmed to what the card actually renders.
+
+    Deliberately NOT the full candidate dicts: this rides on every poll, and a run can hold
+    hundreds of candidates carrying abstracts and authorship lists.
+
+    `provisional` marks finds chosen on provenance alone, before any model has judged them — the
+    client says so, because a paper shown early and then absent from the results would otherwise
+    look like a bug rather than the screen doing its job.
+
+    Provisional finds are additionally required to SHARE VOCABULARY with what the reader asked
+    for. Provenance alone is not enough to put a title on screen: a live run for "3D-stacked DRAM"
+    offered "The AI gambit: leveraging AI to combat climate change" — a real paper citing the
+    reader's library, ranked up by its citation count, and completely off-topic. An early find
+    that looks irrelevant makes the search look worse than showing nothing, so when nothing
+    overlaps this returns nothing and the panel simply keeps its progress line.
+    """
+    wanted = _topic_words(focus)
+
+    def overlap(candidate: dict) -> int:
+        return len(wanted & _topic_words(candidate.get("title", ""))) if wanted else 0
+
+    pool = candidates
+    if provisional and wanted:
+        pool = [c for c in candidates if overlap(c)]
+
+    def rank(candidate: dict) -> tuple:
+        channels = set(candidate.get("channels") or [])
+        return (float(candidate.get("score") or candidate.get("relevance") or 0.0),
+                overlap(candidate),
+                1 if "cites" in channels else 0,
+                1 if "graph" in channels else 0,
+                candidate.get("citation_count") or 0)
+
+    out = []
+    for candidate in sorted(pool, key=rank, reverse=True)[:PREVIEW_FINDS]:
+        reasons = [r for r in (candidate.get("reasons") or []) if r]
+        if not reasons:
+            reasons = [_provenance_line(candidate)] if _provenance_line(candidate) else []
+        out.append({
+            "title": str(candidate.get("title") or "")[:200],
+            "year": candidate.get("year"),
+            "citation_count": candidate.get("citation_count"),
+            "channels": list(candidate.get("channels") or []),
+            "reason": (reasons[0] if reasons else "")[:120],
+            "provisional": provisional,
+        })
+    return out
+
+
+def _provenance_line(candidate: dict) -> str:
+    """Why this find is on screen, in the reader's terms. Never empty for a grounded candidate:
+    a titled row with no explanation is the thing that makes a suggestion feel arbitrary."""
+    for entry in candidate.get("provenance") or []:
+        if entry.get("channel") == "cites":
+            title = str(entry.get("anchor_title") or "").strip()
+            return (f"Cites “{title[:60]}” from your list" if title
+                    else "Cites a paper on your reading list")
+        if entry.get("channel") == "graph":
+            reasons = [str(r) for r in (entry.get("reasons") or []) if r]
+            return reasons[0] if reasons else "Ranked by your reference graph"
+    channels = set(candidate.get("channels") or [])
+    if "cites" in channels:
+        return "Cites a paper on your reading list"
+    if "graph" in channels:
+        return "Ranked by your reference graph"
+    return ""
 
 
 def _reading_list(library_fn) -> list:

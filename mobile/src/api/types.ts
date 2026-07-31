@@ -778,17 +778,44 @@ export interface DiscoveryResult {
  * same pattern as GraphBuildJob. */
 export interface DiscoveryJob {
   status: 'running' | 'done' | 'error';
-  phase: 'queries' | 'searching' | 'citations' | 'evidence' | 'scoring' | 'done';
+  /** Funnel stage. `library`..`gated` are recall and the free deterministic gate; `triage` and
+   * `scoring` are the batched cheap-model screens. */
+  phase:
+    | 'queries' | 'searching' | 'library' | 'gathered' | 'gated'
+    | 'triage' | 'citations' | 'scoring' | 'evidence' | 'done';
   goals: string;
   focus: string;
   queries: DiscoveryQuery[];
   searched: number;
   total_queries: number;
   found: number;
+  /** Papers on the reading list the grounded channels start from. */
+  library: number;
+  /** Unique candidates after every recall channel is merged. */
+  gathered: number;
+  /** Survivors of the current funnel stage. */
+  screened: number;
+  /** A few good finds, refreshed as the funnel narrows — shown while the run is in flight. */
+  finds: DiscoveryFind[];
+  /** `grounded` finds are chosen on provenance alone, before any model has judged them. */
+  finds_stage: '' | 'grounded' | 'ranked';
   result: DiscoveryResult | null;
   error: string | null;
   started_at: string;
   finished_at: string | null;
+}
+
+/** One live find, shown while a search runs (app/discovery.py `_preview`). Deliberately much
+ * smaller than a suggestion: it rides on every poll of a multi-minute job. */
+export interface DiscoveryFind {
+  title: string;
+  year: number | null;
+  citation_count: number | null;
+  channels: string[];
+  reason: string;
+  /** True before any model has judged it — the card says so, so a find that later drops out
+   * reads as the screen working rather than a bug. */
+  provisional: boolean;
 }
 
 /** GET /api/projects/{pid}/discover */

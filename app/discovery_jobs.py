@@ -32,6 +32,11 @@ class DiscoveryJob(Job):
     library: int = 0          # papers on the reading list the grounded channels start from
     gathered: int = 0         # unique candidates after every recall channel is merged
     screened: int = 0         # survivors of the current funnel stage
+    # A few good finds, refreshed as the funnel narrows. The first batch is chosen on provenance
+    # alone (no model involved) so the screen has something real to show seconds in rather than
+    # spinning for minutes — see discovery._preview.
+    finds: list = field(default_factory=list)
+    finds_stage: str = ""     # "grounded" (provisional) | "ranked"
     result: dict | None = None
 
     def to_dict(self) -> dict:
@@ -94,6 +99,10 @@ def _apply_event(job: DiscoveryJob, event: dict) -> None:
     elif etype == "gated":
         job.phase = "gated"
         job.screened = event.get("kept", 0)
+    elif etype == "finds":
+        # Not a phase: finds arrive DURING a phase and must not advance the timeline.
+        job.finds = event.get("items") or []
+        job.finds_stage = event.get("stage", "")
     elif etype == "triage":
         job.phase = "triage"
         job.screened = event.get("count", job.screened)

@@ -321,8 +321,8 @@ def test_run_discovery_event_sequence_and_result_shape():
     assert types.count("search") == 2
     # The funnel's own stages are reported so a client can show real progress rather than a
     # spinner: recall -> gate -> cheap screens -> enrichment.
-    assert types[-8:] == ["library", "gathered", "gated", "triage",
-                          "citations", "scoring", "evidence", "done"]
+    assert types[-10:] == ["library", "gathered", "gated", "finds", "triage",
+                           "citations", "scoring", "finds", "evidence", "done"]
 
     result = events[-1]["result"]
     assert result["goals"] == "understand 3D DRAM"
@@ -646,3 +646,135 @@ def test_the_triage_cap_does_not_let_one_lane_starve_another():
     assert len(kept) == discovery.MAX_AFTER_TITLE_TRIAGE
     assert audit["kept"] == len(kept)          # the audit reports what went forward, not pre-cap
     assert audit["dropped_by_cap"] > 0
+
+
+def test_good_finds_are_emitted_before_any_model_has_judged_them(temp_project):
+    """A run takes minutes. Grounded candidates — reached by forward-citation from the reader's
+    own library, or already ranked by their reference graph — are worth showing on provenance
+    alone, so the screen has something real seconds in rather than spinning. They are marked
+    provisional: a paper shown early and then absent from the results must read as the screen
+    doing its job, not as a bug."""
+    grounded = [{"title": "Sparse attention for long-context transformers", "abstract": "a",
+                 "channels": ["cites"], "citation_count": 900,
+                 "provenance": [{"channel": "cites", "anchor_title": "Attention Is All You Need"}]}]
+
+    events = list(discovery.run_discovery(
+        "sparse attention in transformers", model="m", search_fn=lambda q, n: [],
+        llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=fake_cheap_llm({"Sparse attention": 9}), library_fn=lambda: [],
+        recall_fn=lambda papers: (grounded, {"degraded": []}),
+        citations_fn=fake_citations({})))
+
+    finds = [e for e in events if e["type"] == "finds"]
+    assert [f["stage"] for f in finds] == ["grounded", "ranked"]
+
+    early = finds[0]
+    assert early["items"][0]["title"] == "Sparse attention for long-context transformers"
+    assert early["items"][0]["provisional"] is True
+    assert "Attention Is All You Need" in early["items"][0]["reason"]
+    # It arrives BEFORE the model stages, which is the whole point.
+    types = [e["type"] for e in events]
+    assert types.index("finds") < types.index("citations")
+
+    assert finds[1]["items"][0]["provisional"] is False
+
+
+def test_a_find_carries_only_what_the_card_renders(temp_project):
+    """Finds ride on every poll of a multi-minute job, so they must not carry abstracts or
+    authorship lists for hundreds of candidates."""
+    fat = [{"title": "Retrieval augmented generation", "abstract": "x" * 5000,
+            "channels": ["graph"], "authors": [f"Author {i}" for i in range(50)],
+            "provenance": [{"channel": "graph", "reasons": ["3 of your papers cite it"]}]}]
+    events = list(discovery.run_discovery(
+        "retrieval augmented generation", model="m", search_fn=lambda q, n: [],
+        llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=fake_cheap_llm({"Retrieval": 8}), library_fn=lambda: [],
+        recall_fn=lambda papers: (fat, {"degraded": []}), citations_fn=fake_citations({})))
+
+    item = next(e for e in events if e["type"] == "finds")["items"][0]
+    assert set(item) == {"title", "year", "citation_count", "channels", "reason", "provisional"}
+    assert item["reason"] == "3 of your papers cite it"
+
+
+def test_no_more_than_a_handful_of_finds_are_sent():
+    many = [{"title": f"P{i}", "channels": ["graph"], "citation_count": i} for i in range(50)]
+    assert len(discovery._preview(many)) == discovery.PREVIEW_FINDS
+
+
+def test_an_empty_keyword_search_no_longer_kills_a_run_the_library_can_carry(temp_project):
+    """Keyword search used to BE the pipeline, so finding nothing was fatal. It is now one lane of
+    several, and a project with a good library must not lose its grounded results because one
+    generated query happened to match nothing."""
+    grounded = [{"title": "Found Via Your Library", "abstract": "a", "channels": ["graph"],
+                 "provenance": [{"channel": "graph", "reasons": ["2 of your papers cite it"]}]}]
+
+    result = list(discovery.run_discovery(
+        "goals", model="m", search_fn=lambda q, n: [],          # every query returns nothing
+        llm_fn=fake_llm(scores=[]), cheap_llm_fn=fake_cheap_llm({"Found Via Your Library": 9}),
+        library_fn=lambda: [], recall_fn=lambda papers: (grounded, {"degraded": []}),
+        citations_fn=fake_citations({})))[-1]["result"]
+
+    assert [s["title"] for s in result["suggestions"]] == ["Found Via Your Library"]
+
+
+def test_a_run_with_nothing_from_any_lane_still_fails_loudly(temp_project):
+    with pytest.raises(DiscoveryError):
+        list(discovery.run_discovery(
+            "goals", model="m", search_fn=lambda q, n: [], llm_fn=fake_llm(scores=[]),
+            cheap_llm_fn=fake_cheap_llm({}), library_fn=lambda: [],
+            recall_fn=lambda papers: ([], {"degraded": []}), citations_fn=fake_citations({})))
+
+
+def test_an_early_find_must_share_vocabulary_with_what_was_asked_for():
+    """Provenance alone is not enough to put a title on screen. A live run for '3D-stacked DRAM'
+    offered 'The AI gambit: leveraging AI to combat climate change' — a real paper citing the
+    reader's library, ranked up by citation count, and completely off-topic. An early find that
+    looks irrelevant makes the search look worse than showing nothing."""
+    candidates = [
+        {"title": "The AI gambit: leveraging AI to combat climate change",
+         "channels": ["cites"], "citation_count": 5000},
+        {"title": "A 3D-stacked DRAM architecture for near-memory compute",
+         "channels": ["cites"], "citation_count": 12},
+    ]
+    finds = discovery._preview(candidates, focus="3D-stacked DRAM architectures",
+                               provisional=True)
+    assert [f["title"] for f in finds] == [
+        "A 3D-stacked DRAM architecture for near-memory compute"]
+
+
+def test_showing_nothing_beats_showing_something_irrelevant():
+    finds = discovery._preview(
+        [{"title": "Entirely unrelated work", "channels": ["cites"], "citation_count": 9000}],
+        focus="3D-stacked DRAM", provisional=True)
+    assert finds == []
+
+
+def test_ranked_finds_are_not_filtered_by_vocabulary():
+    """By then a model has judged them on the abstract, which beats a word-overlap heuristic —
+    a paper can be exactly right without repeating the reader's phrasing in its title."""
+    finds = discovery._preview(
+        [{"title": "Processing-in-memory for transformers", "score": 9.0}],
+        focus="3D-stacked DRAM")
+    assert len(finds) == 1
+
+
+def test_a_run_with_no_stated_focus_still_previews_rather_than_filtering_everything_out():
+    finds = discovery._preview(
+        [{"title": "Anything", "channels": ["graph"]}], focus="", provisional=True)
+    assert len(finds) == 1
+
+
+def test_every_grounded_find_says_why_it_is_on_screen():
+    """A titled row with no explanation is what makes a suggestion feel arbitrary. A live run
+    showed three of five finds with a blank reason line, because the citation anchor had no
+    stored title and the fallbacks did not cover it."""
+    candidates = [
+        {"title": "3D DRAM one", "channels": ["cites"],
+         "provenance": [{"channel": "cites", "anchor_slug": "s"}]},        # anchor, no title
+        {"title": "3D DRAM two", "channels": ["cites"]},                    # no provenance at all
+        {"title": "3D DRAM three", "channels": ["graph"],
+         "provenance": [{"channel": "graph", "reasons": []}]},             # graph, no reasons
+    ]
+    finds = discovery._preview(candidates, focus="3D DRAM", provisional=True)
+    assert len(finds) == 3
+    assert all(f["reason"] for f in finds), [f["reason"] for f in finds]
