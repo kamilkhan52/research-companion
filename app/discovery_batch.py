@@ -26,10 +26,11 @@ JSON response raised and discarded the entire run's work.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Sequence
 
-from . import logging_config
+from . import jobs, logging_config
 
 log = logging_config.get("discovery.batch")
 
@@ -124,54 +125,99 @@ def run_batches(
              "missing": 0, "unknown_rows": 0, "duplicate_rows": 0,
              "retried": 0, "failed_open": 0, "degraded": []}
 
-    for start in range(0, len(items), batch_size):
-        chunk = list(enumerate(items[start:start + batch_size], start=start + 1))
-        _run_one(chunk, system, render_item, llm_fn, min_fields, values, audit, allow_retry=True)
+    chunks = [list(enumerate(items[start:start + batch_size], start=start + 1))
+              for start in range(0, len(items), batch_size)]
+
+    # Batches are independent, and this stage dominated wall-clock: 6 sequential title batches took
+    # 707s and 16 abstract batches took 878s on a 53-paper project — half an hour for one run. They
+    # are network-bound, so running them concurrently is nearly free, and `run_parallel` rebinds the
+    # contextvars each worker needs to attribute its own token spend (invariant 2).
+    results = jobs.run_parallel(
+        chunks, lambda chunk: _judge(chunk, system, render_item, llm_fn, min_fields),
+        max_workers=concurrency(), thread_name_prefix=f"discover-{stage}")
+
+    # Merge serially, in submission order, so the audit and the "first answer wins" rule stay
+    # deterministic regardless of which batch happened to return first.
+    for chunk, result in zip(chunks, results, strict=True):
+        _absorb(chunk, result, values, audit)
 
     audit["answered"] = len(values)
     audit["missing"] = len(items) - len(values)
     return values, audit
 
 
-def _run_one(chunk: list[tuple[int, dict]], system: str,
-             render_item: Callable[[int, dict], str], llm_fn: LlmFn, min_fields: int,
-             values: dict[int, list[str]], audit: dict, *, allow_retry: bool) -> None:
-    audit["batches"] += 1
+def concurrency() -> int:
+    """How many screening batches run at once. Bounded 1-12; 1 restores the serial behaviour."""
+    try:
+        n = int(os.environ.get("RC_DISCOVERY_BATCH_CONCURRENCY", "6"))
+    except ValueError:
+        n = 6
+    return max(1, min(12, n))
+
+
+def _judge(chunk: list[tuple[int, dict]], system: str,
+           render_item: Callable[[int, dict], str], llm_fn: LlmFn, min_fields: int,
+           *, allow_retry: bool = True) -> list[tuple[list, object]]:
+    """Ask the model about one batch. Returns `[(subchunk, parsed_or_exception), ...]`.
+
+    Pure with respect to the caller's state — it touches neither `values` nor the audit — so it is
+    safe to run on a pool thread. A retry returns TWO entries, one per half, which is what lets the
+    serial merge below reconstruct exactly what happened.
+    """
     numbers = [n for n, _ in chunk]
     user = "\n".join(render_item(n, item) for n, item in chunk)
 
     try:
         reply = llm_fn(system, user)
     except Exception as e:  # noqa: BLE001 — one failed batch must not discard the others
-        audit["failed_open"] += len(chunk)
-        audit["degraded"].append(
-            f"batch of {len(chunk)} failed ({type(e).__name__}); items passed through unjudged")
         log.warning("discovery batch failed (%s); failing open for %d items",
                     type(e).__name__, len(chunk))
-        return
+        return [(chunk, e)]
 
     parsed = parse_rows(reply, numbers, min_fields=min_fields)
-    audit["unknown_rows"] += parsed.unknown_rows
-    audit["duplicate_rows"] += parsed.duplicate_rows
-    audit["degraded"].extend(parsed.degraded)
 
     if parsed.loss_ratio > MAX_LOSS_RATIO and allow_retry and len(chunk) > 1:
         # The model lost the format rather than skipping a few rows. Halve and retry ONCE; a
         # retry loop here would multiply cost against a model that is not going to recover.
-        audit["retried"] += 1
         log.info("discovery batch lost %.0f%% of %d rows; retrying at half size",
                  parsed.loss_ratio * 100, len(chunk))
         mid = len(chunk) // 2
-        _run_one(chunk[:mid], system, render_item, llm_fn, min_fields, values, audit,
-                 allow_retry=False)
-        _run_one(chunk[mid:], system, render_item, llm_fn, min_fields, values, audit,
-                 allow_retry=False)
+        return [*_judge(chunk[:mid], system, render_item, llm_fn, min_fields, allow_retry=False),
+                *_judge(chunk[mid:], system, render_item, llm_fn, min_fields, allow_retry=False),
+                ("retried", None)]
+
+    return [(chunk, parsed)]
+
+
+def _absorb(chunk: list, result: object, values: dict[int, list[str]], audit: dict) -> None:
+    """Fold one batch's outcome into the shared values/audit. Serial, so no locking is needed."""
+    if isinstance(result, Exception):          # the whole stage failed for this batch
+        audit["batches"] += 1
+        audit["failed_open"] += len(chunk)
+        audit["degraded"].append(
+            f"batch of {len(chunk)} failed ({type(result).__name__}); "
+            f"items passed through unjudged")
         return
 
-    values.update(parsed.values)
-    if parsed.missing:
-        audit["failed_open"] += len(parsed.missing)
-        if parsed.loss_ratio > MAX_LOSS_RATIO:
+    for subchunk, parsed in result:
+        if subchunk == "retried":
+            audit["retried"] += 1
+            continue
+        audit["batches"] += 1
+        if isinstance(parsed, Exception):
+            audit["failed_open"] += len(subchunk)
             audit["degraded"].append(
-                f"batch of {len(chunk)} answered only {parsed.answered}; "
-                f"{len(parsed.missing)} items passed through unjudged")
+                f"batch of {len(subchunk)} failed ({type(parsed).__name__}); "
+                f"items passed through unjudged")
+            continue
+        audit["unknown_rows"] += parsed.unknown_rows
+        audit["duplicate_rows"] += parsed.duplicate_rows
+        audit["degraded"].extend(parsed.degraded)
+        for number, fields in parsed.values.items():
+            values.setdefault(number, fields)   # first answer wins, across retries too
+        if parsed.missing:
+            audit["failed_open"] += len(parsed.missing)
+            if parsed.loss_ratio > MAX_LOSS_RATIO:
+                audit["degraded"].append(
+                    f"batch of {len(subchunk)} answered only {parsed.answered}; "
+                    f"{len(parsed.missing)} items passed through unjudged")

@@ -22,12 +22,13 @@ gate uses to know it must not apply a generic popularity floor to it.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 
 import httpx
 
-from . import logging_config, semantic_scholar, store
+from . import jobs, logging_config, semantic_scholar, store
 from .openalex import BASE as OPENALEX_BASE
 
 log = logging_config.get("discovery.recall")
@@ -45,6 +46,15 @@ MAX_CITES_PAGES = 1
 DOI_BATCH = 50
 
 TIMEOUT_S = 30.0
+
+
+def concurrency() -> int:
+    """How many OpenAlex requests run at once. Bounded 1-12; 1 restores serial behaviour."""
+    try:
+        n = int(os.environ.get("RC_DISCOVERY_RECALL_CONCURRENCY", "8"))
+    except ValueError:
+        n = 8
+    return max(1, min(12, n))
 
 
 # ---------- R1: anchor resolution ----------
@@ -78,6 +88,7 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
     # only ever going to use MAX_ANCHORS of. Cached anchors stay free, so they are never budgeted.
     budget = MAX_ANCHORS
 
+    to_look_up: list = []
     for paper in papers:
         slug = getattr(paper, "slug", "") or ""
         arxiv_id = getattr(paper, "arxiv_id", "") or ""
@@ -91,14 +102,25 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
         if not arxiv_id or budget <= 0:
             continue
         budget -= 1
-        work = _get_work(client, f"doi:{_arxiv_doi(arxiv_id)}")
-        if work:
+        to_look_up.append(paper)
+
+    # The first hop is one independent free OpenAlex request per paper, so it fans out. The S2
+    # fallback below does NOT: it goes through an account-wide pacer, and parallelising it would
+    # trade latency for 429s.
+    works = jobs.run_parallel(
+        to_look_up,
+        lambda p: _get_work(client, f"doi:{_arxiv_doi(getattr(p, 'arxiv_id', ''))}"),
+        max_workers=concurrency(), thread_name_prefix="discover-anchor")
+
+    for paper, work in zip(to_look_up, works, strict=True):
+        slug = getattr(paper, "slug", "")
+        if isinstance(work, dict) and work.get("id"):
             cache[slug] = work["id"]
             anchors.append({"slug": slug, "openalex_id": work["id"],
                             "title": getattr(paper, "title", "") or "",
                             "topics": work.get("topics") or []})
         else:
-            unresolved.append((slug, arxiv_id))
+            unresolved.append((slug, getattr(paper, "arxiv_id", "") or ""))
 
     if unresolved:
         anchors.extend(_resolve_via_s2(unresolved, papers, client=client, cache=cache,
@@ -200,11 +222,10 @@ def chase_citations(anchors: list[dict], *, client: httpx.Client,
     between "here are some papers about your topic" and "this builds on the paper you read on
     Tuesday", and the gate relies on it to waive the citation floor.
     """
-    out: list[dict] = []
-    for anchor in anchors[:MAX_ANCHORS]:
-        key = _work_key(anchor.get("openalex_id"))
-        if not key:
-            continue
+    usable = [a for a in anchors[:MAX_ANCHORS] if _work_key(a.get("openalex_id"))]
+
+    def one(anchor: dict) -> list[dict]:
+        key = _work_key(anchor["openalex_id"])
         filters = [f"cites:{key}"]
         if from_year:
             filters.append(f"publication_year:{from_year}-")
@@ -218,13 +239,14 @@ def chase_citations(anchors: list[dict], *, client: httpx.Client,
                 timeout=TIMEOUT_S)
         except httpx.HTTPError:
             log.info("citation chase unreachable for %s; skipping", key)
-            continue
+            return []
         if resp.status_code != 200:
-            continue
+            return []
         try:
             rows = (resp.json() or {}).get("results") or []
         except ValueError:
-            continue
+            return []
+        found = []
         for row in rows:
             candidate = _from_openalex(row)
             if not candidate:
@@ -234,7 +256,21 @@ def chase_citations(anchors: list[dict], *, client: httpx.Client,
                 "channel": "cites", "anchor_slug": anchor.get("slug"),
                 "anchor_title": anchor.get("title"),
             }]
-            out.append(candidate)
+            found.append(candidate)
+        return found
+
+    # One independent request per anchor, so they run concurrently. OpenAlex has no per-second
+    # limit we are near (a page costs $0.0001 against a $1/day allowance) and `httpx.Client` is
+    # thread-safe. Semantic Scholar is deliberately NOT parallelised anywhere in this module — it
+    # is paced account-wide, and fanning out would simply trade latency for 429s.
+    batches = jobs.run_parallel(usable, one, max_workers=concurrency(),
+                                thread_name_prefix="discover-cites")
+    out: list[dict] = []
+    for batch in batches:
+        if isinstance(batch, Exception):
+            log.info("citation chase failed for one anchor (%s)", type(batch).__name__)
+            continue
+        out.extend(batch)
     return out
 
 

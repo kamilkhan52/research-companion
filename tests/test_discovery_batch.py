@@ -209,3 +209,20 @@ def test_an_openalex_only_row_matches_on_its_work_id_rather_than_its_title():
     merged = discovery_recall.merge_candidates(
         [[a], [b]], identity_keys=_identity_keys, merge_fn=_merge_candidate)
     assert len(merged) == 2
+
+
+def test_screening_batches_run_concurrently():
+    """Six sequential title batches took 707s and sixteen abstract batches took 878s on a real
+    project — half an hour for one run. The batches are independent and network-bound, so this
+    pins that they actually fan out rather than silently degrading to a serial loop."""
+    import threading
+    started = threading.Barrier(3, timeout=5)
+
+    def llm(system, user):
+        started.wait()          # only completes if three batches are in flight together
+        return "\n".join(line.split("|")[0] + "|K|METHOD" for line in user.splitlines())
+
+    values, audit = discovery_batch.run_batches(
+        _items(6), batch_size=2, system="s", render_item=_render, llm_fn=llm)
+    assert sorted(values) == [1, 2, 3, 4, 5, 6]
+    assert audit["batches"] == 3

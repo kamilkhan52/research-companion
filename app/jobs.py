@@ -18,6 +18,7 @@ Two things this makes structural rather than per-module discipline:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 import uuid
@@ -556,3 +557,55 @@ class JobRegistry(Generic[J]):
         for scope in coldest[:len(by_scope) - _MAX_SCOPES_RETAINED]:
             for stale in by_scope[scope]:
                 self._jobs.pop(stale.id, None)
+
+
+def run_parallel(items: list, fn: Callable, *, max_workers: int,
+                 thread_name_prefix: str = "fan") -> list:
+    """Run `fn(item)` over `items` concurrently and return results in the ORIGINAL order.
+
+    Two properties this exists to guarantee, both of which are easy to lose when a caller reaches
+    for `ThreadPoolExecutor` directly:
+
+    **Contextvars are rebound on every worker (invariant 2).** A pool thread inherits nothing, so
+    without this a parallelised stage would attribute its token spend to no project at all, and any
+    per-user setting would silently fall back to the instance default. The project and user are
+    captured on the CALLING thread, where they are correctly bound.
+
+    **One failure does not lose the others.** An exception is returned in place of a result rather
+    than propagated, so a caller that is already best-effort — every discovery stage is — can count
+    the failures without a single bad item discarding the work that succeeded.
+
+    The pool is not used as a context manager: `__exit__` is `shutdown(wait=True)`, which on an
+    abandoned generator would block until every in-flight call finished (same reasoning as
+    `graph.build`'s fan-out).
+    """
+    if not items:
+        return []
+    if max_workers <= 1 or len(items) == 1:
+        return [_call_capturing(fn, item) for item in items]
+
+    pid = config.active_project_id()
+    user_id = config.active_user_id()
+
+    def bound(item):
+        token = config.set_active_project(pid)
+        user_token = config.set_active_user(user_id)
+        try:
+            return _call_capturing(fn, item)
+        finally:
+            config.reset_active_project(token)
+            config.reset_active_user(user_token)
+
+    pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(max_workers, len(items)), thread_name_prefix=thread_name_prefix)
+    try:
+        return list(pool.map(bound, items))
+    finally:
+        pool.shutdown(wait=False)
+
+
+def _call_capturing(fn: Callable, item):
+    try:
+        return fn(item)
+    except Exception as e:  # noqa: BLE001 — returned to the caller, which decides what it means
+        return e
