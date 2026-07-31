@@ -344,7 +344,7 @@ asked explicitly to stop before it so it can be designed properly rather than pa
 | 3 | Paper context (affiliation, citations, relevance) on the reading-mode screen | Shipped — **device-confirmed** |
 | 4 | "Fetch & start reading" progress as staged card rather than vanishing text | Shipped — **device-confirmed** |
 | 5 | Graph label overlap; constant-size labels; nodes separating on zoom | Shipped — **device-confirmed** (#301) |
-| 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **NEXT, untouched** |
+| 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **Slice 1 shipped** (#306) — see below |
 
 **Citation enrichment, which item 5 depended on, went 46% → 92% (186 → 369 of 402, verified after the review changes).** The cap was
 not coverage of the indexes: `app/citations.py` requested `fields=...,matchScore` from Semantic
@@ -380,6 +380,62 @@ Two facts from that work that change planning assumptions:
   plan below).
 - **Semantic Scholar with the key is not the constraint**: 0 of 120 requests were rate-limited, and
   84% of attempted title lookups verified. Discovery can lean on it.
+
+#### Discovery rebuild — slice 1 shipped 2026-07-31 (PR #306)
+
+The full design is `~/.claude/plans/keen-finding-rabin.md`, written from two independent agent
+proposals (Opus and GPT-5.6-Sol) that converged on the same architecture. **Scope decisions Kamil
+made: paper discovery only (gap mode deferred to its own plan), and user-triggered only (no
+scheduler — that needs spend caps and collides with invariant 6).**
+
+**The diagnosis was recall lost BEFORE any semantic judgment**, not bad ranking. `MAX_CANDIDATES =
+50` capped the universe before an LLM saw anything, and `graph.score_recommendations`
+(`app/graph.py:914`) — which already ranks every external paper the project cites, with reasons, on
+every graph build — **was never read by Discovery at all.**
+
+Slice 1 adds a funnel: forward-citation chase from the reader's own library + the graph's existing
+recommendations + the existing lexical lane → a free deterministic gate → batched cheap title
+triage → batched cheap abstract scoring → the existing ranked list. New modules
+`app/discovery_{recall,gate,batch,ledger}.py`; `run_discovery` became the orchestrator.
+
+**The grounded channels are ADDITIVE, not a replacement.** A literal reading of the plan would have
+removed query-based recall, and a project with an empty library would then get nothing — which is
+the case the feature was originally built for.
+
+Measured on a real 53-paper project, cold cache, identical work both times:
+
+| | before | after | |
+|---|---|---|---|
+| recall | 125s | 95s | |
+| title triage | 707s | **87s** | 8.1x |
+| abstract scoring | 878s | **166s** | 5.3x |
+| authorships | 83s | **2.4s** | 35x |
+| **total** | **1797s** | **418s** | **4.3x** |
+
+Cost is **$0.0131** per run for 796 titles + 400 abstracts (measured through `usage.py`, operation
+`discovery_screen`). The pre-parallel run also lost 2 of 6 title batches to `LLMError` and passed
+300 papers through unjudged; the parallel run answered 799/799 and 400/400 with zero degraded.
+
+`jobs.run_parallel` is the shared fan-out helper. **It rebinds the active project AND user
+contextvars per worker (invariant 2)** — without that a parallelised stage attributes its token
+spend to no project and falls back to instance defaults. Semantic Scholar is deliberately NOT
+parallelised anywhere: it is paced account-wide and fanning out trades latency for 429s.
+
+Two harness holes this work exposed, both now closed in `tests/conftest.py`:
+
+- **The suite was making live, billed model calls.** `llm.complete` was never stubbed and the key
+  is in the shell profile. `discovery._cheap_llm` now RAISES in tests rather than no-opping — the
+  batch runner fails open by design, so a silent stub would let a screening test pass while
+  screening nothing.
+- **Tests wrote into the developer's working tree and read it back.** `config.project_dir()` falls
+  back to `BASE_DIR / "project"` when no project is scoped, so redirecting `PROJECTS_ROOT` was not
+  enough; a stale discovery ledger silently satisfied a screening stage and the failure looked like
+  a bug in the code under test. `_LEGACY_PROJECT_DIR` is redirected too, and a test pins it shut.
+
+**Next:** slice 2 (OpenAlex topic sweep + Semantic Scholar `search/bulk` + the incremental
+frontier), then slice 3 (the comparative reading-path call and its client surface). A "Quick" mode
+is wanted — Discover is the first thing a new user touches — but is deliberately deferred until the
+optimised default has been used, so its targets can be set from real numbers rather than guesses.
 
 #### OpenAlex, re-verified live 2026-07-30 (corrects the "it's dead" note above)
 
