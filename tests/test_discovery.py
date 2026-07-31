@@ -778,3 +778,44 @@ def test_every_grounded_find_says_why_it_is_on_screen():
     finds = discovery._preview(candidates, focus="3D DRAM", provisional=True)
     assert len(finds) == 3
     assert all(f["reason"] for f in finds), [f["reason"] for f in finds]
+
+
+def test_short_but_meaningful_acronyms_are_not_discarded_from_the_topic():
+    """A four-character floor dropped LLM, RAG, NLP, PIM and DNN — exactly what a reader types.
+    That emptied the word set, which disabled the filter entirely and admitted the high-citation
+    noise the filter exists to stop."""
+    finds = discovery._preview(
+        [{"title": "A survey of RAG systems", "channels": ["cites"]},
+         {"title": "Completely unrelated cardiology work", "channels": ["cites"],
+          "citation_count": 90000}],
+        focus="RAG", provisional=True)
+    assert [f["title"] for f in finds] == ["A survey of RAG systems"]
+
+
+def test_ordinary_plurals_still_match():
+    finds = discovery._preview(
+        [{"title": "Learning disentangled representations", "channels": ["graph"]}],
+        focus="representation learning", provisional=True)
+    assert len(finds) == 1
+
+
+def test_a_lexical_outage_is_reported_rather_than_presented_as_a_clean_run(temp_project):
+    """Continuing on the grounded channels is right; saying nothing about it is not. A run that
+    searched half its sources and reports success presents an incomplete result as a complete
+    one, and the reader cannot tell why their topic looks thin."""
+    def exploding_search(query, n):
+        raise RuntimeError("provider down")
+
+    grounded = [{"title": "Sparse attention for transformers", "abstract": "a",
+                 "channels": ["graph"],
+                 "provenance": [{"channel": "graph", "reasons": ["2 of your papers cite it"]}]}]
+
+    result = list(discovery.run_discovery(
+        "sparse attention transformers", model="m", search_fn=exploding_search,
+        llm_fn=fake_llm(scores=[]), cheap_llm_fn=fake_cheap_llm({"Sparse": 9}),
+        library_fn=lambda: [], recall_fn=lambda papers: (grounded, {"degraded": []}),
+        citations_fn=fake_citations({})))[-1]["result"]
+
+    assert result["suggestions"], "the grounded lane should still have carried the run"
+    assert any("Keyword search returned nothing" in d for d in result["degraded"]), \
+        result["degraded"]

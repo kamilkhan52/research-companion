@@ -63,6 +63,10 @@ export default function DiscoverScreen() {
   // compact summary — the ranked list is the point of the screen then, and it stays one tap away.
   const [editingGoals, setEditingGoals] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
+  // ONE instance for the screen. The field renders in two mutually exclusive positions (inside
+  // the query card, and below a collapsed summary); two hook instances meant switching between
+  // them unmounted one mid-debounce and silently dropped what the reader had typed.
+  const addByRef = useAddByReference(pid);
 
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
@@ -85,7 +89,12 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
-  const specificEntry = specific === '1' && !hasRunContext;
+  // The deep link means "adding a known paper IS the task", so it holds regardless of whether a
+  // search has run — and unlike the ordinary inline field it is NOT hidden during a run, because
+  // the reader navigated here specifically to add a paper. Gating it on `!hasRunContext` meant a
+  // project with cached results silently fell back to the ordinary field, and a project mid-run
+  // showed no way to add a paper at all.
+  const specificEntry = specific === '1';
 
   async function runDiscovery() {
     const text = goals.trim();
@@ -108,7 +117,7 @@ export default function DiscoverScreen() {
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           {specificEntry && pid ? (
             <>
-              <SpecificPaper pid={pid} />
+              <SpecificPaper add={addByRef} />
               <Button
                 title="Discover papers instead"
                 icon="compass"
@@ -145,7 +154,7 @@ export default function DiscoverScreen() {
               ) : null}
               {/* Only when it matters: a reader watching a search run does not want a second
                   way to add a paper competing for attention. */}
-              {pid && !runState.running ? <AddByReferenceInline pid={pid} /> : null}
+              {addByRef && !runState.running ? <AddByReferenceInline add={addByRef} /> : null}
             </Card>
           ) : (
             // Compact goals summary — the search is the focus now; tap to edit & search again.
@@ -219,8 +228,8 @@ export default function DiscoverScreen() {
           {/* Adding a known paper now lives inline under the query (see AddByReferenceInline),
               so nothing is repeated down here. The compact summary state has no query box of its
               own, so it keeps the affordance — still hidden while a search runs. */}
-          {pid && !specificEntry && !showEditor && !runState.running ? (
-            <AddByReferenceInline pid={pid} />
+          {addByRef && !specificEntry && !showEditor && !runState.running ? (
+            <AddByReferenceInline add={addByRef} />
           ) : null}
         </ScrollView>
 
@@ -246,7 +255,11 @@ export default function DiscoverScreen() {
 function ProgressPanel({ job }: { job: DiscoveryJob }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const { steps, detail, done } = discoverProgress(job);
+  // The furthest step reached so far. Held here rather than derived, so an unrecognised phase
+  // (older client, newer server) holds position instead of rewinding the timeline to "Planned".
+  const furthest = useRef(0);
+  const { steps, detail, done, step } = discoverProgress(job, furthest.current);
+  furthest.current = job.status === 'running' ? step : 0;
 
   return (
     <Card style={styles.progressPanel}>
@@ -514,17 +527,18 @@ function SuggestionCard({
 // Adding a known paper by title / arXiv id / DOI / PDF link. Shared by the compact field under
 // the search box and the full card the `?specific=1` deep link opens, so the reference parsing
 // below — which is subtle and was got wrong once — exists in exactly one place.
-function useAddByReference(pid: string) {
+function useAddByReference(pid: string | null) {
   const router = useRouter();
-  const addPaper = useAddPaper(pid);
-  const textDraft = usePersistedDraft(draftKey(pid, 'discover', 'specific-paper'), '');
+  const addPaper = useAddPaper(pid ?? '');
+  const textDraft = usePersistedDraft(
+    pid ? draftKey(pid, 'discover', 'specific-paper') : null, '');
   const text = textDraft.value;
   const setText = textDraft.setValue;
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
     const s = text.trim();
-    if (!s) return;
+    if (!s || !pid) return;
     setErr(null);
     await textDraft.markSubmitted();
     // A paper name adds it by title (retrieval resolves it on open, escalating to the agentic
@@ -569,10 +583,9 @@ function useAddByReference(pid: string) {
 // or link" button that sat below the results: it was a second call to action competing with the
 // search, and it stayed on screen while a search was running, when it is the last thing the
 // reader wants. Now it is an "or" beneath the query, and it disappears during a run.
-function AddByReferenceInline({ pid }: { pid: string }) {
+function AddByReferenceInline({ add }: { add: ReturnType<typeof useAddByReference> }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const add = useAddByReference(pid);
   return (
     <View style={{ marginTop: space.md }}>
       <View style={styles.orRow}>
@@ -612,10 +625,9 @@ function AddByReferenceInline({ pid }: { pid: string }) {
 }
 
 // The full card, kept for the `?specific=1` deep link, where adding a known paper IS the task.
-function SpecificPaper({ pid }: { pid: string }) {
+function SpecificPaper({ add }: { add: ReturnType<typeof useAddByReference> }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const add = useAddByReference(pid);
 
   return (
     <Card style={{ gap: space.sm }}>

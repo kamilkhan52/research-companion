@@ -951,13 +951,16 @@ def run_discovery(
                 lexical = event["candidates"]
             else:
                 yield event
-    except DiscoveryError as e:
-        # An empty keyword search is no longer fatal. It was, when keyword search WAS the whole
-        # pipeline; now the library-grounded channels can carry a run on their own, and failing
-        # here would throw away good results because one generated query happened to match
-        # nothing. It still fails below if every channel came back empty.
-        lexical_error = str(e)
-        log.info("lexical lane found nothing (%s); continuing on the grounded channels", e)
+    except Exception as e:  # noqa: BLE001 — one lane must not be able to kill the run
+        # Keyword search is no longer the pipeline, so neither an empty result NOR a provider
+        # outage is fatal: the library-grounded channels can carry a run on their own. Catching
+        # only DiscoveryError left a transport failure killing a run that had good grounded
+        # results in hand. It still fails below if every channel came back empty, and the failure
+        # is recorded in `degraded` rather than swallowed — a run that searched half its sources
+        # and reports success presents an incomplete result as a complete one.
+        lexical_error = str(e) if isinstance(e, DiscoveryError) else (
+            f"{type(e).__name__}: {str(e)[:120]}")
+        log.info("lexical lane failed (%s); continuing on the grounded channels", lexical_error)
 
     # The library-grounded channels. They are additive: a brand-new project has no papers and no
     # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
@@ -1029,6 +1032,11 @@ def run_discovery(
               "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
     degraded = [*triage_audit.get("degraded", []), *abstract_audit.get("degraded", []),
                 *recall_audit.get("degraded", [])]
+    if lexical_error:
+        # Recorded, not swallowed. Continuing on the grounded channels is right, but a run that
+        # searched only half its sources and says nothing presents an incomplete result as a
+        # complete one — and the reader has no way to tell why their topic looks thin.
+        degraded.append(f"Keyword search returned nothing: {lexical_error}")
 
     yield {"type": "done", "result": {
         "goals": goals,
@@ -1066,8 +1074,22 @@ _PREVIEW_STOPWORDS = frozenset({
 
 
 def _topic_words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower())
-            if len(w) > 3 and w not in _PREVIEW_STOPWORDS}
+    """Content words, stemmed crudely.
+
+    Three characters, not four: a four-character floor drops LLM, RAG, NLP, PIM and DNN — exactly
+    the terms a reader is most likely to type — which emptied the set and disabled the filter
+    entirely, admitting the high-citation noise it exists to stop.
+
+    The trailing-s strip is what lets "representation learning" match "Learning disentangled
+    representations". It is deliberately not a real stemmer: this decides whether to show a
+    reassurance line mid-run, and a wrong call in either direction costs one row on a card.
+    """
+    words = set()
+    for raw in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(raw) < 3 or raw in _PREVIEW_STOPWORDS:
+            continue
+        words.add(raw[:-1] if len(raw) > 4 and raw.endswith("s") else raw)
+    return words
 
 
 def _preview(candidates: list[dict], *, focus: str = "",

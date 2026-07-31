@@ -30,12 +30,23 @@ test('both cheap screening passes and the citation step read as one "Read" stage
   }
 });
 
-test('an unknown phase does not reset the timeline to the beginning', () => {
-  // `indexOf` on an ordered list would return -1 here and render every step pending, which reads
-  // as the search having started over. A new server phase must fail visibly in the mapping, not
-  // silently rewind the UI.
-  const p = discoverProgress(job({ phase: 'made-up' as DiscoveryJob['phase'] }));
-  expect(p.steps.filter((s) => s.state === 'active')).toHaveLength(1);
+test('an unknown phase holds position instead of rewinding to the start', () => {
+  // An older client against a newer server. `?? 0` put the timeline back on "Planned", which
+  // reads as the search having started over. The previous position is passed in as a floor.
+  // (An earlier version of this test only asserted "one step is active", which passed with the
+  // WRONG step active and hid exactly this bug.)
+  const p = discoverProgress(job({ phase: 'made-up' as DiscoveryJob['phase'] }), 3);
+  expect(p.steps.find((s) => s.state === 'active')?.label).toBe('Read');
+  expect(p.step).toBe(3);
+});
+
+test('the timeline never moves backwards even if a snapshot arrives out of order', () => {
+  const p = discoverProgress(job({ phase: 'searching' }), 3);
+  expect(p.steps.find((s) => s.state === 'active')?.label).toBe('Read');
+});
+
+test('a known phase ahead of the floor still advances', () => {
+  expect(discoverProgress(job({ phase: 'evidence' }), 1).step).toBe(4);
 });
 
 test('a finished job shows every step checked and no trailing detail line', () => {

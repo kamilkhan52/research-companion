@@ -34,13 +34,22 @@ const STEP_OF_PHASE: Record<DiscoveryJob['phase'], number> = {
 
 const n = (v: number) => v.toLocaleString();
 
-export function discoverProgress(job: DiscoveryJob): {
+/**
+ * `floor` is the furthest step already shown for this run. The timeline must never move
+ * backwards: an unknown phase — an older client against a newer server — would otherwise land on
+ * `?? 0` and rewind to "Planned", which reads as the search having started over. Passing the
+ * previous position keeps the display honest without the mapping having to know every future
+ * phase name. It also absorbs an out-of-order snapshot, which polling can produce.
+ */
+export function discoverProgress(job: DiscoveryJob, floor = 0): {
   steps: DiscoverStep[];
   detail: string;
   done: boolean;
+  step: number;
 } {
   const done = job.phase === 'done' || job.status === 'done';
-  const current = STEP_OF_PHASE[job.phase] ?? 0;
+  const known = STEP_OF_PHASE[job.phase];
+  const current = Math.max(known ?? floor, floor);
 
   const labels: Array<{ key: string; label: string; detail: string }> = [
     { key: 'plan', label: 'Planned', detail: job.focus || 'Planning the search…' },
@@ -69,5 +78,5 @@ export function discoverProgress(job: DiscoveryJob): {
     state: (done || i < current ? 'done' : i === current ? 'active' : 'pending') as StepState,
   }));
 
-  return { steps, detail: done ? '' : (steps[current]?.detail ?? ''), done };
+  return { steps, detail: done ? '' : (steps[current]?.detail ?? ''), done, step: current };
 }
