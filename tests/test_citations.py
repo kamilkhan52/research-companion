@@ -549,3 +549,15 @@ def test_a_title_too_generic_to_identify_a_paper_is_not_looked_up():
         real_fetch_missing([node], {}, client, sleep=lambda s: None)
 
     assert called["n"] == 0
+
+
+def test_the_openalex_fallback_client_carries_the_api_key(monkeypatch):
+    """The metered call in this module is OpenAlex SEARCH ($0.001). Unkeyed it draws on a
+    $0.10/day allowance that one pass of OPENALEX_MAX_LOOKUPS exhausts, after which every
+    request 429s and looks exactly like OpenAlex having no data. Regression guard for that."""
+    monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
+    client = citations.openalex_mod.make_client()
+    try:
+        assert dict(client.params).get("api_key") == "test-key"
+    finally:
+        client.close()

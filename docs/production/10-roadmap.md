@@ -341,7 +341,7 @@ asked explicitly to stop before it so it can be designed properly rather than pa
 |---|------|-------|
 | 1 | Graph showed a raw `UnknownHostException` after a successful build, and a failed refresh blanked already-loaded data | Shipped — **device-confirmed** |
 | 2 | Settings auto-save; keyboard hiding the Save button and the privacy/terms links | Shipped — **device-confirmed** |
-| 3 | Paper context (affiliation, citations, relevance) on the reading-mode screen | Shipped — **not yet device-confirmed** |
+| 3 | Paper context (affiliation, citations, relevance) on the reading-mode screen | Shipped — **device-confirmed** |
 | 4 | "Fetch & start reading" progress as staged card rather than vanishing text | Shipped — **device-confirmed** |
 | 5 | Graph label overlap; constant-size labels; nodes separating on zoom | Shipped — **device-confirmed** (#301) |
 | 6 | **Discovery quality** — wants his `n8n_memory_research_agent` standard; open to Google Scholar / Semantic Scholar / OpenAlex | **NEXT, untouched** |
@@ -375,12 +375,44 @@ target the wrong one appear to work and change nothing the app reads.
 
 Two facts from that work that change planning assumptions:
 
-- **OpenAlex is metered now** and answers `429 "Insufficient budget. This request costs $0.001 but
-  you only have $0"` for search *and* by-DOI lookups. Step 3 of `_fetch_missing` contributes
-  nothing today. Whether to pay for it is a product decision, so the code is left in place rather
-  than removed — but **do not plan discovery around free OpenAlex access** without re-checking.
+- **OpenAlex is metered but NOT unaffordable — an earlier version of this entry said it was
+  effectively dead, and that was wrong.** Re-verified live on 2026-07-30 (details and the corrected
+  plan below).
 - **Semantic Scholar with the key is not the constraint**: 0 of 120 requests were rate-limited, and
   84% of attempted title lookups verified. Discovery can lean on it.
+
+#### OpenAlex, re-verified live 2026-07-30 (corrects the "it's dead" note above)
+
+OpenAlex introduced usage-based pricing on **2026-02-24**. The prices are per call, and the shape of
+the call is what costs money:
+
+| Call | Price | Our code |
+|------|-------|----------|
+| Single work by DOI or OpenAlex id (`/works/doi:…`) | **$0 — unlimited** | `openalex.work_authorships_for`, `citations._openalex_by_id` |
+| Filter / list (`/works?filter=…`) | $0.0001 (~$0.10 per 1,000) | not used |
+| Search (`/works?search=…`) | $0.001 (~$1.00 per 1,000) | `citations._openalex_citation_count` |
+| PDF / XML download | $0.01 | not used |
+
+Daily free allowance is **$0.10/day with no key, and $1/day with a free API key** — 10×, free to
+obtain, passed as an `api_key=` **query parameter**. We send no key today, only a `mailto:`
+User-Agent (`openalex._headers`).
+
+**So the `429 "…costs $0.001 but you only have $0"` was self-inflicted, not a policy wall.**
+`citations.OPENALEX_MAX_LOOKUPS = 120` metered *searches* is $0.12 — one enrichment pass exhausts
+the entire unkeyed $0.10 daily budget, and everything afterwards that day 429s. That is why it
+looked permanently dead. Re-tested unkeyed on a fresh day: search returned **200**, not 429.
+
+Two consequences for planning:
+
+1. **A free API key is the whole fix for the budget**, and identifier lookups do not draw it down at
+   all. Affiliation enrichment (discovery's evidence step) uses the **free** by-id shape, so with a
+   key it can run at effectively unlimited volume.
+2. **Independent bug: arXiv DOIs resolve unreliably.** `openalex._work_lookup_id` maps an arXiv id
+   to `doi:10.48550/arXiv.<id>`. Of five well-known papers, **two 404** under that DOI — including
+   "Attention Is All You Need", which *is* in OpenAlex (`W2626778328`, 6,598 citations) under a
+   different DOI. Since our corpus is overwhelmingly arXiv, the free path we most want is the one
+   silently missing. Callers treat any non-200 as "no data", so this looks like absent coverage.
+   Fixing the resolution matters more than the budget does.
 
 **A correction worth carrying:** an earlier version of this list said "encrypted in transit" was
 blocked partly by `safe_fetch` permitting `http://` paper URLs. Checked against Google's live

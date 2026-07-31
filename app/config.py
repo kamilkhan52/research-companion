@@ -638,7 +638,8 @@ RETIRED_SETTING_KEYS = ("parallel_api_key",)
 
 _SETTING_KEYS = ("openrouter_api_key", "model", "narration_model", "preview_model", "openai_api_key",
                  "speech_provider", "tts_model", "tts_voice",
-                 "firecrawl_api_key", "semantic_scholar_api_key", "prior_notes_scope")
+                 "firecrawl_api_key", "semantic_scholar_api_key", "openalex_api_key",
+                 "prior_notes_scope")
 
 # Who owns which setting.
 #

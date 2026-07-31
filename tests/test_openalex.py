@@ -215,3 +215,52 @@ def test_transport_failure_aborts_the_pass_instead_of_timing_out_each_paper():
     openalex.annotate_project_authors(nodes, {}, client=OutageClient(), sleep=lambda *_: None)
     assert calls["n"] == 1  # broke out after the first failure, did not hit all five
     assert all(n["authors"] == [] for n in nodes)
+
+
+# --- API key (OpenAlex went usage-priced 2026-02-24) -------------------------------------------
+
+def test_the_key_rides_on_the_client_so_no_call_site_can_forget_it(monkeypatch):
+    """The key is a QUERY PARAMETER, not a header, so it cannot travel in `_headers()`. Attaching
+    it to the client makes httpx merge it into every request — including ones added later."""
+    monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"authorships": []})
+
+    client = openalex.make_client()
+    client._transport = httpx.MockTransport(handler)
+    openalex.work_authorships_for(arxiv_id="1706.03762", client=client)
+    client.close()
+
+    assert "api_key=test-key" in seen["url"]
+    assert "select=authorships" in seen["url"]  # the call's own params survive the merge
+
+
+def test_no_key_sends_no_api_key_parameter_rather_than_an_empty_one(monkeypatch):
+    """An empty `api_key=` is not the same as omitting it — OpenAlex answers a malformed key with
+    401, which would turn 'no key configured' into a hard failure instead of a smaller budget."""
+    monkeypatch.setenv("OPENALEX_API_KEY", "")
+    monkeypatch.setattr(openalex.config, "load_settings", lambda: {})
+    assert openalex.auth_params() == {}
+
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"authorships": []})
+
+    client = openalex.make_client()
+    client._transport = httpx.MockTransport(handler)
+    openalex.work_authorships_for(arxiv_id="1706.03762", client=client)
+    client.close()
+    assert "api_key" not in seen["url"]
+
+
+def test_the_environment_wins_over_the_settings_document(monkeypatch):
+    monkeypatch.setattr(openalex.config, "load_settings", lambda: {"openalex_api_key": "from-settings"})
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+    assert openalex.api_key() == "from-settings"
+    monkeypatch.setenv("OPENALEX_API_KEY", "from-env")
+    assert openalex.api_key() == "from-env"
