@@ -2,10 +2,14 @@
 
 Why OpenAlex (U.9 source evaluation): project graph nodes are built with `authors: []` and
 nothing fills them — and the authors view needs affiliations too. OpenAlex's works endpoint,
-looked up **by arXiv id**, returns both in one free, keyless call, and the lookup is
-paper-scoped so there is no author-name ambiguity to resolve. Semantic Scholar's affiliation
-fields are mostly empty in practice, and a first-PDF-page LLM pass costs tokens per paper —
-that pass remains the future backfill for non-arXiv papers only.
+looked up **by arXiv id**, returns both in one call OpenAlex prices at zero (a single work by
+id), and the lookup is paper-scoped so there is no author-name ambiguity to resolve. Semantic
+Scholar's affiliation fields are mostly empty in practice, and a first-PDF-page LLM pass costs
+tokens per paper — that pass remains the future backfill for non-arXiv papers only.
+
+OpenAlex has been usage-priced since 2026-02-24. Identifier lookups like this one still cost
+nothing, but SEARCH is $0.001/call against a daily allowance of $0.10 unkeyed or $1 with a free
+key — so the key (see `api_key`) is what keeps `citations`' title-search fallback usable.
 
 Shape mirrors citations.py: called from the graph build job only (never a request), a
 node-id-keyed cache persisted in the graph store so coverage accumulates across builds, and
@@ -21,7 +25,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import logging_config, store
+from . import config, logging_config, store
 
 log = logging_config.get("openalex")
 
@@ -36,6 +40,44 @@ def _headers() -> dict:
     contact = os.environ.get("RC_CONTACT_EMAIL", "").strip()
     ua = f"research-companion (mailto:{contact})" if contact else "research-companion"
     return {"User-Agent": ua}
+
+
+def api_key() -> str:
+    """The OpenAlex key. Mirrors `semantic_scholar.api_key`: environment first, then the
+    instance settings document (an operator key — one deployment, one OpenAlex account)."""
+    return (
+        os.environ.get("OPENALEX_API_KEY")
+        or config.load_settings().get("openalex_api_key")
+        or ""
+    ).strip()
+
+
+class _ApiKeyAuth(httpx.Auth):
+    """Stamps `api_key` onto the outgoing request URL.
+
+    Client-level `params=` is NOT enough, which is the whole reason this class exists: httpx
+    merges client params UNDERNEATH request params, so a call site that passes its own
+    `api_key` — including an empty one — silently replaces the configured key and puts us back
+    on the unkeyed allowance, where 429 is indistinguishable from OpenAlex having no data.
+    `auth_flow` runs after that merge, so it is the only attachment point that always wins.
+    """
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+
+    def auth_flow(self, request):
+        request.url = request.url.copy_set_param("api_key", self._key)
+        yield request
+
+
+def make_client(*, timeout: float = TIMEOUT_S) -> httpx.Client:
+    """The one way to build an OpenAlex client: polite-pool identification plus the API key,
+    attached so that no call site — present or future — can drop it. Unkeyed, this is an
+    ordinary client; OpenAlex answers with a 10x smaller daily allowance rather than a refusal.
+    """
+    key = api_key()
+    return httpx.Client(timeout=timeout, headers=_headers(),
+                        auth=_ApiKeyAuth(key) if key else None)
 
 
 def _work_lookup_id(*, arxiv_id: str | None = None, doi: str | None = None) -> str | None:
@@ -99,7 +141,7 @@ def annotate_discovery_authorships(
     names. A transport outage aborts after one request; missing metadata never penalizes ranking.
     """
     own = client is None
-    client = client or httpx.Client(timeout=TIMEOUT_S)
+    client = client or make_client(timeout=TIMEOUT_S)
     try:
         for candidate in candidates:
             if not candidate.get("arxiv_id") and not candidate.get("doi"):
@@ -139,7 +181,7 @@ def annotate_project_authors(nodes: list[dict], cache: dict, *,
     since the last build get picked up. Never raises."""
     if fetch:
         own = client is None
-        client = client or httpx.Client(timeout=TIMEOUT_S)
+        client = client or make_client(timeout=TIMEOUT_S)
         try:
             for node in nodes:
                 if node.get("kind") != "project" or not node.get("arxiv_id"):

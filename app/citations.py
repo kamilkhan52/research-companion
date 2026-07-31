@@ -103,9 +103,11 @@ def annotate_nodes(nodes: list[dict], cache: dict, *, client: httpx.Client | Non
     own = client is None
     client = client or httpx.Client(timeout=TIMEOUT_S)
     before = len(cache)
-    # OpenAlex gets its own client: a different host, and it asks callers to identify themselves
-    # so requests land in its faster "polite pool" rather than the anonymous one.
-    openalex = httpx.Client(timeout=TIMEOUT_S, headers=openalex_mod._headers())
+    # OpenAlex gets its own client: a different host, its own polite-pool identification, and its
+    # own API key — all of which `openalex.make_client` attaches in one place. Building a bare
+    # client here is what left this step unkeyed on a $0.10/day allowance, which one pass of
+    # `OPENALEX_MAX_LOOKUPS` searches exhausts (see `openalex.make_client`).
+    openalex = openalex_mod.make_client(timeout=TIMEOUT_S)
     try:
         _fetch_missing(nodes, cache, client, sleep, openalex_client=openalex)
     except Exception as e:  # noqa: BLE001 — enrichment must never fail the build

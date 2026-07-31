@@ -2398,6 +2398,8 @@ export interface components {
             firecrawl_api_key?: string | null;
             /** Semantic Scholar Api Key */
             semantic_scholar_api_key?: string | null;
+            /** Openalex Api Key */
+            openalex_api_key?: string | null;
             /** Prior Notes Scope */
             prior_notes_scope?: string | null;
         };
