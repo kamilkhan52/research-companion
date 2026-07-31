@@ -31,6 +31,7 @@ import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { keys, useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
 import { ProgressSteps } from '@/components/ProgressSteps';
+import { ScanningList } from '@/components/ScanningList';
 import { TabHeader } from '@/components/TopBar';
 import { useDiscoveryRun } from '@/hooks/useDiscoveryRun';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
@@ -286,38 +287,39 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
 // from the reader's own library and reference graph, which need no model to be worth showing —
 // they appear seconds in. They are labelled provisional, because a paper shown here and then
 // absent from the results must read as the search narrowing rather than as a bug.
+/** One row's height. Fixed, because the scroller translates by exact multiples of it — a row
+ *  that grew to two lines would put the loop seam out of alignment. Titles clamp to one line. */
+const FIND_ROW_H = 44;
+
 function LiveFinds({ job }: { job: DiscoveryJob }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const finds = job.finds ?? [];
   if (!finds.length) return null;
-  const provisional = job.finds_stage === 'grounded';
+  const ranked = job.finds_stage === 'ranked';
 
   return (
     <View style={styles.finds}>
       <View style={styles.findsHead}>
         <Icon name="compass" size={14} color={t.mint} />
         <Text variant="overline" color={t.mint}>
-          {provisional ? 'Turning up so far' : 'Best matches so far'}
+          {ranked ? 'Best matches so far' : 'Scanning'}
         </Text>
       </View>
-      {finds.map((find, i) => (
-        <View key={`${find.title}:${i}`} style={styles.findRow}>
-          <Text variant="body" numberOfLines={2}>
-            {find.title}
-          </Text>
-          {find.reason ? (
-            <Text variant="caption" color={t.muted} numberOfLines={1} style={{ marginTop: 2 }}>
-              {find.reason}
+      <ScanningList rowHeight={FIND_ROW_H} rows={2} fadeColor={t.elevated}>
+        {finds.map((find, i) => (
+          <View key={`${find.title}:${i}`}>
+            <Text variant="body" numberOfLines={1}>
+              {find.title}
             </Text>
-          ) : null}
-        </View>
-      ))}
-      <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
-        {provisional
-          ? 'From your library and its references — still checking these against your topic.'
-          : 'Ranked so far; the final list is still being assembled.'}
-      </Text>
+            {find.reason ? (
+              <Text variant="caption" color={t.muted} numberOfLines={1} style={{ marginTop: 2 }}>
+                {find.reason}
+              </Text>
+            ) : null}
+          </View>
+        ))}
+      </ScanningList>
     </View>
   );
 }
@@ -687,7 +689,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     gap: space.xs,
   },
   findsHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: space.xs },
-  findRow: { paddingVertical: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.line2 },
   goalsInput: {
     backgroundColor: t.elevated,
     borderWidth: 1,
