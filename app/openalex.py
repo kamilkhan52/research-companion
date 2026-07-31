@@ -52,23 +52,32 @@ def api_key() -> str:
     ).strip()
 
 
-def auth_params() -> dict:
-    """OpenAlex takes the key as a QUERY PARAMETER (`api_key=`), not a header — so it cannot
-    ride along in `_headers()` and has to be attached per client. Empty without a key, which
-    still works: unkeyed callers get a smaller allowance rather than a refusal."""
-    key = api_key()
-    return {"api_key": key} if key else {}
+class _ApiKeyAuth(httpx.Auth):
+    """Stamps `api_key` onto the outgoing request URL.
+
+    Client-level `params=` is NOT enough, which is the whole reason this class exists: httpx
+    merges client params UNDERNEATH request params, so a call site that passes its own
+    `api_key` — including an empty one — silently replaces the configured key and puts us back
+    on the unkeyed allowance, where 429 is indistinguishable from OpenAlex having no data.
+    `auth_flow` runs after that merge, so it is the only attachment point that always wins.
+    """
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+
+    def auth_flow(self, request):
+        request.url = request.url.copy_set_param("api_key", self._key)
+        yield request
 
 
 def make_client(*, timeout: float = TIMEOUT_S) -> httpx.Client:
-    """The one way to build an OpenAlex client.
-
-    Attaching the key at the CLIENT rather than at each call site is deliberate: httpx merges
-    client-level params into every request, so a new call site cannot forget it. Forgetting is
-    not a hypothetical — an unkeyed caller silently draws down a 10x smaller daily budget and
-    then gets 429s that look exactly like OpenAlex having no data (see `citations`).
+    """The one way to build an OpenAlex client: polite-pool identification plus the API key,
+    attached so that no call site — present or future — can drop it. Unkeyed, this is an
+    ordinary client; OpenAlex answers with a 10x smaller daily allowance rather than a refusal.
     """
-    return httpx.Client(timeout=timeout, headers=_headers(), params=auth_params())
+    key = api_key()
+    return httpx.Client(timeout=timeout, headers=_headers(),
+                        auth=_ApiKeyAuth(key) if key else None)
 
 
 def _work_lookup_id(*, arxiv_id: str | None = None, doi: str | None = None) -> str | None:

@@ -551,13 +551,42 @@ def test_a_title_too_generic_to_identify_a_paper_is_not_looked_up():
     assert called["n"] == 0
 
 
-def test_the_openalex_fallback_client_carries_the_api_key(monkeypatch):
+def test_the_openalex_request_this_module_actually_sends_carries_the_api_key(monkeypatch):
     """The metered call in this module is OpenAlex SEARCH ($0.001). Unkeyed it draws on a
-    $0.10/day allowance that one pass of OPENALEX_MAX_LOOKUPS exhausts, after which every
-    request 429s and looks exactly like OpenAlex having no data. Regression guard for that."""
+    $0.10/day allowance that ONE pass of OPENALEX_MAX_LOOKUPS exhausts, after which every
+    request 429s and looks exactly like OpenAlex having no data.
+
+    This drives `annotate_nodes` and inspects the URL that leaves the OpenAlex client, rather
+    than asserting anything about a client built by the test. Reverting `annotate_nodes` to a
+    bare `httpx.Client` must turn this red — an earlier version of this test did not, because
+    it constructed its own client and never exercised the call site it claimed to guard.
+    """
     monkeypatch.setenv("OPENALEX_API_KEY", "test-key")
-    client = citations.openalex_mod.make_client()
-    try:
-        assert dict(client.params).get("api_key") == "test-key"
-    finally:
-        client.close()
+    seen: list[str] = []
+
+    def openalex_handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"results": []})
+
+    real_make_client = citations.openalex_mod.make_client
+
+    def mock_transport_client(**kwargs):
+        client = real_make_client(**kwargs)
+        client._transport = httpx.MockTransport(openalex_handler)
+        return client
+
+    monkeypatch.setattr(citations.openalex_mod, "make_client", mock_transport_client)
+    # conftest stubs `_fetch_missing` suite-wide to keep the suite offline; this test needs the
+    # real one, because the client under test is the one `annotate_nodes` hands it.
+    monkeypatch.setattr(citations, "_fetch_missing", real_fetch_missing)
+
+    # Semantic Scholar answers nothing, so every node falls through to the OpenAlex step.
+    s2 = httpx.Client(transport=httpx.MockTransport(
+        lambda _r: httpx.Response(404, json={})))
+    nodes = [{"id": "n1", "title": "A Sufficiently Specific Paper Title Here",
+              "arxiv_id": "1706.03762"}]
+    citations.annotate_nodes(nodes, {}, client=s2, sleep=lambda *_: None)
+    s2.close()
+
+    assert seen, "annotate_nodes never reached OpenAlex; the test would pass vacuously"
+    assert all("api_key=test-key" in url for url in seen), seen

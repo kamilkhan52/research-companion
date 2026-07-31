@@ -243,7 +243,6 @@ def test_no_key_sends_no_api_key_parameter_rather_than_an_empty_one(monkeypatch)
     401, which would turn 'no key configured' into a hard failure instead of a smaller budget."""
     monkeypatch.setenv("OPENALEX_API_KEY", "")
     monkeypatch.setattr(openalex.config, "load_settings", lambda: {})
-    assert openalex.auth_params() == {}
 
     seen = {}
 
@@ -256,6 +255,30 @@ def test_no_key_sends_no_api_key_parameter_rather_than_an_empty_one(monkeypatch)
     openalex.work_authorships_for(arxiv_id="1706.03762", client=client)
     client.close()
     assert "api_key" not in seen["url"]
+
+
+def test_a_call_site_cannot_override_the_key_with_its_own_param(monkeypatch):
+    """Attaching the key as client-level `params=` is NOT sufficient and this pins why: httpx
+    merges client params UNDERNEATH request params, so a call site passing its own `api_key` —
+    or an empty one — would silently replace the configured key and drop us back onto the
+    unkeyed allowance, where 429 is indistinguishable from OpenAlex having no data."""
+    monkeypatch.setenv("OPENALEX_API_KEY", "real-key")
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={})
+
+    client = openalex.make_client()
+    client._transport = httpx.MockTransport(handler)
+    try:
+        client.get(f"{openalex.BASE}/works", params={"api_key": "", "search": "x"})
+        assert "api_key=real-key" in seen["url"], seen["url"]
+        client.get(f"{openalex.BASE}/works", params={"api_key": "attacker-supplied"})
+        assert "api_key=real-key" in seen["url"], seen["url"]
+        assert "attacker-supplied" not in seen["url"]
+    finally:
+        client.close()
 
 
 def test_the_environment_wins_over_the_settings_document(monkeypatch):
