@@ -129,6 +129,53 @@ def work_authorships(arxiv_id: str, *, client: httpx.Client) -> list[dict] | Non
     return work_authorships_for(arxiv_id=arxiv_id, client=client)
 
 
+
+def concurrency() -> int:
+    """How many discovery authorship lookups run at once. Bounded 1-12; 1 keeps the serial loop."""
+    try:
+        n = int(os.environ.get("RC_DISCOVERY_RECALL_CONCURRENCY", "8"))
+    except ValueError:
+        n = 8
+    return max(1, min(12, n))
+
+
+def _annotate_discovery_parallel(candidates: list[dict], *, client: httpx.Client) -> None:
+    """The same lookup, fanned out. These are single-work-by-id calls, which OpenAlex prices at
+    zero, so the only cost of doing them one at a time was wall-clock — 83s for 60 candidates on
+    a real run, against a funnel whose other stages had already been parallelised down to tens of
+    seconds. Failures stay best-effort: a candidate simply keeps no affiliations."""
+    from . import jobs
+
+    targets = [c for c in candidates
+               if c.get("arxiv_id") or c.get("doi")]
+    if not targets:
+        return
+
+    def one(candidate: dict):
+        return work_authorships_for(arxiv_id=candidate.get("arxiv_id"),
+                                    doi=candidate.get("doi"), client=client)
+
+    # The first lookup is a serial PROBE, which preserves the property the serial loop had: a
+    # transport outage aborts the pass after ONE request instead of paying a timeout per paper.
+    # Fanning out blindly would turn an outage into `len(targets)/workers` rounds of timeouts.
+    try:
+        first = one(targets[0])
+    except httpx.HTTPError:
+        log.info("openalex unreachable — skipping discovery enrichment")
+        return
+    rest = jobs.run_parallel(targets[1:], one, max_workers=concurrency(),
+                             thread_name_prefix="discover-authorships")
+
+    for candidate, ships in zip(targets, [first, *rest], strict=True):
+        if isinstance(ships, Exception) or ships is None:
+            continue
+        candidate["authorships"] = ships
+        if not candidate.get("authors"):
+            candidate["authors"] = [ship["name"] for ship in ships]
+        candidate["affiliations"] = list(dict.fromkeys(
+            ship["affiliation"] for ship in ships if ship.get("affiliation")))
+
+
 def annotate_discovery_authorships(
     candidates: list[dict],
     *,
@@ -142,6 +189,11 @@ def annotate_discovery_authorships(
     """
     own = client is None
     client = client or make_client(timeout=TIMEOUT_S)
+    if concurrency() > 1:
+        _annotate_discovery_parallel(candidates, client=client)
+        if own:
+            client.close()
+        return
     try:
         for candidate in candidates:
             if not candidate.get("arxiv_id") and not candidate.get("doi"):

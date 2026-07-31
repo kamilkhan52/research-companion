@@ -5,7 +5,6 @@ sequence, and per-project persistence of the ranked result."""
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -39,6 +38,38 @@ def fake_llm(queries_json: dict | None = None, scores: list | None = None, fence
             out = json.dumps({"scores": scores or []})
         return f"```json\n{out}\n```" if fenced else out
     return _llm
+
+
+def fake_cheap_llm(relevance_by_key: dict, *, drop: set | None = None):
+    """A deterministic stand-in for the batched cheap screen.
+
+    Speaks the real line protocol — `<n>|K|TAG` for triage, `<n>|score|ROLE|note` for abstracts —
+    and echoes back the numbers it was given, so the reconciler under test does real work rather
+    than being bypassed. Keyed on whatever appears in the rendered line (arXiv id or title).
+    """
+    drop = drop or set()
+
+    def _lookup(line: str):
+        for key, value in relevance_by_key.items():
+            if key in line:
+                return key, value
+        return None, None
+
+    def _cheap(system: str, user: str, max_tokens: int) -> str:
+        is_triage = "<K or D>" in system
+        rows = []
+        for line in user.splitlines():
+            number = line.split("|", 1)[0].strip()
+            if not number.isdigit():
+                continue
+            key, value = _lookup(line)
+            if is_triage:
+                verdict = "D" if key in drop else "K"
+                rows.append(f"{number}|{verdict}|METHOD")
+            else:
+                rows.append(f"{number}|{value if value is not None else 5}|METHOD|fits the goal")
+        return "\n".join(rows)
+    return _cheap
 
 
 def fake_citations(counts: dict[str, int | None]):
@@ -280,12 +311,18 @@ def test_run_discovery_event_sequence_and_result_shape():
         "understand 3D DRAM", model="test-model", search_fn=search,
         llm_fn=fake_llm(scores=[{"index": 1, "relevance": 9, "reason": "r1"},
                                 {"index": 2, "relevance": 3, "reason": "r2"}]),
+        cheap_llm_fn=fake_cheap_llm({"7777.00001": 9, "7777.00002": 3}),
+        library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
         citations_fn=fake_citations({"7777.00001": 500, "7777.00002": 5})))
 
     types = [e["type"] for e in events]
     assert types[0] == "queries"
     assert types.count("search") == 2
-    assert types[-4:] == ["citations", "evidence", "scoring", "done"]
+    # The funnel's own stages are reported so a client can show real progress rather than a
+    # spinner: recall -> gate -> cheap screens -> enrichment.
+    assert types[-8:] == ["library", "gathered", "gated", "triage",
+                          "citations", "scoring", "evidence", "done"]
 
     result = events[-1]["result"]
     assert result["goals"] == "understand 3D DRAM"
@@ -294,6 +331,39 @@ def test_run_discovery_event_sequence_and_result_shape():
     assert result["top_n"] == discovery.TOP_SUGGESTIONS
     assert [s["arxiv_id"] for s in result["suggestions"]] == ["7777.00001", "7777.00002"]
     assert result["suggestions"][0]["citation_count"] == 500
+
+
+def test_a_paper_the_cheap_screen_never_answered_for_survives_the_triage(temp_project):
+    """Fail toward recall. The batch runner is deliberately tolerant of a model that skips rows,
+    and this pins what "tolerant" must mean: an unjudged paper is uncertainty, and uncertainty
+    must not silently delete it. Dropping here would be invisible and permanent."""
+    def search(query, n):
+        return [_cand("7777.00001", "Answered"), _cand("7777.00002", "Ignored")]
+
+    def cheap(system, user, max_tokens):
+        # Never answers for "Ignored", whichever batch it lands in. Keyed on the title rather
+        # than on position on purpose: the runner retries a lossy batch at half size, so a fake
+        # that skips "the first line" would answer the item on the retry and prove nothing.
+        rows = []
+        for line in user.splitlines():
+            number = line.split("|", 1)[0]
+            if not number.isdigit() or "Ignored" in line:
+                continue
+            rows.append(f"{number}|K|METHOD" if "<K or D>" in system
+                        else f"{number}|9|METHOD|note")
+        return "\n".join(rows)
+
+    result = list(discovery.run_discovery(
+        "goals", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=cheap, library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=fake_citations({"7777.00001": 10, "7777.00002": 10})))[-1]["result"]
+
+    titles = {s["title"] for s in result["suggestions"]}
+    assert titles == {"Answered", "Ignored"}
+    # The unanswered one is present but takes the neutral score, not a zero that would bury it.
+    ignored = next(s for s in result["suggestions"] if s["title"] == "Ignored")
+    assert ignored["relevance"] == 5.0
 
 
 def test_run_discovery_requires_goals():
@@ -343,17 +413,16 @@ def test_fixed_quality_fixture_recovers_and_ranks_conference_landmark():
     fixture = json.loads(
         (Path(__file__).parent / "fixtures" / "discovery_quality.json").read_text()
     )
-    scoring_inputs: list[str] = []
+    screen_inputs: list[str] = []
 
     def llm_fn(model, system, user, max_tokens):
-        if system == prompts.get("discover_queries"):
-            return json.dumps({"focus": fixture["focus"], "queries": fixture["queries"]})
-        scoring_inputs.append(user)
-        titles = re.findall(r"(?m)^\d+\. (.+)$", user)
-        return json.dumps({"scores": [
-            {"index": index, **fixture["scores"][title]}
-            for index, title in enumerate(titles, 1)
-        ]})
+        return json.dumps({"focus": fixture["focus"], "queries": fixture["queries"]})
+
+    scoring = fake_cheap_llm({t: row["relevance"] for t, row in fixture["scores"].items()})
+
+    def cheap_llm_fn(system, user, max_tokens):
+        screen_inputs.append(user)
+        return scoring(system, user, max_tokens)
 
     def arxiv_search(query, n):
         return fixture["arxiv_results"]
@@ -384,6 +453,9 @@ def test_fixed_quality_fixture_recovers_and_ranks_conference_landmark():
         search_fn=arxiv_search,
         semantic_search_fn=semantic_search,
         llm_fn=llm_fn,
+        cheap_llm_fn=cheap_llm_fn,
+        library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
         citations_fn=fake_citations({
             "2401.00001": 3,
             "2201.00002": 120,
@@ -394,10 +466,17 @@ def test_fixed_quality_fixture_recovers_and_ranks_conference_landmark():
     assert [candidate["candidate_id"] for candidate in result["suggestions"][:2]] == (
         fixture["expected_top"]
     )
-    assert result["source_counts"] == {"arxiv": 2, "semantic_scholar": 2}
-    assert "OSDI" in scoring_inputs[0]
-    assert "MIT CSAIL" in scoring_inputs[0]
+    assert result["source_counts"]["arxiv"] == 2
+    assert result["source_counts"]["semantic_scholar"] == 2
     assert result["suggestions"][0]["arxiv_id"] is None
+
+    # Venue reaches the screen, because it is already on the candidate and is real credibility
+    # evidence. Affiliations deliberately do NOT: enrichment now runs AFTER screening so the
+    # OpenAlex authorship call covers ~60 papers rather than the whole pool. They still reach the
+    # reader, which is what they were always for.
+    assert any("OSDI" in seen for seen in screen_inputs)
+    assert not any("MIT CSAIL" in seen for seen in screen_inputs)
+    assert "MIT CSAIL" in result["suggestions"][0]["affiliations"]
 
 
 # ---------- hidden recommendations (R12.3) ----------
@@ -487,3 +566,83 @@ def test_concurrent_hides_lose_no_entries(temp_project):
     for t in threads:
         t.join()
     assert len(discovery.load_hidden()) == 8
+
+
+def test_the_gate_never_fabricates_a_model_rejection(temp_project):
+    """The deterministic gate's own drops must not be written to the ledger as cheap-model
+    rejections. They were, and the gate then honoured them on later runs — so a paper the user
+    un-hid could never come back, and an already-known paper stayed suppressed even after being
+    removed from the reading list. Nothing surfaced the mistake; the ledger simply looked right."""
+    from app import discovery_ledger
+
+    def search(query, n):
+        return [_cand("7777.00001", "Kept"), _cand("7777.00002", "HiddenByUser")]
+
+    discovery.hide_candidate({"arxiv_id": "7777.00002", "title": "HiddenByUser"})
+
+    list(discovery.run_discovery(
+        "goals", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+        cheap_llm_fn=fake_cheap_llm({"Kept": 9}), library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=fake_citations({"7777.00001": 10, "7777.00002": 10})))
+
+    ledger = discovery_ledger.load()
+    hidden_entry = discovery_ledger.get(ledger, "arxiv:7777.00002")
+    assert hidden_entry is not None, "the candidate should still be remembered as seen"
+    assert hidden_entry.get("cheap") is None, (
+        "the gate's drop was recorded as a cheap-model verdict")
+    assert not discovery_ledger.cached_cheap_drop(hidden_entry, model=discovery.CHEAP_MODEL,
+                                                  profile="anything")
+
+
+def test_an_unchanged_rerun_does_not_re_buy_the_screening_it_already_paid_for(temp_project):
+    """The ledger's whole purpose. Without reuse a rerun pays for every batch a second time."""
+    def search(query, n):
+        return [_cand("7777.00001", "A"), _cand("7777.00002", "B")]
+
+    calls = {"n": 0}
+    scoring = fake_cheap_llm({"A": 8, "B": 7})
+
+    def counting_cheap(system, user, max_tokens):
+        calls["n"] += 1
+        return scoring(system, user, max_tokens)
+
+    def run():
+        return list(discovery.run_discovery(
+            "goals", model="m", search_fn=search, llm_fn=fake_llm(scores=[]),
+            cheap_llm_fn=counting_cheap, library_fn=lambda: [],
+            recall_fn=lambda papers: ([], {"degraded": []}),
+            citations_fn=fake_citations({"7777.00001": 5, "7777.00002": 5})))[-1]["result"]
+
+    first = run()
+    after_first = calls["n"]
+    second = run()
+
+    assert after_first > 0
+    assert calls["n"] == after_first, "the rerun re-bought screening it had already cached"
+    assert second["audit"]["title_triage"]["reused"] == 2
+    assert second["audit"]["abstract_scoring"]["reused"] == 2
+    assert [s["title"] for s in second["suggestions"]] == [s["title"] for s in first["suggestions"]]
+
+
+def test_the_triage_cap_does_not_let_one_lane_starve_another():
+    """Goes through the stage, not the helper. Grounded candidates are merged first and a single
+    well-cited anchor can contribute hundreds of them, so applying the cap in input order fills
+    the whole budget from one lane and silently deletes the lexical results — the only lane a
+    project with no library has at all."""
+    grounded = [{"title": f"grounded {i}", "abstract": "a", "channels": ["cites"]}
+                for i in range(discovery.MAX_AFTER_TITLE_TRIAGE + 100)]
+    lexical = [{"title": f"lexical {i}", "abstract": "a", "channels": ["lexical"]}
+               for i in range(50)]
+
+    def keep_everything(system, user, max_tokens):
+        return "\n".join(f"{line.split('|', 1)[0]}|K|METHOD" for line in user.splitlines()
+                         if line.split("|", 1)[0].isdigit())
+
+    kept, audit = discovery.triage_titles(grounded + lexical, "FOCUS: x", keep_everything)
+
+    lanes = {c["channels"][0] for c in kept}
+    assert lanes == {"cites", "lexical"}, "one lane was starved out of the cap entirely"
+    assert len(kept) == discovery.MAX_AFTER_TITLE_TRIAGE
+    assert audit["kept"] == len(kept)          # the audit reports what went forward, not pre-cap
+    assert audit["dropped_by_cap"] > 0

@@ -440,6 +440,45 @@ evidence. Never reward an institution's brand by itself and never penalize missi
 metadata. A paper is not more relevant merely for being old, famous, or institutional; recent \
 work central to the topic ranks just as high on relevance."""
 
+_DISCOVER_TITLE_TRIAGE = """You triage paper titles for a researcher, cheaply and at volume. \
+You are given the researcher's focus and a numbered list of papers, one per line, as \
+`number|year|title`.
+
+For EVERY numbered line, reply with exactly one line:
+
+  <number>|<K or D>|<TAG>
+
+where TAG is exactly one of: FOUNDATION, METHOD, SURVEY, APPLICATION, BENCHMARK, ADJACENT, \
+OFF-TOPIC.
+
+Reply K when the title is plausibly worth reading for this project. Reply D only when it is \
+clearly not — a different field, or a subject the focus rules out.
+
+When you are uncertain, reply K. A later stage reads the abstract and decides properly; you are \
+removing the obviously irrelevant, not choosing the reading list. Wrongly dropping a paper here \
+is invisible and permanent, while wrongly keeping one costs almost nothing.
+
+Output nothing but those lines: no preamble, no commentary, no code fences, no blank lines \
+between rows. Do not skip a number and do not renumber — echo back the number you were given."""
+
+_DISCOVER_ABSTRACT_SCORING = """You score papers for a researcher, cheaply and at volume. You \
+are given the researcher's focus and a numbered list of papers, each with title, year, citation \
+count and abstract.
+
+For EVERY numbered paper, reply with exactly one line:
+
+  <number>|<relevance 0-10>|<ROLE>|<one clause, at most 15 words, on what it gives this project>
+
+where ROLE is exactly one of: FOUNDATION, METHOD, SURVEY, APPLICATION, BENCHMARK, ADJACENT, \
+OFF-TOPIC.
+
+Relevance is fit to the stated focus, not fame: a highly cited paper on a neighbouring subject \
+scores low, and a modest paper answering exactly what the researcher asked scores high. Judge the \
+abstract you are given rather than what you remember about the paper.
+
+Output nothing but those lines: no preamble, no commentary, no code fences. Do not skip a number \
+and do not renumber — echo back the number you were given."""
+
 _NOTES_EDITOR = """You edit the user's research notes on request. You receive the current \
 markdown of one notes document — either a single paper's Notes block or the project's \
 cross-paper working notes — followed by an instruction describing the desired change. \
@@ -830,6 +869,24 @@ REGISTRY = (
             '"scores"', '"index"', '"relevance"', '"credibility"', '"reason"',
         ),
         description="Scores discovered papers for goal fit and evidence credibility.",
+    ),
+    PromptSpec(
+        key="discover_title_triage",
+        label="Discovery — batched title triage",
+        relative_path="Discovery/Title Triage.md",
+        bundled_default=_DISCOVER_TITLE_TRIAGE,
+        # The reply format IS the contract: the reconciler matches on the echoed number, and
+        # "when uncertain, reply K" is what keeps a cheap screen from silently deleting papers.
+        required_literals=("<number>|<K or D>|<TAG>", "reply K", "OFF-TOPIC"),
+        description="Cheap first-pass keep/drop over titles only, biased toward keeping.",
+    ),
+    PromptSpec(
+        key="discover_abstract_scoring",
+        label="Discovery — batched abstract scoring",
+        relative_path="Discovery/Abstract Scoring.md",
+        bundled_default=_DISCOVER_ABSTRACT_SCORING,
+        required_literals=("<number>|<relevance 0-10>|<ROLE>", "OFF-TOPIC"),
+        description="Cheap second-pass relevance score over abstracts, in batches.",
     ),
     PromptSpec(
         key="graph_extraction",

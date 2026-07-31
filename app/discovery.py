@@ -26,14 +26,53 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import citations, config, graph, llm, openalex, prompts, retriever, semantic_scholar
+from . import (
+    citations,
+    config,
+    discovery_batch,
+    discovery_gate,
+    discovery_ledger,
+    discovery_recall,
+    graph,
+    graph_store,
+    llm,
+    logging_config,
+    openalex,
+    prompts,
+    retriever,
+    semantic_scholar,
+    store,
+)
 from .fileio import atomic_write_text
+
+log = logging_config.get("discovery")
 
 MAX_QUERIES = 6
 PER_QUERY_RESULTS = 25
 MAX_CANDIDATES = 50
 TOP_SUGGESTIONS = 5
 ABSTRACT_CHARS_FOR_SCORING = 1200
+
+# ---------- funnel (the library-grounded pipeline) ----------
+# Model ids are PINNED, deliberately not resolved through `routers.catalogue.FAVORITE_FAMILIES`.
+# That list auto-tracks the newest model in each family, so a new release would silently multiply
+# the cost of a stage that runs over thousands of items — and would also change what a cached
+# verdict means without changing its cache key. Verified 2026-07-30: v4-flash is $0.14/M in,
+# $0.28/M out, passes `llm.PRIVACY_ROUTING`, and reconciles a numbered batch without index drift.
+CHEAP_MODEL = "deepseek/deepseek-v4-flash"
+TITLE_BATCH_SIZE = 150
+ABSTRACT_BATCH_SIZE = 25
+TITLE_TRIAGE_MAX_TOKENS = 8_000
+ABSTRACT_SCORING_MAX_TOKENS = 8_000
+ABSTRACT_CHARS_FOR_SCREENING = 1100
+MAX_AFTER_TITLE_TRIAGE = 400
+MAX_AFTER_ABSTRACTS = 60
+
+# Grounded channels earn a bounded bonus: evidence tied to THIS project's corpus should outrank a
+# generic keyword hit, but it must not swamp relevance — a paper the reader's library cites is not
+# automatically worth reading. Same reasoning as the capped citation term below.
+PROVENANCE_BONUS_CITES = 1.0
+PROVENANCE_BONUS_GRAPH = 0.75
 QUERIES_MAX_TOKENS = 8_000
 SCORING_MAX_TOKENS = 24_000
 LLM_TIMEOUT_S = 240
@@ -50,6 +89,8 @@ SearchFn = Callable[[str, int], list[dict]]
 LlmFn = Callable[[str, str, str, int], str]
 CitationsFn = Callable[[list[dict], dict], None]
 AuthorshipsFn = Callable[[list[dict]], None]
+CheapLlmFn = Callable[[str, str, int], str]
+RecallFn = Callable[[list], tuple[list[dict], dict]]
 
 
 class DiscoveryError(Exception):
@@ -238,6 +279,23 @@ def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:
         )
     except llm.LLMError as e:
         raise DiscoveryError(str(e)) from e
+
+
+def _cheap_llm(system: str, user: str, max_tokens: int) -> str:
+    """One batched screening call on the pinned cheap model.
+
+    Tagged with its own `operation` so `usage.py` can show what the funnel's volume stages cost
+    separately from the reasoning calls — the whole cost claim for this feature rests on the
+    volume stages being cheap, and an untagged spend is an unfalsifiable claim.
+    """
+    return llm.complete(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        model=CHEAP_MODEL,
+        temperature=0.0,
+        max_tokens=max_tokens,
+        timeout=LLM_TIMEOUT_S,
+        operation="discovery_screen",
+    )
 
 
 def _parse_json(content: str) -> dict:
@@ -638,6 +696,213 @@ def score_candidates(
     return out
 
 
+# ---------- the funnel: cheap batched screening between wide recall and the ranked list ----------
+
+def _profile_text(goals: str, papers: list) -> str:
+    """The compact project profile every screening batch is judged against.
+
+    Deliberately small (~250 tokens): it is repeated in every batch, so its size multiplies across
+    the whole stage. Reading-list titles are included because they say what this researcher
+    actually reads far more precisely than a prose goal does.
+    """
+    titles = [getattr(p, "title", "") for p in (papers or [])[:10]]
+    titles = [t for t in titles if t]
+    lines = [f"FOCUS: {goals.strip()}"]
+    if titles:
+        lines.append("ALREADY READING: " + "; ".join(t[:90] for t in titles))
+    return "\n".join(lines)
+
+
+def _interleave_by_lane(candidates: list[dict], limit: int) -> list[dict]:
+    """Take `limit` candidates round-robin across recall lanes, so no lane can starve the others.
+
+    Order alone is not a safe way to apply a cap here. Grounded candidates are merged first and a
+    single well-cited anchor can contribute hundreds of forward citations, so a plain `[:limit]`
+    would fill the whole budget from one lane and silently delete the lexical results — which are
+    the only lane a project with no library has at all.
+    """
+    if len(candidates) <= limit:
+        return candidates
+    lanes: dict[str, list[dict]] = {}
+    for candidate in candidates:
+        lane = (candidate.get("channels") or ["lexical"])[0]
+        lanes.setdefault(lane, []).append(candidate)
+
+    out: list[dict] = []
+    queues = list(lanes.values())
+    position = 0
+    while len(out) < limit and any(position < len(q) for q in queues):
+        for queue in queues:
+            if position < len(queue):
+                out.append(queue[position])
+                if len(out) >= limit:
+                    break
+        position += 1
+    return out
+
+
+def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: dict | None = None,
+                  cheap_model: str = "", profile_hash: str = "") -> tuple[list[dict], dict]:
+    """Stage B — drop the obviously irrelevant on titles alone, biased hard toward keeping."""
+    if not candidates:
+        return [], {"stage": "title_triage", "items": 0}
+
+    # A candidate this exact model+profile already KEPT does not need re-judging. Reusing it is
+    # the ledger's whole purpose: without this a rerun re-buys every batch it already paid for.
+    cached_keep: dict[int, str] = {}
+    to_judge: list[dict] = []
+    for candidate in candidates:
+        entry = discovery_ledger.get(ledger or {}, _candidate_key(candidate))
+        cheap = (entry or {}).get("cheap") if entry else None
+        if (isinstance(cheap, dict) and cheap.get("verdict") == "K"
+                and cheap.get("model") == cheap_model
+                and cheap.get("profile_hash") == profile_hash):
+            cached_keep[id(candidate)] = str(cheap.get("tag") or "")
+        else:
+            to_judge.append(candidate)
+
+    system = prompts.render("discover_title_triage") + "\n\n" + profile
+
+    def render(index: int, candidate: dict) -> str:
+        year = candidate.get("year") or ""
+        return f"{index}|{year}|{str(candidate.get('title') or '')[:220]}"
+
+    values, audit = discovery_batch.run_batches(
+        to_judge, batch_size=TITLE_BATCH_SIZE, system=system, render_item=render,
+        llm_fn=lambda s, u: cheap_llm(s, u, TITLE_TRIAGE_MAX_TOKENS),
+        min_fields=1, stage="title_triage")
+    audit["reused"] = len(cached_keep)
+
+    verdicts = {id(c): (values.get(i), True) for i, c in enumerate(to_judge, 1)}
+    kept: list[dict] = []
+    for candidate in candidates:
+        if id(candidate) in cached_keep:
+            candidate["triage_tag"] = cached_keep[id(candidate)]
+            kept.append(candidate)
+            continue
+        fields, _ = verdicts.get(id(candidate), (None, False))
+        # No answer means KEEP: an unjudged paper is uncertainty, and the whole point of the
+        # instruction "when uncertain, reply K" is that this stage must not delete on silence.
+        verdict = (fields[0].upper() if fields else "K")[:1]
+        tag = fields[1].upper() if fields and len(fields) > 1 else ""
+        if verdict == "D" and not (discovery_gate.GROUNDED_CHANNELS
+                                   & set(candidate.get("channels") or [])):
+            continue
+        candidate["triage_tag"] = tag
+        kept.append(candidate)
+
+    capped = _interleave_by_lane(kept, MAX_AFTER_TITLE_TRIAGE)
+    audit["kept"] = len(capped)          # what actually goes forward, not the pre-cap count
+    audit["dropped_by_cap"] = len(kept) - len(capped)
+    return capped, audit
+
+
+def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
+                    ledger: dict | None = None, cheap_model: str = "",
+                    profile_hash: str = "") -> tuple[list[dict], dict]:
+    """Stage C — a 0-10 relevance score and a role tag from the abstract."""
+    if not candidates:
+        return [], {"stage": "abstract_scoring", "items": 0}
+
+    # Same reuse as the title stage, and it matters more here: this is the larger of the two
+    # per-item prompts, so an unchanged rerun would otherwise re-buy the most expensive screen.
+    to_judge: list[dict] = []
+    reused = 0
+    for candidate in candidates:
+        entry = discovery_ledger.get(ledger or {}, _candidate_key(candidate))
+        cached = (entry or {}).get("abstract") if entry else None
+        if (isinstance(cached, dict) and cached.get("model") == cheap_model
+                and cached.get("profile_hash") == profile_hash
+                and isinstance(cached.get("relevance"), int)):
+            candidate["relevance"] = float(cached["relevance"])
+            candidate["role"] = str(cached.get("role") or "")
+            candidate.setdefault("screen_note", "")
+            reused += 1
+        else:
+            to_judge.append(candidate)
+    candidates_to_score = to_judge
+
+    system = prompts.render("discover_abstract_scoring") + "\n\n" + profile
+
+    def render(index: int, candidate: dict) -> str:
+        cites = candidate.get("citation_count")
+        # Venue rides along because it is already on the candidate — it costs ~5 tokens and is
+        # real credibility evidence. Affiliations deliberately do NOT: they need an OpenAlex
+        # authorship call, which this design defers until after screening so it runs over ~60
+        # papers instead of thousands. That is a genuine trade, not an oversight.
+        return (f"{index}|{candidate.get('year') or ''}|"
+                f"{str(candidate.get('title') or '')[:220]}|"
+                f"{str(candidate.get('venue') or '')[:60]}|"
+                f"cites={cites if isinstance(cites, int) else '?'}|"
+                f"{str(candidate.get('abstract') or '')[:ABSTRACT_CHARS_FOR_SCREENING]}")
+
+    values, audit = discovery_batch.run_batches(
+        candidates_to_score, batch_size=ABSTRACT_BATCH_SIZE, system=system, render_item=render,
+        llm_fn=lambda s, u: cheap_llm(s, u, ABSTRACT_SCORING_MAX_TOKENS),
+        min_fields=2, stage="abstract_scoring")
+    audit["reused"] = reused
+
+    for index, candidate in enumerate(candidates_to_score, 1):
+        fields = values.get(index) or []
+        candidate["relevance"] = _clamped_score(fields[0] if fields else None)
+        candidate["role"] = (fields[1].upper() if len(fields) > 1 else "") or ""
+        note = fields[2].strip() if len(fields) > 2 else ""
+        candidate["screen_note"] = note[:160]
+    audit["scored"] = sum(1 for c in candidates if c.get("relevance"))
+    return candidates, audit
+
+
+def _clamped_score(raw: object) -> float:
+    """A relevance score we can rank on, whatever the model emitted.
+
+    An unparseable score becomes the neutral 5.0 rather than 0: this stage's job is ordering, and
+    a parse slip must not read as 'the model judged this irrelevant'.
+    """
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return 5.0
+    return max(0.0, min(10.0, value))
+
+
+def blend_and_rank(candidates: list[dict]) -> list[dict]:
+    """Deterministic final ordering, reusing the constants the old pipeline was tuned with."""
+    out = []
+    for candidate in candidates:
+        cites = candidate.get("citation_count") or 0
+        citation_term = min(CITATION_TERM_CAP, CITATION_TERM_SCALE * math.log10(1 + cites))
+        channels = set(candidate.get("channels") or [])
+        provenance_term = 0.0
+        reasons: list[str] = []
+        if candidate.get("screen_note"):
+            reasons.append(candidate["screen_note"])
+        if "cites" in channels:
+            provenance_term += PROVENANCE_BONUS_CITES
+            anchor = next((p.get("anchor_title") for p in candidate.get("provenance") or []
+                           if p.get("channel") == "cites" and p.get("anchor_title")), "")
+            reasons.append(f"Cites “{anchor[:70]}” from your reading list" if anchor
+                           else "Cites a paper on your reading list")
+        if "graph" in channels:
+            provenance_term += PROVENANCE_BONUS_GRAPH
+            graph_reasons = next((p.get("reasons") or [] for p in candidate.get("provenance") or []
+                                  if p.get("channel") == "graph"), [])
+            reasons.extend(str(r) for r in graph_reasons[:2])
+        if cites >= 100:
+            reasons.append(f"~{cites:,} citations overall — a well-established work")
+
+        relevance = float(candidate.get("relevance") or 0.0)
+        out.append({
+            **candidate,
+            "relevance": relevance,
+            "credibility": 0.0,
+            "score": round(relevance + citation_term + provenance_term, 3),
+            "reasons": list(dict.fromkeys(r for r in reasons if r))[:4],
+        })
+    out.sort(key=lambda c: (c["score"], c["relevance"], c.get("citation_count") or 0),
+             reverse=True)
+    return out
+
+
 # ---------- the full run (generator of progress events; drive via discovery_jobs) ----------
 
 def run_discovery(
@@ -649,6 +914,9 @@ def run_discovery(
     llm_fn: LlmFn | None = None,
     citations_fn: CitationsFn | None = None,
     authorships_fn: AuthorshipsFn | None = None,
+    cheap_llm_fn: CheapLlmFn | None = None,
+    library_fn: Callable[[], list] | None = None,
+    recall_fn: RecallFn | None = None,
 ) -> Iterator[dict]:
     """Run the multi-source pipeline and yield cheap snapshots for the background job."""
     goals = (goals or "").strip()
@@ -669,38 +937,167 @@ def run_discovery(
             else openalex.annotate_discovery_authorships
         )
 
+    cheap_llm = cheap_llm_fn or _cheap_llm
+    papers = _reading_list(library_fn)
+
     focus, queries = generate_queries(goals, model, llm_fn)
     yield {"type": "queries", "focus": focus, "queries": queries}
 
-    candidates: list[dict] = []
+    lexical: list[dict] = []
     for event in collect_candidates(queries, search_fn, semantic_search_fn):
         if event["type"] == "candidates":
-            candidates = event["candidates"]
+            lexical = event["candidates"]
         else:
             yield event
 
-    yield {"type": "citations", "count": len(candidates)}
-    add_citation_counts(candidates, citations_fn)
+    # The library-grounded channels. They are additive: a brand-new project has no papers and no
+    # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
+    # which is the case the feature was originally built for and must not regress.
+    yield {"type": "library", "papers": len(papers)}
+    grounded, recall_audit = _grounded_candidates(papers, recall_fn=recall_fn)
 
-    yield {"type": "evidence", "count": len(candidates)}
-    authorships_fn(candidates)
+    candidates = discovery_recall.merge_candidates(
+        [grounded, lexical], identity_keys=_identity_keys, merge_fn=_merge_candidate)
+    yield {"type": "gathered", "count": len(candidates)}
 
-    yield {"type": "scoring", "count": len(candidates)}
-    ranked = score_candidates(goals, candidates, model, llm_fn)
+    ledger = discovery_ledger.load()
+    profile_hash = discovery_ledger.profile_hash(goals, CHEAP_MODEL)
+    today = _now()[:10]
+    for candidate in candidates:
+        entry = discovery_ledger.observe(ledger, _candidate_key(candidate), candidate,
+                                         (candidate.get("channels") or ["lexical"])[0], today)
+        del entry
+
+    survivors, gate_counts = discovery_gate.apply_gate(
+        candidates, known_papers=papers, hidden_filter=filter_hidden,
+        titles_match=graph.titles_match, ledger=ledger, cheap_model=CHEAP_MODEL,
+        profile=profile_hash, today_year=datetime.now(UTC).year, identity_keys=_identity_keys)
+    yield {"type": "gated", "kept": len(survivors), "counts": gate_counts}
+
+    profile = _profile_text(goals, papers)
+    yield {"type": "triage", "count": len(survivors)}
+    gated = survivors                       # the population the cheap screen actually judged
+    triaged, triage_audit = triage_titles(gated, profile, cheap_llm, ledger=ledger,
+                                          cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
+    # ONLY over `gated`. Passing the pre-gate list here recorded a fabricated model rejection for
+    # every candidate the deterministic gate had removed — including hidden ones — and the gate
+    # then honoured that rejection on later runs, so un-hiding a paper could never bring it back.
+    _record_verdicts(ledger, triaged, gated, kind="cheap", model=CHEAP_MODEL,
+                     profile=profile_hash, today=today)
+
+    yield {"type": "citations", "count": len(triaged)}
+    add_citation_counts(triaged, citations_fn)
+
+    yield {"type": "scoring", "count": len(triaged)}
+    scored, abstract_audit = score_abstracts(triaged, profile, cheap_llm, ledger=ledger,
+                                             cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
+    scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
+    scored = scored[:MAX_AFTER_ABSTRACTS]
+
+    yield {"type": "evidence", "count": len(scored)}
+    authorships_fn(scored)
+
+    ranked = blend_and_rank(scored)
+    _record_verdicts(ledger, ranked, triaged, kind="abstract", model=CHEAP_MODEL,
+                     profile=profile_hash, today=today)
+    _persist_ledger(ledger)
+
+    funnel = {"gathered": len(candidates), **gate_counts,
+              "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
+    degraded = [*triage_audit.get("degraded", []), *abstract_audit.get("degraded", []),
+                *recall_audit.get("degraded", [])]
 
     yield {"type": "done", "result": {
         "goals": goals,
         "focus": focus,
         "model": model,
+        "cheap_model": CHEAP_MODEL,
         "queries": queries,
         "candidate_count": len(ranked),
         "source_counts": {
             provider: sum(
                 1 for candidate in ranked if provider in candidate.get("sources", [])
             )
-            for provider in ("arxiv", "semantic_scholar")
+            for provider in ("arxiv", "semantic_scholar", "openalex", "graph")
         },
+        "funnel": funnel,
+        "audit": {"recall": recall_audit, "gate": gate_counts,
+                  "title_triage": triage_audit, "abstract_scoring": abstract_audit},
+        "degraded": degraded,
         "top_n": TOP_SUGGESTIONS,
         "suggestions": ranked,
         "generated_at": _now(),
     }}
+
+
+def _reading_list(library_fn) -> list:
+    """The project's papers, or an empty list. Never fails a run — a project that cannot be read
+    simply has no grounded channels, and the lexical lane still produces suggestions."""
+    try:
+        return list((library_fn or store.list_papers)())
+    except Exception as e:  # noqa: BLE001 — recall is best-effort by design
+        log.info("could not read the reading list for discovery (%s)", type(e).__name__)
+        return []
+
+
+def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
+    """R1+R2+R5. Injectable as one seam so the suite stays network-free."""
+    if recall_fn is not None:
+        return recall_fn(papers)
+    audit: dict = {"anchors": 0, "cites": 0, "graph": 0, "degraded": []}
+    if not papers:
+        return [], audit
+
+    graph_data = graph_store.load()
+    from_graph = discovery_recall.graph_recommendations(graph_data)
+    audit["graph"] = len(from_graph)
+
+    anchor_cache = graph_data.setdefault("openalex_anchors", {})
+    before = len(anchor_cache)
+    client = openalex.make_client(timeout=discovery_recall.TIMEOUT_S)
+    try:
+        anchors = discovery_recall.resolve_anchors(papers, client=client, cache=anchor_cache)
+        audit["anchors"] = len(anchors)
+        from_cites = discovery_recall.chase_citations(anchors, client=client)
+        audit["cites"] = len(from_cites)
+    except Exception as e:  # noqa: BLE001 — an outage must not fail the run
+        log.warning("grounded recall stopped early (%s)", type(e).__name__)
+        audit["degraded"].append(f"citation chase stopped early ({type(e).__name__})")
+        from_cites = []
+    finally:
+        client.close()
+
+    if len(anchor_cache) != before:
+        try:
+            graph_store.save(graph_data)   # anchor ids are free but slow; pay for them once ever
+        except Exception:  # noqa: BLE001
+            pass
+    return [*from_cites, *from_graph], audit
+
+
+def _record_verdicts(ledger: dict, judged: list[dict], all_candidates: list[dict], *,
+                     kind: str, model: str, profile: str, today: str) -> None:
+    """Write this run's screening judgements back to the ledger so a rerun does not re-buy them."""
+    kept_keys = {_candidate_key(c) for c in judged}
+    for candidate in all_candidates:
+        key = _candidate_key(candidate)
+        entry = discovery_ledger.get(ledger, key)
+        if entry is None:
+            continue
+        if kind == "cheap":
+            discovery_ledger.record_cheap_verdict(
+                entry, verdict=("K" if key in kept_keys else "D"),
+                tag=str(candidate.get("triage_tag") or ""), model=model,
+                profile=profile, today=today)
+        elif key in kept_keys and isinstance(candidate.get("relevance"), (int, float)):
+            discovery_ledger.record_abstract_score(
+                entry, relevance=int(candidate["relevance"]),
+                role=str(candidate.get("role") or ""), model=model,
+                profile=profile, today=today)
+
+
+def _persist_ledger(ledger: dict) -> None:
+    try:
+        discovery_ledger.save(ledger)
+    except Exception as e:  # noqa: BLE001 — losing the ledger costs money, never correctness
+        log.warning("could not persist the discovery ledger (%s)", type(e).__name__)
