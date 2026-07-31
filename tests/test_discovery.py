@@ -819,3 +819,27 @@ def test_a_lexical_outage_is_reported_rather_than_presented_as_a_clean_run(temp_
     assert result["suggestions"], "the grounded lane should still have carried the run"
     assert any("Keyword search returned nothing" in d for d in result["degraded"]), \
         result["degraded"]
+
+
+def test_a_failed_query_plan_degrades_to_the_readers_own_words(temp_project):
+    """Observed in production 2026-07-31: the planner answered with something that was not JSON
+    and the run ended 168s in with nothing to show. The plan is a convenience — the reader's own
+    words are a usable query, and the library-grounded channels never used the plan at all."""
+    searched: list[str] = []
+
+    def llm_fn(model, system, user, max_tokens):
+        return "Sure! Here are some good queries you might try:"   # prose, not JSON
+
+    def search(query, n):
+        searched.append(query)
+        return [_cand("7777.00001", "Compute Express Link memory pooling")]
+
+    result = list(discovery.run_discovery(
+        "Compute Express Link uses and applications", model="m", search_fn=search,
+        llm_fn=llm_fn, cheap_llm_fn=fake_cheap_llm({"Compute Express Link": 9}),
+        library_fn=lambda: [], recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=fake_citations({"7777.00001": 20})))[-1]["result"]
+
+    assert result["suggestions"], "the run should have completed on the fallback plan"
+    assert any("Compute Express Link" in q for q in searched)
+    assert any("Query planning failed" in d for d in result["degraded"]), result["degraded"]

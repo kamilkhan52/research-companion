@@ -940,7 +940,19 @@ def run_discovery(
     cheap_llm = cheap_llm_fn or _cheap_llm
     papers = _reading_list(library_fn)
 
-    focus, queries = generate_queries(goals, model, llm_fn)
+    plan_error = ""
+    try:
+        focus, queries = generate_queries(goals, model, llm_fn)
+    except DiscoveryError as e:
+        # A model that answers the planner with prose, or truncates its JSON, used to end the run
+        # right here — 168s in, with nothing to show. Observed in production 2026-07-31. The plan
+        # is a convenience, not a requirement: the reader's own words are a perfectly good query,
+        # and the library-grounded channels do not use the plan at all. Degrade, do not die.
+        plan_error = str(e)
+        focus = goals[:120]
+        queries = [{"query": goals, "search_terms": goals, "phase": "broad",
+                    "rationale": "Searching your words directly"}]
+        log.warning("query planning failed (%s); searching the goals verbatim", plan_error)
     yield {"type": "queries", "focus": focus, "queries": queries}
 
     lexical: list[dict] = []
@@ -1032,6 +1044,8 @@ def run_discovery(
               "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
     degraded = [*triage_audit.get("degraded", []), *abstract_audit.get("degraded", []),
                 *recall_audit.get("degraded", [])]
+    if plan_error:
+        degraded.append(f"Query planning failed ({plan_error}); searched your words directly")
     if lexical_error:
         # Recorded, not swallowed. Continuing on the grounded channels is right, but a run that
         # searched only half its sources and says nothing presents an incomplete result as a
