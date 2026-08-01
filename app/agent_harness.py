@@ -16,10 +16,11 @@ the model to treat it as data to evaluate, never as instructions.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import AsyncIterator, Callable, Iterable
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     ModelRequest,
@@ -31,8 +32,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
-from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from . import agent as agent_mod
@@ -60,24 +61,52 @@ AGENT_REQUEST_LIMIT = 12
 _USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
 
 
-def _record_run_usage(run_usage, model: Model | None, operation: str) -> None:
-    """Best-effort accounting for an agentic run (R12.8 / sol review). The Pydantic AI path
-    bypasses llm.py's ledger, so meter it here — but with a hard limitation: Pydantic AI's
-    usage mapping drops OpenRouter's dollar `cost` (see models/openai._map_usage), so this path
-    can NEVER learn a turn's real cost, only its token counts.
+def _record_run_usage(
+    run_usage, model: Model | None, operation: str, messages: Iterable | None = None
+) -> None:
+    """Best-effort, per-request accounting for an agentic run.
 
-    So: record the token counts (exact), and whenever the run actually issued a billed request,
-    ALSO record a pending marker — cost-unknown — so `usage.summary()` flags totals as
-    estimated instead of reporting the cost as an exact $0 it isn't. This is not about clean vs
-    interrupted completion (a clean multi-round run's cost is just as unknown); it is that cost
-    is structurally unavailable on this path.
+    The native Pydantic AI OpenRouter adapter retains authoritative ``usage.cost`` and the
+    provider response id on each ``ModelResponse``. Record those responses individually: one
+    tool loop can issue up to twelve separately billed generations, and aggregating them into one
+    call loses both the spend shape and the ids needed to reconcile an interrupted response.
 
-    Residual limitation, documented rather than papered over: a request that fails upstream
-    before Pydantic AI increments `RunUsage.requests` is invisible here and records nothing. A
-    faithful fix (OpenRouter generation-cost lookup by id, or request-lifecycle hooks) is a
-    deliberate follow-up, not a token/marker workaround. Never raises: accounting must not fail
-    a turn."""
+    A response with an id but no authoritative cost becomes one reconcilable pending record. The
+    old aggregate fallback remains only for injected/non-OpenRouter models and for the rare failure
+    before the provider response enters the captured history. Never raises: analytics must not
+    fail the turn it observes.
+    """
     try:
+        openrouter_responses = [
+            message
+            for message in (messages or [])
+            if isinstance(message, ModelResponse) and message.provider_name == "openrouter"
+        ]
+        if openrouter_responses:
+            for response in openrouter_responses:
+                model_name = response.model_name or getattr(model, "model_name", None)
+                details = response.provider_details or {}
+                cost = details.get("cost")
+                request_usage = response.usage
+                if (
+                    isinstance(cost, (int, float))
+                    and not isinstance(cost, bool)
+                    and math.isfinite(cost)
+                    and cost >= 0
+                ):
+                    usage.record(
+                        operation,
+                        model_name,
+                        {
+                            "prompt_tokens": int(request_usage.input_tokens or 0),
+                            "completion_tokens": int(request_usage.output_tokens or 0),
+                            "total_tokens": int(request_usage.total_tokens or 0),
+                            "cost": cost,
+                        },
+                    )
+                else:
+                    usage.record_pending(operation, model_name, response.provider_response_id)
+            return
         if not run_usage:
             return
         model_name = getattr(model, "model_name", None) or config.load_settings().get("model")
@@ -124,20 +153,22 @@ TOOLS = [
 ]
 
 
-def _openrouter_model(model_id: str | None = None) -> OpenAIChatModel:
+def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
     settings = config.load_settings()
     key = settings.get("openrouter_api_key")
     if not key:
         raise agent_mod.AgentError("No OpenRouter API key set. Add it in Settings.")
-    provider = OpenAIProvider(base_url=config.OPENROUTER_BASE, api_key=key)
-    # `llm.PRIVACY_ROUTING` on this path too, and it is the one that matters most: the agentic loop
-    # is the DEFAULT turn path (`RC_AGENTIC=0` opts out), so covering only `llm.py` would leave the
-    # promise on /legal/privacy false for almost every real request. Pydantic AI owns the request
-    # body, so the constraint rides in `extra_body` rather than being merged by us.
-    return OpenAIChatModel(
+    provider = OpenRouterProvider(
+        api_key=key, app_url="http://localhost", app_title=config.APP_TITLE)
+    # Native OpenRouter settings retain the same unconditional privacy constraint while also
+    # requesting the authoritative usage/cost block on every tool-loop request.
+    return OpenRouterModel(
         model_id or settings.get("model"),
         provider=provider,
-        settings=OpenAIChatModelSettings(extra_body={"provider": llm.routing_payload()}),
+        settings=OpenRouterModelSettings(
+            openrouter_provider=llm.routing_payload(),
+            openrouter_usage={"include": True},
+        ),
     )
 
 
@@ -196,18 +227,20 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
     # mid-loop still meters the requests it DID make (sol review — otherwise a 12-request
     # runaway records zero agentic usage). The single-shot fallback meters itself via llm.py.
     run_usage = RunUsage()
-    try:
-        result = ag.run_sync(prompt, message_history=_to_message_history(prior),
-                             usage_limits=_USAGE_LIMITS, usage=run_usage)
-    except Exception as e:  # tool-incompatible / provider error → single-shot fallback
-        log.warning("agentic turn failed for %s (error=%s); falling back to single-shot",
-                    slug, type(e).__name__)
-        # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
-        return agent_mod.run_turn(slug, history, model=_model_id(model))
-    finally:
-        # Meters whatever requests happened, on success or fallback (the single-shot fallback
-        # additionally meters itself, with real cost, through llm.py).
-        _record_run_usage(run_usage, ag.model, "analysis")
+    prior_messages = _to_message_history(prior)
+    with capture_run_messages() as captured:
+        try:
+            result = ag.run_sync(prompt, message_history=prior_messages,
+                                 usage_limits=_USAGE_LIMITS, usage=run_usage)
+        except Exception as e:  # tool-incompatible / provider error → single-shot fallback
+            log.warning("agentic turn failed for %s (error=%s); falling back to single-shot",
+                        slug, type(e).__name__)
+            # `model` here is a pydantic-ai Model; the single-shot path takes a model-id string.
+            return agent_mod.run_turn(slug, history, model=_model_id(model))
+        finally:
+            # Meters whatever requests happened, on success or fallback (the single-shot fallback
+            # additionally meters itself, with real cost, through llm.py).
+            _record_run_usage(run_usage, ag.model, "analysis", captured[len(prior_messages):])
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -266,36 +299,44 @@ async def stream_agent_events(ag: Agent, prompt: str,
     # Recorded in `finally` so a capped/cancelled/failed stream still meters what it consumed
     # (sol review). The accumulator is filled in-place as requests happen.
     run_usage = RunUsage()
-    try:
-        async with ag.iter(prompt, message_history=_to_message_history(prior or []),
-                           usage_limits=_USAGE_LIMITS, usage=run_usage) as run:
-            async for node in run:
-                if Agent.is_model_request_node(node):
-                    if not first_request:
-                        yield {"type": "segment"}
-                    first_request = False
-                    async with node.stream(run.ctx) as request_stream:
-                        async for event in request_stream:
-                            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-                                if event.part.content:
-                                    yield {"type": "text", "text": event.part.content}
-                            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                                if event.delta.content_delta:
-                                    yield {"type": "text", "text": event.delta.content_delta}
-                elif Agent.is_call_tools_node(node):
-                    async with node.stream(run.ctx) as tool_stream:
-                        async for event in tool_stream:
-                            if isinstance(event, FunctionToolCallEvent):
-                                yield {"type": "tool", "name": event.part.tool_name,
-                                       "detail": _tool_detail(event.part.args)}
-        yield {"type": "final", "text": run.result.output if run.result else ""}
-    except agent_mod.AgentError:
-        raise
-    except Exception as e:  # normalize framework/provider errors
-        raise agent_mod.AgentError(
-            "The model provider could not complete the agentic request.") from e
-    finally:
-        _record_run_usage(run_usage, ag.model, operation)
+    prior_messages = _to_message_history(prior or [])
+    with capture_run_messages() as captured:
+        try:
+            async with ag.iter(prompt, message_history=prior_messages,
+                               usage_limits=_USAGE_LIMITS, usage=run_usage) as run:
+                async for node in run:
+                    if Agent.is_model_request_node(node):
+                        if not first_request:
+                            yield {"type": "segment"}
+                        first_request = False
+                        async with node.stream(run.ctx) as request_stream:
+                            async for event in request_stream:
+                                if isinstance(event, PartStartEvent) and isinstance(
+                                    event.part, TextPart
+                                ):
+                                    if event.part.content:
+                                        yield {"type": "text", "text": event.part.content}
+                                elif isinstance(event, PartDeltaEvent) and isinstance(
+                                    event.delta, TextPartDelta
+                                ):
+                                    if event.delta.content_delta:
+                                        yield {"type": "text", "text": event.delta.content_delta}
+                    elif Agent.is_call_tools_node(node):
+                        async with node.stream(run.ctx) as tool_stream:
+                            async for event in tool_stream:
+                                if isinstance(event, FunctionToolCallEvent):
+                                    yield {"type": "tool", "name": event.part.tool_name,
+                                           "detail": _tool_detail(event.part.args)}
+            yield {"type": "final", "text": run.result.output if run.result else ""}
+        except agent_mod.AgentError:
+            raise
+        except Exception as e:  # normalize framework/provider errors
+            raise agent_mod.AgentError(
+                "The model provider could not complete the agentic request.") from e
+        finally:
+            _record_run_usage(
+                run_usage, ag.model, operation, captured[len(prior_messages):]
+            )
 
 
 async def stream_with_single_shot_fallback(

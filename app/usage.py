@@ -1,14 +1,15 @@
 """Per-project LLM usage + cost accounting (improvements §3.3).
 
 Every OpenRouter call's usage — prompt/completion tokens and, when OpenRouter returns it, the
-authoritative dollar cost — is recorded here from the one seam that sees every call: llm.py.
+authoritative dollar cost — is recorded here from the two seams that see every call: ``llm.py``
+for raw requests and ``agent_harness.py`` for Pydantic AI tool-loop requests.
 It aggregates per project into `.state/usage.json`: a lifetime running total plus breakdowns by
 model and by operation (analysis, narration, graph_extraction, discovery, notes).
 
 Design notes:
 - **Cost comes straight from OpenRouter** (we request `usage.include`, and read `usage.cost`)
   rather than a local per-model pricing table, so it stays correct as prices change. If a
-  provider omits cost, tokens are still recorded and cost stays 0.
+  provider omits cost, that generation stays pending rather than becoming a false exact $0.
 - **Cost is stored as an integer count of nano-USD** (1e-9 dollars), not a float. This is a
   credits-ledger foundation: summing integers is exact, so a million sub-micro-dollar calls add
   up correctly, whereas rounding each float addition to a few decimals silently discards them.

@@ -50,12 +50,17 @@ Before the tables, three measured facts that matter more than the tier design:
    2026-07-24, so it is current, not stale. Pinning `provider: {only: ["deepseek"]}` is a
    ~60% cut to the LLM bill for one config line.
 
-3. **The default turn path cannot measure its own cost.** `RC_AGENTIC=1` is the default;
-   `agent_harness._record_run_usage` documents that Pydantic AI drops OpenRouter's dollar `cost`,
-   so agentic turns record **tokens with $0 cost** plus a `pending` marker. There are 17 such
-   pending records; `projects/embedded-llms` shows 6 analysis calls, 261 K prompt tokens, **cost
-   $0**. A credits system therefore **cannot** be built on `usage.cost` as `app/usage.py`'s
-   docstring assumes. It must meter **tokens × a local price table**. See §8.
+3. **The historical default-path sample could not measure its own cost.** `RC_AGENTIC=1` is the
+   default, and the generic adapter used during this measurement dropped OpenRouter's dollar
+   `cost`. Those agentic turns therefore recorded **tokens with $0 cost** plus one pending marker;
+   the 17 historical pending records and the figures derived from them remain as measured.
+
+   > **Implementation update 2026-07-31:** M3's first slice switches this path to Pydantic AI's
+   > native OpenRouter adapter, requests authoritative usage, and records cost per provider
+   > request. A missing-cost response is pending under its generation id. This removes the earlier
+   > conclusion that production credits *must* use a local token-price table; authoritative
+   > provider cost can back settlement, while reservations still need a pessimistic local maximum
+   > before admission. Historical tables below continue to describe the old ledgers.
 
 ---
 
@@ -102,9 +107,11 @@ from 74% to 32%.**
 
 ### 2a. Measured token profile per operation
 
-Aggregated across all eight ledgers. `calls` for `analysis` is per **turn** (the agentic loop
-records one aggregate row per run, not per provider request), so 44,668 prompt tokens is the
-whole ~12-request tool loop.
+Aggregated across all eight historical ledgers. In this sample, `calls` for `analysis` is per
+**turn** (the old agentic accounting recorded one aggregate row per run), so 44,668 prompt tokens
+is the whole ~12-request tool loop. M3's native OpenRouter path records new calls per provider
+request so each cost and generation id remains authoritative; do not combine the two call-count
+semantics in future measurements without migrating or segmenting the historical data.
 
 | Operation | Calls | Prompt tok/call | Completion tok/call |
 |---|---:|---:|---:|

@@ -56,7 +56,11 @@ def test_raw_client_sends_the_routing_constraint(monkeypatch):
             return c.post(url, **kw)
 
     monkeypatch.setattr(httpx, "post", post)
-    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "anthropic/claude-test"},
+    )
 
     llm.complete([{"role": "user", "content": "hi"}], operation="test")
 
@@ -67,15 +71,18 @@ def test_raw_client_sends_the_routing_constraint(monkeypatch):
 
 def test_agentic_path_sends_the_routing_constraint(monkeypatch):
     """The default turn path. Pydantic AI builds its own request body, so the constraint has to
-    ride in `extra_body`; asserting on the model's settings is what proves it will."""
-    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    ride in the native OpenRouter settings; asserting on them proves it will."""
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "anthropic/claude-test"},
+    )
 
     model = agent_harness._openrouter_model()
 
     settings = model.settings or {}
-    assert "extra_body" in settings, (
-        "the agentic model carries no extra_body, so no routing constraint reaches OpenRouter")
-    assert settings["extra_body"].get("provider") == llm.PRIVACY_ROUTING
+    assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
+    assert settings.get("openrouter_usage") == {"include": True}
 
 
 def test_a_data_policy_404_does_not_read_as_a_missing_model():

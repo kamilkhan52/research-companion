@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-29, end of the production-bring-up session)
+## Current position (updated 2026-07-31)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -22,6 +22,14 @@ closed.
 
 **M2.5 is code-complete and the app has had its first real device pass.** What now gates the AAB is
 not engineering — it is Kamil's sign-off plus H13. See "Where this session left off" below.
+
+**M3 has started with its prerequisite cost-attribution slice.** The implementation branch moves
+the default agentic path from Pydantic AI's generic OpenAI-compatible adapter to its native
+OpenRouter adapter, requests the authoritative usage block, and records every tool-loop provider
+response separately. Completed responses therefore carry exact OpenRouter cost; a response that
+still lacks cost is pending under its actual generation id rather than one unreconcilable
+run-level `None`. This closes the code-level mechanism behind P0-5 once reviewed and merged; real
+staging usage should still be checked before the audit row is struck through.
 
 ### Where this session left off (read this first)
 
@@ -1165,6 +1173,14 @@ generation id at the transport layer and emit one pending event per generation (
 generation-stats polling can resolve each), or route the agentic path through a client that
 preserves OpenRouter's authoritative `cost`. Nothing else in this milestone is trustworthy until
 turns are priced.
+
+**Implementation status (2026-07-31): in review.** The chosen path is Pydantic AI's native
+`OpenRouterModel`: `openrouter_usage.include` requests authoritative cost, captured
+`ModelResponse`s preserve both that cost and `provider_response_id`, and accounting emits one
+ledger call per provider request. The aggregate fallback remains only for injected/non-OpenRouter
+models and failures before a provider response is captured. Unit coverage asserts exact cost over
+a multi-request tool loop, no duplicate aggregate, a generation-specific pending fallback, and an
+unestimated ledger on the exact path.
 
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** `tts.py` never touches `usage.py`, so *all* OpenAI speech spend is
