@@ -221,20 +221,31 @@ def build_context(slug: str) -> str:
 def paper_opening_message(slug: str, full_text: str, template: str | None = None) -> str:
     """The first user message of a session: hands the agent the paper text and asks for the
     opening comprehensive summary. The template is user-editable (prompts.opening_message), but
-    the full text is always framed here, including when a saved session template omitted its
-    placeholder and the data has to be appended."""
+    the stored paper metadata and full text are always framed here. The compose-first API renders
+    the title for human editing before it stores the prompt, so a submitted template may contain
+    the literal title instead of ``{title}``; replace that rendered value at this final model-input
+    boundary as well."""
+    title = store.title_for(slug)
     framed = model_provenance.frame(
         "paper_full_text", full_text.strip(), source=slug,
     )
     framed_title = model_provenance.frame(
-        "paper_title", store.title_for(slug), source=slug,
+        "paper_title", title, source=slug,
     )
     if template is None:
         content = prompts.render(
             "opening_message", title=framed_title, full_text=framed,
         )
     else:
-        content = template.replace("{title}", framed_title).replace("{full_text}", framed)
+        if "{title}" in template:
+            content = template.replace("{title}", framed_title)
+        elif title:
+            # The visible opening-draft contract intentionally shows the actual title instead of
+            # a template token. It is still stored corpus metadata, not an authored instruction.
+            content = template.replace(title, framed_title)
+        else:
+            content = template
+        content = content.replace("{full_text}", framed)
     if full_text and framed not in content:
         content += "\n\n[BEGIN PAPER FULL TEXT]\n" + framed + "\n[END PAPER FULL TEXT]"
     return content
