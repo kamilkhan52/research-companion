@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 from app import (
     agent,
@@ -82,6 +83,26 @@ def test_raw_and_agentic_openrouter_paths_refuse_before_dispatch(monkeypatch):
     with pytest.raises(agent.AgentError, match="temporarily paused"):
         asyncio.run(model._completions_create([], False, {}, ModelRequestParameters()))
 
+    # The method-level check is intentionally not the only one: message mapping is awaited and
+    # may take time. Flip the switch INSIDE that window and prove the HTTPX transport sees nothing.
+    monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "false")
+    model = agent_harness._openrouter_model("test/model")
+    sent: list[httpx.Request] = []
+
+    async def flip_during_mapping(*_args, **_kwargs):
+        monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "true")
+        return []
+
+    async def would_send(request: httpx.Request):
+        sent.append(request)
+        return httpx.Response(200, json={"choices": []}, request=request)
+
+    monkeypatch.setattr(model, "_map_messages", flip_during_mapping)
+    model._provider._own_http_client._transport = httpx.MockTransport(would_send)
+    with pytest.raises(agent.AgentError, match="temporarily paused"):
+        asyncio.run(model._completions_create([], False, {}, ModelRequestParameters()))
+    assert sent == []
+
 
 def test_openai_speech_refuses_without_recording_or_dispatching(monkeypatch):
     monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "true")
@@ -141,3 +162,22 @@ def test_data_providers_refuse_or_degrade_before_dispatch(monkeypatch):
             pacer=semantic_scholar.RequestPacer(interval=0),
         )
     assert scholar.calls == 0
+
+
+def test_semantic_scholar_rechecks_after_pacing_sleep(monkeypatch):
+    monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "false")
+    now = [0.0]
+    sent: list[str] = []
+
+    def sleep(seconds: float):
+        now[0] += seconds
+        monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "true")
+
+    pacer = semantic_scholar.RequestPacer(
+        interval=1.0, sleep=sleep, clock=lambda: now[0],
+    )
+    assert pacer.call(lambda: sent.append("first") or object()) is not None
+
+    with pytest.raises(spend_control.ProviderSpendDisabled, match="temporarily paused"):
+        pacer.call(lambda: sent.append("escaped") or object())
+    assert sent == ["first"]

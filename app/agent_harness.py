@@ -20,6 +20,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Callable, Iterable
 
+from openai import OpenAIError
 from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -87,6 +88,40 @@ class _LedgerOpenRouterStreamedResponse(OpenRouterStreamedResponse):
         )
 
 
+class _OpenRouterSpendDisabled(OpenAIError):
+    """Stops OpenAI SDK retries while the model wrapper restores the public AgentError."""
+
+
+async def _require_openrouter_spend(_request) -> None:
+    """HTTPX request hook: the last awaitable boundary before the SDK sends OpenRouter bytes."""
+    try:
+        spend_control.require_enabled()
+    except spend_control.ProviderSpendDisabled as exc:
+        # The OpenAI SDK retries arbitrary hook exceptions as connection failures. Its own base
+        # error is explicitly propagated with no retry; the model wrapper translates it back to
+        # the app's safe domain error below.
+        raise _OpenRouterSpendDisabled(str(exc)) from exc
+
+
+class _SpendControlledOpenRouterProvider(OpenRouterProvider):
+    """OpenRouter provider whose owned HTTP client keeps the final spend hook across reuse."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        client = self._own_http_client
+        factory = self._http_client_factory
+        if client is None or factory is None:  # pragma: no cover - app always lets provider own it
+            raise RuntimeError("Spend-controlled OpenRouter requires an owned HTTP client.")
+        client.event_hooks["request"].append(_require_openrouter_spend)
+
+        def controlled_factory():
+            replacement = factory()
+            replacement.event_hooks["request"].append(_require_openrouter_spend)
+            return replacement
+
+        self._http_client_factory = controlled_factory
+
+
 class _LedgerOpenRouterModel(OpenRouterModel):
     async def _completions_create(self, *args, **kwargs):
         """Re-check the live kill switch for every tool-loop model request and retry."""
@@ -94,7 +129,10 @@ class _LedgerOpenRouterModel(OpenRouterModel):
             spend_control.require_enabled()
         except spend_control.ProviderSpendDisabled as exc:
             raise agent_mod.AgentError(str(exc)) from exc
-        return await super()._completions_create(*args, **kwargs)
+        try:
+            return await super()._completions_create(*args, **kwargs)
+        except _OpenRouterSpendDisabled as exc:
+            raise agent_mod.AgentError(str(exc)) from exc
 
     def _process_provider_details(self, response):
         return _retain_authoritative_zero_cost(
@@ -208,7 +246,7 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
     key = settings.get("openrouter_api_key")
     if not key:
         raise agent_mod.AgentError("No OpenRouter API key set. Add it in Settings.")
-    provider = OpenRouterProvider(
+    provider = _SpendControlledOpenRouterProvider(
         api_key=key, app_url="http://localhost", app_title=config.APP_TITLE)
     # Native OpenRouter settings retain the same unconditional privacy constraint while also
     # requesting the authoritative usage/cost block on every tool-loop request.

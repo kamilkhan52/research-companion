@@ -64,6 +64,10 @@ class RequestPacer:
                 if remaining > 0:
                     self._sleep(remaining)
             try:
+                # Final boundary, AFTER pacing sleep. An operator can enable the emergency stop
+                # while a request waits its turn; checking only before acquiring/sleeping would
+                # still dispatch that now-disabled request.
+                spend_control.require_enabled()
                 return request()
             finally:
                 self._last_completed = self._clock()
@@ -82,7 +86,6 @@ def paced_request(
     Citation enrichment and Discovery recall call this helper directly rather than `_request`, so
     the kill switch belongs here to cover the provider structurally instead of per endpoint.
     """
-    spend_control.require_enabled()
     return (pacer or _PACER).call(request)
 
 
