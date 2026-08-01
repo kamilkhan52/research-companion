@@ -102,7 +102,8 @@ def test_web_search_falls_through_to_working_provider(temp_project, monkeypatch)
                         lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("402")))
     monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "Web results: the answer")
     out = research_tools.web_search("anything", ["q"])
-    assert out == "Web results: the answer"
+    assert "Web results: the answer" in out
+    assert "UNTRUSTED DATA JSON" in out
 
 
 def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monkeypatch):
@@ -119,7 +120,8 @@ def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monke
 
     out = research_tools.web_search("anything", ["q"])
 
-    assert out == "Web results: recovered"
+    assert "Web results: recovered" in out
+    assert "UNTRUSTED DATA JSON" in out
 
 
 def test_an_unwrapped_exception_is_named_when_every_provider_fails(temp_project, monkeypatch):
@@ -154,5 +156,4 @@ def test_web_search_all_providers_down_returns_readable_error(temp_project, monk
         monkeypatch.setattr(research_tools, name, boom)
     out = research_tools.web_search("x", ["x"])
     assert "no provider available" in out.lower()
-
 

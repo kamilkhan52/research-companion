@@ -6,7 +6,7 @@ are assembled once at session start rather than rebuilt here every turn.
 """
 from __future__ import annotations
 
-from . import affiliations, config, figures, graph, graph_store, prompts, store
+from . import affiliations, config, figures, graph, graph_store, model_provenance, prompts, store
 from .models import REVIEW_SLUG
 
 
@@ -195,5 +195,7 @@ def build_context(slug: str) -> str:
 def paper_opening_message(slug: str, full_text: str) -> str:
     """The first user message of a session: hands the agent the paper text and asks for the
     opening comprehensive summary. The template is user-editable (prompts.opening_message)."""
-    return prompts.render("opening_message", title=store.title_for(slug),
-                          full_text=full_text.strip())
+    framed = model_provenance.frame(
+        "paper_full_text", full_text.strip(), source=slug,
+    )
+    return prompts.render("opening_message", title=store.title_for(slug), full_text=framed)

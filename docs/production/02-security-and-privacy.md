@@ -174,6 +174,33 @@ exception and the actual provider terms/configuration support that classificatio
 | OpenAlex | arXiv/DOI, **paper titles** (citation-count matching — sent whenever an identifier is absent OR its lookup misses), plus operator contact in User-Agent when configured | Author/affiliation metadata; global citation counts | `app/openalex.py`, `app/citations.py` |
 | arXiv/ar5iv and user-selected public hosts | Paper identifier or requested public URL; standard request metadata | Retrieve paper text, HTML, figures, or PDF | `app/retriever.py`, `app/figures.py`, `app/safe_fetch.py` |
 
+### Tool-loop trust and egress review
+
+Prompt injection is not made impossible by a sentence in a prompt. The fixed application policy
+therefore sits after operator-editable agent guidance, and paper full text plus web/tool results are
+serialized as a single typed JSON value. A forged role or end marker remains escaped inside its
+`content` field. Search objectives/queries and fetch URLs have hard length/count bounds; URLs with
+embedded credentials are refused. The policy forbids copying prompt, credential, private paper,
+notes, or transcript content into outbound arguments. These controls reduce accidental obedience
+and bulk exfiltration; they are not described as a model sandbox.
+
+Every network-capable tool or downstream fetch reachable from model output was re-inventoried:
+
+| Path | Model controls | Egress and boundary |
+|---|---|---|
+| Analyst/notes `web_search` → Firecrawl | Up to three bounded queries; only the first is dispatched today | Query plus fixed-endpoint API authentication. No paper text or transcript is appended by code. |
+| Analyst/notes `web_search` → DuckDuckGo fallback | Same bounded query | Query and ordinary request metadata; no application credential. |
+| Analyst/notes `web_fetch` → Firecrawl | Up to three bounded public URLs | Target URLs go to Firecrawl's fixed API with its credential. The model-supplied objective is not sent to the fetched host. |
+| Analyst/notes `web_fetch` → direct fallback | Same URLs | `safe_fetch.fetch`: public-IP validation on every redirect, byte/deadline/content bounds, no cookies or application credentials. |
+| Retrieval agent `fetch_pdf` | A URL found during its bounded title search | `safe_fetch.fetch` under the PDF ceiling; the arXiv-specialized branch first applies the same public-address guard and uses only a fixed User-Agent. |
+| Retrieval fallback title search | Bounded paper-title query | The same Firecrawl/DuckDuckGo search boundary above. |
+| Figure extraction | Image/page URLs parsed from paper HTML | Not a general model tool: HTTPS arXiv/ar5iv host allowlist, redirect revalidation, public-IP and raster/size bounds, no credentials. |
+| Citation/metadata enrichment | Paper identifiers/titles, not arbitrary tool URLs | Fixed Semantic Scholar/OpenAlex endpoints and shared pacing/provider-stop clients. |
+| Local paper/graph/notes tools | Slug chosen by the model | No network egress; project-scoped store reads only. Full paper text is provenance-framed on return. |
+
+No additional model-selected outbound-fetch path was found. The two bounded DNS residuals in
+`safe_fetch` remain P1-11 and are not relabeled by this review.
+
 OpenRouter is not only an API endpoint, and this was the largest unresolved gap in the inventory
 until 2026-07-28. The clients used to send a model ID with no `provider` routing constraint, so
 OpenRouter could choose among any endpoints eligible to serve that model; the provider-like prefix

@@ -2,9 +2,9 @@
 harness in a later step). Two families:
 
   * Local, project-scoped: read other papers' cached text / committed notes, list what's in the
-    project, find related papers, read the aggregate working notes. These are grounded in data
-    the user already pulled into the project — no external calls, no injection surface — and
-    resolve within the active project via the store layer (config.project_dir()).
+    project, find related papers, read the aggregate working notes. These make no external calls
+    and resolve within the active project via the store layer (config.project_dir()). Paper text
+    remains untrusted model input and is returned in a typed provenance envelope.
 
   * Web: fetch a URL's readable text, and search the web. These reach outside the corpus, so
     they carry real safety obligations, enforced here: http(s)-only, per-redirect-hop blocking
@@ -29,7 +29,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import config, graph_store, logging_config, safe_fetch, sessions, spend_control, store
+from . import (
+    config,
+    graph_store,
+    logging_config,
+    model_provenance,
+    safe_fetch,
+    sessions,
+    spend_control,
+    store,
+)
 
 log = logging_config.get("research_tools")
 
@@ -38,6 +47,9 @@ MAX_PAPER_TEXT_CHARS = 16_000
 MAX_NOTES_CHARS = 12_000
 MAX_WEB_TEXT_CHARS = 12_000        # cap the text handed back from a web search/fetch
 WEB_TIMEOUT_S = 45.0
+MAX_SEARCH_OBJECTIVE_CHARS = 500
+MAX_SEARCH_QUERY_CHARS = 240
+MAX_FETCH_URL_CHARS = 2_048
 
 FIRECRAWL_BASE = "https://api.firecrawl.dev/v2"
 
@@ -83,7 +95,7 @@ def read_paper_text(slug: str) -> str:
     title = store.title_for(slug)
     if len(text) > MAX_PAPER_TEXT_CHARS:
         text = text[:MAX_PAPER_TEXT_CHARS] + "\n\n[...truncated...]"
-    return f"# {title} (full text)\n\n{text}"
+    return model_provenance.frame("project_paper_full_text", text, source=f"{slug}: {title}")
 
 
 def read_paper_notes(slug: str) -> str:
@@ -151,6 +163,14 @@ def _firecrawl_key() -> str:
 def _cap(text: str) -> str:
     text = text.strip()
     return text if len(text) <= MAX_WEB_TEXT_CHARS else text[:MAX_WEB_TEXT_CHARS] + "\n\n[...truncated...]"
+
+
+def _has_url_credentials(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False  # `safe_fetch.assert_public_url` below returns the typed refusal.
+    return parsed.username is not None or parsed.password is not None
 
 
 # ---- provider: Firecrawl (https://firecrawl.dev) ----
@@ -343,22 +363,37 @@ def web_search(objective: str, search_queries: list[str] | None = None) -> str:
     queries. Tries Firecrawl, then keyless DuckDuckGo. Returns ranked results with
     snippets — usually enough to answer (author info, adoption, follow-up work, outside papers)
     without fetching. UNTRUSTED content."""
-    objective = (objective or "").strip()
+    objective = " ".join((objective or "").split())
     if not objective:
         return "Empty search objective."
-    queries = [q.strip() for q in (search_queries or []) if q.strip()] or [objective]
-    return _run_chain(
+    if len(objective) > MAX_SEARCH_OBJECTIVE_CHARS:
+        return "Search refused: objective is too long."
+    queries = [" ".join(q.split()) for q in (search_queries or []) if q.strip()][:3] or [objective]
+    if any(len(query) > MAX_SEARCH_QUERY_CHARS for query in queries):
+        return "Search refused: query is too long."
+    result = _run_chain(
         [("Firecrawl", _firecrawl_search), ("DuckDuckGo", _ddg_search)],
         objective, queries)
+    return model_provenance.frame("web_search_results", result, source="provider chain")
 
 
 def web_fetch(urls: list[str], objective: str = "") -> str:
     """Extract content from specific URLs. Tries Firecrawl, then a direct fetch.
     Use when search snippets aren't enough or a specific page is named. UNTRUSTED content."""
-    urls = [u.strip() for u in (urls or []) if u.strip()]
+    urls = [u.strip() for u in (urls or []) if u.strip()][:3]
     if not urls:
         return "No URLs provided."
-    objective = (objective or "").strip()
-    return _run_chain(
+    if any(len(url) > MAX_FETCH_URL_CHARS for url in urls):
+        return "Fetch refused: URL is too long."
+    if any(_has_url_credentials(url) for url in urls):
+        return "Fetch refused: URL credentials are not allowed."
+    for url in urls:
+        try:
+            safe_fetch.assert_public_url(url)
+        except safe_fetch.UnsafeURLError:
+            return "Fetch refused: every URL must resolve to a public HTTP(S) destination."
+    objective = " ".join((objective or "").split())[:MAX_SEARCH_OBJECTIVE_CHARS]
+    result = _run_chain(
         [("Firecrawl", _firecrawl_fetch), ("direct", _direct_fetch)],
         urls, objective)
+    return model_provenance.frame("web_fetch_results", result, source="provider chain")

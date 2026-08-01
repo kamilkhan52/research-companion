@@ -1248,6 +1248,15 @@ values do not disable eviction. In-flight synthesis and response files are prote
 symlinks and non-cache files are never candidates. This closes P1-1/P1-14 without changing the
 per-user ownership decision or deleting any human-approved record.
 
+**Prompt-injection hardening status (2026-07-31): stacked implementation in review.** Paper full
+text and web/tool results now arrive as typed untrusted-data JSON envelopes, so forged role text or
+end markers stay inside one escaped content field. A fixed policy after operator-editable guidance
+treats imported content as evidence only and forbids prompt/private-context egress through tool
+arguments. Search/fetch inputs are shape-bounded and URL credentials are refused. The complete
+tool egress inventory is recorded in `02-security-and-privacy.md`; all model-selected direct fetches
+still converge on `safe_fetch`. This is explicit defense in depth, not a claim that prompt wording
+can sandbox a model.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
@@ -1288,11 +1297,11 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
 
 An instance-wide kill switch. Soft warnings at 80%.
 Max-token and timeout caps per operation. ~~Audio cache eviction with an LRU/size bound (P1-1).~~
-Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
+~~Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
 tool-call budget already in place, plus an egress review covering **every** outbound-fetch path,
 not just `web_fetch` — the retrieval path was the one missing its guard entirely (P0-14, closed in
 M1), so the review's job is to confirm no third path exists rather than to re-check the one that
-was already guarded.
+was already guarded.~~
 
 **Files/services.** New `app/metering.py`, `app/quotas.py`; `app/usage.py`, `app/llm.py`,
 `app/agent_harness.py`, `app/jobs.py`, `app/audio_jobs.py`, `app/research_tools.py`; all
