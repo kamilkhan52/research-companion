@@ -402,7 +402,11 @@ def test_agentic_turn_accounts_from_captured_provider_response(temp_project, mon
 
     turn = agent_harness.run_turn_agentic(
         "a",
-        [{"role": "user", "content": "q"}],
+        [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+            {"role": "user", "content": "q"},
+        ],
         model=FunctionModel(model_fn),
     )
 
