@@ -152,6 +152,18 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 begin
+    if tg_op = 'DELETE' then
+        -- Account deletion is the one supported way to erase this history. Its FK cascade runs
+        -- after the owning rc_users row is no longer visible to this statement; every direct
+        -- reservation delete still has a live owner and is refused.
+        if exists (select 1 from public.rc_users where id = old.user_id) then
+            raise exception using
+                errcode = '23514',
+                message = 'usage reservations may only be deleted with their account';
+        end if;
+        return old;
+    end if;
+
     if new.id is distinct from old.id
        or new.user_id is distinct from old.user_id
        or new.project_id is distinct from old.project_id
@@ -193,7 +205,7 @@ $$;
 
 drop trigger if exists rc_guard_usage_reservation_transition on rc_usage_reservations;
 create trigger rc_guard_usage_reservation_transition
-before update on rc_usage_reservations
+before update or delete on rc_usage_reservations
 for each row execute function public.rc_guard_usage_reservation_transition();
 
 -- Attempts are the per-network-dispatch half of the same record. A resolved attempt must not be
@@ -205,6 +217,19 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 begin
+    if tg_op = 'DELETE' then
+        -- The parent is already invisible while its FK cascade is deleting attempts. If it is
+        -- still present, this is a direct attempt deletion that would erase dispatch evidence.
+        if exists (
+            select 1 from public.rc_usage_reservations where id = old.reservation_id
+        ) then
+            raise exception using
+                errcode = '23514',
+                message = 'usage reservation attempts may only be deleted with their account';
+        end if;
+        return old;
+    end if;
+
     if new.id is distinct from old.id
        or new.reservation_id is distinct from old.reservation_id
        or new.attempt_key is distinct from old.attempt_key
@@ -234,5 +259,5 @@ $$;
 drop trigger if exists rc_guard_usage_reservation_attempt_transition
     on rc_usage_reservation_attempts;
 create trigger rc_guard_usage_reservation_attempt_transition
-before update on rc_usage_reservation_attempts
+before update or delete on rc_usage_reservation_attempts
 for each row execute function public.rc_guard_usage_reservation_attempt_transition();

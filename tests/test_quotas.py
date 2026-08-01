@@ -436,6 +436,42 @@ def test_schema_refuses_to_rewind_settled_spend_and_free_the_ceiling(database, t
 
 
 @needs_pg
+def test_schema_refuses_to_delete_settled_spend_and_free_the_ceiling(database, temp_project):
+    _own(temp_project)
+    reservation = quotas.reserve(**_args(temp_project, maximum=60, limit=60))
+    attempt, _ = quotas.begin_attempt(
+        reservation.id,
+        user_id=ALICE,
+        attempt_key="request-1",
+        maximum_cost_nanousd=60,
+    )
+    quotas.resolve_attempt(
+        attempt.id,
+        user_id=ALICE,
+        actual_nanousd=60,
+        generation_id="gen-delete",
+    )
+    quotas.mark_dispatches_complete(reservation.id, user_id=ALICE)
+    quotas.settle(reservation.id, user_id=ALICE, actual_nanousd=60)
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.pool().connection() as conn:
+            conn.execute(
+                "delete from rc_usage_reservations where id = %s",
+                (reservation.id,),
+            )
+
+    with pytest.raises(quotas.QuotaExceeded):
+        quotas.reserve(**_args(
+            temp_project,
+            key="job-2:openrouter",
+            job_id="job-2",
+            maximum=60,
+            limit=60,
+        ))
+
+
+@needs_pg
 def test_store_failure_is_a_sanitized_fail_closed_refusal(database, monkeypatch, caplog):
     def broken_pool():
         raise RuntimeError("postgresql://user:secret@example.test/private")
