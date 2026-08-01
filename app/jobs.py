@@ -56,6 +56,19 @@ class Job:
 
 J = TypeVar("J", bound=Job)
 
+
+@dataclass
+class _Admission:
+    """One outside-lock preparation and the job concurrent callers must share.
+
+    `published` is retained on this object after it leaves the registry map because waiters already
+    hold the object. They can therefore return the same attempt even if a zero-duration worker
+    settles before they are scheduled after the event wakeup.
+    """
+
+    event: threading.Event = field(default_factory=threading.Event)
+    published: Job | None = None
+
 # The dedup key and owning project are stashed on the job instance under these attributes (not
 # dataclass fields, so they never leak into to_dict()). Keeping them on the job means the
 # registry's single _jobs dict is the whole of its state — clearing it (as tests do) is a
@@ -214,7 +227,7 @@ class JobRegistry(Generic[J]):
         # kind. The per-(scope,key) marker lets one caller prepare while identical callers wait and
         # later join its published job; unrelated keys continue normally.
         self._admitting: dict[
-            tuple[str | None, str | None, str], threading.Event
+            tuple[str | None, str | None, str], _Admission
         ] = {}
         _ALL_REGISTRIES.append(self)
 
@@ -404,10 +417,20 @@ class JobRegistry(Generic[J]):
                     return existing
                 admission = self._admitting.get(identity)
                 if admission is None:
-                    admission = threading.Event()
+                    admission = _Admission()
                     self._admitting[identity] = admission
                     break
-            admission.wait()
+            admission.event.wait()
+            if admission.published is not None:
+                published = admission.published
+                log.debug(
+                    "join %s job=%s key=%s",
+                    self.name,
+                    published.id[:8],
+                    key,
+                    extra=tag,
+                )
+                return published  # type: ignore[return-value] -- registry creates only J
 
         cleanup: Callable[[], None] | None = None
         try:
@@ -455,9 +478,11 @@ class JobRegistry(Generic[J]):
                     self._jobs.pop(job.id, None)
                     setattr(job, _WORKER_ACTIVE_ATTR, False)
                     raise
-                if self._admitting.get(identity) is admission:
-                    self._admitting.pop(identity, None)
-                    admission.set()
+                # This caller owns the identity until it signals completion; no other path can
+                # replace the marker while the event is unset.
+                admission.published = job
+                self._admitting.pop(identity, None)
+                admission.event.set()
         except BaseException:
             self._rollback_preparation(cleanup)
             self._finish_admission(identity, admission)
@@ -468,13 +493,13 @@ class JobRegistry(Generic[J]):
     def _finish_admission(
         self,
         identity: tuple[str | None, str | None, str],
-        admission: threading.Event,
+        admission: _Admission,
     ) -> None:
         """Publish completion of one outside-lock admission attempt to its waiters."""
         with self._lock:
             if self._admitting.get(identity) is admission:
                 self._admitting.pop(identity, None)
-                admission.set()
+                admission.event.set()
 
     def _rollback_preparation(self, cleanup: Callable[[], None] | None) -> None:
         """Best-effort rollback without hiding the publication/start failure that caused it.

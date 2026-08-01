@@ -68,7 +68,6 @@ def test_durable_preparation_runs_once_and_concurrent_caller_joins():
     reg: JobRegistry[SampleJob] = JobRegistry("prepared")
     preparing = threading.Event()
     release_preparation = threading.Event()
-    release_work = threading.Event()
     prepared: list[str] = []
     results: list[SampleJob] = []
     failures: list[BaseException] = []
@@ -86,7 +85,9 @@ def test_durable_preparation_runs_once_and_concurrent_caller_joins():
             results.append(reg.start_or_join(
                 "same",
                 lambda: SampleJob(id=new_id()),
-                lambda _job: release_work.wait(5),
+                # Deliberately finishes immediately. The waiter must still share this published
+                # attempt even if it wakes only after the worker has changed status to `done`.
+                lambda _job: None,
                 prepare_new=prepare,
             ))
         except BaseException as exc:  # pragma: no cover - asserted below
@@ -108,8 +109,6 @@ def test_durable_preparation_runs_once_and_concurrent_caller_joins():
     assert len(results) == 2
     assert results[0] is results[1]
     assert len(prepared) == 1
-
-    release_work.set()
     _settle(reg, results[0].id)
 
 
