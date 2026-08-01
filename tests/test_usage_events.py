@@ -124,12 +124,21 @@ def test_daily_summary_surfaces_only_unresolved_pending_calls(database, temp_pro
     assert pending[0]["estimated"] is True
 
     assert usage_events.append_usage(
+        **{**args, "generation_id": "gen-exact-summary"},
+        provider_usage={"prompt_tokens": 2, "completion_tokens": 1, "cost": 0.001},
+    ) is True
+    mixed = usage_events.daily_summary(ALICE)
+    assert mixed[0]["calls"] == 1
+    assert mixed[0]["pending_calls"] == 1
+    assert mixed[0]["estimated"] is True
+
+    assert usage_events.append_usage(
         **args,
         provider_usage={"prompt_tokens": 4, "completion_tokens": 2, "cost": 0.003},
     ) is True
     resolved = usage_events.daily_summary(ALICE)
     assert len(resolved) == 1
-    assert resolved[0]["calls"] == 1
+    assert resolved[0]["calls"] == 2
     assert resolved[0]["pending_calls"] == 0
     assert resolved[0]["estimated"] is False
 
