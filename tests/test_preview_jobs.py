@@ -172,7 +172,14 @@ def test_generation_receives_only_the_bounded_source_window():
         })
 
     job = preview_jobs.start_job(
-        "bounded-generation", 3, items, generate_fn=generate, synth_fn=lambda cue: b"mp3",
+        "bounded-generation",
+        3,
+        items,
+        previous_cue="p" * 2_000,
+        played_cues=[f"played {index} " + "p" * 600 for index in range(12)],
+        generated_cues=[f"generated {index} " + "g" * 600 for index in range(12)],
+        generate_fn=generate,
+        synth_fn=lambda cue: b"mp3",
     )
     assert _wait(job.id).status == "done"
 
@@ -181,6 +188,11 @@ def test_generation_receives_only_the_bounded_source_window():
     assert captured["completed_sentences"] == [
         item for item in captured["grounded_sources"] if item["kind"] == "live_response"
     ]
+    assert len(captured["played_cues"]) == preview_jobs.CUE_HISTORY_WINDOW
+    assert len(captured["generated_cues"]) == preview_jobs.CUE_HISTORY_WINDOW
+    assert all(len(cue) <= preview_jobs.MAX_CUE_CHARS for cue in captured["played_cues"])
+    assert all(len(cue) <= preview_jobs.MAX_CUE_CHARS for cue in captured["generated_cues"])
+    assert len(captured["previous_cue"]) == preview_jobs.MAX_CUE_CHARS
 
 
 def test_audio_synthesis_progress_is_citable_and_never_announces_readiness(temp_project):

@@ -542,8 +542,15 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
     generate_fn = generate_fn or _default_generate
     synth_fn = synth_fn or tts.openai_speech
     progress_copy = dict(progress or {})
-    played_copy = list(played_cues or [])
-    generated_copy = list(generated_cues or [])
+    # Enforce the history contract at the model boundary too. Current callers already use
+    # cue_history(), but a future/direct caller must not be able to restore an unbounded prompt.
+    played_copy = [str(cue)[:MAX_CUE_CHARS] for cue in (played_cues or [])][
+        -CUE_HISTORY_WINDOW:
+    ]
+    generated_copy = [str(cue)[:MAX_CUE_CHARS] for cue in (generated_cues or [])][
+        -CUE_HISTORY_WINDOW:
+    ]
+    previous_cue = str(previous_cue)[:MAX_CUE_CHARS]
     sentence_copy = [
         {
             "id": str(item["id"]),
