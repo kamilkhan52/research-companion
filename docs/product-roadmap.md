@@ -21,9 +21,15 @@ each PR. Keep it current as PRs are opened, reviewed, and merged.
 
 ## Active device acceptance
 
-Use [`current-device-test-checklist.md`](current-device-test-checklist.md) as the canonical,
-editable record for the current Android pass. It deduplicates the historical Round-9/Round-10
-queues, lists exact expected behavior, and provides result/evidence fields for each live check.
+Use [`device-review-ledger.md`](device-review-ledger.md) as the canonical intake and lifecycle
+record for every observation Kamil raises during continuous device use. It gives each item a stable
+id and distinguishes open work, partial implementation, merged-but-unverified behavior, explicit
+deferrals, and device-confirmed closure.
+
+Use [`current-device-test-checklist.md`](current-device-test-checklist.md) and its focused follow-up
+files for executable acceptance scenarios. Checklists record what was tried on a physical device;
+the feedback ledger records what remains owed. Historical Round queues are implementation records,
+not competing sources of current truth.
 
 ## Status
 

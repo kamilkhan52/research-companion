@@ -917,6 +917,7 @@ def run_discovery(
     cheap_llm_fn: CheapLlmFn | None = None,
     library_fn: Callable[[], list] | None = None,
     recall_fn: RecallFn | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
     """Run the multi-source pipeline and yield cheap snapshots for the background job."""
     goals = (goals or "").strip()
@@ -939,6 +940,7 @@ def run_discovery(
 
     cheap_llm = cheap_llm_fn or _cheap_llm
     papers = _reading_list(library_fn)
+    cancelled = should_cancel or (lambda: False)
 
     plan_error = ""
     try:
@@ -954,6 +956,8 @@ def run_discovery(
                     "rationale": "Searching your words directly"}]
         log.warning("query planning failed (%s); searching the goals verbatim", plan_error)
     yield {"type": "queries", "focus": focus, "queries": queries}
+    if cancelled():
+        return
 
     lexical: list[dict] = []
     lexical_error = ""
@@ -963,6 +967,8 @@ def run_discovery(
                 lexical = event["candidates"]
             else:
                 yield event
+                if cancelled():
+                    return
     except Exception as e:  # noqa: BLE001 — one lane must not be able to kill the run
         # Keyword search is no longer the pipeline, so neither an empty result NOR a provider
         # outage is fatal: the library-grounded channels can carry a run on their own. Catching
@@ -981,11 +987,15 @@ def run_discovery(
     if lexical:
         yield {"type": "finds", "stage": "searching",
                "items": _preview(lexical, focus=f"{focus} {goals}", provisional=True)}
+        if cancelled():
+            return
 
     # The library-grounded channels. They are additive: a brand-new project has no papers and no
     # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
     # which is the case the feature was originally built for and must not regress.
     yield {"type": "library", "papers": len(papers)}
+    if cancelled():
+        return
     grounded, recall_audit = _grounded_candidates(papers, recall_fn=recall_fn)
 
     candidates = discovery_recall.merge_candidates(
@@ -994,6 +1004,8 @@ def run_discovery(
         raise DiscoveryError(lexical_error or (
             "No papers found. Try rephrasing the goals with more specific terms."))
     yield {"type": "gathered", "count": len(candidates)}
+    if cancelled():
+        return
 
     ledger = discovery_ledger.load()
     profile_hash = discovery_ledger.profile_hash(goals, CHEAP_MODEL)
@@ -1008,6 +1020,8 @@ def run_discovery(
         titles_match=graph.titles_match, ledger=ledger, cheap_model=CHEAP_MODEL,
         profile=profile_hash, today_year=datetime.now(UTC).year, identity_keys=_identity_keys)
     yield {"type": "gated", "kept": len(survivors), "counts": gate_counts}
+    if cancelled():
+        return
 
     # Early finds. These come from the grounded channels, so they need no model to be worth
     # showing: a paper reached by forward-citation from the reader's own library, or already
@@ -1016,9 +1030,13 @@ def run_discovery(
     # it is finding things rather than hanging.
     yield {"type": "finds", "stage": "grounded",
            "items": _preview(survivors, focus=f"{focus} {goals}", provisional=True)}
+    if cancelled():
+        return
 
     profile = _profile_text(goals, papers)
     yield {"type": "triage", "count": len(survivors)}
+    if cancelled():
+        return
     gated = survivors                       # the population the cheap screen actually judged
     triaged, triage_audit = triage_titles(gated, profile, cheap_llm, ledger=ledger,
                                           cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
@@ -1030,11 +1048,17 @@ def run_discovery(
 
     yield {"type": "finds", "stage": "screened",
            "items": _preview(triaged, focus=f"{focus} {goals}", provisional=True)}
+    if cancelled():
+        return
 
     yield {"type": "citations", "count": len(triaged)}
+    if cancelled():
+        return
     add_citation_counts(triaged, citations_fn)
 
     yield {"type": "scoring", "count": len(triaged)}
+    if cancelled():
+        return
     scored, abstract_audit = score_abstracts(triaged, profile, cheap_llm, ledger=ledger,
                                              cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
     scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
@@ -1042,8 +1066,12 @@ def run_discovery(
 
     ranked_so_far = blend_and_rank(scored)
     yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
+    if cancelled():
+        return
 
     yield {"type": "evidence", "count": len(scored)}
+    if cancelled():
+        return
     authorships_fn(scored)
 
     ranked = blend_and_rank(scored)
