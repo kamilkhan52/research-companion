@@ -239,13 +239,27 @@ def paper_opening_message(slug: str, full_text: str, template: str | None = None
     else:
         if "{title}" in template:
             content = template.replace("{title}", framed_title)
-        elif title:
-            # The visible opening-draft contract intentionally shows the actual title instead of
-            # a template token. It is still stored corpus metadata, not an authored instruction.
-            content = template.replace(title, framed_title)
         else:
             content = template
+            # The visible opening-draft contract intentionally shows the actual title instead of
+            # a template token. Locate only the slot defined by the server's configured opening
+            # template. Replacing the title string globally is unsafe for short titles (for
+            # example, a paper called "a" occurs throughout ordinary prompt prose).
+            configured = prompts.get("opening_message")
+            if title and "{title}" in configured:
+                prefix, suffix = configured.split("{title}", 1)
+                position = len(prefix)
+                if (
+                    content.startswith(prefix)
+                    and content[position:position + len(title)] == title
+                    and content[position + len(title):].startswith(suffix)
+                ):
+                    content = (
+                        content[:position] + framed_title + content[position + len(title):]
+                    )
         content = content.replace("{full_text}", framed)
+    if framed_title not in content:
+        content += "\n\n[PAPER TITLE]\n" + framed_title
     if full_text and framed not in content:
         content += "\n\n[BEGIN PAPER FULL TEXT]\n" + framed + "\n[END PAPER FULL TEXT]"
     return content
