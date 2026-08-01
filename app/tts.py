@@ -18,7 +18,7 @@ from typing import Protocol
 
 import httpx
 
-from . import config, prompts, usage
+from . import config, prompts, spend_control, usage
 
 # OpenAI /audio/speech caps input at 4096 chars; stay under with margin and synthesize long
 # narrations as several segments concatenated into one mp3.
@@ -138,11 +138,14 @@ def openai_speech(text: str) -> bytes:
         if attempt:
             time.sleep(2 * attempt)
         try:
+            spend_control.require_enabled()
             r = httpx.post(
                 f"{config.OPENAI_BASE}/audio/speech",
                 headers={"Authorization": f"Bearer {key}"},
                 json=body, timeout=120,
             )
+        except spend_control.ProviderSpendDisabled as e:
+            raise TTSError(str(e)) from e
         except (httpx.ConnectError, httpx.ConnectTimeout):
             # No connection means no provider dispatch and therefore no possible synthesis bill.
             continue

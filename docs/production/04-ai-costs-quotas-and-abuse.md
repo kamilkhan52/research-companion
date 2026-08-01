@@ -15,7 +15,8 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | Crash reconciliation | PR #317, ready for review | Expire safe undispatched leases; recover completed OpenRouter generations exactly; charge ambiguity conservatively. |
 | Exact-once job admission seam | stacked implementation, in review | Prepare one durable reservation only for a newly published job; joins and cache hits do not reserve again. |
 | Paid-work admission + rate limits | queued | Gate every surviving provider workflow before network dispatch. |
-| Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
+| Provider-spend kill switch | stacked implementation, in review | `RC_PROVIDER_SPEND_DISABLED` stops every outbound provider dispatch before network I/O. |
+| Tier/model gates | queued | A caller cannot select spend outside their entitlement. |
 
 Accounting and enforcement are deliberately different systems:
 
@@ -135,6 +136,19 @@ set was never marked complete, a generation id is absent, or any attempt was alr
 the parent settles to its full reserved maximum. A metadata or database outage leaves the maximum
 reserved for another pass rather than turning a temporary failure into a permanent full-price
 charge; no ambiguity releases possibly-spent capacity.
+
+## Emergency provider-spend stop
+
+`RC_PROVIDER_SPEND_DISABLED` is checked at the final dispatch seams for raw and Pydantic OpenRouter,
+OpenAI speech, Firecrawl, OpenAlex, and Semantic Scholar. Unset or an explicit false spelling keeps
+normal service; any other non-empty value disables spend, so a typo during an incident fails toward
+no provider requests. The refusal occurs before network I/O and before usage accounting, while
+cached and local-only results remain usable. Firecrawl falls through to the keyless direct/search
+providers, and metadata enrichment degrades through its existing optional-provider paths.
+
+This switch is deliberately independent of per-user quota state and requires no tier amounts. It
+is an emergency brake, not a ceiling: the durable reservation layer remains responsible for
+ordinary account-level spend control.
 
 ## Next implementation order
 

@@ -1234,6 +1234,13 @@ drains, deletion/busy gates are re-checked after database I/O, and publication o
 failure rolls preparation back. This is the shared concurrency seam; provider-specific maxima and
 route wiring remain the next slice and do not require choosing actual tier amounts.
 
+**Emergency spend-stop status (2026-07-31): stacked implementation in review.** The live-read
+`RC_PROVIDER_SPEND_DISABLED` switch is enforced immediately before raw and Pydantic OpenRouter,
+OpenAI speech, Firecrawl, OpenAlex, and Semantic Scholar network dispatches. It leaves cached/local
+work available and treats every non-empty value except an explicit false spelling as disabled, so
+an operator typo fails toward no spend. This independent incident brake requires no H15 tier value
+and does not replace the per-account reservation ceiling.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched

@@ -41,7 +41,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from . import agent as agent_mod
-from . import config, llm, logging_config, prompts, research_tools, sessions, usage
+from . import config, llm, logging_config, prompts, research_tools, sessions, spend_control, usage
 from .models import Turn
 
 log = logging_config.get("agent_harness")
@@ -88,6 +88,14 @@ class _LedgerOpenRouterStreamedResponse(OpenRouterStreamedResponse):
 
 
 class _LedgerOpenRouterModel(OpenRouterModel):
+    async def _completions_create(self, *args, **kwargs):
+        """Re-check the live kill switch for every tool-loop model request and retry."""
+        try:
+            spend_control.require_enabled()
+        except spend_control.ProviderSpendDisabled as exc:
+            raise agent_mod.AgentError(str(exc)) from exc
+        return await super()._completions_create(*args, **kwargs)
+
     def _process_provider_details(self, response):
         return _retain_authoritative_zero_cost(
             super()._process_provider_details(response), getattr(response, "usage", None)
@@ -192,6 +200,10 @@ TOOLS = [
 
 
 def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
+    try:
+        spend_control.require_enabled()
+    except spend_control.ProviderSpendDisabled as exc:
+        raise agent_mod.AgentError(str(exc)) from exc
     settings = config.load_settings()
     key = settings.get("openrouter_api_key")
     if not key:

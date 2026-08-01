@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import config
+from . import config, spend_control
 
 BASE_URL = "https://api.semanticscholar.org/graph/v1"
 REFERENCE_FIELDS = (
@@ -77,7 +77,12 @@ def paced_request(
     *,
     pacer: RequestPacer | None = None,
 ) -> httpx.Response:
-    """Run any Semantic Scholar request through the account-wide pacing boundary."""
+    """Run any Semantic Scholar request through spend control and account-wide pacing.
+
+    Citation enrichment and Discovery recall call this helper directly rather than `_request`, so
+    the kill switch belongs here to cover the provider structurally instead of per endpoint.
+    """
+    spend_control.require_enabled()
     return (pacer or _PACER).call(request)
 
 
@@ -129,9 +134,12 @@ def _request(
     response: httpx.Response | None = None
     for attempt in range(MAX_RETRIES):
         try:
+            spend_control.require_enabled()
             response = paced_request(
                 lambda: client.get(path, params=params, headers=headers), pacer=pacer
             )
+        except spend_control.ProviderSpendDisabled as exc:
+            raise SemanticScholarError(str(exc)) from exc
         except httpx.HTTPError as exc:
             if attempt + 1 == MAX_RETRIES:
                 raise SemanticScholarError(f"Semantic Scholar request failed: {exc}") from exc
