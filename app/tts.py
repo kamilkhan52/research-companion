@@ -95,6 +95,7 @@ def _record_dispatch(model: str, spoken_text: str, *, estimated: bool = False) -
         "speech_synthesis",
         model,
         {"cost": len(spoken_text) * rate},
+        estimated=estimated,
     )
     if estimated:
         usage.record_pending("speech_synthesis", model, None)

@@ -37,10 +37,11 @@ the corrections here so no future agent re-plans against the fiction.
   (`app/agent_harness.py`) with web search/fetch tools (`app/research_tools.py`) operating over
   attacker-influenceable PDF full text, using your API keys. The SSRF half is now mitigated by
   `app/safe_fetch.py` (M1 PR3); instruction injection is still unguarded.
-- **`usage.py` is an aggregate, not an event ledger.** Genuinely well-built (integer nano-USD,
-  pending/`estimated` honesty, a `reconcile` hook) but it stores rolled-up buckets keyed by project.
-  Cost-per-user, cost-per-day, and anomaly detection need append-only events — an additive change
-  on a good foundation, not a rewrite.
+- ~~**`usage.py` is an aggregate, not an event ledger.**~~ — **fix stacked in review 2026-07-31:**
+  the project aggregate remains the presentation cache, while append-only Postgres events record
+  the verified `(user, project)`, feature/model, tokens, nano-USD cost, generation id,
+  estimated/pending state, and timestamp. Reconciliation appends rather than rewriting history;
+  generation ids make analytics retries idempotent.
 - **Zero rate limiting anywhere.** One authenticated user can fire unlimited minutes-long Opus jobs.
 - **CI has been dead since 2026-07-22** (account-level Actions billing block; all jobs fail in ~3s
   with 0 steps). Any release-automation milestone is blocked behind a human billing fix.

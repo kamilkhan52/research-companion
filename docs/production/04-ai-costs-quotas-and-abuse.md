@@ -10,7 +10,7 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | Agentic OpenRouter cost | PR #312, ready for review | Native OpenRouter responses retain authoritative cost and generation id per tool-loop request. |
 | OpenAI speech cost | stacked implementation, in review | Every provider dispatch is visible; `tts-1` and `tts-1-hd` are priced exactly by characters sent. |
 | Paid-route consolidation | stacked implementation, in review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
-| Append-only per-user events | queued | Queryable cost per user, project, feature, and day. |
+| Append-only per-user events | stacked implementation, in review | Queryable cost per user, project, feature, and day without replacing the project aggregate. |
 | Admission reservations + rate limits | queued | Authoritative hard ceiling before paid work starts. |
 | Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
 
@@ -61,12 +61,31 @@ That scope is **not** a billing project. The worker must rebind the validated in
 (or the explicit unattributed ledger) around speech dispatches; otherwise `usage.record` attempts
 to resolve `user:<hash>` as a project and the cost disappears.
 
+## Append-only event contract
+
+`rc_usage_events` stores one `usage` row per observed provider dispatch and a `pending` marker when
+an accepted call lacks authoritative cost. Reconciliation never rewrites the marker: it appends the
+resolved `usage` row with the same generation id. A partial unique index on
+`(user_id, generation_id, event_type)` makes retries idempotent without collapsing separate TTS
+dispatches, which have no provider generation id.
+
+The insert proves the live `(user, project)` ownership pair inside the SQL statement. App-global
+user work maps the explicit unattributed sentinel to a null project; a foreign or retired project
+cannot receive a row. The table is included in the automatic `rc_*` Data API lockout, contains no
+request/response content, and cascades on account deletion while surviving ordinary project
+deletion as historical cost metadata.
+
+Event analytics and the git-side aggregate are independent best-effort writes. Either can fail
+without failing a provider result, and `usage_events.daily_summary` can query cost by account,
+calendar day, and feature. This remains intentionally separate from reservations: their database
+write authorizes spend and therefore must fail closed.
+
 ## Next implementation order
 
 1. Land exact OpenRouter and speech accounting, then verify one real staging response from each
    provider without generating a large workload.
-2. Add append-only Postgres usage events keyed by `(user, project)` while retaining the current
-   aggregate as a presentation/cache layer.
+2. Verify the append-only Postgres usage events on staging while retaining the current aggregate
+   as a presentation/cache layer.
 3. Define durable reservation states and leases, then gate **every row in the inventory** through
    one admission seam. Refuse new paid work when the quota store is unavailable.
 4. Add concurrent rate limits, monthly tier quotas, model allowlists, soft 80% warnings, and the

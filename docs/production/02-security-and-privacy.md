@@ -1,6 +1,6 @@
 # Security, privacy, and Google Play data declarations
 
-*Code-derived inventory checked 2026-07-28 against `origin/main` at `d05a100`. This is an
+*Code-derived inventory checked through the M3 event-ledger stack on 2026-07-31. This is an
 engineering record and a Play Console **draft**, not an approved privacy policy or a legal
 attestation. Re-check it against the exact AAB submitted to Play.*
 
@@ -92,6 +92,7 @@ the server inventory below.
 | Postgres `rc_projects` / `rc_project_trash` | Project ID, live owner UUID, transition former-owner UUID, concrete trash-directory name and owner UUID, creation/adoption/deletion timestamps | Live row plus permanent ID tombstone after project deletion; exact trash entry retained until permanent purge | Account deletion removes every owner link and trash row but retains content-free project-ID tombstones as anti-ABA/security records |
 | Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | Removed transactionally with the parent `rc_users` row |
 | Postgres `rc_content_reports` | Reporter UUID, a POINTER to the reported AI output (project id, paper slug, message reference), a fixed surface/reason, and the reporter's own free-text note (≤2000 chars). Deliberately **not** the reported content itself, which stays in the project git transcript | Until the reporter's account is deleted; no separate TTL yet, and the operator review workflow that would close reports out is M7 | Cascades from `rc_users`, so a reporter's reports go with their account. That loses moderation signal and is still the right default — revisit only with a documented retention basis, and never by switching to `set null`, which would leave the free-text note behind |
+| Postgres `rc_usage_events` | User UUID, optional owned project ID, operation/model, token counts, integer nano-USD cost, provider generation ID when available, estimated/pending state, and timestamp. No prompt, response, paper, narration, email, or provider body | Historical accounting metadata until account deletion; project deletion does not erase its cost history | Cascades from `rc_users`. Inserts prove the live `(user, project)` ownership pair; app-global user spend has a null project |
 | Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active and attributed trashed repositories are permanently removed by the coordinator |
 | Project `.state/` | Session index, discovery results, graph/metadata caches, usage totals, covers, figures, branches/drafts, and transient job state | Indefinite/rebuildable; no general TTL | Removed only when the containing project is permanently removed |
 | `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite until account deletion; no separate TTL yet | Exact attributed entries are permanently removed by account deletion. Ambiguous legacy entries still require explicit per-directory mapping |
@@ -144,9 +145,12 @@ second reauthentication after the destructive decision was already authorized. T
 user-facing work is the public web request path, H23 configuration, and disposable-account staging
 verification.
 
-Usage is currently a per-project `.state/usage.json` aggregate, not a Postgres event table. It
-records operation, model, tokens, cost, timestamps, and pending OpenRouter generation IDs. M3 will
-change this inventory when it introduces durable per-user reservations/events.
+Usage now has two deliberately different stores. Per-project `.state/usage.json` remains the
+presentation cache and records aggregate operation/model/token/cost totals plus pending OpenRouter
+generation IDs. Postgres `rc_usage_events` is the append-only per-user/day/feature history. A
+pending generation is never rewritten: reconciliation appends its exact usage event alongside the
+marker. The future reservation ledger is separate and fail-closed; these observational writes stay
+best-effort and cannot fail provider work.
 
 ### External recipients and payloads
 
@@ -158,7 +162,7 @@ exception and the actual provider terms/configuration support that classificatio
 |---|---|---|---|
 | Fly.io | All API traffic and persisted application volume; request metadata/logs | Hosting | deployment/runtime |
 | Supabase Auth | Email, OAuth identity response, session/auth metadata | Account management and authentication | `mobile/src/auth/`, `app/auth.py` |
-| Supabase Postgres | UUID, email, ownership rows, user preferences | Tenancy and settings | `app/db.py`, `app/tenancy.py`, `app/user_settings.py` |
+| Supabase Postgres | UUID, email, ownership rows, user preferences, content-report pointers/notes, and usage/cost metadata | Tenancy, settings, moderation, and spend accounting | `app/db.py`, `app/tenancy.py`, `app/user_settings.py`, `app/content_reports.py`, `app/usage_events.py` |
 | Google Identity | OAuth sign-in request and Google account interaction | User-initiated authentication | Supabase Google provider |
 | OpenRouter and dynamically eligible inference endpoints | Operator API credential; system prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Authentication; analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
 | OpenAI | Operator API credential; generated narration text, selected TTS model/voice/instructions | Authentication; text-to-speech | `app/tts.py` |

@@ -304,7 +304,7 @@ def _usage_obj(input_tokens=0, output_tokens=0, requests=0):
 def _capture_usage(monkeypatch):
     recorded, pending = [], []
     monkeypatch.setattr(agent_harness.usage, "record",
-                        lambda op, model, u: recorded.append(u))
+                        lambda op, model, u, **_kwargs: recorded.append(u))
     monkeypatch.setattr(agent_harness.usage, "record_pending",
                         lambda op, model, gid: pending.append((op, gid)))
     return recorded, pending
@@ -356,6 +356,22 @@ def test_openrouter_tool_loop_records_each_request_with_exact_cost(temp_project,
         {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50, "cost": 0.004},
     ]
     assert pending == []
+
+
+def test_openrouter_exact_event_keeps_its_generation_id(temp_project, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        agent_harness.usage,
+        "record",
+        lambda op, model, data, **kwargs: seen.append(kwargs.get("generation_id")),
+    )
+    agent_harness._record_run_usage(
+        _usage_obj(requests=1),
+        None,
+        "analysis",
+        [_openrouter_response(generation_id="gen-ledger", cost=0.002, prompt=3, completion=1)],
+    )
+    assert seen == ["gen-ledger"]
 
 
 def test_exact_openrouter_responses_leave_ledger_unestimated(temp_project):
