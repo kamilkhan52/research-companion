@@ -1206,7 +1206,7 @@ the pending marker rather than rewriting history. Ordinary project deletion reta
 cost, account deletion cascades it, and the automatic `rc_*` Data API lockout covers the table.
 The existing project aggregate remains an independent presentation cache.
 
-**Durable reservation foundation status (2026-07-31): stacked implementation in review.**
+**Durable reservation foundation status (2026-07-31): PR #316, ready for review.**
 `rc_usage_reservations` serializes admission on the account row and sums active maxima plus settled
 actual cost inside the same transaction. It locks/proves the live `(user, project)` row, derives
 the current UTC month server-side, refuses on store ambiguity, and persists explicit
@@ -1216,6 +1216,15 @@ bounded per-dispatch attempt rows (including OpenRouter generation links) *and* 
 all-dispatches-complete marker, or settle conservatively to the reserved maximum. This slice
 defines the crash-safe persistence contract; paid-work integration and actual tier amounts are
 still next, so it does not yet close the zero-rate-limit finding.
+
+**Reservation reconciliation status (2026-07-31): stacked implementation in review.** A bounded
+startup monitor expires only never-dispatched leases. Completed OpenRouter dispatch sets can recover
+pending exact cost through the provider's generation-metadata endpoint; incomplete dispatch sets,
+missing generation evidence, and providers without per-request recovery settle conservatively to
+the reserved maximum. A metadata outage leaves that maximum reserved for a later retry. The lookup
+sends only the durable generation id and never requests stored prompt/completion content. Each
+snapshot candidate is re-checked under its row lock, preventing a concurrent lease renewal from
+being reconciled as stale.
 
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in

@@ -8,10 +8,11 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | Slice | Status | What it establishes |
 |---|---|---|
 | Agentic OpenRouter cost | PR #312, ready for review | Native OpenRouter responses retain authoritative cost and generation id per tool-loop request. |
-| OpenAI speech cost | stacked implementation, in review | Every provider dispatch is visible; `tts-1` and `tts-1-hd` are priced exactly by characters sent. |
-| Paid-route consolidation | stacked implementation, in review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
-| Append-only per-user events | stacked implementation, in review | Queryable cost per user, project, feature, and day without replacing the project aggregate. |
-| Durable reservation lifecycle | stacked implementation, in review | Transactional per-user ceiling, explicit dispatch and terminal states, leases, and generation linkage. |
+| OpenAI speech cost | PR #313, ready for review | Every provider dispatch is visible; `tts-1` and `tts-1-hd` are priced exactly by characters sent. |
+| Paid-route consolidation | PR #314, ready for review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
+| Append-only per-user events | PR #315, ready for review | Queryable cost per user, project, feature, and day without replacing the project aggregate. |
+| Durable reservation lifecycle | PR #316, ready for review | Transactional per-user ceiling, explicit dispatch and terminal states, leases, and generation linkage. |
+| Crash reconciliation | stacked implementation, in review | Expire safe undispatched leases; recover completed OpenRouter generations exactly; charge ambiguity conservatively. |
 | Paid-work admission + rate limits | queued | Gate every surviving provider workflow before network dispatch. |
 | Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
 
@@ -101,13 +102,31 @@ maximum must fit inside the parent reservation. A lost database response returns
 `should_dispatch=false`, preventing an idempotency retry from sending the provider request twice.
 An attempt can retain an OpenRouter generation id while its cost is pending, then resolve exactly
 or conservatively. Exact parent settlement additionally requires a durable
-`dispatches_complete_at` marker, written only after all attempts resolve; without it an unseen
-request may still have been in flight at the crash.
+`dispatches_complete_at` marker. A worker writes that marker after it knows no further request can
+begin and every accepted OpenRouter response has at least linked its generation id; cost resolution
+is deliberately independent and may still be pending. Without the marker, an unseen request may
+have been in flight at the crash. Keeping the two proofs separate lets a completed generation
+reconcile exactly after restart without pretending a mid-dispatch crash was complete.
 
 This slice establishes and tests the crash/state contract independently. It does not yet claim
 that paid routes are gated: job/provider integration, pessimistic per-workflow estimates, lease
-renewal, startup reconciliation orchestration, rate/concurrency limits, and the instance kill
+renewal, rate/concurrency limits, and the instance kill
 switch are the next slices. Actual monthly tier amounts remain the documented human decision.
+
+## Startup reconciliation
+
+After migrations succeed, one daemon monitor scans expired leases in bounded batches. It expires
+only reservations with no dispatch evidence. Every dispatched candidate is re-checked under its
+row lock before reconciliation, so a worker renewal that wins after the snapshot scan cannot be
+settled underneath live work. Once the locked check observes expiry, normal code cannot resurrect
+the lease. A dispatched reservation with a complete dispatch set
+and all-exact attempts settles to their sum. For a completed OpenRouter attempt whose cost remains
+pending, the monitor calls the documented cost-only `GET /api/v1/generation?id=…` metadata endpoint,
+never the separate generation-content endpoint, then resolves the durable attempt. If the dispatch
+set was never marked complete, a generation id is absent, or any attempt was already conservative,
+the parent settles to its full reserved maximum. A metadata or database outage leaves the maximum
+reserved for another pass rather than turning a temporary failure into a permanent full-price
+charge; no ambiguity releases possibly-spent capacity.
 
 ## Next implementation order
 
@@ -118,8 +137,8 @@ switch are the next slices. Actual monthly tier amounts remain the documented hu
 3. Land the durable reservation states, leases, dispatch marker, exact/conservative settlement,
    and generation linkage.
 4. Gate **every row in the inventory** through one admission seam, with pessimistic per-workflow
-   maxima and startup reconciliation. Refuse new paid work when the quota store is unavailable.
+   maxima. Refuse new paid work when the quota store is unavailable.
 5. Add concurrent rate limits, monthly tier quotas, model allowlists, soft 80% warnings, and the
    instance kill switch. Actual tier amounts remain a human decision informed by the new events.
-6. Reconcile OpenRouter orphans by generation id. For character-priced speech, settle at dispatch;
-   there is no per-request provider id to poll.
+6. Verify reconciliation on staging with one deliberately stale completed OpenRouter generation.
+   Character-priced speech settles from its durable exact attempt; there is no provider id to poll.

@@ -1,6 +1,6 @@
 # Security, privacy, and Google Play data declarations
 
-*Code-derived inventory checked through the M3 reservation-foundation stack on 2026-07-31. This is an
+*Code-derived inventory checked through the M3 reservation-reconciliation stack on 2026-07-31. This is an
 engineering record and a Play Console **draft**, not an approved privacy policy or a legal
 attestation. Re-check it against the exact AAB submitted to Play.*
 
@@ -166,7 +166,7 @@ exception and the actual provider terms/configuration support that classificatio
 | Supabase Auth | Email, OAuth identity response, session/auth metadata | Account management and authentication | `mobile/src/auth/`, `app/auth.py` |
 | Supabase Postgres | UUID, email, ownership rows, user preferences, content-report pointers/notes, and usage/cost metadata | Tenancy, settings, moderation, and spend accounting | `app/db.py`, `app/tenancy.py`, `app/user_settings.py`, `app/content_reports.py`, `app/usage_events.py` |
 | Google Identity | OAuth sign-in request and Google account interaction | User-initiated authentication | Supabase Google provider |
-| OpenRouter and dynamically eligible inference endpoints | Operator API credential; system prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model | Authentication; analysis, discovery, graph extraction, narration adaptation | `app/llm.py`, `app/agent_harness.py` |
+| OpenRouter and dynamically eligible inference endpoints | Operator API credential; system prompts, user prompts, paper text/metadata, existing transcript, notes/synthesis, tool results, requested model; a provider generation id alone for cost-only crash reconciliation | Authentication; analysis, discovery, graph extraction, narration adaptation; authoritative usage recovery without requesting stored generation content | `app/llm.py`, `app/agent_harness.py`, `app/quota_reconciler.py` |
 | OpenAI | Operator API credential; generated narration text, selected TTS model/voice/instructions | Authentication; text-to-speech | `app/tts.py` |
 | Firecrawl | Operator API credential; research objective/search query, or requested public URLs | Authentication; web search and extraction | `app/research_tools.py` |
 | DuckDuckGo | Search query | Keyless search fallback | `app/research_tools.py` |

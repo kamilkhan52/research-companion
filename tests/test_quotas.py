@@ -161,9 +161,9 @@ def test_settlement_replaces_the_maximum_with_actual_cost_for_future_admission(
         maximum_cost_nanousd=60,
     )
     assert should_dispatch is True
-    with pytest.raises(quotas.ReservationConflict, match="fully resolved"):
-        quotas.mark_dispatches_complete(first.id, user_id=ALICE)
-    with pytest.raises(quotas.ReservationConflict, match="complete provider-dispatch"):
+    completed = quotas.mark_dispatches_complete(first.id, user_id=ALICE)
+    assert completed.dispatches_complete_at is not None
+    with pytest.raises(quotas.ReservationConflict, match="every provider attempt"):
         quotas.settle(first.id, user_id=ALICE, actual_nanousd=20)
     resolved_attempt = quotas.resolve_attempt(
         attempt.id,
@@ -172,8 +172,10 @@ def test_settlement_replaces_the_maximum_with_actual_cost_for_future_admission(
         generation_id="gen-settle",
     )
     assert resolved_attempt.state == "resolved"
-    completed = quotas.mark_dispatches_complete(first.id, user_id=ALICE)
-    assert completed.dispatches_complete_at is not None
+    # Completion is idempotent and independent of later cost resolution.
+    assert quotas.mark_dispatches_complete(
+        first.id, user_id=ALICE,
+    ).dispatches_complete_at == completed.dispatches_complete_at
     with pytest.raises(quotas.ReservationConflict, match="already complete"):
         quotas.begin_attempt(
             first.id,
