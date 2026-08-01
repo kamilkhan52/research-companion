@@ -242,20 +242,23 @@ def paper_opening_message(slug: str, full_text: str, template: str | None = None
             content = template.replace(prompts.OPENING_TITLE_MARKER, framed_title, 1)
         else:
             content = template
-            # Legacy compose-first drafts contained the actual title. Locate only the slot defined
-            # by the server's configured opening template. Replacing the title string globally is
-            # unsafe for short titles (a paper called "a" occurs throughout ordinary prose).
-            configured = prompts.get("opening_message")
-            if title and "{title}" in configured:
-                prefix, _suffix = configured.split("{title}", 1)
-                position = len(prefix)
-                if (
-                    content.startswith(prefix)
-                    and content[position:position + len(title)] == title
-                ):
-                    content = (
-                        content[:position] + framed_title + content[position + len(title):]
-                    )
+            # Legacy compose-first drafts contained the actual title. The operator may have
+            # changed the configured opening since one was saved, so no current-template prefix is
+            # a reliable locator. A unique exact occurrence is safe to replace. Multiple matches
+            # are ambiguous (especially one-character titles): rebuild the authoritative opening
+            # and retain the old draft only as framed historical data instead of globally
+            # expanding every matching substring into an envelope.
+            occurrences = content.count(title) if title else 0
+            if occurrences == 1:
+                content = content.replace(title, framed_title, 1)
+            elif occurrences > 1:
+                legacy = model_provenance.frame(
+                    "legacy_opening_draft", content, source=slug,
+                )
+                content = prompts.render(
+                    "opening_message", title=framed_title, full_text=framed,
+                )
+                content += "\n\n[LEGACY EDITED OPENING]\n" + legacy
         content = content.replace("{full_text}", framed)
     if framed_title not in content:
         content += "\n\n[PAPER TITLE]\n" + framed_title
