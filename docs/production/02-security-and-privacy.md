@@ -177,12 +177,16 @@ exception and the actual provider terms/configuration support that classificatio
 ### Tool-loop trust and egress review
 
 Prompt injection is not made impossible by a sentence in a prompt. The fixed application policy
-therefore sits after operator-editable agent guidance, and paper full text plus web/tool results are
-serialized as a single typed JSON value. A forged role or end marker remains escaped inside its
-`content` field. Search objectives/queries and fetch URLs have hard length/count bounds; URLs with
-embedded credentials are refused. The policy forbids copying prompt, credential, private paper,
-notes, or transcript content into outbound arguments. These controls reduce accidental obedience
-and bulk exfiltration; they are not described as a model sandbox.
+therefore sits after operator-editable guidance on every Pydantic tool agent. Paper full text,
+assembled working/prior notes, reading-list abstracts/titles, citation contexts, current-paper and
+figure metadata, and web/tool results are serialized as single typed JSON values. A forged role or
+end marker remains escaped inside its `content` field. The project reading method is the deliberate
+exception: it is the user's versioned instruction document and is meant to direct the analyst; the
+fixed no-egress rules still follow it and cannot be edited away. Search objectives/queries and
+fetch URLs have hard length/count bounds; URLs with embedded credentials are refused. The policy
+forbids copying prompt, credential, private paper, notes, or transcript content into outbound
+arguments. These controls reduce accidental obedience and bulk exfiltration; they are not described
+as a model sandbox.
 
 Every network-capable tool or downstream fetch reachable from model output was re-inventoried:
 

@@ -14,7 +14,18 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import assembler, audio_cache, audio_jobs, config, llm, logging_config, prompts, store, tts
+from . import (
+    assembler,
+    audio_cache,
+    audio_jobs,
+    config,
+    llm,
+    logging_config,
+    model_provenance,
+    prompts,
+    store,
+    tts,
+)
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -197,7 +208,8 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
     model = resolve_model()
     research_agent = Agent(
         agent_harness._openrouter_model(model),
-        system_prompt=prompts.get("listening_preview_research"),
+        system_prompt=(prompts.get("listening_preview_research")
+                       + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],
         output_type=str,
         retries=2,

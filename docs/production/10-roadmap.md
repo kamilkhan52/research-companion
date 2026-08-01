@@ -1249,13 +1249,14 @@ symlinks and non-cache files are never candidates. This closes P1-1/P1-14 withou
 per-user ownership decision or deleting any human-approved record.
 
 **Prompt-injection hardening status (2026-07-31): stacked implementation in review.** Paper full
-text and web/tool results now arrive as typed untrusted-data JSON envelopes, so forged role text or
-end markers stay inside one escaped content field. A fixed policy after operator-editable guidance
+text, assembled notes/abstracts/citation metadata, titles, and web/tool results now arrive as typed
+untrusted-data JSON envelopes, so forged role text or end markers stay inside one escaped content
+field. Every Pydantic tool agent receives a fixed policy after operator-editable guidance that
 treats imported content as evidence only and forbids prompt/private-context egress through tool
-arguments. Search/fetch inputs are shape-bounded and URL credentials are refused. The complete
-tool egress inventory is recorded in `02-security-and-privacy.md`; all model-selected direct fetches
-still converge on `safe_fetch`. This is explicit defense in depth, not a claim that prompt wording
-can sandbox a model.
+arguments. The user-authored, versioned reading method deliberately remains instruction. Search/
+fetch inputs are shape-bounded and URL credentials are refused. The complete tool egress inventory
+is recorded in `02-security-and-privacy.md`; all model-selected direct fetches still converge on
+`safe_fetch`. This is explicit defense in depth, not a claim that prompt wording can sandbox a model.
 
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in

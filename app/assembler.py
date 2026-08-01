@@ -14,14 +14,19 @@ def build_review_context() -> str:
     """Aggregate context for the Working Notes Review chat: the reading method, the current
     working notes, every per-paper Notes block read so far, and the reading list."""
     parts = ["# Reading method (follow this exactly)\n\n" + store.read_method().strip()]
-    parts.append("# Working notes — the running cross-paper synthesis so far\n\n"
-                 + store.read_synthesis().strip())
+    parts.append(
+        "# Working notes — the running cross-paper synthesis so far\n\n"
+        + model_provenance.frame("working_notes", store.read_synthesis().strip())
+    )
     notes = store.all_committed_notes()
     if notes:
         block = ["# Per-paper Notes for every paper read so far"]
         for title, n in notes:
             block.append(f"\n## {title}\n\n{n.strip()}")
-        parts.append("\n".join(block))
+        parts.append(
+            "# Per-paper Notes for every paper read so far\n\n"
+            + model_provenance.frame("committed_paper_notes", "\n".join(block[1:]))
+        )
     else:
         parts.append("# Per-paper Notes\n\nNo papers have been read in full yet.")
     parts.append("# The full reading list (papers not yet read carry their abstract)\n\n"
@@ -29,7 +34,9 @@ def build_review_context() -> str:
                  "to its `link:` target below (an `rc-paper:<slug>`), verbatim — including in the "
                  "rewritten SYNTHESIS — so the reader can tap it. Link the first mention in each "
                  "section; never invent a slug for a paper that isn't listed.)\n\n"
-                 + store.reading_list_overview())
+                 + model_provenance.frame(
+                     "reading_list_metadata", store.reading_list_overview(),
+                 ))
     return "\n\n---\n\n".join(parts)
 
 
@@ -40,8 +47,10 @@ def build_context(slug: str) -> str:
 
     parts.append("# Reading method (follow this exactly)\n\n" + store.read_method().strip())
 
-    parts.append("# Working notes — the running cross-paper synthesis so far\n\n"
-                 + store.read_synthesis().strip())
+    parts.append(
+        "# Working notes — the running cross-paper synthesis so far\n\n"
+        + model_provenance.frame("working_notes", store.read_synthesis().strip(), source=slug)
+    )
     graph_data = graph_store.load()
 
     # Which prior per-paper Notes to include: every paper read so far (the default — richer
@@ -66,10 +75,15 @@ def build_context(slug: str) -> str:
         empty = ("# Prior Notes from related papers\n\n"
                  "None yet — no related paper on the list has been read in full.")
     if prior:
-        block = list(header)
+        block = []
         for title, notes in prior:
             block.append(f"\n## {title}\n\n{notes.strip()}")
-        parts.append("\n".join(block))
+        parts.append(
+            "\n".join(header) + "\n\n"
+            + model_provenance.frame(
+                "committed_paper_notes", "\n".join(block), source=slug,
+            )
+        )
     else:
         parts.append(empty)
 
@@ -84,6 +98,7 @@ def build_context(slug: str) -> str:
                  "source. Example: [Attention Is All You Need](rc-paper:attention-is-all-you-need). "
                  "Use the target verbatim. You may still note the item is in the Related works "
                  "menu.)"]
+        data = []
         for r in related:
             status = ("in this project, read" if r["kind"] == "project" and r["list_status"] == "read"
                       else "in this project, unread" if r["kind"] == "project" else "external")
@@ -98,8 +113,9 @@ def build_context(slug: str) -> str:
             else:
                 target = ""
             link = f" link:{target}" if target else ""
-            block.append(f"- \"{r['title']}\" ({r.get('year') or 'n.d.'}; {status}{cites}) — "
-                         f"{rel}: {r['reason']}{link}")
+            data.append(f"- \"{r['title']}\" ({r.get('year') or 'n.d.'}; {status}{cites}) — "
+                        f"{rel}: {r['reason']}{link}")
+        block.append(model_provenance.frame("related_works_metadata", "\n".join(data), source=slug))
         parts.append("\n".join(block))
 
     citers = graph.project_citers_for(slug, graph_data=graph_data)
@@ -111,6 +127,7 @@ def build_context(slug: str) -> str:
             "it. Distinguish substantive use from a background citation and stay within the "
             "evidence below.)",
         ]
+        data = []
         for citer in citers:
             timing = "published later" if citer["later"] else "project citer"
             strength = "substantive citation" if citer["significant"] else "background citation"
@@ -120,9 +137,10 @@ def build_context(slug: str) -> str:
             )
             if citer.get("reason"):
                 line += f" — {citer['reason']}"
-            block.append(line)
+            data.append(line)
             for context in citer.get("contexts") or []:
-                block.append(f"  Evidence from the citing paper: “{context}”")
+                data.append(f"  Evidence from the citing paper: “{context}”")
+        block.append(model_provenance.frame("citation_contexts", "\n".join(data), source=slug))
         parts.append("\n".join(block))
 
     parts.append("# The full reading list (for situating this paper)\n\n"
@@ -133,25 +151,31 @@ def build_context(slug: str) -> str:
                  "link to its `link:` target given below (an `rc-paper:<slug>`), verbatim, so the "
                  "reader can tap it to open that paper in the app. Link the first mention in each "
                  "section; you need not relink every repeat.)\n\n"
-                 + store.reading_list_overview())
+                 + model_provenance.frame(
+                     "reading_list_metadata", store.reading_list_overview(), source=slug,
+                 ))
 
     entry = store.entry_markdown(slug)
     if entry:
         head = "# This paper's reading-list entry (authors, venue, context)\n\n"
+        metadata = []
         year = store.year_for(slug)
         if year:
             # Stated explicitly (not only encoded in the arXiv id) so the discussion reliably
             # situates the paper on the timeline: what existed before it, what came after.
-            head += (f"Published: {year}. Situate the paper in time — note which related "
-                     "works predate or postdate it when weighing its contributions.\n\n")
+            head += ("Situate the paper in time — note which related works predate or postdate "
+                     "it when weighing its contributions.\n\n")
+            metadata.append(f"Published: {year}.")
         top_affiliations = affiliations.top_affiliations(slug, graph_data=graph_data)
         if top_affiliations:
-            head += (
-                "Most common affiliations: "
-                + "; ".join(top_affiliations)
-                + ". Treat these as identifying context, not a credibility shortcut.\n\n"
+            head += "Treat affiliations as identifying context, not a credibility shortcut.\n\n"
+            metadata.append("Most common affiliations: " + "; ".join(top_affiliations) + ".")
+        metadata.append(entry)
+        parts.append(
+            head + model_provenance.frame(
+                "current_paper_metadata", "\n\n".join(metadata), source=slug,
             )
-        parts.append(head + entry)
+        )
 
     manifest = figures.manifest_for(slug)
     available = [
@@ -169,6 +193,7 @@ def build_context(slug: str) -> str:
             "conclusion in words. Do not emit markdown image syntax or imply that any unlisted "
             "figure is visible.)",
         ]
+        data = []
         for figure in available:
             caption = " ".join(str(figure.get("caption") or "").split())
             if len(caption) > 360:
@@ -176,7 +201,8 @@ def build_context(slug: str) -> str:
             line = f"- Figure {figure['number']}"
             if caption:
                 line += f": {caption}"
-            block.append(line)
+            data.append(line)
+        block.append(model_provenance.frame("figure_captions", "\n".join(data), source=slug))
         parts.append("\n".join(block))
     else:
         parts.append(

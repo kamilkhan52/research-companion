@@ -56,7 +56,11 @@ def test_retrieval_hunt_resolves_and_renders_registry_prompt(monkeypatch):
     )
 
     retrieval_agent.build_hunt_agent("A Paper", {}, model=object())
-    assert captured["system_prompt"] == "retrieval_hunt: A Paper"
+    assert captured["system_prompt"].startswith(
+        "retrieval_hunt: === BEGIN UNTRUSTED DATA JSON ===\n"
+    )
+    assert '"source_type":"paper_title"' in captured["system_prompt"]
+    assert captured["system_prompt"].endswith(retrieval_agent.model_provenance.SYSTEM_POLICY)
 
 
 def test_graph_extraction_resolves_registry_system_prompt(monkeypatch):
