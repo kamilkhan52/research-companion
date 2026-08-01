@@ -139,3 +139,100 @@ create index if not exists rc_usage_reservations_stale_idx
     where state = 'reserved';
 create index if not exists rc_usage_reservations_job_idx
     on rc_usage_reservations (user_id, job_id);
+
+-- CHECK constraints prove that each stored row has a valid shape, but they cannot prove how the
+-- row reached that shape. Without a transition guard, a direct/internal writer could rewind a
+-- settled row to ``reserved`` (clearing its settlement fields), then mark it ``released``. The
+-- already-spent cost would disappear from admission's monthly sum. Keep the durable ledger
+-- append-like at the database boundary: accounting identity never changes, dispatch evidence can
+-- only accumulate, and a terminal row is immutable.
+create or replace function public.rc_guard_usage_reservation_transition()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+    if new.id is distinct from old.id
+       or new.user_id is distinct from old.user_id
+       or new.project_id is distinct from old.project_id
+       or new.reservation_key is distinct from old.reservation_key
+       or new.job_id is distinct from old.job_id
+       or new.provider is distinct from old.provider
+       or new.operation is distinct from old.operation
+       or new.model is distinct from old.model
+       or new.reserved_nanousd is distinct from old.reserved_nanousd
+       or new.period_start is distinct from old.period_start
+       or new.period_end is distinct from old.period_end
+       or new.created_at is distinct from old.created_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation accounting identity is immutable';
+    end if;
+
+    if old.dispatched_at is not null
+       and new.dispatched_at is distinct from old.dispatched_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation dispatch evidence is immutable';
+    end if;
+    if old.dispatches_complete_at is not null
+       and new.dispatches_complete_at is distinct from old.dispatches_complete_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation completion evidence is immutable';
+    end if;
+
+    if old.state <> 'reserved' and new is distinct from old then
+        raise exception using
+            errcode = '23514',
+            message = 'terminal usage reservations are immutable';
+    end if;
+    return new;
+end
+$$;
+
+drop trigger if exists rc_guard_usage_reservation_transition on rc_usage_reservations;
+create trigger rc_guard_usage_reservation_transition
+before update on rc_usage_reservations
+for each row execute function public.rc_guard_usage_reservation_transition();
+
+-- Attempts are the per-network-dispatch half of the same record. A resolved attempt must not be
+-- rewound or repriced before its parent is settled, and a linked provider generation id is durable
+-- crash-reconciliation evidence rather than mutable metadata.
+create or replace function public.rc_guard_usage_reservation_attempt_transition()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+    if new.id is distinct from old.id
+       or new.reservation_id is distinct from old.reservation_id
+       or new.attempt_key is distinct from old.attempt_key
+       or new.provider is distinct from old.provider
+       or new.maximum_nanousd is distinct from old.maximum_nanousd
+       or new.dispatched_at is distinct from old.dispatched_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation attempt identity is immutable';
+    end if;
+
+    if old.generation_id is not null
+       and new.generation_id is distinct from old.generation_id then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation generation evidence is immutable';
+    end if;
+    if old.state = 'resolved' and new is distinct from old then
+        raise exception using
+            errcode = '23514',
+            message = 'resolved usage reservation attempts are immutable';
+    end if;
+    return new;
+end
+$$;
+
+drop trigger if exists rc_guard_usage_reservation_attempt_transition
+    on rc_usage_reservation_attempts;
+create trigger rc_guard_usage_reservation_attempt_transition
+before update on rc_usage_reservation_attempts
+for each row execute function public.rc_guard_usage_reservation_attempt_transition();

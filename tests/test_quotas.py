@@ -59,12 +59,11 @@ def _args(
 
 
 def _make_lease_stale(reservation_id: str) -> None:
-    """Age a row without sleeping while preserving the schema's lease-after-create invariant."""
+    """Expire a row without sleeping while preserving immutable accounting identity."""
     with db.pool().connection() as conn:
         conn.execute(
             "update rc_usage_reservations "
-            "set created_at = created_at - interval '2 minutes', "
-            "lease_expires_at = now() - interval '1 second' where id = %s",
+            "set lease_expires_at = created_at where id = %s",
             (reservation_id,),
         )
 
@@ -394,6 +393,46 @@ def test_schema_refuses_to_release_a_dispatched_reservation_even_if_python_is_by
                 "set state = 'released', finalized_at = %s where id = %s",
                 (datetime.now(UTC), reservation.id),
             )
+
+
+@needs_pg
+def test_schema_refuses_to_rewind_settled_spend_and_free_the_ceiling(database, temp_project):
+    _own(temp_project)
+    reservation = quotas.reserve(**_args(temp_project, maximum=60, limit=60))
+    attempt, _ = quotas.begin_attempt(
+        reservation.id,
+        user_id=ALICE,
+        attempt_key="request-1",
+        maximum_cost_nanousd=60,
+    )
+    quotas.resolve_attempt(
+        attempt.id,
+        user_id=ALICE,
+        actual_nanousd=60,
+        generation_id="gen-terminal",
+    )
+    quotas.mark_dispatches_complete(reservation.id, user_id=ALICE)
+    quotas.settle(reservation.id, user_id=ALICE, actual_nanousd=60)
+
+    # A valid final-row CHECK cannot catch this first half of a two-step bypass by itself. The
+    # transition trigger must reject the rewind before a second update can mark the row released.
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with db.pool().connection() as conn:
+            conn.execute(
+                "update rc_usage_reservations set state = 'reserved', actual_nanousd = null, "
+                "settlement_kind = null, dispatches_complete_at = null, finalized_at = null "
+                "where id = %s",
+                (reservation.id,),
+            )
+
+    with pytest.raises(quotas.QuotaExceeded):
+        quotas.reserve(**_args(
+            temp_project,
+            key="job-2:openrouter",
+            job_id="job-2",
+            maximum=60,
+            limit=60,
+        ))
 
 
 @needs_pg
