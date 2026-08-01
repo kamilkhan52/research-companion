@@ -95,6 +95,8 @@ def _all_audio_dirs(legacy_dir: Path) -> list[Path]:
     roots = [legacy_dir]
     users = config.APP_STATE_DIR / "users"
     try:
+        if not stat.S_ISDIR(users.lstat().st_mode):
+            return roots
         user_dirs = list(users.iterdir())
     except OSError:
         return roots

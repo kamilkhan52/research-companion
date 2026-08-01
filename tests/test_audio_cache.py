@@ -87,6 +87,20 @@ def test_eviction_never_follows_or_removes_symlinks(tmp_path, monkeypatch):
     assert outside.read_bytes() == b"private"
 
 
+def test_eviction_never_enters_a_symlinked_users_root(tmp_path, monkeypatch):
+    app_state = tmp_path / "app-state"
+    outside = tmp_path / "outside"
+    app_state.mkdir()
+    (app_state / "users").symlink_to(outside)
+    monkeypatch.setattr(config, "APP_STATE_DIR", app_state)
+    _limits(monkeypatch, per_user=1, total=1)
+    target = _write(outside / "alice" / "audio", 1, 5, 1)
+
+    audio_cache.enforce(app_state / "audio", app_state / "audio")
+
+    assert target.read_bytes() == b"xxxxx"
+
+
 def test_invalid_limits_keep_finite_defaults(monkeypatch):
     monkeypatch.setenv("RC_AUDIO_CACHE_PER_USER_BYTES", "not-a-number")
     monkeypatch.setenv("RC_AUDIO_CACHE_TOTAL_BYTES", "0")
