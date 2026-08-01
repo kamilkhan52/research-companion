@@ -345,6 +345,8 @@ _REQUIRED_TABLES = (
     "rc_content_reports",
     "rc_project_trash",
     "rc_projects",
+    "rc_usage_reservation_attempts",
+    "rc_usage_reservations",
     "rc_usage_events",
     "rc_user_settings",
     "rc_users",

@@ -11,7 +11,8 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | OpenAI speech cost | stacked implementation, in review | Every provider dispatch is visible; `tts-1` and `tts-1-hd` are priced exactly by characters sent. |
 | Paid-route consolidation | stacked implementation, in review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
 | Append-only per-user events | stacked implementation, in review | Queryable cost per user, project, feature, and day without replacing the project aggregate. |
-| Admission reservations + rate limits | queued | Authoritative hard ceiling before paid work starts. |
+| Durable reservation lifecycle | stacked implementation, in review | Transactional per-user ceiling, explicit dispatch and terminal states, leases, and generation linkage. |
+| Paid-work admission + rate limits | queued | Gate every surviving provider workflow before network dispatch. |
 | Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
 
 Accounting and enforcement are deliberately different systems:
@@ -80,15 +81,45 @@ without failing a provider result, and `usage_events.daily_summary` can query co
 calendar day, and feature. This remains intentionally separate from reservations: their database
 write authorizes spend and therefore must fail closed.
 
+## Durable reservation contract
+
+`rc_usage_reservations` is the authoritative system that is deliberately *not* coupled to the
+best-effort event writer. Admission locks the verified `rc_users` row, which serializes concurrent
+reservations for one account, then locks and proves the live owned project row. Inside that same
+transaction it sums both active pessimistic maxima and settled actual cost for the server-derived
+UTC calendar month. Concurrent starts therefore cannot each spend the same remaining balance.
+Missing Postgres, a missing account row, ownership loss, or an ambiguous database result refuses
+admission with a sanitized error.
+
+Each row has one durable lifecycle: `reserved → settled | released | expired`. A stable internal
+retry key makes admission idempotent. `begin_attempt` must land immediately before each provider
+request; after the first attempt, both Python and a schema constraint prohibit `released`/`expired`.
+An undispatched expired lease can safely free capacity. A dispatched orphan remains reserved until
+OpenRouter generation reconciliation supplies exact cost, or until it is conservatively settled to
+its full maximum. Every network request first inserts an `rc_usage_reservation_attempts` row whose
+maximum must fit inside the parent reservation. A lost database response returns that attempt as
+`should_dispatch=false`, preventing an idempotency retry from sending the provider request twice.
+An attempt can retain an OpenRouter generation id while its cost is pending, then resolve exactly
+or conservatively. Exact parent settlement additionally requires a durable
+`dispatches_complete_at` marker, written only after all attempts resolve; without it an unseen
+request may still have been in flight at the crash.
+
+This slice establishes and tests the crash/state contract independently. It does not yet claim
+that paid routes are gated: job/provider integration, pessimistic per-workflow estimates, lease
+renewal, startup reconciliation orchestration, rate/concurrency limits, and the instance kill
+switch are the next slices. Actual monthly tier amounts remain the documented human decision.
+
 ## Next implementation order
 
 1. Land exact OpenRouter and speech accounting, then verify one real staging response from each
    provider without generating a large workload.
 2. Verify the append-only Postgres usage events on staging while retaining the current aggregate
    as a presentation/cache layer.
-3. Define durable reservation states and leases, then gate **every row in the inventory** through
-   one admission seam. Refuse new paid work when the quota store is unavailable.
-4. Add concurrent rate limits, monthly tier quotas, model allowlists, soft 80% warnings, and the
+3. Land the durable reservation states, leases, dispatch marker, exact/conservative settlement,
+   and generation linkage.
+4. Gate **every row in the inventory** through one admission seam, with pessimistic per-workflow
+   maxima and startup reconciliation. Refuse new paid work when the quota store is unavailable.
+5. Add concurrent rate limits, monthly tier quotas, model allowlists, soft 80% warnings, and the
    instance kill switch. Actual tier amounts remain a human decision informed by the new events.
-5. Reconcile OpenRouter orphans by generation id. For character-priced speech, settle at dispatch;
+6. Reconcile OpenRouter orphans by generation id. For character-priced speech, settle at dispatch;
    there is no per-request provider id to poll.

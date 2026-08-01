@@ -1206,6 +1206,17 @@ the pending marker rather than rewriting history. Ordinary project deletion reta
 cost, account deletion cascades it, and the automatic `rc_*` Data API lockout covers the table.
 The existing project aggregate remains an independent presentation cache.
 
+**Durable reservation foundation status (2026-07-31): stacked implementation in review.**
+`rc_usage_reservations` serializes admission on the account row and sums active maxima plus settled
+actual cost inside the same transaction. It locks/proves the live `(user, project)` row, derives
+the current UTC month server-side, refuses on store ambiguity, and persists explicit
+`reserved → settled | released | expired` states with a lease and pre-dispatch marker. Once marked
+possibly dispatched, schema and code both forbid release; stale work must reconcile through its
+bounded per-dispatch attempt rows (including OpenRouter generation links) *and* a durable
+all-dispatches-complete marker, or settle conservatively to the reserved maximum. This slice
+defines the crash-safe persistence contract; paid-work integration and actual tier amounts are
+still next, so it does not yet close the zero-rate-limit finding.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched

@@ -1,6 +1,6 @@
 # Security, privacy, and Google Play data declarations
 
-*Code-derived inventory checked through the M3 event-ledger stack on 2026-07-31. This is an
+*Code-derived inventory checked through the M3 reservation-foundation stack on 2026-07-31. This is an
 engineering record and a Play Console **draft**, not an approved privacy policy or a legal
 attestation. Re-check it against the exact AAB submitted to Play.*
 
@@ -93,6 +93,7 @@ the server inventory below.
 | Postgres `rc_user_settings` | Model, voice, speech, and prior-notes preferences | Until cleared/account deletion | Removed transactionally with the parent `rc_users` row |
 | Postgres `rc_content_reports` | Reporter UUID, a POINTER to the reported AI output (project id, paper slug, message reference), a fixed surface/reason, and the reporter's own free-text note (≤2000 chars). Deliberately **not** the reported content itself, which stays in the project git transcript | Until the reporter's account is deleted; no separate TTL yet, and the operator review workflow that would close reports out is M7 | Cascades from `rc_users`, so a reporter's reports go with their account. That loses moderation signal and is still the right default — revisit only with a documented retention basis, and never by switching to `set null`, which would leave the free-text note behind |
 | Postgres `rc_usage_events` | User UUID, optional owned project ID, operation/model, token counts, integer nano-USD cost, provider generation ID when available, estimated/pending state, and timestamp. No prompt, response, paper, narration, email, or provider body | Historical accounting metadata until account deletion; project deletion does not erase its cost history | Cascades from `rc_users`. Inserts prove the live `(user, project)` ownership pair; app-global user spend has a null project |
+| Postgres `rc_usage_reservations` / `rc_usage_reservation_attempts` | User UUID, optional owned project ID, internal job/reservation/attempt identifiers, provider/operation/model, pessimistic and settled nano-USD cost, monthly period, state/lease/dispatch/finalization timestamps, and OpenRouter generation IDs. No request or response content | Durable admission/accounting metadata until account deletion. Terminal rows and their provider attempts remain for the account's period history; ordinary project deletion does not erase them | Cascades from `rc_users`. Reservation admission locks the user and live owned project rows; attempts cascade from their reservation |
 | Project git repository | Project metadata, reading list, cached corpus/full text, session transcripts, approved notes/synthesis, and their git history | Indefinite until deletion | Active and attributed trashed repositories are permanently removed by the coordinator |
 | Project `.state/` | Session index, discovery results, graph/metadata caches, usage totals, covers, figures, branches/drafts, and transient job state | Indefinite/rebuildable; no general TTL | Removed only when the containing project is permanently removed |
 | `PROJECTS_ROOT/.trash/` | Recoverable full project directories after ordinary project deletion | Indefinite until account deletion; no separate TTL yet | Exact attributed entries are permanently removed by account deletion. Ambiguous legacy entries still require explicit per-directory mapping |
@@ -149,7 +150,8 @@ Usage now has two deliberately different stores. Per-project `.state/usage.json`
 presentation cache and records aggregate operation/model/token/cost totals plus pending OpenRouter
 generation IDs. Postgres `rc_usage_events` is the append-only per-user/day/feature history. A
 pending generation is never rewritten: reconciliation appends its exact usage event alongside the
-marker. The future reservation ledger is separate and fail-closed; these observational writes stay
+marker. The reservation ledger is separate and fail-closed: its identifiers, state, maximum/actual
+cost, lease, and per-dispatch provider attempts authorize and reconcile spend. Observational writes stay
 best-effort and cannot fail provider work.
 
 ### External recipients and payloads
