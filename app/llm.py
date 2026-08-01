@@ -112,7 +112,8 @@ def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") 
             f"pick a different model under “{setting}” in Settings.")
 
 
-# The routing constraint that makes the privacy policy true.
+# The routing constraint that makes the privacy policy true and avoids paying a random premium
+# among the endpoints that satisfy it.
 #
 # Every request carries a paper's full text, the reader's questions, and their notes. Without a
 # `provider` block OpenRouter may route that to ANY endpoint eligible to serve the model — the
@@ -122,9 +123,14 @@ def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") 
 # SiliconFlow respectively. So an unconstrained request cannot honestly be described in a privacy
 # policy at all.
 #
-# The two keys are NOT the same guarantee and both are needed: `data_collection: "deny"` excludes
-# providers that may store or train on inputs, while `zdr` requires zero retention at rest — a
-# provider can satisfy one and fail the other (30-day logs, no training).
+# The first two keys are NOT the same guarantee and both are needed: `data_collection: "deny"`
+# excludes providers that may store or train on inputs, while `zdr` requires zero retention at
+# rest — a provider can satisfy one and fail the other (30-day logs, no training).
+#
+# `sort: "price"` does not relax that eligible set or pin a vendor. OpenRouter documents that it
+# disables price-weighted load balancing and tries eligible endpoints in ascending price order,
+# with normal fallbacks retained. That is the cost-safe default for long research prompts; an
+# explicit provider allowlist would be a separate availability/quality decision.
 #
 # Deliberately not env-configurable. `/legal/privacy` states this as an unconditional promise, and
 # a flag that relaxes it would make the published policy false on whichever deployment set it.
@@ -155,7 +161,11 @@ def _empty_response_message(finish_reason, usage: dict, operation: str = "llm") 
 #: or two sentences under a latency budget.
 NO_REASONING = MappingProxyType({"enabled": False})
 
-PRIVACY_ROUTING = MappingProxyType({"data_collection": "deny", "zdr": True})
+PRIVACY_ROUTING = MappingProxyType({
+    "data_collection": "deny",
+    "zdr": True,
+    "sort": "price",
+})
 
 
 def routing_payload() -> dict:

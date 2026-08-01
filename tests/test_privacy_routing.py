@@ -46,7 +46,11 @@ def test_the_routing_payload_is_json_serializable_and_a_fresh_copy():
 def test_both_keys_are_set_and_neither_alone_would_do():
     """`data_collection: deny` excludes training; `zdr` excludes retention at rest. A provider can
     satisfy one and fail the other, so the policy's wording requires both."""
-    assert llm.PRIVACY_ROUTING == {"data_collection": "deny", "zdr": True}
+    assert llm.PRIVACY_ROUTING == {
+        "data_collection": "deny",
+        "zdr": True,
+        "sort": "price",
+    }
 
 
 def test_raw_client_sends_the_routing_constraint(monkeypatch):
