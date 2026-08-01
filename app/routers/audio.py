@@ -11,6 +11,7 @@ import re
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from .. import audio_jobs, config, projects, tenancy, usage
 
@@ -97,8 +98,9 @@ def audio(name: str):
     """
     if not re.fullmatch(r"[0-9a-f]{40}\.mp3", name):
         raise HTTPException(status_code=404, detail="Not found")
-    path = audio_jobs.user_audio_dir() / name
-    if not path.exists():
+    path = audio_jobs.claim_cached_file(name)
+    if path is None:
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path, media_type="audio/mpeg",
-                        headers={"Cache-Control": "private, max-age=86400"})
+                        headers={"Cache-Control": "private, max-age=86400"},
+                        background=BackgroundTask(audio_jobs.release_cached_file, path))

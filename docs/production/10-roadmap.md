@@ -1241,6 +1241,13 @@ work available and treats every non-empty value except an explicit false spellin
 an operator typo fails toward no spend. This independent incident brake requires no H15 tier value
 and does not replace the per-account reservation ceiling.
 
+**Audio-cache eviction status (2026-07-31): stacked implementation in review.** Derived narration
+and preview mp3s now use successful reads as their LRU clock and enforce both a 2 GiB per-user and
+8 GiB instance-wide bound after writes. The finite defaults are operator-configurable; invalid
+values do not disable eviction. In-flight synthesis and response files are protected, while
+symlinks and non-cache files are never candidates. This closes P1-1/P1-14 without changing the
+per-user ownership decision or deleting any human-approved record.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
@@ -1280,7 +1287,7 @@ reconciliation**. M6 consumes these same records when it marks interrupted jobs.
   this anyway: it reports aggregated time buckets by project/key/model, with no per-request id.)
 
 An instance-wide kill switch. Soft warnings at 80%.
-Max-token and timeout caps per operation. Audio cache eviction with an LRU/size bound (P1-1).
+Max-token and timeout caps per operation. ~~Audio cache eviction with an LRU/size bound (P1-1).~~
 Prompt-injection hardening on the tool loop (P1-4): explicit provenance framing for paper text,
 tool-call budget already in place, plus an egress review covering **every** outbound-fetch path,
 not just `web_fetch` — the retrieval path was the one missing its guard entirely (P0-14, closed in
