@@ -180,7 +180,9 @@ def opening_draft(slug: str, thread_id: str = sessions.MAIN_THREAD):
             p = store.get_paper(slug)
             if not p:
                 raise HTTPException(status_code=404, detail="Unknown paper")
-            base = prompts.get("opening_message").replace("{title}", p.title)
+            base = prompts.get("opening_message").replace(
+                "{title}", prompts.OPENING_TITLE_MARKER,
+            )
             title = p.title
         return {
             "prompt": stored or base,
@@ -247,7 +249,9 @@ def _paper_summary_hook(req: RetrievalJobReq):
             p = store.get_paper(slug)
             if not p:
                 raise RetrievalError("Unknown paper")
-            base = prompts.get("opening_message").replace("{title}", p.title)
+            base = prompts.get("opening_message").replace(
+                "{title}", prompts.OPENING_TITLE_MARKER,
+            )
             prompt = _opening_prompt_templates(base).get(req.mode or "balanced", base)
             chat_req = ChatStartReq(
                 slug=slug, prompt=prompt,

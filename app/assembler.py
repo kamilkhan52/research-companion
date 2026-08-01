@@ -221,10 +221,9 @@ def build_context(slug: str) -> str:
 def paper_opening_message(slug: str, full_text: str, template: str | None = None) -> str:
     """The first user message of a session: hands the agent the paper text and asks for the
     opening comprehensive summary. The template is user-editable (prompts.opening_message), but
-    the stored paper metadata and full text are always framed here. The compose-first API renders
-    the title for human editing before it stores the prompt, so a submitted template may contain
-    the literal title instead of ``{title}``; replace that rendered value at this final model-input
-    boundary as well."""
+    the stored paper metadata and full text are always framed here. Compose-first drafts carry a
+    fixed non-data title marker, leaving the actual title separate until this final model-input
+    boundary. The legacy-slot branch safely upgrades drafts stored before that contract changed."""
     title = store.title_for(slug)
     framed = model_provenance.frame(
         "paper_full_text", full_text.strip(), source=slug,
@@ -239,20 +238,20 @@ def paper_opening_message(slug: str, full_text: str, template: str | None = None
     else:
         if "{title}" in template:
             content = template.replace("{title}", framed_title)
+        elif prompts.OPENING_TITLE_MARKER in template:
+            content = template.replace(prompts.OPENING_TITLE_MARKER, framed_title, 1)
         else:
             content = template
-            # The visible opening-draft contract intentionally shows the actual title instead of
-            # a template token. Locate only the slot defined by the server's configured opening
-            # template. Replacing the title string globally is unsafe for short titles (for
-            # example, a paper called "a" occurs throughout ordinary prompt prose).
+            # Legacy compose-first drafts contained the actual title. Locate only the slot defined
+            # by the server's configured opening template. Replacing the title string globally is
+            # unsafe for short titles (a paper called "a" occurs throughout ordinary prose).
             configured = prompts.get("opening_message")
             if title and "{title}" in configured:
-                prefix, suffix = configured.split("{title}", 1)
+                prefix, _suffix = configured.split("{title}", 1)
                 position = len(prefix)
                 if (
                     content.startswith(prefix)
                     and content[position:position + len(title)] == title
-                    and content[position + len(title):].startswith(suffix)
                 ):
                     content = (
                         content[:position] + framed_title + content[position + len(title):]

@@ -32,6 +32,11 @@ class PromptManagedError(PromptError):
 
 log = get_logger("prompts")
 
+# Compose-first screens show an editable opening instruction. Stored paper titles are corpus data,
+# not authored instructions, so they must never be interpolated into that editable string. The
+# assembler replaces this fixed marker with a provenance envelope at the final model boundary.
+OPENING_TITLE_MARKER = "[paper title supplied securely when sent]"
+
 
 _DEFAULT_READING_METHOD = """# Reading method
 

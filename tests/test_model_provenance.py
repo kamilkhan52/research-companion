@@ -11,6 +11,7 @@ from app import (
     lab_research,
     model_provenance,
     preview_jobs,
+    prompts,
     research_tools,
     sessions,
 )
@@ -95,11 +96,16 @@ def test_opening_draft_to_session_to_history_reframes_rendered_title(
     monkeypatch.setattr(session_routes.config, "has_api_key", lambda: True)
 
     visible_draft = session_routes.opening_draft("paper-a")["prompt"]
-    assert hostile_title in visible_draft  # The editor shows the real title, not a token.
+    assert hostile_title not in visible_draft
+    assert prompts.OPENING_TITLE_MARKER in visible_draft
     assert "{title}" not in visible_draft
+    edited_draft = visible_draft.replace(
+        "Produce the paper summary now:",
+        "Focus on limitations, then produce the paper summary:",
+    )
 
     session_routes._prep_chat_start(
-        session_routes.ChatStartReq(slug="paper-a", prompt=visible_draft),
+        session_routes.ChatStartReq(slug="paper-a", prompt=edited_draft),
     )
     opening = sessions.build_history("paper-a")[0]["content"]
     envelopes = [
@@ -118,13 +124,14 @@ def test_opening_draft_to_session_to_history_reframes_rendered_title(
 def test_rendered_one_character_title_replaces_only_the_configured_slot(temp_project):
     add_paper(temp_project, "paper-a", "a", full_text="stored evidence")
 
-    visible_draft = session_routes.opening_draft("paper-a")["prompt"]
-    sessions.start_session("paper-a", "a", opening=visible_draft)
+    # Simulate a legacy draft saved before opening_draft stopped interpolating stored titles.
+    legacy_draft = prompts.get("opening_message").replace("{title}", "a")
+    sessions.start_session("paper-a", "a", opening=legacy_draft)
     opening = sessions.build_history("paper-a")[0]["content"]
 
     assert opening.count('"source_type":"paper_title"') == 1
     assert "Produce the paper summary now" in opening
-    assert len(opening) < len(visible_draft) + 1_000
+    assert len(opening) < len(legacy_draft) + 1_000
 
 
 def test_project_paper_tool_returns_typed_untrusted_data(temp_project):
