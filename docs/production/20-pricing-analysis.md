@@ -43,9 +43,10 @@ Before the tables, three measured facts that matter more than the tier design:
    > user, and that note is now about a model no longer used by default. Do not halve the tables.
    >
    > **Implementation update 2026-07-31:** the M3 speech slice records each `tts-1`/`tts-1-hd`
-   > provider dispatch at the published character rate, including retries. These historical audio
-   > figures were reconstructed from cached text/files; new usage will appear directly under the
-   > `speech_synthesis` operation. Token/audio-priced speech models remain visibly estimated.
+   > accepted provider response at the published character rate. Transport-ambiguous attempts are
+   > conservatively charged and marked estimated; explicit rejections are unbilled. These
+   > historical audio figures were reconstructed from cached text/files; new usage will appear
+   > directly under `speech_synthesis`. Token/audio-priced speech models remain visibly estimated.
 
 2. **We are paying ~2.45× DeepSeek list price for no reason.** `app/llm.py` sends no OpenRouter
    `provider` routing preference, so requests fan out across 18 endpoints for

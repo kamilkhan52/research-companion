@@ -78,13 +78,13 @@ _USD_PER_CHARACTER = {
 }
 
 
-def _record_dispatch(model: str, spoken_text: str) -> None:
-    """Charge one provider dispatch to the active usage scope, conservatively.
+def _record_dispatch(model: str, spoken_text: str, *, estimated: bool = False) -> None:
+    """Charge one completed or transport-ambiguous dispatch to the active usage scope.
 
-    Record before the HTTP call: a read timeout can mean OpenAI completed and billed work even
-    though this process never received the bytes. Charging that ambiguous attempt is the safe
-    direction for a spend ceiling, and a retry is a second dispatch that must be counted too.
-    Analytics remains best-effort through ``usage.record`` and must never block synthesis.
+    A returned non-2xx response is a definite provider rejection and records nothing. A successful
+    response is exact. A transport failure after connection may mean OpenAI completed and billed
+    work even though this process never received the bytes, so charge it conservatively and leave
+    the ledger estimated. Analytics remains best-effort and must never block synthesis.
     """
     rate = _USD_PER_CHARACTER.get(model)
     if rate is None:
@@ -96,6 +96,8 @@ def _record_dispatch(model: str, spoken_text: str) -> None:
         model,
         {"cost": len(spoken_text) * rate},
     )
+    if estimated:
+        usage.record_pending("speech_synthesis", model, None)
 
 
 def _friendly_tts_error(status: int, raw: str) -> str:
@@ -134,16 +136,22 @@ def openai_speech(text: str) -> bytes:
     for attempt in range(_TRIES):
         if attempt:
             time.sleep(2 * attempt)
-        _record_dispatch(model, spoken_text)
         try:
             r = httpx.post(
                 f"{config.OPENAI_BASE}/audio/speech",
                 headers={"Authorization": f"Bearer {key}"},
                 json=body, timeout=120,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # No connection means no provider dispatch and therefore no possible synthesis bill.
+            continue
         except httpx.HTTPError:
+            # The connection existed but no authoritative response arrived. It may have completed
+            # upstream, so account conservatively and keep totals visibly estimated.
+            _record_dispatch(model, spoken_text, estimated=True)
             continue
         if r.status_code == 200:
+            _record_dispatch(model, spoken_text)
             return r.content
         last_err = _friendly_tts_error(r.status_code, r.text)
         if r.status_code not in _RETRYABLE:

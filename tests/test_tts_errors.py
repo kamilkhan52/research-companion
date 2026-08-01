@@ -73,7 +73,7 @@ def test_tts_1_records_exact_character_cost_per_dispatch(monkeypatch):
     )]
 
 
-def test_retry_is_a_second_conservatively_charged_dispatch(monkeypatch):
+def test_provider_rejection_is_not_charged_but_successful_retry_is(monkeypatch):
     recorded = []
     responses = iter([FakeResp(500), FakeResp(200, content=b"mp3!")])
     monkeypatch.setattr(tts.usage, "record",
@@ -81,8 +81,39 @@ def test_retry_is_a_second_conservatively_charged_dispatch(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: next(responses))
 
     assert tts.openai_speech("hello") == b"mp3!"
-    assert len(recorded) == 2
+    assert len(recorded) == 1
     assert all(item[2]["cost"] == pytest.approx(5 * 15 / 1_000_000) for item in recorded)
+
+
+def test_returned_rate_limit_records_no_speech_spend(temp_project, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(429, text='{"error":"rl"}'))
+
+    with pytest.raises(tts.TTSError):
+        tts.openai_speech("hello")
+
+    summary = tts.usage.summary()
+    assert summary["total"]["calls"] == 0
+    assert summary["pending_count"] == 0
+    assert summary["estimated"] is False
+
+
+def test_transport_ambiguity_is_charged_and_marked_estimated(temp_project, monkeypatch):
+    responses = iter([httpx.ReadTimeout("late response"), FakeResp(200, content=b"mp3!")])
+
+    def post(*_args, **_kwargs):
+        result = next(responses)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(httpx, "post", post)
+    assert tts.openai_speech("hello") == b"mp3!"
+
+    summary = tts.usage.summary()
+    assert summary["by_operation"]["speech_synthesis"]["calls"] == 2
+    assert summary["by_operation"]["speech_synthesis"]["cost_nanousd"] == 150_000
+    assert summary["pending_count"] == 1
+    assert summary["estimated"] is True
 
 
 def test_unpriceable_speech_model_is_counted_and_marked_estimated(temp_project, monkeypatch):

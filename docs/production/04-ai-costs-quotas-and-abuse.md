@@ -43,10 +43,11 @@ OpenAI currently publishes `tts-1` at **$15 per 1M characters** and `tts-1-hd` a
 characters**. Sources: [tts-1-hd model pricing](https://developers.openai.com/api/docs/models/tts-1-hd)
 and [speech API request contract](https://platform.openai.com/docs/api-reference/audio/createSpeech).
 
-One retry is one more provider dispatch. Accounting records before the HTTP call because a read
-timeout may mean OpenAI completed and billed the synthesis while this process never received the
-bytes. Conservatively charging that ambiguous attempt is safer than silently losing spend; a
-later successful retry is separately charged.
+A successful retry is one more provider dispatch. A returned 4xx/5xx is a definite rejection and
+records no speech cost. A transport failure after connection is different: a read failure may mean
+OpenAI completed and billed the synthesis while this process never received the bytes. That
+ambiguous attempt is conservatively charged *and marked estimated*; a later successful retry is
+separately charged exactly. A connection failure before dispatch records nothing.
 
 `gpt-4o-mini-tts` does not have a character-price contract and the binary speech response does not
 return per-request cost. It is therefore counted but left pending/estimated rather than assigned a
@@ -70,4 +71,3 @@ to resolve `user:<hash>` as a project and the cost disappears.
    instance kill switch. Actual tier amounts remain a human decision informed by the new events.
 5. Reconcile OpenRouter orphans by generation id. For character-priced speech, settle at dispatch;
    there is no per-request provider id to poll.
-

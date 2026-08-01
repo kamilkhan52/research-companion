@@ -1183,9 +1183,10 @@ a multi-request tool loop, no duplicate aggregate, a generation-specific pending
 unestimated ledger on the exact path.
 
 **Speech-accounting status (2026-07-31): stacked implementation in review.**
-`tts.openai_speech` is now the single dispatch meter: every attempt produces a
-`speech_synthesis` call, with exact character-priced cost for `tts-1`/`tts-1-hd`; an unpriceable
-model remains explicitly pending/estimated. Audio workers rebind the validated initiating
+`tts.openai_speech` is now the single dispatch meter: accepted responses produce exact
+character-priced `speech_synthesis` cost for `tts-1`/`tts-1-hd`; a transport-ambiguous attempt is
+charged conservatively and marked estimated, while an explicit provider rejection is unbilled.
+An unpriceable model remains explicitly pending/estimated. Audio workers rebind the initiating
 project around synthesis instead of leaking cost into their `user:<hash>` registry scope, and the
 legacy `/api/speak` path validates and binds its body-carried billing project on a cache miss. The
 provider/route inventory and next enforcement sequence now live in

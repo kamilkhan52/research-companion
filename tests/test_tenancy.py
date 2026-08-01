@@ -404,6 +404,44 @@ def test_ownership_round_trips(database):
 
 
 @needs_pg
+def test_foreign_user_cannot_bill_blocking_speech_to_an_owned_project(
+    database, temp_project, monkeypatch
+):
+    """`/api/speak` carries its project in the body, so route dependencies do not gate it.
+
+    Use the real ownership table and the same existing project id for both users. The provider
+    seam must remain untouched when Bob tries to charge synthesis to Alice's project.
+    """
+    from types import SimpleNamespace
+
+    from app import audio_jobs, config, tts
+    from app.routers import audio as audio_routes
+    from fastapi import HTTPException
+
+    tenancy.ensure_user(OWNER, "alice@example.com")
+    tenancy.ensure_user(OTHER, "bob@example.com")
+    tenancy.record_project(temp_project, OWNER)
+    monkeypatch.setattr(audio_jobs, "AUDIO_DIR", config.PROJECTS_ROOT / "_audio-test")
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"speech_provider": "openai", "tts_model": "tts-1", "tts_voice": "alloy"},
+    )
+    called = []
+    monkeypatch.setattr(tts, "synthesize_long", lambda text: called.append(text) or b"mp3")
+    request = SimpleNamespace(state=SimpleNamespace(user={"user_id": OTHER}))
+
+    with pytest.raises(HTTPException) as error:
+        audio_routes.speak(
+            audio_routes.NarrateReq(text="Foreign billing attempt.", project=temp_project),
+            request,
+        )
+
+    assert error.value.status_code == 400
+    assert called == []
+
+
+@needs_pg
 def test_recording_refuses_a_conflicting_owner_rather_than_reporting_success(database):
     """Never a silent transfer — and never a silent NO-OP either.
 
