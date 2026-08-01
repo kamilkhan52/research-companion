@@ -216,7 +216,10 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
     )
     result = asyncio.run(
         research_agent.run(
-            f"Paper title: {title}\n\nKnown project metadata:\n{paper_metadata[:4_000]}",
+            model_provenance.frame(
+                "paper_metadata",
+                f"Paper title: {title}\n\nKnown project metadata:\n{paper_metadata[:4_000]}",
+            ),
             usage_limits=UsageLimits(
                 request_limit=MAX_RESEARCH_AGENT_REQUESTS,
                 tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,

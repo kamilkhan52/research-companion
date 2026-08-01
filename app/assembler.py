@@ -218,10 +218,20 @@ def build_context(slug: str) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def paper_opening_message(slug: str, full_text: str) -> str:
+def paper_opening_message(slug: str, full_text: str, template: str | None = None) -> str:
     """The first user message of a session: hands the agent the paper text and asks for the
-    opening comprehensive summary. The template is user-editable (prompts.opening_message)."""
+    opening comprehensive summary. The template is user-editable (prompts.opening_message), but
+    the full text is always framed here, including when a saved session template omitted its
+    placeholder and the data has to be appended."""
     framed = model_provenance.frame(
         "paper_full_text", full_text.strip(), source=slug,
     )
-    return prompts.render("opening_message", title=store.title_for(slug), full_text=framed)
+    if template is None:
+        content = prompts.render(
+            "opening_message", title=store.title_for(slug), full_text=framed,
+        )
+    else:
+        content = template.replace("{title}", store.title_for(slug)).replace("{full_text}", framed)
+    if full_text and framed not in content:
+        content += "\n\n[BEGIN PAPER FULL TEXT]\n" + framed + "\n[END PAPER FULL TEXT]"
+    return content

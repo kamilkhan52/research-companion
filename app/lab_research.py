@@ -142,8 +142,11 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
         output_type=str,
         retries=2,
     )
-    user = (f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
-            f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}")
+    user = model_provenance.frame(
+        "author_and_paper_metadata",
+        f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
+        f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}",
+    )
     try:
         result = asyncio.run(
             ag.run(user, usage_limits=UsageLimits(
