@@ -1182,9 +1182,19 @@ models and failures before a provider response is captured. Unit coverage assert
 a multi-request tool loop, no duplicate aggregate, a generation-specific pending fallback, and an
 unestimated ledger on the exact path.
 
+**Speech-accounting status (2026-07-31): stacked implementation in review.**
+`tts.openai_speech` is now the single dispatch meter: every attempt produces a
+`speech_synthesis` call, with exact character-priced cost for `tts-1`/`tts-1-hd`; an unpriceable
+model remains explicitly pending/estimated. Audio workers rebind the validated initiating
+project around synthesis instead of leaking cost into their `user:<hash>` registry scope, and the
+legacy `/api/speak` path validates and binds its body-carried billing project on a cache miss. The
+provider/route inventory and next enforcement sequence now live in
+`04-ai-costs-quotas-and-abuse.md`.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
-not cover them (P0-13).** `tts.py` never touches `usage.py`, so *all* OpenAI speech spend is
-currently unmetered; and `POST /api/speak` (`routers/audio.py:39-52`) synthesizes arbitrary
+not cover them (P0-13).** The inventory is now recorded in
+`04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
+`usage.py`, so *all* OpenAI speech spend was invisible; and `POST /api/speak` synthesized arbitrary
 caller-supplied text synchronously, outside the job framework entirely. `/api/narrate` and the
 plain/SSE turn-delivery paths in `routers/session.py` are likewise paid work that is not a
 `JobRegistry` job. Enumerate all of them, meter TTS as a first-class operation in the ledger, and
