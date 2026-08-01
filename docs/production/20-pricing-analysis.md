@@ -470,6 +470,13 @@ These are prerequisites, not nice-to-haves. In priority order:
    preview cost from $0.087/turn to $0.0016/turn at the same product surface. This is the single
    largest LLM saving available.
 
+   > **Implementation update 2026-07-31:** the measured figures above remain the historical
+   > baseline, not a post-change measurement. The prompt-volume half is stacked in review: each
+   > cue gets at most 6,000 grounded-source characters, at most 2,000 of them from live response,
+   > four recent history entries, and rotating project context. Kamil explicitly retained
+   > uncapped cues until final audio is playable, so the six-call assumption and therefore the
+   > `$0.0016/turn` projection no longer describe the chosen product. Re-measure after deployment.
+
 6. **The audio cache has no eviction.** 2.99 GB in ~3 weeks from **one** user, against a 20 GB
    volume (`fly.toml`). At 100 paying users that is ~300 GB/month of accumulation. The M3 eviction
    work is a hard prerequisite for launch, not a follow-up — and at $0.15/GB an unbounded cache is
