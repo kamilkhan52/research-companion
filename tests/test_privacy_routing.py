@@ -9,6 +9,10 @@ from __future__ import annotations
 import httpx
 import pytest
 from app import agent_harness, config, llm
+from pydantic_ai.models.openrouter import (
+    _OpenRouterChatCompletion,
+    _OpenRouterChatCompletionChunk,
+)
 
 
 def _capture(sent: list[dict]) -> httpx.MockTransport:
@@ -83,6 +87,51 @@ def test_agentic_path_sends_the_routing_constraint(monkeypatch):
     settings = model.settings or {}
     assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
     assert settings.get("openrouter_usage") == {"include": True}
+
+
+def _zero_cost_response_payload(*, streamed: bool) -> dict:
+    choice = {
+        "index": 0,
+        "finish_reason": "stop",
+        "native_finish_reason": "stop",
+    }
+    if streamed:
+        choice["delta"] = {"content": "ok"}
+    else:
+        choice["message"] = {"role": "assistant", "content": "ok"}
+    return {
+        "id": "gen-free",
+        "object": "chat.completion.chunk" if streamed else "chat.completion",
+        "created": 1,
+        "model": "openrouter/free",
+        "provider": "Test",
+        "choices": [choice],
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+            "cost": 0,
+        },
+    }
+
+
+def test_agentic_adapter_preserves_authoritative_zero_cost(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "openrouter/free"},
+    )
+    model = agent_harness._openrouter_model()
+    response = _OpenRouterChatCompletion.model_validate(
+        _zero_cost_response_payload(streamed=False)
+    )
+    chunk = _OpenRouterChatCompletionChunk.model_validate(
+        _zero_cost_response_payload(streamed=True)
+    )
+
+    assert model._process_provider_details(response)["cost"] == 0
+    stream_response = object.__new__(model._streamed_response_cls)
+    assert stream_response._map_provider_details(chunk)["cost"] == 0
 
 
 def test_a_data_policy_404_does_not_read_as_a_missing_model():

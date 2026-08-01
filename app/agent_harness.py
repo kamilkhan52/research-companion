@@ -32,7 +32,11 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models import Model
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
+from pydantic_ai.models.openrouter import (
+    OpenRouterModel,
+    OpenRouterModelSettings,
+    OpenRouterStreamedResponse,
+)
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
@@ -59,6 +63,39 @@ AGENTIC_ENABLED = _flag_enabled(os.environ.get("RC_AGENTIC"))
 # The final answer-writing request counts too, so this comfortably allows several tool rounds.
 AGENT_REQUEST_LIMIT = 12
 _USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
+
+
+def _retain_authoritative_zero_cost(details: dict | None, provider_usage) -> dict | None:
+    """Work around Pydantic AI 2.2 dropping OpenRouter's numeric zero cost.
+
+    Its native adapter copies ``usage.cost`` only through a truthiness check, so an authoritative
+    ``0`` disappears while every positive number survives. Preserve any non-``None`` value here;
+    ledger validation still rejects booleans, negatives, NaN, and infinity.
+    """
+    cost = getattr(provider_usage, "cost", None) if provider_usage is not None else None
+    if cost is None:
+        return details
+    retained = dict(details or {})
+    retained["cost"] = cost
+    return retained
+
+
+class _LedgerOpenRouterStreamedResponse(OpenRouterStreamedResponse):
+    def _map_provider_details(self, chunk):
+        return _retain_authoritative_zero_cost(
+            super()._map_provider_details(chunk), getattr(chunk, "usage", None)
+        )
+
+
+class _LedgerOpenRouterModel(OpenRouterModel):
+    def _process_provider_details(self, response):
+        return _retain_authoritative_zero_cost(
+            super()._process_provider_details(response), getattr(response, "usage", None)
+        )
+
+    @property
+    def _streamed_response_cls(self):
+        return _LedgerOpenRouterStreamedResponse
 
 
 def _record_run_usage(
@@ -162,7 +199,7 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
         api_key=key, app_url="http://localhost", app_title=config.APP_TITLE)
     # Native OpenRouter settings retain the same unconditional privacy constraint while also
     # requesting the authoritative usage/cost block on every tool-loop request.
-    return OpenRouterModel(
+    return _LedgerOpenRouterModel(
         model_id or settings.get("model"),
         provider=provider,
         settings=OpenRouterModelSettings(
@@ -240,7 +277,11 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
         finally:
             # Meters whatever requests happened, on success or fallback (the single-shot fallback
             # additionally meters itself, with real cost, through llm.py).
-            _record_run_usage(run_usage, ag.model, "analysis", captured[len(prior_messages):])
+            # `_to_message_history` rebuilds old assistant responses without provider metadata,
+            # so filtering the whole capture for provider_name=openrouter is safe. Do not slice by
+            # the input length: Pydantic compacts consecutive ModelRequests before capture, making
+            # those lengths differ after failed turns and dropping the new paid response.
+            _record_run_usage(run_usage, ag.model, "analysis", captured)
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -334,9 +375,7 @@ async def stream_agent_events(ag: Agent, prompt: str,
             raise agent_mod.AgentError(
                 "The model provider could not complete the agentic request.") from e
         finally:
-            _record_run_usage(
-                run_usage, ag.model, operation, captured[len(prior_messages):]
-            )
+            _record_run_usage(run_usage, ag.model, operation, captured)
 
 
 async def stream_with_single_shot_fallback(
