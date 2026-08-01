@@ -81,7 +81,9 @@ def list_project_papers() -> str:
             flags.append("has notes")
         flags.append("read" if p.list_status == "read" else "unread")
         lines.append(f"- {p.slug}: \"{p.title}\" ({', '.join(flags)})")
-    return "Papers in this project:\n" + "\n".join(lines)
+    return model_provenance.frame(
+        "project_paper_index", "Papers in this project:\n" + "\n".join(lines),
+    )
 
 
 def read_paper_text(slug: str) -> str:
@@ -107,7 +109,9 @@ def read_paper_notes(slug: str) -> str:
     notes = store.read_notes(slug)
     if len(notes) > MAX_NOTES_CHARS:
         notes = notes[:MAX_NOTES_CHARS] + "\n\n[...truncated...]"
-    return f"# {store.title_for(slug)} (notes)\n\n{notes}"
+    return model_provenance.frame(
+        "committed_paper_notes", notes, source=f"{slug}: {store.title_for(slug)}",
+    )
 
 
 def related_papers(slug: str) -> str:
@@ -135,8 +139,12 @@ def related_papers(slug: str) -> str:
             return "  (none)"
         return "\n".join(f"  - {s}: \"{papers[s].title}\"" for s in sorted(slugs))
 
-    return (f"Papers '{slug}' cites (in-project):\n{_fmt(cites)}\n\n"
-            f"Papers that cite '{slug}' (in-project):\n{_fmt(cited_by)}")
+    return model_provenance.frame(
+        "project_relationship_metadata",
+        f"Papers '{slug}' cites (in-project):\n{_fmt(cites)}\n\n"
+        f"Papers that cite '{slug}' (in-project):\n{_fmt(cited_by)}",
+        source=slug,
+    )
 
 
 def read_working_notes() -> str:
@@ -146,7 +154,7 @@ def read_working_notes() -> str:
         return "The project has no working notes yet."
     if len(notes) > MAX_NOTES_CHARS:
         notes = notes[:MAX_NOTES_CHARS] + "\n\n[...truncated...]"
-    return notes
+    return model_provenance.frame("working_notes", notes)
 
 
 # ----------------------------------------------------------------------------------- web tools

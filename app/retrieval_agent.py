@@ -76,7 +76,10 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
     holder: dict = {}
     ag = build_hunt_agent(title, holder, model=model)
     try:
-        async with ag.iter(f'Find a working PDF for: "{title}"') as run:
+        async with ag.iter(
+            "Find the working PDF for this paper title:\n\n"
+            + model_provenance.frame("paper_title", title)
+        ) as run:
             async for node in run:
                 if Agent.is_call_tools_node(node):
                     async with node.stream(run.ctx) as tool_stream:

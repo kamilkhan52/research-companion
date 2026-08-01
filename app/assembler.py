@@ -226,12 +226,15 @@ def paper_opening_message(slug: str, full_text: str, template: str | None = None
     framed = model_provenance.frame(
         "paper_full_text", full_text.strip(), source=slug,
     )
+    framed_title = model_provenance.frame(
+        "paper_title", store.title_for(slug), source=slug,
+    )
     if template is None:
         content = prompts.render(
-            "opening_message", title=store.title_for(slug), full_text=framed,
+            "opening_message", title=framed_title, full_text=framed,
         )
     else:
-        content = template.replace("{title}", store.title_for(slug)).replace("{full_text}", framed)
+        content = template.replace("{title}", framed_title).replace("{full_text}", framed)
     if full_text and framed not in content:
         content += "\n\n[BEGIN PAPER FULL TEXT]\n" + framed + "\n[END PAPER FULL TEXT]"
     return content
