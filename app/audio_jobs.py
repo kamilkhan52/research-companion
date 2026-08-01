@@ -104,8 +104,7 @@ def job_id_for(text: str) -> str:
 
 
 def audio_cache_path(narration: str) -> Path:
-    """Cache file for a narration under the current voice settings. Same key scheme
-    /api/speak has always used, so both entry points share one cache."""
+    """Cache file for a narration under the current voice settings."""
     name = hashlib.sha1(f"{_voice_key()}|{narration}".encode()).hexdigest() + ".mp3"
     return user_audio_dir() / name
 

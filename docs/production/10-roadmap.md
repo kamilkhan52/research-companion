@@ -1127,8 +1127,8 @@ overconfident and is withdrawn. Immaterial now: we are on `tts-1`, which the sam
 with no deprecation label.)*
 
 Ship the chosen design in M2.5 as a simplified precursor of M3's reservations, together with
-per-user concurrent-job and requests-per-hour caps, and **retire `POST /api/speak` or route it
-through the same per-user TTS budget** (P0-13). Note that "authenticate it" is not the fix —
+per-user concurrent-job and requests-per-hour caps. `POST /api/speak` is now retired (P0-13).
+Note that "authenticate it" was not the fix —
 every `/api/*` route is already behind the auth middleware; the gap is that it accepts
 arbitrary-length text and fans it into many paid calls with no budget gate at all. Test that the
 configured maximum genuinely cannot be exceeded.
@@ -1187,21 +1187,26 @@ unestimated ledger on the exact path.
 character-priced `speech_synthesis` cost for `tts-1`/`tts-1-hd`; a transport-ambiguous attempt is
 charged conservatively and marked estimated, while an explicit provider rejection is unbilled.
 An unpriceable model remains explicitly pending/estimated. Audio workers rebind the initiating
-project around synthesis instead of leaking cost into their `user:<hash>` registry scope, and the
-legacy `/api/speak` path validates and binds its body-carried billing project on a cache miss. The
+project around synthesis instead of leaking cost into their `user:<hash>` registry scope. The
 provider/route inventory and next enforcement sequence now live in
 `04-ai-costs-quotas-and-abuse.md`.
+
+**Paid-route consolidation status (2026-07-31): stacked implementation in review.** Both shipped
+clients already used background retrieval, chat-turn, and audio jobs. Their unused declarations
+and the backend's blocking/SSE compatibility routes are now removed, including `/api/speak` and
+`/api/narrate`. An enumeration regression asserts the retired routes stay absent and every paid
+workflow retains its job entry point. This closes invariant 1/P0-13 without waiting for—and creates
+one authoritative seam per workflow for—the reservation layer.
 
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
 `usage.py`, so *all* OpenAI speech spend was invisible; and `POST /api/speak` synthesized arbitrary
 caller-supplied text synchronously, outside the job framework entirely. `/api/narrate` and the
-plain/SSE turn-delivery paths in `routers/session.py` are likewise paid work that is not a
-`JobRegistry` job. Enumerate all of them, meter TTS as a first-class operation in the ledger, and
-put every one behind the same ownership + rate-limit + reservation guard — or retire it. The
-blocking/SSE endpoints should additionally be migrated or disabled in production, since their
-existence contradicts invariant 1.
+plain/SSE turn-delivery paths in `routers/session.py` were likewise paid work outside
+`JobRegistry`. They are now retired; TTS is metered as a first-class operation and all surviving
+paid entry points are background jobs. The next slice puts those job seams behind the same
+ownership + rate-limit + reservation guard.
 
 Then: append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost,
 timestamp, generation id) written alongside the existing aggregate. Per-user rate limits
@@ -1251,8 +1256,9 @@ is what makes a ceiling unenforceable.
 
 **Tests.** Cost recorded for both agentic and single-shot paths, with no `estimated` flag on the
 default path. TTS spend appears in the ledger. **No endpoint can initiate paid work without
-passing ownership, rate-limit, and reservation checks** — enumerate them and assert it per route,
-including `/api/speak` and `/api/narrate`. Quota exhaustion returns a clean, actionable error.
+passing ownership, rate-limit, and reservation checks** — enumerate the surviving job routes and
+assert it per route; retired compatibility routes must remain absent. Quota exhaustion returns a
+clean, actionable error.
 Rate limiter under concurrency. **Concurrent admission cannot collectively exceed the ceiling** —
 the race the reservation design exists to close, so test simultaneous admissions, not sequential
 ones. Quota store unavailable ⇒ paid work refused. **Kill the process immediately after admission,

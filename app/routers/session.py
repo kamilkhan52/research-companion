@@ -1,64 +1,35 @@
-"""Per-project reading-session routes: paper retrieval, the compose-first opening, and every
-turn-delivery path — streaming SSE (web), background job + poll (mobile), and the plain
-non-streaming variants. The `_prep_*` helpers validate and mutate the session exactly as each
-endpoint always did; only how the resulting turn is delivered differs. See CLAUDE.md invariant 1
-(long/LLM turns are jobs, never a connection-tied stream across the tunnel)."""
+"""Per-project reading-session routes: connection-independent paper retrieval and chat turns.
+
+Every long or paid operation starts a background job and returns a snapshot for polling. The
+legacy blocking and connection-tied SSE variants were deliberately retired: merely keeping those
+compatibility routes exposed would let callers bypass M3 admission controls and violate invariant
+1 before reservations even land.
+"""
 from __future__ import annotations
 
-import asyncio
-import json
-import threading
-import time
 from typing import Literal
 
 from fastapi import File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import (
     affiliation_jobs,
     affiliations,
-    agent,
-    agent_harness,
-    canonical_jobs,
     chat_jobs,
     committer,
     config,
-    cover_jobs,
     graph,
     preview_jobs,
     prompts,
-    retrieval_agent,
     retrieval_jobs,
-    retriever,
     sessions,
     store,
 )
-from ..agent import AgentError
 from ..models import COMMITTED, REVIEW_SLUG, REVIEW_TITLE
 from ..retriever import RetrievalError
 from . import make_project_router
 
 project_router = make_project_router()
-
-
-class _PaperGoneError(Exception):
-    """A split/move removed the paper while we were retrieving it — its corpus must not be
-    recreated (that would orphan a file with no reading-list entry). See task #75b."""
-
-
-def _guarded_write(slug: str, do_write) -> None:
-    """Run a retrieval's corpus write under the project write guard, re-checking the paper is
-    still in the project first. The (slow) retrieval itself stays OUTSIDE this guard, so a
-    split/move never waits on a network call — only the quick write is serialized, and it can't
-    recreate a paper the relocation just removed. Raises config.ProjectBusyError (project
-    reserved by a relocation) or _PaperGoneError (paper removed mid-retrieve). `do_write` is a
-    zero-arg callback holding the actual store writes (and any cover render, which runs
-    in-thread here). Callers on the event loop invoke this via asyncio.to_thread."""
-    with config.project_write_guard(config.active_project_id()):
-        if store.get_paper(slug) is None:
-            raise _PaperGoneError(slug)
-        do_write()
 
 
 # ---------- request models ----------
@@ -144,194 +115,6 @@ def _thread_id(value: str | None) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-# ---------- streaming helpers ----------
-
-def _run_and_record(slug: str, model: str | None = None) -> dict:
-    history = sessions.build_history(slug)
-    try:
-        turn = agent.run_turn(slug, history, model=model)
-    except AgentError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
-    return turn.to_dict()
-
-
-def _sse(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-
-# SSE turns are connection-tied and invisible to the chat JobRegistry, so the empty-fork
-# recovery in get_session and the branch-mutation guards must consult this in-process marker
-# too. Registered EAGERLY by the route (a generator body doesn't run until its first pull, so
-# lazy registration left a guard window) and refreshed/discarded by the generator itself.
-# Entries carry a timestamp: if a response object is never consumed, its finally never runs,
-# so stale entries expire instead of wedging the session's guards forever. Single-worker
-# process (CLAUDE.md invariant 6).
-_active_sse_turns: dict[tuple[str | None, str, str], float] = {}
-_active_sse_lock = threading.Lock()
-_SSE_TURN_TTL_S = 2 * 60 * 60.0
-
-
-def _register_sse_turn(slug: str) -> None:
-    with _active_sse_lock:
-        _active_sse_turns[
-            (config.active_project_id(), slug, sessions.active_thread_id())
-        ] = time.monotonic()
-
-
-def _discard_sse_turn(slug: str) -> None:
-    with _active_sse_lock:
-        _active_sse_turns.pop(
-            (config.active_project_id(), slug, sessions.active_thread_id()),
-            None,
-        )
-
-
-def _sse_turn_active(slug: str) -> bool:
-    with _active_sse_lock:
-        started = _active_sse_turns.get(
-            (config.active_project_id(), slug, sessions.active_thread_id()),
-        )
-        return started is not None and time.monotonic() - started < _SSE_TURN_TTL_S
-
-
-def any_sse_turn_active(slug: str) -> bool:
-    """Whether any independent thread for this paper has a live legacy SSE turn."""
-    pid = config.active_project_id()
-    now = time.monotonic()
-    with _active_sse_lock:
-        return any(
-            key_pid == pid and key_slug == slug and now - started < _SSE_TURN_TTL_S
-            for (key_pid, key_slug, _thread_id_), started in _active_sse_turns.items()
-        )
-
-
-def _turn_stream(
-    slug: str,
-    model: str | None = None,
-    thread_id: str = sessions.MAIN_THREAD,
-):
-    """Stream the analysis turn as SSE: incremental CANONICAL text, then a final 'done'
-    event carrying the parsed+recorded turn. The user message must already be recorded."""
-    with sessions.thread_scope(thread_id):
-        try:
-            _register_sse_turn(slug)
-            history = sessions.build_history(slug)
-            pieces: list[str] = []
-            sent = 0
-            try:
-                for piece in agent.stream_tokens(slug, history, model=model):
-                    pieces.append(piece)
-                    canon = agent.canonical_prefix("".join(pieces))
-                    if len(canon) > sent:
-                        yield _sse({"type": "delta", "text": canon[sent:]})
-                        sent = len(canon)
-            except AgentError as e:
-                yield _sse({"type": "error", "detail": str(e)})
-                return
-            turn = agent.parse(
-                "".join(pieces),
-                allow_proposed_commit=sessions.proposal_expected(slug),
-            )
-            if not turn.canonical.strip():
-                yield _sse({"type": "error", "detail":
-                            "The model returned an empty response. Try again, or switch the "
-                            "analysis model in Settings."})
-                return
-            sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model))
-            yield _sse({
-                "type": "done",
-                "turn": turn.to_dict(),
-                "state": sessions.get_state(slug),
-            })
-        finally:
-            _discard_sse_turn(slug)
-
-
-async def _agentic_turn_stream(
-    slug: str,
-    model: str | None = None,
-    thread_id: str = sessions.MAIN_THREAD,
-):
-    """Streaming turn through the Pydantic AI tool loop (the default; RC_AGENTIC=0 opts out). Same client
-    contract as _turn_stream — incremental CANONICAL 'delta' events then a final 'done' — plus
-    'tool' events announcing each research tool the model calls. The final answer is parsed from
-    the agent's authoritative output."""
-    with sessions.thread_scope(thread_id):
-        _register_sse_turn(slug)
-        try:
-            async for chunk in _agentic_turn_events(slug, model):
-                yield chunk
-        finally:
-            _discard_sse_turn(slug)
-
-
-async def _agentic_turn_events(slug: str, model: str | None = None):
-    history = sessions.build_history(slug)
-    pieces: list[str] = []
-    sent = 0
-    final_text = ""
-    trail: list[dict] = []  # demoted commentary + tool calls, persisted with the turn (R6.8)
-    try:
-        async for ev in agent_harness.stream_agentic_events(
-            slug, history, model=agent_harness.model_override(model)
-        ):
-            if ev["type"] == "text":
-                pieces.append(ev["text"])
-                canon = agent.canonical_prefix("".join(pieces))
-                if len(canon) > sent:
-                    yield _sse({"type": "delta", "text": canon[sent:]})
-                    sent = len(canon)
-            elif ev["type"] == "segment":
-                # A new model request begins: what streamed so far was pre-tool commentary,
-                # not the answer. Demote it to the trail, restart accumulation, and tell the
-                # client to reset its bubble (the recorded answer comes only from the final
-                # request — R6.8).
-                if pieces:
-                    thought = agent.canonical_prefix("".join(pieces)).strip()
-                    if thought:
-                        trail.append({"kind": "thought", "text": thought})
-                    pieces.clear()
-                    sent = 0
-                    yield _sse({"type": "segment"})
-            elif ev["type"] == "tool":
-                trail.append({"kind": "tool", "name": ev["name"],
-                              "detail": ev.get("detail", "")})
-                yield _sse({"type": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
-            elif ev["type"] == "final":
-                final_text = ev["text"]
-    except AgentError as e:
-        yield _sse({"type": "error", "detail": str(e)})
-        return
-    turn = agent.parse(
-        final_text or "".join(pieces),
-        allow_proposed_commit=sessions.proposal_expected(slug),
-    )
-    if not turn.canonical.strip():
-        yield _sse({"type": "error", "detail":
-                    "The model returned an empty response. Try again, or switch the analysis "
-                    "model in Settings."})
-        return
-    sessions.record_assistant(slug, turn, model=chat_jobs.override_label(model),
-                              agent_trail=trail or None)
-    yield _sse({"type": "done", "turn": turn.to_dict(), "state": sessions.get_state(slug)})
-
-
-def _stream_for(
-    slug: str,
-    model: str | None = None,
-    thread_id: str = sessions.MAIN_THREAD,
-):
-    """Pick the streaming turn implementation: the agentic tool loop when enabled, else the
-    proven single-shot stream. Both are (async/sync) generators StreamingResponse can consume."""
-    if agent_harness.AGENTIC_ENABLED:
-        return _agentic_turn_stream(slug, model=model, thread_id=thread_id)
-    return _turn_stream(slug, model=model, thread_id=thread_id)
-
-
-_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-
-
 # ---------- session flows (Section 9) ----------
 
 @project_router.get("/session/{slug}")
@@ -351,12 +134,10 @@ def _get_session(slug: str, thread_id: str):
     # tail is still empty, restore the branch it left (no-op otherwise; the grace window
     # keeps this from racing a retry that was just prepped).
     if (not config.project_is_busy(config.active_project_id())
-            and not chat_jobs.active_for(slug)
-            and not _sse_turn_active(slug)):
+            and not chat_jobs.active_for(slug)):
         with sessions.paper_lock(slug), sessions.mutation_lock(slug):
             if (not config.project_is_busy(config.active_project_id())
-                    and not chat_jobs.active_for(slug)
-                    and not _sse_turn_active(slug)):
+                    and not chat_jobs.active_for(slug)):
                 sessions.rollback_empty_fork(slug, min_age_s=30.0)
     if slug == REVIEW_SLUG:
         paper = {"slug": REVIEW_SLUG, "title": REVIEW_TITLE, "kind": "review",
@@ -445,49 +226,6 @@ def _opening_prompt_templates(base: str) -> dict[str, str]:
     return templates
 
 
-@project_router.post("/start")
-def start_paper(req: StartReq):
-    """Retrieve + cache a paper's full text (no session, no turn). The compose-first screen
-    fires the first turn separately via /api/chat/start_stream."""
-    paper = store.get_paper(req.slug)
-    if not paper:
-        raise HTTPException(status_code=404, detail="Unknown paper")
-    if paper.retrieved and not req.arxiv_id and not req.pdf_url:
-        canonical_jobs.warm_async(req.slug)
-        return {"ok": True, "retrieved": True}
-    try:
-        res = retriever.retrieve(paper.title, req.arxiv_id, req.pdf_url)
-    except RetrievalError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    if res.get("needs_confirmation"):
-        return {"needs_confirmation": True, "candidates": res["candidates"], "slug": req.slug}
-
-    def _write():
-        store.write_full_text(req.slug, paper.title, res["full_text"], {
-            "slug": req.slug, "arxiv_id": res.get("arxiv_id"), "source": res.get("source"),
-            "match_score": res.get("score"),
-        })
-        # An explicitly supplied id corrects any machine-resolved one on the entry — but only
-        # when the result IS that id (a failed explicit download falls back to title search).
-        if (req.arxiv_id and res.get("arxiv_id")
-                and store.arxiv_base_id(res["arxiv_id"]) == store.arxiv_base_id(req.arxiv_id)):
-            store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
-        cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # reuse the just-downloaded PDF
-
-    try:
-        _guarded_write(req.slug, _write)
-    except config.ProjectBusyError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This project is being moved or split — wait, then retrieve.") from e
-    except _PaperGoneError as e:
-        raise HTTPException(
-            status_code=409,
-            detail="This paper is no longer in the project (it may have just been moved).") from e
-    canonical_jobs.warm_async(req.slug)
-    return {"ok": True, "retrieved": True}
-
-
 class RetrievalJobReq(StartReq):
     # R7.8: chain the paper's PAPER SUMMARY onto a successful retrieval, so "add paper →
     # analyzed and narrated" is one durable server-side flow the user can walk away from.
@@ -559,96 +297,6 @@ def related_works(slug: str):
     """The paper's most significant related works (from the stored reference graph), backing
     the reading session's 'Related works' menu."""
     return {"related": graph.related_works_for(slug)}
-
-
-@project_router.post("/start_stream")
-async def start_paper_stream(req: StartReq):
-    """Streaming variant of /start: emits 'step' events (deterministic stages + the PDF-hunt
-    agent's tool calls) so the client can show what retrieval is doing, then 'done' /
-    'needs_confirmation' / 'error'. Escalation: deterministic retriever first (fast, free);
-    if it fails, an agentic web hunt for the PDF (papers not on arXiv, throttled APIs...)."""
-    paper = store.get_paper(req.slug)
-
-    async def gen():
-        if not paper:
-            yield _sse({"type": "error", "detail": "Unknown paper"})
-            return
-        if paper.retrieved and not req.arxiv_id and not req.pdf_url:
-            canonical_jobs.warm_async(req.slug)
-            yield _sse({"type": "done", "retrieved": True})
-            return
-        yield _sse({"type": "step", "name": "arxiv", "detail": req.arxiv_id or req.pdf_url or paper.title[:60]})
-        first_error = None
-        try:
-            res = await asyncio.to_thread(retriever.retrieve, paper.title, req.arxiv_id, req.pdf_url)
-        except RetrievalError as e:
-            res, first_error = None, str(e)
-        if res and res.get("needs_confirmation"):
-            yield _sse({"type": "needs_confirmation", "candidates": res["candidates"]})
-            return
-        if res:
-            def _write_deterministic():
-                store.write_full_text(req.slug, paper.title, res["full_text"], {
-                    "slug": req.slug, "arxiv_id": res.get("arxiv_id"),
-                    "source": res.get("source"), "match_score": res.get("score")})
-                # An explicitly supplied id corrects any machine-resolved one on the entry —
-                # but only when the result IS that id (a failed explicit download falls back to
-                # title search).
-                if (req.arxiv_id and res.get("arxiv_id")
-                        and store.arxiv_base_id(res["arxiv_id"])
-                        == store.arxiv_base_id(req.arxiv_id)):
-                    store.annotate_entry(req.slug, arxiv_id=res["arxiv_id"], authoritative=True)
-                cover_jobs.render_from_pdf(req.slug, res.get("pdf_bytes"))  # sync, in-thread
-            # Whole write (guard + re-check + cover render) runs in one worker thread, off the
-            # event loop; the guard keeps it from overlapping a split/move (task #75b).
-            try:
-                await asyncio.to_thread(_guarded_write, req.slug, _write_deterministic)
-            except config.ProjectBusyError:
-                yield _sse({"type": "error", "detail":
-                            "This project is being moved or split — retry in a moment."})
-                return
-            except _PaperGoneError:
-                yield _sse({"type": "error", "detail":
-                            "This paper is no longer in the project (it may have been moved)."})
-                return
-            canonical_jobs.warm_async(req.slug)
-            yield _sse({"type": "done", "retrieved": True})
-            return
-        # Deterministic path failed — agentic hunt (needs an OpenRouter key like any turn).
-        if not config.has_api_key():
-            yield _sse({"type": "error", "detail": first_error})
-            return
-        try:
-            async for ev in retrieval_agent.stream_hunt(paper.title):
-                if ev["type"] == "tool":
-                    yield _sse({"type": "step", "name": ev["name"], "detail": ev.get("detail", "")})
-                elif ev["type"] == "result":
-                    if ev.get("ok"):
-                        def _write_hunted(ev=ev):
-                            store.write_full_text(req.slug, paper.title, ev["full_text"], {
-                                "slug": req.slug, "source": ev.get("source")})
-                        try:
-                            await asyncio.to_thread(_guarded_write, req.slug, _write_hunted)
-                        except config.ProjectBusyError:
-                            yield _sse({"type": "error", "detail":
-                                        "This project is being moved or split — retry."})
-                            return
-                        except _PaperGoneError:
-                            yield _sse({"type": "error", "detail":
-                                        "This paper is no longer in the project."})
-                            return
-                        canonical_jobs.warm_async(req.slug)
-                        yield _sse({"type": "done", "retrieved": True})
-                    else:
-                        yield _sse({"type": "error", "detail":
-                                    (first_error or "Retrieval failed.") + " The PDF hunt also "
-                                    "came up empty — paste a PDF link in 'Provide a source'."})
-                    return
-        except Exception as e:
-            yield _sse({"type": "error", "detail": f"{first_error or 'Retrieval failed.'} "
-                        f"(hunt error: {str(e)[:150]})"})
-
-    return StreamingResponse(gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @project_router.post("/upload_paper")
@@ -794,114 +442,7 @@ def _prep_request_changes(req: RequestChangesReq) -> None:
                          kind="revision", authored_text=req.text)
 
 
-@project_router.post("/chat/start_stream")
-def chat_start_stream(req: ChatStartReq):
-    """Fire the paper summary for any chat (paper or review) with the edited opening prompt
-    and chosen model, streaming it. Restarts the session (used for start and first-retry)."""
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_chat_start(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/reply")
-def reply(req: ReplyReq):
-    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        with sessions.mutation_lock(req.slug):
-            _prep_reply(req)
-        turn = _run_and_record(req.slug, model=req.model)
-        return {"state": sessions.get_state(req.slug), "turn": turn}
-
-
-@project_router.post("/reply_stream")
-def reply_stream(req: ReplyReq):
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_reply(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/continue_stream")
-def continue_stream(req: FinishReq):
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_continue(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/retry_stream")
-def retry_stream(req: RetryReq):
-    """Regenerate the n-th assistant turn: discard it (and anything after) and stream a fresh
-    response to the preceding user message."""
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_retry(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/edit_stream")
-def edit_stream(req: EditReq):
-    """Edit an earlier user reply and regenerate from it: replace the reply's text, discard the
-    old response and everything after it, then stream a fresh answer to the edited message."""
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_edit(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/finish_stream")
-def finish_stream(req: FinishReq):
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_finish(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-@project_router.post("/request_changes_stream")
-def request_changes_stream(req: RequestChangesReq):
-    thread_id = _thread_id(req.thread_id)
-    with sessions.thread_scope(thread_id), sessions.paper_lock(req.slug), \
-            sessions.mutation_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_request_changes(req)
-        _register_sse_turn(req.slug)
-    return StreamingResponse(_stream_for(req.slug, model=req.model, thread_id=thread_id),
-                             media_type="text/event-stream",
-                             headers=_SSE_HEADERS)
-
-
-# ---- job-based turns (mobile): the turn runs in a background thread that records the result
+# ---- Job-based turns: the turn runs in a background thread that records the result
 #      regardless of what any client does, and clients poll short-lived snapshot requests. This
 #      is the same job+poll pattern as audio/graph builds — a live SSE across the tunnel gets
 #      killed on long turns and takes the un-persisted response with it (see chat_jobs). ----
@@ -914,7 +455,7 @@ def _no_turn_in_flight(slug: str) -> None:
             status_code=409,
             detail="This project is being moved or split — wait, then try again.",
         )
-    if chat_jobs.active_for(slug) or _sse_turn_active(slug):
+    if chat_jobs.active_for(slug):
         raise HTTPException(status_code=409,
                             detail="A response is already being generated for this paper.")
 
@@ -968,7 +509,7 @@ def branch_switch(req: BranchSwitchReq):
             # an older proposed-draft branch would re-offer Approve for notes already in git.
             raise HTTPException(status_code=409,
                                 detail="Notes are committed — continue the discussion first.")
-        if chat_jobs.active_for(req.slug) or _sse_turn_active(req.slug):
+        if chat_jobs.active_for(req.slug):
             raise HTTPException(status_code=409,
                                 detail="Wait for the current response to finish.")
         if committer.approval_in_flight(req.slug):
@@ -1061,42 +602,6 @@ def preview_job_played(job_id: str):
     if not snap:
         raise HTTPException(status_code=404, detail="Unknown preview job")
     return {"job": snap}
-
-
-@project_router.post("/continue")
-def continue_turn(req: FinishReq):
-    """Generate the assistant response for a reply that was recorded but never answered
-    (e.g. a prior turn errored). No new user message is added."""
-    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        if not sessions.get_state(req.slug):
-            raise HTTPException(status_code=409, detail="No active session for this paper.")
-        records = sessions.read_records(req.slug)
-        if not records or records[-1]["role"] != "user":
-            raise HTTPException(
-                status_code=409,
-                detail="Nothing to continue — last turn already answered.",
-            )
-        turn = _run_and_record(req.slug, model=req.model)
-        return {"state": sessions.get_state(req.slug), "turn": turn}
-
-
-@project_router.post("/finish")
-def finish(req: FinishReq):
-    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_finish(req)
-        turn = _run_and_record(req.slug, model=req.model)
-        return {"state": sessions.get_state(req.slug), "turn": turn}
-
-
-@project_router.post("/request_changes")
-def request_changes(req: RequestChangesReq):
-    with sessions.thread_scope(_thread_id(req.thread_id)), sessions.paper_lock(req.slug):
-        _no_turn_in_flight(req.slug)
-        _prep_request_changes(req)
-        turn = _run_and_record(req.slug, model=req.model)
-        return {"state": sessions.get_state(req.slug), "turn": turn}
 
 
 @project_router.post("/reopen")

@@ -1,6 +1,6 @@
 // Thin JSON fetch wrapper around the backend. Adds the auth header, builds URLs from the
 // configured base, and turns non-2xx responses into a typed ApiError carrying the backend's
-// {detail} message. Streaming (SSE) lives in stream.ts; audio URLs in audio.ts.
+// {detail} message. Long operations use start-job + poll helpers; audio URLs live in audio.ts.
 
 import { getBaseUrl, getMediaCacheNamespace, getToken } from './config';
 

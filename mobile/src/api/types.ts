@@ -342,20 +342,6 @@ export interface Turn {
   ts: string;
 }
 
-/** SSE events emitted by the *_stream endpoints (app/main.py _turn_stream /
- *  _agentic_turn_stream). 'tool' events appear only on the agentic path (RC_AGENTIC). */
-export type StreamEvent =
-  | { type: 'delta'; text: string }
-  | { type: 'tool'; name: string; detail: string }
-  | { type: 'error'; detail: string }
-  | { type: 'done'; turn: Turn; state: SessionState };
-
-/** A research tool the agent invoked mid-turn, surfaced for live "what it's doing" UI. */
-export interface ToolActivity {
-  name: string;
-  detail: string;
-}
-
 /** One item in the ordered live stream of an agentic turn — a run of assistant text or a tool
  *  invocation — kept in arrival order so the UI can interleave them ("…thinking… → 🔎 search →
  *  …answer") the way agent UIs conventionally do. */
@@ -468,14 +454,6 @@ export interface RelatedWork {
   direction: 'builds_on' | 'built_on_by';
   reason: string;
 }
-
-/** SSE events from POST /start_stream (paper retrieval with live steps: deterministic stages
- *  plus the PDF-hunt agent's tool calls). */
-export type StartStreamEvent =
-  | { type: 'step'; name: string; detail: string }
-  | { type: 'needs_confirmation'; candidates: unknown[] }
-  | { type: 'done'; retrieved: boolean }
-  | { type: 'error'; detail: string };
 
 // ---------- reference graph (app/graph.py) ----------
 

@@ -272,10 +272,9 @@ def fetch(url: str, *, max_bytes: int, timeout: float = 60,
     `timeout` is httpx's PER-OPERATION budget; `deadline` (default `MAX_TOTAL_SECONDS`) bounds the
     whole call. Both are needed: httpx resets its read timeout on every socket read, so a server
     that dribbles one byte just inside the timeout keeps `iter_raw()` going forever without
-    exceeding either the timeout or the byte ceiling. That pins the calling thread — usually a
-    background job, though the legacy `/start` and `/start_stream` routes still reach retrieval
-    synchronously, where it pins a request instead. Either way, in a single-worker process enough
-    of them and nothing else runs. Raises `FetchTimeoutError` when the deadline passes.
+    exceeding either the timeout or the byte ceiling. That pins a background-job thread and can
+    starve the single-worker process when repeated. Raises `FetchTimeoutError` when the deadline
+    passes.
 
     Enforcement is a watchdog thread that closes the client when the deadline passes, plus checks
     between operations. The checks alone are NOT enough: httpx loops on reads internally while

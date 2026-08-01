@@ -44,7 +44,6 @@ import * as api from '@/api/endpoints';
 import { turnJobPaths } from '@/api/endpoints';
 import { useFavoriteModels, useOpeningDraft, usePaperFigures, useSession, useSettings } from '@/api/queries';
 import { keys } from '@/api/queries';
-import { streamPost } from '@/api/stream';
 import type {
   ChatJob,
   DiscussionThreadSummary,
@@ -54,7 +53,6 @@ import type {
   RetrievalJob,
   Session,
   SessionState,
-  StartStreamEvent,
   StreamItem,
   TranscriptEntry,
 } from '@/api/types';

@@ -202,12 +202,8 @@ def approve(req: ApproveReq):
                 sessions.paper_lock(req.slug), \
                 sessions.mutation_lock(req.slug), \
                 notes_jobs.mutation_lock(notes_jobs.WORKING):
-            # Runtime import avoids a router-module import cycle; this is the compatibility
-            # guard for legacy web SSE clients (mobile turns are all chat_jobs).
-            from . import session as session_routes
-            if (any(chat_jobs.active_for(req.slug, row["id"])
-                    for row in sessions.list_threads(req.slug))
-                    or session_routes.any_sse_turn_active(req.slug)):
+            if any(chat_jobs.active_for(req.slug, row["id"])
+                   for row in sessions.list_threads(req.slug)):
                 raise HTTPException(
                     status_code=409,
                     detail="Wait for every discussion response to finish before approving notes.",
