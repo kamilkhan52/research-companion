@@ -64,6 +64,197 @@ def test_second_start_for_same_key_joins_the_running_job():
     assert reg.active_for("k") is None           # no longer running
 
 
+def test_durable_preparation_runs_once_and_concurrent_caller_joins():
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared")
+    preparing = threading.Event()
+    release_preparation = threading.Event()
+    release_work = threading.Event()
+    prepared: list[str] = []
+    results: list[SampleJob] = []
+    failures: list[BaseException] = []
+
+    def prepare(job: SampleJob):
+        # The callback may query registry state or wait on Postgres without deadlocking polling.
+        assert reg.snapshot(job.id) is None
+        prepared.append(job.id)
+        preparing.set()
+        assert release_preparation.wait(5)
+        return None
+
+    def start():
+        try:
+            results.append(reg.start_or_join(
+                "same",
+                lambda: SampleJob(id=new_id()),
+                lambda _job: release_work.wait(5),
+                prepare_new=prepare,
+            ))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    first = threading.Thread(target=start)
+    second = threading.Thread(target=start)
+    first.start()
+    assert preparing.wait(2)
+    second.start()
+    time.sleep(0.05)
+    assert len(prepared) == 1
+    assert second.is_alive()  # it is waiting for the first admission, not reserving again
+
+    release_preparation.set()
+    first.join(5)
+    second.join(5)
+    assert not failures
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert len(prepared) == 1
+
+    release_work.set()
+    _settle(reg, results[0].id)
+
+
+def test_slow_preparation_does_not_block_an_unrelated_job():
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared-independent")
+    preparing = threading.Event()
+    release = threading.Event()
+    failures: list[BaseException] = []
+
+    def prepare(_job: SampleJob):
+        preparing.set()
+        assert release.wait(5)
+        return None
+
+    def start_slow():
+        try:
+            reg.start_or_join(
+                "slow", lambda: SampleJob(id="slow"), lambda _job: None,
+                prepare_new=prepare,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    caller = threading.Thread(target=start_slow)
+    caller.start()
+    assert preparing.wait(2)
+
+    fast = reg.start_or_join(
+        "fast", lambda: SampleJob(id="fast"), lambda job: setattr(job, "value", 7),
+    )
+    assert _settle(reg, fast.id).value == 7
+    assert caller.is_alive()
+
+    release.set()
+    caller.join(5)
+    assert not failures
+
+
+def test_failed_preparation_publishes_nothing_and_never_runs_work():
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared-failure")
+    ran = threading.Event()
+
+    def fail(_job: SampleJob):
+        raise RuntimeError("reservation refused")
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="reservation refused"):
+        reg.start_or_join(
+            "k", lambda: SampleJob(id="never"), lambda _job: ran.set(), prepare_new=fail,
+        )
+
+    assert not ran.is_set()
+    assert reg.jobs == {}
+    assert reg._admitting == {}
+
+
+def test_preparation_counts_as_active_work_and_rolls_back_if_deletion_wins():
+    from app import jobs
+
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared-delete")
+    preparing = threading.Event()
+    release = threading.Event()
+    rolled_back: list[str] = []
+    failures: list[BaseException] = []
+
+    def prepare(job: SampleJob):
+        preparing.set()
+        assert release.wait(5)
+        return lambda: rolled_back.append(job.id)
+
+    def start():
+        try:
+            reg.start_or_join(
+                "k", lambda: SampleJob(id="prepared"), lambda _job: None,
+                project_id="doomed", prepare_new=prepare,
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    caller = threading.Thread(target=start)
+    caller.start()
+    assert preparing.wait(2)
+    assert jobs.any_running_for_project("doomed") == "prepared-delete"
+    assert config.mark_project_deleting("doomed") is True
+    try:
+        release.set()
+        caller.join(5)
+        assert len(failures) == 1
+        assert "being modified" in str(failures[0])
+        assert rolled_back == ["prepared"]
+        assert reg.jobs == {}
+        assert reg._admitting == {}
+    finally:
+        config.unmark_project_deleting("doomed")
+
+
+def test_thread_start_failure_rolls_back_without_publishing(monkeypatch):
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared-start-failure")
+    rolled_back: list[str] = []
+
+    def fail_start(_thread):
+        raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        reg.start_or_join(
+            "k",
+            lambda: SampleJob(id="never-started"),
+            lambda _job: None,
+            prepare_new=lambda job: lambda: rolled_back.append(job.id),
+        )
+
+    assert rolled_back == ["never-started"]
+    assert reg.jobs == {}
+    assert reg._admitting == {}
+
+
+def test_thread_construction_failure_also_rolls_back(monkeypatch):
+    reg: JobRegistry[SampleJob] = JobRegistry("prepared-thread-construction-failure")
+    rolled_back: list[str] = []
+
+    def fail_construction(*_args, **_kwargs):
+        raise RuntimeError("thread construction unavailable")
+
+    monkeypatch.setattr(threading, "Thread", fail_construction)
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="thread construction unavailable"):
+        reg.start_or_join(
+            "k",
+            lambda: SampleJob(id="never-constructed"),
+            lambda _job: None,
+            prepare_new=lambda job: lambda: rolled_back.append(job.id),
+        )
+
+    assert rolled_back == ["never-constructed"]
+    assert reg.jobs == {}
+    assert reg._admitting == {}
+
+
 def test_different_keys_run_independently():
     reg: JobRegistry[SampleJob] = JobRegistry("t")
     a = reg.start_or_join("a", lambda: SampleJob(id=new_id()), lambda j: setattr(j, "value", 1))

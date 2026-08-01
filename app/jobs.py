@@ -112,9 +112,16 @@ _ALL_REGISTRIES: list[JobRegistry] = []
 
 
 def any_active_for_scopes(scopes: set[str | None]) -> str | None:
-    """The first registry with a live worker in one of ``scopes``, else None."""
+    """The first registry with a live worker OR durable admission in ``scopes``, else None.
+
+    Admission can be waiting on Postgres before its worker is published. Treating that interval as
+    idle would let project/account deletion remove the scope and clear its tombstone; the callback
+    could then return and publish a worker into a directory that no longer exists.
+    """
     for reg in _ALL_REGISTRIES:
         with reg.lock:
+            if any(scope in scopes for _user_id, scope, _key in reg._admitting):
+                return reg.name
             for job in reg.jobs.values():
                 if (
                     _worker_is_active(job)
@@ -202,6 +209,13 @@ class JobRegistry(Generic[J]):
         self._lock = threading.Lock()
         self._max_finished = max_finished
         self._settle_seq = 0
+        # A durable admission callback may wait on Postgres. Never hold the registry lock across
+        # that I/O: doing so would freeze polling/progress/cancellation for every user of this job
+        # kind. The per-(scope,key) marker lets one caller prepare while identical callers wait and
+        # later join its published job; unrelated keys continue normally.
+        self._admitting: dict[
+            tuple[str | None, str | None, str], threading.Event
+        ] = {}
         _ALL_REGISTRIES.append(self)
 
     @property
@@ -337,6 +351,7 @@ class JobRegistry(Generic[J]):
         *,
         project_id=_AMBIENT,
         admit: Callable[[J | None], None] | None = None,
+        prepare_new: Callable[[J], Callable[[], None] | None] | None = None,
         allow_busy: bool = False,
     ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
@@ -346,65 +361,161 @@ class JobRegistry(Generic[J]):
         ambient context is absent or different. When supplied, `admit` runs under the registry
         lock with the newest retained job for the same key and project; it may raise to reject
         registration atomically (proposal jobs use this to avoid hiding unapplied results).
+        `prepare_new`, by contrast, runs exactly once only for a genuinely NEW job, outside the
+        registry lock. It may durably reserve external resources and return a no-argument rollback
+        callback for the narrow case where publication/thread start subsequently fails. Identical
+        callers wait for that preparation and then join the published job; unrelated keys are not
+        blocked by its database I/O.
         `allow_busy` is reserved for a caller that already owns the project's busy reservation
         and is admitting the follow-on job before releasing it; deletion tombstones still reject.
         `work` populates the job's fields and returns; the registry then marks it done (or error,
         if `work` raised)."""
         pid = _resolve_pid(project_id)
+        user_id = config.active_user_id()
         # The lifecycle lines carry the job's AUTHORITATIVE project (the resolved pid), passed
         # explicitly so they aren't mistagged by the emitting thread's ambient context — the
         # start/join lines run on the caller thread (which may have a different project bound, or
         # none for an app-global job), while done/error run on the worker thread.
         tag = _log_tag(pid)
-        with self._lock:
-            # Atomic with the account-deletion sweep for the same reason the project check below
-            # is atomic with project deletion: either this registration wins and the sweep sees
-            # it, or the user gate wins and admission is refused.
-            if config.user_is_deleting(config.active_user_id()):
-                raise RuntimeError("Account is being deleted; not accepting new jobs.")
-            if pid is None and config.global_job_drain_active():
-                raise RuntimeError(
-                    "Account deletion is draining instance-wide work; not accepting global jobs.")
-            # Admission gate for project deletion / an in-progress split of the source: once
-            # the pid is tombstoned (delete) or marked busy (split), no new worker may register
-            # — its writes would recreate a moved directory or land in files being relocated.
-            # Checked INSIDE the registry lock (not before it): the mutating side marks the pid
-            # busy BEFORE sweeping the registries, so with the check under the same lock the
-            # sweep serializes against registration — either the sweep sees this job, or this
-            # job sees the busy flag. Raised, not swallowed — the caller deserves the error.
-            if pid is not None and (
-                config.project_is_deleting(pid)
-                or (config.project_is_busy(pid) and not allow_busy)
-            ):
-                raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
-            matching = [
-                job for job in self._jobs.values()
-                if getattr(job, _KEY_ATTR, None) == key
-                and getattr(job, _PID_ATTR, None) == pid
-            ]
-            if admit is not None:
-                admit(matching[-1] if matching else None)
-            existing = self._running_for(key, pid)
-            if existing:
-                log.debug("join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag)
-                return existing
+        # User is part of the preparation identity even though live project ids are globally
+        # unique today. That keeps the tenancy boundary structural for app-global work and for a
+        # future storage layout where two accounts may both own a project called `default`.
+        identity = (user_id, pid, key)
+
+        # Only one caller prepares a given logical job. A waiter wakes after success OR failure,
+        # then re-runs every gate and the feature-specific `admit` rule against current state.
+        while True:
+            with self._lock:
+                self._check_registration_gates(
+                    pid, user_id=user_id, allow_busy=allow_busy,
+                )
+                matching = [
+                    job for job in self._jobs.values()
+                    if getattr(job, _KEY_ATTR, None) == key
+                    and getattr(job, _PID_ATTR, None) == pid
+                ]
+                if admit is not None:
+                    admit(matching[-1] if matching else None)
+                existing = self._running_for(key, pid)
+                if existing:
+                    log.debug(
+                        "join %s job=%s key=%s", self.name, existing.id[:8], key, extra=tag,
+                    )
+                    return existing
+                admission = self._admitting.get(identity)
+                if admission is None:
+                    admission = threading.Event()
+                    self._admitting[identity] = admission
+                    break
+            admission.wait()
+
+        cleanup: Callable[[], None] | None = None
+        try:
             job = factory()
-            setattr(job, _KEY_ATTR, key)
-            setattr(job, _PID_ATTR, pid)
-            # Set before publishing the job in the registry. A deletion sweep that wins after this
-            # point must see the scope as active even if the new thread has not entered _run yet.
-            setattr(job, _WORKER_ACTIVE_ATTR, True)
-            self._jobs[job.id] = job
-            self._prune()
+            if prepare_new is not None:
+                cleanup = prepare_new(job)
+        except BaseException:
+            self._finish_admission(identity, admission)
+            raise
+
+        try:
+            thread = threading.Thread(
+                target=self._run,
+                args=(job, work, pid, user_id),
+                daemon=True,
+                name=f"{self.name}-{job.id[:8]}",
+            )
+            with self._lock:
+                # Deletion/project-split state may have changed while durable admission ran. This
+                # second check is load-bearing: no worker was published for the deletion sweep to
+                # observe during that interval.
+                self._check_registration_gates(
+                    pid, user_id=user_id, allow_busy=allow_busy,
+                )
+                # Nothing else can publish this exact identity while its admission marker exists.
+                # A feature may still have used `put` directly, but that is terminal cache state,
+                # not a running job to join and not a reason to discard newly authorized work.
+                setattr(job, _KEY_ATTR, key)
+                setattr(job, _PID_ATTR, pid)
+                # Set before publishing the job in the registry. A deletion sweep that wins after
+                # this point must see the scope as active even if the new thread has not entered
+                # _run yet.
+                setattr(job, _WORKER_ACTIVE_ATTR, True)
+                self._jobs[job.id] = job
+                self._prune()
+                try:
+                    # Starting while holding the registry lock is deliberately brief and closes a
+                    # subtle join race: the worker cannot settle before admission waiters are
+                    # released, so every concurrent identical caller observes and joins this job.
+                    thread.start()
+                except BaseException:
+                    # No waiter can have observed the job: its admission event is still unset and
+                    # direct readers are blocked on this lock. Remove it instead of retaining a
+                    # terminal object for work that never existed.
+                    self._jobs.pop(job.id, None)
+                    setattr(job, _WORKER_ACTIVE_ATTR, False)
+                    raise
+                if self._admitting.get(identity) is admission:
+                    self._admitting.pop(identity, None)
+                    admission.set()
+        except BaseException:
+            self._rollback_preparation(cleanup)
+            self._finish_admission(identity, admission)
+            raise
         log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
-        # Captured on the CALLER's thread, where the middleware bound it, and rebound on the worker
-        # below — invariant 2, for the same reason as the project: a thread inherits no contextvars,
-        # so without this every job would silently fall back to the instance's model and voice
-        # instead of the preferences of the person who asked for the work.
-        thread = threading.Thread(target=self._run, args=(job, work, pid, config.active_user_id()),
-                                  daemon=True, name=f"{self.name}-{job.id[:8]}")
-        thread.start()
         return job
+
+    def _finish_admission(
+        self,
+        identity: tuple[str | None, str | None, str],
+        admission: threading.Event,
+    ) -> None:
+        """Publish completion of one outside-lock admission attempt to its waiters."""
+        with self._lock:
+            if self._admitting.get(identity) is admission:
+                self._admitting.pop(identity, None)
+                admission.set()
+
+    def _rollback_preparation(self, cleanup: Callable[[], None] | None) -> None:
+        """Best-effort rollback without hiding the publication/start failure that caused it.
+
+        A quota rollback can itself encounter a database outage. Its durable lease remains safe
+        for the reconciler to expire later; replacing the original exception with cleanup's error
+        would make the actual admission failure impossible to diagnose.
+        """
+        if cleanup is None:
+            return
+        try:
+            cleanup()
+        except Exception as exc:  # noqa: BLE001 — cleanup is explicitly best effort
+            log.warning(
+                "job admission rollback failed kind=%s error=%s",
+                self.name,
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _check_registration_gates(
+        pid: str | None,
+        *,
+        user_id: str | None,
+        allow_busy: bool,
+    ) -> None:
+        """The deletion/split gates shared by both sides of outside-lock preparation."""
+        # Atomic with the account-deletion sweep at each call site because callers hold the
+        # registry lock. Either publication wins and the sweep sees it, or the deletion flag wins
+        # and publication is refused.
+        if config.user_is_deleting(user_id):
+            raise RuntimeError("Account is being deleted; not accepting new jobs.")
+        if pid is None and config.global_job_drain_active():
+            raise RuntimeError(
+                "Account deletion is draining instance-wide work; not accepting global jobs."
+            )
+        if pid is not None and (
+            config.project_is_deleting(pid)
+            or (config.project_is_busy(pid) and not allow_busy)
+        ):
+            raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
 
     def add_settle_callback(self, job: J, cb: Callable[[J], None]) -> bool:
         """Register cb(job) to run on the worker thread immediately after the job settles

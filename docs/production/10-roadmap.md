@@ -1226,6 +1226,14 @@ sends only the durable generation id and never requests stored prompt/completion
 snapshot candidate is re-checked under its row lock, preventing a concurrent lease renewal from
 being reconciled as stale.
 
+**Exact-once job admission status (2026-07-31): stacked implementation in review.** `JobRegistry`
+now has an outside-lock durable preparation phase that runs once only when it creates a new job.
+Identical callers wait and join the published worker instead of taking a second reservation;
+unrelated polling and jobs remain unblocked. Preparations count as active work for destructive
+drains, deletion/busy gates are re-checked after database I/O, and publication or thread-start
+failure rolls preparation back. This is the shared concurrency seam; provider-specific maxima and
+route wiring remain the next slice and do not require choosing actual tier amounts.
+
 **Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
 not cover them (P0-13).** The inventory is now recorded in
 `04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
