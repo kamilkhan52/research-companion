@@ -136,18 +136,37 @@ def _append(
 
 
 def daily_summary(user_id: str, *, days: int = 30) -> list[dict]:
-    """Queryable cost-by-day/feature for one account; internal analytics seam, not an API route."""
+    """Queryable cost-by-day/feature for one account; internal analytics seam, not an API route.
+
+    Unresolved pending markers remain visible with ``pending_calls > 0`` and keep the bucket
+    estimated. Once an exact event with the same generation id arrives, the append-only marker is
+    retained in storage but excluded from the summary; a marker without an id cannot be proven
+    resolved and therefore remains visible.
+    """
     if not db.enabled() or days < 1:
         return []
     since = datetime.now(UTC) - timedelta(days=days)
     with db.pool().connection() as conn:
         rows = conn.execute(
-            "select created_at::date, operation, sum(prompt_tokens), "
-            "sum(completion_tokens), sum(total_tokens), sum(cost_nanousd), "
-            "bool_or(estimated), count(*) "
-            "from rc_usage_events "
-            "where user_id = %s and event_type = 'usage' and created_at >= %s "
-            "group by created_at::date, operation order by created_at::date, operation",
+            "select event.created_at::date, event.operation, sum(event.prompt_tokens), "
+            "sum(event.completion_tokens), sum(event.total_tokens), sum(event.cost_nanousd), "
+            "bool_or(event.estimated), "
+            "count(*) filter (where event.event_type = 'usage'), "
+            "count(*) filter (where event.event_type = 'pending') "
+            "from rc_usage_events event "
+            "where event.user_id = %s and event.created_at >= %s and ("
+            "  event.event_type = 'usage' or ("
+            "    event.event_type = 'pending' and not exists ("
+            "      select 1 from rc_usage_events resolved "
+            "      where resolved.user_id = event.user_id "
+            "        and resolved.event_type = 'usage' "
+            "        and event.generation_id is not null "
+            "        and resolved.generation_id = event.generation_id"
+            "    )"
+            "  )"
+            ") "
+            "group by event.created_at::date, event.operation "
+            "order by event.created_at::date, event.operation",
             (user_id, since),
         ).fetchall()
     return [
@@ -160,6 +179,7 @@ def daily_summary(user_id: str, *, days: int = 30) -> list[dict]:
             "cost_nanousd": row[5],
             "estimated": row[6],
             "calls": row[7],
+            "pending_calls": row[8],
         }
         for row in rows
     ]

@@ -79,6 +79,7 @@ def test_usage_record_appends_queryable_user_project_feature_and_day(database, t
         "cost_nanousd": 12_000_000,
         "estimated": False,
         "calls": 1,
+        "pending_calls": 0,
     }]
 
 
@@ -103,6 +104,34 @@ def test_generation_ids_make_each_event_kind_idempotent(database, temp_project):
             "select event_type, count(*) from rc_usage_events group by event_type order by 1",
         ).fetchall()
     assert rows == [("pending", 1), ("usage", 1)]
+
+
+@needs_pg
+def test_daily_summary_surfaces_only_unresolved_pending_calls(database, temp_project):
+    _own(temp_project)
+    args = {
+        "user_id": ALICE,
+        "project_id": temp_project,
+        "operation": "analysis",
+        "model": "m",
+        "generation_id": "gen-pending-summary",
+    }
+    assert usage_events.append_pending(**args) is True
+    pending = usage_events.daily_summary(ALICE)
+    assert len(pending) == 1
+    assert pending[0]["calls"] == 0
+    assert pending[0]["pending_calls"] == 1
+    assert pending[0]["estimated"] is True
+
+    assert usage_events.append_usage(
+        **args,
+        provider_usage={"prompt_tokens": 4, "completion_tokens": 2, "cost": 0.003},
+    ) is True
+    resolved = usage_events.daily_summary(ALICE)
+    assert len(resolved) == 1
+    assert resolved[0]["calls"] == 1
+    assert resolved[0]["pending_calls"] == 0
+    assert resolved[0]["estimated"] is False
 
 
 @needs_pg
