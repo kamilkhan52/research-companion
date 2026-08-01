@@ -58,7 +58,7 @@ was active when this ledger was created:
 
 | Work | State | Next boundary |
 |---|---|---|
-| Discovery slice 2 — OpenAlex topic sweep, Semantic Scholar `search/bulk`, incremental frontier, stage checkpoints | `planned` | Implement from `~/.claude/plans/keen-finding-rabin.md`; keep grounded and lexical lanes independent, preserve the false-negative audit/protected quotas, and make a restart resume rather than re-buy a long run. |
+| Discovery slice 2 — OpenAlex topic sweep, Semantic Scholar `search/bulk`, incremental frontier, stage checkpoints | `implementation ready — review` | Draft [#311](https://github.com/kamilkhan52/research-companion/pull/311), stacked on #310, keeps grounded and lexical lanes independent, persists the candidate reservoir before advancing frontiers, resumes completed stages, and measures protected title-drop false negatives. After review/merge, run one cold and one incremental production-device search to measure reservoir size, elapsed time, spend, resume behavior, and result quality. |
 | Discovery slice 3 — comparative reading path and client surface | `planned` | One comparative `v4-pro` call using the marker protocol; path/coverage/why UI only after slice 2's recall reservoir is measured. |
 | M3 metering, quotas, and model enforcement | `planned` | Production launch priority: close P0-4/P0-17 before twelve testers can spend against shared provider keys. |
 
