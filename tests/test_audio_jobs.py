@@ -172,6 +172,13 @@ def _billing_narrate(text: str) -> str:
     return f"narrated: {text}"
 
 
+def _billing_synth(text: str) -> bytes:
+    """Stand-in for tts.openai_speech: its usage write must see the initiating project too."""
+    from app import usage
+    usage.record("speech_synthesis", "tts-1", {"cost": 0.001})
+    return fake_synth(text)
+
+
 def test_narration_bills_the_initiating_project_not_another(temp_project):
     from app import config, usage
     # temp_project is the ambient "other" project; the audio was initiated from proj-A.
@@ -188,6 +195,27 @@ def test_narration_bills_the_initiating_project_not_another(temp_project):
     assert billed["by_operation"]["narration"]["cost_nanousd"] == 20_000_000  # 0.02 USD
 
     # The ambient project (temp_project) is NOT charged for A's narration.
+    assert usage.load()["total"]["calls"] == 0
+
+
+def test_speech_bills_the_initiating_project_not_the_audio_registry_scope(temp_project):
+    from app import config, usage
+    job = audio_jobs.start_job(
+        "Bill speech A.",
+        billing_project="proj-A",
+        narrate_fn=fake_narrate,
+        synth_fn=_billing_synth,
+    )
+    assert _wait_until_settled(job.id).status == "done"
+
+    token = config.set_active_project("proj-A")
+    try:
+        billed = usage.load()
+    finally:
+        config.reset_active_project(token)
+    assert billed["by_operation"]["speech_synthesis"]["calls"] == 1
+    assert billed["by_operation"]["speech_synthesis"]["cost_nanousd"] == 1_000_000
+
     assert usage.load()["total"]["calls"] == 0
 
 
@@ -245,6 +273,37 @@ def test_route_missing_project_bills_unattributed(temp_project, monkeypatch):
     resp = audio_routes.start_audio_job(audio_routes.NarrateReq(text="No project route.", project=None), _AnonRequest())
     _wait_until_settled(resp["job"]["id"])
     assert usage.unattributed_summary()["by_operation"]["narration"]["calls"] == 1
+    assert usage.load()["total"]["calls"] == 0
+
+
+def test_blocking_speak_binds_its_validated_billing_project(temp_project, monkeypatch):
+    from app import projects, usage
+    from app.routers import audio as audio_routes
+
+    billing_project = projects.create_project("Speech Billing")["id"]
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"speech_provider": "openai", "tts_model": "tts-1", "tts_voice": "alloy"},
+    )
+
+    def billed_synthesis(_text):
+        usage.record("speech_synthesis", "tts-1", {"cost": 0.003})
+        return b"mp3"
+
+    monkeypatch.setattr(tts, "synthesize_long", billed_synthesis)
+    result = audio_routes.speak(
+        audio_routes.NarrateReq(text="Legacy speech.", project=billing_project),
+        _AnonRequest(),
+    )
+    assert result["url"].startswith("/api/audio/")
+
+    token = config.set_active_project(billing_project)
+    try:
+        billed = usage.load()
+    finally:
+        config.reset_active_project(token)
+    assert billed["by_operation"]["speech_synthesis"]["cost_nanousd"] == 3_000_000
     assert usage.load()["total"]["calls"] == 0
 
 
