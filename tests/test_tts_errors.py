@@ -61,7 +61,7 @@ def test_success_returns_audio_bytes(monkeypatch):
 def test_tts_1_records_exact_character_cost_per_dispatch(monkeypatch):
     recorded = []
     monkeypatch.setattr(tts.usage, "record",
-                        lambda op, model, data: recorded.append((op, model, data)))
+                        lambda op, model, data, **_kwargs: recorded.append((op, model, data)))
     monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, content=b"mp3!"))
 
     tts.openai_speech("See arXiv")
@@ -77,7 +77,7 @@ def test_provider_rejection_is_not_charged_but_successful_retry_is(monkeypatch):
     recorded = []
     responses = iter([FakeResp(500), FakeResp(200, content=b"mp3!")])
     monkeypatch.setattr(tts.usage, "record",
-                        lambda op, model, data: recorded.append((op, model, data)))
+                        lambda op, model, data, **_kwargs: recorded.append((op, model, data)))
     monkeypatch.setattr(httpx, "post", lambda *a, **k: next(responses))
 
     assert tts.openai_speech("hello") == b"mp3!"
@@ -114,6 +114,18 @@ def test_transport_ambiguity_is_charged_and_marked_estimated(temp_project, monke
     assert summary["by_operation"]["speech_synthesis"]["cost_nanousd"] == 150_000
     assert summary["pending_count"] == 1
     assert summary["estimated"] is True
+
+
+def test_transport_ambiguity_marks_the_usage_event_estimated(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        tts.usage,
+        "record",
+        lambda op, model, data, **kwargs: seen.append(kwargs),
+    )
+    monkeypatch.setattr(tts.usage, "record_pending", lambda *_args: None)
+    tts._record_dispatch("tts-1", "hello", estimated=True)
+    assert seen == [{"estimated": True}]
 
 
 def test_unpriceable_speech_model_is_counted_and_marked_estimated(temp_project, monkeypatch):

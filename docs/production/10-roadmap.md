@@ -1242,8 +1242,42 @@ plain/SSE turn-delivery paths in `routers/session.py` were likewise paid work ou
 paid entry points are background jobs. The next slice puts those job seams behind the same
 ownership + rate-limit + reservation guard.
 
-Then: append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost,
-timestamp, generation id) written alongside the existing aggregate. Per-user rate limits
+**Speech-accounting status (2026-07-31): stacked implementation in review.**
+`tts.openai_speech` is now the single dispatch meter: accepted responses produce exact
+character-priced `speech_synthesis` cost for `tts-1`/`tts-1-hd`; a transport-ambiguous attempt is
+charged conservatively and marked estimated, while an explicit provider rejection is unbilled.
+An unpriceable model remains explicitly pending/estimated. Audio workers rebind the initiating
+project around synthesis instead of leaking cost into their `user:<hash>` registry scope. The
+provider/route inventory and next enforcement sequence now live in
+`04-ai-costs-quotas-and-abuse.md`.
+
+**Paid-route consolidation status (2026-07-31): stacked implementation in review.** Both shipped
+clients already used background retrieval, chat-turn, and audio jobs. Their unused declarations
+and the backend's blocking/SSE compatibility routes are now removed, including `/api/speak` and
+`/api/narrate`. An enumeration regression asserts the retired routes stay absent and every paid
+workflow retains its job entry point. This closes invariant 1/P0-13 without waiting for—and creates
+one authoritative seam per workflow for—the reservation layer.
+
+**Append-only event status (2026-07-31): stacked implementation in review.** `rc_usage_events`
+records the verified `(user, project)` scope, operation/model, tokens, integer nano-USD cost,
+generation id, estimated/pending state, and timestamp without storing any prompt or response
+content. Provider generation ids make retries idempotent; reconciliation appends exact usage beside
+the pending marker rather than rewriting history. Ordinary project deletion retains historical
+cost, account deletion cascades it, and the automatic `rc_*` Data API lockout covers the table.
+The existing project aggregate remains an independent presentation cache.
+
+**Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
+not cover them (P0-13).** The inventory is now recorded in
+`04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
+`usage.py`, so *all* OpenAI speech spend was invisible; and `POST /api/speak` synthesized arbitrary
+caller-supplied text synchronously, outside the job framework entirely. `/api/narrate` and the
+plain/SSE turn-delivery paths in `routers/session.py` were likewise paid work outside
+`JobRegistry`. They are now retired; TTS is metered as a first-class operation and all surviving
+paid entry points are background jobs. The next slice puts those job seams behind the same
+ownership + rate-limit + reservation guard.
+
+Append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost, timestamp,
+generation id) now write alongside the existing aggregate. Next: per-user rate limits
 (requests/minute, concurrent jobs). Daily and monthly quotas by tier. **Pre-spend reservations per
 architectural rule 5** — atomically reserve a pessimistic maximum against the user's remaining
 budget before admitting work, settle to actual cost when it finishes, release on failure; a

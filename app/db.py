@@ -1,10 +1,11 @@
 """Postgres: the connection pool and the migration runner.
 
-**What lives in Postgres, and what does not.** Ownership and index rows only. The content — papers,
-notes, transcripts — stays in each project's git repository, because the git history *is* the
-record (invariant 4: the agent proposes, a human approves, and only then does anything commit).
-Putting content here as well would create a second source of truth that can disagree with the
-record, so the schema deliberately stores no reading material.
+**What lives in Postgres, and what does not.** Ownership, operational metadata (usage, deletion,
+moderation), and index rows only. The content — papers, notes, transcripts — stays in each
+project's git repository, because the git history *is* the record (invariant 4: the agent proposes,
+a human approves, and only then does anything commit). Putting reading content here as well would
+create a second source of truth that can disagree with the record, so the schema deliberately
+stores none.
 
 **The database is optional.** With `RC_DATABASE_URL` unset there is no pool, `enabled()` is False,
 and every caller falls back to the single-tenant behaviour the app has today. That is what lets a
@@ -344,6 +345,7 @@ _REQUIRED_TABLES = (
     "rc_content_reports",
     "rc_project_trash",
     "rc_projects",
+    "rc_usage_events",
     "rc_user_settings",
     "rc_users",
 )

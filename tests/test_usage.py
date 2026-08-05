@@ -30,6 +30,58 @@ def test_record_accumulates_tokens_and_cost(temp_project):
     assert data["first_at"] and data["updated_at"]
 
 
+def test_record_forwards_the_composite_scope_and_generation_to_event_ledger(
+    temp_project, monkeypatch
+):
+    seen = []
+    monkeypatch.setattr(usage.usage_events, "append_usage", lambda **event: seen.append(event))
+    user_token = config.set_active_user("a3f0c8de-4b21-4d77-9f0e-2b6c5d1a7e44")
+    try:
+        usage.record(
+            "analysis",
+            "openai/gpt",
+            {"prompt_tokens": 7, "completion_tokens": 3, "cost": 0.002},
+            generation_id="gen-7",
+        )
+    finally:
+        config.reset_active_user(user_token)
+
+    assert len(seen) == 1
+    assert seen[0]["user_id"] == "a3f0c8de-4b21-4d77-9f0e-2b6c5d1a7e44"
+    assert seen[0]["project_id"] == temp_project
+    assert seen[0]["generation_id"] == "gen-7"
+    assert seen[0]["provider_usage"]["cost"] == 0.002
+
+
+def test_pending_forwards_the_same_composite_scope_to_event_ledger(temp_project, monkeypatch):
+    seen = []
+    monkeypatch.setattr(usage.usage_events, "append_pending", lambda **event: seen.append(event))
+    user_token = config.set_active_user("a3f0c8de-4b21-4d77-9f0e-2b6c5d1a7e44")
+    try:
+        usage.record_pending("analysis", "openai/gpt", "gen-pending")
+    finally:
+        config.reset_active_user(user_token)
+
+    assert seen == [{
+        "user_id": "a3f0c8de-4b21-4d77-9f0e-2b6c5d1a7e44",
+        "project_id": temp_project,
+        "operation": "analysis",
+        "model": "openai/gpt",
+        "generation_id": "gen-pending",
+    }]
+
+
+def test_event_ledger_failure_cannot_fail_or_suppress_the_project_aggregate(
+    temp_project, monkeypatch
+):
+    def fail(**_event):
+        raise RuntimeError("analytics unavailable")
+
+    monkeypatch.setattr(usage.usage_events, "append_usage", fail)
+    usage.record("analysis", "m", {"cost": 0.001})
+    assert usage.load()["total"]["cost_nanousd"] == 1_000_000
+
+
 def test_record_breaks_down_by_model_and_operation(temp_project):
     usage.record("analysis", "m1", {"prompt_tokens": 10, "cost": 0.001})
     usage.record("graph_extraction", "m2", {"prompt_tokens": 20, "cost": 0.002})
@@ -193,6 +245,26 @@ def test_complete_records_usage(temp_project, monkeypatch):
     assert data["total"]["total_tokens"] == 10
     assert data["total"]["cost_nanousd"] == 10_000_000  # 0.01 USD
     assert data["by_operation"]["analysis"]["calls"] == 1
+
+
+def test_complete_passes_provider_generation_id_to_usage(temp_project, monkeypatch):
+    monkeypatch.setattr(config, "load_settings", lambda: {"openrouter_api_key": "k", "model": "m"})
+    payload = {
+        "id": "gen-complete",
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.01},
+    }
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Resp(200, payload))
+    seen = []
+    monkeypatch.setattr(
+        usage,
+        "record",
+        lambda op, model, data, **kwargs: seen.append((op, model, data, kwargs)),
+    )
+
+    llm.complete([{"role": "user", "content": "x"}], operation="analysis")
+
+    assert seen[0][3]["generation_id"] == "gen-complete"
 
 
 class _FakeStream:

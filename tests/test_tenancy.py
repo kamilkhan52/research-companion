@@ -369,22 +369,21 @@ def test_every_table_is_off_the_supabase_data_api(database):
     Asserted per table rather than per migration, so a table added later without this fails here
     instead of on a live instance.
     """
+    expected = set(db._REQUIRED_TABLES) | {"rc_schema_migrations"}
     with db.pool().connection() as conn:
         rows = conn.execute(
-            "select relname, relrowsecurity from pg_class "
-            "where relname in ('rc_users', 'rc_projects', 'rc_project_trash', "
-            "'rc_user_settings', 'rc_account_deletions', "
-            "'rc_schema_migrations')").fetchall()
-    assert len(rows) == 6, rows
+            "select relname, relrowsecurity from pg_class where relname = any(%s)",
+            (list(expected),),
+        ).fetchall()
+    assert {name for name, _enabled in rows} == expected, rows
     assert all(enabled for _name, enabled in rows), rows
 
     # And no policy has been added that would re-open one: RLS with zero policies is the denial.
     with db.pool().connection() as conn:
         policies = conn.execute(
-            "select tablename, policyname from pg_policies "
-            "where tablename in ('rc_users', 'rc_projects', 'rc_project_trash', "
-            "'rc_user_settings', 'rc_account_deletions', "
-            "'rc_schema_migrations')").fetchall()
+            "select tablename, policyname from pg_policies where tablename = any(%s)",
+            (list(expected),),
+        ).fetchall()
     assert policies == [], policies
 
 

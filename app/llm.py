@@ -310,7 +310,9 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
         log.info("retrying without the reasoning hint (model=%s)", body.get("model"))
         body.pop("reasoning", None)
         data = _post_with_retry(body, key, timeout, tries)
-    usage.record(operation, body.get("model"), data.get("usage"))  # any 200 was billed
+    usage.record(
+        operation, body.get("model"), data.get("usage"), generation_id=data.get("id"),
+    )  # any 200 was billed
     try:
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
@@ -330,7 +332,7 @@ def _account_stream(operation: str, model: str | None, seen_usage: dict | None,
     """Account one accepted (200) streaming generation: exact usage if its final usage chunk
     arrived, else a pending record (billed, cost unknown, reconcilable by gen_id)."""
     if seen_usage is not None:
-        usage.record(operation, model, seen_usage)
+        usage.record(operation, model, seen_usage, generation_id=gen_id)
     else:
         usage.record_pending(operation, model, gen_id)
 

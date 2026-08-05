@@ -22,12 +22,11 @@ Design notes:
     reconciled later against OpenRouter's generation-stats endpoint (see `reconcile`).
   * Narration on the app-global audio path with no initiating project is billed to an explicit
     **unattributed** ledger (a sentinel scope stored in app-global state), so no spend vanishes.
-- **Foundation for the credits model.** When projects become per-user, attribution is one more
-  key on the aggregate (a `by_user` breakdown), not a redesign. Recording is keyed off the
-  active project, so — like every other background write — a job worker must have rebound the
-  project contextvar first (invariant 2); llm.py's graph path rebinds it into the extraction
-  executor thread, and audio_jobs binds the initiating (or unattributed) scope around its
-  narration call, for exactly this reason.
+- **Foundation for the credits model.** The project aggregate remains the presentation cache;
+  `usage_events.py` also appends the active `(user, project)` to Postgres for daily accounting.
+  Like every other background write, a worker must rebind BOTH contextvars (invariant 2);
+  graph/affiliation workers and `JobRegistry` do so, while audio jobs bind the initiating (or
+  unattributed) project around narration and synthesis.
 
 Reads/writes are serialized on a lock and persisted with an atomic write (concurrent graph
 extraction records several papers at once into the same file).
@@ -39,7 +38,7 @@ import math
 import threading
 from datetime import UTC, datetime
 
-from . import config, logging_config
+from . import config, logging_config, usage_events
 from .fileio import atomic_write_text
 
 log = logging_config.get("usage")
@@ -139,11 +138,20 @@ def _apply(data: dict, operation: str, model: str | None, usage: dict) -> None:
     data["updated_at"] = _now()
 
 
-def record(operation: str, model: str | None, usage: dict | None) -> None:
+def record(
+    operation: str,
+    model: str | None,
+    usage: dict | None,
+    *,
+    generation_id: str | None = None,
+    estimated: bool = False,
+) -> None:
     """Accumulate one call's usage into the active scope's aggregate. No-ops when there is no
     active project (or unattributed scope) to attribute to, so app-global calls and unit tests
     don't write anything. Never raises — accounting must not break the call it is measuring."""
-    if not config.active_project_id():
+    project_id = config.active_project_id()
+    user_id = config.active_user_id()
+    if not project_id:
         return
     try:
         with _lock:
@@ -152,6 +160,20 @@ def record(operation: str, model: str | None, usage: dict | None) -> None:
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
     except Exception as e:  # accounting is best-effort; a bad usage dict must not fail the turn
         log.warning("usage.record failed (op=%s model=%s): %s", operation, model, e)
+    # Independent of the presentation-cache write: corruption or a full project volume must not
+    # also erase the queryable per-user observation. The event seam is itself best-effort.
+    try:
+        usage_events.append_usage(
+            user_id=user_id,
+            project_id=project_id,
+            operation=operation,
+            model=model,
+            provider_usage=usage,
+            generation_id=generation_id,
+            estimated=estimated,
+        )
+    except Exception as e:  # noqa: BLE001 — preserve the analytics-never-fails contract
+        log.warning("usage event forwarding failed (error=%s)", type(e).__name__)
 
 
 def record_pending(operation: str, model: str | None, generation_id: str | None) -> None:
@@ -159,7 +181,9 @@ def record_pending(operation: str, model: str | None, generation_id: str | None)
     by disconnect or truncation — without the final usage chunk). Stores a bounded pending
     record with the generation id so it can be reconciled later; `summary()` flags totals as
     estimates meanwhile. Best-effort, never raises."""
-    if not config.active_project_id():
+    project_id = config.active_project_id()
+    user_id = config.active_user_id()
+    if not project_id:
         return
     try:
         with _lock:
@@ -177,6 +201,16 @@ def record_pending(operation: str, model: str | None, generation_id: str | None)
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
     except Exception as e:
         log.warning("usage.record_pending failed (op=%s model=%s): %s", operation, model, e)
+    try:
+        usage_events.append_pending(
+            user_id=user_id,
+            project_id=project_id,
+            operation=operation,
+            model=model,
+            generation_id=generation_id,
+        )
+    except Exception as e:  # noqa: BLE001 — preserve the analytics-never-fails contract
+        log.warning("pending usage event forwarding failed (error=%s)", type(e).__name__)
 
 
 def _authoritative_cost(usage) -> bool:
@@ -201,7 +235,9 @@ def reconcile(generation_id: str, usage: dict | None) -> bool:
     Requires AUTHORITATIVE cost — `usage["cost"]` must be a finite, non-negative number
     (see `_authoritative_cost`). Without it we don't touch the pending record: marking a
     generation 'exact' on unknown cost would clear the estimate flag while under-counting spend."""
-    if not generation_id or not config.active_project_id():
+    project_id = config.active_project_id()
+    user_id = config.active_user_id()
+    if not generation_id or not project_id:
         return False
     if not _authoritative_cost(usage):
         return False  # no authoritative cost -> leave it pending, keep totals flagged estimated
@@ -214,7 +250,18 @@ def reconcile(generation_id: str, usage: dict | None) -> bool:
             data["pending"] = [p for p in data["pending"] if p is not match]
             _apply(data, match.get("operation"), match.get("model"), usage)
             atomic_write_text(_usage_file(), json.dumps(data, indent=2))
-            return True
+        try:
+            usage_events.append_usage(
+                user_id=user_id,
+                project_id=project_id,
+                operation=match.get("operation"),
+                model=match.get("model"),
+                provider_usage=usage,
+                generation_id=generation_id,
+            )
+        except Exception as e:  # noqa: BLE001 — local reconciliation still succeeded
+            log.warning("reconciled usage event forwarding failed (error=%s)", type(e).__name__)
+        return True
     except Exception as e:
         log.warning("usage.reconcile failed (gen=%s): %s", generation_id, e)
         return False

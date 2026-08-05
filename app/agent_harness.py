@@ -140,6 +140,7 @@ def _record_run_usage(
                             "total_tokens": int(request_usage.total_tokens or 0),
                             "cost": cost,
                         },
+                        generation_id=response.provider_response_id,
                     )
                 else:
                     usage.record_pending(operation, model_name, response.provider_response_id)
