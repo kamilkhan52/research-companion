@@ -1,0 +1,263 @@
+-- M3: durable, fail-closed provider-spend reservations.
+--
+-- Usage events are observational and best-effort. They cannot authorize spend: an analytics
+-- outage must not fail work that already completed, while an admission outage must refuse work
+-- before a provider call begins. These rows are the authoritative second system. A reservation
+-- consumes its pessimistic maximum until it is settled to actual cost or safely released.
+
+create table if not exists rc_usage_reservations (
+    id                   uuid primary key default gen_random_uuid(),
+    user_id              uuid not null references rc_users(id) on delete cascade,
+    -- Null is app-global work attributed to the verified user. As with usage events, project_id
+    -- deliberately has no FK: ordinary project deletion retains accounting history. The reserve
+    -- transaction locks and proves the live (user, project) ownership row before inserting.
+    project_id           text
+                         constraint rc_usage_reservations_project_id_safe
+                         check (
+                             project_id is null or (
+                                 project_id ~ '^[A-Za-z0-9][A-Za-z0-9_-]*$'
+                                 and length(project_id) <= 255
+                             )
+                         ),
+    -- Stable internal retry key, normally job-id + provider. It contains no reader content.
+    reservation_key      text not null
+                         constraint rc_usage_reservations_key_bounded
+                         check (length(reservation_key) between 1 and 192),
+    job_id               text not null
+                         constraint rc_usage_reservations_job_bounded
+                         check (length(job_id) between 1 and 128),
+    provider             text not null
+                         constraint rc_usage_reservations_provider_allowed
+                         check (provider in (
+                             'openrouter', 'openai', 'firecrawl',
+                             'openalex', 'semantic_scholar'
+                         )),
+    operation            text not null
+                         constraint rc_usage_reservations_operation_bounded
+                         check (length(operation) between 1 and 64),
+    model                text not null
+                         constraint rc_usage_reservations_model_bounded
+                         check (length(model) between 1 and 256),
+    state                text not null default 'reserved'
+                         constraint rc_usage_reservations_state_allowed
+                         check (state in ('reserved', 'settled', 'released', 'expired')),
+    reserved_nanousd     bigint not null
+                         constraint rc_usage_reservations_reserved_positive
+                         check (reserved_nanousd > 0),
+    actual_nanousd       bigint
+                         constraint rc_usage_reservations_actual_nonnegative
+                         check (actual_nanousd is null or actual_nanousd >= 0),
+    settlement_kind      text
+                         constraint rc_usage_reservations_settlement_kind_allowed
+                         check (settlement_kind is null or settlement_kind in ('exact', 'conservative')),
+    period_start         timestamptz not null,
+    period_end           timestamptz not null,
+    lease_expires_at     timestamptz not null,
+    dispatched_at        timestamptz,
+    -- Set only after every provider attempt in this reservation has returned and every known
+    -- generation/cost has been durably linked. Without it, a crash may have left one more request
+    -- in flight, so summing the generation ids we happened to receive could under-count spend.
+    dispatches_complete_at timestamptz,
+    created_at           timestamptz not null default now(),
+    updated_at           timestamptz not null default now(),
+    finalized_at         timestamptz,
+
+    constraint rc_usage_reservations_period_valid check (period_end > period_start),
+    constraint rc_usage_reservations_lease_valid check (lease_expires_at >= created_at),
+    -- A possibly-dispatched reservation is never released or expired. If exact provider data is
+    -- unavailable after a crash, it is settled conservatively to the reserved maximum instead.
+    constraint rc_usage_reservations_state_shape check (
+        (state = 'reserved' and actual_nanousd is null
+                            and settlement_kind is null and finalized_at is null)
+        or
+        (state = 'settled' and actual_nanousd is not null and dispatched_at is not null
+             and settlement_kind is not null and finalized_at is not null
+             and (settlement_kind = 'conservative' or dispatches_complete_at is not null))
+        or
+        (state in ('released', 'expired') and actual_nanousd is null
+             and settlement_kind is null and finalized_at is not null
+             and dispatched_at is null and dispatches_complete_at is null)
+    ),
+    unique (user_id, reservation_key)
+);
+
+-- Every network dispatch gets its own durable attempt BEFORE bytes are sent. Without this table a
+-- multi-request job can crash with one known generation and another request still in flight; a
+-- reconciler that sums only known generations would silently under-count the second. The sum of
+-- attempt maxima may never exceed the parent reservation.
+create table if not exists rc_usage_reservation_attempts (
+    id               uuid primary key default gen_random_uuid(),
+    reservation_id   uuid not null references rc_usage_reservations(id) on delete cascade,
+    attempt_key      text not null
+                     constraint rc_usage_reservation_attempts_key_bounded
+                     check (length(attempt_key) between 1 and 128),
+    provider         text not null
+                     constraint rc_usage_reservation_attempts_provider_allowed
+                     check (provider in (
+                         'openrouter', 'openai', 'firecrawl',
+                         'openalex', 'semantic_scholar'
+                     )),
+    maximum_nanousd  bigint not null
+                     constraint rc_usage_reservation_attempts_maximum_positive
+                     check (maximum_nanousd > 0),
+    state            text not null default 'dispatched'
+                     constraint rc_usage_reservation_attempts_state_allowed
+                     check (state in ('dispatched', 'resolved')),
+    actual_nanousd   bigint
+                     constraint rc_usage_reservation_attempts_actual_nonnegative
+                     check (actual_nanousd is null or actual_nanousd >= 0),
+    settlement_kind  text
+                     constraint rc_usage_reservation_attempts_settlement_kind_allowed
+                     check (settlement_kind is null or settlement_kind in ('exact', 'conservative')),
+    generation_id    text
+                     constraint rc_usage_reservation_attempts_generation_bounded
+                     check (generation_id is null or length(generation_id) between 1 and 256),
+    dispatched_at    timestamptz not null default now(),
+    resolved_at      timestamptz,
+
+    constraint rc_usage_reservation_attempts_state_shape check (
+        (state = 'dispatched' and actual_nanousd is null
+                              and settlement_kind is null and resolved_at is null)
+        or
+        (state = 'resolved' and actual_nanousd is not null
+                            and settlement_kind is not null and resolved_at is not null)
+    ),
+    unique (reservation_id, attempt_key)
+);
+
+create unique index if not exists rc_usage_reservation_attempts_generation_uniq
+    on rc_usage_reservation_attempts (provider, generation_id)
+    where generation_id is not null;
+create index if not exists rc_usage_reservation_attempts_unresolved_idx
+    on rc_usage_reservation_attempts (reservation_id, dispatched_at)
+    where state = 'dispatched';
+
+create index if not exists rc_usage_reservations_user_period_idx
+    on rc_usage_reservations (user_id, period_start, period_end);
+create index if not exists rc_usage_reservations_stale_idx
+    on rc_usage_reservations (lease_expires_at)
+    where state = 'reserved';
+create index if not exists rc_usage_reservations_job_idx
+    on rc_usage_reservations (user_id, job_id);
+
+-- CHECK constraints prove that each stored row has a valid shape, but they cannot prove how the
+-- row reached that shape. Without a transition guard, a direct/internal writer could rewind a
+-- settled row to ``reserved`` (clearing its settlement fields), then mark it ``released``. The
+-- already-spent cost would disappear from admission's monthly sum. Keep the durable ledger
+-- append-like at the database boundary: accounting identity never changes, dispatch evidence can
+-- only accumulate, and a terminal row is immutable.
+create or replace function public.rc_guard_usage_reservation_transition()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+    if tg_op = 'DELETE' then
+        -- Account deletion is the one supported way to erase this history. Its FK cascade runs
+        -- after the owning rc_users row is no longer visible to this statement; every direct
+        -- reservation delete still has a live owner and is refused.
+        if exists (select 1 from public.rc_users where id = old.user_id) then
+            raise exception using
+                errcode = '23514',
+                message = 'usage reservations may only be deleted with their account';
+        end if;
+        return old;
+    end if;
+
+    if new.id is distinct from old.id
+       or new.user_id is distinct from old.user_id
+       or new.project_id is distinct from old.project_id
+       or new.reservation_key is distinct from old.reservation_key
+       or new.job_id is distinct from old.job_id
+       or new.provider is distinct from old.provider
+       or new.operation is distinct from old.operation
+       or new.model is distinct from old.model
+       or new.reserved_nanousd is distinct from old.reserved_nanousd
+       or new.period_start is distinct from old.period_start
+       or new.period_end is distinct from old.period_end
+       or new.created_at is distinct from old.created_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation accounting identity is immutable';
+    end if;
+
+    if old.dispatched_at is not null
+       and new.dispatched_at is distinct from old.dispatched_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation dispatch evidence is immutable';
+    end if;
+    if old.dispatches_complete_at is not null
+       and new.dispatches_complete_at is distinct from old.dispatches_complete_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation completion evidence is immutable';
+    end if;
+
+    if old.state <> 'reserved' and new is distinct from old then
+        raise exception using
+            errcode = '23514',
+            message = 'terminal usage reservations are immutable';
+    end if;
+    return new;
+end
+$$;
+
+drop trigger if exists rc_guard_usage_reservation_transition on rc_usage_reservations;
+create trigger rc_guard_usage_reservation_transition
+before update or delete on rc_usage_reservations
+for each row execute function public.rc_guard_usage_reservation_transition();
+
+-- Attempts are the per-network-dispatch half of the same record. A resolved attempt must not be
+-- rewound or repriced before its parent is settled, and a linked provider generation id is durable
+-- crash-reconciliation evidence rather than mutable metadata.
+create or replace function public.rc_guard_usage_reservation_attempt_transition()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+    if tg_op = 'DELETE' then
+        -- The parent is already invisible while its FK cascade is deleting attempts. If it is
+        -- still present, this is a direct attempt deletion that would erase dispatch evidence.
+        if exists (
+            select 1 from public.rc_usage_reservations where id = old.reservation_id
+        ) then
+            raise exception using
+                errcode = '23514',
+                message = 'usage reservation attempts may only be deleted with their account';
+        end if;
+        return old;
+    end if;
+
+    if new.id is distinct from old.id
+       or new.reservation_id is distinct from old.reservation_id
+       or new.attempt_key is distinct from old.attempt_key
+       or new.provider is distinct from old.provider
+       or new.maximum_nanousd is distinct from old.maximum_nanousd
+       or new.dispatched_at is distinct from old.dispatched_at then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation attempt identity is immutable';
+    end if;
+
+    if old.generation_id is not null
+       and new.generation_id is distinct from old.generation_id then
+        raise exception using
+            errcode = '23514',
+            message = 'usage reservation generation evidence is immutable';
+    end if;
+    if old.state = 'resolved' and new is distinct from old then
+        raise exception using
+            errcode = '23514',
+            message = 'resolved usage reservation attempts are immutable';
+    end if;
+    return new;
+end
+$$;
+
+drop trigger if exists rc_guard_usage_reservation_attempt_transition
+    on rc_usage_reservation_attempts;
+create trigger rc_guard_usage_reservation_attempt_transition
+before update or delete on rc_usage_reservation_attempts
+for each row execute function public.rc_guard_usage_reservation_attempt_transition();
