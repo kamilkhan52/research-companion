@@ -91,6 +91,7 @@ def client_as(monkeypatch):
     ("GET", "/api/projects/{pid}/usage"),
     ("GET", "/api/projects/{pid}/graph"),
     ("POST", "/api/projects/{pid}/discover"),
+    ("POST", "/api/projects/{pid}/discover/cancel"),
     ("POST", "/api/projects/{pid}/papers"),
     ("PATCH", "/api/projects/{pid}/meta"),
     ("GET", "/api/projects/{pid}/meta"),

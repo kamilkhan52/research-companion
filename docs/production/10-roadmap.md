@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-31)
+## Current position (updated 2026-07-31, during Discovery slice 2 review)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -20,18 +20,33 @@ policies, 0 `anon`/`authenticated` grants), two accounts allowlisted, five of hi
 with full git history, and his own prompt overrides and model picks in place. H26/H27/H28 are all
 closed.
 
-**M2.5 is code-complete and the app has had its first real device pass.** What now gates the AAB is
-not engineering — it is Kamil's sign-off plus H13. See "Where this session left off" below.
+**M2.5 is code-complete and the app is in continuous production-device review.** What gates the
+AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
+there are testers does not bank closed-test time and prematurely freezes the Android package name.
 
-**M3 has started with its prerequisite cost-attribution slice.** The implementation branch moves
-the default agentic path from Pydantic AI's generic OpenAI-compatible adapter to its native
-OpenRouter adapter, requests the authoritative usage block, and records every tool-loop provider
-response separately. Completed responses therefore carry exact OpenRouter cost; a response that
-still lacks cost is pending under its actual generation id rather than one unreconcilable
-run-level `None`. This closes the code-level mechanism behind P0-5 once reviewed and merged; real
-staging usage should still be checked before the audit row is struck through.
+**Main is at PR #309.** PR #310 is the open draft for cooperative Discover cancellation, and
+Discovery slice 2 is stacked on it as draft PR #311. Since the production bring-up, the Round-14 device queue
+shipped, project transfer began carrying gitignored working state, graph/citation enrichment moved
+from 46% to 92% coverage, the OpenAlex key went live, and Discovery slice 1 plus its staged/live-
+finds UI shipped as #306–#309. The latest production deploy and the local `device-main` worktree
+both serve #309.
 
-### Where this session left off (read this first)
+**Immediate handoff:**
+
+1. Continuous device feedback is now reconciled in
+   [`../device-review-ledger.md`](../device-review-ledger.md); that ledger distinguishes genuinely
+   open work from merged behavior that only needs device acceptance.
+2. Discovery slice 2 is implemented and entering review: OpenAlex topic sweep, Semantic Scholar
+   `search/bulk`, an incremental frontier backed by a durable candidate reservoir, restart-safe
+   stage checkpoints, and measurable title-screen false-negative protection. The durable plan is
+   `~/.claude/plans/keen-finding-rabin.md`; live/device measurement remains after merge.
+3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
+   reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
+   enough real timing/quality evidence to set a meaningful target.
+4. M3 metering, quotas, and per-turn model enforcement remains the production priority before
+   twelve testers can spend against shared provider credentials.
+
+### Earlier production-bring-up handoff (historical, retained for rationale)
 
 Merged this session, in order: **#274** deploy findings · **#275** duplicate-signup dead end ·
 **#276** default prior-notes scope · **#277** actionable empty-response error · **#278** stale
@@ -445,10 +460,29 @@ Two harness holes this work exposed, both now closed in `tests/conftest.py`:
   enough; a stale discovery ledger silently satisfied a screening stage and the failure looked like
   a bug in the code under test. `_LEGACY_PROJECT_DIR` is redirected too, and a test pins it shut.
 
-**Next:** slice 2 (OpenAlex topic sweep + Semantic Scholar `search/bulk` + the incremental
-frontier), then slice 3 (the comparative reading-path call and its client surface). A "Quick" mode
+**Next:** review and measure slice 2 (OpenAlex topic sweep + Semantic Scholar `search/bulk` + the
+incremental frontier), then slice 3 (the comparative reading-path call and its client surface). A "Quick" mode
 is wanted — Discover is the first thing a new user touches — but is deliberately deferred until the
 optimised default has been used, so its targets can be set from real numbers rather than guesses.
+
+#### Discovery rebuild — slice 2 implementation candidate 2026-07-31
+
+Slice 2 adds the two graph-independent wide-recall lanes without replacing the lexical or
+library-grounded lanes. One OpenAlex cursor sweep ORs the six strongest project topics under one
+30-page total cap. Up to four broad Boolean Semantic Scholar `paper/search/bulk` lanes request
+1,000 rows per paced page and 2,000 rows per query. The providers run alongside one another, but
+Semantic Scholar pagination remains serialized behind its account-wide pacer.
+
+Incrementality is crash-safe rather than merely cached. The discovery ledger now retains a compact
+candidate reservoir, and provider frontier updates stay pending until the reservoir and completed
+run are durable. A 24-hour per-project checkpoint snapshots the completed recall, gate, title
+triage, and abstract-score stages; it is invalidated by goals, reading-list identity, or pipeline
+version changes. Cancellation and provider failures do not advance a truncated frontier.
+
+The title screen protects project-grounded candidates, source lanes, topic/concept groups, time
+strata, FOUNDATION/SURVEY labels, and a deterministic 2% audit sample. Protected title drops still
+receive abstract scoring, and the run reports the observed false-negative count/rate over the full
+reviewed population (not only the final display cap). Every abstract score paid for is cached.
 
 #### OpenAlex, re-verified live 2026-07-30 (corrects the "it's dead" note above)
 
@@ -1188,6 +1222,32 @@ ledger call per provider request. The aggregate fallback remains only for inject
 models and failures before a provider response is captured. Unit coverage asserts exact cost over
 a multi-request tool loop, no duplicate aggregate, a generation-specific pending fallback, and an
 unestimated ledger on the exact path.
+
+**Speech-accounting status (2026-07-31): stacked implementation in review.**
+`tts.openai_speech` is now the single dispatch meter: accepted responses produce exact
+character-priced `speech_synthesis` cost for `tts-1`/`tts-1-hd`; a transport-ambiguous attempt is
+charged conservatively and marked estimated, while an explicit provider rejection is unbilled.
+An unpriceable model remains explicitly pending/estimated. Audio workers rebind the initiating
+project around synthesis instead of leaking cost into their `user:<hash>` registry scope. The
+provider/route inventory and next enforcement sequence now live in
+`04-ai-costs-quotas-and-abuse.md`.
+
+**Paid-route consolidation status (2026-07-31): stacked implementation in review.** Both shipped
+clients already used background retrieval, chat-turn, and audio jobs. Their unused declarations
+and the backend's blocking/SSE compatibility routes are now removed, including `/api/speak` and
+`/api/narrate`. An enumeration regression asserts the retired routes stay absent and every paid
+workflow retains its job entry point. This closes invariant 1/P0-13 without waiting for—and creates
+one authoritative seam per workflow for—the reservation layer.
+
+**Second, inventory every provider-spend entry point — "LLM calls" and "job-creating routes" do
+not cover them (P0-13).** The inventory is now recorded in
+`04-ai-costs-quotas-and-abuse.md`. Before the speech-accounting slice, `tts.py` never touched
+`usage.py`, so *all* OpenAI speech spend was invisible; and `POST /api/speak` synthesized arbitrary
+caller-supplied text synchronously, outside the job framework entirely. `/api/narrate` and the
+plain/SSE turn-delivery paths in `routers/session.py` were likewise paid work outside
+`JobRegistry`. They are now retired; TTS is metered as a first-class operation and all surviving
+paid entry points are background jobs. The next slice puts those job seams behind the same
+ownership + rate-limit + reservation guard.
 
 **Speech-accounting status (2026-07-31): stacked implementation in review.**
 `tts.openai_speech` is now the single dispatch meter: accepted responses produce exact

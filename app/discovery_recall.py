@@ -13,8 +13,11 @@ cent, and R5 costs nothing because the numbers are already computed and sitting 
   R2  forward-citation      who cites those works                      $0.0001 / 200 rows
   R5  graph recommendations already ranked in the reference graph      free, in-process
 
-R3 (topic sweep) and R4 (Semantic Scholar bulk search) are deliberately not here; they belong with
-the incremental frontier in the next slice.
+Slice 2 adds the two independent wide-recall lanes and returns frontier updates for the caller to
+commit only after the candidate reservoir and final result are durable:
+
+  R3  OpenAlex topic sweep  top project topics over a rolling decade
+  R4  S2 bulk search        broad goal queries, up to 1,000 rows per page
 
 Every candidate carries `channels` and `provenance`, because "cited by *Attention Is All You Need*,
 which is paper 3 on your list" is both the reason the result is good and the thing the deterministic
@@ -22,13 +25,15 @@ gate uses to know it must not apply a generic popularity floor to it.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from . import jobs, logging_config, semantic_scholar, store
+from . import jobs, logging_config, openalex, semantic_scholar, store
 from .openalex import BASE as OPENALEX_BASE
 
 log = logging_config.get("discovery.recall")
@@ -41,6 +46,13 @@ MAX_ANCHORS = 25
 #: OpenAlex returns at most 200 rows per page; one page per anchor is plenty for slice 1.
 CITES_PER_PAGE = 200
 MAX_CITES_PAGES = 1
+
+TOP_TOPIC_COUNT = 6
+TOPIC_PER_PAGE = 200
+MAX_TOPIC_PAGES = 30
+TOPIC_HORIZON_YEARS = 10
+BULK_QUERY_COUNT = 4
+BULK_ROWS_PER_QUERY = 2_000
 
 #: OpenAlex accepts a DOI list in one filter call. 50 keeps the URL comfortably short.
 DOI_BATCH = 50
@@ -96,8 +108,13 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
             continue
         cached = cache.get(slug)
         if cached:
-            anchors.append({"slug": slug, "openalex_id": cached,
-                            "title": getattr(paper, "title", "") or ""})
+            # Slice 1 stored just the work-id string. Accept it forever, while new cache rows also
+            # retain topics so R3 does not have to re-fetch a free-but-slow anchor every run.
+            work_id = cached.get("openalex_id") if isinstance(cached, dict) else cached
+            topics = cached.get("topics") if isinstance(cached, dict) else []
+            anchors.append({"slug": slug, "openalex_id": work_id,
+                            "title": getattr(paper, "title", "") or "",
+                            "topics": topics or []})
             continue
         if not arxiv_id or budget <= 0:
             continue
@@ -115,7 +132,7 @@ def resolve_anchors(papers: list, *, client: httpx.Client, cache: dict,
     for paper, work in zip(to_look_up, works, strict=True):
         slug = getattr(paper, "slug", "")
         if isinstance(work, dict) and work.get("id"):
-            cache[slug] = work["id"]
+            cache[slug] = {"openalex_id": work["id"], "topics": work.get("topics") or []}
             anchors.append({"slug": slug, "openalex_id": work["id"],
                             "title": getattr(paper, "title", "") or "",
                             "topics": work.get("topics") or []})
@@ -142,6 +159,33 @@ def _get_work(client: httpx.Client, lookup: str) -> dict | None:
     except ValueError:
         return None
     return data if isinstance(data, dict) and data.get("id") else None
+
+
+def hydrate_anchor_topics(anchors: list[dict], *, client: httpx.Client, cache: dict) -> None:
+    """One-time upgrade for slice-1 cache rows that retained only an OpenAlex work id.
+
+    Existing production projects have already paid the latency to resolve their anchors, but
+    those rows predate R3 and contain no topic fingerprint. Single-work lookups are free; fetch
+    only the bounded anchors missing topics, update them in place, and persist through the caller's
+    existing graph-store save. Once upgraded, later runs make zero requests here.
+    """
+    missing = [anchor for anchor in anchors[:MAX_ANCHORS]
+               if anchor.get("openalex_id") and not anchor.get("topics")]
+    if not missing:
+        return
+    works = jobs.run_parallel(
+        missing, lambda anchor: _get_work(client, _work_key(anchor["openalex_id"])),
+        max_workers=concurrency(), thread_name_prefix="discover-anchor-topics")
+    for anchor, work in zip(missing, works, strict=True):
+        if not isinstance(work, dict):
+            continue
+        topics = work.get("topics") or []
+        if not topics:
+            continue
+        anchor["topics"] = topics
+        slug = str(anchor.get("slug") or "")
+        if slug:
+            cache[slug] = {"openalex_id": work["id"], "topics": topics}
 
 
 def _default_s2_doi(arxiv_id: str) -> str | None:
@@ -201,7 +245,7 @@ def _resolve_via_s2(unresolved: list[tuple[str, str]], papers: list, *,
                          str(row.get("doi") or ""), flags=re.IGNORECASE).lower()
             slug = by_doi.get(doi)
             if slug and row.get("id"):
-                cache[slug] = row["id"]
+                cache[slug] = {"openalex_id": row["id"], "topics": row.get("topics") or []}
                 found.append({"slug": slug, "openalex_id": row["id"],
                               "title": titles.get(slug, ""), "topics": row.get("topics") or []})
     return found
@@ -287,8 +331,21 @@ def _from_openalex(row: dict) -> dict | None:
         arxiv_id = match.group(1)
     authors = [((a.get("author") or {}).get("display_name") or "")
                for a in (row.get("authorships") or [])]
+    inverted = row.get("abstract_inverted_index") or {}
+    abstract = ""
+    if isinstance(inverted, dict):
+        positioned = [
+            (position, str(word))
+            for word, positions in inverted.items()
+            if isinstance(positions, list)
+            for position in positions
+            if isinstance(position, int)
+        ]
+        positioned.sort()
+        abstract = " ".join(word for _, word in positioned)
     return {
         "title": title,
+        "abstract": abstract,
         "doi": doi,
         "arxiv_id": arxiv_id,
         "year": row.get("publication_year"),
@@ -299,6 +356,234 @@ def _from_openalex(row: dict) -> dict | None:
         "openalex_id": row.get("id"),
         "sources": ["openalex"],
     }
+
+
+# ---------- R3/R4: wide recall + pending frontier updates ----------
+
+def topic_fingerprint(anchors: list[dict], limit: int = TOP_TOPIC_COUNT) -> list[dict]:
+    """The project's strongest OpenAlex topics, weighted across resolved library anchors."""
+    scores: dict[str, dict] = {}
+    for anchor in anchors:
+        for topic in (anchor.get("topics") or [])[:3]:
+            if not isinstance(topic, dict):
+                continue
+            raw_id = str(topic.get("id") or "")
+            topic_id = raw_id.rsplit("/", 1)[-1]
+            if not re.fullmatch(r"T\d+", topic_id):
+                continue
+            try:
+                weight = float(topic.get("score") or 1.0)
+            except (TypeError, ValueError):
+                weight = 1.0
+            row = scores.setdefault(topic_id, {
+                "id": topic_id, "name": str(topic.get("display_name") or ""), "score": 0.0,
+            })
+            row["score"] += max(0.0, weight)
+    return sorted(scores.values(), key=lambda row: (-row["score"], row["id"]))[:limit]
+
+
+def _frontier_start(frontier: dict, key: str, today: date) -> date | None:
+    row = frontier.get(key)
+    swept = row.get("swept_to") if isinstance(row, dict) else None
+    if isinstance(swept, str):
+        try:
+            start = date.fromisoformat(swept) + timedelta(days=1)
+            return None if start > today else start
+        except ValueError:
+            pass
+    return date(today.year - TOPIC_HORIZON_YEARS + 1, 1, 1)
+
+
+def sweep_topics(anchors: list[dict], *, client: httpx.Client, frontier: dict,
+                 today: date | None = None, should_cancel: Callable[[], bool] | None = None
+                 ) -> tuple[list[dict], dict, list[dict]]:
+    """R3: sweep the project's topic space, returning updates that are not yet durable.
+
+    The caller commits ``updates`` only with the completed result/ledger. Advancing the frontier
+    here would be a data-loss bug: a crash after this function would skip pages whose candidates
+    existed only in the dead process.
+    """
+    today = today or datetime.now(UTC).date()
+    topics = topic_fingerprint(anchors)
+    candidates: list[dict] = []
+    updates: list[dict] = []
+    audit = {"topics": len(topics), "pages": 0, "rows": 0, "degraded": []}
+    cancelled = should_cancel or (lambda: False)
+    if not topics or cancelled():
+        if cancelled():
+            audit["cancelled"] = True
+        return candidates, audit, updates
+
+    ids = [topic["id"] for topic in topics]
+    names = {topic["id"]: topic["name"] for topic in topics}
+    key = "topics.id:" + "|".join(ids)
+    start = _frontier_start(frontier, key, today)
+    if start is None:
+        return candidates, audit, updates
+    cursor: str | None = "*"
+    seen_cursors: set[str] = set()
+    pages = 0
+    complete = False
+    while cursor and pages < MAX_TOPIC_PAGES:
+        if cancelled():
+            audit["cancelled"] = True
+            break
+        if cursor in seen_cursors:
+            audit["degraded"].append(
+                "topic sweep received a repeated cursor; frontier not advanced")
+            break
+        seen_cursors.add(cursor)
+        try:
+            response = client.get(
+                f"{OPENALEX_BASE}/works",
+                params={
+                    "filter": (f"topics.id:{'|'.join(ids)},"
+                               f"from_publication_date:{start.isoformat()},"
+                               f"to_publication_date:{today.isoformat()}"),
+                    "cursor": cursor,
+                    "per-page": TOPIC_PER_PAGE,
+                    "sort": "cited_by_count:desc",
+                    "select": "id,doi,title,abstract_inverted_index,publication_year,"
+                              "cited_by_count,type,primary_location,authorships,topics",
+                }, timeout=TIMEOUT_S)
+            if response.status_code != 200:
+                raise httpx.HTTPStatusError(
+                    f"OpenAlex returned {response.status_code}", request=response.request,
+                    response=response)
+            payload = response.json()
+            rows = payload.get("results") or []
+            if not isinstance(rows, list):
+                raise ValueError("results is not a list")
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            audit["degraded"].append(
+                f"topic sweep stopped after {pages} pages ({type(exc).__name__})")
+            break
+        pages += 1
+        audit["pages"] += 1
+        for row in rows:
+            if not isinstance(row, dict) or not (candidate := _from_openalex(row)):
+                continue
+            matched = [str(topic.get("id") or "").rsplit("/", 1)[-1]
+                       for topic in (row.get("topics") or []) if isinstance(topic, dict)]
+            matched = [topic_id for topic_id in matched if topic_id in names] or ids[:1]
+            candidate["channels"] = ["topic"]
+            candidate["provenance"] = [{
+                "channel": "topic", "topic_id": topic_id, "topic": names.get(topic_id, ""),
+            } for topic_id in matched[:3]]
+            candidates.append(candidate)
+        next_cursor = ((payload.get("meta") or {}).get("next_cursor")
+                       if isinstance(payload.get("meta"), dict) else None)
+        cursor = str(next_cursor) if next_cursor else None
+        if not cursor or not rows:
+            complete = True
+            break
+    if complete:
+        updates.append({"key": key, "swept_to": today.isoformat(),
+                        "from_date": start.isoformat(), "pages": pages,
+                        "topics": ids})
+    elif cursor and pages >= MAX_TOPIC_PAGES:
+        audit["degraded"].append(
+            f"topic sweep reached the {MAX_TOPIC_PAGES}-page safety cap; frontier not advanced")
+    audit["rows"] = len(candidates)
+    return candidates, audit, updates
+
+
+def bulk_goal_search(queries: list[dict], *, frontier: dict,
+                     search_fn=None, today: date | None = None,
+                     should_cancel: Callable[[], bool] | None = None
+                     ) -> tuple[list[dict], dict, list[dict]]:
+    """R4: broad Semantic Scholar bulk-search lanes, independent of the project graph."""
+    today = today or datetime.now(UTC).date()
+    search = search_fn or semantic_scholar.bulk_search_papers
+    terms = []
+    for query in queries:
+        value = str(query.get("bulk_query") or query.get("search_terms")
+                    or query.get("query") or "").strip()
+        if value and value not in terms:
+            terms.append(value)
+        if len(terms) >= BULK_QUERY_COUNT:
+            break
+    candidates: list[dict] = []
+    updates: list[dict] = []
+    audit = {"queries": len(terms), "pages": 0, "rows": 0, "degraded": []}
+    cancelled = should_cancel or (lambda: False)
+    for query in terms:
+        if cancelled():
+            audit["cancelled"] = True
+            break
+        key = "bulk:" + hashlib.sha1(query.encode("utf-8")).hexdigest()[:12]
+        start = _frontier_start(frontier, key, today)
+        if start is None:
+            continue
+        try:
+            result = search(query, BULK_ROWS_PER_QUERY, from_date=start.isoformat(),
+                            should_cancel=cancelled)
+            rows, page_audit = result if isinstance(result, tuple) else (result, {"complete": True})
+        except Exception as exc:  # noqa: BLE001 — one recall lane is best-effort
+            audit["degraded"].append(f"bulk query failed ({type(exc).__name__})")
+            continue
+        audit["pages"] += int(page_audit.get("pages") or 0)
+        for raw in rows:
+            if not isinstance(raw, dict) or not raw.get("title"):
+                continue
+            candidate = dict(raw)
+            candidate["channels"] = ["bulk"]
+            candidate["sources"] = list(dict.fromkeys(
+                [*candidate.get("sources", []), "semantic_scholar"]))
+            candidate["provenance"] = [{"channel": "bulk", "query": query}]
+            candidates.append(candidate)
+        if page_audit.get("complete"):
+            updates.append({"key": key, "swept_to": today.isoformat(),
+                            "from_date": start.isoformat(), "query": query,
+                            "pages": int(page_audit.get("pages") or 0)})
+        else:
+            audit["degraded"].append(
+                f"bulk query reached the {BULK_ROWS_PER_QUERY}-row cap; frontier not advanced")
+    audit["rows"] = len(candidates)
+    return candidates, audit, updates
+
+
+def wide_recall(anchors: list[dict], queries: list[dict], *, frontier: dict,
+                client: httpx.Client | None = None, bulk_search_fn=None,
+                today: date | None = None, should_cancel: Callable[[], bool] | None = None
+                ) -> tuple[list[dict], dict, list[dict]]:
+    """R3+R4 together; failures stay lane-local and every frontier update remains pending."""
+    own = client is None
+    client = client or openalex.make_client(timeout=TIMEOUT_S)
+    try:
+        # Parallelise ACROSS providers only. OpenAlex owns its own concurrent page/anchor budget;
+        # Semantic Scholar remains serialized through its account-wide pacer. Running the two
+        # independent lanes together cuts wall-clock without turning S2 pagination into a 429 fan-
+        # out or letting one lane's outage discard the other.
+        results = jobs.run_parallel(
+            ["topic", "bulk"],
+            lambda lane: (
+                sweep_topics(anchors, client=client, frontier=frontier, today=today,
+                             should_cancel=should_cancel)
+                if lane == "topic"
+                else bulk_goal_search(
+                    queries, frontier=frontier, search_fn=bulk_search_fn, today=today,
+                    should_cancel=should_cancel)
+            ),
+            max_workers=2,
+            thread_name_prefix="discover-wide",
+        )
+        topic_result, bulk_result = results
+        if isinstance(topic_result, Exception):
+            topic_result = ([], {"topics": 0, "pages": 0, "rows": 0,
+                                 "degraded": [f"topic sweep failed ({type(topic_result).__name__})"]}, [])
+        if isinstance(bulk_result, Exception):
+            bulk_result = ([], {"queries": 0, "pages": 0, "rows": 0,
+                                "degraded": [f"bulk recall failed ({type(bulk_result).__name__})"]}, [])
+        topic_rows, topic_audit, topic_updates = topic_result
+        bulk_rows, bulk_audit, bulk_updates = bulk_result
+        return [*topic_rows, *bulk_rows], {
+            "topic": topic_audit, "bulk": bulk_audit,
+            "degraded": [*topic_audit["degraded"], *bulk_audit["degraded"]],
+        }, [*topic_updates, *bulk_updates]
+    finally:
+        if own:
+            client.close()
 
 
 # ---------- R5: the reference graph's own recommendations ----------
