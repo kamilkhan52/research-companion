@@ -31,7 +31,7 @@ GROUNDED_CHANNELS = frozenset({"cites", "graph"})
 
 #: Publication types that are never a reading suggestion, whatever they cite.
 EXCLUDED_TYPES = frozenset({
-    "Editorial", "News", "LettersAndComments", "Dataset", "Review",
+    "Editorial", "News", "LettersAndComments", "Dataset",
 })
 
 #: Above this age-scaled ceiling the floor stops rising — a 30-year-old paper does not need 60

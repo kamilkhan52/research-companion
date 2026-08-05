@@ -38,6 +38,7 @@ afterEach(() => {
   jest.mocked(api.startGraphBuild).mockReset();
   jest.mocked(api.getGraphBuildStatus).mockReset();
   jest.mocked(api.startDiscovery).mockReset();
+  jest.mocked(api.cancelDiscovery).mockReset();
   jest.mocked(api.getDiscovery).mockReset();
 });
 
@@ -199,5 +200,75 @@ test('a project switch mid-start resets discovery and discards the old response'
   expect(hook.result.current.error).toBeNull();
   expect(accepted).toBe(true);
   expect(hook.result.current.running).toBe(true);
+  await hook.unmountAsync();
+});
+
+test('discover Stop ignores a stale running poll that resolves after cancellation', async () => {
+  const running = { status: 'running', phase: 'gated', finds: [] } as unknown as DiscoveryJob;
+  const cancelled = { ...running, status: 'cancelled' } as DiscoveryJob;
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: running });
+  let resolvePoll: (value: { job: DiscoveryJob | null }) => void = () => undefined;
+  jest.mocked(api.getDiscovery).mockReturnValue(
+    new Promise((resolve) => {
+      resolvePoll = resolve;
+    }) as never,
+  );
+  jest.mocked(api.cancelDiscovery).mockResolvedValue({ job: cancelled });
+
+  const hook = await renderHookAsync(() => useDiscoveryRun('proj'), { wrapper });
+  await act(async () => hook.result.current.run('memory systems'));
+  expect(hook.result.current.job?.status).toBe('running');
+  await act(async () => Promise.resolve()); // immediate poll is now in flight
+
+  let stopped = false;
+  await act(async () => {
+    stopped = await hook.result.current.cancel();
+  });
+  expect(stopped).toBe(true);
+  expect(hook.result.current.running).toBe(false);
+  expect(hook.result.current.job?.status).toBe('cancelled');
+
+  await act(async () => {
+    resolvePoll({ job: running });
+  });
+  expect(hook.result.current.running).toBe(false);
+  expect(hook.result.current.job?.status).toBe('cancelled');
+  await hook.unmountAsync();
+});
+
+test('a lost Stop response reconciles against the cancelled backend job', async () => {
+  const running = { status: 'running', phase: 'gated', finds: [] } as unknown as DiscoveryJob;
+  const cancelled = { ...running, status: 'cancelled' } as DiscoveryJob;
+  jest.mocked(api.startDiscovery).mockResolvedValue({ job: running });
+  jest.mocked(api.cancelDiscovery).mockRejectedValue(new Error('tunnel timeout'));
+  // The first call is the immediate status poll. The second is Stop's reconciliation read.
+  jest.mocked(api.getDiscovery)
+    .mockResolvedValueOnce({ job: running } as never)
+    .mockResolvedValueOnce({ job: cancelled } as never);
+
+  const hook = await renderHookAsync(() => useDiscoveryRun('proj'), { wrapper });
+  await act(async () => hook.result.current.run('memory systems'));
+  await act(async () => Promise.resolve());
+
+  let stopped = false;
+  await act(async () => {
+    stopped = await hook.result.current.cancel();
+  });
+  expect(stopped).toBe(true);
+  expect(hook.result.current.error).toBeNull();
+  expect(hook.result.current.running).toBe(false);
+  expect(hook.result.current.job?.status).toBe('cancelled');
+  await hook.unmountAsync();
+});
+
+test('reopening Discover restores a cancelled snapshot without restarting polling', async () => {
+  const cancelled = {
+    status: 'cancelled', phase: 'gated', finds: [{ title: 'Partial' }],
+  } as unknown as DiscoveryJob;
+  const hook = await renderHookAsync(() => useDiscoveryRun('proj'), { wrapper });
+  act(() => hook.result.current.resume(cancelled));
+  expect(hook.result.current.running).toBe(false);
+  expect(hook.result.current.job).toBe(cancelled);
+  expect(api.getDiscovery).not.toHaveBeenCalled();
   await hook.unmountAsync();
 });
