@@ -42,6 +42,16 @@ LEDGER_VERSION = 1
 #: A candidate we have never judged. Distinguishes "no entry" from "entry with a null verdict".
 _MISSING = object()
 
+_CANDIDATE_SCALARS = (
+    "candidate_id", "paper_id", "openalex_id", "arxiv_id", "doi", "title", "year", "venue",
+    "url", "provider_url", "pdf_url", "citation_count", "influential_citation_count",
+    "publication_date", "category", "provider", "recall_score",
+)
+_CANDIDATE_LISTS = (
+    "authors", "author_ids", "fields_of_study", "publication_types", "sources", "channels",
+    "provenance",
+)
+
 
 def ledger_path() -> Path:
     return config.state_dir() / "discovery-ledger.json"
@@ -128,11 +138,53 @@ def observe(ledger: dict, key: str, candidate: dict, channel: str, today: str) -
         entries[key] = entry
     entry["last_seen"] = today
     entry["times_seen"] = int(entry.get("times_seen") or 0) + 1
-    if channel and channel not in entry.get("channels", []):
-        entry.setdefault("channels", []).append(channel)
+    seen_channels = [channel, *(candidate.get("channels") or [])]
+    for seen_channel in seen_channels:
+        if seen_channel and seen_channel not in entry.get("channels", []):
+            entry.setdefault("channels", []).append(seen_channel)
     if not entry.get("title") and candidate.get("title"):
         entry["title"] = str(candidate["title"])[:300]
+    entry["candidate"] = _snapshot_candidate(candidate, previous=entry.get("candidate"))
     return entry
+
+
+def _snapshot_candidate(candidate: dict, *, previous: object = None) -> dict:
+    """Compact, JSON-safe reservoir row sufficient to screen/rank without re-fetching it."""
+    out = dict(previous) if isinstance(previous, dict) else {}
+    for field in _CANDIDATE_SCALARS:
+        value = candidate.get(field)
+        if value not in (None, ""):
+            out[field] = value
+    abstract = str(candidate.get("abstract") or "")
+    if len(abstract) > len(str(out.get("abstract") or "")):
+        out["abstract"] = abstract[:6_000]
+    for field in _CANDIDATE_LISTS:
+        incoming = candidate.get(field)
+        if not isinstance(incoming, list):
+            continue
+        if field == "provenance":
+            # Dict equality gives deterministic de-duplication without inventing an identity for
+            # provider evidence. Every provider row is already bounded before it reaches here.
+            values = [*out.get(field, []), *[v for v in incoming if isinstance(v, dict)]]
+            unique = []
+            for value in values:
+                if value not in unique:
+                    unique.append(value)
+            out[field] = unique[:8]
+        else:
+            out[field] = list(dict.fromkeys(
+                [*out.get(field, []), *[str(v) for v in incoming if str(v)]]))[:24]
+    return out
+
+
+def reservoir(ledger: dict) -> list[dict]:
+    """Previously seen candidates, preserving the pool across incremental frontier advances."""
+    rows = []
+    for entry in (ledger.get("entries") or {}).values():
+        candidate = entry.get("candidate") if isinstance(entry, dict) else None
+        if isinstance(candidate, dict) and candidate.get("title"):
+            rows.append(dict(candidate))
+    return rows
 
 
 def record_cheap_verdict(entry: dict, *, verdict: str, tag: str, model: str,
@@ -141,10 +193,10 @@ def record_cheap_verdict(entry: dict, *, verdict: str, tag: str, model: str,
                       "profile_hash": profile, "at": today}
 
 
-def record_abstract_score(entry: dict, *, relevance: int, role: str, model: str,
+def record_abstract_score(entry: dict, *, relevance: int, role: str, note: str, model: str,
                           profile: str, today: str) -> None:
     entry["abstract"] = {"relevance": relevance, "role": role, "model": model,
-                         "profile_hash": profile, "at": today}
+                         "note": note[:160], "profile_hash": profile, "at": today}
 
 
 def cached_cheap_drop(entry: dict | None, *, model: str, profile: str) -> bool:
@@ -193,3 +245,12 @@ def record_sweep(ledger: dict, channel_key: str, *, swept_to: str, **extra: Any)
     row = frontier.setdefault(channel_key, {})
     row["swept_to"] = swept_to
     row.update(extra)
+
+
+def apply_frontier_updates(ledger: dict, updates: list[dict]) -> None:
+    """Apply provider-complete updates. Partial/capped lanes never produce an update."""
+    for update in updates:
+        if not isinstance(update, dict) or not update.get("key") or not update.get("swept_to"):
+            continue
+        extra = {k: v for k, v in update.items() if k not in {"key", "swept_to"}}
+        record_sweep(ledger, str(update["key"]), swept_to=str(update["swept_to"]), **extra)

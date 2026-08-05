@@ -24,21 +24,21 @@ Update the Status column as items land.
 
 | # | Item | Source | Status |
 |---|------|--------|--------|
-| R12.1 | Figure-card visibility: prompt coverage on all paper-summary/summary paths, explicit "show figures" handling, native-arXiv HTML image-path fix; card placement at/before first mention; rename paper summary to **Summary** everywhere | D27 + in-flight work | in progress |
-| R12.2 | Resuming a paper (Continue Reading or any entry) opens the **last-opened thread**, not the first | usage notes | queued |
-| R12.3 | **Hide** action on recommended papers so Discover recommendations stay relevant | usage notes | queued |
-| R12.4 | Default sort = **Last Interacted, most recent first**; persist per-project sort (D10 note) | usage notes + D10 | queued |
-| R12.5 | Marquee/hero title: first appearance must start at the rolling left position — no mid-screen start or snap | usage notes | queued |
+| R12.1 | Figure-card visibility: prompt coverage on all paper-summary/summary paths, explicit "show figures" handling, native-arXiv HTML image-path fix; card placement at/before first mention; rename paper summary to **Summary** everywhere | D27 + in-flight work | **partial** — prompt/sourcing shipped in #201; first-mention placement remains DR-003. The old **Summary** rename was superseded by Kamil's later **Paper summary** decision (#282). |
+| R12.2 | Resuming a paper (Continue Reading or any entry) opens the **last-opened thread**, not the first | usage notes | **done** (#204) |
+| R12.3 | **Hide** action on recommended papers so Discover recommendations stay relevant | usage notes | **done** (#206) |
+| R12.4 | Default sort = **Last Interacted, most recent first**; persist per-project sort (D10 note) | usage notes + D10 | **done** (#202) |
+| R12.5 | Marquee/hero title: first appearance must start at the rolling left position — no mid-screen start or snap | usage notes | **done** (#203) |
 | R12.6 | Floating rounded surfaces (composer, mini player, project selector, …) must not reveal a rectangular backdrop over underlying content; transparent + subtle shadow | usage notes | **done** — composer & project pill float as absolute overlays over the scrolling list (measured onLayout inset so content scrolls behind); mini-player is now a plain full-width bar; device-confirmed (PR follow-up to #207) |
 | R12.7 | Responses as playlist tracks: easy play-next when the current response ends + optional autoplay | usage notes | **done** (PR #215) — full-player "Play next" + session autoplay toggle (OFF by default), Listening-mode only; queue-first next-response selection w/ transcript fallback, billing-attributed; live-Listening flow unchanged. NEEDS Kamil native-build device pass (D31/D33-D35) |
-| R12.8 | Make the agentic tool loop the default turn path (retire the silent `RC_AGENTIC` footgun), keep an explicit off switch, and surface tool calls in the chat UI | I1 | queued |
+| R12.8 | Make the agentic tool loop the default turn path (retire the silent `RC_AGENTIC` footgun), keep an explicit off switch, and surface tool calls in the chat UI | I1 | **done** (#208) |
 | R12.9 | Single full-paper pass: one canonical per-paper record (affiliations, figures, citations/related works, covers) produced on first full-text analysis and reused by Map build — never divergent per-surface passes; concise progress steps shown during first read | I2 + usage notes | **done** (PR #213) — canonical `paper_metadata` v2 record; reference/context extraction moved to first-read warm fan-out (`canonical_jobs`+`reference_jobs`); Map build consumes canonical extractions; enrichment step surfaced via retrieval snapshot |
-| R12.10 | Notes generation/review UX: visible progress, auto-open the proposal, Cancel/Approve/Request-edits together on the review screen | D03 | queued |
+| R12.10 | Notes generation/review UX: visible progress, auto-open the proposal, Cancel/Approve/Request-edits together on the review screen | D03 | **partial** — auto-open shipped in #211; progress, unified actions, diff/review polish remain DR-001. |
 | R12.11 | Opening summary must use completed-Map incoming-citation evidence (substantive vs background) | D06 | **mechanism done** (PR #213, folded into R12.9) — contexts now extracted at each paper's first read; needs Kamil's LIVE acceptance pass (design-doc P3) to confirm on-device |
-| R12.12 | New Project sheet: keyboard must reveal the name input/actions with 4+ existing projects | D08 | queued |
+| R12.12 | New Project sheet: keyboard must reveal the name input/actions with 4+ existing projects | D08 | **implemented — verify** (#209); original 4+ project device case remains DR-010. |
 | R12.13 | Canonical-title approval must keep the live discussion attached; fix mid-string edit cursor jump; "Keep it" persists and suppresses future prompts | D12 | **done** (PR #214) — active-thread cache patched before invalidation (thread no longer detaches); raw controlled-input echo (caret fix); `<!-- title-confirmed -->` marker persists "Keep mine"/accept and travels on split/move. NEEDS Kamil device pass: mid-string caret + thread-resume after Update/Keep |
-| R12.14 | Build Graph / Discover Search first tap must keep the running view (no flash-revert); add search cancel + safe partial results | D17 + D18 note | queued |
-| R12.15 | Continue Reading opens with the prefetched draft — no ~1s stale/spinner pause | D39 | queued |
+| R12.14 | Build Graph / Discover Search first tap must keep the running view (no flash-revert); add search cancel + safe partial results | D17 + D18 note | **implemented — verify** — first-tap race fixed in #205; provisional results shipped in #308/#309; cooperative Stop and safe partial-result treatment are tracked as DR-002. |
+| R12.15 | Continue Reading opens with the prefetched draft — no ~1s stale/spinner pause | D39 | **implemented — verify** (#210); perceptual device timing remains DR-011. |
 
 ## Secondary polish backlog (from passing items' notes — pick up after the queue)
 
