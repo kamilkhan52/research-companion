@@ -6,7 +6,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getDiscovery, startDiscovery } from '@/api/endpoints';
+import { cancelDiscovery, getDiscovery, startDiscovery } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { DiscoveryJob, DiscoveryResponse } from '@/api/types';
 
@@ -14,11 +14,14 @@ const POLL_INTERVAL_MS = 1500;
 
 export interface DiscoveryRunState {
   running: boolean;
+  cancelling: boolean;
   job: DiscoveryJob | null;
   error: string | null;
   run: (goals: string) => Promise<boolean>;
-  /** Re-attach to an already-running job (e.g. the screen just loaded a DiscoveryResponse
-   *  whose `job` is still running). No-op if it isn't running. */
+  /** Stop the current server-side run at its next provider/stage boundary. */
+  cancel: () => Promise<boolean>;
+  /** Re-attach to a running job, or restore a cancelled snapshot so its partial-state
+   *  explanation survives leaving and reopening Discover. */
   resume: (job: DiscoveryJob | null | undefined) => void;
   clearError: () => void;
 }
@@ -26,6 +29,7 @@ export interface DiscoveryRunState {
 export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   const qc = useQueryClient();
   const [running, setRunning] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [job, setJob] = useState<DiscoveryJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Guards a start against a fast double-tap in the same tick (before `running` re-renders).
@@ -39,6 +43,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     startGenerationRef.current += 1;
     startingRef.current = false;
     setRunning(false);
+    setCancelling(false);
     setJob(null);
     setError(null);
   }, [pid]);
@@ -47,17 +52,21 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     (next: DiscoveryJob | null | undefined) => {
       if (!next) {
         setRunning(false);
+        setCancelling(false);
         return;
       }
       setJob(next);
       if (next.status === 'running') {
         setRunning(true);
+        setCancelling(false);
         return;
       }
       setRunning(false);
+      setCancelling(false);
       if (next.status === 'error') setError(next.error ?? 'Discovery failed.');
-      // done: the result is already persisted server-side; refresh the query so the screen
-      // (and any future visit) renders the new suggestions.
+      // done: the result is already persisted server-side. cancelled: the old completed result
+      // deliberately remains. In either case refresh so this and future visits render the
+      // authoritative persisted state.
       if (pid) qc.invalidateQueries({ queryKey: keys.discovery(pid) });
     },
     [pid, qc],
@@ -69,12 +78,13 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     if (!running || !pid) return;
     let cancelled = false;
     const tick = async () => {
+      const generation = startGenerationRef.current;
       // Captured BEFORE the request — a poll can READ the server pre-registration and
       // resolve only after the start POST settles (see useGraphBuild).
       const beganWhileStarting = startingRef.current;
       try {
         const { job: snap } = await getDiscovery(pid);
-        if (cancelled) return;
+        if (cancelled || generation !== startGenerationRef.current) return;
         // Same first-tap guard as useGraphBuild (D17/D18): while the start POST is in
         // flight, the server may not know the new job yet (or still report the previous
         // settled run) — applying that snapshot flipped `running` off and flashed the
@@ -140,11 +150,56 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   const resume = useCallback(
     (next: DiscoveryJob | null | undefined) => {
       if (next?.status === 'running') applyJob(next);
+      else if (next?.status === 'cancelled') {
+        // Do not call applyJob here: terminal apply invalidates the Discovery query, and this
+        // function itself is driven by that query. Invalidating would create a refetch loop on
+        // every re-entry snapshot.
+        setJob(next);
+        setRunning(false);
+        setCancelling(false);
+      }
     },
     [applyJob],
   );
 
+  const cancel = useCallback(async () => {
+    // During the optimistic start there is not a registered server job to cancel yet. The UI
+    // exposes Stop as soon as the POST returns a running snapshot (normally one short request).
+    if (!pid || !running || cancelling || job?.status !== 'running') return false;
+    const requestPid = pid;
+    // Invalidate every poll/start response already in flight. A GET can read "running" before
+    // Stop reaches the server and resolve after the cancelled response; applying it would restart
+    // the searching UI locally even though the backend had stopped.
+    const generation = ++startGenerationRef.current;
+    startingRef.current = false;
+    setCancelling(true);
+    setError(null);
+    try {
+      const { job: stopped } = await cancelDiscovery(requestPid);
+      if (generation !== startGenerationRef.current) return false;
+      applyJob(stopped);
+      return stopped.status !== 'running';
+    } catch (e) {
+      if (generation !== startGenerationRef.current) return false;
+      // As with start, the response can be lost after the server applied the operation. Reconcile
+      // before telling the reader Stop failed.
+      try {
+        const { job: snap } = await getDiscovery(requestPid);
+        if (generation !== startGenerationRef.current) return false;
+        if (snap?.status !== 'running') {
+          applyJob(snap);
+          return true;
+        }
+      } catch {
+        // Status is unreachable too; retain the running view and surface the original failure.
+      }
+      setError((e as Error).message ?? 'Could not stop discovery.');
+      setCancelling(false);
+      return false;
+    }
+  }, [pid, running, cancelling, job?.status, applyJob]);
+
   const clearError = useCallback(() => setError(null), []);
 
-  return { running, job, error, run, resume, clearError };
+  return { running, cancelling, job, error, run, cancel, resume, clearError };
 }

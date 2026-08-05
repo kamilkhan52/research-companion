@@ -1424,6 +1424,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/discover/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Discovery
+         * @description Stop the current discovery run at its next stage boundary.
+         *
+         *     The last completed result remains persisted. The cancelled job snapshot retains any live
+         *     finds already gathered so the client can show them as partial, non-ranked evidence instead of
+         *     pretending the run found nothing.
+         */
+        post: operations["cancel_discovery_api_projects__pid__discover_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/discover/hide": {
         parameters: {
             query?: never;
@@ -4489,6 +4513,37 @@ export interface operations {
                 "application/json": components["schemas"]["DiscoverReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_discovery_api_projects__pid__discover_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
