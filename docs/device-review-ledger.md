@@ -6,6 +6,12 @@ acceptance. The scenario-oriented acceptance scripts remain in
 [`current-device-test-checklist.md`](current-device-test-checklist.md) and focused follow-up files;
 the production and product roadmaps still decide delivery order.
 
+**It also holds shipped work that is waiting on Kamil's device check**, whatever raised it. Until
+2026-08-04 those lived only as a trailing "device pass pending" note on a roadmap row marked
+complete — so the implementation backlog was visible and the verification backlog was not, and
+items sat unverified since Round 9 with no id and no single view. One question, "what is waiting on
+me?", now has one answer: every row in this file that is not `closed`.
+
 ## Workflow
 
 1. Record every actionable observation in this table during the same session it is reported. Give
@@ -21,6 +27,9 @@ the production and product roadmaps still decide delivery order.
    - `superseded` — replaced by a later decision, linked from the row.
 4. An implementation PR updates its row with the PR and the exact remaining device check. Automated
    tests alone never move a row to `closed`.
+   **A PR that ships anything a person has to look at opens a row here if one does not exist**, so
+   "complete" in the roadmap never again means "nobody has seen it." When a roadmap row carries a
+   pending device check, it links the `DR-###` that owns it and both are updated together.
 5. Put detailed reproduction steps in the acceptance checklist and link them here. Screenshots that
    must survive local cleanup belong on the PR/issue or, when genuinely useful as long-term visual
    evidence, under `docs/device-review-assets/<DR-id>/` rather than a temporary attachment path.
@@ -50,6 +59,30 @@ This table is a reconciliation of the 2026-07-21 Round-12 pass, its follow-up ch
 | DR-015 | 2026-07-29 | Avoid nested accessible buttons inside the Continue Reading pressable; TalkBack/VoiceOver must reach dismiss and external-link actions reliably. | `deferred` | Known pre-existing accessibility debt recorded in `docs/production/10-roadmap.md`. Schedule one deliberate nested-control audit rather than another isolated button patch. |
 | DR-016 | 2026-07-29 | Use skeleton screens for initial empty-cache loading, without replacing meaningful job progress or stale cached content. | `deferred` | Design and implementation guardrails are in `product-roadmap.md` U.26. Do after subscription/credit surfaces settle, before M10 launch rehearsal and store screenshots. |
 | DR-017 | 2026-07-31 | Add a Quick Discover mode, optimized for first interaction latency. | `deferred` | Kamil explicitly deferred this until the parallel optimized default has real usage data. Slice 1 measured roughly 5–7 minutes; set Quick's quality/latency budget only after more device runs. |
+
+## Shipped work still awaiting device acceptance
+
+Folded in from `product-roadmap.md` on 2026-08-04. These rows were marked complete there with a
+trailing "device pass pending" note, which meant the *implementation* backlog was visible while the
+*verification* backlog was not — several had been waiting since Round 9 with no id and no single
+view. They are ordinary ledger rows now: same ids, same rule that only Kamil's device confirmation
+moves one to `closed`.
+
+The roadmap remains the delivery-order record; when one of these closes, update both.
+
+| ID | Raised | Feedback / acceptance | State | Evidence / next action |
+|---|---|---|---|---|
+| DR-018 | 2026-07-17 | Paper figures appear in chat: arXiv-sourced figure cards render with captions beside the response that discusses them. | `implemented — verify` | Shipped in phases R.10a–R.10c ([#154](https://github.com/kamilkhan52/research-companion/pull/154)/[#155](https://github.com/kamilkhan52/research-companion/pull/155)/[#156](https://github.com/kamilkhan52/research-companion/pull/156)); design in `docs/chat-figures-design.md`. Verify on a paper with real arXiv HTML figures. Placement itself is a separate open defect — see DR-003. |
+| DR-019 | 2026-07-17 | Listening cues stop repeating "synthesizing" and report only on real progress; audio keeps playing when the app is backgrounded. | `implemented — verify` | [#160](https://github.com/kamilkhan52/research-companion/pull/160), [#192](https://github.com/kamilkhan52/research-companion/pull/192). Cues are progress-gated; Android continues after backgrounding and removal from recents; iOS declares the playback/spoken-audio session and background-audio mode. **Android acceptance and a fresh native iOS build both remain.** |
+| DR-020 | 2026-07-17 | Reply composer redesign: send button inside the field, full width, no stray separator line beyond the rounded shape. | `implemented — verify` | [#166](https://github.com/kamilkhan52/research-companion/pull/166) — one floating rounded card, transparent container so no strip shows. Check against the Gemini reference Kamil supplied. |
+| DR-021 | 2026-07-21 | Annotate mode opens with a quiet sentence-selection cue and a Done escape hatch; composer transitions animate without disturbing ordinary message rendering. | `implemented — verify` | [#181](https://github.com/kamilkhan52/research-companion/pull/181), phase 4 of R9.2. The structured-attachment contract for the outgoing message is separately open — see DR-009. |
+| DR-022 | 2026-07-21 | Listening preview cues keep going through slow flat synthesis segments and stop only at a terminal or playable audio state. | `implemented — verify` | [#177](https://github.com/kamilkhan52/research-companion/pull/177) — bounded grounded keepalive. Verify on a genuinely slow synthesis, not a fast one. |
+| DR-023 | 2026-07-21 | Empty-project Add Papers hub; hierarchical sort directions with chronological defaults; compact explicit Move/Copy/Delete selection actions. | `implemented — verify` | [#183](https://github.com/kamilkhan52/research-companion/pull/183) — automated verification passed. Note DR-004 wants the Add surfaces unified; this hub is one of the surfaces that review should cover. |
+| DR-024 | 2026-07-21 | Human-confirmed canonical titles; stable-slug Rename/Delete; durable source status with Fetch/auto-fetch, resolver recovery, and guarded PDF upload. | `implemented — verify` | [#184](https://github.com/kamilkhan52/research-companion/pull/184) — automated verification passed. Overlaps DR-012's D1–D5 script in [`device-test-r12-followups.md`](device-test-r12-followups.md); run them together. |
+| DR-025 | 2026-07-21 | Compact first-turn prompt/model selection; paper-summary Retry reopens the same configuration and stores prompt/mode per response branch. | `implemented — verify` | [#185](https://github.com/kamilkhan52/research-companion/pull/185) — automated verification passed. Verify Retry reuses the configuration rather than resetting to defaults. |
+| DR-026 | 2026-07-21 | Independent per-paper discussion threads: arbitrary compose-first messages, thread-scoped jobs/drafts/audio/retries, all-thread notes synthesis, complete Move/Copy history. | `implemented — verify` | [#187](https://github.com/kamilkhan52/research-companion/pull/187) — automated verification passed. Large surface; verify thread scoping of audio and retries specifically, since those cross job boundaries. |
+| DR-027 | 2026-07-21 | Cross-project deterministic paper identity, app-wide duplicate preflight, safe Copy default, explicit Move, reusable source/history visibility, immediate sequential Notes integration. | `implemented — verify` | [#188](https://github.com/kamilkhan52/research-companion/pull/188) — automated verification passed. Verify the duplicate preflight against a paper genuinely present in two projects. |
+| DR-028 | 2026-07-21 | Persisted Comfortable/Tight density with a density-aware style cache; tighter type/card/list/chat rhythm while touch targets, math, code, and audio controls stay protected. | `implemented — verify` | [#189](https://github.com/kamilkhan52/research-companion/pull/189) — automated verification and a local-Figma comparison passed. Verify touch targets and equation legibility at Tight, which is where protection is most likely to have slipped. |
 
 ## Planned product work adjacent to device feedback
 
