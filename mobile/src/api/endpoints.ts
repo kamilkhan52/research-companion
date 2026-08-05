@@ -404,6 +404,10 @@ export const startDiscovery = (pid: string, goals: string) =>
   apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
 /** Live job snapshot + the last persisted result + saved goals. Cheap; safe every ~1.5s. */
 export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)}/discover`);
+/** Cooperatively stop the current run. The last completed result is preserved server-side;
+ *  the returned cancelled snapshot retains any live finds already gathered. */
+export const cancelDiscovery = (pid: string) =>
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {});
 /** Hide one recommended paper from every recommendation surface (R12.3). Send the rendered
  *  suggestion; the server derives all its identities (arXiv/DOI/S2/title). */
 export const hideSuggestion = (pid: string, candidate: object) =>

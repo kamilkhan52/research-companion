@@ -777,7 +777,7 @@ export interface DiscoveryResult {
  * thread — two LLM calls plus paced multi-source enrichment take minutes — and the client polls,
  * same pattern as GraphBuildJob. */
 export interface DiscoveryJob {
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'cancelled';
   /** Funnel stage. `library`..`gated` are recall and the free deterministic gate; `triage` and
    * `scoring` are the batched cheap-model screens. */
   phase:

@@ -168,6 +168,30 @@ def test_a_cap_larger_than_the_input_changes_nothing():
     assert _interleave_by_lane(items, 10) == items
 
 
+def test_title_drop_protections_keep_each_lane_and_time_stratum():
+    from app.discovery import _title_protections
+
+    candidates = [
+        {"title": "old bulk", "year": 1995, "citation_count": 2, "channels": ["bulk"]},
+        {"title": "new bulk", "year": 2026, "citation_count": 1, "channels": ["bulk"]},
+        {"title": "topic one", "year": 2015, "citation_count": 3, "channels": ["topic"]},
+        {"title": "topic two", "year": 2016, "citation_count": 2, "channels": ["topic"]},
+    ]
+    protected = _title_protections(candidates, "profile")
+    assert all(id(candidate) in protected for candidate in candidates)
+
+
+def test_title_drop_audit_sample_is_stable_and_nonempty_at_realistic_scale():
+    from app.discovery import _title_protections
+
+    candidates = [{"title": f"Paper {i}", "channels": ["bulk"]} for i in range(1_000)]
+    first = _title_protections(candidates, "profile")
+    second = _title_protections(candidates, "profile")
+    audited = {key for key, priority in first.items() if priority == 10}
+    assert audited == {key for key, priority in second.items() if priority == 10}
+    assert 8 <= len(audited) <= 35   # deterministic ~2%, allowing ordinary hash variance
+
+
 def test_two_papers_sharing_a_title_are_not_merged_into_a_hybrid():
     """Distinct works share exact titles. Merging them would blend two papers into one row whose
     screening verdict, citations and provenance describe neither."""
