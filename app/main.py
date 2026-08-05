@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import account_deletion, auth, config, db, deploy_guard, logging_config
+from . import account_deletion, auth, config, db, deploy_guard, logging_config, quota_reconciler
 from .auth import AuthError
 from .routers import (
     account,
@@ -117,10 +117,11 @@ def _resume_account_deletions() -> None:
         resumed = account_deletion.resume_pending()
     except Exception as e:  # noqa: BLE001 — migration retry or the next boot can recover it
         _log.error("account deletion resume failed: %s", type(e).__name__)
-        return
-    if resumed:
-        _log.info("account deletion resumed %d durable request(s)", resumed)
-    account_deletion.start_resume_monitor()
+    else:
+        if resumed:
+            _log.info("account deletion resumed %d durable request(s)", resumed)
+        account_deletion.start_resume_monitor()
+    quota_reconciler.start_monitor()
 
 GUARD_BOOT_TIMEOUT_S = 15.0
 GUARD_RETRY_START_S = 5.0

@@ -465,12 +465,37 @@ def generation_ids(reservation_id: str, *, user_id: str) -> list[str]:
         ) from None
 
 
+def attempts_for(reservation_id: str, *, user_id: str) -> list[DispatchAttempt]:
+    """All durable provider attempts for one owner-scoped reservation, in dispatch order."""
+    if not db.enabled():
+        raise QuotaUnavailable("Usage limits are temporarily unavailable. Please try again.")
+    try:
+        with db.pool().connection() as conn:
+            rows = conn.execute(
+                f"select {_ATTEMPT_COLUMNS_QUALIFIED} "
+                "from rc_usage_reservation_attempts attempt "
+                "join rc_usage_reservations reservation "
+                "  on reservation.id = attempt.reservation_id "
+                "where reservation.id = %s and reservation.user_id = %s "
+                "order by attempt.dispatched_at, attempt.id",
+                (reservation_id, user_id),
+            ).fetchall()
+        return [_attempt_from_row(row) for row in rows]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("usage attempt read failed closed (error=%s)", type(exc).__name__)
+        raise QuotaUnavailable(
+            "Usage limits are temporarily unavailable. Please try again."
+        ) from None
+
+
 def mark_dispatches_complete(reservation_id: str, *, user_id: str) -> Reservation:
     """Durably assert that no further provider request can be in flight for this reservation.
 
-    Call only after every response's generation/cost metadata has been persisted. Exact startup
-    reconciliation is unsafe without this marker: a process may have crashed during an additional
-    request whose generation id never arrived.
+    Call only after the worker knows it will initiate no more requests and every accepted response
+    has at least had its generation id linked when one exists. Cost resolution is deliberately
+    independent: a completed OpenRouter generation can still be pending when this marker lands,
+    then startup reconciliation can resolve it exactly. Exact settlement remains forbidden until
+    every attempt is resolved.
     """
     now = datetime.now(UTC)
     try:
@@ -481,13 +506,13 @@ def mark_dispatches_complete(reservation_id: str, *, user_id: str) -> Reservatio
                     raise ReservationConflict("The reservation is no longer active.")
                 if reservation.dispatched_at is None:
                     raise ReservationConflict("Provider dispatch was not durably marked.")
-                attempt_counts = conn.execute(
-                    "select count(*), count(*) filter (where state <> 'resolved') "
+                attempt_count = conn.execute(
+                    "select count(*) "
                     "from rc_usage_reservation_attempts where reservation_id = %s",
                     (reservation_id,),
-                ).fetchone()
-                if attempt_counts[0] < 1 or attempt_counts[1] != 0:
-                    raise ReservationConflict("Provider attempts are not fully resolved.")
+                ).fetchone()[0]
+                if attempt_count < 1:
+                    raise ReservationConflict("Provider dispatch was not durably marked.")
                 row = conn.execute(
                     "update rc_usage_reservations "
                     "set dispatches_complete_at = coalesce(dispatches_complete_at, %s), "
@@ -575,13 +600,18 @@ def settle(
                 if kind == "exact":
                     attempt_totals = conn.execute(
                         "select coalesce(sum(actual_nanousd), 0), "
+                        "count(*) filter (where state <> 'resolved'), "
                         "count(*) filter (where settlement_kind <> 'exact') "
                         "from rc_usage_reservation_attempts "
-                        "where reservation_id = %s and state = 'resolved'",
+                        "where reservation_id = %s",
                         (reservation_id,),
                     ).fetchone()
                     attempt_total = int(attempt_totals[0])
                     if attempt_totals[1] != 0:
+                        raise ReservationConflict(
+                            "Exact settlement requires every provider attempt to be resolved."
+                        )
+                    if attempt_totals[2] != 0:
                         raise ReservationConflict(
                             "Exact settlement requires exact provider attempts."
                         )
@@ -661,6 +691,35 @@ def stale_dispatched(*, limit: int = 100) -> list[Reservation]:
         return [_from_row(row) for row in rows]
     except Exception as exc:  # noqa: BLE001
         log.warning("usage stale-reservation scan failed closed (error=%s)", type(exc).__name__)
+        raise QuotaUnavailable(
+            "Usage limits are temporarily unavailable. Please try again."
+        ) from None
+
+
+def claim_stale_dispatched(reservation_id: str, *, user_id: str) -> Reservation | None:
+    """Re-check one stale candidate under its row lock before reconciliation.
+
+    ``stale_dispatched`` is intentionally a cheap snapshot scan. A worker may renew between that
+    scan and reconciliation; acting on the stale snapshot would then settle a live job underneath
+    it. Once this locked check observes an expired lease, normal ``renew``/``begin_attempt`` cannot
+    resurrect it, so the reconciler may safely continue after releasing the lock.
+    """
+    now = datetime.now(UTC)
+    try:
+        with db.pool().connection() as conn:
+            with conn.transaction():
+                reservation = _locked(conn, reservation_id, user_id)
+                if (
+                    reservation.state != "reserved"
+                    or reservation.dispatched_at is None
+                    or reservation.lease_expires_at >= now
+                ):
+                    return None
+                return reservation
+    except ReservationConflict:
+        return None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("usage stale-reservation claim failed closed (error=%s)", type(exc).__name__)
         raise QuotaUnavailable(
             "Usage limits are temporarily unavailable. Please try again."
         ) from None
