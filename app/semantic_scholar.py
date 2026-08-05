@@ -281,6 +281,89 @@ def search_papers(
             client.close()
 
 
+def bulk_search_papers(
+    query: str,
+    limit: int = 2_000,
+    *,
+    from_date: str | None = None,
+    key: str | None = None,
+    client: httpx.Client | None = None,
+    pacer: RequestPacer = _PACER,
+    sleep: Callable[[float], None] = time.sleep,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Wide, cursor-paged recall through Semantic Scholar's ``paper/search/bulk`` endpoint.
+
+    The ordinary relevance endpoint tops out at 100 rows. Bulk returns up to 1,000 per page and
+    a continuation token, which is the reservoir Discovery needs before semantic screening. It
+    remains account-wide paced and anonymous-capable like ``search_papers``. The audit explicitly
+    reports whether the continuation was exhausted: callers must not advance a durable frontier
+    when a configured cap truncated the result set.
+    """
+    query = query.strip()
+    cap = max(1, min(8_000, int(limit)))
+    if not query:
+        return [], {"pages": 0, "complete": True, "next_token": None}
+    own_client = client is None
+    client = client or httpx.Client(base_url=BASE_URL, timeout=TIMEOUT_S)
+    output: list[dict[str, Any]] = []
+    token: str | None = None
+    pages = 0
+    seen_tokens: set[str] = set()
+    cancelled = should_cancel or (lambda: False)
+    try:
+        while len(output) < cap:
+            if cancelled():
+                return output, {"pages": pages, "complete": False, "next_token": token,
+                                "rows": len(output), "cancelled": True}
+            # Bulk defaults to a much smaller page. Ask for the documented maximum so a
+            # 2,000-row lane is two paced requests rather than roughly twenty.
+            params: dict[str, Any] = {
+                "query": query,
+                "fields": SEARCH_FIELDS,
+                "limit": min(1_000, cap - len(output)),
+            }
+            if token:
+                params["token"] = token
+            if from_date:
+                params["publicationDateOrYear"] = f"{from_date}:"
+            response = _request(
+                client, "/paper/search/bulk", params=params, key=key, pacer=pacer,
+                sleep=sleep, require_key=False)
+            pages += 1
+            try:
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise TypeError("bulk response is not an object")
+                rows = payload.get("data") or []
+                if not isinstance(rows, list):
+                    raise TypeError("bulk data is not a list")
+            except (TypeError, ValueError) as exc:
+                raise SemanticScholarError(
+                    "Semantic Scholar returned malformed bulk-search metadata.") from exc
+            for row in rows:
+                if isinstance(row, dict) and (
+                    normalized := _normalize_search_result(row)
+                ) is not None:
+                    output.append(normalized)
+                    if len(output) >= cap:
+                        break
+            raw_token = payload.get("token")
+            next_token = str(raw_token).strip() if raw_token else None
+            if not next_token or not rows:
+                token = None
+                break
+            if next_token in seen_tokens:
+                raise SemanticScholarError("Semantic Scholar repeated a bulk-search token.")
+            seen_tokens.add(next_token)
+            token = next_token
+        return output, {"pages": pages, "complete": token is None,
+                        "next_token": token, "rows": len(output), "cancelled": False}
+    finally:
+        if own_client:
+            client.close()
+
+
 def resolve_paper(
     title: str,
     *,

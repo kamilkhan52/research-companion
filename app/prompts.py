@@ -407,6 +407,7 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary):
   "queries": [
     {"query": "<arXiv search_query expression>",
      "search_terms": "<plain scholarly search terms for the same concept>",
+     "bulk_query": "<broad Boolean title/abstract query for Semantic Scholar bulk search>",
      "phase": "broad" | "narrow",
      "rationale": "<a few words on what this query is meant to surface>"}
   ]
@@ -418,6 +419,8 @@ double quotes. Example: abs:"3D stacked DRAM" AND cat:cs.AR
 
 Keep each query simple — one or two concepts, not long keyword chains (over-specific queries \
 return nothing). Plain search_terms must not contain arXiv field syntax or Boolean operators. \
+bulk_query may use quoted phrases plus AND, OR, and NOT, but no arXiv field/category syntax; keep \
+it broad enough for high recall rather than copying the narrow arXiv expression. \
 Use vocabulary recognized across journals and conferences rather than assuming every important \
 paper uses the researcher's exact wording."""
 
@@ -862,6 +865,9 @@ REGISTRY = (
         label="Discovery — multi-source query generation",
         relative_path="Discovery/Query Generation.md",
         bundled_default=_DISCOVER_QUERIES,
+        # ``bulk_query`` is intentionally optional for compatibility with an operator's existing
+        # prompt override; generate_queries derives it from search_terms when an older override
+        # does not emit the new field.
         required_literals=('"focus"', '"queries"', '"search_terms"'),
         description="Turns project goals into broad and narrow scholarly searches.",
     ),

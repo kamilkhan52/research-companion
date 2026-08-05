@@ -48,6 +48,20 @@ def get_discovery(pid: str):
             "goals": (projects._read_meta(pid) or {}).get("goals") or ""}
 
 
+@project_router.post("/discover/cancel")
+def cancel_discovery(pid: str):
+    """Stop the current discovery run at its next stage boundary.
+
+    The last completed result remains persisted. The cancelled job snapshot retains any live
+    finds already gathered so the client can show them as partial, non-ranked evidence instead of
+    pretending the run found nothing.
+    """
+    job = discovery_jobs.cancel_discovery(pid)
+    if not job:
+        raise HTTPException(status_code=404, detail="No discovery run to stop")
+    return {"job": discovery_jobs.snapshot(pid)}
+
+
 class HideReq(BaseModel):
     candidate: dict
 
