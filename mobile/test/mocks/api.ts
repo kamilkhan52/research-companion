@@ -74,6 +74,7 @@ export const getActiveNotesJob = unexpected('getActiveNotesJob');
 export const getLatestNotesJob = unexpected('getLatestNotesJob');
 export const discardNotesJob = unexpected('discardNotesJob');
 export const startDiscovery = unexpected('startDiscovery');
+export const cancelDiscovery = unexpected('cancelDiscovery');
 export const getDiscovery = unexpected('getDiscovery');
 export const getGraph = unexpected('getGraph');
 export const getGraphAuthors = unexpected('getGraphAuthors');

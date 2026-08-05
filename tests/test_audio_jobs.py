@@ -276,6 +276,37 @@ def test_route_missing_project_bills_unattributed(temp_project, monkeypatch):
     assert usage.load()["total"]["calls"] == 0
 
 
+def test_blocking_speak_binds_its_validated_billing_project(temp_project, monkeypatch):
+    from app import projects, usage
+    from app.routers import audio as audio_routes
+
+    billing_project = projects.create_project("Speech Billing")["id"]
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"speech_provider": "openai", "tts_model": "tts-1", "tts_voice": "alloy"},
+    )
+
+    def billed_synthesis(_text):
+        usage.record("speech_synthesis", "tts-1", {"cost": 0.003})
+        return b"mp3"
+
+    monkeypatch.setattr(tts, "synthesize_long", billed_synthesis)
+    result = audio_routes.speak(
+        audio_routes.NarrateReq(text="Legacy speech.", project=billing_project),
+        _AnonRequest(),
+    )
+    assert result["url"].startswith("/api/audio/")
+
+    token = config.set_active_project(billing_project)
+    try:
+        billed = usage.load()
+    finally:
+        config.reset_active_project(token)
+    assert billed["by_operation"]["speech_synthesis"]["cost_nanousd"] == 3_000_000
+    assert usage.load()["total"]["calls"] == 0
+
+
 def test_route_invalid_project_is_rejected_400(temp_project, monkeypatch):
     from app.routers import audio as audio_routes
     from fastapi import HTTPException
