@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import assembler, audio_jobs, config, llm, logging_config, prompts, store, tts
+from . import assembler, audio_cache, audio_jobs, config, llm, logging_config, prompts, store, tts
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -538,8 +538,13 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
             return
 
         path = audio_jobs.audio_cache_path(cue)
-        if not path.exists():
-            atomic_write_bytes(path, synth_fn(cue))
+        try:
+            with audio_cache.protected([path]):
+                if not audio_cache.touch(path):
+                    atomic_write_bytes(path, synth_fn(cue))
+                audio_cache.touch(path)
+        finally:
+            audio_jobs.enforce_cache_limits(path.parent)
         if _suppressed(job):
             return
         with _registry.lock:

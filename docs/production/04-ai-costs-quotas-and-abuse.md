@@ -16,6 +16,7 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | Exact-once job admission seam | stacked implementation, in review | Prepare one durable reservation only for a newly published job; joins and cache hits do not reserve again. |
 | Paid-work admission + rate limits | queued | Gate every surviving provider workflow before network dispatch. |
 | Provider-spend kill switch | stacked implementation, in review | `RC_PROVIDER_SPEND_DISABLED` stops every outbound provider dispatch before network I/O. |
+| Bounded audio cache | stacked implementation, in review | Per-user and instance-wide LRU bounds keep reproducible mp3s from exhausting the shared volume. |
 | Tier/model gates | queued | A caller cannot select spend outside their entitlement. |
 
 Accounting and enforcement are deliberately different systems:
@@ -149,6 +150,18 @@ providers, and metadata enrichment degrades through its existing optional-provid
 This switch is deliberately independent of per-user quota state and requires no tier amounts. It
 is an emergency brake, not a ceiling: the durable reservation layer remains responsible for
 ordinary account-level spend control.
+
+## Derived audio cache
+
+Completed narration and preview mp3s are an optimization, not the human-approved git record. Their
+mtime is touched on each successful cache hit, response files stay protected while streaming, and
+oldest files are removed after cache writes. The default bounds are 2 GiB per user and 8 GiB across
+the instance; operators can override them with `RC_AUDIO_CACHE_PER_USER_BYTES` and
+`RC_AUDIO_CACHE_TOTAL_BYTES`. Invalid or non-positive values retain the finite defaults.
+
+Eviction considers only ordinary 40-hex-name mp3 files, never walks directory symlinks, never
+follows or removes file symlinks, and protects synthesis outputs and response files under the same
+process-local lock. This relies on the documented single-uvicorn-worker deployment invariant.
 
 ## Next implementation order
 

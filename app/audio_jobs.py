@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agent, config, sessions, tts, usage
+from . import agent, audio_cache, config, sessions, tts, usage
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -75,6 +75,21 @@ def user_audio_dir() -> Path:
     return directory
 
 
+def claim_cached_file(name: str) -> Path | None:
+    """Touch and protect one caller-scoped file for the lifetime of an HTTP response."""
+    path = user_audio_dir() / name
+    return path if audio_cache.claim(path) else None
+
+
+def release_cached_file(path: Path) -> None:
+    audio_cache.release(path)
+    audio_cache.enforce(path.parent, AUDIO_DIR)
+
+
+def enforce_cache_limits(directory: Path | None = None) -> None:
+    audio_cache.enforce(directory or user_audio_dir(), AUDIO_DIR)
+
+
 def _audio_scope() -> str | None:
     """The job-registry scope for the active user, or None (app-global) when there is none.
 
@@ -118,7 +133,7 @@ def _segment_metadata(parts: list[str], *, existing_only: bool) -> list[dict]:
     out = []
     for index, part in enumerate(parts):
         path = segment_cache_path(part)
-        if existing_only and not path.exists():
+        if existing_only and not audio_cache.touch(path):
             return []
         out.append({"index": index, "text": part, "url": f"/api/audio/{path.name}"})
     return out
@@ -171,12 +186,13 @@ def start_job(text: str, billing_project: str | None = None,
 
     # Fully cached (narration text + synthesized mp3): register a done job, no thread.
     narration = sessions.get_cached_narration(text)
-    if narration is not None and audio_cache_path(narration).exists():
+    cached_path = audio_cache_path(narration) if narration is not None else None
+    if narration is not None and cached_path is not None and audio_cache.touch(cached_path):
         parts = tts.split_for_tts(narration)
         segments = _segment_metadata(parts, existing_only=True)
         return _registry.put(jid, AudioJob(
             id=new_id(), status="done", stage="synthesizing", narration=narration,
-            url=f"/api/audio/{audio_cache_path(narration).name}",
+            url=f"/api/audio/{cached_path.name}",
             segments=segments, segments_done=len(segments), segments_total=len(parts),
             finished_at=now_iso()),
             project_id=_audio_scope())
@@ -216,38 +232,48 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.segments_total = len(parts)
 
-        # The audio registry is keyed by a user pseudonym rather than a project. Rebind the
-        # initiating billing project around every TTS dispatch just as narration does above;
-        # otherwise usage.record tries to bill `user:<hash>` and the spend disappears.
-        token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
+        segment_paths = [segment_cache_path(part) for part in parts]
         try:
-            # A legacy combined cache may not have segment files. Keep the zero-cost cache hit and
-            # let clients use the final URL instead of re-synthesizing merely to backfill segments.
-            if path.exists() and not _segment_metadata(parts, existing_only=True):
-                with _registry.lock:
-                    job.segments_done = len(parts)
-            else:
-                chunks: list[bytes] = []
-                for index, part in enumerate(parts):
-                    if cancelled():
-                        return
-                    segment_path = segment_cache_path(part)
-                    if not segment_path.exists():
-                        atomic_write_bytes(segment_path, synth_fn(part))
-                    chunks.append(segment_path.read_bytes())
-                    with _registry.lock:
-                        job.segments.append({
-                            "index": index,
-                            "text": part,
-                            "url": f"/api/audio/{segment_path.name}",
-                        })
-                        job.segments_done += 1
-                        if index == 0:
-                            job.timings["first_segment"] = now_iso()
-                if not path.exists():
-                    atomic_write_bytes(path, b"".join(chunks))
+            with audio_cache.protected([path, *segment_paths]):
+                # The audio registry is keyed by a user pseudonym rather than a project. Rebind
+                # the initiating billing project around every TTS dispatch just as narration does
+                # above; otherwise usage.record tries to bill `user:<hash>` and spend disappears.
+                token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
+                try:
+                    # A legacy combined cache may not have segment files. Keep the zero-cost cache
+                    # hit and let clients use the final URL instead of re-synthesizing to backfill.
+                    if audio_cache.touch(path) and not _segment_metadata(parts, existing_only=True):
+                        with _registry.lock:
+                            job.segments_done = len(parts)
+                    else:
+                        chunks: list[bytes] = []
+                        for index, (part, segment_path) in enumerate(
+                            zip(parts, segment_paths, strict=True)
+                        ):
+                            if cancelled():
+                                return
+                            if not audio_cache.touch(segment_path):
+                                atomic_write_bytes(segment_path, synth_fn(part))
+                            audio_cache.touch(segment_path)
+                            chunks.append(segment_path.read_bytes())
+                            with _registry.lock:
+                                job.segments.append({
+                                    "index": index,
+                                    "text": part,
+                                    "url": f"/api/audio/{segment_path.name}",
+                                })
+                                job.segments_done += 1
+                                if index == 0:
+                                    job.timings["first_segment"] = now_iso()
+                        if not audio_cache.touch(path):
+                            atomic_write_bytes(path, b"".join(chunks))
+                        audio_cache.touch(path)
+                finally:
+                    config.reset_active_project(token)
         finally:
-            config.reset_active_project(token)
+            # Partial segments from a cancelled/failed job are useful resume points but cannot be
+            # allowed to bypass the volume bound. Active paths stay protected until this point.
+            enforce_cache_limits(path.parent)
 
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"
