@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-31, during Discovery slice 2 review)
+## Current position (updated 2026-08-05, after landing the Discovery and M3 stacks)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -24,27 +24,45 @@ closed.
 AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
 there are testers does not bank closed-test time and prematurely freezes the Android package name.
 
-**Main is at PR #309.** PR #310 is the open draft for cooperative Discover cancellation, and
-Discovery slice 2 is stacked on it as draft PR #311. Since the production bring-up, the Round-14 device queue
-shipped, project transfer began carrying gitignored working state, graph/citation enrichment moved
-from 46% to 92% coverage, the OpenAlex key went live, and Discovery slice 1 plus its staged/live-
-finds UI shipped as #306–#309. The latest production deploy and the local `device-main` worktree
-both serve #309.
+**Main is at PR #323, and nothing is open.** Fifteen reviewed PRs had accumulated unmerged since
+2026-08-01 in two independent stacks; both landed on 2026-08-05. Discovery: **#310** cooperative
+Stop, **#311** slice 2, **#324** the device-review ledger. M3: **#312**–**#323** — exact-cost
+metering for the agentic and speech paths, the retirement of the legacy blocking paid routes,
+per-user usage events, durable reservations with quota-gated job admission, an emergency
+provider-spend stop, audio-cache eviction, prompt-injection framing with bounded tool egress, and
+price-sorted OpenRouter routing. Every one carried a clean GPT-5.6 Terra review before merge.
+
+**Two migrations ship with this: `0007_usage_events` and `0008_usage_reservations`** — three new
+tables, their indexes, and two state-transition guard triggers. Purely additive, no drops; `main`
+applies them on boot.
+
+**Merging the stacks was not mechanical, and the reason matters for the next one.** Parents were
+squash-merged, so a parent's commits are never ancestors of `main`; git then falls back to a stale
+merge base and re-conflicts the parent's whole new files even though the child already contains
+them. The safe resolution was to keep the child's side and then require the result to be
+byte-identical to that branch's own pre-merge version — if it is not, `main` genuinely changed the
+file and a human has to read it. Two conflicts were real rather than artefacts: **#314** retires
+`/api/speak` while **#313** was still editing it (the deletion looks exactly like an empty
+conflict side), and **#317** deliberately makes dispatch completion independent of cost
+resolution, which reads as a regression against **#316** until you check its tests. One test —
+#313's `/api/speak` billing case — merged *cleanly* and only failed in CI, because #314's branch
+never saw it; its guarantee survives on the job path.
 
 **Immediate handoff:**
 
-1. Continuous device feedback is now reconciled in
+1. Continuous device feedback is reconciled in
    [`../device-review-ledger.md`](../device-review-ledger.md); that ledger distinguishes genuinely
-   open work from merged behavior that only needs device acceptance.
-2. Discovery slice 2 is implemented and entering review: OpenAlex topic sweep, Semantic Scholar
-   `search/bulk`, an incremental frontier backed by a durable candidate reservoir, restart-safe
-   stage checkpoints, and measurable title-screen false-negative protection. The durable plan is
-   `~/.claude/plans/keen-finding-rabin.md`; live/device measurement remains after merge.
+   open work from merged behavior that only needs device acceptance. Landing these stacks did not
+   close a single row there — merging is not acceptance.
+2. Discovery slice 2 is merged but **unmeasured**: run one cold and one incremental production
+   search and record reservoir size, elapsed time, spend, resume behavior, and result quality. The
+   durable plan is `~/.claude/plans/keen-finding-rabin.md`.
 3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
    reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
    enough real timing/quality evidence to set a meaningful target.
-4. M3 metering, quotas, and per-turn model enforcement remains the production priority before
-   twelve testers can spend against shared provider credentials.
+4. M3's mechanism is now in place; what remains is **enforcement in production** — per-turn model
+   limits and the tier/quota values themselves — before twelve testers spend against shared
+   provider credentials.
 
 ### Earlier production-bring-up handoff (historical, retained for rationale)
 
