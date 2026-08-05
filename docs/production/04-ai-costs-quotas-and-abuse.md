@@ -9,6 +9,7 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 |---|---|---|
 | Agentic OpenRouter cost | PR #312, ready for review | Native OpenRouter responses retain authoritative cost and generation id per tool-loop request. |
 | OpenAI speech cost | stacked implementation, in review | Every provider dispatch is visible; `tts-1` and `tts-1-hd` are priced exactly by characters sent. |
+| Paid-route consolidation | stacked implementation, in review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
 | Append-only per-user events | queued | Queryable cost per user, project, feature, and day. |
 | Admission reservations + rate limits | queued | Authoritative hard ceiling before paid work starts. |
 | Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
@@ -23,16 +24,17 @@ Accounting and enforcement are deliberately different systems:
 ## Provider-spend inventory
 
 This is wider than “LLM jobs.” Every row must eventually pass ownership, rate-limit, and
-reservation admission, including synchronous and SSE compatibility routes.
+reservation admission. The synchronous and SSE compatibility routes were removed before the
+reservation layer so they cannot become alternate admission paths.
 
 | Provider spend | Code seam | Initiating surfaces | Accounting now | Remaining admission work |
 |---|---|---|---|---|
-| OpenRouter analysis/tool loop | `agent_harness.py` | chat start/reply/continue/retry/edit/finish/request-changes, job and stream variants | Exact per provider request in #312; missing cost pending by generation id | Per-user event + reservation; tier-check `DeliveryReq.model`; disable blocking/SSE in production |
-| OpenRouter single-shot analysis/narration | `llm.py` via `agent.py` | agentic fallback, `/api/narrate`, audio job narration, legacy delivery routes | Exact when response usage arrives; interrupted streams pending | Same reservation gate as agentic path |
+| OpenRouter analysis/tool loop | `agent_harness.py` | chat start/reply/continue/retry/edit/finish/request-changes jobs | Exact per provider request in #312; missing cost pending by generation id | Per-user event + reservation; tier-check `DeliveryReq.model` |
+| OpenRouter single-shot analysis/narration | `llm.py` via `agent.py` | agentic fallback and audio-job narration | Exact when response usage arrives; interrupted streams pending | Same reservation gate as agentic path |
 | OpenRouter discovery screening | `discovery.py` → `llm.py` | `/discover` background job | Exact provider usage | Reserve the bounded stage budget and rate-limit starts |
 | OpenRouter graph extraction | `graph.py` → `llm.py` | `/graph/build` background job | Exact per paper extraction | Reserve the bounded corpus fan-out before admission |
 | OpenRouter notes and author/lab research | `notes_jobs.py`, `author_profiles.py`, `affiliations.py` → `llm.py` | notes agent jobs, author profile and lab research jobs | Exact provider usage | Enumerate fan-out maxima and reserve each job |
-| OpenAI speech | `tts.openai_speech` | audio jobs, listening previews, `/api/speak` | This slice: one `speech_synthesis` ledger call per dispatch; exact for character-priced models | Reservation per segment/attempt; retire blocking `/api/speak` or move it to jobs |
+| OpenAI speech | `tts.openai_speech` | audio jobs and listening previews | One `speech_synthesis` ledger call per dispatch; exact for character-priced models | Reservation per segment/attempt |
 | Firecrawl fetch/search | `research_tools.py` | tool-enabled chat | Not in `usage.py` | Add request event, tool-call rate limit, and reservation/allowance |
 | OpenAlex and Semantic Scholar APIs | `openalex.py`, `semantic_scholar.py` | discovery, citation/metadata enrichment | Paced/cached, but not represented in the cost ledger | Record usage-priced calls and keep provider-specific daily caps |
 

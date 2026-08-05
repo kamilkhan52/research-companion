@@ -18,7 +18,7 @@ export const TOOL_META: Record<string, { icon: IconName; label: string }> = {
   read_paper_text: { icon: 'file-text', label: 'Reading a paper' },
   related_papers: { icon: 'share-2', label: 'Finding related papers' },
   list_project_papers: { icon: 'book-open', label: 'Scanning the project' },
-  // retrieval (/start_stream) steps
+  // retrieval-job steps
   arxiv: { icon: 'book-open', label: 'Resolving on arXiv' },
   fetch_pdf: { icon: 'download', label: 'Trying a PDF' },
 };

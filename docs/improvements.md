@@ -279,8 +279,8 @@ to check) and cost awareness.
     zeroes sub-micro-dollar calls) and surfaced as USD only for presentation (`summary()`).
   - **Narration spend on the app-global audio path bills the initiating project** — `audio_jobs`
     binds it around the narration call, leaving the shared cache/dedup untouched (a cache hit
-    costs nothing). Both `/api/audio/jobs` and `/api/narrate` accept a validated `project`; with
-    none, spend goes to an explicit **unattributed** app-global ledger (`GET
+    costs nothing). `/api/audio/jobs` accepts a validated `project`; with none, spend goes to an
+    explicit **unattributed** app-global ledger (`GET
     /api/usage/unattributed`) so nothing is silently dropped for the currently-shipped clients.
   - **Path-traversal hardening (security):** the billing `project` (and the route pid) flow
     through `projects.project_path`, which now rejects any id that isn't a contained single
@@ -369,8 +369,8 @@ Smaller, concrete issues found while reading; none are crashing today, all are w
    clean; split into `graph/extract.py`, `graph/analyze.py`, `graph/build.py` when next
    touched.
 8. **Dead/legacy code**: `assembler.paper_opening_message` is unused (history building went
-   through `sessions.build_history`); the `/api/speak` blocking endpoint and non-stream
-   `/reply` family are superseded (see 1.6); `web/` itself should get an explicit
+   through `sessions.build_history`); the blocking/SSE paid route families were retired during
+   M3; `web/` itself should get an explicit
    deprecation plan — every API change currently pays a "does the legacy client still work?"
    tax.
 9. **`store.derive_slug` collisions are only handled at add-time** (`add_entry` raises

@@ -40,8 +40,8 @@ Implemented on the backend + web client so any client can build against a stable
 4. **Typed API contract** — `scripts/gen-api-types.sh` generates `shared/api-types.ts` from the
    FastAPI OpenAPI schema, so the app's API types can't drift from the backend.
 
-The audio path was already mobile-friendly: `/api/speak` returns one complete, range-served
-mp3 — exactly what `react-native-track-player` wants (background playback, scrub, lock screen).
+The audio path now starts at `/api/audio/jobs`, which prepares a complete, range-served mp3 for
+`react-native-track-player` without tying paid work to one request connection.
 
 ## Recommended repo layout (when mobile work starts) — monorepo
 
@@ -63,10 +63,10 @@ research-companion/
 
 ## Build order (after Phase A)
 
-- **Phase B (MVP) — DONE.** Expo app — Library + project switcher, Compose-first, streaming
+- **Phase B (MVP) — DONE.** Expo app — Library + project switcher, Compose-first, job-polled
   Discussion, Settings. The listen loop: `react-native-track-player` background audio +
-  lock-screen controls, narration mp3 from `/api/speak`. State via TanStack Query (optimistic
-  stream, authoritative refetch of `/session/{slug}` on reconnect — the server records every
+  lock-screen controls, narration mp3 from `/api/audio/jobs`. State via TanStack Query (optimistic
+  progress, authoritative refetch of `/session/{slug}` on reconnect — the server records every
   turn). Also shipped along the way: message copy-to-clipboard, proper keyboard handling
   (`react-native-keyboard-controller`), and three New-Architecture compatibility fixes for
   `react-native-track-player` (see `mobile/scripts/patch-react-native-track-player.js`).

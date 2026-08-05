@@ -76,11 +76,6 @@ export const savePrompt = (key: string, value: string) =>
 export const resetPrompt = (key: string) =>
   apiPost<{ key: string; value: string; is_overridden: boolean }>('/api/prompts/reset', { key });
 
-/** Synthesize a passage to mp3; returns a relative URL under /api/audio. */
-export const speak = (text: string) => apiPost<{ url: string }>('/api/speak', { text });
-/** Stage-2 narration: adapt canonical text into a spoken transcript (cached server-side). */
-export const narrate = (text: string) =>
-  apiPost<{ narration: string; cached: boolean }>('/api/narrate', { text });
 /** Start (or join) a background narrate→synthesize job for one message; returns immediately
  *  with the job snapshot ('done' instantly when fully cached). Poll getAudioJob until settled.
  *  `project` is the initiating project — audio is app-global (shared cache), but the narration
@@ -194,13 +189,6 @@ export const createDiscussionThread = (pid: string, slug: string, title?: string
     title ? { title } : {},
   );
 
-/** Retrieve + cache a paper's full text (no turn). Returns {ok,retrieved} or a confirm step. */
-export const startPaper = (pid: string, slug: string, opts?: { arxiv_id?: string; pdf_url?: string }) =>
-  apiPost<{ ok?: boolean; retrieved?: boolean; needs_confirmation?: boolean; candidates?: unknown[] }>(
-    `${P(pid)}/start`,
-    { slug, ...opts },
-  );
-
 // NOTE: every LLM turn must go through turnJobPaths below — a blocking POST holds the
 // request open for the whole generation and the tunnel kills it at ~100s (524). Only quick
 // non-generating actions (approve/reopen/addPaper) may use plain apiPost.
@@ -292,17 +280,6 @@ export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) =
  *  disconnect can't half-apply a confirmed batch; unknown slugs are skipped (idempotent). */
 export const removePapersBatch = (pid: string, slugs: string[]) =>
   apiPost<{ removed: string[] }>(`${P(pid)}/papers/remove-batch`, { slugs });
-
-// Stream endpoint paths (used with streamPost from stream.ts).
-export const streamPaths = (pid: string) => ({
-  chatStart: `${P(pid)}/chat/start_stream`,
-  paperStart: `${P(pid)}/start_stream`,
-  reply: `${P(pid)}/reply_stream`,
-  continue: `${P(pid)}/continue_stream`,
-  retry: `${P(pid)}/retry_stream`,
-  edit: `${P(pid)}/edit_stream`,
-  finish: `${P(pid)}/finish_stream`,
-});
 
 // Job-based turn endpoints (used with useStreamingTurn). The POST starts (or joins) a
 // server-side background job that records the turn even if this client disappears; progress

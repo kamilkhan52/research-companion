@@ -61,7 +61,6 @@ export const findPaperMatches = jest.fn(async (_pid: string, candidate: { title:
   candidate,
 }));
 export const switchBranch = unexpected('switchBranch');
-export const streamPaths = jest.fn(() => ({}));
 export const turnJobPaths = jest.fn(() => ({}));
 export const getChatJob = unexpected('getChatJob');
 export const getActiveChatJob = unexpected('getActiveChatJob');

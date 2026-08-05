@@ -1,7 +1,9 @@
-"""App-global audio routes: blocking one-shot TTS (/speak), the background narrate→synthesize
-job flow (/audio/jobs), the cached-mp3 file server, and stage-2 narration. Audio is app-global
-(the TTS cache is shared across projects), but each request may name an initiating project so
-its LLM spend is billed there rather than to the unattributed ledger."""
+"""App-global background audio jobs and the caller-isolated cached-mp3 file server.
+
+The former blocking speech and standalone narration routes are intentionally absent: every paid
+audio operation must enter through the connection-independent job seam that M3 admission controls
+will gate.
+"""
 from __future__ import annotations
 
 import re
@@ -10,9 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .. import agent, audio_jobs, config, fileio, projects, sessions, tenancy, tts, usage
-from ..agent import AgentError
-from ..tts import TTSError
+from .. import audio_jobs, config, projects, tenancy, usage
 
 router = APIRouter()
 
@@ -46,25 +46,6 @@ def _billing_scope(project: str | None, request: Request) -> str:
     if not projects.exists(project):
         raise HTTPException(status_code=400, detail=f"Unknown billing project: {project}")
     return project
-
-
-@router.post("/api/speak")
-def speak(req: NarrateReq, request: Request):
-    """Synthesize one passage to mp3 (OpenAI), cached on disk; returns its URL. Blocking —
-    long passages can outlive proxy timeouts; prefer the /api/audio/jobs flow for those."""
-    s = config.load_settings()
-    if s.get("speech_provider") != "openai":
-        raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
-    path = audio_jobs.audio_cache_path(req.text)
-    if not path.exists():
-        token = config.set_active_project(_billing_scope(req.project, request))
-        try:
-            fileio.atomic_write_bytes(path, tts.synthesize_long(req.text))
-        except TTSError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        finally:
-            config.reset_active_project(token)
-    return {"url": f"/api/audio/{path.name}"}
 
 
 @router.post("/api/audio/jobs")
@@ -121,21 +102,3 @@ def audio(name: str):
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path, media_type="audio/mpeg",
                         headers={"Cache-Control": "private, max-age=86400"})
-
-
-@router.post("/api/narrate")
-def narrate(req: NarrateReq, request: Request):
-    """Stage 2: adapt one canonical response into a TTS transcript (cached by text hash). Uncached
-    narration bills the initiating project (validated) or the unattributed ledger."""
-    cached = sessions.get_cached_narration(req.text)
-    if cached is not None:
-        return {"narration": cached, "cached": True}
-    token = config.set_active_project(_billing_scope(req.project, request))  # validates project (400)
-    try:
-        narration = agent.narrate(req.text)
-    except AgentError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    finally:
-        config.reset_active_project(token)
-    sessions.cache_narration(req.text, narration)
-    return {"narration": narration, "cached": False}

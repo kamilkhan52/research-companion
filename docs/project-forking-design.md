@@ -160,8 +160,9 @@ all load-bearing:
 projects busy and sweeps jobs on both; `move_to_existing` then takes each project's
 **exclusive write lock** (sorted, so two moves can't deadlock), draining any synchronous writer
 already in flight — the same protection the split gained, now on both sides. All synchronous
-record-writers (add/remove/approve/notes-save/start/start_stream/upload_paper) hold the shared
-side of that lock, so none can start or be mid-commit while a move holds the exclusive side.
+record-writers (add/remove/approve/notes-save/upload_paper) hold the shared side of that lock, so
+none can start or be mid-commit while a move holds the exclusive side; retrieval itself persists
+through the guarded background-job path.
 
 **Transactional move (rollback on failure).** A move writes+commits the destination, then
 removes+commits the source across two git repos. On any failure the destination is rolled back
