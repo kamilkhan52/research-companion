@@ -217,31 +217,38 @@ def start_job(text: str, billing_project: str | None = None,
         with _registry.lock:
             job.segments_total = len(parts)
 
-        # A legacy combined cache may not have segment files. Keep the zero-cost cache hit and
-        # let clients use the final URL instead of re-synthesizing merely to backfill segments.
-        if path.exists() and not _segment_metadata(parts, existing_only=True):
-            with _registry.lock:
-                job.segments_done = len(parts)
-        else:
-            chunks: list[bytes] = []
-            for index, part in enumerate(parts):
-                if cancelled():
-                    return
-                segment_path = segment_cache_path(part)
-                if not segment_path.exists():
-                    atomic_write_bytes(segment_path, synth_fn(part))
-                chunks.append(segment_path.read_bytes())
+        # The audio registry is keyed by a user pseudonym rather than a project. Rebind the
+        # initiating billing project around every TTS dispatch just as narration does above;
+        # otherwise usage.record tries to bill `user:<hash>` and the spend disappears.
+        token = config.set_active_project(billing_project or usage.UNATTRIBUTED)
+        try:
+            # A legacy combined cache may not have segment files. Keep the zero-cost cache hit and
+            # let clients use the final URL instead of re-synthesizing merely to backfill segments.
+            if path.exists() and not _segment_metadata(parts, existing_only=True):
                 with _registry.lock:
-                    job.segments.append({
-                        "index": index,
-                        "text": part,
-                        "url": f"/api/audio/{segment_path.name}",
-                    })
-                    job.segments_done += 1
-                    if index == 0:
-                        job.timings["first_segment"] = now_iso()
-            if not path.exists():
-                atomic_write_bytes(path, b"".join(chunks))
+                    job.segments_done = len(parts)
+            else:
+                chunks: list[bytes] = []
+                for index, part in enumerate(parts):
+                    if cancelled():
+                        return
+                    segment_path = segment_cache_path(part)
+                    if not segment_path.exists():
+                        atomic_write_bytes(segment_path, synth_fn(part))
+                    chunks.append(segment_path.read_bytes())
+                    with _registry.lock:
+                        job.segments.append({
+                            "index": index,
+                            "text": part,
+                            "url": f"/api/audio/{segment_path.name}",
+                        })
+                        job.segments_done += 1
+                        if index == 0:
+                            job.timings["first_segment"] = now_iso()
+                if not path.exists():
+                    atomic_write_bytes(path, b"".join(chunks))
+        finally:
+            config.reset_active_project(token)
 
         with _registry.lock:
             job.url = f"/api/audio/{path.name}"

@@ -57,10 +57,13 @@ def speak(req: NarrateReq, request: Request):
         raise HTTPException(status_code=400, detail="Speech provider is not OpenAI.")
     path = audio_jobs.audio_cache_path(req.text)
     if not path.exists():
+        token = config.set_active_project(_billing_scope(req.project, request))
         try:
             fileio.atomic_write_bytes(path, tts.synthesize_long(req.text))
         except TTSError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        finally:
+            config.reset_active_project(token)
     return {"url": f"/api/audio/{path.name}"}
 
 

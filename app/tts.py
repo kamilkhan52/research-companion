@@ -18,7 +18,7 @@ from typing import Protocol
 
 import httpx
 
-from . import config, prompts
+from . import config, prompts, usage
 
 # OpenAI /audio/speech caps input at 4096 chars; stay under with margin and synthesize long
 # narrations as several segments concatenated into one mp3.
@@ -68,6 +68,37 @@ class BrowserTTS:
 _RETRYABLE = {429, 500, 502, 503, 504}
 _TRIES = 3
 
+# OpenAI publishes these two speech models per input character. Keep the price beside the only
+# dispatch seam so retries and every caller use the same accounting. Other accepted speech models
+# use token/audio-output pricing that this binary endpoint does not return per request; those calls
+# are recorded as pending rather than assigned a made-up local estimate.
+_USD_PER_CHARACTER = {
+    "tts-1": 15 / 1_000_000,
+    "tts-1-hd": 30 / 1_000_000,
+}
+
+
+def _record_dispatch(model: str, spoken_text: str, *, estimated: bool = False) -> None:
+    """Charge one completed or transport-ambiguous dispatch to the active usage scope.
+
+    A returned non-2xx response is a definite provider rejection and records nothing. A successful
+    response is exact. A transport failure after connection may mean OpenAI completed and billed
+    work even though this process never received the bytes, so charge it conservatively and leave
+    the ledger estimated. Analytics remains best-effort and must never block synthesis.
+    """
+    rate = _USD_PER_CHARACTER.get(model)
+    if rate is None:
+        usage.record("speech_synthesis", model, {})
+        usage.record_pending("speech_synthesis", model, None)
+        return
+    usage.record(
+        "speech_synthesis",
+        model,
+        {"cost": len(spoken_text) * rate},
+    )
+    if estimated:
+        usage.record_pending("speech_synthesis", model, None)
+
 
 def _friendly_tts_error(status: int, raw: str) -> str:
     """User-facing message for an OpenAI speech failure — quota/key/rate problems in the
@@ -94,7 +125,8 @@ def openai_speech(text: str) -> bytes:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
     model = s.get("tts_model") or "tts-1"
     voice = s.get("tts_voice") or "alloy"
-    body = {"model": model, "voice": voice, "input": normalize_for_speech(text),
+    spoken_text = normalize_for_speech(text)
+    body = {"model": model, "voice": voice, "input": spoken_text,
             "response_format": "mp3"}
     if model == "gpt-4o-mini-tts":
         # Steerability is a gpt-4o-mini-tts feature; the character-priced tts-1 family rejects
@@ -110,9 +142,16 @@ def openai_speech(text: str) -> bytes:
                 headers={"Authorization": f"Bearer {key}"},
                 json=body, timeout=120,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # No connection means no provider dispatch and therefore no possible synthesis bill.
+            continue
         except httpx.HTTPError:
+            # The connection existed but no authoritative response arrived. It may have completed
+            # upstream, so account conservatively and keep totals visibly estimated.
+            _record_dispatch(model, spoken_text, estimated=True)
             continue
         if r.status_code == 200:
+            _record_dispatch(model, spoken_text)
             return r.content
         last_err = _friendly_tts_error(r.status_code, r.text)
         if r.status_code not in _RETRYABLE:
