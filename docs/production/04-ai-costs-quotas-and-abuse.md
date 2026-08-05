@@ -12,7 +12,8 @@ milestone ledger; this document owns the spend inventory and the accounting/enfo
 | Paid-route consolidation | PR #314, ready for review | Retrieval, chat turns, narration, and synthesis are exposed only through background-job routes. |
 | Append-only per-user events | PR #315, ready for review | Queryable cost per user, project, feature, and day without replacing the project aggregate. |
 | Durable reservation lifecycle | PR #316, ready for review | Transactional per-user ceiling, explicit dispatch and terminal states, leases, and generation linkage. |
-| Crash reconciliation | stacked implementation, in review | Expire safe undispatched leases; recover completed OpenRouter generations exactly; charge ambiguity conservatively. |
+| Crash reconciliation | PR #317, ready for review | Expire safe undispatched leases; recover completed OpenRouter generations exactly; charge ambiguity conservatively. |
+| Exact-once job admission seam | stacked implementation, in review | Prepare one durable reservation only for a newly published job; joins and cache hits do not reserve again. |
 | Paid-work admission + rate limits | queued | Gate every surviving provider workflow before network dispatch. |
 | Tier/model gates + kill switch | queued | A caller cannot select spend outside their entitlement; operator can stop all new spend. |
 
@@ -108,10 +109,17 @@ is deliberately independent and may still be pending. Without the marker, an uns
 have been in flight at the crash. Keeping the two proofs separate lets a completed generation
 reconcile exactly after restart without pretending a mid-dispatch crash was complete.
 
-This slice establishes and tests the crash/state contract independently. It does not yet claim
-that paid routes are gated: job/provider integration, pessimistic per-workflow estimates, lease
-renewal, rate/concurrency limits, and the instance kill
-switch are the next slices. Actual monthly tier amounts remain the documented human decision.
+The registry's next exact-once seam performs durable preparation outside its process-wide lock,
+but serializes identical callers so only a genuinely new job reserves. A concurrent join waits for
+that preparation and reuses the published job; unrelated polling and job starts stay responsive.
+An in-flight preparation counts as active work for project/account deletion drains. Publication or
+thread-start failure invokes a best-effort rollback, while a started job hands settlement to the
+normal worker lifecycle. Cache hits occur before this seam and therefore do not reserve.
+
+These slices establish and test the crash/state and job-admission contracts independently. They do
+not yet claim that paid routes are gated: provider integration, pessimistic per-workflow estimates,
+lease renewal, rate/concurrency limits, and the instance kill switch are the next slices. Actual
+monthly tier amounts remain the documented human decision.
 
 ## Startup reconciliation
 
