@@ -19,7 +19,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
 
-from . import agent_harness, prompts, research_tools, retriever, safe_fetch
+from . import agent_harness, model_provenance, prompts, research_tools, retriever, safe_fetch
 
 HUNT_MAX_PDF_BYTES = 40_000_000
 
@@ -63,8 +63,10 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
         keyword queries. Returns results with URLs to try."""
         return research_tools.web_search(objective, search_queries)
 
+    framed_title = model_provenance.frame("paper_title", title)
     return Agent(model or agent_harness._openrouter_model(),
-                 system_prompt=prompts.render("retrieval_hunt", title=title),
+                 system_prompt=(prompts.render("retrieval_hunt", title=framed_title)
+                                + "\n\n" + model_provenance.SYSTEM_POLICY),
                  tools=[web_search, fetch_pdf], output_type=str, retries=2)
 
 
@@ -74,7 +76,10 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
     holder: dict = {}
     ag = build_hunt_agent(title, holder, model=model)
     try:
-        async with ag.iter(f'Find a working PDF for: "{title}"') as run:
+        async with ag.iter(
+            "Find the working PDF for this paper title:\n\n"
+            + model_provenance.frame("paper_title", title)
+        ) as run:
             async for node in run:
                 if Agent.is_call_tools_node(node):
                     async with node.stream(run.ctx) as tool_stream:

@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 
-from . import config, prompts, store
+from . import assembler, config, prompts, store
 from .fileio import atomic_write_text
 from .models import COMMITTED, IN_DISCUSSION, NOTES_DRAFTED, REVIEW_SLUG, Turn
 
@@ -489,10 +489,7 @@ def build_history(slug: str) -> list[dict]:
         content = opening or prompts.get("review_opening")
     else:
         full_text = store.read_full_text(slug)
-        template = opening or prompts.get("opening_message")
-        content = template.replace("{title}", store.title_for(slug)).replace("{full_text}", full_text)
-        if full_text and full_text not in content:  # user dropped {full_text}; ensure paper is sent
-            content += "\n\n[BEGIN PAPER FULL TEXT]\n" + full_text + "\n[END PAPER FULL TEXT]"
+        content = assembler.paper_opening_message(slug, full_text, template=opening)
     history = [{"role": "user", "content": content}]
     for rec in read_records(slug):
         if rec["role"] == "user":

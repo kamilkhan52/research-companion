@@ -42,7 +42,17 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from . import agent as agent_mod
-from . import config, llm, logging_config, prompts, research_tools, sessions, spend_control, usage
+from . import (
+    config,
+    llm,
+    logging_config,
+    model_provenance,
+    prompts,
+    research_tools,
+    sessions,
+    spend_control,
+    usage,
+)
 from .models import Turn
 
 log = logging_config.get("agent_harness")
@@ -272,7 +282,8 @@ def build_agent(slug: str, model: Model | None = None,
     """Construct the tool-using analyst agent for a session. `model` is injectable so tests can
     pass a FunctionModel/TestModel and exercise the whole tool loop with no network."""
     system = (agent_mod._system_for(slug, latest_user_text)
-              + "\n\n" + prompts.get("analyst_tool_guidance"))
+              + "\n\n" + prompts.get("analyst_tool_guidance")
+              + "\n\n" + model_provenance.SYSTEM_POLICY)
     return Agent(model or _openrouter_model(), system_prompt=system, tools=TOOLS,
                  output_type=str, retries=2)
 
@@ -282,7 +293,8 @@ def build_notes_editor(model: Model | None = None) -> Agent:
     notes, which a notes edit legitimately needs), governed by the notes_editor prompt. Output
     is the full revised markdown document — no section protocol."""
     system = (prompts.get("notes_editor") + "\n\n" + agent_mod.MATH_MARKDOWN_CONTRACT
-              + "\n\n" + prompts.get("notes_tool_guidance"))
+              + "\n\n" + prompts.get("notes_tool_guidance")
+              + "\n\n" + model_provenance.SYSTEM_POLICY)
     tools = TOOLS + [research_tools.read_paper_notes, research_tools.read_working_notes]
     return Agent(model or _openrouter_model(), system_prompt=system, tools=tools,
                  output_type=str, retries=2)

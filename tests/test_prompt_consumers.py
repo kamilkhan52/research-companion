@@ -1,4 +1,4 @@
-"""Every model-facing behavioral instruction resolves through the live prompt registry."""
+"""Editable behavior resolves live; the security boundary remains non-editable."""
 from __future__ import annotations
 
 from app import agent, agent_harness, graph, retrieval_agent
@@ -31,9 +31,13 @@ def test_agent_harness_resolves_both_tool_guidance_prompts(monkeypatch):
     agent_harness.build_agent("paper", model=model)
     agent_harness.build_notes_editor(model=model)
 
-    assert captured[0]["system_prompt"] == "analysis system\n\nlive analyst guidance"
+    assert captured[0]["system_prompt"] == (
+        "analysis system\n\nlive analyst guidance\n\n"
+        + agent_harness.model_provenance.SYSTEM_POLICY
+    )
     assert captured[1]["system_prompt"] == (
-        "live notes editor\n\n" + agent.MATH_MARKDOWN_CONTRACT + "\n\nlive notes guidance"
+        "live notes editor\n\n" + agent.MATH_MARKDOWN_CONTRACT + "\n\nlive notes guidance\n\n"
+        + agent_harness.model_provenance.SYSTEM_POLICY
     )
 
 
@@ -52,7 +56,11 @@ def test_retrieval_hunt_resolves_and_renders_registry_prompt(monkeypatch):
     )
 
     retrieval_agent.build_hunt_agent("A Paper", {}, model=object())
-    assert captured["system_prompt"] == "retrieval_hunt: A Paper"
+    assert captured["system_prompt"].startswith(
+        "retrieval_hunt: === BEGIN UNTRUSTED DATA JSON ===\n"
+    )
+    assert '"source_type":"paper_title"' in captured["system_prompt"]
+    assert captured["system_prompt"].endswith(retrieval_agent.model_provenance.SYSTEM_POLICY)
 
 
 def test_graph_extraction_resolves_registry_system_prompt(monkeypatch):

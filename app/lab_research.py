@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import config, graph, graph_store, prompts, store
+from . import config, graph, graph_store, model_provenance, prompts, store
 from .fileio import atomic_write_text
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -136,13 +136,17 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     model = graph.resolve_model()
     ag = Agent(
         agent_harness._openrouter_model(model),
-        system_prompt=prompts.get("lab_research"),
+        system_prompt=(prompts.get("lab_research")
+                       + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],
         output_type=str,
         retries=2,
     )
-    user = (f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
-            f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}")
+    user = model_provenance.frame(
+        "author_and_paper_metadata",
+        f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
+        f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}",
+    )
     try:
         result = asyncio.run(
             ag.run(user, usage_limits=UsageLimits(

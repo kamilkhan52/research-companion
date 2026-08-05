@@ -3,6 +3,8 @@ real temp project (via the store layer); web tools use injected fake httpx clien
 providers, so nothing here touches the network."""
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from app import graph_store, research_tools, store
@@ -15,12 +17,16 @@ def _resp(status: int, *, headers=None, text: str = "") -> httpx.Response:
                           request=httpx.Request("POST", "https://example.com"))
 
 
+def _framed_content(value: str) -> str:
+    return json.loads(value.splitlines()[1])["content"]
+
+
 # ---- local tools ----
 
 def test_list_and_read_paper_text(temp_project):
     add_paper(temp_project, "a", "Paper A", full_text="The alpha method works.")
     listing = research_tools.list_project_papers()
-    assert "a: \"Paper A\"" in listing
+    assert "a: \"Paper A\"" in _framed_content(listing)
 
     assert "alpha method" in research_tools.read_paper_text("a")
     assert "No paper with slug 'zzz'" in research_tools.read_paper_text("zzz")
@@ -48,7 +54,7 @@ def test_related_papers_uses_graph_edges(temp_project):
     data["graph"] = {"nodes": [], "edges": [{"source": "a", "target": "b"}]}
     graph_store.save(data)
     out = research_tools.related_papers("a")
-    assert "b: \"Paper B\"" in out  # a cites b, surfaced from the graph edge
+    assert "b: \"Paper B\"" in _framed_content(out)  # a cites b, surfaced from the graph edge
 
 
 # ---- web tools: fetch_url ----
@@ -102,7 +108,8 @@ def test_web_search_falls_through_to_working_provider(temp_project, monkeypatch)
                         lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("402")))
     monkeypatch.setattr(research_tools, "_ddg_search", lambda *a, **k: "Web results: the answer")
     out = research_tools.web_search("anything", ["q"])
-    assert out == "Web results: the answer"
+    assert "Web results: the answer" in out
+    assert "UNTRUSTED DATA JSON" in out
 
 
 def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monkeypatch):
@@ -119,7 +126,8 @@ def test_an_unwrapped_provider_exception_still_falls_through(temp_project, monke
 
     out = research_tools.web_search("anything", ["q"])
 
-    assert out == "Web results: recovered"
+    assert "Web results: recovered" in out
+    assert "UNTRUSTED DATA JSON" in out
 
 
 def test_an_unwrapped_exception_is_named_when_every_provider_fails(temp_project, monkeypatch):
@@ -154,5 +162,3 @@ def test_web_search_all_providers_down_returns_readable_error(temp_project, monk
         monkeypatch.setattr(research_tools, name, boom)
     out = research_tools.web_search("x", ["x"])
     assert "no provider available" in out.lower()
-
-
