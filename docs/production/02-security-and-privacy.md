@@ -214,12 +214,13 @@ that day: `openai/gpt-5.6-sol` went to OpenAI unconstrained and Azure constraine
 request therefore could not be described truthfully in a privacy policy at all.
 
 **Resolved by pinning, not by enumeration.** `llm.PRIVACY_ROUTING` — `{"data_collection": "deny",
-"zdr": true}` — now rides on every request from both turn paths: the raw client in `llm.py` and,
+"zdr": true, "sort": "price"}` — now rides on every request from both turn paths: the raw client in `llm.py` and,
 critically, `agent_harness`'s Pydantic AI model via `extra_body`, since the agentic loop is the
 default. The two keys are different guarantees and both are required: `data_collection: "deny"`
 excludes providers that may store or train on inputs, `zdr` requires zero retention at rest, and a
 provider can satisfy one while failing the other. It is deliberately not environment-configurable,
-because `/legal/privacy` states it as an unconditional promise.
+because `/legal/privacy` states it as an unconditional promise. `sort: "price"` only orders that
+already-filtered eligible set; it does not broaden the set or change the data-handling guarantee.
 
 Cost, measured across the twelve favourite families: eleven still resolve. Only **Qwen Max** has no
 conforming endpoint, and it was removed from `FAVORITE_FAMILIES` rather than left to 404 on every

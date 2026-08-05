@@ -739,9 +739,11 @@ with M2.
 **Pricing is now analysed, not assumed** — see `20-pricing-analysis.md`. Free = 15 turns on
 DeepSeek V4 Flash with `BrowserTTS` (~$0.14/user-month worst case); Basic $10 = 60 turns + 45 min
 of `tts-1` (74% gross margin after Play's 15%, break-even ~5 paying users). The four findings that
-reshape M3 are recorded as **P0-16, P0-17, P1-12, P1-13, P1-14** in the audit: audio is unmetered
-and is the biggest cost line, nothing pins the model server-side, provider routing is unpinned at
-~2.45x list, `listening_preview` burns 17.3 calls per turn, and the audio cache never evicts.
+reshape M3 are recorded as **P0-16, P0-17, P1-12, P1-13, P1-14** in the audit. The historical
+findings were: unmetered audio as the biggest cost line, no server-side model gate, cost-unordered
+provider routing, 17.3 listening-preview calls per turn, and an unbounded audio cache. Attribution,
+cache eviction, preview prompt volume, and cheapest-eligible OpenRouter ordering are now stacked in
+review; the tier/model gate and actual quota values remain H15 business decisions.
 
 
 ---

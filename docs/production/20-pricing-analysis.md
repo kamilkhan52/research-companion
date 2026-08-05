@@ -48,13 +48,15 @@ Before the tables, three measured facts that matter more than the tier design:
    > historical audio figures were reconstructed from cached text/files; new usage will appear
    > directly under `speech_synthesis`. Token/audio-priced speech models remain visibly estimated.
 
-2. **We are paying ~2.45× DeepSeek list price for no reason.** `app/llm.py` sends no OpenRouter
+2. **The historical unconstrained sample paid ~2.45× DeepSeek list price.** At measurement time,
+   `app/llm.py` sent no OpenRouter
    `provider` routing preference, so requests fan out across 18 endpoints for
    `deepseek/deepseek-v4-pro` priced from $0.435/M (DeepSeek first-party) to $1.74/M (Fireworks,
    Together, CoreWeave, …). Solving our own ledger for the implied rate gives **$1.064/M in,
    $2.128/M out — 2.45× the $0.435/$0.870 list**. This holds for usage recorded as recently as
-   2026-07-24, so it is current, not stale. Pinning `provider: {only: ["deepseek"]}` is a
-   ~60% cut to the LLM bill for one config line.
+   2026-07-24. The later privacy-routing constraint changed the eligible endpoint set, so this is
+   no longer a current multiplier. A stacked 2026-07-31 slice now adds `sort: "price"` without
+   weakening that privacy filter; re-measure before claiming the historical ~60% saving.
 
 3. **The historical default-path sample could not measure its own cost.** `RC_AGENTIC=1` is the
    default, and the generic adapter used during this measurement dropped OpenRouter's dollar
@@ -348,7 +350,9 @@ nobody made; it is just however long the model wrote. A 6,000-char cap (~6 minut
    listen for 10 hours as easily as 45 minutes. At `tts-1-hd` with uncapped narration, a single
    engaged user costs $19/month against $8.40 of revenue. **Everything else is rounding error
    next to this.** It must be a hard server-enforced quota, not a soft default.
-2. **Whether provider routing gets pinned.** 2.45× on every LLM line. 74% GM → 32% GM.
+2. **Whether provider routing gets cost-ordered.** Historical sensitivity only: 2.45× on every LLM
+   line moved 74% GM → 32% GM before privacy filtering changed the eligible endpoints. The stacked
+   `sort: "price"` slice closes the code gap; re-measure the realized multiplier after deployment.
 3. **Free:paid ratio.** At 20:1 with a $0.30 free allowance, contribution per paying user falls
    to $0.18 and break-even goes from 9 users to 148.
 4. **Turns per paper.** Measured at 1.9; I modelled 4. If real engaged users do 8, the 60-turn
@@ -449,6 +453,15 @@ These are prerequisites, not nice-to-haves. In priority order:
    layer. Original text: add `"provider": {"only": ["deepseek"], "allow_fallbacks": false}` (or an
    explicit cheap-endpoint order) to the request body. **Worth ~60% of the LLM bill.** Verified
    against the endpoints API: we are routing to endpoints costing up to 4× first-party DeepSeek.
+
+   > **Implementation update 2026-07-31:** a stacked cost-routing slice adds `sort: "price"` to
+   > the existing `data_collection: "deny"` + ZDR provider object on both raw and agentic paths.
+   > OpenRouter's current provider-routing documentation says this disables weighted balancing
+   > and tries eligible endpoints strictly by lowest price while retaining fallbacks. This avoids
+   > a provider allowlist decision and keeps the published privacy promise intact. The historical
+   > 2.45× figure predates privacy filtering, so deployment must be re-measured before claiming a
+   > realized percentage saving. Source checked 2026-07-31:
+   > <https://openrouter.ai/docs/guides/routing/provider-selection>.
 
 2. **The default turn path cannot report cost** (`agent_harness._record_run_usage`, and
    `app/usage.py`'s "cost comes straight from OpenRouter" design note). 17 pending records and at
