@@ -115,6 +115,86 @@ def test_research_sources_include_paper_opening_and_prior_project_context(monkey
     assert all("Ignore for previews" not in text for text in texts)
 
 
+def test_each_cue_has_a_finite_source_budget_and_keeps_progress_last():
+    items = [
+        {"id": f"live{i:04d}", "text": f"live {i} " + "x" * 600, "kind": "live_response"}
+        for i in range(10)
+    ] + [
+        {"id": f"context{i:04d}", "text": f"context {i} " + "y" * 690,
+         "kind": "paper_background"}
+        for i in range(30)
+    ] + [{
+        "id": "progress0001", "text": "2 of 4 parts synthesized.",
+        "kind": "preparation_progress",
+    }]
+
+    selected = preview_jobs._bounded_sources(items, ordinal=1)
+
+    assert sum(len(item["text"]) for item in selected) <= preview_jobs.MAX_GROUNDED_SOURCE_CHARS
+    assert sum(len(item["text"]) for item in selected if item["kind"] == "live_response") \
+        <= preview_jobs.MAX_LIVE_SOURCE_CHARS
+    assert selected[-1]["id"] == "progress0001"
+    assert len({item["id"] for item in selected}) == len(selected)
+
+
+def test_later_cues_rotate_the_bounded_project_context():
+    items = [
+        {"id": f"context{i:04d}", "text": "z" * 700, "kind": "prior_project_context"}
+        for i in range(20)
+    ]
+
+    first = preview_jobs._bounded_sources(items, ordinal=1)
+    second = preview_jobs._bounded_sources(items, ordinal=2)
+
+    assert [item["id"] for item in first] != [item["id"] for item in second]
+    assert first[0]["id"] == "context0000"
+    assert second[0]["id"] == "context0005"
+
+
+def test_generation_receives_only_the_bounded_source_window():
+    captured = {}
+    items = [
+        {"id": f"live{i:04d}", "text": "live evidence " + "x" * 600,
+         "kind": "live_response"}
+        for i in range(10)
+    ] + [
+        {"id": f"context{i:04d}", "text": "project evidence " + "y" * 690,
+         "kind": "prior_project_context"}
+        for i in range(30)
+    ]
+
+    def generate(messages, model):
+        payload = json.loads(messages[1]["content"])
+        captured.update(payload)
+        return json.dumps({
+            "cue": "A compact grounded observation.",
+            "source_sentence_ids": [payload["grounded_sources"][0]["id"]],
+        })
+
+    job = preview_jobs.start_job(
+        "bounded-generation",
+        3,
+        items,
+        previous_cue="p" * 2_000,
+        played_cues=[f"played {index} " + "p" * 600 for index in range(12)],
+        generated_cues=[f"generated {index} " + "g" * 600 for index in range(12)],
+        generate_fn=generate,
+        synth_fn=lambda cue: b"mp3",
+    )
+    assert _wait(job.id).status == "done"
+
+    assert sum(len(item["text"]) for item in captured["grounded_sources"]) \
+        <= preview_jobs.MAX_GROUNDED_SOURCE_CHARS
+    assert captured["completed_sentences"] == [
+        item for item in captured["grounded_sources"] if item["kind"] == "live_response"
+    ]
+    assert len(captured["played_cues"]) == preview_jobs.CUE_HISTORY_WINDOW
+    assert len(captured["generated_cues"]) == preview_jobs.CUE_HISTORY_WINDOW
+    assert all(len(cue) <= preview_jobs.MAX_CUE_CHARS for cue in captured["played_cues"])
+    assert all(len(cue) <= preview_jobs.MAX_CUE_CHARS for cue in captured["generated_cues"])
+    assert len(captured["previous_cue"]) == preview_jobs.MAX_CUE_CHARS
+
+
 def test_audio_synthesis_progress_is_citable_and_never_announces_readiness(temp_project):
     """Playback is the complete stitched track (polish plan I.1/I.2): the synthesis-phase
     progress source carries the honest parts count and must NOT claim the response is ready

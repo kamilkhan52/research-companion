@@ -46,8 +46,8 @@ SYNTHESIS_KEEPALIVE_SECONDS = 18.0
 # "I like cues coming through all the way until the audio is ready. silence is the worst here at
 # any cost." That is a product judgement about the listening experience, not an oversight — the
 # wait is dead air otherwise, and dead air is what makes a long preparation feel broken. The cheaper
-# lever remains available and does NOT cost silence: trimming the cue prompt to ~4K tokens is the
-# other half of §8's saving and is still unstarted.
+# lever does NOT cost silence: the source/history budget below trims each cue prompt toward ~4K
+# tokens while leaving this uncapped cadence decision intact.
 MAX_CUES_PER_WAIT: int | None = None
 log = logging_config.get("preview")
 
@@ -188,6 +188,14 @@ _EXTERNAL_CACHE_MAX = 64
 MAX_RESEARCH_AGENT_REQUESTS = 7
 MAX_RESEARCH_AGENT_TOOL_CALLS = 5
 
+# Per-cue context budget. The old 12K paper + 18K project slices were copied into EVERY cue, then
+# live sentences and three overlapping cue-history fields were added. Measured result: 11,373
+# prompt tokens for an 86-token answer. Six thousand grounded characters plus a two-thousand-char
+# live-response share keeps the whole request near the pricing analysis's ~4K-token target while a
+# rotating context window still gives an uncapped wait fresh material on later cues.
+MAX_GROUNDED_SOURCE_CHARS = 6_000
+MAX_LIVE_SOURCE_CHARS = 2_000
+
 
 def _research_with_agent(title: str, paper_metadata: str) -> str:
     """Run a small read-only search/fetch agent and return its sourced findings."""
@@ -296,6 +304,63 @@ def progress_signature(progress: dict) -> str:
     return "|".join(
         str(progress.get(field)) for field in ("phase", "segments_done", "segments_total")
     )
+
+
+def _fit_source(item: dict, available: int) -> dict | None:
+    """Copy one source under ``available`` characters without changing its provenance id/kind."""
+    text = str(item.get("text") or "").strip()
+    if not text or available < 40:
+        return None
+    if len(text) > available:
+        cut = text.rfind(" ", 0, available - 1)
+        cut = cut if cut >= 40 else available - 1
+        text = text[:cut].rstrip(" ,;:-") + "…"
+    return {**item, "text": text}
+
+
+def _bounded_sources(items: list[dict], ordinal: int) -> list[dict]:
+    """Select a small, citable source window while preserving live/progress grounding.
+
+    The newest live response gets a fixed share because a cue during analysis should react to what
+    was just written. Progress is always retained when present. Remaining paper/project/web/tool
+    context rotates by cue ordinal; unlimited cues therefore explore the corpus rather than paying
+    to resend the same prefix forever.
+    """
+    progress = [item for item in items if item.get("kind") == "preparation_progress"][-1:]
+    progress_copy = _fit_source(progress[0], MAX_GROUNDED_SOURCE_CHARS) if progress else None
+    reserved = len(progress_copy["text"]) if progress_copy else 0
+    remaining = max(0, MAX_GROUNDED_SOURCE_CHARS - reserved)
+
+    live_selected: list[dict] = []
+    live_used = 0
+    live_items = [item for item in items if item.get("kind") == "live_response"]
+    for item in reversed(live_items):
+        allowance = min(remaining, MAX_LIVE_SOURCE_CHARS - live_used)
+        fitted = _fit_source(item, allowance)
+        if fitted is None:
+            break
+        live_selected.append(fitted)
+        used = len(fitted["text"])
+        live_used += used
+        remaining -= used
+    live_selected.reverse()
+
+    context = [
+        item for item in items
+        if item.get("kind") not in ("live_response", "preparation_progress")
+    ]
+    if context:
+        offset = ((max(ordinal, 1) - 1) * 5) % len(context)
+        context = context[offset:] + context[:offset]
+    context_selected: list[dict] = []
+    for item in context:
+        fitted = _fit_source(item, remaining)
+        if fitted is None:
+            break
+        context_selected.append(fitted)
+        remaining -= len(fitted["text"])
+
+    return [*live_selected, *context_selected, *([progress_copy] if progress_copy else [])]
 
 
 def budget_exhausted(existing_job_ids: list[str]) -> bool:
@@ -439,12 +504,12 @@ def acknowledge_played(job_id: str) -> dict | None:
     return _registry.snapshot(job_id)
 
 
-#: How many recent cues are shown to the next one. Not a cost lever first — though it is one: with
+#: How many recent cues are shown to the next one. Not a cue-count cap: with
 #: no cap on cue count, sending every prior cue makes each request grow with the wait. It is mainly
 #: honesty. Retention can evict the oldest jobs, so "every cue so far" is a promise this cannot
 #: keep, and a bounded window is a promise it can. A listener will not notice cue 30 echoing cue 2;
 #: they notice cue 4 echoing cue 3, and the window covers that comfortably.
-CUE_HISTORY_WINDOW = 12
+CUE_HISTORY_WINDOW = 4
 
 
 def cue_history(job_ids: list[str]) -> tuple[list[str], list[str]]:
@@ -477,8 +542,15 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
     generate_fn = generate_fn or _default_generate
     synth_fn = synth_fn or tts.openai_speech
     progress_copy = dict(progress or {})
-    played_copy = list(played_cues or [])
-    generated_copy = list(generated_cues or [])
+    # Enforce the history contract at the model boundary too. Current callers already use
+    # cue_history(), but a future/direct caller must not be able to restore an unbounded prompt.
+    played_copy = [str(cue)[:MAX_CUE_CHARS] for cue in (played_cues or [])][
+        -CUE_HISTORY_WINDOW:
+    ]
+    generated_copy = [str(cue)[:MAX_CUE_CHARS] for cue in (generated_cues or [])][
+        -CUE_HISTORY_WINDOW:
+    ]
+    previous_cue = str(previous_cue)[:MAX_CUE_CHARS]
     sentence_copy = [
         {
             "id": str(item["id"]),
@@ -495,6 +567,7 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
     progress_item = _progress_source(progress_copy) if progress_is_new else None
     if progress_item:
         sentence_copy.append(progress_item)
+    sentence_copy = _bounded_sources(sentence_copy, ordinal)
     key = f"{chat_job_id}:{ordinal}"
 
     def work(job: PreviewJob) -> None:
@@ -506,8 +579,9 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
             {"role": "system", "content": (
                 prompts.get("listening_preview") + "\n\n"
                 + prompts.get("listening_preview_priorities") + "\n\n"
-                + "Runtime requirements: `played_cues` and `generated_cues` below are complete "
-                  "chronological histories for this wait. Compare against every cue in both and "
+                + "Runtime requirements: `played_cues` and `generated_cues` below are the bounded "
+                  "recent chronological histories supplied for this wait. Compare against every "
+                  "cue in both and "
                   "do not repeat any topic, fact, framing, transition, or progress wording. Never "
                   "tell the researcher to read the response or look at the screen; they are "
                   "waiting for automatic audio playback. Keep cue text at or below "
@@ -519,7 +593,8 @@ def start_job(chat_job_id: str, ordinal: int, sentences: list[dict], previous_cu
                    "about the material instead.")
             )},
             {"role": "user", "content": json.dumps({
-                # Kept for compatibility with existing user-edited preview prompts.
+                # Kept for compatibility with existing user-edited preview prompts. It contains
+                # only the live items that survived the same finite grounded-source budget.
                 "completed_sentences": [
                     item for item in sentence_copy if item["kind"] == "live_response"
                 ],

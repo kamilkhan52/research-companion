@@ -79,9 +79,12 @@ reported symptom had a different cause than the wording suggested:
    eligibility). **The default is deliberately still `full`** — flipping it is gated on a real
    device pass against real synthesis latency.
 
-**Correction worth carrying forward:** the `$0.0016/turn` figure for cue costs is NOT achievable by
-the six-cue cap alone. `20-pricing-analysis.md` §8 requires the cap *and* trimming the cue prompt to
-~4K tokens; the trim is separate, unstarted work. The cap is most of the saving from $0.087.
+**Correction worth carrying forward:** the `$0.0016/turn` figure for cue costs assumed *both* a
+six-cue cap and a ~4K-token prompt. Kamil subsequently chose not to cap the cue count because cues
+should continue until final audio is playable. The prompt-volume half is now stacked in review:
+grounded sources have a finite 6K-character budget, live response a 2K share, recent cue history is
+four entries, and project context rotates across later cues. Do not reuse `$0.0016/turn` as the
+expected result; cadence remains uncapped by deliberate product choice.
 
 **Open defect found 2026-07-29 after the production project copy: sharing a project loses all
 reading *progress*, and any discussion that was never committed.** Kamil's production corpus showed
@@ -118,11 +121,12 @@ bundle choice deliberately avoided. It must be a **whitelist** — `.state/sessi
 pre-existing external-link button). TalkBack/VoiceOver can swallow nested accessible controls. It
 predates #284 and wants one deliberate pass over the pattern rather than a per-button patch.
 
-**The cheap cost work that is NOT done** (from `20-pricing-analysis.md` §8, and the reason the AAB
-should not be rushed): `listening_preview` is measured at **17.3 cues per turn**, each sending
-~11,373 prompt tokens to produce 86 — 4.4× the analysis turn's own prompt. Capping at 6 cues takes
-it from $0.087/turn to $0.0016 at the same product surface. That is the single largest LLM saving
-available and it is config-level. Item 3/5 above is the natural place to land it.
+**The cheap cue-cost work is partially stacked.** The historical baseline remains **17.3 cues per
+turn**, each sending ~11,373 prompt tokens to produce 86 — 4.4× the analysis turn's own prompt.
+The repeated source/history payload is now bounded toward the ~4K-token target without reducing
+spoken coverage. The other half — capping at six calls — is deliberately not planned because Kamil
+prefers continued cues to silence while final audio is prepared. Measure the new prompt-token
+distribution after deployment before projecting a new per-turn price.
 
 **M2's backend is complete.** M1 was code-complete at #218–#224; M2 then landed in five slices:
 
@@ -341,7 +345,8 @@ and ~~the legal surface~~ — privacy policy, terms and the public deletion page
    no per-user cap, no TTS metering and no web-search metering (§8 of `20-pricing-analysis.md`),
    twelve testers read against Kamil's personal provider keys with nothing bounding the spend. The
    default models were pinned to DeepSeek in #281 for exactly this reason, which removes the worst
-   of it; the `listening_preview` cue cap removes most of the rest.
+   of it; the stacked `listening_preview` prompt budget removes repeated context while preserving
+   the deliberately uncapped cue cadence.
    Source: <https://support.google.com/googleplay/android-developer/answer/14151465>.
 
 **On tester sequencing (Kamil's call, 2026-07-28):** he wants to test himself before involving
