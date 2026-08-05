@@ -1,9 +1,9 @@
-# Device-test checklist — R12 follow-ups (R12.9 / R12.11 / R12.13 / R12.7)
+# Device-test checklist — R12 follow-ups
 
 Manual acceptance record for the work merged after the 2026-07-21 round-12 device pass. These are
 the items that shipped in PRs #213, #214, #215 and now need a physical-device / human-judgment pass.
 The broader round-12 pass lives in [`current-device-test-checklist.md`](current-device-test-checklist.md);
-this document is scoped to the four follow-up items only.
+this document is scoped to focused follow-up items that need physical-device acceptance.
 
 ## How to record a result
 
@@ -216,6 +216,45 @@ and the project pill was reordered for screen-reader traversal. Quick re-check o
   - Scroll a long discussion (the scroll-to-bottom chevron should sit **above** the composer, not
     behind it). If you can trigger a chat error, its card + Dismiss button should also sit above the
     composer. The Library project pill still floats over the list with papers scrolling behind it.
+  - **Result:** <!-- PASS / FAIL / BLOCKED -->
+  - **Notes:**
+
+---
+
+## G. DR-002 / R12.14 — Stop a running Discover search
+
+*What changed: a running search now has a cooperative Stop action. It stops before starting the
+next provider/model stage, keeps any prior completed recommendations unchanged, and retains titles
+already published by the running funnel as clearly labelled, non-ranked partial finds.*
+
+- [ ] **G1 — Stop before any finds are ready** — `NOT TESTED`
+  - Start Discover and tap **Stop search** as soon as it appears.
+  - **Expected:** the control changes to `Stopping…`, then the panel says `Search stopped`; no
+    spinner remains and the screen clearly says that no partial finds were ready. A new search can
+    be started immediately.
+  - **Result:** <!-- PASS / FAIL / BLOCKED -->
+  - **Notes:**
+
+- [ ] **G2 — Stop after the scanning reel has finds** — `NOT TESTED`
+  - Start a search, wait for several titles to scroll under **Scanning**, then stop it.
+  - **Expected:** those titles remain under **Partial finds** with explicit copy that they were not
+    saved as ranked recommendations. The reel no longer animates as if the search were running.
+  - **Result:** <!-- PASS / FAIL / BLOCKED -->
+  - **Notes:**
+
+- [ ] **G3 — Previous completed results survive** — `NOT TESTED`
+  - Complete one search, start a different search, then stop the second one.
+  - **Expected:** the first search remains below under **Previous results**. Stopping must not
+    replace it with the incomplete second run.
+  - **Result:** <!-- PASS / FAIL / BLOCKED -->
+  - **Notes:**
+
+- [ ] **G4 — Network interruption and navigation are safe** — `NOT TESTED`
+  - Start a search, briefly interrupt connectivity around Stop, then reconnect. Also leave and
+    reopen Discover after stopping.
+  - **Expected:** a lost response reconciles to the server's actual state; the UI never jumps back
+    to Searching after it has observed cancellation, and reopening shows the stopped snapshot plus
+    unchanged previous results.
   - **Result:** <!-- PASS / FAIL / BLOCKED -->
   - **Notes:**
 

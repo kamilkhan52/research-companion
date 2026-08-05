@@ -181,10 +181,20 @@ export default function DiscoverScreen() {
 
           {/* Keep the panel after an in-session run finishes so the fully-checked
               "Search complete" state (frame 02) actually renders above the results. */}
-          {runState.job && (runState.running || runState.job.status === 'done') ? (
+          {runState.job && (
+            runState.running
+            || runState.job.status === 'done'
+            || runState.job.status === 'cancelled'
+          ) ? (
             <>
-              <ProgressPanel job={runState.job} />
-              {runState.running ? <LiveFinds job={runState.job} /> : null}
+              <ProgressPanel
+                job={runState.job}
+                cancelling={runState.cancelling}
+                onCancel={runState.cancel}
+              />
+              {runState.running || runState.job.status === 'cancelled' ? (
+                <LiveFinds job={runState.job} cancelled={runState.job.status === 'cancelled'} />
+              ) : null}
             </>
           ) : null}
 
@@ -199,7 +209,9 @@ export default function DiscoverScreen() {
 
           {result && !runState.running ? (
             <View style={{ marginTop: space.xl }}>
-              <Text variant="editorial">Results</Text>
+              <Text variant="editorial">
+                {runState.job?.status === 'cancelled' ? 'Previous results' : 'Results'}
+              </Text>
               <Text variant="caption" color={t.muted} style={{ marginTop: space.xs, marginBottom: space.md }}>
                 {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
                 scholarly sources, ranked by fit and evidence.
@@ -253,7 +265,15 @@ export default function DiscoverScreen() {
 // underneath. The detail lines carry REAL counts now — a run takes minutes, and "1,204 papers
 // found" is the difference between progress and a spinner. The phase mapping lives in
 // `lib/discoverProgress` so it can be tested without rendering.
-function ProgressPanel({ job }: { job: DiscoveryJob }) {
+function ProgressPanel({
+  job,
+  cancelling,
+  onCancel,
+}: {
+  job: DiscoveryJob;
+  cancelling: boolean;
+  onCancel: () => Promise<boolean>;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   // The furthest step reached so far. Held here rather than derived, so an unrecognised phase
@@ -261,21 +281,39 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
   const furthest = useRef(0);
   const { steps, detail, done, step } = discoverProgress(job, furthest.current);
   furthest.current = job.status === 'running' ? step : 0;
+  const cancelled = job.status === 'cancelled';
 
   return (
     <Card style={styles.progressPanel}>
       <Text variant="serifTitle" color={t.mint}>
-        {done ? 'Search complete' : 'Searching…'}
+        {cancelled ? 'Search stopped' : done ? 'Search complete' : 'Searching…'}
       </Text>
       <ProgressSteps
         dotSize={28}
         style={styles.stepsRow}
         steps={steps.map((step) => ({ key: step.key, label: step.label, state: step.state }))}
       />
-      {detail ? (
+      {cancelled ? (
+        <Text variant="caption" style={{ textAlign: 'center' }}>
+          {job.finds?.length
+            ? 'Partial finds are shown below. They were not saved as ranked recommendations.'
+            : 'No partial finds were ready. Your previous completed results are unchanged.'}
+        </Text>
+      ) : detail ? (
         <Text variant="caption" numberOfLines={1} style={{ textAlign: 'center' }}>
           {detail}
         </Text>
+      ) : null}
+      {job.status === 'running' ? (
+        <Button
+          title={cancelling ? 'Stopping…' : 'Stop search'}
+          variant="ghost"
+          icon="x"
+          onPress={() => void onCancel()}
+          loading={cancelling}
+          accessibilityLabel="Stop discovery search"
+          style={styles.stopButton}
+        />
       ) : null}
     </Card>
   );
@@ -291,7 +329,7 @@ function ProgressPanel({ job }: { job: DiscoveryJob }) {
  *  that grew to two lines would put the loop seam out of alignment. Titles clamp to one line. */
 const FIND_ROW_H = 44;
 
-function LiveFinds({ job }: { job: DiscoveryJob }) {
+function LiveFinds({ job, cancelled = false }: { job: DiscoveryJob; cancelled?: boolean }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const finds = job.finds ?? [];
@@ -303,10 +341,10 @@ function LiveFinds({ job }: { job: DiscoveryJob }) {
       <View style={styles.findsHead}>
         <Icon name="compass" size={14} color={t.mint} />
         <Text variant="overline" color={t.mint}>
-          {ranked ? 'Best matches so far' : 'Scanning'}
+          {cancelled ? 'Partial finds' : ranked ? 'Best matches so far' : 'Scanning'}
         </Text>
       </View>
-      <ScanningList rowHeight={FIND_ROW_H} rows={2} fadeColor={t.elevated}>
+      <ScanningList rowHeight={FIND_ROW_H} rows={2} fadeColor={t.elevated} paused={cancelled}>
         {finds.map((find, i) => (
           <View key={`${find.title}:${i}`}>
             <Text variant="body" numberOfLines={1}>
@@ -714,6 +752,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     fontSize: 15,
   },
   progressPanel: { gap: space.md, marginTop: space.md, alignItems: 'center' },
+  stopButton: { alignSelf: 'stretch', height: 42 },
   stepsRow: {
     alignSelf: 'stretch',
     paddingHorizontal: space.sm,
