@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-29, end of the production-bring-up session)
+## Current position (updated 2026-07-31, after Discovery slice 1)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -20,10 +20,31 @@ policies, 0 `anon`/`authenticated` grants), two accounts allowlisted, five of hi
 with full git history, and his own prompt overrides and model picks in place. H26/H27/H28 are all
 closed.
 
-**M2.5 is code-complete and the app has had its first real device pass.** What now gates the AAB is
-not engineering — it is Kamil's sign-off plus H13. See "Where this session left off" below.
+**M2.5 is code-complete and the app is in continuous production-device review.** What gates the
+AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
+there are testers does not bank closed-test time and prematurely freezes the Android package name.
 
-### Where this session left off (read this first)
+**Main is at PR #309 with no open PRs.** Since the production bring-up, the Round-14 device queue
+shipped, project transfer began carrying gitignored working state, graph/citation enrichment moved
+from 46% to 92% coverage, the OpenAlex key went live, and Discovery slice 1 plus its staged/live-
+finds UI shipped as #306–#309. The latest production deploy and the local `device-main` worktree
+both serve #309.
+
+**Immediate handoff:**
+
+1. Continuous device feedback is now reconciled in
+   [`../device-review-ledger.md`](../device-review-ledger.md); that ledger distinguishes genuinely
+   open work from merged behavior that only needs device acceptance.
+2. Discovery slice 2 is the current planned feature work: OpenAlex topic sweep, Semantic Scholar
+   `search/bulk`, an incremental frontier, and restart-safe stage checkpoints. The durable plan is
+   `~/.claude/plans/keen-finding-rabin.md`.
+3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
+   reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
+   enough real timing/quality evidence to set a meaningful target.
+4. M3 metering, quotas, and per-turn model enforcement remains the production priority before
+   twelve testers can spend against shared provider credentials.
+
+### Earlier production-bring-up handoff (historical, retained for rationale)
 
 Merged this session, in order: **#274** deploy findings · **#275** duplicate-signup dead end ·
 **#276** default prior-notes scope · **#277** actionable empty-response error · **#278** stale

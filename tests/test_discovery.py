@@ -338,6 +338,36 @@ def test_run_discovery_event_sequence_and_result_shape():
     assert result["suggestions"][0]["citation_count"] == 500
 
 
+def test_cancel_after_a_progress_event_does_not_start_the_next_provider_stage():
+    """The job driver cannot enforce this by checking after ``next(generator)``—by then the
+    generator has already executed the next stage. The checkpoint must live immediately after
+    each yielded event inside ``run_discovery`` itself."""
+    cancelled = False
+    searches: list[str] = []
+
+    def search(query: str, n: int):
+        searches.append(query)
+        return [_cand("7777.00001")]
+
+    events = discovery.run_discovery(
+        "goals",
+        model="m",
+        search_fn=search,
+        llm_fn=fake_llm(),
+        cheap_llm_fn=fake_cheap_llm({}),
+        library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": []}),
+        citations_fn=fake_citations({}),
+        should_cancel=lambda: cancelled,
+    )
+    assert next(events)["type"] == "queries"
+    cancelled = True
+
+    with pytest.raises(StopIteration):
+        next(events)
+    assert searches == []
+
+
 def test_a_paper_the_cheap_screen_never_answered_for_survives_the_triage(temp_project):
     """Fail toward recall. The batch runner is deliberately tolerant of a model that skips rows,
     and this pins what "tolerant" must mean: an unjudged paper is uncertainty, and uncertainty
