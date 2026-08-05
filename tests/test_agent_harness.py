@@ -11,6 +11,7 @@ import pytest
 from app import agent, agent_harness
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RequestUsage
 
 from tests.conftest import add_paper
 
@@ -309,15 +310,114 @@ def _capture_usage(monkeypatch):
     return recorded, pending
 
 
-def test_billed_run_flags_estimated_because_cost_is_unavailable(temp_project, monkeypatch):
-    # OpenRouter's dollar cost is not surfaced through Pydantic AI, so ANY billed agentic run
-    # records its exact tokens AND a pending (cost-unknown) marker — so totals read estimated
-    # rather than implying an exact $0 (sol review rounds 3-5).
+def test_non_openrouter_run_uses_estimated_aggregate_fallback(temp_project, monkeypatch):
+    # Injected/non-OpenRouter models do not expose authoritative provider cost. Preserve the old
+    # aggregate token record plus an estimate marker rather than implying exact zero spend.
     recorded, pending = _capture_usage(monkeypatch)
     agent_harness._record_run_usage(
         _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis")
     assert recorded and recorded[0]["total_tokens"] == 140
     assert pending == [("analysis", None)]
+
+
+def _openrouter_response(
+    *, generation_id: str, cost: float | None, prompt: int, completion: int
+) -> ModelResponse:
+    details = {} if cost is None else {"cost": cost}
+    return ModelResponse(
+        parts=[TextPart(content="answer")],
+        usage=RequestUsage(input_tokens=prompt, output_tokens=completion),
+        model_name="anthropic/claude-test",
+        provider_name="openrouter",
+        provider_url="https://openrouter.ai/api/v1",
+        provider_response_id=generation_id,
+        provider_details=details,
+    )
+
+
+def test_openrouter_tool_loop_records_each_request_with_exact_cost(temp_project, monkeypatch):
+    recorded, pending = _capture_usage(monkeypatch)
+    responses = [
+        _openrouter_response(generation_id="gen-1", cost=0.012, prompt=100, completion=20),
+        _openrouter_response(generation_id="gen-2", cost=0.004, prompt=40, completion=10),
+    ]
+
+    # The aggregate deliberately disagrees: captured provider responses are authoritative and
+    # must not be followed by a duplicate aggregate record.
+    agent_harness._record_run_usage(
+        _usage_obj(input_tokens=999, output_tokens=999, requests=2),
+        None,
+        "analysis",
+        responses,
+    )
+
+    assert recorded == [
+        {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost": 0.012},
+        {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50, "cost": 0.004},
+    ]
+    assert pending == []
+
+
+def test_exact_openrouter_responses_leave_ledger_unestimated(temp_project):
+    responses = [
+        _openrouter_response(generation_id="gen-1", cost=0.001, prompt=20, completion=5),
+        _openrouter_response(generation_id="gen-2", cost=0.002, prompt=30, completion=10),
+    ]
+
+    agent_harness._record_run_usage(_usage_obj(requests=2), None, "analysis", responses)
+
+    summary = agent_harness.usage.summary()
+    assert summary["total"]["calls"] == 2
+    assert summary["total"]["total_tokens"] == 65
+    assert summary["total"]["cost_nanousd"] == 3_000_000
+    assert summary["pending_count"] == 0
+    assert summary["estimated"] is False
+
+
+def test_openrouter_response_without_cost_is_pending_by_generation(temp_project, monkeypatch):
+    recorded, pending = _capture_usage(monkeypatch)
+    responses = [
+        _openrouter_response(generation_id="gen-exact", cost=0.002, prompt=30, completion=5),
+        _openrouter_response(generation_id="gen-pending", cost=None, prompt=10, completion=2),
+    ]
+
+    agent_harness._record_run_usage(_usage_obj(requests=2), None, "analysis", responses)
+
+    assert recorded == [
+        {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35, "cost": 0.002}
+    ]
+    assert pending == [("analysis", "gen-pending")]
+
+
+def test_agentic_turn_accounts_from_captured_provider_response(temp_project, monkeypatch):
+    """Exercise the capture plumbing, not just the response-accounting helper."""
+    recorded, pending = _capture_usage(monkeypatch)
+
+    def model_fn(messages, info):
+        response = _openrouter_response(
+            generation_id="gen-captured", cost=0.006, prompt=70, completion=15
+        )
+        response.parts = [TextPart(content=_CANON)]
+        return response
+
+    turn = agent_harness.run_turn_agentic(
+        "a",
+        [
+            # Failed jobs leave already-recorded user turns with no assistant between them.
+            # Pydantic compacts these requests in captured history, so index-based slicing by the
+            # pre-cleanup history length used to discard this paid response entirely.
+            {"role": "user", "content": "opening question"},
+            {"role": "user", "content": "failed-turn question"},
+            {"role": "user", "content": "q"},
+        ],
+        model=FunctionModel(model_fn),
+    )
+
+    assert turn.canonical.startswith("The alpha method")
+    assert recorded == [
+        {"prompt_tokens": 70, "completion_tokens": 15, "total_tokens": 85, "cost": 0.006}
+    ]
+    assert pending == []
 
 
 def test_billed_run_without_token_counts_still_records_a_pending_marker(temp_project, monkeypatch):
