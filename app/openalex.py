@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import config, logging_config, store
+from . import config, logging_config, spend_control, store
 
 log = logging_config.get("openalex")
 
@@ -74,10 +74,16 @@ def make_client(*, timeout: float = TIMEOUT_S) -> httpx.Client:
     """The one way to build an OpenAlex client: polite-pool identification plus the API key,
     attached so that no call site — present or future — can drop it. Unkeyed, this is an
     ordinary client; OpenAlex answers with a 10x smaller daily allowance rather than a refusal.
+    The request hook is the spend-stop boundary for every OpenAlex workflow sharing this client,
+    including citation enrichment and Discovery recall.
     """
+    def require_spend(_request: httpx.Request) -> None:
+        spend_control.require_enabled()
+
     key = api_key()
     return httpx.Client(timeout=timeout, headers=_headers(),
-                        auth=_ApiKeyAuth(key) if key else None)
+                        auth=_ApiKeyAuth(key) if key else None,
+                        event_hooks={"request": [require_spend]})
 
 
 def _work_lookup_id(*, arxiv_id: str | None = None, doi: str | None = None) -> str | None:
@@ -99,6 +105,8 @@ def work_authorships_for(
     """[{name, affiliation}] for one identified work, or None when the lookup misses."""
     lookup = _work_lookup_id(arxiv_id=arxiv_id, doi=doi)
     if not lookup:
+        return None
+    if spend_control.disabled():
         return None
     r = client.get(
         f"{BASE}/works/{quote(lookup, safe=':./')}",

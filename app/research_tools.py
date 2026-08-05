@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from . import config, graph_store, logging_config, safe_fetch, sessions, store
+from . import config, graph_store, logging_config, safe_fetch, sessions, spend_control, store
 
 log = logging_config.get("research_tools")
 
@@ -162,6 +162,10 @@ def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Clien
     own = client is None
     client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
     try:
+        try:
+            spend_control.require_enabled()
+        except spend_control.ProviderSpendDisabled as e:
+            raise ToolError(str(e)) from e
         resp = client.post(f"{FIRECRAWL_BASE}/search",
                            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                            json={"query": queries[0] if queries else objective, "limit": 5})
@@ -193,6 +197,10 @@ def _firecrawl_fetch(urls: list[str], objective: str, *, client: httpx.Client | 
     try:
         chunks = []
         for url in urls[:4]:
+            try:
+                spend_control.require_enabled()
+            except spend_control.ProviderSpendDisabled as e:
+                raise ToolError(str(e)) from e
             resp = client.post(f"{FIRECRAWL_BASE}/scrape",
                                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                                json={"url": url, "formats": ["markdown"]})

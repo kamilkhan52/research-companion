@@ -37,7 +37,7 @@ from types import MappingProxyType
 
 import httpx
 
-from . import config, logging_config, usage
+from . import config, logging_config, spend_control, usage
 
 log = logging_config.get("llm")
 
@@ -245,8 +245,11 @@ def _post_with_retry(body: dict, key: str, timeout: float, tries: int) -> dict:
             time.sleep(_BACKOFF_BASE * attempt)
         attempts = attempt + 1
         try:
+            spend_control.require_enabled()
             r = httpx.post(f"{config.OPENROUTER_BASE}/chat/completions",
                            headers=_headers(key), json=body, timeout=timeout)
+        except spend_control.ProviderSpendDisabled as e:
+            raise LLMError(str(e)) from e
         except httpx.HTTPError as e:
             last = f"transport={type(e).__name__}"
             friendly = _TRANSPORT_FRIENDLY
@@ -366,6 +369,7 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
         gen_id: str | None = None
         got_200 = False
         try:
+            spend_control.require_enabled()
             with httpx.stream("POST", url, headers=_headers(key), json=body,
                               timeout=timeout) as r:
                 if r.status_code != 200:
@@ -404,6 +408,8 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
                         yield piece
             _account_stream(operation, body.get("model"), seen_usage, gen_id)  # exact or pending
             return  # stream finished cleanly
+        except spend_control.ProviderSpendDisabled as e:
+            raise LLMError(str(e)) from e
         except httpx.HTTPError as e:
             last = f"transport={type(e).__name__}"
             friendly = _TRANSPORT_FRIENDLY
