@@ -118,6 +118,16 @@ def test_editorials_and_datasets_are_never_a_reading_suggestion():
     assert counts["excluded_type"] == 1
 
 
+def test_a_scholarly_review_survives_for_the_survey_screening_protection():
+    """S2 uses Review for surveys; dropping the type here bypasses the SURVEY title tag."""
+    kept, counts = _gate([{
+        "title": "A Survey of Memory Disaggregation", "abstract": "a",
+        "publication_types": ["Review"],
+    }])
+    assert len(kept) == 1
+    assert counts["excluded_type"] == 0
+
+
 def test_a_row_with_neither_abstract_nor_citations_is_dropped_unless_grounded():
     kept, counts = _gate([{"title": "bare"}])
     assert kept == [] and counts["no_substance"] == 1
@@ -187,6 +197,34 @@ def test_seeing_a_candidate_again_updates_rather_than_duplicates_it():
     assert entry["times_seen"] == 2
     assert entry["channels"] == ["cites", "graph"]
     assert entry["first_seen"] == "2026-07-01" and entry["last_seen"] == "2026-07-30"
+
+
+def test_the_ledger_keeps_a_compact_candidate_reservoir_for_incremental_runs():
+    ledger = {"entries": {}}
+    discovery_ledger.observe(
+        ledger, "s2:p1", {
+            "paper_id": "p1", "title": "A", "abstract": "useful", "channels": ["bulk"],
+            "sources": ["semantic_scholar"], "authors": ["Ada"],
+        }, "bulk", "2026-07-30")
+    discovery_ledger.observe(
+        ledger, "s2:p1", {"paper_id": "p1", "title": "A", "citation_count": 9,
+                           "channels": ["topic"]}, "topic", "2026-07-31")
+
+    rows = discovery_ledger.reservoir(ledger)
+    assert len(rows) == 1
+    assert rows[0]["abstract"] == "useful"
+    assert rows[0]["citation_count"] == 9
+    assert set(rows[0]["channels"]) == {"bulk", "topic"}
+
+
+def test_frontier_updates_are_applied_only_from_complete_provider_results():
+    ledger = {"frontier": {}}
+    discovery_ledger.apply_frontier_updates(ledger, [
+        {"key": "topic:T1", "swept_to": "2026-07-31", "pages": 2},
+        {"key": "", "swept_to": "2026-07-31"},
+    ])
+    assert discovery_ledger.swept_to(ledger, "topic:T1") == "2026-07-31"
+    assert ledger["frontier"]["topic:T1"]["pages"] == 2
 
 
 # ---------- isolation (found the hard way) ----------
