@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
-from app import config, discovery, prompts, retriever
+from app import config, discovery, discovery_checkpoint, discovery_ledger, prompts, retriever
 from app.discovery import DiscoveryError
 
 QUERIES_JSON = {
@@ -97,6 +97,17 @@ def test_generate_queries_derives_plain_terms_for_an_older_prompt_override():
     }]}
     _, queries = discovery.generate_queries("goals", "m", fake_llm(queries_json=plan))
     assert queries[0]["search_terms"] == "processing in memory"
+    assert queries[0]["bulk_query"] == "processing in memory"
+
+
+def test_generate_queries_keeps_the_wide_boolean_query_for_bulk_recall():
+    plan = {"queries": [{
+        "query": 'abs:"memory pooling" AND cat:cs.AR',
+        "search_terms": "memory pooling fabrics",
+        "bulk_query": '"memory pooling" OR "memory disaggregation"',
+    }]}
+    _, queries = discovery.generate_queries("goals", "m", fake_llm(queries_json=plan))
+    assert queries[0]["bulk_query"] == '"memory pooling" OR "memory disaggregation"'
 
 
 def test_generate_queries_caps_at_max_queries():
@@ -368,6 +379,176 @@ def test_cancel_after_a_progress_event_does_not_start_the_next_provider_stage():
     assert searches == []
 
 
+def test_cancellation_inside_wide_recall_does_not_checkpoint_a_partial_stage(temp_project):
+    cancelled = False
+    wide_calls = 0
+
+    def wide(anchors, queries, ledger):
+        nonlocal cancelled, wide_calls
+        wide_calls += 1
+        cancelled = True
+        return ([_cand("8888.00001", "Partial")], {"degraded": []}, [{
+            "key": "bulk:test", "swept_to": "2026-07-31",
+        }])
+
+    events = list(discovery.run_discovery(
+        "goals", model="m", search_fn=lambda query, n: [], llm_fn=fake_llm(),
+        cheap_llm_fn=fake_cheap_llm({}), library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": [], "_anchors": []}),
+        wide_recall_fn=wide, citations_fn=lambda nodes, cache: None,
+        authorships_fn=lambda candidates: None, should_cancel=lambda: cancelled))
+
+    assert wide_calls == 1
+    assert events[-1]["type"] == "library"
+    assert not discovery_checkpoint.checkpoint_path().exists()
+    assert discovery_ledger.swept_to(discovery_ledger.load(), "bulk:test") is None
+
+
+def test_a_restarted_run_resumes_recall_and_only_then_commits_the_frontier(temp_project):
+    calls = {"plan": 0, "search": 0, "grounded": 0, "wide": 0}
+
+    def plan(model, system, user, max_tokens):
+        calls["plan"] += 1
+        return json.dumps(QUERIES_JSON)
+
+    def search(query, n):
+        calls["search"] += 1
+        return []
+
+    def grounded(papers):
+        calls["grounded"] += 1
+        return [], {"degraded": [], "_anchors": []}
+
+    def wide(anchors, queries, ledger):
+        calls["wide"] += 1
+        return ([_cand("8888.00001", "Wide paper")], {"degraded": []}, [{
+            "key": "bulk:test", "swept_to": "2026-07-31", "pages": 1,
+        }])
+
+    first = discovery.run_discovery(
+        "goals", model="m", search_fn=search, llm_fn=plan,
+        cheap_llm_fn=fake_cheap_llm({"Wide paper": 9}), library_fn=lambda: [],
+        recall_fn=grounded, wide_recall_fn=wide, citations_fn=lambda nodes, cache: None,
+        authorships_fn=lambda candidates: None)
+    for event in first:
+        if event["type"] == "gathered":
+            break
+    first.close()  # model a process dying after recall but before screening
+
+    assert discovery_checkpoint.checkpoint_path().exists()
+    assert discovery_ledger.swept_to(discovery_ledger.load(), "bulk:test") is None
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("a completed recall stage was bought twice")
+
+    events = list(discovery.run_discovery(
+        "goals", model="m", search_fn=should_not_run, llm_fn=should_not_run,
+        cheap_llm_fn=fake_cheap_llm({"Wide paper": 9}), library_fn=lambda: [],
+        recall_fn=should_not_run, wide_recall_fn=should_not_run,
+        citations_fn=lambda nodes, cache: None, authorships_fn=lambda candidates: None))
+
+    assert events[0]["resumed"] is True
+    assert events[-1]["result"]["suggestions"][0]["title"] == "Wide paper"
+    assert calls == {"plan": 1, "search": 2, "grounded": 1, "wide": 1}
+    assert discovery_ledger.swept_to(discovery_ledger.load(), "bulk:test") == "2026-07-31"
+    assert not discovery_checkpoint.checkpoint_path().exists()
+
+
+def test_resume_after_title_triage_does_not_rebuy_that_model_stage(temp_project):
+    counts = {"triage": 0, "abstract": 0}
+
+    def cheap(system, user, max_tokens):
+        triage = "<K or D>" in system
+        counts["triage" if triage else "abstract"] += 1
+        return "\n".join(
+            f"{line.split('|', 1)[0]}|{'K|METHOD' if triage else '8|METHOD|fit'}"
+            for line in user.splitlines() if line.split("|", 1)[0].isdigit())
+
+    wide = lambda anchors, queries, ledger: (  # noqa: E731 — compact injected stage fixture
+        [_cand("8888.00001", "Wide paper")], {"degraded": []}, [])
+    first = discovery.run_discovery(
+        "goals", model="m", search_fn=lambda query, n: [], llm_fn=fake_llm(),
+        cheap_llm_fn=cheap, library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": [], "_anchors": []}),
+        wide_recall_fn=wide, citations_fn=lambda nodes, cache: None,
+        authorships_fn=lambda candidates: None)
+    for event in first:
+        if event["type"] == "finds" and event.get("stage") == "screened":
+            break
+    first.close()
+    assert counts == {"triage": 1, "abstract": 0}
+
+    list(discovery.run_discovery(
+        "goals", model="m", search_fn=lambda *args: (_ for _ in ()).throw(
+            AssertionError("search repeated")), llm_fn=fake_llm(), cheap_llm_fn=cheap,
+        library_fn=lambda: [], recall_fn=lambda *args: (_ for _ in ()).throw(
+            AssertionError("recall repeated")), wide_recall_fn=lambda *args: (_ for _ in ()).throw(
+            AssertionError("wide recall repeated")), citations_fn=lambda nodes, cache: None,
+        authorships_fn=lambda candidates: None))
+    assert counts == {"triage": 1, "abstract": 1}
+
+
+def test_protected_title_drops_are_abstract_scored_and_make_false_negatives_measurable(
+    temp_project, monkeypatch,
+):
+    monkeypatch.setattr(discovery, "MAX_AFTER_ABSTRACTS", 1)
+    def cheap(system, user, max_tokens):
+        triage = "<K or D>" in system
+        return "\n".join(
+            f"{line.split('|', 1)[0]}|"
+            f"{'D|OFF-TOPIC' if triage else '9|METHOD|actually relevant'}"
+            for line in user.splitlines() if line.split("|", 1)[0].isdigit())
+
+    candidates = [_cand(f"9000.{i:05d}", f"Candidate {i}") for i in range(100)]
+    for candidate in candidates:
+        candidate["channels"] = ["bulk"]
+        candidate["sources"] = ["semantic_scholar"]
+    result = list(discovery.run_discovery(
+        "goals", model="m", search_fn=lambda query, n: [], llm_fn=fake_llm(),
+        cheap_llm_fn=cheap, library_fn=lambda: [],
+        recall_fn=lambda papers: ([], {"degraded": [], "_anchors": []}),
+        wide_recall_fn=lambda anchors, queries, ledger: (
+            candidates, {"degraded": []}, []),
+        citations_fn=lambda nodes, cache: None,
+        authorships_fn=lambda scored: None))[-1]["result"]
+
+    audit = result["audit"]["abstract_scoring"]["title_drop_audit"]
+    assert audit["reviewed"] > len(result["suggestions"]), (
+        "the audit was calculated only over the final display cap")
+    assert audit["false_negatives"] == audit["reviewed"]
+    assert audit["rate"] == 1.0
+
+
+def test_abstract_scores_below_the_display_cap_are_cached(temp_project):
+    candidates = [_cand(f"9100.{i:05d}", f"Candidate {i}") for i in range(70)]
+    calls = {"triage": 0, "abstract": 0}
+
+    def cheap(system, user, max_tokens):
+        triage = "<K or D>" in system
+        calls["triage" if triage else "abstract"] += 1
+        return "\n".join(
+            f"{line.split('|', 1)[0]}|{'K|METHOD' if triage else '8|METHOD|fit'}"
+            for line in user.splitlines() if line.split("|", 1)[0].isdigit())
+
+    def run():
+        return list(discovery.run_discovery(
+            "goals", model="m", search_fn=lambda query, n: [], llm_fn=fake_llm(),
+            cheap_llm_fn=cheap, library_fn=lambda: [],
+            recall_fn=lambda papers: ([], {"degraded": [], "_anchors": []}),
+            wide_recall_fn=lambda anchors, queries, ledger: (
+                candidates, {"degraded": []}, []),
+            citations_fn=lambda nodes, cache: None,
+            authorships_fn=lambda scored: None))[-1]["result"]
+
+    first = run()
+    first_calls = dict(calls)
+    second = run()
+
+    assert first["candidate_count"] == discovery.MAX_AFTER_ABSTRACTS
+    assert calls == first_calls
+    assert second["audit"]["abstract_scoring"]["reused"] == 70
+
+
 def test_a_paper_the_cheap_screen_never_answered_for_survives_the_triage(temp_project):
     """Fail toward recall. The batch runner is deliberately tolerant of a model that skips rows,
     and this pins what "tolerant" must mean: an unjudged paper is uncertainty, and uncertainty
@@ -574,6 +755,42 @@ def test_title_match_never_bridges_conflicting_strong_ids(temp_project):
     # Undoing one entry leaves the other hidden.
     assert discovery.unhide(["arxiv:2401.00001"]) is True
     assert len(discovery.load_hidden()) == 1
+
+
+def test_title_match_never_bridges_conflicting_openalex_ids(temp_project):
+    discovery.hide_candidate({"openalex_id": "https://openalex.org/W1",
+                              "title": "Shared Title Words"})
+    kept = discovery.filter_hidden([
+        {"openalex_id": "https://openalex.org/W2", "title": "Shared Title Words"},
+        {"title": "Shared Title Words"},
+    ])
+    assert kept == [{
+        "openalex_id": "https://openalex.org/W2", "title": "Shared Title Words",
+    }]
+
+
+def test_distinct_openalex_only_rows_keep_separate_reservoir_and_verdict_keys():
+    candidates = [
+        {"openalex_id": "https://openalex.org/W1", "title": "Shared title",
+         "abstract": "first", "channels": ["topic"]},
+        {"openalex_id": "https://openalex.org/W2", "title": "Shared title",
+         "abstract": "second", "channels": ["topic"]},
+    ]
+    ledger = {"entries": {}, "frontier": {}}
+    for candidate in candidates:
+        discovery_ledger.observe(
+            ledger, discovery._candidate_key(candidate), candidate, "topic", "2026-07-31")
+
+    assert [discovery._candidate_key(candidate) for candidate in candidates] == [
+        "openalex:w1", "openalex:w2"]
+    assert {row["openalex_id"] for row in discovery_ledger.reservoir(ledger)} == {
+        "https://openalex.org/W1", "https://openalex.org/W2"}
+
+    discovery_ledger.record_cheap_verdict(
+        discovery_ledger.get(ledger, "openalex:w1"), verdict="D", tag="OFF-TOPIC",
+        model="m", profile="p", today="2026-07-31")
+    assert discovery_ledger.cached_cheap_drop(
+        discovery_ledger.get(ledger, "openalex:w2"), model="m", profile="p") is False
 
 
 def test_degenerate_title_normalizations_never_match(temp_project):

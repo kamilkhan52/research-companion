@@ -115,6 +115,68 @@ def test_search_papers_rejects_malformed_provider_payload():
         s2.search_papers("query", key="", client=client, pacer=no_wait_pacer())
 
 
+def test_bulk_search_follows_tokens_and_preserves_the_incremental_date():
+    row = {
+        "paperId": "p1", "title": "Wide result", "abstract": "a", "authors": [],
+        "year": 2026, "externalIds": {}, "citationCount": 1,
+    }
+    client = FakeClient(
+        FakeResponse(200, {"token": "next-page", "data": [row]}),
+        FakeResponse(200, {"data": [{**row, "paperId": "p2", "title": "Second"}]}),
+    )
+
+    results, audit = s2.bulk_search_papers(
+        "memory systems", from_date="2026-07-01", key="", client=client,
+        pacer=no_wait_pacer())
+
+    assert [r["paper_id"] for r in results] == ["p1", "p2"]
+    assert audit == {"pages": 2, "complete": True, "next_token": None, "rows": 2,
+                     "cancelled": False}
+    assert client.calls[0]["path"] == "/paper/search/bulk"
+    assert client.calls[0]["params"]["publicationDateOrYear"] == "2026-07-01:"
+    assert client.calls[0]["params"]["limit"] == 1000
+    assert client.calls[1]["params"]["token"] == "next-page"
+
+
+def test_bulk_search_reports_a_cap_before_the_continuation_is_exhausted():
+    rows = [{"paperId": f"p{i}", "title": f"P{i}"} for i in range(3)]
+    client = FakeClient(FakeResponse(200, {"token": "more", "data": rows}))
+    results, audit = s2.bulk_search_papers(
+        "q", limit=2, key="", client=client, pacer=no_wait_pacer())
+    assert len(results) == 2
+    assert audit["complete"] is False
+    assert audit["next_token"] == "more"
+
+
+def test_bulk_search_refuses_a_repeated_token_instead_of_looping_forever():
+    row = {"paperId": "p", "title": "P"}
+    client = FakeClient(
+        FakeResponse(200, {"token": "same", "data": [row]}),
+        FakeResponse(200, {"token": "same", "data": [row]}),
+    )
+    with pytest.raises(s2.SemanticScholarError, match="repeated"):
+        s2.bulk_search_papers("q", key="", client=client, pacer=no_wait_pacer())
+
+
+def test_bulk_search_cancellation_stops_before_the_next_page():
+    cancelled = False
+    row = {"paperId": "p", "title": "P"}
+
+    class CancellingClient(FakeClient):
+        def get(self, path: str, *, params: dict, headers: dict):
+            nonlocal cancelled
+            response = super().get(path, params=params, headers=headers)
+            cancelled = True
+            return response
+
+    client = CancellingClient(FakeResponse(200, {"token": "next", "data": [row]}))
+    rows, audit = s2.bulk_search_papers(
+        "q", key="", client=client, pacer=no_wait_pacer(), should_cancel=lambda: cancelled)
+    assert len(client.calls) == 1
+    assert len(rows) == 1
+    assert audit["cancelled"] is True
+
+
 def test_references_normalizes_edges_and_follows_pagination():
     first = FakeResponse(200, {
         "next": 1,

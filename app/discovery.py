@@ -18,6 +18,7 @@ is injectable so tests and fixed quality fixtures run without network access.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -30,6 +31,7 @@ from . import (
     citations,
     config,
     discovery_batch,
+    discovery_checkpoint,
     discovery_gate,
     discovery_ledger,
     discovery_recall,
@@ -91,6 +93,9 @@ CitationsFn = Callable[[list[dict], dict], None]
 AuthorshipsFn = Callable[[list[dict]], None]
 CheapLlmFn = Callable[[str, str, int], str]
 RecallFn = Callable[[list], tuple[list[dict], dict]]
+WideRecallFn = Callable[[list[dict], list[dict], dict], tuple[list[dict], dict, list[dict]]]
+
+CHECKPOINT_PIPELINE = f"wide-recall-v1:{CHEAP_MODEL}"
 
 
 class DiscoveryError(Exception):
@@ -151,16 +156,16 @@ def save_result(result: dict) -> None:
 # ---------- hidden recommendations (R12.3) ----------
 # A reader can hide a recommended paper (already read, known under another project, simply not
 # interesting) so it stops surfacing. Hidden entries are per-project, persisted under .state/,
-# and keyed by the suggestion's deterministic identities (arXiv id, DOI, S2 paper id,
+# and keyed by the suggestion's deterministic identities (arXiv id, DOI, OpenAlex/S2 paper id,
 # normalized title) so the same work re-found through a different provider stays hidden.
 #
-# Matching semantics (sol review, PR #206): a strong identifier match (arxiv/doi/s2) always
+# Matching semantics (sol review, PR #206): a strong identifier match (arxiv/doi/openalex/s2) always
 # hides; the normalized title is only a FALLBACK — it never bridges two works that carry
 # conflicting strong identifiers of the same kind, and degenerate normalizations ("C++" →
 # "c") are ignored entirely, so hiding one paper can never hide a different one that merely
 # shares a flattened title.
 
-_STRONG_PREFIXES = ("arxiv:", "doi:", "s2:")
+_STRONG_PREFIXES = ("arxiv:", "doi:", "openalex:", "s2:")
 _TITLE_KEY_MIN_CHARS = 4
 
 # hide/unhide are read-modify-write over one JSON file; atomic_write_text prevents torn
@@ -346,9 +351,13 @@ def generate_queries(goals: str, model: str, llm_fn: LlmFn) -> tuple[str, list[d
         search_terms = (
             str(q.get("search_terms") or "").strip() if isinstance(q, dict) else ""
         ) or _plain_search_terms(text)
+        bulk_query = (
+            str(q.get("bulk_query") or "").strip() if isinstance(q, dict) else ""
+        ) or search_terms
         queries.append({
             "query": text,
             "search_terms": search_terms,
+            "bulk_query": bulk_query,
             "phase": str(phase).strip() or "narrow",
             "rationale": str(rationale).strip(),
         })
@@ -386,6 +395,9 @@ def _identity_keys(candidate: dict) -> list[str]:
     doi = _clean_doi(candidate.get("doi"))
     if doi:
         keys.append(f"doi:{doi}")
+    openalex_id = str(candidate.get("openalex_id") or "").strip().rsplit("/", 1)[-1]
+    if openalex_id:
+        keys.append(f"openalex:{openalex_id.lower()}")
     paper_id = str(candidate.get("paper_id") or "").strip()
     if paper_id:
         keys.append(f"s2:{paper_id}")
@@ -741,6 +753,88 @@ def _interleave_by_lane(candidates: list[dict], limit: int) -> list[dict]:
     return out
 
 
+def _title_protections(candidates: list[dict], profile: str) -> dict[int, int]:
+    """Candidates a cheap title DROP may not remove, with deterministic priority.
+
+    Title-only screening is the irreversible-risk stage: cross-domain work often looks wrong
+    before its abstract is read. Protect project-grounded evidence, source diversity, concepts,
+    eras, and a stable 2% sample of everything else so the false-negative rate is measurable.
+    """
+    protected: dict[int, int] = {}
+
+    def mark(candidate: dict, priority: int) -> None:
+        protected[id(candidate)] = max(priority, protected.get(id(candidate), 0))
+
+    ranked = sorted(candidates, key=lambda candidate: (
+        candidate.get("citation_count") or 0,
+        candidate.get("recall_score") or 0.0,
+        str(candidate.get("title") or "").lower(),
+    ), reverse=True)
+
+    lanes: dict[str, list[dict]] = {}
+    concepts: dict[str, list[dict]] = {}
+    strata: dict[str, list[dict]] = {}
+    for candidate in ranked:
+        channels = set(candidate.get("channels") or ["lexical"])
+        if discovery_gate.GROUNDED_CHANNELS & channels:
+            mark(candidate, 100)
+        for lane in channels:
+            lanes.setdefault(str(lane), []).append(candidate)
+
+        values = [str(value).strip().lower()
+                  for value in (candidate.get("fields_of_study") or [])[:3] if str(value).strip()]
+        for provenance in candidate.get("provenance") or []:
+            if not isinstance(provenance, dict):
+                continue
+            value = provenance.get("topic_id") or provenance.get("topic")
+            if not value and provenance.get("channel") == "bulk":
+                value = provenance.get("query")
+            if value:
+                values.append(str(value).strip().lower()[:120])
+        for concept in dict.fromkeys(values):
+            concepts.setdefault(concept, []).append(candidate)
+
+        year = candidate.get("year")
+        if isinstance(year, int):
+            stratum = ("pre-2000" if year < 2000 else "2000s" if year < 2010
+                       else "2010s" if year < 2020 else "2020s")
+            strata.setdefault(stratum, []).append(candidate)
+
+        digest = hashlib.sha256(
+            f"{profile}:{_candidate_key(candidate)}".encode()).digest()
+        if int.from_bytes(digest[:4], "big") % 100 < 2:
+            mark(candidate, 10)
+
+    for rows in lanes.values():
+        for candidate in rows[:2]:
+            mark(candidate, 60)
+    for rows in concepts.values():
+        for candidate in rows[:5]:
+            mark(candidate, 40)
+    for rows in strata.values():
+        for candidate in rows[:10]:
+            mark(candidate, 30)
+    return protected
+
+
+def _cap_with_protections(candidates: list[dict], limit: int,
+                          protected: dict[int, int]) -> list[dict]:
+    input_order = {id(candidate): index for index, candidate in enumerate(candidates)}
+    protected_rows = [candidate for candidate in candidates if id(candidate) in protected]
+    protected_rows.sort(key=lambda candidate: (
+        -protected[id(candidate)], -(candidate.get("citation_count") or 0),
+        -(candidate.get("recall_score") or 0.0), input_order[id(candidate)],
+    ))
+    # Protected does not mean one source may consume the whole cap. Provenance independence is
+    # itself a false-negative protection, so round-robin the protected pool across its lanes.
+    selected = _interleave_by_lane(protected_rows, limit)
+    selected_ids = {id(candidate) for candidate in selected}
+    if len(selected) < limit:
+        remainder = [candidate for candidate in candidates if id(candidate) not in selected_ids]
+        selected.extend(_interleave_by_lane(remainder, limit - len(selected)))
+    return selected
+
+
 def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: dict | None = None,
                   cheap_model: str = "", profile_hash: str = "") -> tuple[list[dict], dict]:
     """Stage B — drop the obviously irrelevant on titles alone, biased hard toward keeping."""
@@ -774,10 +868,12 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: di
     audit["reused"] = len(cached_keep)
 
     verdicts = {id(c): (values.get(i), True) for i, c in enumerate(to_judge, 1)}
+    protected = _title_protections(candidates, profile_hash or profile)
     kept: list[dict] = []
     for candidate in candidates:
         if id(candidate) in cached_keep:
             candidate["triage_tag"] = cached_keep[id(candidate)]
+            candidate["triage_verdict"] = "K"
             kept.append(candidate)
             continue
         fields, _ = verdicts.get(id(candidate), (None, False))
@@ -785,15 +881,22 @@ def triage_titles(candidates: list[dict], profile: str, cheap_llm, *, ledger: di
         # instruction "when uncertain, reply K" is that this stage must not delete on silence.
         verdict = (fields[0].upper() if fields else "K")[:1]
         tag = fields[1].upper() if fields and len(fields) > 1 else ""
-        if verdict == "D" and not (discovery_gate.GROUNDED_CHANNELS
-                                   & set(candidate.get("channels") or [])):
-            continue
+        candidate["triage_verdict"] = verdict
+        if verdict == "D":
+            if tag in {"FOUNDATION", "SURVEY"}:
+                protected[id(candidate)] = max(50, protected.get(id(candidate), 0))
+            if id(candidate) not in protected:
+                continue
+            candidate["screen_protected"] = True
         candidate["triage_tag"] = tag
         kept.append(candidate)
 
-    capped = _interleave_by_lane(kept, MAX_AFTER_TITLE_TRIAGE)
+    capped = _cap_with_protections(kept, MAX_AFTER_TITLE_TRIAGE, protected)
     audit["kept"] = len(capped)          # what actually goes forward, not the pre-cap count
     audit["dropped_by_cap"] = len(kept) - len(capped)
+    audit["protected"] = sum(1 for candidate in capped if id(candidate) in protected)
+    audit["audit_sample"] = sum(
+        1 for candidate in capped if protected.get(id(candidate)) == 10)
     return capped, audit
 
 
@@ -816,7 +919,7 @@ def score_abstracts(candidates: list[dict], profile: str, cheap_llm, *,
                 and isinstance(cached.get("relevance"), int)):
             candidate["relevance"] = float(cached["relevance"])
             candidate["role"] = str(cached.get("role") or "")
-            candidate.setdefault("screen_note", "")
+            candidate["screen_note"] = str(cached.get("note") or "")[:160]
             reused += 1
         else:
             to_judge.append(candidate)
@@ -917,9 +1020,10 @@ def run_discovery(
     cheap_llm_fn: CheapLlmFn | None = None,
     library_fn: Callable[[], list] | None = None,
     recall_fn: RecallFn | None = None,
+    wide_recall_fn: WideRecallFn | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Iterator[dict]:
-    """Run the multi-source pipeline and yield cheap snapshots for the background job."""
+    """Run the multi-source pipeline, resuming the last complete stage after a process restart."""
     goals = (goals or "").strip()
     if not goals:
         raise DiscoveryError("Describe the project's goals first.")
@@ -941,84 +1045,122 @@ def run_discovery(
     cheap_llm = cheap_llm_fn or _cheap_llm
     papers = _reading_list(library_fn)
     cancelled = should_cancel or (lambda: False)
+    checkpoint_key = discovery_checkpoint.fingerprint(
+        goals, papers, pipeline=CHECKPOINT_PIPELINE)
+    checkpoint = discovery_checkpoint.load(checkpoint_key)
+    state = dict(checkpoint.get("state") or {}) if checkpoint else {}
+    stage = checkpoint.get("stage") if checkpoint else ""
 
-    plan_error = ""
-    try:
-        focus, queries = generate_queries(goals, model, llm_fn)
-    except DiscoveryError as e:
-        # A model that answers the planner with prose, or truncates its JSON, used to end the run
-        # right here — 168s in, with nothing to show. Observed in production 2026-07-31. The plan
-        # is a convenience, not a requirement: the reader's own words are a perfectly good query,
-        # and the library-grounded channels do not use the plan at all. Degrade, do not die.
-        plan_error = str(e)
-        focus = goals[:120]
-        queries = [{"query": goals, "search_terms": goals, "phase": "broad",
-                    "rationale": "Searching your words directly"}]
-        log.warning("query planning failed (%s); searching the goals verbatim", plan_error)
-    yield {"type": "queries", "focus": focus, "queries": queries}
-    if cancelled():
-        return
-
-    lexical: list[dict] = []
-    lexical_error = ""
-    try:
-        for event in collect_candidates(queries, search_fn, semantic_search_fn):
-            if event["type"] == "candidates":
-                lexical = event["candidates"]
-            else:
-                yield event
-                if cancelled():
-                    return
-    except Exception as e:  # noqa: BLE001 — one lane must not be able to kill the run
-        # Keyword search is no longer the pipeline, so neither an empty result NOR a provider
-        # outage is fatal: the library-grounded channels can carry a run on their own. Catching
-        # only DiscoveryError left a transport failure killing a run that had good grounded
-        # results in hand. It still fails below if every channel came back empty, and the failure
-        # is recorded in `degraded` rather than swallowed — a run that searched half its sources
-        # and reports success presents an incomplete result as a complete one.
-        lexical_error = str(e) if isinstance(e, DiscoveryError) else (
-            f"{type(e).__name__}: {str(e)[:120]}")
-        log.info("lexical lane failed (%s); continuing on the grounded channels", lexical_error)
-
-    # The FIRST finds, as early as there is anything real to show. Keyword hits are relevant by
-    # construction and arrive within seconds, whereas grounded recall takes a minute or more — so
-    # emitting here is the difference between a reel that starts almost immediately and one that
-    # sits empty through the longest part of the run.
-    if lexical:
-        yield {"type": "finds", "stage": "searching",
-               "items": _preview(lexical, focus=f"{focus} {goals}", provisional=True)}
+    if checkpoint:
+        focus = str(state["focus"])
+        queries = list(state["queries"])
+        plan_error = str(state.get("plan_error") or "")
+        lexical_error = str(state.get("lexical_error") or "")
+        ledger = state["ledger"]
+        candidates = list(state["candidates"])
+        recall_audit = state["recall_audit"]
+        frontier_updates = list(state.get("frontier_updates") or [])
+        yield {"type": "queries", "focus": focus, "queries": queries, "resumed": True}
+        if cancelled():
+            return
+        yield {"type": "library", "papers": len(papers), "resumed": True}
+        if cancelled():
+            return
+        yield {"type": "gathered", "count": len(candidates), "resumed": True}
+        if cancelled():
+            return
+    else:
+        plan_error = ""
+        try:
+            focus, queries = generate_queries(goals, model, llm_fn)
+        except DiscoveryError as e:
+            # Query planning is a convenience. The reader's own words are a usable fallback and
+            # neither grounded nor topic recall depends on a valid JSON plan.
+            plan_error = str(e)
+            focus = goals[:120]
+            queries = [{"query": goals, "search_terms": goals, "phase": "broad",
+                        "rationale": "Searching your words directly"}]
+            log.warning("query planning failed (%s); searching the goals verbatim", plan_error)
+        yield {"type": "queries", "focus": focus, "queries": queries}
         if cancelled():
             return
 
-    # The library-grounded channels. They are additive: a brand-new project has no papers and no
-    # graph, so they contribute nothing and Discovery still works off the lexical lane alone —
-    # which is the case the feature was originally built for and must not regress.
-    yield {"type": "library", "papers": len(papers)}
-    if cancelled():
-        return
-    grounded, recall_audit = _grounded_candidates(papers, recall_fn=recall_fn)
+        lexical: list[dict] = []
+        lexical_error = ""
+        try:
+            for event in collect_candidates(queries, search_fn, semantic_search_fn):
+                if event["type"] == "candidates":
+                    lexical = event["candidates"]
+                else:
+                    yield event
+                    if cancelled():
+                        return
+        except Exception as e:  # noqa: BLE001 — one lane must not kill the run
+            lexical_error = str(e) if isinstance(e, DiscoveryError) else (
+                f"{type(e).__name__}: {str(e)[:120]}")
+            log.info("lexical lane failed (%s); continuing on other channels", lexical_error)
 
-    candidates = discovery_recall.merge_candidates(
-        [grounded, lexical], identity_keys=_identity_keys, merge_fn=_merge_candidate)
-    if not candidates:
-        raise DiscoveryError(lexical_error or (
-            "No papers found. Try rephrasing the goals with more specific terms."))
-    yield {"type": "gathered", "count": len(candidates)}
-    if cancelled():
-        return
+        if lexical:
+            yield {"type": "finds", "stage": "searching",
+                   "items": _preview(lexical, focus=f"{focus} {goals}", provisional=True)}
+            if cancelled():
+                return
 
-    ledger = discovery_ledger.load()
+        yield {"type": "library", "papers": len(papers)}
+        if cancelled():
+            return
+        ledger = discovery_ledger.load()
+        grounded, recall_audit = _grounded_candidates(papers, recall_fn=recall_fn)
+        anchors = list(recall_audit.pop("_anchors", []))
+        wide, wide_audit, frontier_updates = _wide_candidates(
+            anchors, queries, ledger, wide_recall_fn=wide_recall_fn,
+            allow_network=not injected_search, should_cancel=cancelled)
+        # Provider lanes check cancellation between pages and may return a useful partial batch.
+        # It is NOT a completed recall stage: checkpointing it would make the next explicit run
+        # resume past the pages whose frontiers were deliberately left unadvanced.
+        if cancelled():
+            return
+        recall_audit["wide"] = wide_audit
+        recall_audit["degraded"] = [
+            *recall_audit.get("degraded", []), *wide_audit.get("degraded", [])]
+
+        # The durable reservoir participates in every incremental run. Without it, advancing a
+        # topic frontier would make yesterday's candidates impossible to reconstruct today.
+        candidates = discovery_recall.merge_candidates(
+            [discovery_ledger.reservoir(ledger), grounded, lexical, wide],
+            identity_keys=_identity_keys, merge_fn=_merge_candidate)
+        if not candidates:
+            raise DiscoveryError(lexical_error or (
+                "No papers found. Try rephrasing the goals with more specific terms."))
+        today = _now()[:10]
+        for candidate in candidates:
+            discovery_ledger.observe(
+                ledger, _candidate_key(candidate), candidate,
+                (candidate.get("channels") or ["lexical"])[0], today)
+        state.update({
+            "focus": focus, "queries": queries, "plan_error": plan_error,
+            "lexical_error": lexical_error, "ledger": ledger, "candidates": candidates,
+            "recall_audit": recall_audit, "frontier_updates": frontier_updates,
+        })
+        discovery_checkpoint.save(checkpoint_key, "recall", state)
+        stage = "recall"
+        yield {"type": "gathered", "count": len(candidates)}
+        if cancelled():
+            return
+
     profile_hash = discovery_ledger.profile_hash(goals, CHEAP_MODEL)
     today = _now()[:10]
-    for candidate in candidates:
-        entry = discovery_ledger.observe(ledger, _candidate_key(candidate), candidate,
-                                         (candidate.get("channels") or ["lexical"])[0], today)
-        del entry
-
-    survivors, gate_counts = discovery_gate.apply_gate(
-        candidates, known_papers=papers, hidden_filter=filter_hidden,
-        titles_match=graph.titles_match, ledger=ledger, cheap_model=CHEAP_MODEL,
-        profile=profile_hash, today_year=datetime.now(UTC).year, identity_keys=_identity_keys)
+    if discovery_checkpoint.STAGES.index(stage) < discovery_checkpoint.STAGES.index("gated"):
+        survivors, gate_counts = discovery_gate.apply_gate(
+            candidates, known_papers=papers, hidden_filter=filter_hidden,
+            titles_match=graph.titles_match, ledger=ledger, cheap_model=CHEAP_MODEL,
+            profile=profile_hash, today_year=datetime.now(UTC).year, identity_keys=_identity_keys)
+        state.update({"survivors": survivors, "gate_counts": gate_counts})
+        discovery_checkpoint.save(checkpoint_key, "gated", state)
+        stage = "gated"
+    else:
+        survivors = list(state["survivors"])
+        gate_counts = state["gate_counts"]
     yield {"type": "gated", "kept": len(survivors), "counts": gate_counts}
     if cancelled():
         return
@@ -1037,14 +1179,19 @@ def run_discovery(
     yield {"type": "triage", "count": len(survivors)}
     if cancelled():
         return
-    gated = survivors                       # the population the cheap screen actually judged
-    triaged, triage_audit = triage_titles(gated, profile, cheap_llm, ledger=ledger,
-                                          cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
-    # ONLY over `gated`. Passing the pre-gate list here recorded a fabricated model rejection for
-    # every candidate the deterministic gate had removed — including hidden ones — and the gate
-    # then honoured that rejection on later runs, so un-hiding a paper could never bring it back.
-    _record_verdicts(ledger, triaged, gated, kind="cheap", model=CHEAP_MODEL,
-                     profile=profile_hash, today=today)
+    gated = survivors
+    if discovery_checkpoint.STAGES.index(stage) < discovery_checkpoint.STAGES.index("triaged"):
+        triaged, triage_audit = triage_titles(
+            gated, profile, cheap_llm, ledger=ledger,
+            cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
+        _record_verdicts(ledger, triaged, gated, kind="cheap", model=CHEAP_MODEL,
+                         profile=profile_hash, today=today)
+        state.update({"ledger": ledger, "triaged": triaged, "triage_audit": triage_audit})
+        discovery_checkpoint.save(checkpoint_key, "triaged", state)
+        stage = "triaged"
+    else:
+        triaged = list(state["triaged"])
+        triage_audit = state["triage_audit"]
 
     yield {"type": "finds", "stage": "screened",
            "items": _preview(triaged, focus=f"{focus} {goals}", provisional=True)}
@@ -1059,10 +1206,37 @@ def run_discovery(
     yield {"type": "scoring", "count": len(triaged)}
     if cancelled():
         return
-    scored, abstract_audit = score_abstracts(triaged, profile, cheap_llm, ledger=ledger,
-                                             cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
-    scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
-    scored = scored[:MAX_AFTER_ABSTRACTS]
+    if discovery_checkpoint.STAGES.index(stage) < discovery_checkpoint.STAGES.index("scored"):
+        all_scored, abstract_audit = score_abstracts(
+            triaged, profile, cheap_llm, ledger=ledger,
+            cheap_model=CHEAP_MODEL, profile_hash=profile_hash)
+        all_scored.sort(key=lambda c: float(c.get("relevance") or 0.0), reverse=True)
+        # The false-negative denominator is every protected title DROP we paid to abstract-score,
+        # not merely the final 60. Computing after the final cap made the audit look healthier by
+        # silently excluding reviewed drops that ranked below the display boundary.
+        audited_drops = [candidate for candidate in all_scored
+                         if candidate.get("screen_protected")
+                         and candidate.get("triage_verdict") == "D"]
+        false_negatives = [candidate for candidate in audited_drops
+                           if float(candidate.get("relevance") or 0) >= 7]
+        abstract_audit["title_drop_audit"] = {
+            "reviewed": len(audited_drops),
+            "false_negatives": len(false_negatives),
+            "rate": (round(len(false_negatives) / len(audited_drops), 4)
+                     if audited_drops else None),
+        }
+        # Cache every score we bought, including candidates below the final display cap. Otherwise
+        # an unchanged run re-pays to score up to 340 rows the ledger deliberately forgot.
+        _record_verdicts(ledger, all_scored, triaged, kind="abstract", model=CHEAP_MODEL,
+                         profile=profile_hash, today=today)
+        scored = all_scored[:MAX_AFTER_ABSTRACTS]
+        state.update({"ledger": ledger, "scored": scored,
+                      "abstract_audit": abstract_audit})
+        discovery_checkpoint.save(checkpoint_key, "scored", state)
+        stage = "scored"
+    else:
+        scored = list(state["scored"])
+        abstract_audit = state["abstract_audit"]
 
     ranked_so_far = blend_and_rank(scored)
     yield {"type": "finds", "stage": "ranked", "items": _preview(ranked_so_far, focus=focus)}
@@ -1075,9 +1249,8 @@ def run_discovery(
     authorships_fn(scored)
 
     ranked = blend_and_rank(scored)
-    _record_verdicts(ledger, ranked, triaged, kind="abstract", model=CHEAP_MODEL,
-                     profile=profile_hash, today=today)
-    _persist_ledger(ledger)
+    discovery_ledger.apply_frontier_updates(ledger, frontier_updates)
+    ledger_saved = _persist_ledger(ledger)
 
     funnel = {"gathered": len(candidates), **gate_counts,
               "after_triage": triage_audit.get("kept", 0), "surfaced": len(ranked)}
@@ -1112,6 +1285,10 @@ def run_discovery(
         "suggestions": ranked,
         "generated_at": _now(),
     }}
+    if ledger_saved:
+        # The driver persists the yielded result before it asks the generator for another event.
+        # Reaching this line therefore proves result + ledger are both durable.
+        discovery_checkpoint.clear()
 
 
 #: How many live finds ride on the job snapshot. The client shows only two at a time and scrolls
@@ -1231,7 +1408,7 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     """R1+R2+R5. Injectable as one seam so the suite stays network-free."""
     if recall_fn is not None:
         return recall_fn(papers)
-    audit: dict = {"anchors": 0, "cites": 0, "graph": 0, "degraded": []}
+    audit: dict = {"anchors": 0, "cites": 0, "graph": 0, "degraded": [], "_anchors": []}
     if not papers:
         return [], audit
 
@@ -1240,10 +1417,12 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     audit["graph"] = len(from_graph)
 
     anchor_cache = graph_data.setdefault("openalex_anchors", {})
-    before = len(anchor_cache)
+    before = json.dumps(anchor_cache, sort_keys=True, ensure_ascii=False)
     client = openalex.make_client(timeout=discovery_recall.TIMEOUT_S)
     try:
         anchors = discovery_recall.resolve_anchors(papers, client=client, cache=anchor_cache)
+        discovery_recall.hydrate_anchor_topics(anchors, client=client, cache=anchor_cache)
+        audit["_anchors"] = anchors
         audit["anchors"] = len(anchors)
         from_cites = discovery_recall.chase_citations(anchors, client=client)
         audit["cites"] = len(from_cites)
@@ -1254,12 +1433,26 @@ def _grounded_candidates(papers: list, *, recall_fn) -> tuple[list[dict], dict]:
     finally:
         client.close()
 
-    if len(anchor_cache) != before:
+    if json.dumps(anchor_cache, sort_keys=True, ensure_ascii=False) != before:
         try:
             graph_store.save(graph_data)   # anchor ids are free but slow; pay for them once ever
         except Exception:  # noqa: BLE001
             pass
     return [*from_cites, *from_graph], audit
+
+
+def _wide_candidates(anchors: list[dict], queries: list[dict], ledger: dict, *,
+                     wide_recall_fn: WideRecallFn | None,
+                     allow_network: bool, should_cancel: Callable[[], bool]
+                     ) -> tuple[list[dict], dict, list[dict]]:
+    """R3+R4 behind one injectable seam. Tests with injected providers stay network-free."""
+    if wide_recall_fn is not None:
+        return wide_recall_fn(anchors, queries, ledger)
+    if not allow_network:
+        return [], {"topic": {}, "bulk": {}, "degraded": []}, []
+    return discovery_recall.wide_recall(
+        anchors, queries, frontier=ledger.get("frontier") or {},
+        should_cancel=should_cancel)
 
 
 def _record_verdicts(ledger: dict, judged: list[dict], all_candidates: list[dict], *,
@@ -1273,18 +1466,22 @@ def _record_verdicts(ledger: dict, judged: list[dict], all_candidates: list[dict
             continue
         if kind == "cheap":
             discovery_ledger.record_cheap_verdict(
-                entry, verdict=("K" if key in kept_keys else "D"),
+                entry, verdict=(str(candidate.get("triage_verdict") or "")
+                                or ("K" if key in kept_keys else "D")),
                 tag=str(candidate.get("triage_tag") or ""), model=model,
                 profile=profile, today=today)
         elif key in kept_keys and isinstance(candidate.get("relevance"), (int, float)):
             discovery_ledger.record_abstract_score(
                 entry, relevance=int(candidate["relevance"]),
-                role=str(candidate.get("role") or ""), model=model,
+                role=str(candidate.get("role") or ""),
+                note=str(candidate.get("screen_note") or ""), model=model,
                 profile=profile, today=today)
 
 
-def _persist_ledger(ledger: dict) -> None:
+def _persist_ledger(ledger: dict) -> bool:
     try:
         discovery_ledger.save(ledger)
+        return True
     except Exception as e:  # noqa: BLE001 — losing the ledger costs money, never correctness
         log.warning("could not persist the discovery ledger (%s)", type(e).__name__)
+        return False

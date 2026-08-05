@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-07-31, after Discovery slice 1)
+## Current position (updated 2026-07-31, during Discovery slice 2 review)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -24,7 +24,8 @@ closed.
 AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
 there are testers does not bank closed-test time and prematurely freezes the Android package name.
 
-**Main is at PR #309 with no open PRs.** Since the production bring-up, the Round-14 device queue
+**Main is at PR #309.** PR #310 is the open draft for cooperative Discover cancellation, and
+Discovery slice 2 is stacked on it as draft PR #311. Since the production bring-up, the Round-14 device queue
 shipped, project transfer began carrying gitignored working state, graph/citation enrichment moved
 from 46% to 92% coverage, the OpenAlex key went live, and Discovery slice 1 plus its staged/live-
 finds UI shipped as #306–#309. The latest production deploy and the local `device-main` worktree
@@ -35,9 +36,10 @@ both serve #309.
 1. Continuous device feedback is now reconciled in
    [`../device-review-ledger.md`](../device-review-ledger.md); that ledger distinguishes genuinely
    open work from merged behavior that only needs device acceptance.
-2. Discovery slice 2 is the current planned feature work: OpenAlex topic sweep, Semantic Scholar
-   `search/bulk`, an incremental frontier, and restart-safe stage checkpoints. The durable plan is
-   `~/.claude/plans/keen-finding-rabin.md`.
+2. Discovery slice 2 is implemented and entering review: OpenAlex topic sweep, Semantic Scholar
+   `search/bulk`, an incremental frontier backed by a durable candidate reservoir, restart-safe
+   stage checkpoints, and measurable title-screen false-negative protection. The durable plan is
+   `~/.claude/plans/keen-finding-rabin.md`; live/device measurement remains after merge.
 3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
    reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
    enough real timing/quality evidence to set a meaningful target.
@@ -453,10 +455,29 @@ Two harness holes this work exposed, both now closed in `tests/conftest.py`:
   enough; a stale discovery ledger silently satisfied a screening stage and the failure looked like
   a bug in the code under test. `_LEGACY_PROJECT_DIR` is redirected too, and a test pins it shut.
 
-**Next:** slice 2 (OpenAlex topic sweep + Semantic Scholar `search/bulk` + the incremental
-frontier), then slice 3 (the comparative reading-path call and its client surface). A "Quick" mode
+**Next:** review and measure slice 2 (OpenAlex topic sweep + Semantic Scholar `search/bulk` + the
+incremental frontier), then slice 3 (the comparative reading-path call and its client surface). A "Quick" mode
 is wanted — Discover is the first thing a new user touches — but is deliberately deferred until the
 optimised default has been used, so its targets can be set from real numbers rather than guesses.
+
+#### Discovery rebuild — slice 2 implementation candidate 2026-07-31
+
+Slice 2 adds the two graph-independent wide-recall lanes without replacing the lexical or
+library-grounded lanes. One OpenAlex cursor sweep ORs the six strongest project topics under one
+30-page total cap. Up to four broad Boolean Semantic Scholar `paper/search/bulk` lanes request
+1,000 rows per paced page and 2,000 rows per query. The providers run alongside one another, but
+Semantic Scholar pagination remains serialized behind its account-wide pacer.
+
+Incrementality is crash-safe rather than merely cached. The discovery ledger now retains a compact
+candidate reservoir, and provider frontier updates stay pending until the reservoir and completed
+run are durable. A 24-hour per-project checkpoint snapshots the completed recall, gate, title
+triage, and abstract-score stages; it is invalidated by goals, reading-list identity, or pipeline
+version changes. Cancellation and provider failures do not advance a truncated frontier.
+
+The title screen protects project-grounded candidates, source lanes, topic/concept groups, time
+strata, FOUNDATION/SURVEY labels, and a deterministic 2% audit sample. Protected title drops still
+receive abstract scoring, and the run reports the observed false-negative count/rate over the full
+reviewed population (not only the final display cap). Every abstract score paid for is cached.
 
 #### OpenAlex, re-verified live 2026-07-30 (corrects the "it's dead" note above)
 
