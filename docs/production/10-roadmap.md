@@ -1356,7 +1356,7 @@ ownership + rate-limit + reservation guard.
 Append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost, timestamp,
 generation id) now write alongside the existing aggregate.
 
-**Rate-limit status (2026-08-06): implemented.** `app/rate_limits.py` enforces two independent
+**Rate-limit status (2026-08-06): merged as [#325](https://github.com/kamilkhan52/research-companion/pull/325), deployed to staging and production.** `app/rate_limits.py` enforces two independent
 per-account ceilings — a sliding requests-per-minute window and a concurrent-jobs cap — at the
 `JobRegistry` seam, so a new paid entry point is covered by construction instead of by remembering
 to add a check. Registries carry a `metered` flag: the eight user-initiated paid entry points
