@@ -10,7 +10,16 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import canonical_jobs, config, cover_jobs, retrieval_agent, retriever, store
+from . import (
+    canonical_jobs,
+    config,
+    cover_jobs,
+    quotas,
+    rate_limits,
+    retrieval_agent,
+    retriever,
+    store,
+)
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -169,6 +178,11 @@ def start_retrieval(
 
     try:
         job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    except (quotas.QuotaError, rate_limits.RateLimited):
+        # Both subclass RuntimeError, so the tombstone catch below would swallow them and tell a
+        # reader who is out of budget — or simply going too fast — that their project is being
+        # moved. Re-raised so the 402/429/503 handlers in `main` see them.
+        raise
     except RuntimeError as exc:
         raise RetrievalError(
             "This project is being moved or split — wait, then fetch the paper again.",
@@ -358,6 +372,11 @@ def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:
 
     try:
         return _registry.start_or_join(slug, make_job, work)
+    except (quotas.QuotaError, rate_limits.RateLimited):
+        # Both subclass RuntimeError, so the tombstone catch below would swallow them and tell a
+        # reader who is out of budget — or simply going too fast — that their project is being
+        # moved. Re-raised so the 402/429/503 handlers in `main` see them.
+        raise
     except RuntimeError as exc:
         raise RetrievalError(
             "This project is being moved or split — wait, then upload the PDF again.",

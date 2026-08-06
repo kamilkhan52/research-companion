@@ -102,6 +102,27 @@ def max_cost_nanousd(operation: str) -> int:
     return _MAX_NANOUSD.get(operation, _DEFAULT_MAX_NANOUSD)
 
 
+#: Per-paper hold for a graph build: the measured $0.084 of extraction (§2b) plus headroom for the
+#: citation/metadata calls that accompany it.
+GRAPH_NANOUSD_PER_PAPER = 100_000_000  # $0.10
+
+
+def graph_build_nanousd(uncached_papers: int) -> int:
+    """What to hold for a build that must extract `uncached_papers` papers.
+
+    Sized to the work actually about to happen rather than to the corpus, because extractions are
+    cached per paper (`graph.py`: "re-running after adding one new paper only spends tokens on
+    that paper"). A flat corpus-sized hold would refuse every rebuild of a large project on a
+    tier that can comfortably afford the one new paper it is really extracting — and a flat SMALL
+    hold would let a first build of that project overshoot the ceiling, since settlement charges
+    actual and nothing clamps it to the reservation.
+
+    A build with nothing to extract still holds one paper's worth: it is not free (graph assembly
+    and any metadata refresh still run), and a zero maximum is rejected by `quotas.reserve`.
+    """
+    return max(1, int(uncached_papers)) * GRAPH_NANOUSD_PER_PAPER
+
+
 def enabled() -> bool:
     """Whether spend ceilings can be enforced at all.
 

@@ -85,7 +85,8 @@ def note_spend(nanousd: int) -> None:
 
 
 def hold(operation: str, job_id: str, *, model: str | None = None,
-         provider: str = "openrouter", lease_seconds: int = 3600) -> _Held | None:
+         provider: str = "openrouter", lease_seconds: int = 3600,
+         maximum_nanousd: int | None = None) -> _Held | None:
     """Reserve this account's pessimistic maximum for one job, or raise if it cannot be afforded.
 
     Returns None when ceilings are inert (no database, or nobody signed in). Raises
@@ -96,7 +97,10 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
     if not spend_limits.enabled():
         return None
     user_id = config.active_user_id()
-    maximum = spend_limits.max_cost_nanousd(operation)
+    # An explicit maximum is for work whose size is known at admission and varies hugely — a
+    # graph build extracts only its UNCACHED papers, so a flat corpus-sized hold would refuse
+    # every rebuild of a large project while a flat small one would let the first build overshoot.
+    maximum = maximum_nanousd or spend_limits.max_cost_nanousd(operation)
     reservation = quotas.reserve(
         user_id=user_id,
         project_id=config.active_project_id(),

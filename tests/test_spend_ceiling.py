@@ -242,3 +242,41 @@ def test_real_usage_recording_feeds_the_reservation(ledger, temp_project):
 
     # $0.002 -> 2,000,000 nano-USD, charged against the reservation rather than only the ledger.
     assert ledger["settle"] == [("res-1", 2_000_000)]
+
+
+def test_a_continuation_is_exempt_from_the_rate_ceiling_but_still_holds_budget(ledger):
+    """Rate limiting and budget answer different questions about the same work.
+
+    A listening turn's narration was exempt from BOTH because one flag controlled both — so the
+    largest variable cost in the app (audio) sat entirely outside the spend ceiling on the path
+    readers actually take. It must still not consume a concurrency slot, since it was authorized
+    when its parent turn was admitted.
+    """
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="speech_synthesis")
+    token = config.set_active_user(ALICE)
+    try:
+        job = reg.start_or_join(
+            "k", lambda: SampleJob(id=new_id()), lambda j: None,
+            metered=False, reserves=True,
+        )
+        _settled(reg, job.id)
+        _wait_for(lambda: ledger["settle"], what="the continuation to settle")
+    finally:
+        config.reset_active_user(token)
+    assert len(ledger["reserve"]) == 1, "a continuation's spend must still be held"
+    assert ledger["reserve"][0]["operation"] == "speech_synthesis"
+
+
+def test_an_explicit_maximum_overrides_the_flat_per_operation_hold(ledger):
+    """Graph builds size their hold to the papers they will actually extract."""
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="graph_build")
+    token = config.set_active_user(ALICE)
+    try:
+        job = reg.start_or_join(
+            "k", lambda: SampleJob(id=new_id()), lambda j: None,
+            hold_max_nanousd=spend_limits.graph_build_nanousd(3),
+        )
+        _settled(reg, job.id)
+    finally:
+        config.reset_active_user(token)
+    assert ledger["reserve"][0]["maximum_cost_nanousd"] == 3 * spend_limits.GRAPH_NANOUSD_PER_PAPER

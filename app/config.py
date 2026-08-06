@@ -600,7 +600,19 @@ DEFAULT_PRIOR_NOTES_SCOPE = "all"
 # `llm.PRIVACY_ROUTING` before being pinned — a model with no zero-retention endpoint 404s, and
 # pinning narration to one would have taken out all audio. `graph.resolve_model` already defaults
 # to DeepSeek V4 Pro, so no third default needed changing.
-DEFAULT_ANALYSIS_MODEL = "deepseek/deepseek-v4-pro"
+# Moved from `deepseek-v4-pro` to Flash-0731 on 2026-08-06 (Kamil's call: it currently reads
+# better than Pro). It is also 4.8x cheaper — $0.09/$0.18 per M against $0.435/$0.87 — which does
+# more for the unit economics than any ceiling, since §8 of the pricing analysis names model cost
+# as the largest single lever.
+#
+# Verified before pinning, the same way the previous defaults were: present in the live catalogue,
+# and called successfully under `llm.PRIVACY_ROUTING` (a model with no zero-retention endpoint
+# 404s). It IS a reasoning model, so it spends hidden tokens before answering — a call with a tiny
+# `max_tokens` returns empty with `finish_reason=length`. Checked against the two short-output
+# shapes in the app: a listening cue at 120 tokens and a triage line at 60 both answer correctly.
+# Those paths use the narration and discovery models rather than this one, so the exposure is
+# small, but the failure mode is worth knowing — `llm.py` has a named error for exactly it.
+DEFAULT_ANALYSIS_MODEL = "deepseek/deepseek-v4-flash-0731"
 DEFAULT_NARRATION_MODEL = "deepseek/deepseek-v4-flash"
 
 _ENV_DEFAULTS = {

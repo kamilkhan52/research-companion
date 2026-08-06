@@ -169,7 +169,7 @@ def test_default_models_are_deepseek_not_a_frontier_model(monkeypatch):
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
     try:
         importlib.reload(config)
-        assert config._ENV_DEFAULTS["model"] == "deepseek/deepseek-v4-pro"
+        assert config._ENV_DEFAULTS["model"] == "deepseek/deepseek-v4-flash-0731"
         # Narration is Flash, not Pro: it only re-voices text the analysis turn already wrote, so
         # latency beats depth, and audio prep is the slowest thing a reader waits on.
         assert config._ENV_DEFAULTS["narration_model"] == "deepseek/deepseek-v4-flash"

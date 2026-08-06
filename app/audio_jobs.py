@@ -281,4 +281,5 @@ def start_job(text: str, billing_project: str | None = None,
             job.url = f"/api/audio/{path.name}"
 
     return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work,
-                                   project_id=_audio_scope(), metered=metered)
+                                   project_id=_audio_scope(), metered=metered,
+                                   reserves=True)

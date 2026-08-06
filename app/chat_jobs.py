@@ -300,6 +300,9 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         ),
         work,
         metered=metered,
+        # Exempt from the concurrency ceiling as a continuation, but its spend is still held:
+        # an auto-analysis turn costs the same money as one the reader started.
+        reserves=True,
     )
 
 
