@@ -274,3 +274,173 @@ def test_the_ceiling_releases_when_the_worker_exits_not_when_the_client_sees_don
         _settle(reg, second.id)
     finally:
         config.reset_active_user(token)
+
+
+# ---------- regressions from the independent review of PR #325 ----------
+
+def test_an_internal_continuation_does_not_consume_the_accounts_budget(monkeypatch):
+    """The exemption has to hold per CALL SITE, not per registry.
+
+    The chat and audio registries are each BOTH a direct client entry point and the target of
+    internal continuation work: a listening turn starts its own narration, and auto-analyze starts
+    a turn from inside the retrieval worker. Metering by registry charged those continuations to
+    the user's own ceiling, so one ordinary "add paper with auto-analyze in listening mode"
+    chained three admissions (retrieval -> chat -> audio) against a default ceiling of four.
+
+    Worse, those calls happen inside a worker rather than a route, so the refusal never reached
+    the 429 handler — it was swallowed into `audio_error`/`analysis_error` and the feature just
+    silently did not happen.
+    """
+    monkeypatch.setenv("RC_RATE_LIMIT_STARTS_PER_MINUTE", "1")
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True)
+    token = _as(ALICE)
+    try:
+        first = reg.start_or_join("k1", lambda: SampleJob(id=new_id()), lambda j: None)
+        _settle(reg, first.id)
+        # Budget for the minute is now spent. A continuation must still be admitted.
+        cont = reg.start_or_join(
+            "k2", lambda: SampleJob(id=new_id()), lambda j: None, metered=False,
+        )
+        _settle(reg, cont.id)
+        # ...while a genuine new entry point is still refused.
+        with pytest.raises(rate_limits.RateLimited):
+            reg.start_or_join("k3", lambda: SampleJob(id=new_id()), lambda j: None)
+    finally:
+        config.reset_active_user(token)
+
+
+def test_the_two_real_continuation_call_sites_pass_metered_false():
+    """Pin the actual production wiring, not just the registry mechanism.
+
+    The mechanism above can be perfect while the call sites still forget to use it — which is
+    exactly the state this PR was in when it was reviewed.
+    """
+    import ast
+    import inspect
+
+    from app import chat_jobs
+    from app.routers import session as session_routes
+
+    def calls_to(module, dotted: str) -> list[ast.Call]:
+        """Every call of `a.b(...)` in the module, found by parsing rather than string slicing.
+
+        A `.split(")")` scan finds the first close-paren, which here belongs to a nested
+        `config.active_project_id()` — so it reported the keyword missing when it was present.
+        """
+        owner, attr = dotted.split(".")
+        tree = ast.parse(inspect.getsource(module))
+        return [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == attr
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == owner
+        ]
+
+    def passes_metered_false(call: ast.Call) -> bool:
+        return any(
+            kw.arg == "metered"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is False
+            for kw in call.keywords
+        )
+
+    narration = calls_to(chat_jobs, "audio_jobs.start_job")
+    assert narration, "expected chat_jobs to start narration for a listening turn"
+    assert all(map(passes_metered_false, narration)), \
+        "listening-turn narration continues an admitted turn and must not be re-metered"
+
+    auto_analyze = calls_to(session_routes, "chat_jobs.start_turn")
+    continuations = [c for c in auto_analyze if passes_metered_false(c)]
+    assert len(continuations) == 1, (
+        "expected exactly one continuation call (the auto-analyze hook) to pass metered=False; "
+        "the direct /chat/start_job route must stay metered"
+    )
+
+
+def test_an_in_flight_admission_counts_before_its_worker_is_published(monkeypatch):
+    """The `_admitting` half of the count, which the suite previously never exercised.
+
+    Every other test inspects the count only once a worker is running. Deleting the admission
+    half of `active_count_for_user` therefore left the whole suite green — so the property that
+    a burst of concurrent starts cannot each undercount the others was unverified.
+    """
+    monkeypatch.setenv("RC_RATE_LIMIT_CONCURRENT_JOBS", "1")
+    monkeypatch.setenv("RC_RATE_LIMIT_STARTS_PER_MINUTE", "50")
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True)
+    in_prepare = threading.Event()
+    hold = threading.Event()
+    refused: list[BaseException] = []
+
+    def slow_prepare(_job):
+        # Inside preparation the admission marker exists but no worker is published yet.
+        in_prepare.set()
+        hold.wait(5)
+        return None
+
+    def first():
+        token = _as(ALICE)
+        try:
+            reg.start_or_join(
+                "k1", lambda: SampleJob(id=new_id()), lambda j: None, prepare_new=slow_prepare,
+            )
+        finally:
+            config.reset_active_user(token)
+
+    t = threading.Thread(target=first)
+    t.start()
+    try:
+        assert in_prepare.wait(5), "preparation never started"
+        token = _as(ALICE)
+        try:
+            assert jobs.active_count_for_user(ALICE) == 1, "pending admission was not counted"
+            with pytest.raises(rate_limits.RateLimited) as err:
+                reg.start_or_join("k2", lambda: SampleJob(id=new_id()), lambda j: None)
+            refused.append(err.value)
+        finally:
+            config.reset_active_user(token)
+    finally:
+        hold.set()
+        t.join(5)
+    assert refused, "a second start during preparation should have been refused"
+
+
+def test_a_wedged_worker_stops_holding_a_slot_so_one_hang_is_not_an_account_lockout(monkeypatch):
+    """Cancellation is cooperative, so a job wedged with no checkpoint never releases.
+
+    Without a staleness bound, one hang would consume an account-wide slot until process restart,
+    locking that person out of chat, notes, retrieval, audio, discovery, graph, labs and profiles
+    at once. Blocking a paying user is worse than a mild overspend, so this fails open.
+    """
+    monkeypatch.setenv("RC_RATE_LIMIT_CONCURRENT_JOBS", "1")
+    monkeypatch.setenv("RC_RATE_LIMIT_STARTS_PER_MINUTE", "50")
+    release = threading.Event()
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True)
+    token = _as(ALICE)
+    try:
+        wedged = reg.start_or_join(
+            "k1", lambda: SampleJob(id=new_id()), lambda j: release.wait(10),
+        )
+        assert jobs.active_count_for_user(ALICE) == 1
+        with pytest.raises(rate_limits.RateLimited):
+            reg.start_or_join("k2", lambda: SampleJob(id=new_id()), lambda j: None)
+
+        # Age it past the bound. The worker is still running and still metered for spend.
+        setattr(
+            wedged, jobs._STARTED_MONO_ATTR,
+            time.monotonic() - jobs._STUCK_AFTER_SECONDS - 1,
+        )
+        assert jobs.active_count_for_user(ALICE) == 0
+        freed = reg.start_or_join("k3", lambda: SampleJob(id=new_id()), lambda j: None)
+        _settle(reg, freed.id)
+        assert jobs._worker_is_active(wedged), "the wedged worker must still be running"
+    finally:
+        release.set()
+        config.reset_active_user(token)
+
+
+def test_a_job_without_a_monotonic_stamp_is_never_treated_as_stuck():
+    """Absence of evidence must not silently free a slot."""
+    job = SampleJob(id=new_id())
+    assert not jobs._is_stuck(job, cutoff=time.monotonic())

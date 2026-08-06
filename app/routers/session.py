@@ -259,7 +259,12 @@ def _paper_summary_hook(req: RetrievalJobReq):
                 delivery_mode=req.delivery_mode,
             )
             _prep_chat_start(chat_req)
-            chat_job = chat_jobs.start_turn(slug, delivery_mode=req.delivery_mode)
+            # Auto-analyze continues the retrieval the account was already admitted for, and this
+            # runs inside the retrieval worker — a refusal here would be swallowed into
+            # `analysis_error` and the paper would silently never be analysed.
+            chat_job = chat_jobs.start_turn(
+                slug, delivery_mode=req.delivery_mode, metered=False,
+            )
         retrieval_jobs.set_analysis_job(job, chat_job.id)
     return kick
 

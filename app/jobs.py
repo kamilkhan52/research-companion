@@ -79,6 +79,10 @@ _PID_ATTR = "_rc_project_id"
 # attributed to a user without consulting the ambient contextvar of whichever thread is asking —
 # the rate limiter counts one account's live work from an unrelated caller's thread.
 _USER_ATTR = "_rc_user_id"
+#: Monotonic clock reading from when the worker was published. Used only to stop a WEDGED worker
+#: from consuming an account's concurrency slot forever (see `_STUCK_AFTER_SECONDS`); deliberately
+#: monotonic rather than `started_at`, which is a second-resolution ISO string.
+_STARTED_MONO_ATTR = "_rc_started_mono"
 _CANCELLED_ATTR = "_rc_cancelled"
 _WORKER_ACTIVE_ATTR = "_rc_worker_active"
 _ON_SETTLE_ATTR = "_rc_on_settle"
@@ -148,6 +152,17 @@ def any_active_for_scopes(scopes: set[str | None]) -> str | None:
     return None
 
 
+#: After this long, a still-active worker stops counting toward an account's CONCURRENCY ceiling.
+#: Not a timeout and not a cancellation — the worker keeps running and its spend is still metered.
+#: This exists because cancellation is cooperative (`cancel` only sets a flag the worker must
+#: check), so a job wedged inside a call with no checkpoint would otherwise consume one of a small
+#: number of account-wide slots until the process restarts — locking that account out of chat,
+#: notes, retrieval, audio, discovery, graph, labs and profiles at once. The roadmap is explicit
+#: that blocking a legitimate paying user is worse than a mild overspend, so this fails open.
+#: Generous on purpose: the slowest legitimate job measured is a cold Discovery run at ~7 minutes.
+_STUCK_AFTER_SECONDS = 30 * 60
+
+
 def active_count_for_user(
     user_id: str | None,
     *,
@@ -173,6 +188,7 @@ def active_count_for_user(
     if not user_id:
         return 0
     total = 0
+    cutoff = time.monotonic() - _STUCK_AFTER_SECONDS
     for reg in _ALL_REGISTRIES:
         if not reg.metered:
             continue
@@ -183,9 +199,21 @@ def active_count_for_user(
             )
             total += sum(
                 1 for job in reg.jobs.values()
-                if _worker_is_active(job) and getattr(job, _USER_ATTR, None) == user_id
+                if _worker_is_active(job)
+                and getattr(job, _USER_ATTR, None) == user_id
+                and not _is_stuck(job, cutoff)
             )
     return total
+
+
+def _is_stuck(job: Job, cutoff: float) -> bool:
+    """Whether a live worker has run so long it should stop holding a concurrency slot.
+
+    A job with no monotonic stamp (registered through `put`, or built by a test) is never treated
+    as stuck — absence of evidence must not silently free a slot.
+    """
+    started = getattr(job, _STARTED_MONO_ATTR, None)
+    return started is not None and started < cutoff
 
 
 def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
@@ -420,6 +448,7 @@ class JobRegistry(Generic[J]):
         admit: Callable[[J | None], None] | None = None,
         prepare_new: Callable[[J], Callable[[], None] | None] | None = None,
         allow_busy: bool = False,
+        metered: bool | None = None,
     ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
         `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
@@ -435,6 +464,13 @@ class JobRegistry(Generic[J]):
         blocked by its database I/O.
         `allow_busy` is reserved for a caller that already owns the project's busy reservation
         and is admitting the follow-on job before releasing it; deletion tombstones still reject.
+        `metered` overrides the registry's own flag for ONE call. It exists because metering is a
+        property of the CALL SITE, not of the job kind: the chat and audio registries are each both
+        a direct client entry point and the target of internal continuation work (a listening turn
+        starts its own narration; auto-analyze starts a turn from inside the retrieval worker).
+        Deciding per registry would charge a user's own turn against their concurrency ceiling —
+        and because those calls happen inside a worker rather than a route, the refusal would be
+        swallowed into an error string instead of surfacing as a 429. Continuations pass False.
         `work` populates the job's fields and returns; the registry then marks it done (or error,
         if `work` raised)."""
         pid = _resolve_pid(project_id)
@@ -491,7 +527,7 @@ class JobRegistry(Generic[J]):
             # Reached only by the caller that will genuinely CREATE a job — every joiner returned
             # above. So the ceiling counts real new spend, and a client polling a running job can
             # never rate-limit itself out of its own result.
-            if self.metered:
+            if self.metered if metered is None else metered:
                 rate_limits.check_and_record(
                     user_id,
                     active_jobs=active_count_for_user(user_id, exclude=identity),
@@ -527,6 +563,7 @@ class JobRegistry(Generic[J]):
                 # this point must see the scope as active even if the new thread has not entered
                 # _run yet.
                 setattr(job, _WORKER_ACTIVE_ATTR, True)
+                setattr(job, _STARTED_MONO_ATTR, time.monotonic())
                 self._jobs[job.id] = job
                 self._prune()
                 try:
