@@ -39,7 +39,8 @@ def _clean_limiter(monkeypatch):
     # behind for whatever runs next — `_prune`'s scope-retention bound is asserted elsewhere in
     # the suite, and leaking scopes into it made that assertion fail on a full-suite run.
     from app import retrieval_jobs
-    retrieval_jobs._registry.jobs.clear()
+    with retrieval_jobs._registry.lock:  # a worker may still be settling as this runs
+        retrieval_jobs._registry.jobs.clear()
 
 
 def _as(user_id):
