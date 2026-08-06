@@ -309,53 +309,77 @@ def test_an_internal_continuation_does_not_consume_the_accounts_budget(monkeypat
         config.reset_active_user(token)
 
 
-def test_the_two_real_continuation_call_sites_pass_metered_false():
-    """Pin the actual production wiring, not just the registry mechanism.
+def test_every_worker_side_call_into_a_metered_entry_point_decides_metering_explicitly():
+    """Sweep the whole package, not just the two sites already known to be wrong.
 
-    The mechanism above can be perfect while the call sites still forget to use it — which is
-    exactly the state this PR was in when it was reviewed.
+    The earlier version of this test parsed only `chat_jobs` and `session`, so it could not have
+    caught a THIRD continuation added elsewhere — which the re-review pointed out. It also cannot
+    prove reachability: a call site can pass the right keyword and still be reached from a path
+    that never paid an admission, which is exactly how the already-retrieved bypass survived.
+    So this checks the weaker but sweepable property: any module that is not an HTTP router and
+    calls a metered entry point must state its metering intent, rather than silently inheriting
+    the registry default it may not be entitled to.
     """
+    import ast
+    import pathlib
+
+    entry_points = {"start_job": "audio_jobs", "start_turn": "chat_jobs"}
+    app_dir = pathlib.Path(__file__).resolve().parent.parent / "app"
+    offenders = []
+    for path in sorted(app_dir.rglob("*.py")):
+        if path.parent.name == "routers":
+            continue  # a route IS the entry point; inheriting metered=True is correct there
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            owner = entry_points.get(node.func.attr)
+            if not owner or not isinstance(node.func.value, ast.Name):
+                continue
+            if node.func.value.id != owner:
+                continue
+            if not any(kw.arg == "metered" for kw in node.keywords):
+                offenders.append(f"{path.name}:{node.lineno} {owner}.{node.func.attr}")
+    assert not offenders, (
+        "these worker-side calls into a metered entry point do not state their metering "
+        f"intent, so they inherit the registry default: {offenders}"
+    )
+
+
+def test_the_known_continuation_sites_pass_the_intended_value():
+    """And the two known sites pass the RIGHT value, not merely some value."""
     import ast
     import inspect
 
     from app import chat_jobs
     from app.routers import session as session_routes
 
-    def calls_to(module, dotted: str) -> list[ast.Call]:
-        """Every call of `a.b(...)` in the module, found by parsing rather than string slicing.
-
-        A `.split(")")` scan finds the first close-paren, which here belongs to a nested
-        `config.active_project_id()` — so it reported the keyword missing when it was present.
-        """
-        owner, attr = dotted.split(".")
+    def metered_kw(module, owner: str, attr: str):
         tree = ast.parse(inspect.getsource(module))
-        return [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == attr
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == owner
-        ]
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == attr
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == owner
+            ):
+                for kw in node.keywords:
+                    if kw.arg == "metered":
+                        yield kw.value
 
-    def passes_metered_false(call: ast.Call) -> bool:
-        return any(
-            kw.arg == "metered"
-            and isinstance(kw.value, ast.Constant)
-            and kw.value.value is False
-            for kw in call.keywords
-        )
+    # Narration always continues a turn that was already admitted -> a flat False.
+    narration = list(metered_kw(chat_jobs, "audio_jobs", "start_job"))
+    assert len(narration) == 1
+    assert isinstance(narration[0], ast.Constant) and narration[0].value is False
 
-    narration = calls_to(chat_jobs, "audio_jobs.start_job")
-    assert narration, "expected chat_jobs to start narration for a listening turn"
-    assert all(map(passes_metered_false, narration)), \
-        "listening-turn narration continues an admitted turn and must not be re-metered"
-
-    auto_analyze = calls_to(session_routes, "chat_jobs.start_turn")
-    continuations = [c for c in auto_analyze if passes_metered_false(c)]
-    assert len(continuations) == 1, (
-        "expected exactly one continuation call (the auto-analyze hook) to pass metered=False; "
-        "the direct /chat/start_job route must stay metered"
+    # Auto-analyze is admitted on the worker path but NOT on the free short-circuit/join paths,
+    # so it must be conditional on the admission state rather than a flat False.
+    analyze = list(metered_kw(session_routes, "chat_jobs", "start_turn"))
+    assert len(analyze) == 1, "expected exactly the auto-analyze hook to state its metering"
+    assert not isinstance(analyze[0], ast.Constant), (
+        "a flat metered=False here is the bypass: an already-retrieved paper reaches this on the "
+        "request thread with no admission, making the turn free"
     )
 
 
@@ -444,3 +468,78 @@ def test_a_job_without_a_monotonic_stamp_is_never_treated_as_stuck():
     """Absence of evidence must not silently free a slot."""
     job = SampleJob(id=new_id())
     assert not jobs._is_stuck(job, cutoff=time.monotonic())
+
+
+def test_auto_analyze_on_an_already_retrieved_paper_is_still_metered(monkeypatch, temp_project):
+    """The bypass the re-review found, pinned end to end at the real seam.
+
+    `start_retrieval` short-circuits an already-retrieved paper through `put()` — a terminal job
+    with no worker and, crucially, no admission — and then kicks the analysis hook inline on the
+    request thread. The first fix passed a blanket `metered=False` there on the reasoning that the
+    hook "runs inside the retrieval worker", which is only true on the other branch. The result
+    was that `auto_analyze` on any already-retrieved paper bought an unmetered LLM turn, and in
+    listening mode an unmetered narration with it. Already-retrieved is the common case after a
+    project split or copy, since corpus files transfer but session state does not.
+    """
+    from app import retrieval_jobs
+
+    from tests.conftest import add_paper
+
+    add_paper(temp_project, "p1", "Paper One")  # corpus present -> retrieved
+    seen: list[bool] = []
+    retrieval_jobs.start_retrieval(
+        "p1", after_retrieved=lambda _job, **kw: seen.append(kw["admitted"]),
+    )
+    assert seen == [False], "a free cache hit must not mark the turn it kicks as already admitted"
+
+
+def test_the_inline_settled_join_path_reports_no_admission(temp_project):
+    """The second free path into the analysis hook.
+
+    When a request joins a retrieval that has ALREADY settled, the registry's settle callback
+    cannot fire on a worker, so the hook runs inline on the joining request's thread. Joining
+    deliberately consumes no budget, so the turn it kicks is that request's first paid work.
+
+    Driving the real join is a genuine race — it needs a job in the registry that settled without
+    a hook attached — so this asserts the CALL SITE rather than the function.
+
+    The first attempt at this test called `_run_analysis_hook(job, admitted=False)` directly and
+    checked the hook saw False. That proved only that the parameter works: reverting the argument
+    at the production line left it green, because the test supplied the argument itself. Asserting
+    the source is what actually bites.
+    """
+    import ast
+    import inspect
+
+    from app import retrieval_jobs
+
+    tree = ast.parse(inspect.getsource(retrieval_jobs))
+    inline_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_analysis_hook"
+    ]
+    assert len(inline_calls) == 2, (
+        "expected exactly two call sites: the worker end-of-work call and the inline fallback "
+        f"for a join of an already-settled retrieval; found {len(inline_calls)}"
+    )
+    admitted_values = [
+        next(
+            (kw.value.value for kw in call.keywords
+             if kw.arg == "admitted" and isinstance(kw.value, ast.Constant)),
+            True,  # omitted -> the default, which is "a worker admitted this"
+        )
+        for call in inline_calls
+    ]
+    assert sorted(admitted_values, key=str) == [False, True], (
+        "one call site (the worker's) may inherit admitted=True, but the inline fallback must "
+        "pass admitted=False — a join consumes no budget, so the turn it kicks is unpaid-for"
+    )
+
+    # The function must also honour what the call site passes.
+    seen: list[bool] = []
+    job = retrieval_jobs.RetrievalJob(id="j1", slug="p1", status="done", retrieved=True)
+    job._after_retrieved = lambda _j, **kw: seen.append(kw["admitted"])
+    retrieval_jobs._run_analysis_hook(job, admitted=False)
+    assert seen == [False]

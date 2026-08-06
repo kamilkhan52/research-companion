@@ -103,7 +103,10 @@ def start_retrieval(
         if after_retrieved is not None:
             with _registry.lock:
                 job._analysis_claimed = True
-            _call_analysis_hook(job, after_retrieved)
+            # `put` registers an already-terminal job: no worker, and crucially no admission.
+            # Retrieval itself was free (a cache hit), so the analysis turn this kicks is the
+            # first paid work of this request and must be metered like any other entry point.
+            _call_analysis_hook(job, after_retrieved, admitted=False)
         return job
 
     def work(job: RetrievalJob) -> None:
@@ -177,26 +180,35 @@ def start_retrieval(
             if getattr(job, "_after_retrieved", None) is None:
                 job._after_retrieved = after_retrieved
         if not _registry.add_settle_callback(job, _run_analysis_hook):
-            _run_analysis_hook(job)
+            _run_analysis_hook(job, admitted=False)
     return job
 
 
-def _run_analysis_hook(job: RetrievalJob) -> None:
-    """Worker-side end of the chain: claim and run the attached hook exactly once. The claim
-    flag (mutated only under the registry lock) keeps a caller that attached a hook to a
-    just-finished job from double-running it."""
+def _run_analysis_hook(job: RetrievalJob, *, admitted: bool = True) -> None:
+    """Claim and run the attached hook exactly once. The claim flag (mutated only under the
+    registry lock) keeps a caller that attached a hook to a just-finished job from double-running
+    it.
+
+    `admitted` says whether the CALLER already consumed a rate-limit admission for this work.
+    It defaults to True because the common path is the registry firing this on the worker thread,
+    where `start_or_join` admitted the retrieval. It is False whenever this runs inline on a
+    request thread — a join of an already-settled job — because joining deliberately costs no
+    budget, so the analysis turn it spawns is the first paid work that request performs.
+    """
     with _registry.lock:
         hook = getattr(job, "_after_retrieved", None)
         eligible = hook is not None and job.retrieved and not getattr(job, "_analysis_claimed", False)
         if eligible:
             job._analysis_claimed = True
     if eligible:
-        _call_analysis_hook(job, hook)
+        _call_analysis_hook(job, hook, admitted=admitted)
 
 
-def _call_analysis_hook(job: RetrievalJob, hook: Callable[[RetrievalJob], None]) -> None:
+def _call_analysis_hook(
+    job: RetrievalJob, hook: Callable[..., None], *, admitted: bool = True,
+) -> None:
     try:
-        hook(job)
+        hook(job, admitted=admitted)
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))

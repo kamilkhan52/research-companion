@@ -305,8 +305,8 @@ def test_after_retrieved_hook_runs_on_success_and_records_analysis_job(temp_proj
     _unretrieved_paper(temp_project)
     kicked: list[str] = []
 
-    def hook(job):
-        kicked.append(job.slug)
+    def hook(job, *, admitted=True):
+        kicked.append((job.slug, admitted))
         retrieval_jobs.set_analysis_job(job, "chat-123")
 
     job = retrieval_jobs.start_retrieval(
@@ -316,7 +316,8 @@ def test_after_retrieved_hook_runs_on_success_and_records_analysis_job(temp_proj
         after_retrieved=hook,
     )
     snap = _settled(job.id)
-    assert kicked == ["p1"]
+    # The worker path admitted the retrieval, so the turn it continues must NOT be re-metered.
+    assert kicked == [("p1", True)]
     assert snap["status"] == "done" and snap["analysis_job_id"] == "chat-123"
     assert snap["analysis_error"] is None
 
@@ -324,7 +325,7 @@ def test_after_retrieved_hook_runs_on_success_and_records_analysis_job(temp_proj
 def test_after_retrieved_hook_failure_is_best_effort(temp_project):
     _unretrieved_paper(temp_project)
 
-    def hook(job):
+    def hook(job, *, admitted=True):
         raise RuntimeError("no API key")
 
     job = retrieval_jobs.start_retrieval(
@@ -346,7 +347,7 @@ def test_after_retrieved_hook_skipped_on_confirmation(temp_project):
         "p1",
         retrieve_fn=lambda title, aid, url: {"needs_confirmation": True,
                                              "candidates": [{"id": "x"}]},
-        after_retrieved=lambda job: kicked.append(job.slug),
+        after_retrieved=lambda job, **_kw: kicked.append(job.slug),
     )
     snap = _settled(job.id)
     assert snap["phase"] == "confirmation" and kicked == []
@@ -360,7 +361,10 @@ def test_hook_runs_inline_for_an_already_retrieved_paper(temp_project):
 
     job = retrieval_jobs.start_retrieval(
         "p1",
-        after_retrieved=lambda j: kicked.append(j.slug),
+        after_retrieved=lambda j, **kw: kicked.append((j.slug, kw.get("admitted"))),
     )
     assert job.status == "done" and job.retrieved is True
-    assert kicked == ["p1"]
+    # No worker and no admission ran, so the turn this kicks is the first paid work of the
+    # request and must be metered. Reporting `admitted=True` here was an unmetered LLM turn
+    # (plus unmetered narration in listening mode) for any already-retrieved paper.
+    assert kicked == [("p1", False)]
