@@ -1354,12 +1354,45 @@ paid entry points are background jobs. The next slice puts those job seams behin
 ownership + rate-limit + reservation guard.
 
 Append-only `usage_events` (user, project, operation, model, tokens, nano-USD cost, timestamp,
-generation id) now write alongside the existing aggregate. Next: per-user rate limits
-(requests/minute, concurrent jobs). Daily and monthly quotas by tier. **Pre-spend reservations per
+generation id) now write alongside the existing aggregate.
+
+**Rate-limit status (2026-08-06): implemented.** `app/rate_limits.py` enforces two independent
+per-account ceilings — a sliding requests-per-minute window and a concurrent-jobs cap — at the
+`JobRegistry` seam, so a new paid entry point is covered by construction instead of by remembering
+to add a check. Registries carry a `metered` flag: the eight user-initiated paid entry points
+(chat, notes, retrieval, audio, discover, graph-build, lab-research, author-profile) are metered,
+while follow-on work a turn spawns internally is deliberately exempt — it was authorized when its
+parent was admitted, and counting it would let one legitimate turn throttle the account that asked
+for it. The check sits after dedup, so **joining a running job never consumes budget**; a client
+polling its own in-flight request cannot rate-limit itself out of its own result. Refusals surface
+as 429 with an honest `Retry-After`, handled centrally so a future paid route cannot return 500
+instead. Limits are in-process (invariant 6) and reset on restart, which is right for a burst
+bound and wrong for a budget — budgets are the durable reservations, kept separate per rule 5.
+
+Two findings from that PR's independent review are recorded rather than built, both deliberate:
+a cross-registry **TOCTOU** in the concurrency count is real in principle (each registry lock is
+taken separately, never one atomic snapshot) but was not reproducible under a deliberate stress
+test — 40 registries, a release barrier, a widened GIL switch interval, 30 trials, zero
+violations — and it errs toward mild overspend rather than false blocking, which is the direction
+the risk section prefers; it becomes real only if invariant 6 is ever relaxed. And the **mobile
+client does not act on `Retry-After`**: it does surface the server's `detail`, so a refusal is
+explained rather than silent, but there is no automatic retry-after-the-window.
+
+**Still open in this milestone.** Daily and monthly quotas by tier. **Pre-spend reservations per
 architectural rule 5** — atomically reserve a pessimistic maximum against the user's remaining
 budget before admitting work, settle to actual cost when it finishes, release on failure; a
 reservation that cannot be taken (or a quota store that is unreachable) refuses the work rather
 than letting it through.
+
+**Read that literally: the reservation ceiling is not connected yet.** `app/quotas.py` is complete
+and tested, `start_or_join`'s `prepare_new` hook exists precisely to hold it, and
+`quota_reconciler` sweeps orphans — but as of 2026-08-06 `quotas.reserve` has **no caller outside
+the test suite**, and nothing passes `prepare_new`. So today a signed-in account is bounded by
+ownership, the rate ceilings above, and the instance-wide emergency stop, but **not** by a spend
+ceiling of its own. `spend_control`'s docstring calls per-user reservations "the normal ceiling",
+which is the intended end state rather than the current one. Wiring `prepare_new` to `reserve` at
+the eight metered seams is the next slice, and it is what makes "no single account can exceed its
+ceiling" true.
 
 **Reservations need a crash lifecycle, defined here rather than assumed.** Jobs live in memory
 (invariant 6) but reservations live in Postgres, so a process death between reserve and settle

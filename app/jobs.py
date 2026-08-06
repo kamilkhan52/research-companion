@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
-from . import config, logging_config
+from . import config, logging_config, rate_limits
 
 log = logging_config.get("jobs")
 
@@ -75,6 +75,14 @@ class _Admission:
 # complete reset.
 _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
+# The account the job was admitted for. Stamped like the project so a running worker can be
+# attributed to a user without consulting the ambient contextvar of whichever thread is asking —
+# the rate limiter counts one account's live work from an unrelated caller's thread.
+_USER_ATTR = "_rc_user_id"
+#: Monotonic clock reading from when the worker was published. Used only to stop a WEDGED worker
+#: from consuming an account's concurrency slot forever (see `_STUCK_AFTER_SECONDS`); deliberately
+#: monotonic rather than `started_at`, which is a second-resolution ISO string.
+_STARTED_MONO_ATTR = "_rc_started_mono"
 _CANCELLED_ATTR = "_rc_cancelled"
 _WORKER_ACTIVE_ATTR = "_rc_worker_active"
 _ON_SETTLE_ATTR = "_rc_on_settle"
@@ -142,6 +150,80 @@ def any_active_for_scopes(scopes: set[str | None]) -> str | None:
                 ):
                     return reg.name
     return None
+
+
+#: After this long, a still-active worker stops counting toward an account's CONCURRENCY ceiling.
+#: Not a timeout and not a cancellation — the worker keeps running and its spend is still metered.
+#: This exists because cancellation is cooperative (`cancel` only sets a flag the worker must
+#: check), so a job wedged inside a call with no checkpoint would otherwise consume one of a small
+#: number of account-wide slots until the process restarts — locking that account out of chat,
+#: notes, retrieval, audio, discovery, graph, labs and profiles at once. The roadmap is explicit
+#: that blocking a legitimate paying user is worse than a mild overspend, so this fails open.
+#:
+#: It is NOT a "no legitimate job runs this long" bound, and an earlier comment here wrongly said
+#: so on the basis of Discovery's ~7-minute cold run. Graph builds are also metered and can far
+#: exceed this: `graph.EXTRACTION_HARD_DEADLINE` is 480s PER PAPER at a concurrency of 1–8, and
+#: `graph_jobs`'s own docstring records a real build still going after 2.5 hours. A large build
+#: will therefore stop holding its slot while still legitimately running, and its owner can start
+#: work beyond the concurrency cap for the remainder. That is the accepted trade: the per-minute
+#: window still applies, the spend is still metered, and the alternative — one wedged worker
+#: locking an account out of all eight paid features until the process restarts — is the failure
+#: the risk section explicitly ranks worse. No single constant serves both a 20-second narration
+#: and a two-hour graph build; scaling the bound per job kind is the real fix if this matters.
+_STUCK_AFTER_SECONDS = 30 * 60
+
+
+def active_count_for_user(
+    user_id: str | None,
+    *,
+    exclude: tuple[str | None, str | None, str] | None = None,
+) -> int:
+    """How much paid work this account currently has in flight, across every registry.
+
+    Counts live workers AND in-flight admissions, for the same reason `any_active_for_scopes`
+    does: an admission waiting on Postgres has committed to doing the work but has not published a
+    worker yet, and treating that interval as idle would let a burst of concurrent requests all
+    pass a concurrency check that each of them is about to violate.
+
+    `exclude` drops one admission identity — the caller's own. `start_or_join` registers its
+    admission marker before it can check anything (the marker is what makes identical callers wait
+    instead of racing), so without this every start would count itself and a ceiling of N would
+    admit only N-1. Deliberately an explicit identity rather than a blanket "minus one": a caller
+    that legitimately holds another admission must still be counted for it.
+
+    Only metered registries count. Internal follow-on work (cover art, affiliations, figure
+    warming) is spawned by an already-admitted request, so counting it would let one legitimate
+    turn exhaust the caller's own concurrency ceiling.
+    """
+    if not user_id:
+        return 0
+    total = 0
+    cutoff = time.monotonic() - _STUCK_AFTER_SECONDS
+    for reg in _ALL_REGISTRIES:
+        if not reg.metered:
+            continue
+        with reg.lock:
+            total += sum(
+                1 for identity in reg._admitting
+                if identity[0] == user_id and identity != exclude
+            )
+            total += sum(
+                1 for job in reg.jobs.values()
+                if _worker_is_active(job)
+                and getattr(job, _USER_ATTR, None) == user_id
+                and not _is_stuck(job, cutoff)
+            )
+    return total
+
+
+def _is_stuck(job: Job, cutoff: float) -> bool:
+    """Whether a live worker has run so long it should stop holding a concurrency slot.
+
+    A job with no monotonic stamp (registered through `put`, or built by a test) is never treated
+    as stuck — absence of evidence must not silently free a slot.
+    """
+    started = getattr(job, _STARTED_MONO_ATTR, None)
+    return started is not None and started < cutoff
 
 
 def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
@@ -216,8 +298,14 @@ def forget_finished_for_project(pid: str) -> None:
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
-    def __init__(self, name: str, *, max_finished: int | None = 20):
+    def __init__(self, name: str, *, max_finished: int | None = 20, metered: bool = False):
         self.name = name
+        # Whether starting a job here is a USER-INITIATED paid entry point, and therefore subject
+        # to the per-account rate ceilings. Follow-on work a turn spawns internally (covers,
+        # affiliations, figure warming, per-segment preview synthesis) is deliberately NOT metered:
+        # it was authorized when its parent was admitted, and charging it again would let one
+        # legitimate turn throttle the account that asked for it.
+        self.metered = metered
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
@@ -351,6 +439,10 @@ class JobRegistry(Generic[J]):
                 raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
+            # Ambient here, unlike start_or_join's captured value: `put` runs entirely on the
+            # caller's request thread. It is stamped for attribution only — an already-terminal
+            # cache hit spawned no worker, so it never counts toward the concurrency ceiling.
+            setattr(job, _USER_ATTR, config.active_user_id())
             self._jobs[job.id] = job
             self._stamp_settled(job)   # `put` registers an ALREADY-terminal job
             self._prune()
@@ -366,6 +458,7 @@ class JobRegistry(Generic[J]):
         admit: Callable[[J | None], None] | None = None,
         prepare_new: Callable[[J], Callable[[], None] | None] | None = None,
         allow_busy: bool = False,
+        metered: bool | None = None,
     ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
         `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
@@ -381,6 +474,13 @@ class JobRegistry(Generic[J]):
         blocked by its database I/O.
         `allow_busy` is reserved for a caller that already owns the project's busy reservation
         and is admitting the follow-on job before releasing it; deletion tombstones still reject.
+        `metered` overrides the registry's own flag for ONE call. It exists because metering is a
+        property of the CALL SITE, not of the job kind: the chat and audio registries are each both
+        a direct client entry point and the target of internal continuation work (a listening turn
+        starts its own narration; auto-analyze starts a turn from inside the retrieval worker).
+        Deciding per registry would charge a user's own turn against their concurrency ceiling —
+        and because those calls happen inside a worker rather than a route, the refusal would be
+        swallowed into an error string instead of surfacing as a 429. Continuations pass False.
         `work` populates the job's fields and returns; the registry then marks it done (or error,
         if `work` raised)."""
         pid = _resolve_pid(project_id)
@@ -434,6 +534,14 @@ class JobRegistry(Generic[J]):
 
         cleanup: Callable[[], None] | None = None
         try:
+            # Reached only by the caller that will genuinely CREATE a job — every joiner returned
+            # above. So the ceiling counts real new spend, and a client polling a running job can
+            # never rate-limit itself out of its own result.
+            if self.metered if metered is None else metered:
+                rate_limits.check_and_record(
+                    user_id,
+                    active_jobs=active_count_for_user(user_id, exclude=identity),
+                )
             job = factory()
             if prepare_new is not None:
                 cleanup = prepare_new(job)
@@ -460,10 +568,12 @@ class JobRegistry(Generic[J]):
                 # not a running job to join and not a reason to discard newly authorized work.
                 setattr(job, _KEY_ATTR, key)
                 setattr(job, _PID_ATTR, pid)
+                setattr(job, _USER_ATTR, user_id)
                 # Set before publishing the job in the registry. A deletion sweep that wins after
                 # this point must see the scope as active even if the new thread has not entered
                 # _run yet.
                 setattr(job, _WORKER_ACTIVE_ATTR, True)
+                setattr(job, _STARTED_MONO_ATTR, time.monotonic())
                 self._jobs[job.id] = job
                 self._prune()
                 try:

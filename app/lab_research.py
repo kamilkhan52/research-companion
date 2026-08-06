@@ -41,7 +41,7 @@ class LabsJob(Job):
     skipped_cached: int = 0
 
 
-_registry: JobRegistry[LabsJob] = JobRegistry("lab-research", max_finished=10)
+_registry: JobRegistry[LabsJob] = JobRegistry("lab-research", max_finished=10, metered=True)
 _jobs = _registry.jobs
 
 

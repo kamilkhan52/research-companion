@@ -241,7 +241,7 @@ def _paper_summary_hook(req: RetrievalJobReq):
     opening template and spawn the normal chat turn job. Runs inside the retrieval worker
     (project contextvar rebound by the registry) or, for an already-retrieved paper, on the
     request thread. Mirrors /chat/start_job exactly — same lock, same prep."""
-    def kick(job) -> None:
+    def kick(job, *, admitted: bool = True) -> None:
         slug = req.slug
         with sessions.mutation_lock(slug):
             if sessions.get_state(slug):
@@ -259,7 +259,20 @@ def _paper_summary_hook(req: RetrievalJobReq):
                 delivery_mode=req.delivery_mode,
             )
             _prep_chat_start(chat_req)
-            chat_job = chat_jobs.start_turn(slug, delivery_mode=req.delivery_mode)
+            # Metered only when this request has NOT already paid an admission. On the worker
+            # path the retrieval was admitted and this turn continues it, so re-metering would
+            # charge one user action twice — and because that runs inside a worker the refusal
+            # would be swallowed into `analysis_error` rather than surfacing as a 429.
+            #
+            # But `start_retrieval` has two paths that reach here on the REQUEST thread with no
+            # admission at all: an already-retrieved paper short-circuits through `put`, and a
+            # join of an already-settled retrieval runs this inline. Both are free retrievals, so
+            # the turn they kick is the first paid work of the request. Passing a blanket False
+            # here made `POST /retrieval/jobs {auto_analyze: true}` on any already-retrieved paper
+            # an unmetered LLM turn — plus an unmetered narration in listening mode.
+            chat_job = chat_jobs.start_turn(
+                slug, delivery_mode=req.delivery_mode, metered=not admitted,
+            )
         retrieval_jobs.set_analysis_job(job, chat_job.id)
     return kick
 

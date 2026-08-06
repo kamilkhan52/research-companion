@@ -19,7 +19,16 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from . import account_deletion, auth, config, db, deploy_guard, logging_config, quota_reconciler
+from . import (
+    account_deletion,
+    auth,
+    config,
+    db,
+    deploy_guard,
+    logging_config,
+    quota_reconciler,
+    rate_limits,
+)
 from .auth import AuthError
 from .routers import (
     account,
@@ -329,6 +338,21 @@ async def authenticate(request: Request, call_next):
         config.reset_active_user(token)
         if request_admitted:
             config.release_user_request(user_id)
+
+
+@app.exception_handler(rate_limits.RateLimited)
+async def _rate_limited(_request: Request, exc: rate_limits.RateLimited) -> JSONResponse:
+    """429 with an honest `Retry-After`.
+
+    Handled centrally rather than per route because the refusal is raised deep inside
+    `JobRegistry.start_or_join`, below every job module — so each of the paid routes would
+    otherwise need the same `except`, and a new paid route would silently return 500 instead.
+    """
+    return JSONResponse(
+        {"detail": str(exc), "code": "rate_limited"},
+        status_code=429,
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
 
 
 # ---------- routers ----------

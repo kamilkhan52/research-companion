@@ -51,7 +51,7 @@ class AudioJob(Job):
 
 # Keyed by content hash (voice settings + text); `_jobs` aliases the registry dict so tests can
 # clear() it to reset. Higher finished cap than the others — audio jobs are small and re-listened.
-_registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50)
+_registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50, metered=True)
 _jobs = _registry.jobs
 
 
@@ -161,7 +161,8 @@ def cancel_job(job_id: str) -> AudioJob | None:
 
 def start_job(text: str, billing_project: str | None = None,
               narrate_fn: NarrateFn | None = None,
-              synth_fn: SynthFn | None = None) -> AudioJob:
+              synth_fn: SynthFn | None = None,
+              metered: bool = True) -> AudioJob:
     """Start preparing audio for `text` in a background thread, join the identical job if one
     is already running, or answer instantly from the caches if the result already exists.
     Returns the job snapshot either way — callers just poll get_job(id) until it settles.
@@ -279,4 +280,4 @@ def start_job(text: str, billing_project: str | None = None,
             job.url = f"/api/audio/{path.name}"
 
     return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work,
-                                   project_id=_audio_scope())
+                                   project_id=_audio_scope(), metered=metered)

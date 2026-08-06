@@ -45,7 +45,7 @@ class BuildJob(Job):
 
 # Keyed by pid, at most one build per project — no pruning. `_jobs` aliases the registry's dict
 # so tests can clear() it to reset.
-_registry: JobRegistry[BuildJob] = JobRegistry("graph-build", max_finished=None)
+_registry: JobRegistry[BuildJob] = JobRegistry("graph-build", max_finished=None, metered=True)
 _jobs = _registry.jobs
 
 

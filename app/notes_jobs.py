@@ -95,7 +95,7 @@ class NotesJob(Job):
 
 
 # `_jobs` aliases the registry dict so tests can clear() it to reset.
-_registry: JobRegistry[NotesJob] = JobRegistry("notes", max_finished=20)
+_registry: JobRegistry[NotesJob] = JobRegistry("notes", max_finished=20, metered=True)
 _jobs = _registry.jobs
 _mutation_locks_guard = threading.Lock()
 _mutation_locks: dict[tuple[str | None, str], threading.RLock] = {}

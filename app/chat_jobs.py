@@ -78,7 +78,7 @@ class ChatJob(Job):
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
 # registry dict so tests can clear() it to reset.
-_registry: JobRegistry[ChatJob] = JobRegistry("chat", max_finished=20)
+_registry: JobRegistry[ChatJob] = JobRegistry("chat", max_finished=20, metered=True)
 _jobs = _registry.jobs
 
 
@@ -125,7 +125,7 @@ def override_label(model: str | None) -> str | None:
 
 def start_turn(slug: str, runner: RunnerFn | None = None,
                delivery_mode: str = "reading", model: str | None = None,
-               thread_id: str | None = None) -> ChatJob:
+               thread_id: str | None = None, metered: bool = True) -> ChatJob:
     """Start generating the assistant turn for `slug` in a background thread, or join the job
     already running for it. The user message must already be recorded (history is rebuilt from
     the session file inside the thread). Callers poll get_job(id) until it settles; the turn is
@@ -210,6 +210,10 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
                 started_audio_id = audio_jobs.start_job(
                     turn.canonical,
                     billing_project=config.active_project_id(),
+                    # Continuation of a turn the account was already admitted for. Charging it
+                    # again would let one listening turn consume two concurrency slots, and the
+                    # refusal would surface here as an `audio_error` string rather than a 429.
+                    metered=False,
                 ).id
                 if started_audio_id != audio_job_id:
                     audio_job_id = started_audio_id
@@ -295,6 +299,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             activity_detail=activity_detail,
         ),
         work,
+        metered=metered,
     )
 
 

@@ -323,9 +323,9 @@ def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
         lambda: {"speech_provider": "openai"},
     )
 
-    def fake_audio(text, billing_project=None):
+    def fake_audio(text, billing_project=None, metered=True):
         assert sessions.read_records(slug)[-1]["role"] == "assistant"
-        captured.update(text=text, billing_project=billing_project)
+        captured.update(text=text, billing_project=billing_project, metered=metered)
         return SimpleNamespace(id="audio-job")
 
     monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", fake_audio)
@@ -339,7 +339,13 @@ def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
     assert finished.audio_job_id == "audio-job"
     assert finished.audio_error is None
     assert finished.assistant_index == 0
-    assert captured == {"text": "The answer.", "billing_project": temp_project}
+    # `metered=False`: this narration continues a turn the account was already admitted for.
+    # Charging it again would spend a second concurrency slot on one listening turn, and because
+    # this call happens inside the worker the refusal would be swallowed into `audio_error`
+    # rather than surfacing as a 429.
+    assert captured == {
+        "text": "The answer.", "billing_project": temp_project, "metered": False,
+    }
     transcript = sessions.transcript(slug)
     assert transcript[-1]["assistant_index"] == 0
     assert transcript[-1]["delivery_mode"] == "listening"

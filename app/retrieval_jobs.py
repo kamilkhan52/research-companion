@@ -39,7 +39,7 @@ class RetrievalJob(Job):
     canonical_job_id: str | None = None
 
 
-_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
+_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True)
 _jobs = _registry.jobs
 
 
@@ -103,7 +103,11 @@ def start_retrieval(
         if after_retrieved is not None:
             with _registry.lock:
                 job._analysis_claimed = True
-            _call_analysis_hook(job, after_retrieved)
+            # `put` registers an already-terminal job: no worker, and crucially no admission.
+            # Retrieval itself was free (a cache hit), so the analysis turn this kicks is the
+            # first paid work of this request and must be metered like any other entry point.
+            _attach_hook(job, after_retrieved, admitted=False)
+            _call_analysis_hook(job, after_retrieved, admitted=False)
         return job
 
     def work(job: RetrievalJob) -> None:
@@ -158,7 +162,9 @@ def start_retrieval(
         created = True
         job = RetrievalJob(id=new_id(), slug=slug)
         if after_retrieved is not None:
-            job._after_retrieved = after_retrieved  # read back under the registry lock
+            # The creator: `start_or_join` runs the rate-limit check before calling this factory,
+            # so reaching here means this request was admitted and its continuation is covered.
+            _attach_hook(job, after_retrieved, admitted=True)
         return job
 
     try:
@@ -175,28 +181,65 @@ def start_retrieval(
         # The claim flag dedupes against the worker's own end-of-work check.
         with _registry.lock:
             if getattr(job, "_after_retrieved", None) is None:
-                job._after_retrieved = after_retrieved
+                # A joiner. `start_or_join` returned an existing job without admitting anything,
+                # so nothing has been paid for the turn this hook will start.
+                _attach_hook(job, after_retrieved, admitted=False)
         if not _registry.add_settle_callback(job, _run_analysis_hook):
             _run_analysis_hook(job)
     return job
 
 
+#: Attribute holding whether the party that ATTACHED the analysis hook paid an admission.
+#: Kept beside `_after_retrieved` and only ever written together with it (see `_attach_hook`),
+#: because the two must not drift.
+_HOOK_ADMITTED_ATTR = "_after_retrieved_admitted"
+
+
+def _attach_hook(job: RetrievalJob, hook: Callable[..., None], *, admitted: bool) -> None:
+    """Attach the analysis continuation together with who paid for it.
+
+    Admission belongs to whoever ATTACHED the hook, not to whichever thread later runs it. That
+    distinction is the whole bug this exists to prevent: `_after_retrieved` is a single slot, so a
+    second request can join an in-flight retrieval for free -- joining deliberately costs no
+    budget -- attach its own hook, and have the CREATOR's worker run it. Deciding admission at the
+    call site ("this fires from a worker, so it must be covered") then reads the creator's payment
+    as though it covered the joiner's turn, and the joiner gets a free chat turn plus, in
+    listening mode, free narration.
+
+    Callers must not set either attribute directly.
+    """
+    job._after_retrieved = hook
+    setattr(job, _HOOK_ADMITTED_ATTR, admitted)
+
+
 def _run_analysis_hook(job: RetrievalJob) -> None:
-    """Worker-side end of the chain: claim and run the attached hook exactly once. The claim
-    flag (mutated only under the registry lock) keeps a caller that attached a hook to a
-    just-finished job from double-running it."""
+    """Claim and run the attached hook exactly once. The claim flag (mutated only under the
+    registry lock) keeps a caller that attached a hook to a just-finished job from double-running
+    it.
+
+    Whether the resulting turn is metered is read from the hook's own attachment stamp, not
+    passed in by the caller: every call site here runs on a thread whose relationship to the
+    admission is ambiguous, and guessing from the thread is what produced two separate bypasses.
+
+    An unstamped hook is treated as UNPAID. Absence of evidence must not grant free spend: an
+    unmetered turn is money that cannot be recovered, while a wrongly metered one is at worst a
+    refusal the reader can retry.
+    """
     with _registry.lock:
         hook = getattr(job, "_after_retrieved", None)
+        admitted = bool(getattr(job, _HOOK_ADMITTED_ATTR, False))
         eligible = hook is not None and job.retrieved and not getattr(job, "_analysis_claimed", False)
         if eligible:
             job._analysis_claimed = True
     if eligible:
-        _call_analysis_hook(job, hook)
+        _call_analysis_hook(job, hook, admitted=admitted)
 
 
-def _call_analysis_hook(job: RetrievalJob, hook: Callable[[RetrievalJob], None]) -> None:
+def _call_analysis_hook(
+    job: RetrievalJob, hook: Callable[..., None], *, admitted: bool = True,
+) -> None:
     try:
-        hook(job)
+        hook(job, admitted=admitted)
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))
