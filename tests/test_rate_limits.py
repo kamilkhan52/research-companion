@@ -33,6 +33,13 @@ def _clean_limiter(monkeypatch):
     monkeypatch.setattr(jobs, "_ALL_REGISTRIES", [])
     yield
     rate_limits.reset()
+    # Swapping the module-global list above does NOT reach the real feature registries, which were
+    # created at import time and keep their own `_jobs` dict. The few tests here that drive the
+    # actual retrieval registry would otherwise leave finished jobs (and their project scopes)
+    # behind for whatever runs next — `_prune`'s scope-retention bound is asserted elsewhere in
+    # the suite, and leaking scopes into it made that assertion fail on a full-suite run.
+    from app import retrieval_jobs
+    retrieval_jobs._registry.jobs.clear()
 
 
 def _as(user_id):
@@ -493,53 +500,82 @@ def test_auto_analyze_on_an_already_retrieved_paper_is_still_metered(monkeypatch
     assert seen == [False], "a free cache hit must not mark the turn it kicks as already admitted"
 
 
-def test_the_inline_settled_join_path_reports_no_admission(temp_project):
-    """The second free path into the analysis hook.
+def test_joining_an_in_flight_retrieval_does_not_buy_a_free_analysis_turn(temp_project):
+    """The third bypass, and the one that showed the whole approach was wrong.
 
-    When a request joins a retrieval that has ALREADY settled, the registry's settle callback
-    cannot fire on a worker, so the hook runs inline on the joining request's thread. Joining
-    deliberately consumes no budget, so the turn it kicks is that request's first paid work.
+    `_after_retrieved` is a single slot on the job. A second request can join a retrieval that is
+    still running — joining is deliberately free, it never reaches the rate check — attach its own
+    auto-analyze hook, and then the CREATOR's worker runs that hook when it finishes. Deciding
+    metering per call site ("this fires from a worker, so a worker admitted it") reads the
+    creator's payment as covering the joiner's turn. One admission bought a retrieval plus a full
+    chat turn, plus narration in listening mode.
 
-    Driving the real join is a genuine race — it needs a job in the registry that settled without
-    a hook attached — so this asserts the CALL SITE rather than the function.
+    So admission is now bound to the ATTACHMENT rather than to the thread that runs it, which
+    removes the class of bug rather than this instance: there is no longer a call site that can
+    forget, because no call site decides.
 
-    The first attempt at this test called `_run_analysis_hook(job, admitted=False)` directly and
-    checked the hook saw False. That proved only that the parameter works: reverting the argument
-    at the production line left it green, because the test supplied the argument itself. Asserting
-    the source is what actually bites.
+    Note what made this hard to see: the first repro of it put the creator in a bare thread, which
+    does not inherit the active-project contextvar (invariant 2), so the "joiner" resolved a
+    different scope and quietly created its own job instead of joining. Binding the project in the
+    creating thread is what makes this a real join.
     """
-    import ast
-    import inspect
+    import threading
 
-    from app import retrieval_jobs
+    from app import config, retrieval_jobs, store
 
-    tree = ast.parse(inspect.getsource(retrieval_jobs))
-    inline_calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_run_analysis_hook"
-    ]
-    assert len(inline_calls) == 2, (
-        "expected exactly two call sites: the worker end-of-work call and the inline fallback "
-        f"for a join of an already-settled retrieval; found {len(inline_calls)}"
-    )
-    admitted_values = [
-        next(
-            (kw.value.value for kw in call.keywords
-             if kw.arg == "admitted" and isinstance(kw.value, ast.Constant)),
-            True,  # omitted -> the default, which is "a worker admitted this"
-        )
-        for call in inline_calls
-    ]
-    assert sorted(admitted_values, key=str) == [False, True], (
-        "one call site (the worker's) may inherit admitted=True, but the inline fallback must "
-        "pass admitted=False — a join consumes no budget, so the turn it kicks is unpaid-for"
-    )
-
-    # The function must also honour what the call site passes.
+    store.add_entry(title="Paper One", group="G")
+    slug = store.list_papers()[0].slug
     seen: list[bool] = []
-    job = retrieval_jobs.RetrievalJob(id="j1", slug="p1", status="done", retrieved=True)
-    job._after_retrieved = lambda _j, **kw: seen.append(kw["admitted"])
-    retrieval_jobs._run_analysis_hook(job, admitted=False)
+    gate = threading.Event()
+
+    def slow_retrieve(_title, _aid, _url):
+        gate.wait(5)
+        return {"full_text": "text", "arxiv_id": None, "source": "s"}
+
+    def creator():
+        token = config.set_active_project(temp_project)
+        try:
+            retrieval_jobs.start_retrieval(slug, retrieve_fn=slow_retrieve)
+        finally:
+            config.reset_active_project(token)
+
+    thread = threading.Thread(target=creator)
+    thread.start()
+    try:
+        time.sleep(0.4)  # let the creator publish its worker and block in retrieval
+        # The joiner: pays nothing, attaches auto-analyze to the in-flight job.
+        retrieval_jobs.start_retrieval(
+            slug,
+            retrieve_fn=slow_retrieve,
+            after_retrieved=lambda _job, **kw: seen.append(kw["admitted"]),
+        )
+    finally:
+        gate.set()
+        thread.join(5)
+    deadline = time.time() + 5
+    while not seen and time.time() < deadline:
+        time.sleep(0.02)
+
+    assert seen == [False], (
+        "a request that joined an in-flight retrieval paid no admission, so the analysis turn it "
+        f"attaches must be metered; got admitted={seen}"
+    )
+
+
+def test_an_unstamped_hook_is_treated_as_unpaid(temp_project):
+    """Absence of evidence must not grant free spend.
+
+    Nothing should reach `_run_analysis_hook` without a stamp — `_attach_hook` writes both fields
+    together — but the default decides what happens if a future caller sets `_after_retrieved`
+    directly. Unmetered spend cannot be recovered; a wrongly metered turn is at worst a refusal
+    the reader retries.
+    """
+    from app import retrieval_jobs, store
+
+    store.add_entry(title="Paper One", group="G")
+    slug = store.list_papers()[0].slug
+    seen: list[bool] = []
+    job = retrieval_jobs.RetrievalJob(id="j1", slug=slug, status="done", retrieved=True)
+    job._after_retrieved = lambda _j, **kw: seen.append(kw["admitted"])  # no stamp, on purpose
+    retrieval_jobs._run_analysis_hook(job)
     assert seen == [False]
