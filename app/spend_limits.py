@@ -102,9 +102,23 @@ def max_cost_nanousd(operation: str) -> int:
     return _MAX_NANOUSD.get(operation, _DEFAULT_MAX_NANOUSD)
 
 
-#: Per-paper hold for a graph build: the measured $0.084 of extraction (§2b) plus headroom for the
-#: citation/metadata calls that accompany it.
-GRAPH_NANOUSD_PER_PAPER = 100_000_000  # $0.10
+#: Per-paper hold for a graph build. Extraction resolves to V4 Pro (`graph.resolve_model`), which
+#: §2b prices at **$0.03343/paper pinned** — the $0.084 in that table is the *unpinned* column, and
+#: `sort: "price"` routing has shipped since. 2x headroom over the pinned figure.
+GRAPH_NANOUSD_PER_PAPER = 70_000_000  # $0.07
+
+#: Ceiling on the ADMISSION hold for one build, independent of corpus size.
+#:
+#: A first build of a large corpus genuinely costs more than a month's allowance — 400 papers is
+#: ~$13 at pinned Pro — so a hold sized to the whole corpus refuses the build outright, forever,
+#: on any real project. That is the failure the roadmap ranks worse than a mild overspend, and it
+#: would ship Map dead for every project past ~35 papers.
+#:
+#: The hold is an ADMISSION gate, not the charge: settlement records the true cost and is not
+#: clamped to the reservation, so the month still sees every dollar the build actually spent. What
+#: this bounds is how much headroom a reader must have to *start* one. A build can therefore carry
+#: the account past its ceiling — once — and the next admission of anything is refused.
+GRAPH_HOLD_CAP_NANOUSD = 500_000_000  # $0.50
 
 
 def graph_build_nanousd(uncached_papers: int) -> int:
@@ -120,7 +134,10 @@ def graph_build_nanousd(uncached_papers: int) -> int:
     A build with nothing to extract still holds one paper's worth: it is not free (graph assembly
     and any metadata refresh still run), and a zero maximum is rejected by `quotas.reserve`.
     """
-    return max(1, int(uncached_papers)) * GRAPH_NANOUSD_PER_PAPER
+    return min(
+        max(1, int(uncached_papers)) * GRAPH_NANOUSD_PER_PAPER,
+        GRAPH_HOLD_CAP_NANOUSD,
+    )
 
 
 #: How long a reservation's lease should outlive its job, per operation. The reconciler treats a

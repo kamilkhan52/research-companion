@@ -36,11 +36,23 @@ class QuotaUnavailable(QuotaError):
 class QuotaExceeded(QuotaError):
     """The account's configured hard ceiling cannot fit the requested reservation."""
 
-    def __init__(self, *, used_nanousd: int, requested_nanousd: int, limit_nanousd: int):
+    def __init__(self, *, used_nanousd: int, requested_nanousd: int, limit_nanousd: int,
+                 settled_nanousd: int | None = None):
         super().__init__("Your usage limit has been reached. Try again after it resets.")
         self.used_nanousd = used_nanousd
         self.requested_nanousd = requested_nanousd
         self.limit_nanousd = limit_nanousd
+        #: Of `used_nanousd`, how much is money actually SPENT rather than held against work still
+        #: running. The two mean opposite things to a reader: spend does not come back until the
+        #: period rolls over, while a hold clears in seconds when its job finishes. Reporting a
+        #: transient collision of pessimistic holds as "your monthly limit is reached" tells
+        #: someone who has spent nothing to wait a month.
+        self.settled_nanousd = used_nanousd if settled_nanousd is None else settled_nanousd
+
+    @property
+    def is_transient(self) -> bool:
+        """Whether outstanding holds — not real spend — are what leaves no room."""
+        return self.settled_nanousd + self.requested_nanousd <= self.limit_nanousd
 
 
 class ReservationConflict(QuotaError):
@@ -199,22 +211,28 @@ def reserve(
                         )
                     return reservation
 
-                used = conn.execute(
+                # Both halves in one pass: what is HELD against running work, and what has been
+                # SPENT. Admission is refused on the total, but the caller needs the split to say
+                # whether waiting seconds or waiting a month is the honest advice.
+                totals = conn.execute(
                     "select coalesce(sum(case "
                     "  when state = 'reserved' then reserved_nanousd "
                     "  when state = 'settled' then actual_nanousd "
-                    "  else 0 end), 0) "
+                    "  else 0 end), 0), "
+                    "coalesce(sum(case when state = 'settled' then actual_nanousd else 0 end), 0) "
                     "from rc_usage_reservations "
                     "where user_id = %s and period_start = %s and period_end = %s "
                     "and state in ('reserved', 'settled')",
                     (user_id, start, end),
-                ).fetchone()[0]
-                used = int(used)
+                ).fetchone()
+                used = int(totals[0])
+                settled = int(totals[1])
                 if used > limit - maximum:
                     raise QuotaExceeded(
                         used_nanousd=used,
                         requested_nanousd=maximum,
                         limit_nanousd=limit,
+                        settled_nanousd=settled,
                     )
 
                 row = conn.execute(

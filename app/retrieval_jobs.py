@@ -116,7 +116,8 @@ def start_retrieval(
             # Retrieval itself was free (a cache hit), so the analysis turn this kicks is the
             # first paid work of this request and must be metered like any other entry point.
             _attach_hook(job, after_retrieved, admitted=False)
-            _call_analysis_hook(job, after_retrieved, admitted=False)
+            # The short-circuit runs on the request thread, so a refusal can still be the response.
+            _call_analysis_hook(job, after_retrieved, admitted=False, can_answer=True)
         return job
 
     def work(job: RetrievalJob) -> None:
@@ -199,7 +200,10 @@ def start_retrieval(
                 # so nothing has been paid for the turn this hook will start.
                 _attach_hook(job, after_retrieved, admitted=False)
         if not _registry.add_settle_callback(job, _run_analysis_hook):
-            _run_analysis_hook(job)
+            # The job had already settled, so this runs inline on THIS request's thread and a
+            # refusal is still answerable. When the callback registers instead, it fires on the
+            # creator's worker where nothing is listening — hence the default of False.
+            _run_analysis_hook(job, can_answer=True)
     return job
 
 
@@ -226,7 +230,7 @@ def _attach_hook(job: RetrievalJob, hook: Callable[..., None], *, admitted: bool
     setattr(job, _HOOK_ADMITTED_ATTR, admitted)
 
 
-def _run_analysis_hook(job: RetrievalJob) -> None:
+def _run_analysis_hook(job: RetrievalJob, *, can_answer: bool = False) -> None:
     """Claim and run the attached hook exactly once. The claim flag (mutated only under the
     registry lock) keeps a caller that attached a hook to a just-finished job from double-running
     it.
@@ -246,22 +250,25 @@ def _run_analysis_hook(job: RetrievalJob) -> None:
         if eligible:
             job._analysis_claimed = True
     if eligible:
-        _call_analysis_hook(job, hook, admitted=admitted)
+        _call_analysis_hook(job, hook, admitted=admitted, can_answer=can_answer)
 
 
 def _call_analysis_hook(
     job: RetrievalJob, hook: Callable[..., None], *, admitted: bool = True,
+    can_answer: bool = False,
 ) -> None:
     try:
         hook(job, admitted=admitted)
-    except (quotas.QuotaError, rate_limits.RateLimited):
-        # A refusal is not a best-effort failure — it is the answer to the request. When this runs
-        # on the REQUEST thread (the `admitted=False` paths: an already-retrieved short-circuit,
-        # or joining a settled retrieval) it can still reach the 402/429 handlers, so let it. The
-        # alternative is a 200 OK carrying a hidden error string, which is how the reader learns
-        # they are out of budget only if some client happens to render `analysis_error`.
-        if not admitted:
+    except (quotas.QuotaError, rate_limits.RateLimited) as exc:
+        # A refusal is the answer to the request, so re-raise it where a client is still listening
+        # — but ONLY there. `admitted` is a payment fact and says nothing about which thread this
+        # is on: a joiner attaches with admitted=False and its hook then runs on the CREATOR's
+        # worker via the settle callback, where `_fire_settle` catches and logs everything. Keying
+        # the re-raise on `admitted` therefore lost the refusal entirely — the reader saw a
+        # retrieved paper with no analysis job and no error, and waited forever.
+        if can_answer:
             raise
+        set_analysis_error(job, str(exc))
         # On the worker thread there is nobody left to answer: the retrieval itself succeeded and
         # the response went out long ago. Record it rather than losing it.
         set_analysis_error(job, "Usage limit reached — the analysis did not start.")

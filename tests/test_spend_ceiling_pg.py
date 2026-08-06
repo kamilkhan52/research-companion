@@ -106,3 +106,63 @@ def test_being_out_of_budget_refuses_the_next_admission(database, monkeypatch):
     spend_ceiling.settle(held)
     with pytest.raises(quotas.QuotaExceeded):
         spend_ceiling.hold("analysis", "job-2")
+
+
+@needs_pg
+def test_a_burst_of_holds_reports_as_transient_not_as_monthly_exhaustion(database, monkeypatch):
+    """The overcorrection: pessimistic holds are several times the measured cost, so ordinary
+    concurrent reading collides long before real spend does. Reporting that as "your monthly limit
+    is reached, try again after it resets" points someone who has spent nothing a month away from
+    a wait of seconds.
+    """
+    # $1.00 ceiling: the blocked request ($0.60 of speech) fits on its own, so what refuses it is
+    # purely this account's own outstanding holds. A request that could NEVER fit is a different
+    # thing and is correctly not transient.
+    monkeypatch.setattr(spend_limits, "monthly_limit_nanousd", lambda: 1_000_000_000)
+    live = [spend_ceiling.hold("analysis", f"job-{i}") for i in range(3)]  # $0.45 held, $0 spent
+    with pytest.raises(quotas.QuotaExceeded) as err:
+        spend_ceiling.hold("speech_synthesis", "job-audio")
+    assert err.value.settled_nanousd == 0, "nothing has actually been spent"
+    assert err.value.is_transient, "a hold collision must not read as exhaustion"
+    for held in live:
+        spend_ceiling.settle(held)
+
+
+@needs_pg
+def test_real_exhaustion_is_not_reported_as_transient(database, monkeypatch):
+    """And the opposite: money genuinely spent does NOT come back until the period rolls over."""
+    monkeypatch.setattr(spend_limits, "monthly_limit_nanousd", lambda: 200_000_000)
+    held = spend_ceiling.hold("analysis", "job-1")
+    held.add(195_000_000)
+    spend_ceiling.settle(held)
+    with pytest.raises(quotas.QuotaExceeded) as err:
+        spend_ceiling.hold("analysis", "job-2")
+    assert err.value.settled_nanousd >= 195_000_000
+    assert not err.value.is_transient
+
+
+@needs_pg
+def test_a_large_first_build_is_admitted_rather_than_refused_forever(database):
+    """A corpus-sized hold refused every build past ~35 papers, permanently, on any real project.
+
+    The hold is an admission gate, not the charge: settlement records the true cost, which is not
+    clamped to the reservation, so the month still sees every dollar the build spent.
+    """
+    held = spend_ceiling.hold(
+        "graph_build", PID, maximum_nanousd=spend_limits.graph_build_nanousd(400),
+    )
+    assert held is not None, "a 400-paper build must still be admitted"
+    spend_ceiling.settle(held)
+
+
+@needs_pg
+def test_an_aborted_admission_gives_its_hold_back(database):
+    """`quotas.release` refuses a dispatched reservation, and `hold` always dispatches — so the
+    rollback path was a silent no-op and an aborted admission held its full maximum for the whole
+    lease, then was charged at that maximum by the reconciler."""
+    held = spend_ceiling.hold("analysis", "job-aborted")
+    spend_ceiling.release(held)
+    row = quotas.get(held.reservation_id, user_id=ALICE)
+    assert row.state == "settled" and row.actual_nanousd == 0, (
+        f"rollback left the hold outstanding: state={row.state}"
+    )

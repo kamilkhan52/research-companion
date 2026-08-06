@@ -365,11 +365,29 @@ async def _quota_exceeded(_request: Request, exc: quotas.QuotaExceeded) -> JSONR
     and a client that retries a 429 on a backoff would hammer a wall until the period rolls over.
     The figures are the account's own spend, not internal pricing, so they are safe to return.
     """
+    if exc.is_transient:
+        # Nothing is actually exhausted: this account's own in-flight work is holding pessimistic
+        # maximums that clear the moment those jobs settle. Telling a reader who has spent nothing
+        # to "try again after it resets" points them a month away from a wait of seconds — and
+        # holds are deliberately several times the measured cost, so a burst of ordinary reading
+        # collides long before real spend does.
+        return JSONResponse(
+            {
+                "detail": "Your other tasks are still running. Give them a moment and try again.",
+                "code": "holds_outstanding",
+                "used_nanousd": exc.used_nanousd,
+                "settled_nanousd": exc.settled_nanousd,
+                "limit_nanousd": exc.limit_nanousd,
+            },
+            status_code=429,
+            headers={"Retry-After": "15"},
+        )
     return JSONResponse(
         {
             "detail": str(exc),
             "code": "quota_exceeded",
             "used_nanousd": exc.used_nanousd,
+            "settled_nanousd": exc.settled_nanousd,
             "requested_nanousd": exc.requested_nanousd,
             "limit_nanousd": exc.limit_nanousd,
         },

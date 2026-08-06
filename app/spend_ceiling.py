@@ -139,19 +139,31 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
 
 
 def release(held: _Held | None) -> None:
-    """Give back an unused reservation — the admission failed before any work ran.
+    """Give back a reservation whose work never ran — settled at zero, not released.
 
-    Best-effort on purpose: a release that cannot reach the database leaves a lease the reconciler
-    expires later, and raising here would replace the original admission failure with a database
-    error, making the real cause impossible to diagnose (the same reasoning as
+    `quotas.release` is unreachable from here and must not be called: `hold` marks the reservation
+    dispatched (it has to — `settle` refuses one that was not), and the ledger refuses to release
+    anything dispatched, on the principle that possibly-billed work is settled rather than
+    discarded. Calling it made both rollback paths in `start_or_join` silent no-ops, so an
+    admission that aborted before its worker started left a full-maximum hold counting against the
+    month for the whole lease — up to six hours for a graph build — and the reconciler then charged
+    it at that maximum.
+
+    Settling at zero is the honest equivalent: nothing was spent, and the ledger records the
+    admission as finished rather than leaving an orphan for the reconciler to over-charge.
+
+    Best-effort, like the old path: a failure here must not replace the original admission error,
+    which is what a caller actually needs to see (same reasoning as
     `JobRegistry._rollback_preparation`).
     """
     if held is None:
         return
     try:
-        quotas.release(held.reservation_id, user_id=held.user_id)
+        quotas.resolve_attempt(held.attempt_id, user_id=held.user_id, actual_nanousd=0)
+        quotas.mark_dispatches_complete(held.reservation_id, user_id=held.user_id)
+        quotas.settle(held.reservation_id, user_id=held.user_id, actual_nanousd=0)
     except Exception as e:  # noqa: BLE001
-        log.warning("reservation release failed (id=%s error=%s)",
+        log.warning("reservation rollback failed (id=%s error=%s) — the lease will expire",
                     held.reservation_id[:8], type(e).__name__)
 
 
