@@ -1369,6 +1369,15 @@ as 429 with an honest `Retry-After`, handled centrally so a future paid route ca
 instead. Limits are in-process (invariant 6) and reset on restart, which is right for a burst
 bound and wrong for a budget — budgets are the durable reservations, kept separate per rule 5.
 
+Two findings from that PR's independent review are recorded rather than built, both deliberate:
+a cross-registry **TOCTOU** in the concurrency count is real in principle (each registry lock is
+taken separately, never one atomic snapshot) but was not reproducible under a deliberate stress
+test — 40 registries, a release barrier, a widened GIL switch interval, 30 trials, zero
+violations — and it errs toward mild overspend rather than false blocking, which is the direction
+the risk section prefers; it becomes real only if invariant 6 is ever relaxed. And the **mobile
+client does not act on `Retry-After`**: it does surface the server's `detail`, so a refusal is
+explained rather than silent, but there is no automatic retry-after-the-window.
+
 **Still open in this milestone.** Daily and monthly quotas by tier. **Pre-spend reservations per
 architectural rule 5** — atomically reserve a pessimistic maximum against the user's remaining
 budget before admitting work, settle to actual cost when it finishes, release on failure; a

@@ -107,9 +107,15 @@ def check_and_record(user_id: str | None, *, active_jobs: int) -> None:
 
     limit = concurrent_jobs()
     if active_jobs >= limit:
+        # The "just cancelled" clause is not padding. Cancellation is cooperative: status flips to
+        # `cancelled` for the client immediately, but the slot is only freed when the worker
+        # actually unwinds, which can take as long as the underlying provider timeout. Without
+        # this sentence, cancel-then-retry looks identical to a genuine overload and reads as the
+        # app ignoring the cancel.
         raise RateLimited(
             f"You already have {active_jobs} tasks running. "
-            "Wait for one to finish, then try again.",
+            "Wait for one to finish, then try again — "
+            "anything you just cancelled takes a moment to stop.",
             retry_after_seconds=10,
         )
 
