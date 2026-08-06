@@ -254,6 +254,17 @@ def _call_analysis_hook(
 ) -> None:
     try:
         hook(job, admitted=admitted)
+    except (quotas.QuotaError, rate_limits.RateLimited):
+        # A refusal is not a best-effort failure — it is the answer to the request. When this runs
+        # on the REQUEST thread (the `admitted=False` paths: an already-retrieved short-circuit,
+        # or joining a settled retrieval) it can still reach the 402/429 handlers, so let it. The
+        # alternative is a 200 OK carrying a hidden error string, which is how the reader learns
+        # they are out of budget only if some client happens to render `analysis_error`.
+        if not admitted:
+            raise
+        # On the worker thread there is nobody left to answer: the retrieval itself succeeded and
+        # the response went out long ago. Record it rather than losing it.
+        set_analysis_error(job, "Usage limit reached — the analysis did not start.")
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))

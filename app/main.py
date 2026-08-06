@@ -50,6 +50,7 @@ from .routers import (
 
 logging_config.configure()  # install the rc.* log handler before any job/LLM/commit runs
 _log = logging_config.get("auth")
+log = _log
 
 # Refuse to start a staging/prod process that is configured permissively — BEFORE the app object
 # exists, so a misconfigured deploy crashes on boot instead of serving. Every check inside guards
@@ -373,6 +374,23 @@ async def _quota_exceeded(_request: Request, exc: quotas.QuotaExceeded) -> JSONR
             "limit_nanousd": exc.limit_nanousd,
         },
         status_code=402,
+    )
+
+
+@app.exception_handler(quotas.ReservationConflict)
+async def _reservation_conflict(_r: Request, exc: quotas.ReservationConflict) -> JSONResponse:
+    """503 rather than an unhandled 500.
+
+    Starlette matches handlers by class, and `ReservationConflict` shares no ancestor with the two
+    below, so every conflict path escaped as a generic 500 with a stack trace. A conflict means the
+    ledger and this process disagree about a reservation's state — a server-side fault, not
+    something the reader did — so it says so and stays retryable.
+    """
+    log.error("reservation conflict surfaced to a client: %s", exc)
+    return JSONResponse(
+        {"detail": "Usage accounting is temporarily inconsistent. Please try again.",
+         "code": "reservation_conflict"},
+        status_code=503,
     )
 
 

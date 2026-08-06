@@ -123,6 +123,26 @@ def graph_build_nanousd(uncached_papers: int) -> int:
     return max(1, int(uncached_papers)) * GRAPH_NANOUSD_PER_PAPER
 
 
+#: How long a reservation's lease should outlive its job, per operation. The reconciler treats a
+#: dispatched reservation past its lease as an orphan and settles it CONSERVATIVELY — at the full
+#: maximum — so a lease shorter than the work charges the account the maximum while the job is
+#: still running, and the worker's own settle then finds it already finalized. A graph build is
+#: documented as running up to 2.5 hours (`graph_jobs`), and `graph.EXTRACTION_HARD_DEADLINE` is
+#: 480s per paper, so an hour is far too short for it.
+_LEASE_SECONDS = {
+    "graph_build": 6 * 60 * 60,     # comfortably past the longest observed build
+    "discovery": 2 * 60 * 60,       # slice 2 widened recall; a cold run was ~7 minutes
+    "speech_synthesis": 60 * 60,    # long narrations are many segments
+    "analysis": 60 * 60,
+}
+_DEFAULT_LEASE_SECONDS = 60 * 60
+
+
+def lease_seconds(operation: str) -> int:
+    """How long to hold the lease for one admission of `operation`."""
+    return _LEASE_SECONDS.get(operation, _DEFAULT_LEASE_SECONDS)
+
+
 def enabled() -> bool:
     """Whether spend ceilings can be enforced at all.
 

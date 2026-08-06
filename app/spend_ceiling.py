@@ -84,8 +84,14 @@ def note_spend(nanousd: int) -> None:
         log.warning("spend accumulation skipped (error=%s)", type(e).__name__)
 
 
+#: Which provider each operation actually bills. `quota_reconciler` branches on this — it looks up
+#: OpenRouter generation stats to recover an orphan's cost — so labelling a TTS reservation
+#: "openrouter" would send it hunting for a generation id that never existed.
+_PROVIDER = {"speech_synthesis": "openai"}
+
+
 def hold(operation: str, job_id: str, *, model: str | None = None,
-         provider: str = "openrouter", lease_seconds: int = 3600,
+         provider: str | None = None, lease_seconds_override: int | None = None,
          maximum_nanousd: int | None = None) -> _Held | None:
     """Reserve this account's pessimistic maximum for one job, or raise if it cannot be afforded.
 
@@ -110,12 +116,12 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
         # project id AS the job id, so every build after the first raised ReservationConflict.
         reservation_key=f"{operation}:{job_id}:{uuid.uuid4().hex}",
         job_id=job_id,
-        provider=provider,
+        provider=provider or _PROVIDER.get(operation, "openrouter"),
         operation=operation,
         model=model,
         maximum_cost_nanousd=maximum,
         limit_nanousd=spend_limits.monthly_limit_nanousd(),
-        lease_seconds=lease_seconds,
+        lease_seconds=lease_seconds_override or spend_limits.lease_seconds(operation),
     )
     # Mark the dispatch immediately, not lazily at first spend. Two reasons, both from the ledger's
     # own design: `settle` REFUSES a reservation that was never dispatched (so settling without
