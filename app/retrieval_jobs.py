@@ -268,10 +268,13 @@ def _call_analysis_hook(
         # retrieved paper with no analysis job and no error, and waited forever.
         if can_answer:
             raise
-        set_analysis_error(job, str(exc))
-        # On the worker thread there is nobody left to answer: the retrieval itself succeeded and
-        # the response went out long ago. Record it rather than losing it.
-        set_analysis_error(job, "Usage limit reached — the analysis did not start.")
+        # Nobody is left to answer: the retrieval succeeded and its response went out long ago.
+        # Record the refusal's OWN message — an earlier version wrote it and then immediately
+        # overwrote it with a generic "usage limit reached", so a rate-limit ("you already have 4
+        # tasks running") and a server-side quota outage both reached the reader as a monthly
+        # limit. That is the same wait-a-month-versus-wait-seconds misdirection the transient
+        # split exists to remove.
+        set_analysis_error(job, str(exc) or "The analysis could not be started.")
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))

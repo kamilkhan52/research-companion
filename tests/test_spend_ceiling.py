@@ -280,3 +280,101 @@ def test_an_explicit_maximum_overrides_the_flat_per_operation_hold(ledger):
     finally:
         config.reset_active_user(token)
     assert ledger["reserve"][0]["maximum_cost_nanousd"] == 3 * spend_limits.GRAPH_NANOUSD_PER_PAPER
+
+
+def test_pool_threads_charge_their_spend_to_the_parent_reservation(ledger):
+    """`run_parallel` fan-out is the SAME job, so its spend belongs to the hold already taken.
+
+    A pool thread inherits no contextvars, so without an explicit bind `note_spend` finds nothing
+    and drops the cost. That silently zeroed the two most expensive operations in the app — a graph
+    build extracting a whole corpus, and every parallel discovery stage — and three review passes
+    confirmed no test failed when the bind was removed.
+    """
+    from app import jobs as jobs_module
+
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="graph_build")
+
+    def work(_job):
+        # Exactly the shape of graph extraction: fan out, each worker spends.
+        jobs_module.run_parallel(
+            [1_000, 2_000, 3_000],
+            lambda cost: spend_ceiling.note_spend(cost),
+            max_workers=3,
+        )
+
+    token = config.set_active_user(ALICE)
+    try:
+        job = reg.start_or_join("k", lambda: SampleJob(id=new_id()), work)
+        _settled(reg, job.id)
+        _wait_for(lambda: ledger["settle"], what="the build to settle")
+    finally:
+        config.reset_active_user(token)
+    assert ledger["settle"] == [("res-1", 6_000)], (
+        "spend from pool threads must reach the parent reservation, not vanish"
+    )
+
+
+def test_app_global_spend_with_no_project_still_charges_the_reservation(ledger):
+    """`usage.record` returns early when there is no active project, but reservations are scoped to
+    the USER. Audio is app-global — `/api/audio/jobs` has no project in its path — and it is the
+    largest variable cost in the app, so charging behind that guard let it escape the ceiling."""
+    from app import usage
+
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="speech_synthesis")
+
+    def work(_job):
+        usage.record("speech_synthesis", "tts-1", {"cost": 0.004})
+
+    token = config.set_active_user(ALICE)
+    project_token = config.set_active_project(None)   # app-global, like an audio job
+    try:
+        job = reg.start_or_join("k", lambda: SampleJob(id=new_id()), work)
+        _settled(reg, job.id)
+        _wait_for(lambda: ledger["settle"], what="the audio job to settle")
+    finally:
+        config.reset_active_project(project_token)
+        config.reset_active_user(token)
+    assert ledger["settle"] == [("res-1", 4_000_000)], (
+        "app-global spend must still be charged to the user's reservation"
+    )
+
+
+def test_the_real_continuation_call_sites_hold_budget(ledger, temp_project, monkeypatch):
+    """Pin the production wiring, not a synthetic registry passing the flag to itself.
+
+    The existing continuation test builds its own registry and supplies `reserves=True`, so it
+    proves the registry honours the flag and nothing about whether `chat_jobs` and `audio_jobs`
+    actually pass it. Removing it from both left the whole suite green across three review passes.
+    """
+    import ast
+    import inspect
+
+    from app import audio_jobs, chat_jobs
+
+    def reserves_kw(module, owner: str, attr: str):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == attr
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == owner
+            ):
+                for kw in node.keywords:
+                    if kw.arg == "reserves":
+                        yield kw.value
+
+    for module, owner, attr in (
+        (chat_jobs, "_registry", "start_or_join"),
+        (audio_jobs, "_registry", "start_or_join"),
+    ):
+        values = list(reserves_kw(module, owner, attr))
+        assert values, (
+            f"{module.__name__} must state `reserves` explicitly: it passes `metered` through for "
+            "continuations, and inheriting the registry default there is what left the largest "
+            "variable cost in the app outside the ceiling"
+        )
+        assert all(
+            isinstance(v, ast.Constant) and v.value is True for v in values
+        ), f"{module.__name__} must pass reserves=True — a continuation's spend is still spend"
