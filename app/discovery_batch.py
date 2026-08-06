@@ -147,12 +147,12 @@ def run_batches(
 
 
 def concurrency() -> int:
-    """How many screening batches run at once. Bounded 1-12; 1 restores the serial behaviour."""
+    """How many screening batches run at once. Bounded 1-32; 1 restores the serial behaviour."""
     try:
         n = int(os.environ.get("RC_DISCOVERY_BATCH_CONCURRENCY", "6"))
     except ValueError:
         n = 6
-    return max(1, min(12, n))
+    return max(1, min(32, n))
 
 
 def _judge(chunk: list[tuple[int, dict]], system: str,
