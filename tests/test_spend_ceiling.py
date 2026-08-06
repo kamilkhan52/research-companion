@@ -25,6 +25,10 @@ class _FakeReservation:
     def __init__(self, rid): self.id = rid
 
 
+class _FakeAttempt:
+    def __init__(self, aid): self.id = aid
+
+
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
     monkeypatch.setattr(jobs, "_ALL_REGISTRIES", [])
@@ -34,13 +38,23 @@ def _isolated(monkeypatch):
 @pytest.fixture
 def ledger(monkeypatch):
     """A stand-in for the durable ledger, recording what the registry asked it to do."""
-    calls = {"reserve": [], "settle": [], "release": []}
+    calls = {"reserve": [], "settle": [], "release": [], "resolve": [], "complete": []}
 
     def reserve(**kw):
         calls["reserve"].append(kw)
         return _FakeReservation(f"res-{len(calls['reserve'])}")
 
     monkeypatch.setattr(quotas, "reserve", reserve)
+    # The attempt lifecycle is part of settling, not an optional extra: `quotas.settle` refuses a
+    # reservation that was never marked dispatched. Stubbing it here keeps these tests focused on
+    # the REGISTRY wiring — `tests/test_spend_ceiling_pg.py` is what proves the ledger accepts the
+    # sequence, which is the check whose absence let an unsettleable version pass CI.
+    monkeypatch.setattr(quotas, "begin_attempt",
+                        lambda rid, **kw: (_FakeAttempt(f"att-{rid}"), True))
+    monkeypatch.setattr(quotas, "resolve_attempt",
+                        lambda aid, **kw: calls["resolve"].append((aid, kw["actual_nanousd"])))
+    monkeypatch.setattr(quotas, "mark_dispatches_complete",
+                        lambda rid, **kw: calls["complete"].append(rid))
     monkeypatch.setattr(quotas, "settle", lambda rid, *, user_id, actual_nanousd, **kw:
                         calls["settle"].append((rid, actual_nanousd)))
     monkeypatch.setattr(quotas, "release", lambda rid, *, user_id:

@@ -73,21 +73,28 @@ def monthly_limit_nanousd() -> int:
 #: (character-priced `tts-1`), but this is the admission-time bound for a whole narration job,
 #: whose text length is not known until the turn that produces it has run.
 _MAX_NANOUSD: dict[str, int] = {
-    "analysis": 80_000,             # $0.08 — ~3x the measured all-in turn
-    "narration": 20_000,            # $0.02
-    "speech_synthesis": 60_000,     # $0.06 — ~4,000 characters at tts-1
-    "retrieval": 20_000,            # $0.02 — extraction is cheap; the fetch is free
-    "discovery": 150_000,           # $0.15 — a measured cold run was $0.013, but slice 2 widened recall
-    "graph_build": 500_000,         # $0.50 — per-paper extraction across a whole project
-    "notes": 40_000,                # $0.04
-    "author_profile": 20_000,       # $0.02
-    "lab_research": 40_000,         # $0.04
+    # $0.15 — the ledger actual for a turn is $0.06023 (§2b), not the recommended stack's $0.0262,
+    # and §8 lists provider pinning as an unmet precondition. 2.5x that, not 3x the aspiration.
+    "analysis": 150_000_000,
+    "narration": 40_000_000,        # $0.04
+    # $0.60. The MEAN cached narration is 10,702 characters ($0.1605 at tts-1) and the largest
+    # measured is 36,987 ($0.555) — §2c. Narration length is unknown at admission and §8 records
+    # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
+    "speech_synthesis": 600_000_000,
+    "retrieval": 20_000_000,        # $0.02 — the fetch is free; extraction is cheap
+    "discovery": 150_000_000,       # $0.15 — a measured cold run was $0.013; slice 2 widened recall
+    # $0.084 per paper (§2b) x a large project. Deliberately generous: this is one admission for
+    # work that fans out across an entire corpus, and `_MAX_NANOUSD` cannot see the corpus size.
+    "graph_build": 10_000_000_000,  # $10.00
+    "notes": 40_000_000,            # $0.04
+    "author_profile": 20_000_000,   # $0.02
+    "lab_research": 40_000_000,     # $0.04
 }
 
 #: Used when an operation has no entry. Generous rather than tight: refusing a legitimate reader is
 #: the failure the roadmap ranks worse than a mild overspend, and an unknown operation is far more
 #: likely to be a new cheap ancillary call than a new expensive one.
-_DEFAULT_MAX_NANOUSD = 50_000
+_DEFAULT_MAX_NANOUSD = 50_000_000
 
 
 def max_cost_nanousd(operation: str) -> int:

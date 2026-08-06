@@ -49,15 +49,41 @@ def test_an_unknown_operation_gets_the_generous_default_not_zero():
     )
 
 
-def test_no_single_admission_can_consume_the_whole_default_ceiling():
-    """A hold larger than the ceiling would refuse every request on a fresh account.
+#: Operations whose pessimistic hold legitimately exceeds the default monthly ceiling, and why.
+#: This is not a waiver — it records a real product conflict rather than hiding it behind a hold
+#: small enough to pass. A graph build fans out across a whole corpus at a measured $0.084/paper
+#: (pricing analysis §2b), so 100 papers is ~$8.40 against a Basic allowance of $2.50. Sizing the
+#: hold to fit would let one build silently overshoot the ceiling, because settlement charges
+#: actual and nothing clamps it to the reservation.
+_KNOWN_TO_EXCEED_THE_CEILING = {"graph_build"}
 
-    The expensive operation is a graph build; even that must leave room, or a reader who has spent
-    nothing this month still cannot start one.
+
+def test_only_the_acknowledged_operations_can_exceed_the_monthly_ceiling():
+    """A hold larger than the ceiling refuses that operation outright on a fresh account.
+
+    That is the honest behaviour when the work genuinely costs more than the tier allows — but it
+    must be a deliberate, listed exception, not something a new number drifts into unnoticed.
     """
     ceiling = spend_limits.monthly_limit_nanousd()
     for operation, hold in spend_limits._MAX_NANOUSD.items():
+        if operation in _KNOWN_TO_EXCEED_THE_CEILING:
+            continue
         assert hold < ceiling, f"{operation} alone would exhaust the monthly ceiling"
+
+
+def test_the_holds_are_in_nano_usd_and_not_off_by_a_factor_of_a_thousand():
+    """The unit error the stubbed suite could not see.
+
+    Every hold was originally written as if nano-USD were micro-USD, so `analysis` held $0.00008
+    instead of $0.08. Nothing caught it: the ledger was mocked, and the "no hold exceeds the
+    ceiling" test above passes MORE easily when the holds are too small. Only settling against a
+    real Postgres surfaced it, as `actual > reserved`.
+    """
+    usd = lambda nano: nano / 1_000_000_000  # noqa: E731
+    assert 0.05 <= usd(spend_limits.max_cost_nanousd("analysis")) <= 1.0
+    assert 0.10 <= usd(spend_limits.max_cost_nanousd("speech_synthesis")) <= 2.0
+    assert 0.001 <= usd(spend_limits._DEFAULT_MAX_NANOUSD) <= 1.0
+    assert usd(spend_limits.monthly_limit_nanousd()) == 2.5
 
 
 def test_the_analysis_hold_exceeds_the_measured_turn_cost():
@@ -65,7 +91,9 @@ def test_the_analysis_hold_exceeds_the_measured_turn_cost():
 
     Pricing analysis §2e measures an all-in turn at $0.0262 on the recommended stack.
     """
-    assert spend_limits.max_cost_nanousd("analysis") > 26_200
+    # §2b's ledger actual is $0.06023/turn, which is what the hold must clear — not the
+    # recommended stack's $0.0262, since §8 lists its preconditions as not all met.
+    assert spend_limits.max_cost_nanousd("analysis") > 60_230_000
 
 
 def test_the_soft_warning_fires_before_the_hard_ceiling():

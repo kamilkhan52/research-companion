@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextvars
 import threading
+import uuid
 from dataclasses import dataclass, field
 
 from . import config, logging_config, quotas, spend_limits
@@ -36,10 +37,11 @@ log = logging_config.get("spend_ceiling")
 
 @dataclass
 class _Held:
-    """One job's reservation and the real cost observed under it."""
+    """One job's reservation, its dispatch attempt, and the real cost observed under it."""
 
     reservation_id: str
     user_id: str
+    attempt_id: str
     spent_nanousd: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -94,19 +96,36 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
     if not spend_limits.enabled():
         return None
     user_id = config.active_user_id()
+    maximum = spend_limits.max_cost_nanousd(operation)
     reservation = quotas.reserve(
         user_id=user_id,
         project_id=config.active_project_id(),
-        reservation_key=f"{operation}:{job_id}",
+        # Unique per admission. The key is an idempotency handle, and `reserve` refuses to reuse
+        # one whose reservation is no longer `reserved` — so a key derived from the job id alone
+        # breaks permanently for any job whose id is stable across runs. `graph_jobs` uses the
+        # project id AS the job id, so every build after the first raised ReservationConflict.
+        reservation_key=f"{operation}:{job_id}:{uuid.uuid4().hex}",
         job_id=job_id,
         provider=provider,
         operation=operation,
         model=model,
-        maximum_cost_nanousd=spend_limits.max_cost_nanousd(operation),
+        maximum_cost_nanousd=maximum,
         limit_nanousd=spend_limits.monthly_limit_nanousd(),
         lease_seconds=lease_seconds,
     )
-    return _Held(reservation_id=reservation.id, user_id=user_id)
+    # Mark the dispatch immediately, not lazily at first spend. Two reasons, both from the ledger's
+    # own design: `settle` REFUSES a reservation that was never dispatched (so settling without
+    # this is structurally impossible, which is what made the first version of this a no-op), and
+    # a process death after this point leaves a *dispatched* row that the reconciler settles
+    # conservatively — over-charging a possibly-billed attempt rather than silently losing spend,
+    # which is the trade `04-ai-costs-quotas-and-abuse.md` states explicitly.
+    attempt, _created = quotas.begin_attempt(
+        reservation.id,
+        user_id=user_id,
+        attempt_key=f"{job_id}:work",
+        maximum_cost_nanousd=maximum,
+    )
+    return _Held(reservation_id=reservation.id, user_id=user_id, attempt_id=attempt.id)
 
 
 def release(held: _Held | None) -> None:
@@ -137,9 +156,18 @@ def settle(held: _Held | None) -> None:
     with held.lock:
         spent = held.spent_nanousd
     try:
+        # The ledger's state machine, in the order it requires: resolve the dispatch to its actual
+        # cost, declare dispatching finished, then settle exactly. An exact settle is rejected
+        # unless the resolved attempts sum to the settled amount, so these three are one operation.
+        quotas.resolve_attempt(held.attempt_id, user_id=held.user_id, actual_nanousd=spent)
+        quotas.mark_dispatches_complete(held.reservation_id, user_id=held.user_id)
         quotas.settle(held.reservation_id, user_id=held.user_id, actual_nanousd=spent)
     except Exception as e:  # noqa: BLE001 — a settle failure must not turn a finished job into an
         # error the reader sees. The lease expires and the reconciler settles it conservatively,
         # which over-charges rather than losing the spend.
-        log.warning("reservation settle failed (id=%s error=%s)",
-                    held.reservation_id[:8], type(e).__name__)
+        #
+        # Logged at ERROR, not WARNING: the first version of this swallowed a ReservationConflict
+        # at warning level on EVERY job, so a ceiling that never recorded anything looked healthy.
+        # A conflict here means the integration is wrong, not that the database blipped.
+        log.error("reservation settle failed (id=%s error=%s) — the ceiling did not record this "
+                  "job's spend", held.reservation_id[:8], type(e).__name__)
