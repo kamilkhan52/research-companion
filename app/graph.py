@@ -49,6 +49,7 @@ from . import (
     retriever,
     semantic_scholar,
     spend_ceiling,
+    spend_limits,
     store,
 )
 from .models import Paper
@@ -1548,6 +1549,7 @@ def build_graph(papers: list[Paper], force: bool = False,
             max_workers=workers, thread_name_prefix="graph-extract-fan",
         )
         abandoned = False
+        extracted_since_checkpoint = 0
         in_flight: dict[concurrent.futures.Future, Paper] = {}
         try:
             while pending or in_flight:
@@ -1565,6 +1567,15 @@ def build_graph(papers: list[Paper], force: bool = False,
                     extraction = future.result()  # an extract_fn crash fails the build,
                     # exactly as the serial loop did
                     graph_store.set_paper_extraction(data, paper.slug, extraction)
+                    extracted_since_checkpoint += 1
+                    if extracted_since_checkpoint >= spend_limits.GRAPH_TRANCHE_PAPERS:
+                        # Pay as we go. One admission cannot bound a cost that scales with the
+                        # corpus, and sizing that admission to the whole corpus refuses every
+                        # large build instead. Settling each tranche and reserving the next caps
+                        # the over-run at one tranche; when the account cannot afford another this
+                        # raises, the build stops, and every paper extracted so far stays cached.
+                        extracted_since_checkpoint = 0
+                        spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
                     # Persist after EACH paper, not just once at the end: each extraction
                     # is a real (paid) call taking tens of seconds, so an interrupted
                     # build keeps every paper completed so far and the next build only

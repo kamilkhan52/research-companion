@@ -121,6 +121,18 @@ GRAPH_NANOUSD_PER_PAPER = 70_000_000  # $0.07
 GRAPH_HOLD_CAP_NANOUSD = 500_000_000  # $0.50
 
 
+#: How many papers a graph build extracts between re-reservations. Each tranche settles at what it
+#: really cost and the next is reserved against what is left, so an over-run is bounded by one
+#: tranche rather than by the corpus. Small enough that the bound is meaningful (7 papers is about
+#: $0.23 of real extraction), large enough that a build is not doing ledger round-trips constantly.
+GRAPH_TRANCHE_PAPERS = 7
+
+
+def graph_tranche_nanousd() -> int:
+    """The maximum to hold for one tranche of a graph build."""
+    return GRAPH_TRANCHE_PAPERS * GRAPH_NANOUSD_PER_PAPER
+
+
 def graph_build_nanousd(uncached_papers: int) -> int:
     """What to hold for a build that must extract `uncached_papers` papers.
 

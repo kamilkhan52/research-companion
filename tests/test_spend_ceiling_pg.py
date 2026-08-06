@@ -166,3 +166,63 @@ def test_an_aborted_admission_gives_its_hold_back(database):
     assert row.state == "settled" and row.actual_nanousd == 0, (
         f"rollback left the hold outstanding: state={row.state}"
     )
+
+
+@needs_pg
+def test_a_build_pays_as_it_goes_instead_of_overshooting_by_the_whole_corpus(database):
+    """Chunked re-reservation: the fix for an over-run bounded only by corpus size.
+
+    A single admission cannot bound work that scales with the corpus — the hold is fixed and
+    settlement charges actual, which nothing clamps, so a 400-paper first build settled ~$13
+    against a $2.50 ceiling and 5,000 papers would settle ~$167. Sizing the admission to the
+    corpus instead refuses every large build outright, which is worse.
+    """
+    held = spend_ceiling.hold(
+        "graph_build", PID, maximum_nanousd=spend_limits.graph_tranche_nanousd(),
+    )
+    first_reservation = held.reservation_id
+    # `checkpoint` reads the bound reservation, exactly as it does inside a worker — the registry
+    # binds it in `_run`. Without this it is a silent no-op, which is how the first version of
+    # this test "passed" the sequence while proving nothing.
+    token = spend_ceiling.bind(held)
+    try:
+        held.add(200_000_000)                               # tranche one really cost $0.20
+        spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
+    finally:
+        spend_ceiling.reset(token)
+
+    settled = quotas.get(first_reservation, user_id=ALICE)
+    assert settled.state == "settled" and settled.actual_nanousd == 200_000_000, (
+        "the finished tranche must be charged before the next is reserved"
+    )
+    assert held.reservation_id != first_reservation, "a fresh tranche must be reserved"
+
+    held.add(50_000_000)                                    # tranche two so far: $0.05
+    spend_ceiling.settle(held)
+    final = quotas.get(held.reservation_id, user_id=ALICE)
+    assert final.actual_nanousd == 50_000_000, (
+        "the final settle must charge only this tranche, not the whole build again"
+    )
+
+
+@needs_pg
+def test_a_build_stops_when_the_account_can_no_longer_afford_the_next_tranche(
+    database, monkeypatch,
+):
+    """The bound. Refusing mid-build is the point: extractions are cached per paper, so the work
+    already done survives and the build resumes when the period rolls over."""
+    monkeypatch.setattr(spend_limits, "monthly_limit_nanousd", lambda: 600_000_000)
+    held = spend_ceiling.hold(
+        "graph_build", PID, maximum_nanousd=spend_limits.graph_tranche_nanousd(),
+    )
+    token = spend_ceiling.bind(held)
+    try:
+        held.add(550_000_000)   # this tranche ate almost the whole ceiling
+        with pytest.raises(quotas.QuotaExceeded):
+            spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
+    finally:
+        spend_ceiling.reset(token)
+
+    # And the spend that DID happen is recorded, not abandoned by the refusal.
+    row = quotas.get(held.reservation_id, user_id=ALICE)
+    assert row.state == "settled" and row.actual_nanousd == 550_000_000
