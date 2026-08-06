@@ -159,7 +159,17 @@ def any_active_for_scopes(scopes: set[str | None]) -> str | None:
 #: number of account-wide slots until the process restarts — locking that account out of chat,
 #: notes, retrieval, audio, discovery, graph, labs and profiles at once. The roadmap is explicit
 #: that blocking a legitimate paying user is worse than a mild overspend, so this fails open.
-#: Generous on purpose: the slowest legitimate job measured is a cold Discovery run at ~7 minutes.
+#:
+#: It is NOT a "no legitimate job runs this long" bound, and an earlier comment here wrongly said
+#: so on the basis of Discovery's ~7-minute cold run. Graph builds are also metered and can far
+#: exceed this: `graph.EXTRACTION_HARD_DEADLINE` is 480s PER PAPER at a concurrency of 1–8, and
+#: `graph_jobs`'s own docstring records a real build still going after 2.5 hours. A large build
+#: will therefore stop holding its slot while still legitimately running, and its owner can start
+#: work beyond the concurrency cap for the remainder. That is the accepted trade: the per-minute
+#: window still applies, the spend is still metered, and the alternative — one wedged worker
+#: locking an account out of all eight paid features until the process restarts — is the failure
+#: the risk section explicitly ranks worse. No single constant serves both a 20-second narration
+#: and a two-hour graph build; scaling the bound per job kind is the real fix if this matters.
 _STUCK_AFTER_SECONDS = 30 * 60
 
 
