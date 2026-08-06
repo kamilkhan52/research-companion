@@ -78,7 +78,7 @@ class ChatJob(Job):
 
 # Finished jobs kept for late polls (pruned oldest-first past the cap). `_jobs` aliases the
 # registry dict so tests can clear() it to reset.
-_registry: JobRegistry[ChatJob] = JobRegistry("chat", max_finished=20, metered=True)
+_registry: JobRegistry[ChatJob] = JobRegistry("chat", max_finished=20, metered=True, operation="analysis")
 _jobs = _registry.jobs
 
 

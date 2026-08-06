@@ -38,7 +38,7 @@ import math
 import threading
 from datetime import UTC, datetime
 
-from . import config, logging_config, usage_events
+from . import config, logging_config, spend_ceiling, usage_events
 from .fileio import atomic_write_text
 
 log = logging_config.get("usage")
@@ -153,6 +153,10 @@ def record(
     user_id = config.active_user_id()
     if not project_id:
         return
+    # Feed the reservation covering this job BEFORE the presentation cache: a full volume or a
+    # corrupt usage.json must not also lose the fact that money was spent, which is what the
+    # ceiling settles against.
+    spend_ceiling.note_spend(round(float((usage or {}).get("cost") or 0.0) * _NANO_USD))
     try:
         with _lock:
             data = load()

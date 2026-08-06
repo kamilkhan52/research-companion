@@ -27,6 +27,7 @@ from . import (
     deploy_guard,
     logging_config,
     quota_reconciler,
+    quotas,
     rate_limits,
 )
 from .auth import AuthError
@@ -353,6 +354,37 @@ async def _rate_limited(_request: Request, exc: rate_limits.RateLimited) -> JSON
         status_code=429,
         headers={"Retry-After": str(exc.retry_after_seconds)},
     )
+
+
+@app.exception_handler(quotas.QuotaExceeded)
+async def _quota_exceeded(_request: Request, exc: quotas.QuotaExceeded) -> JSONResponse:
+    """402 with the real numbers, because "limit reached" alone is not actionable.
+
+    Payment Required rather than 429: this is not a rate the caller can wait out inside the month,
+    and a client that retries a 429 on a backoff would hammer a wall until the period rolls over.
+    The figures are the account's own spend, not internal pricing, so they are safe to return.
+    """
+    return JSONResponse(
+        {
+            "detail": str(exc),
+            "code": "quota_exceeded",
+            "used_nanousd": exc.used_nanousd,
+            "requested_nanousd": exc.requested_nanousd,
+            "limit_nanousd": exc.limit_nanousd,
+        },
+        status_code=402,
+    )
+
+
+@app.exception_handler(quotas.QuotaUnavailable)
+async def _quota_unavailable(_request: Request, exc: quotas.QuotaUnavailable) -> JSONResponse:
+    """503, and deliberately NOT an admission.
+
+    A ceiling that opens when its store is unreachable is not a ceiling (architectural rule 5), so
+    paid work is refused — but this is a transient server fault, not the reader's fault, and the
+    status says so.
+    """
+    return JSONResponse({"detail": str(exc), "code": "quota_unavailable"}, status_code=503)
 
 
 # ---------- routers ----------

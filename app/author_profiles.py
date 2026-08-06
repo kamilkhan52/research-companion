@@ -31,7 +31,8 @@ class ProfileJob(Job):
     cached: bool = False
 
 
-_registry: JobRegistry[ProfileJob] = JobRegistry("author-profile", max_finished=30, metered=True)
+_registry: JobRegistry[ProfileJob] = JobRegistry("author-profile", max_finished=30, metered=True,
+                                          operation="author_profile")
 _jobs = _registry.jobs
 
 
