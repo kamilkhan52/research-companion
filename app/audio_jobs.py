@@ -51,7 +51,7 @@ class AudioJob(Job):
 
 # Keyed by content hash (voice settings + text); `_jobs` aliases the registry dict so tests can
 # clear() it to reset. Higher finished cap than the others — audio jobs are small and re-listened.
-_registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50)
+_registry: JobRegistry[AudioJob] = JobRegistry("audio", max_finished=50, metered=True)
 _jobs = _registry.jobs
 
 

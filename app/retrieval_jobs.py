@@ -39,7 +39,7 @@ class RetrievalJob(Job):
     canonical_job_id: str | None = None
 
 
-_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30)
+_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True)
 _jobs = _registry.jobs
 
 

@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
-from . import config, logging_config
+from . import config, logging_config, rate_limits
 
 log = logging_config.get("jobs")
 
@@ -75,6 +75,10 @@ class _Admission:
 # complete reset.
 _KEY_ATTR = "_rc_dedup_key"
 _PID_ATTR = "_rc_project_id"
+# The account the job was admitted for. Stamped like the project so a running worker can be
+# attributed to a user without consulting the ambient contextvar of whichever thread is asking —
+# the rate limiter counts one account's live work from an unrelated caller's thread.
+_USER_ATTR = "_rc_user_id"
 _CANCELLED_ATTR = "_rc_cancelled"
 _WORKER_ACTIVE_ATTR = "_rc_worker_active"
 _ON_SETTLE_ATTR = "_rc_on_settle"
@@ -142,6 +146,46 @@ def any_active_for_scopes(scopes: set[str | None]) -> str | None:
                 ):
                     return reg.name
     return None
+
+
+def active_count_for_user(
+    user_id: str | None,
+    *,
+    exclude: tuple[str | None, str | None, str] | None = None,
+) -> int:
+    """How much paid work this account currently has in flight, across every registry.
+
+    Counts live workers AND in-flight admissions, for the same reason `any_active_for_scopes`
+    does: an admission waiting on Postgres has committed to doing the work but has not published a
+    worker yet, and treating that interval as idle would let a burst of concurrent requests all
+    pass a concurrency check that each of them is about to violate.
+
+    `exclude` drops one admission identity — the caller's own. `start_or_join` registers its
+    admission marker before it can check anything (the marker is what makes identical callers wait
+    instead of racing), so without this every start would count itself and a ceiling of N would
+    admit only N-1. Deliberately an explicit identity rather than a blanket "minus one": a caller
+    that legitimately holds another admission must still be counted for it.
+
+    Only metered registries count. Internal follow-on work (cover art, affiliations, figure
+    warming) is spawned by an already-admitted request, so counting it would let one legitimate
+    turn exhaust the caller's own concurrency ceiling.
+    """
+    if not user_id:
+        return 0
+    total = 0
+    for reg in _ALL_REGISTRIES:
+        if not reg.metered:
+            continue
+        with reg.lock:
+            total += sum(
+                1 for identity in reg._admitting
+                if identity[0] == user_id and identity != exclude
+            )
+            total += sum(
+                1 for job in reg.jobs.values()
+                if _worker_is_active(job) and getattr(job, _USER_ATTR, None) == user_id
+            )
+    return total
 
 
 def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
@@ -216,8 +260,14 @@ def forget_finished_for_project(pid: str) -> None:
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
-    def __init__(self, name: str, *, max_finished: int | None = 20):
+    def __init__(self, name: str, *, max_finished: int | None = 20, metered: bool = False):
         self.name = name
+        # Whether starting a job here is a USER-INITIATED paid entry point, and therefore subject
+        # to the per-account rate ceilings. Follow-on work a turn spawns internally (covers,
+        # affiliations, figure warming, per-segment preview synthesis) is deliberately NOT metered:
+        # it was authorized when its parent was admitted, and charging it again would let one
+        # legitimate turn throttle the account that asked for it.
+        self.metered = metered
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
@@ -351,6 +401,10 @@ class JobRegistry(Generic[J]):
                 raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
             setattr(job, _KEY_ATTR, key)
             setattr(job, _PID_ATTR, pid)
+            # Ambient here, unlike start_or_join's captured value: `put` runs entirely on the
+            # caller's request thread. It is stamped for attribution only — an already-terminal
+            # cache hit spawned no worker, so it never counts toward the concurrency ceiling.
+            setattr(job, _USER_ATTR, config.active_user_id())
             self._jobs[job.id] = job
             self._stamp_settled(job)   # `put` registers an ALREADY-terminal job
             self._prune()
@@ -434,6 +488,14 @@ class JobRegistry(Generic[J]):
 
         cleanup: Callable[[], None] | None = None
         try:
+            # Reached only by the caller that will genuinely CREATE a job — every joiner returned
+            # above. So the ceiling counts real new spend, and a client polling a running job can
+            # never rate-limit itself out of its own result.
+            if self.metered:
+                rate_limits.check_and_record(
+                    user_id,
+                    active_jobs=active_count_for_user(user_id, exclude=identity),
+                )
             job = factory()
             if prepare_new is not None:
                 cleanup = prepare_new(job)
@@ -460,6 +522,7 @@ class JobRegistry(Generic[J]):
                 # not a running job to join and not a reason to discard newly authorized work.
                 setattr(job, _KEY_ATTR, key)
                 setattr(job, _PID_ATTR, pid)
+                setattr(job, _USER_ATTR, user_id)
                 # Set before publishing the job in the registry. A deletion sweep that wins after
                 # this point must see the scope as active even if the new thread has not entered
                 # _run yet.
