@@ -95,8 +95,11 @@ _MAX_NANOUSD: dict[str, int] = {
     # at any cost). §2b prices a cue at $0.00108 pinned, so this covers a long wait generously.
     "listening_preview": 60_000_000,   # $0.06
     "affiliations": 10_000_000,        # $0.01 — one small extraction per paper
-    # The single most expensive per-paper LLM call in the app; §2b puts it at $0.03343 pinned.
-    "graph_extraction": 100_000_000,   # $0.10
+    # §2b prices extraction at $0.00721/paper on pinned V4 Flash, which is what
+    # `graph.resolve_model` selects since 2026-08-07. 4x headroom over that, and still well under
+    # the $0.10 this held while extraction ran on Pro — the hold is what decides how much of a
+    # month a build can consume, so pricing it off the wrong model was costing mapped papers.
+    "graph_extraction": 30_000_000,    # $0.03
     "author_profile": 20_000_000,   # $0.02
     "lab_research": 40_000_000,     # $0.04
 }

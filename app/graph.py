@@ -55,8 +55,17 @@ from .models import Paper
 
 # ---------- model resolution ----------
 
-DEFAULT_GRAPH_MODEL = "deepseek/deepseek-v4-pro"
-_GRAPH_MODEL_INC = ["deepseek", "v4"]
+# Moved from V4 Pro to Flash-0731 on 2026-08-07 (Kamil's call, matching the analysis default he
+# switched earlier the same day). Extraction is the app's most expensive per-paper LLM call and
+# §2b prices it at $0.03343/paper pinned on Pro against $0.00721 on Flash — so this is what makes
+# a reference graph affordable inside a monthly ceiling rather than a multi-month build.
+#
+# The family match is narrowed to Flash with it. `["deepseek", "v4"]` matched Pro and Flash
+# alike and picked whichever was NEWEST, so leaving it would let the catalogue quietly hand
+# extraction back to the model this moved away from — the same auto-tracking trap that resolved a
+# favourite family to something five times its intended price.
+DEFAULT_GRAPH_MODEL = "deepseek/deepseek-v4-flash-0731"
+_GRAPH_MODEL_INC = ["deepseek", "v4", "flash"]
 # Same spirit as main.py's FAVORITE_GLOBAL_EXC: keep the match on a real chat/instruct model.
 _GRAPH_MODEL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", "ocr", "search",
                     "guard", "moderation", "rerank", ":free", "distill", "chat", "lite"]
@@ -120,7 +129,7 @@ def _now() -> str:
 
 def resolve_model() -> str:
     """The extraction model: RC_GRAPH_LLM_MODEL env override, else the newest OpenRouter
-    catalogue id matching "DeepSeek V4 Pro" (same family-matching approach as the app's
+    catalogue id matching "DeepSeek V4 Flash" (same family-matching approach as the app's
     favorite-model picker in main.py), else the literal default id. Never raises — a
     catalogue fetch failure just falls back to the default, since extraction can still
     proceed (OpenRouter will 404 at call time if the id is genuinely gone, surfaced per-paper)."""
