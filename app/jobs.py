@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
-from . import config, logging_config, rate_limits
+from . import config, logging_config, rate_limits, spend_ceiling
 
 log = logging_config.get("jobs")
 
@@ -298,7 +298,8 @@ def forget_finished_for_project(pid: str) -> None:
 class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
-    def __init__(self, name: str, *, max_finished: int | None = 20, metered: bool = False):
+    def __init__(self, name: str, *, max_finished: int | None = 20, metered: bool = False,
+                 operation: str | None = None, reserves: bool | None = None):
         self.name = name
         # Whether starting a job here is a USER-INITIATED paid entry point, and therefore subject
         # to the per-account rate ceilings. Follow-on work a turn spawns internally (covers,
@@ -306,6 +307,17 @@ class JobRegistry(Generic[J]):
         # it was authorized when its parent was admitted, and charging it again would let one
         # legitimate turn throttle the account that asked for it.
         self.metered = metered
+        # The `usage.py` operation name this registry's work bills as, used to size the pessimistic
+        # reservation held while a job runs. Defaults to the registry name, which already matches
+        # for most; the ones that differ pass it explicitly.
+        self.operation = operation or name
+        # Whether work here must HOLD BUDGET, as opposed to counting against the per-account
+        # concurrency ceiling. Usually the same answer, hence the default — but not always. A
+        # registry whose jobs outlive the request that started them (listening cues, the canonical
+        # warm chain) must reserve their own budget even though they are not an entry point a
+        # reader queues directly: inheriting the caller's reservation is only safe while the
+        # caller is still running, and these deliberately are not.
+        self.reserves = metered if reserves is None else reserves
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
@@ -459,6 +471,8 @@ class JobRegistry(Generic[J]):
         prepare_new: Callable[[J], Callable[[], None] | None] | None = None,
         allow_busy: bool = False,
         metered: bool | None = None,
+        reserves: bool | None = None,
+        hold_max_nanousd: int | None = None,
     ) -> J:
         """Return the running job for (`project_id`, `key`), or create one via `factory()` and run
         `work(job)` in a daemon thread bound to that project. `project_id` defaults to the ambient
@@ -533,26 +547,59 @@ class JobRegistry(Generic[J]):
                 return published  # type: ignore[return-value] -- registry creates only J
 
         cleanup: Callable[[], None] | None = None
+        held: spend_ceiling._Held | None = None
+        owns_hold = False
         try:
             # Reached only by the caller that will genuinely CREATE a job — every joiner returned
             # above. So the ceiling counts real new spend, and a client polling a running job can
             # never rate-limit itself out of its own result.
-            if self.metered if metered is None else metered:
+            is_metered = self.metered if metered is None else metered
+            # Rate limiting and budget are separate questions, and a continuation answers them
+            # differently. It must NOT count against the concurrency ceiling — it was authorized
+            # when its parent was admitted, and counting it lets one legitimate turn throttle the
+            # account that asked for it. But money does not care who initiated the work: a
+            # listening turn's narration is real TTS spend, and audio is the largest variable cost
+            # in the app. Tying both to one flag left that spend entirely outside the ceiling.
+            reserves_budget = self.reserves if reserves is None else reserves
+            if is_metered:
                 rate_limits.check_and_record(
                     user_id,
                     active_jobs=active_count_for_user(user_id, exclude=identity),
                 )
             job = factory()
+            if reserves_budget:
+                # Held HERE rather than by each feature module's `prepare_new`, for the same
+                # reason metering itself moved into the registry: a ceiling that depends on every
+                # call site remembering is a ceiling with holes. Raises when the account cannot
+                # afford the work, or when the ledger is unreachable — both fail closed.
+                held = spend_ceiling.hold(
+                    self.operation, job.id, maximum_nanousd=hold_max_nanousd,
+                )
+                owns_hold = True
+            else:
+                # This registry takes no reservation of its own — but it may be doing an admitted
+                # job's work on its behalf. A graph build's per-paper extraction is the case that
+                # matters: the build binds its reservation on the fan-out thread, then hands the
+                # paper to the `paper-references` registry, whose worker runs on a THIRD thread
+                # that inherits nothing. The spend landed there and was dropped, so every build
+                # settled at $0 and the per-paper gating that bounds a build never fired.
+                #
+                # Inheriting the caller's reservation puts that spend back where it belongs. The
+                # ownership flag is what keeps it safe: only the job that TOOK a hold may settle
+                # or release it, or a short child job would finalize its parent's hold mid-build.
+                held = spend_ceiling.active()
             if prepare_new is not None:
                 cleanup = prepare_new(job)
         except BaseException:
+            if owns_hold:
+                spend_ceiling.release(held)
             self._finish_admission(identity, admission)
             raise
 
         try:
             thread = threading.Thread(
                 target=self._run,
-                args=(job, work, pid, user_id),
+                args=(job, work, pid, user_id, held, owns_hold),
                 daemon=True,
                 name=f"{self.name}-{job.id[:8]}",
             )
@@ -595,6 +642,8 @@ class JobRegistry(Generic[J]):
                 admission.event.set()
         except BaseException:
             self._rollback_preparation(cleanup)
+            if owns_hold:
+                spend_ceiling.release(held)
             self._finish_admission(identity, admission)
             raise
         log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
@@ -677,9 +726,12 @@ class JobRegistry(Generic[J]):
                             str(e)[:200], extra=tag)
 
     def _run(self, job: J, work: Callable[[J], None], pid: str | None,
-             user_id: str | None = None) -> None:
+             user_id: str | None = None, held=None, owns_hold: bool = False) -> None:
         token = config.set_active_project(pid)
         user_token = config.set_active_user(user_id)
+        # Bound like the project and the user, and for the same reason: the spend happens deep
+        # inside llm/tts/nested workers, and a thread inherits none of this.
+        held_token = spend_ceiling.bind(held)
         tag = _log_tag(pid)
         t0 = time.monotonic()
         try:
@@ -721,6 +773,17 @@ class JobRegistry(Generic[J]):
             with self._lock:
                 setattr(job, _WORKER_ACTIVE_ATTR, False)
                 self._prune()
+            # Settle before unbinding, and inside the same `finally` that clears the active
+            # marker: whatever the worker did — returned, raised, or was cancelled — the account
+            # is charged exactly what it spent and the unspent remainder goes back. A job that
+            # never spent anything settles at zero rather than being released, so the ledger
+            # records the admission as used rather than abandoned.
+            # Only the job that TOOK the hold settles it. An inherited one belongs to the
+            # caller still running above us, and settling it here would finalize a live build's
+            # reservation from inside one of its papers.
+            if owns_hold:
+                spend_ceiling.settle(held)
+            spend_ceiling.reset(held_token)
             config.reset_active_project(token)
             config.reset_active_user(user_token)
 
@@ -832,13 +895,20 @@ def run_parallel(items: list, fn: Callable, *, max_workers: int,
 
     pid = config.active_project_id()
     user_id = config.active_user_id()
+    # The parent's reservation travels with the fan-out too. A pool thread is not a separate
+    # admission — it is the SAME job doing its work in parallel — so its spend belongs to the
+    # reservation already held. Dropping it meant the whole of graph extraction and every parallel
+    # discovery stage accumulated nothing, and those jobs settled at ~$0 no matter what they cost.
+    held = spend_ceiling.active()
 
     def bound(item):
         token = config.set_active_project(pid)
         user_token = config.set_active_user(user_id)
+        held_token = spend_ceiling.bind(held)
         try:
             return _call_capturing(fn, item)
         finally:
+            spend_ceiling.reset(held_token)
             config.reset_active_project(token)
             config.reset_active_user(user_token)
 

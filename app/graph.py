@@ -48,20 +48,37 @@ from . import (
     reference_jobs,
     retriever,
     semantic_scholar,
+    spend_ceiling,
     store,
 )
 from .models import Paper
 
 # ---------- model resolution ----------
 
-DEFAULT_GRAPH_MODEL = "deepseek/deepseek-v4-pro"
-_GRAPH_MODEL_INC = ["deepseek", "v4"]
+# Moved from V4 Pro to Flash-0731 on 2026-08-07 (Kamil's call, matching the analysis default he
+# switched earlier the same day). Extraction is the app's most expensive per-paper LLM call and
+# §2b prices it at $0.03343/paper pinned on Pro against $0.00721 on Flash — so this is what makes
+# a reference graph affordable inside a monthly ceiling rather than a multi-month build.
+#
+# The family match is narrowed to Flash with it. `["deepseek", "v4"]` matched Pro and Flash
+# alike and picked whichever was NEWEST, so leaving it would let the catalogue quietly hand
+# extraction back to the model this moved away from — the same auto-tracking trap that resolved a
+# favourite family to something five times its intended price.
+DEFAULT_GRAPH_MODEL = "deepseek/deepseek-v4-flash-0731"
+_GRAPH_MODEL_INC = ["deepseek", "v4", "flash"]
 # Same spirit as main.py's FAVORITE_GLOBAL_EXC: keep the match on a real chat/instruct model.
 _GRAPH_MODEL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", "ocr", "search",
-                    "guard", "moderation", "rerank", ":free", "distill", "chat", "lite"]
+                    "guard", "moderation", "rerank", ":free", "distill", "chat", "lite",
+                    # Added 2026-08-07: this list claims to mirror the favourites exclusions in
+                    # `routers/catalogue.py` and had drifted from them. `:online` bills a web
+                    # search on top of tokens and `:nitro` routes to a premium endpoint — either
+                    # would match the Flash family and, being newer, win the `created` sort, so
+                    # the catalogue could quietly re-price extraction without anyone choosing to.
+                    "online", "latest", "nitro"]
 
 MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus's paper sizes
-# DeepSeek V4 Pro is a reasoning model: OpenRouter's response carries a separate
+# The extraction model is a reasoning model (V4 Pro was, and Flash-0731 is): OpenRouter's
+# response carries a separate
 # message.reasoning field, and usage.completion_tokens_details.reasoning_tokens confirms
 # those tokens count against max_tokens right alongside the visible content. On a large,
 # complex paper this can consume the ENTIRE budget on hidden reasoning with zero content
@@ -119,7 +136,7 @@ def _now() -> str:
 
 def resolve_model() -> str:
     """The extraction model: RC_GRAPH_LLM_MODEL env override, else the newest OpenRouter
-    catalogue id matching "DeepSeek V4 Pro" (same family-matching approach as the app's
+    catalogue id matching "DeepSeek V4 Flash" (same family-matching approach as the app's
     favorite-model picker in main.py), else the literal default id. Never raises — a
     catalogue fetch failure just falls back to the default, since extraction can still
     proceed (OpenRouter will 404 at call time if the id is genuinely gone, surfaced per-paper)."""
@@ -255,16 +272,17 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
     # active-project contextvar — so rebind it inside the worker (invariant 2) so llm's usage
     # accounting attributes this paper's spend to the right project.
     pid = config.active_project_id()
+    uid = config.active_user_id()
+    # Project, user AND reservation: this deadline pool inherits none of them, and a missing user
+    # is not merely an attribution slip — it makes the spend ceiling inert for this call.
+    held = spend_ceiling.active()
 
     def _do_extract():
-        token = config.set_active_project(pid)
-        try:
+        with config.bound_scope(pid, uid, held):
             return llm.complete(messages, model=model, temperature=0.1,
                                 max_tokens=EXTRACTION_MAX_TOKENS,
                                 reasoning={"effort": REASONING_EFFORT}, timeout=300, tries=2,
                                 operation="graph_extraction")
-        finally:
-            config.reset_active_project(token)
 
     try:
         content = _call_with_deadline(_do_extract, deadline=EXTRACTION_HARD_DEADLINE)
@@ -1516,10 +1534,17 @@ def build_graph(papers: list[Paper], force: bool = False,
 
     if to_run:
         pid = config.active_project_id()
+        uid = config.active_user_id()
+        held = spend_ceiling.active()
 
         def run_one(paper: Paper, text: str) -> dict:
-            token = config.set_active_project(pid)
-            try:
+            # All three, via the one helper that exists so a worker cannot rebind a subset.
+            # Binding project and reservation but not the USER was silently fatal once
+            # `paper-references` began taking its own hold: `spend_limits.enabled()` requires a
+            # signed-in user, so on this pool thread it read False, no hold was taken, and the
+            # `reserves` branch meant no inheritance either — every paper's extraction spend
+            # landed nowhere and the whole build settled at $0.
+            with config.bound_scope(pid, uid, held):
                 return reference_jobs.ensure_for_text(
                     paper.slug,
                     paper.title,
@@ -1527,8 +1552,6 @@ def build_graph(papers: list[Paper], force: bool = False,
                     model=model,
                     extract_fn=extract_fn,
                 )
-            finally:
-                config.reset_active_project(token)
 
         workers = extraction_concurrency()
         pending = list(to_run)

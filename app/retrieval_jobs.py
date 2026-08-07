@@ -10,7 +10,16 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
-from . import canonical_jobs, config, cover_jobs, retrieval_agent, retriever, store
+from . import (
+    canonical_jobs,
+    config,
+    cover_jobs,
+    quotas,
+    rate_limits,
+    retrieval_agent,
+    retriever,
+    store,
+)
 from .jobs import Job, JobRegistry, new_id, now_iso
 from .retriever import RetrievalError
 
@@ -107,7 +116,8 @@ def start_retrieval(
             # Retrieval itself was free (a cache hit), so the analysis turn this kicks is the
             # first paid work of this request and must be metered like any other entry point.
             _attach_hook(job, after_retrieved, admitted=False)
-            _call_analysis_hook(job, after_retrieved, admitted=False)
+            # The short-circuit runs on the request thread, so a refusal can still be the response.
+            _call_analysis_hook(job, after_retrieved, admitted=False, can_answer=True)
         return job
 
     def work(job: RetrievalJob) -> None:
@@ -169,6 +179,11 @@ def start_retrieval(
 
     try:
         job = _registry.start_or_join(slug, make_job, work_then_analyze)
+    except (quotas.QuotaError, rate_limits.RateLimited):
+        # Both subclass RuntimeError, so the tombstone catch below would swallow them and tell a
+        # reader who is out of budget — or simply going too fast — that their project is being
+        # moved. Re-raised so the 402/429/503 handlers in `main` see them.
+        raise
     except RuntimeError as exc:
         raise RetrievalError(
             "This project is being moved or split — wait, then fetch the paper again.",
@@ -185,7 +200,10 @@ def start_retrieval(
                 # so nothing has been paid for the turn this hook will start.
                 _attach_hook(job, after_retrieved, admitted=False)
         if not _registry.add_settle_callback(job, _run_analysis_hook):
-            _run_analysis_hook(job)
+            # The job had already settled, so this runs inline on THIS request's thread and a
+            # refusal is still answerable. When the callback registers instead, it fires on the
+            # creator's worker where nothing is listening — hence the default of False.
+            _run_analysis_hook(job, can_answer=True)
     return job
 
 
@@ -212,7 +230,7 @@ def _attach_hook(job: RetrievalJob, hook: Callable[..., None], *, admitted: bool
     setattr(job, _HOOK_ADMITTED_ATTR, admitted)
 
 
-def _run_analysis_hook(job: RetrievalJob) -> None:
+def _run_analysis_hook(job: RetrievalJob, *, can_answer: bool = False) -> None:
     """Claim and run the attached hook exactly once. The claim flag (mutated only under the
     registry lock) keeps a caller that attached a hook to a just-finished job from double-running
     it.
@@ -232,14 +250,31 @@ def _run_analysis_hook(job: RetrievalJob) -> None:
         if eligible:
             job._analysis_claimed = True
     if eligible:
-        _call_analysis_hook(job, hook, admitted=admitted)
+        _call_analysis_hook(job, hook, admitted=admitted, can_answer=can_answer)
 
 
 def _call_analysis_hook(
     job: RetrievalJob, hook: Callable[..., None], *, admitted: bool = True,
+    can_answer: bool = False,
 ) -> None:
     try:
         hook(job, admitted=admitted)
+    except (quotas.QuotaError, rate_limits.RateLimited) as exc:
+        # A refusal is the answer to the request, so re-raise it where a client is still listening
+        # — but ONLY there. `admitted` is a payment fact and says nothing about which thread this
+        # is on: a joiner attaches with admitted=False and its hook then runs on the CREATOR's
+        # worker via the settle callback, where `_fire_settle` catches and logs everything. Keying
+        # the re-raise on `admitted` therefore lost the refusal entirely — the reader saw a
+        # retrieved paper with no analysis job and no error, and waited forever.
+        if can_answer:
+            raise
+        # Nobody is left to answer: the retrieval succeeded and its response went out long ago.
+        # Record the refusal's OWN message — an earlier version wrote it and then immediately
+        # overwrote it with a generic "usage limit reached", so a rate-limit ("you already have 4
+        # tasks running") and a server-side quota outage both reached the reader as a monthly
+        # limit. That is the same wait-a-month-versus-wait-seconds misdirection the transient
+        # split exists to remove.
+        set_analysis_error(job, str(exc) or "The analysis could not be started.")
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))
@@ -358,6 +393,11 @@ def start_upload(slug: str, data: bytes, filename: str) -> RetrievalJob:
 
     try:
         return _registry.start_or_join(slug, make_job, work)
+    except (quotas.QuotaError, rate_limits.RateLimited):
+        # Both subclass RuntimeError, so the tombstone catch below would swallow them and tell a
+        # reader who is out of budget — or simply going too fast — that their project is being
+        # moved. Re-raised so the 402/429/503 handlers in `main` see them.
+        raise
     except RuntimeError as exc:
         raise RetrievalError(
             "This project is being moved or split — wait, then upload the PDF again.",

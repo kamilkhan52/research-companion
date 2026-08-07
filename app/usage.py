@@ -38,7 +38,7 @@ import math
 import threading
 from datetime import UTC, datetime
 
-from . import config, logging_config, usage_events
+from . import config, logging_config, spend_ceiling, usage_events
 from .fileio import atomic_write_text
 
 log = logging_config.get("usage")
@@ -151,6 +151,12 @@ def record(
     don't write anything. Never raises — accounting must not break the call it is measuring."""
     project_id = config.active_project_id()
     user_id = config.active_user_id()
+    # Charge the reservation FIRST, and deliberately ahead of the `project_id` guard below.
+    # Reservations are scoped to the USER, not the project, so app-global paid work — audio being
+    # the obvious one, since `/api/audio/jobs` has no project in the path — would otherwise spend
+    # real money that the ceiling never saw. Also ahead of the presentation cache: a full volume
+    # or a corrupt usage.json must not additionally lose the fact that money was spent.
+    spend_ceiling.note_spend(round(float((usage or {}).get("cost") or 0.0) * _NANO_USD))
     if not project_id:
         return
     try:

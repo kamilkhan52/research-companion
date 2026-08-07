@@ -128,7 +128,18 @@ def test_transport_ambiguity_marks_the_usage_event_estimated(monkeypatch):
     assert seen == [{"estimated": True}]
 
 
-def test_unpriceable_speech_model_is_counted_and_marked_estimated(temp_project, monkeypatch):
+def test_a_token_priced_speech_model_is_estimated_rather_than_recorded_free(
+    temp_project, monkeypatch,
+):
+    """It used to record exactly zero, which the spend ceiling then settled against.
+
+    `gpt-4o-mini-tts` is token-priced, so this binary endpoint returns no per-request figure —
+    but it is also a per-user preference and the first entry in the voice picker, so "no price"
+    meant any reader could select their way to unlimited audio that the ceiling could not see.
+    Audio is the largest variable cost in the app. An estimate that is deliberately high is the
+    right trade: it binds the ceiling slightly early instead of letting spend escape it, and the
+    call is still recorded pending so an exact figure can replace it.
+    """
     monkeypatch.setattr(
         config,
         "load_settings",
@@ -139,9 +150,29 @@ def test_unpriceable_speech_model_is_counted_and_marked_estimated(temp_project, 
     assert tts.openai_speech("hello") == b"mp3!"
     summary = tts.usage.summary()
     assert summary["by_operation"]["speech_synthesis"]["calls"] == 1
-    assert summary["by_operation"]["speech_synthesis"]["cost_nanousd"] == 0
+    charged = summary["by_operation"]["speech_synthesis"]["cost_nanousd"]
+    assert charged > 0, "a priced-by-token model must not settle at zero"
+    # Above `tts-1-hd`'s character rate, since audio-token pricing runs higher per character.
+    assert charged > len("hello") * 30 / 1_000_000 * 1_000_000_000
     assert summary["pending_count"] == 1
     assert summary["estimated"] is True
+
+
+def test_a_genuinely_unknown_speech_model_still_invents_no_number(temp_project, monkeypatch):
+    """The estimate is a named exception for a model we priced deliberately, not a licence to
+    guess. An unrecognised model records no cost and says so in the log — its spend really is
+    invisible to the ceiling, and that should look like a gap rather than a figure."""
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openai_api_key": "sk-test", "tts_model": "some-future-voice"},
+    )
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, content=b"mp3!"))
+
+    assert tts.openai_speech("hello") == b"mp3!"
+    summary = tts.usage.summary()
+    assert summary["by_operation"]["speech_synthesis"]["cost_nanousd"] == 0
+    assert summary["pending_count"] == 1
 
 
 def test_exact_speech_dispatch_leaves_ledger_unestimated(temp_project, monkeypatch):

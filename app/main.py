@@ -27,6 +27,7 @@ from . import (
     deploy_guard,
     logging_config,
     quota_reconciler,
+    quotas,
     rate_limits,
 )
 from .auth import AuthError
@@ -49,6 +50,7 @@ from .routers import (
 
 logging_config.configure()  # install the rc.* log handler before any job/LLM/commit runs
 _log = logging_config.get("auth")
+log = _log
 
 # Refuse to start a staging/prod process that is configured permissively — BEFORE the app object
 # exists, so a misconfigured deploy crashes on boot instead of serving. Every check inside guards
@@ -353,6 +355,72 @@ async def _rate_limited(_request: Request, exc: rate_limits.RateLimited) -> JSON
         status_code=429,
         headers={"Retry-After": str(exc.retry_after_seconds)},
     )
+
+
+@app.exception_handler(quotas.QuotaExceeded)
+async def _quota_exceeded(_request: Request, exc: quotas.QuotaExceeded) -> JSONResponse:
+    """402 with the real numbers, because "limit reached" alone is not actionable.
+
+    Payment Required rather than 429: this is not a rate the caller can wait out inside the month,
+    and a client that retries a 429 on a backoff would hammer a wall until the period rolls over.
+    The figures are the account's own spend, not internal pricing, so they are safe to return.
+    """
+    if exc.is_transient:
+        # Nothing is actually exhausted: this account's own in-flight work is holding pessimistic
+        # maximums that clear the moment those jobs settle. Telling a reader who has spent nothing
+        # to "try again after it resets" points them a month away from a wait of seconds — and
+        # holds are deliberately several times the measured cost, so a burst of ordinary reading
+        # collides long before real spend does.
+        return JSONResponse(
+            {
+                "detail": "Your other tasks are still running. Give them a moment and try again.",
+                "code": "holds_outstanding",
+                "used_nanousd": exc.used_nanousd,
+                "settled_nanousd": exc.settled_nanousd,
+                "limit_nanousd": exc.limit_nanousd,
+            },
+            status_code=429,
+            headers={"Retry-After": "15"},
+        )
+    return JSONResponse(
+        {
+            "detail": str(exc),
+            "code": "quota_exceeded",
+            "used_nanousd": exc.used_nanousd,
+            "settled_nanousd": exc.settled_nanousd,
+            "requested_nanousd": exc.requested_nanousd,
+            "limit_nanousd": exc.limit_nanousd,
+        },
+        status_code=402,
+    )
+
+
+@app.exception_handler(quotas.ReservationConflict)
+async def _reservation_conflict(_r: Request, exc: quotas.ReservationConflict) -> JSONResponse:
+    """503 rather than an unhandled 500.
+
+    Starlette matches handlers by class, and `ReservationConflict` shares no ancestor with the two
+    below, so every conflict path escaped as a generic 500 with a stack trace. A conflict means the
+    ledger and this process disagree about a reservation's state — a server-side fault, not
+    something the reader did — so it says so and stays retryable.
+    """
+    log.error("reservation conflict surfaced to a client: %s", exc)
+    return JSONResponse(
+        {"detail": "Usage accounting is temporarily inconsistent. Please try again.",
+         "code": "reservation_conflict"},
+        status_code=503,
+    )
+
+
+@app.exception_handler(quotas.QuotaUnavailable)
+async def _quota_unavailable(_request: Request, exc: quotas.QuotaUnavailable) -> JSONResponse:
+    """503, and deliberately NOT an admission.
+
+    A ceiling that opens when its store is unreachable is not a ceiling (architectural rule 5), so
+    paid work is refused — but this is a transient server fault, not the reader's fault, and the
+    status says so.
+    """
+    return JSONResponse({"detail": str(exc), "code": "quota_unavailable"}, status_code=503)
 
 
 # ---------- routers ----------

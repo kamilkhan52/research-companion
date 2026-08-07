@@ -93,10 +93,11 @@ class PreviewCoordinator(Job):
 #: wait and `cue_history` reads them back out of this registry, so once finished jobs are evicted
 #: the "complete chronological history" the prompt promises quietly becomes partial — and the
 #: repetition the history exists to prevent comes back. 60 was chosen when waits were capped at 6.
-_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=400)
+_registry: JobRegistry[PreviewJob] = JobRegistry("preview", max_finished=400, reserves=True,
+                                                    operation="listening_preview")
 _jobs = _registry.jobs
 _coordinator_registry: JobRegistry[PreviewCoordinator] = JobRegistry(
-    "preview-coordinator", max_finished=20,
+    "preview-coordinator", max_finished=20, reserves=True, operation="listening_preview",
 )
 _coordinator_jobs = _coordinator_registry.jobs
 

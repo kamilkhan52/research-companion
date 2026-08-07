@@ -37,7 +37,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from . import config, logging_config, store
+from . import config, logging_config, spend_ceiling, store
 from .fileio import atomic_write_bytes, atomic_write_text
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -660,6 +660,9 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
     Other in-thread failures are a retryable miss, never an exception on the build thread."""
     pid = config.active_project_id()
     uid = config.active_user_id()
+    # And the caller's reservation: a raw thread inherits none of the three, and a dropped cost
+    # means the job that asked for this settles short of what it really spent.
+    held = spend_ceiling.active()
     result: dict = {}
     cell: dict = {}
 
@@ -667,7 +670,7 @@ def _derive_with_deadline(slug: str, force: bool, derive) -> bool:
         # Project AND user (invariant 2, see config.bound_scope): a raw thread inherits neither,
         # and a missing user silently runs this on the instance's model rather than the caller's.
         try:
-            with config.bound_scope(pid, uid):
+            with config.bound_scope(pid, uid, held):
                 derive(slug, force=force)
         except StallError as e:
             result["stalled"] = True

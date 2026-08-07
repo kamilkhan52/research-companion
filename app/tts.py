@@ -18,7 +18,7 @@ from typing import Protocol
 
 import httpx
 
-from . import config, prompts, spend_control, usage
+from . import config, logging_config, prompts, spend_control, usage
 
 # OpenAI /audio/speech caps input at 4096 chars; stay under with margin and synthesize long
 # narrations as several segments concatenated into one mp3.
@@ -69,12 +69,28 @@ _RETRYABLE = {429, 500, 502, 503, 504}
 _TRIES = 3
 
 # OpenAI publishes these two speech models per input character. Keep the price beside the only
-# dispatch seam so retries and every caller use the same accounting. Other accepted speech models
-# use token/audio-output pricing that this binary endpoint does not return per request; those calls
-# are recorded as pending rather than assigned a made-up local estimate.
+# dispatch seam so retries and every caller use the same accounting.
+log = logging_config.get("tts")
+
 _USD_PER_CHARACTER = {
     "tts-1": 15 / 1_000_000,
     "tts-1-hd": 30 / 1_000_000,
+}
+
+# Token/audio-priced models. This binary endpoint returns no per-request usage, so there is no
+# exact figure to record — but recording NOTHING is worse than recording an estimate now that a
+# spend ceiling settles against these numbers. `gpt-4o-mini-tts` is user-selectable (it is a
+# per-user preference and the first entry in the voice picker), so an unpriced model was a
+# self-service way to make the app's largest variable cost invisible: the job settled at exactly
+# zero and handed back its whole hold.
+#
+# Deliberately pessimistic, in the same direction as every other number in the ceiling: an
+# over-estimate binds the ceiling slightly early, an under-estimate lets spend escape it. Rated
+# above `tts-1-hd` because audio-token pricing runs higher per character of speech than either
+# character-priced model. The call is still ALSO recorded pending, so the exact figure can replace
+# this if a reconciliation source ever appears.
+_ESTIMATED_USD_PER_CHARACTER = {
+    "gpt-4o-mini-tts": 40 / 1_000_000,
 }
 
 
@@ -88,7 +104,21 @@ def _record_dispatch(model: str, spoken_text: str, *, estimated: bool = False) -
     """
     rate = _USD_PER_CHARACTER.get(model)
     if rate is None:
-        usage.record("speech_synthesis", model, {})
+        estimate = _ESTIMATED_USD_PER_CHARACTER.get(model)
+        if estimate is None:
+            # An unknown model: still no made-up number, but say so loudly. A speech model that
+            # reaches here bills real money the ceiling cannot see.
+            log.warning("speech model %s has no price; its spend is invisible to the ceiling",
+                        model)
+            usage.record("speech_synthesis", model, {})
+            usage.record_pending("speech_synthesis", model, None)
+            return
+        usage.record(
+            "speech_synthesis",
+            model,
+            {"cost": len(spoken_text) * estimate},
+            estimated=True,
+        )
         usage.record_pending("speech_synthesis", model, None)
         return
     usage.record(

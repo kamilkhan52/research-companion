@@ -50,7 +50,8 @@ class DiscoveryJob(Job):
 # cancelled worker that is still unwinding. Dedup is separately keyed by the composite user+project
 # scope below. Three terminal attempts per project are ample for polling/retry diagnosis; the
 # completed recommendation payload itself is persisted on disk.
-_registry: JobRegistry[DiscoveryJob] = JobRegistry("discover", max_finished=3, metered=True)
+_registry: JobRegistry[DiscoveryJob] = JobRegistry("discover", max_finished=3, metered=True,
+                                     operation="discovery")
 _jobs = _registry.jobs
 
 

@@ -1384,15 +1384,30 @@ budget before admitting work, settle to actual cost when it finishes, release on
 reservation that cannot be taken (or a quota store that is unreachable) refuses the work rather
 than letting it through.
 
-**Read that literally: the reservation ceiling is not connected yet.** `app/quotas.py` is complete
-and tested, `start_or_join`'s `prepare_new` hook exists precisely to hold it, and
-`quota_reconciler` sweeps orphans — but as of 2026-08-06 `quotas.reserve` has **no caller outside
-the test suite**, and nothing passes `prepare_new`. So today a signed-in account is bounded by
-ownership, the rate ceilings above, and the instance-wide emergency stop, but **not** by a spend
-ceiling of its own. `spend_control`'s docstring calls per-user reservations "the normal ceiling",
-which is the intended end state rather than the current one. Wiring `prepare_new` to `reserve` at
-the eight metered seams is the next slice, and it is what makes "no single account can exceed its
-ceiling" true.
+**Spend-ceiling status (2026-08-07): connected, in review as
+[#326](https://github.com/kamilkhan52/research-companion/pull/326).** Until that PR, `quotas.py`
+was complete and tested with **no caller outside the test suite** — the ledger existed and bounded
+nothing. Admission now reserves an operation's pessimistic maximum, every metered call adds its
+real cost to a per-job accumulator, and the worker settles to actual and hands back the remainder.
+
+Two things that took five review passes to get right, recorded because they are the shape of
+mistake this design invites. **Settlement could not land at all** in the first version: the ledger
+refuses to settle a reservation that was never marked dispatched, so every settle raised and was
+swallowed, holds simply expired, and nothing reached the monthly total — a ceiling that recorded
+nothing while every test passed. And **spend kept escaping through seams**: pool threads, then a
+hop to a different registry, then raw threads outside the registry entirely. Each was invisible to
+a green suite, which is why `tests/test_spend_ceiling_pg.py` drives the real ledger rather than a
+stub, and why the reservation now travels through `run_parallel`, through `config.bound_scope`,
+and through registries that take no reservation of their own.
+
+**Exact reconciliation is not built, despite what the M3 notes below say.**
+`quotas.link_attempt_generation` has no production caller, and `spend_ceiling` creates one attempt
+per JOB rather than per provider dispatch — so a chat turn making several requests could not be
+reconciled by generation id even with a caller. `quota_reconciler` therefore always takes its
+conservative path: an interrupted job is charged its full maximum. That is the safe direction, and
+a deploy kills in-flight jobs (the M6 drain hook has not landed), so an interrupted listening turn
+costs its holder ~30% of a month's allowance for work they did not get. Per-dispatch attempts are
+the fix; until then this milestone should not claim authoritative recovery.
 
 **Reservations need a crash lifecycle, defined here rather than assumed.** Jobs live in memory
 (invariant 6) but reservations live in Postgres, so a process death between reserve and settle
