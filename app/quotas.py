@@ -46,7 +46,15 @@ class QuotaExceeded(QuotaError):
         # spent almost nothing — to wait until the period rolls over. Same lesson as the hook's
         # admission stamp: put the fact on the thing, not at every call site.
         spent = used_nanousd if settled_nanousd is None else settled_nanousd
-        if spent + requested_nanousd <= limit_nanousd:
+        if requested_nanousd > limit_nanousd:
+            # Waiting cannot help: the work costs more than the whole allowance. Unreachable at
+            # the default ceiling, but the pricing doc's Free tier is $0.20 a month, against which
+            # a narration hold alone is $0.60 — every one of those refusals would otherwise advise
+            # waiting for a reset that changes nothing.
+            super().__init__(
+                "This task needs more than your whole monthly allowance.",
+            )
+        elif spent + requested_nanousd <= limit_nanousd:
             super().__init__(
                 "Your other tasks are still running. Give them a moment and try again.",
             )

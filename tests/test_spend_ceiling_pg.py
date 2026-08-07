@@ -145,18 +145,20 @@ def test_real_exhaustion_is_not_reported_as_transient(database, monkeypatch):
 
 
 @needs_pg
-def test_a_large_first_build_is_admitted_rather_than_refused_forever(database):
-    """A corpus-sized hold refused every build past ~35 papers, permanently, on any real project.
+def test_a_build_is_admitted_on_a_nominal_ticket_and_gated_paper_by_paper(database):
+    """The build's own hold is only an admission ticket now.
 
-    The hold is an admission gate, not the charge: settlement records the true cost, which is not
-    clamped to the reservation, so the month still sees every dollar the build spent.
+    A corpus-sized hold refused every build past a couple of dozen papers; a capped one let an
+    unbounded over-run through. Neither is needed: every paper takes its own `graph_extraction`
+    hold through `paper-references`, so the build is gated where the money is actually spent and
+    stops at a paper boundary with everything so far cached.
     """
-    held = spend_ceiling.hold(
-        "graph_build", PID, maximum_nanousd=spend_limits.graph_build_nanousd(400),
+    held = spend_ceiling.hold("graph_build", PID)
+    assert held is not None, "a build of any size must be admitted"
+    assert quotas.get(held.reservation_id, user_id=ALICE).reserved_nanousd < 100_000_000, (
+        "the build's own ticket must stay nominal — it spends nothing on its own thread"
     )
-    assert held is not None, "a 400-paper build must still be admitted"
     spend_ceiling.settle(held)
-
 
 @needs_pg
 def test_an_aborted_admission_gives_its_hold_back(database):
@@ -171,61 +173,87 @@ def test_an_aborted_admission_gives_its_hold_back(database):
     )
 
 
-@needs_pg
-def test_a_build_pays_as_it_goes_instead_of_overshooting_by_the_whole_corpus(database):
-    """Chunked re-reservation: the fix for an over-run bounded only by corpus size.
 
-    A single admission cannot bound work that scales with the corpus — the hold is fixed and
-    settlement charges actual, which nothing clamps, so a 400-paper first build settled ~$13
-    against a $2.50 ceiling and 5,000 papers would settle ~$167. Sizing the admission to the
-    corpus instead refuses every large build outright, which is worse.
+
+@needs_pg
+def test_a_pool_thread_without_the_user_bound_still_holds_budget(database):
+    """The P0 the mocked suite structurally could not see.
+
+    `spend_limits.enabled()` requires BOTH a database and a signed-in user. A graph build's
+    fan-out pool inherits no contextvars, and `run_one` bound the project and the reservation but
+    not the user — so on that thread `enabled()` read False, `hold()` returned None, and because
+    the registry now takes the `reserves` branch it did not inherit the parent's hold either.
+    Every paper's extraction spend landed nowhere and a whole build settled at $0.
+
+    The mocked suite patches `spend_limits.enabled` to True outright, which is exactly why it
+    could not express this. This drives the real gate.
     """
-    held = spend_ceiling.hold(
-        "graph_build", PID, maximum_nanousd=spend_limits.graph_tranche_nanousd(),
-    )
-    first_reservation = held.reservation_id
-    # `checkpoint` reads the bound reservation, exactly as it does inside a worker — the registry
-    # binds it in `_run`. Without this it is a silent no-op, which is how the first version of
-    # this test "passed" the sequence while proving nothing.
-    token = spend_ceiling.bind(held)
-    try:
-        held.add(200_000_000)                               # tranche one really cost $0.20
-        spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
-    finally:
-        spend_ceiling.reset(token)
+    import threading
 
-    settled = quotas.get(first_reservation, user_id=ALICE)
-    assert settled.state == "settled" and settled.actual_nanousd == 200_000_000, (
-        "the finished tranche must be charged before the next is reserved"
-    )
-    assert held.reservation_id != first_reservation, "a fresh tranche must be reserved"
+    from app import config, spend_limits
 
-    held.add(50_000_000)                                    # tranche two so far: $0.05
-    spend_ceiling.settle(held)
-    final = quotas.get(held.reservation_id, user_id=ALICE)
-    assert final.actual_nanousd == 50_000_000, (
-        "the final settle must charge only this tranche, not the whole build again"
+    seen: list[bool] = []
+
+    def on_pool_thread():
+        # Precisely what `config.bound_scope(pid, uid, held)` must restore, and what binding a
+        # subset silently loses.
+        with config.bound_scope(PID, ALICE, None):
+            seen.append(spend_limits.enabled())
+
+    thread = threading.Thread(target=on_pool_thread)
+    thread.start()
+    thread.join(5)
+    assert seen == [True], "a worker that rebinds project+user must be able to take a hold"
+
+    # And the failure mode itself: user missing -> the ceiling silently goes inert.
+    inert: list[bool] = []
+
+    def without_user():
+        with config.bound_scope(PID, None, None):
+            inert.append(spend_limits.enabled())
+
+    thread = threading.Thread(target=without_user)
+    thread.start()
+    thread.join(5)
+    assert inert == [False], (
+        "this is the trap: no user means no ceiling, so a worker binding a subset of the "
+        "contextvars disables the ceiling rather than failing loudly"
     )
 
 
 @needs_pg
-def test_a_build_stops_when_the_account_can_no_longer_afford_the_next_tranche(
-    database, monkeypatch,
-):
-    """The bound. Refusing mid-build is the point: extractions are cached per paper, so the work
-    already done survives and the build resumes when the period rolls over."""
-    monkeypatch.setattr(spend_limits, "monthly_limit_nanousd", lambda: 600_000_000)
-    held = spend_ceiling.hold(
-        "graph_build", PID, maximum_nanousd=spend_limits.graph_tranche_nanousd(),
-    )
-    token = spend_ceiling.bind(held)
-    try:
-        held.add(550_000_000)   # this tranche ate almost the whole ceiling
-        with pytest.raises(quotas.QuotaExceeded):
-            spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
-    finally:
-        spend_ceiling.reset(token)
+def test_the_graph_fan_out_binds_all_three_contextvars(database):
+    """Pin the call site, not just the helper.
 
-    # And the spend that DID happen is recorded, not abandoned by the refusal.
-    row = quotas.get(held.reservation_id, user_id=ALICE)
-    assert row.state == "settled" and row.actual_nanousd == 550_000_000
+    `graph.run_one` and `extract_references_for_paper._do_extract` must go through
+    `config.bound_scope`, which takes project, user and reservation together. Rebinding a subset
+    by hand is what broke this twice.
+    """
+    import ast
+    import inspect
+
+    from app import graph
+
+    tree = ast.parse(inspect.getsource(graph))
+    bound_scope_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "bound_scope"
+    ]
+    assert len(bound_scope_calls) >= 2, (
+        "both graph pools must rebind through bound_scope; found "
+        f"{len(bound_scope_calls)}"
+    )
+    for call in bound_scope_calls:
+        assert len(call.args) == 3, (
+            "bound_scope must be given project, user AND reservation — passing a subset is how "
+            "the ceiling went inert on the fan-out thread"
+        )
+        # Each must be a captured variable, not a literal. Counting arguments alone passed when
+        # the user slot was `None`, which is precisely the bug: a hard-coded None there disables
+        # the ceiling on that thread just as effectively as omitting the argument.
+        assert all(isinstance(arg, ast.Name) for arg in call.args), (
+            "every argument must be a value captured on the calling thread; a literal (usually "
+            f"None) in one of these slots silently disables the ceiling: {ast.dump(call)[:200]}"
+        )

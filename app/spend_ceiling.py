@@ -43,9 +43,6 @@ class _Held:
     user_id: str
     attempt_id: str
     spent_nanousd: int = 0
-    #: Of `spent_nanousd`, how much earlier TRANCHES already settled. Only work whose cost scales
-    #: without bound re-reserves mid-flight (see `checkpoint`); for everything else this stays 0.
-    settled_nanousd: int = 0
     operation: str = ""
     job_id: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -162,72 +159,6 @@ def _discard_undispatched(reservation_id: str, user_id: str) -> None:
                     reservation_id[:8], type(e).__name__)
 
 
-def checkpoint(tranche_nanousd: int) -> None:
-    """Settle the tranche just finished and reserve the next one, or refuse to continue.
-
-    One admission cannot bound work whose cost scales with the corpus. A graph build holds a
-    fixed maximum and then settles ACTUAL, which is not clamped to the reservation — so a first
-    build of 400 papers settled $13 against a $2.50 ceiling, and 5,000 papers would settle $167,
-    with nothing in the design bounding it and up to four concurrent builds multiplying it.
-
-    Sizing the hold to the whole corpus instead is strictly worse: it refuses every build past a
-    couple of dozen papers, forever, which is the failure the roadmap ranks above overspend.
-
-    So the build pays as it goes. Each tranche settles at what it really cost and the next is
-    reserved against the remaining ceiling; when the account can no longer afford one, this raises
-    and the build stops. Overshoot is then bounded by a single tranche instead of by the corpus.
-    Nothing is wasted — extractions are cached per paper, so the papers already done stay done and
-    the build resumes when the period rolls over.
-
-    A no-op when ceilings are inert or no reservation is bound.
-    """
-    held = _active.get()
-    if held is None:
-        return
-    with held.lock:
-        spent_total = held.spent_nanousd
-        already_settled = held.settled_nanousd
-    tranche_spend = max(0, spent_total - already_settled)
-
-    # Settle the finished tranche FIRST. If the next reservation is then refused, the work done so
-    # far is already recorded — the opposite order would abandon a tranche's real spend.
-    quotas.resolve_attempt(held.attempt_id, user_id=held.user_id, actual_nanousd=tranche_spend)
-    quotas.mark_dispatches_complete(held.reservation_id, user_id=held.user_id)
-    quotas.settle(held.reservation_id, user_id=held.user_id, actual_nanousd=tranche_spend)
-
-    # Raises QuotaExceeded when the account cannot afford to continue. That propagates out of the
-    # worker and fails the build, which is the intended answer: the alternative is spending money
-    # the reader does not have.
-    reservation = quotas.reserve(
-        user_id=held.user_id,
-        project_id=config.active_project_id(),
-        reservation_key=f"{held.operation}:{held.job_id}:{uuid.uuid4().hex}",
-        job_id=held.job_id,
-        provider=_PROVIDER.get(held.operation, "openrouter"),
-        operation=held.operation,
-        model=None,
-        maximum_cost_nanousd=tranche_nanousd,
-        limit_nanousd=spend_limits.monthly_limit_nanousd(),
-        lease_seconds=spend_limits.lease_seconds(held.operation),
-    )
-    try:
-        attempt, _created = quotas.begin_attempt(
-            reservation.id,
-            user_id=held.user_id,
-            attempt_key=f"{held.job_id}:tranche:{reservation.id}",
-            maximum_cost_nanousd=tranche_nanousd,
-        )
-    except BaseException:
-        # Same leak, one level in: the tranche is reserved but `held` still points at the tranche
-        # just settled, so nothing would ever finalize this one.
-        _discard_undispatched(reservation.id, held.user_id)
-        raise
-    with held.lock:
-        held.reservation_id = reservation.id
-        held.attempt_id = attempt.id
-        held.settled_nanousd = spent_total
-
-
 def release(held: _Held | None) -> None:
     """Give back a reservation whose work never ran — settled at zero, not released.
 
@@ -266,8 +197,7 @@ def settle(held: _Held | None) -> None:
     if held is None:
         return
     with held.lock:
-        # Only what THIS tranche spent: earlier tranches settled against their own reservations.
-        spent = max(0, held.spent_nanousd - held.settled_nanousd)
+        spent = held.spent_nanousd
     try:
         # The ledger's state machine, in the order it requires: resolve the dispatch to its actual
         # cost, declare dispatching finished, then settle exactly. An exact settle is rejected

@@ -83,9 +83,12 @@ _MAX_NANOUSD: dict[str, int] = {
     "speech_synthesis": 600_000_000,
     "retrieval": 20_000_000,        # $0.02 — the fetch is free; extraction is cheap
     "discovery": 150_000_000,       # $0.15 — a measured cold run was $0.013; slice 2 widened recall
-    # $0.084 per paper (§2b) x a large project. Deliberately generous: this is one admission for
-    # work that fans out across an entire corpus, and `_MAX_NANOUSD` cannot see the corpus size.
-    "graph_build": 10_000_000_000,  # $10.00
+    # Nominal, and deliberately so: a build spends nothing on its own thread. Every paper it
+    # extracts takes its own `graph_extraction` hold through `paper-references`, so the build is
+    # gated paper by paper and this is only the admission ticket. Sizing it to the corpus instead
+    # held a large fraction of the month in budget that never became spend — measured at roughly
+    # ten papers a month lost to holds alone.
+    "graph_build": 20_000_000,      # $0.02
     "notes": 40_000_000,            # $0.04
     # Cues run for as long as a narration takes to synthesize, at a cadence of one every few
     # seconds with NO cap on how many (Kamil's 2026-07-30 call: silence during the wait is worse
@@ -109,56 +112,6 @@ def max_cost_nanousd(operation: str) -> int:
     return _MAX_NANOUSD.get(operation, _DEFAULT_MAX_NANOUSD)
 
 
-#: Per-paper hold for a graph build. Extraction resolves to V4 Pro (`graph.resolve_model`), which
-#: §2b prices at **$0.03343/paper pinned** — the $0.084 in that table is the *unpinned* column, and
-#: `sort: "price"` routing has shipped since. 2x headroom over the pinned figure.
-GRAPH_NANOUSD_PER_PAPER = 70_000_000  # $0.07
-
-#: Ceiling on the ADMISSION hold for one build, independent of corpus size.
-#:
-#: A first build of a large corpus genuinely costs more than a month's allowance — 400 papers is
-#: ~$13 at pinned Pro — so a hold sized to the whole corpus refuses the build outright, forever,
-#: on any real project. That is the failure the roadmap ranks worse than a mild overspend, and it
-#: would ship Map dead for every project past ~35 papers.
-#:
-#: The hold is an ADMISSION gate, not the charge: settlement records the true cost and is not
-#: clamped to the reservation, so the month still sees every dollar the build actually spent. What
-#: this bounds is how much headroom a reader must have to *start* one. A build can therefore carry
-#: the account past its ceiling — once — and the next admission of anything is refused.
-GRAPH_HOLD_CAP_NANOUSD = 500_000_000  # $0.50
-
-
-#: How many papers a graph build extracts between re-reservations. Each tranche settles at what it
-#: really cost and the next is reserved against what is left, so an over-run is bounded by one
-#: tranche rather than by the corpus. Small enough that the bound is meaningful (7 papers is about
-#: $0.23 of real extraction), large enough that a build is not doing ledger round-trips constantly.
-GRAPH_TRANCHE_PAPERS = 7
-
-
-def graph_tranche_nanousd() -> int:
-    """The maximum to hold for one tranche of a graph build."""
-    return GRAPH_TRANCHE_PAPERS * GRAPH_NANOUSD_PER_PAPER
-
-
-def graph_build_nanousd(uncached_papers: int) -> int:
-    """What to hold for a build that must extract `uncached_papers` papers.
-
-    Sized to the work actually about to happen rather than to the corpus, because extractions are
-    cached per paper (`graph.py`: "re-running after adding one new paper only spends tokens on
-    that paper"). A flat corpus-sized hold would refuse every rebuild of a large project on a
-    tier that can comfortably afford the one new paper it is really extracting — and a flat SMALL
-    hold would let a first build of that project overshoot the ceiling, since settlement charges
-    actual and nothing clamps it to the reservation.
-
-    A build with nothing to extract still holds one paper's worth: it is not free (graph assembly
-    and any metadata refresh still run), and a zero maximum is rejected by `quotas.reserve`.
-    """
-    return min(
-        max(1, int(uncached_papers)) * GRAPH_NANOUSD_PER_PAPER,
-        GRAPH_HOLD_CAP_NANOUSD,
-    )
-
-
 #: How long a reservation's lease should outlive its job, per operation. The reconciler treats a
 #: dispatched reservation past its lease as an orphan and settles it CONSERVATIVELY — at the full
 #: maximum — so a lease shorter than the work charges the account the maximum while the job is
@@ -167,6 +120,7 @@ def graph_build_nanousd(uncached_papers: int) -> int:
 #: 480s per paper, so an hour is far too short for it.
 _LEASE_SECONDS = {
     "graph_build": 6 * 60 * 60,     # comfortably past the longest observed build
+    "graph_extraction": 60 * 60,    # one paper, bounded by EXTRACTION_HARD_DEADLINE
     "discovery": 2 * 60 * 60,       # slice 2 widened recall; a cold run was ~7 minutes
     "speech_synthesis": 60 * 60,    # long narrations are many segments
     "analysis": 60 * 60,

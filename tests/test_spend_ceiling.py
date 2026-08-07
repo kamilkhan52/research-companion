@@ -268,19 +268,19 @@ def test_a_continuation_is_exempt_from_the_rate_ceiling_but_still_holds_budget(l
 
 
 def test_an_explicit_maximum_overrides_the_flat_per_operation_hold(ledger):
-    """Graph builds size their hold to the papers they will actually extract."""
-    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="graph_build")
+    """The override still exists for work whose size is known at admission, even though graph
+    builds no longer use it — each of their papers holds for itself now."""
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="analysis")
     token = config.set_active_user(ALICE)
     try:
         job = reg.start_or_join(
             "k", lambda: SampleJob(id=new_id()), lambda j: None,
-            hold_max_nanousd=spend_limits.graph_build_nanousd(3),
+            hold_max_nanousd=12_345_000,
         )
         _settled(reg, job.id)
     finally:
         config.reset_active_user(token)
-    assert ledger["reserve"][0]["maximum_cost_nanousd"] == 3 * spend_limits.GRAPH_NANOUSD_PER_PAPER
-
+    assert ledger["reserve"][0]["maximum_cost_nanousd"] == 12_345_000
 
 def test_pool_threads_charge_their_spend_to_the_parent_reservation(ledger):
     """`run_parallel` fan-out is the SAME job, so its spend belongs to the hold already taken.

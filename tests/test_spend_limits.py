@@ -49,13 +49,12 @@ def test_an_unknown_operation_gets_the_generous_default_not_zero():
     )
 
 
-#: Operations whose pessimistic hold legitimately exceeds the default monthly ceiling, and why.
-#: This is not a waiver — it records a real product conflict rather than hiding it behind a hold
-#: small enough to pass. A graph build fans out across a whole corpus at a measured $0.084/paper
-#: (pricing analysis §2b), so 100 papers is ~$8.40 against a Basic allowance of $2.50. Sizing the
-#: hold to fit would let one build silently overshoot the ceiling, because settlement charges
-#: actual and nothing clamps it to the reservation.
-_KNOWN_TO_EXCEED_THE_CEILING = {"graph_build"}
+#: Operations whose pessimistic hold legitimately exceeds the default monthly ceiling. Empty now:
+#: a graph build used to be the exception, but each paper takes its own `graph_extraction` hold
+#: through `paper-references`, so the build's own admission ticket is nominal and nothing needs a
+#: waiver. Kept as a list rather than deleted so a future oversized hold has to be declared here
+#: rather than quietly passing.
+_KNOWN_TO_EXCEED_THE_CEILING: set[str] = set()
 
 
 def test_only_the_acknowledged_operations_can_exceed_the_monthly_ceiling():

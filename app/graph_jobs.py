@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import graph, graph_store, sessions, spend_limits, store
+from . import graph, sessions, store
 from .jobs import Job, JobRegistry, now_iso
 
 
@@ -78,34 +78,7 @@ def start_build(pid: str, force: bool = False,
 
     # Pass project_id explicitly (not the ambient default): the worker must bind THIS pid's
     # project even if a caller's ambient context is absent or different (scheduler/test/batch).
-    return _registry.start_or_join(
-        pid, lambda: BuildJob(id=pid), work, project_id=pid,
-        hold_max_nanousd=spend_limits.graph_build_nanousd(_papers_needing_extraction(force)),
-    )
-
-
-def _papers_needing_extraction(force: bool) -> int:
-    """How many papers this build will actually pay to extract.
-
-    Extractions are cached per paper, so a rebuild after adding one paper costs one paper — not a
-    whole corpus. Sizing the reservation to the corpus would refuse routine rebuilds of a large
-    project on a tier that can easily afford the single new paper; sizing it flat and small would
-    let a first build overshoot the ceiling, because settlement charges actual.
-
-    Best-effort: if the cache cannot be read, assume every paper is uncached. That over-holds,
-    which binds the ceiling early rather than letting spend escape it.
-    """
-    try:
-        papers = store.list_papers()
-        if force:
-            return len(papers)
-        data = graph_store.load()
-        return sum(1 for p in papers if graph_store.get_paper_extraction(data, p.slug) is None)
-    except Exception:  # noqa: BLE001 — sizing must never be the reason a build cannot start
-        try:
-            return len(store.list_papers())
-        except Exception:  # noqa: BLE001
-            return 1
+    return _registry.start_or_join(pid, lambda: BuildJob(id=pid), work, project_id=pid)
 
 
 def _apply_event(job: BuildJob, event: dict) -> None:

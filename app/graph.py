@@ -49,7 +49,6 @@ from . import (
     retriever,
     semantic_scholar,
     spend_ceiling,
-    spend_limits,
     store,
 )
 from .models import Paper
@@ -257,22 +256,17 @@ def extract_references_for_paper(slug: str, title: str, full_text: str, model: s
     # active-project contextvar — so rebind it inside the worker (invariant 2) so llm's usage
     # accounting attributes this paper's spend to the right project.
     pid = config.active_project_id()
-    # The build's reservation travels with the extraction too, for the same reason as the project:
-    # this pool thread is the same job, so its spend belongs to the hold already taken. Without it
-    # a build settled at ~$0 however many papers it extracted.
+    uid = config.active_user_id()
+    # Project, user AND reservation: this deadline pool inherits none of them, and a missing user
+    # is not merely an attribution slip — it makes the spend ceiling inert for this call.
     held = spend_ceiling.active()
 
     def _do_extract():
-        token = config.set_active_project(pid)
-        held_token = spend_ceiling.bind(held)
-        try:
+        with config.bound_scope(pid, uid, held):
             return llm.complete(messages, model=model, temperature=0.1,
                                 max_tokens=EXTRACTION_MAX_TOKENS,
                                 reasoning={"effort": REASONING_EFFORT}, timeout=300, tries=2,
                                 operation="graph_extraction")
-        finally:
-            spend_ceiling.reset(held_token)
-            config.reset_active_project(token)
 
     try:
         content = _call_with_deadline(_do_extract, deadline=EXTRACTION_HARD_DEADLINE)
@@ -1524,12 +1518,17 @@ def build_graph(papers: list[Paper], force: bool = False,
 
     if to_run:
         pid = config.active_project_id()
+        uid = config.active_user_id()
         held = spend_ceiling.active()
 
         def run_one(paper: Paper, text: str) -> dict:
-            token = config.set_active_project(pid)
-            held_token = spend_ceiling.bind(held)
-            try:
+            # All three, via the one helper that exists so a worker cannot rebind a subset.
+            # Binding project and reservation but not the USER was silently fatal once
+            # `paper-references` began taking its own hold: `spend_limits.enabled()` requires a
+            # signed-in user, so on this pool thread it read False, no hold was taken, and the
+            # `reserves` branch meant no inheritance either — every paper's extraction spend
+            # landed nowhere and the whole build settled at $0.
+            with config.bound_scope(pid, uid, held):
                 return reference_jobs.ensure_for_text(
                     paper.slug,
                     paper.title,
@@ -1537,9 +1536,6 @@ def build_graph(papers: list[Paper], force: bool = False,
                     model=model,
                     extract_fn=extract_fn,
                 )
-            finally:
-                spend_ceiling.reset(held_token)
-                config.reset_active_project(token)
 
         workers = extraction_concurrency()
         pending = list(to_run)
@@ -1549,7 +1545,6 @@ def build_graph(papers: list[Paper], force: bool = False,
             max_workers=workers, thread_name_prefix="graph-extract-fan",
         )
         abandoned = False
-        extracted_since_checkpoint = 0
         in_flight: dict[concurrent.futures.Future, Paper] = {}
         try:
             while pending or in_flight:
@@ -1567,15 +1562,6 @@ def build_graph(papers: list[Paper], force: bool = False,
                     extraction = future.result()  # an extract_fn crash fails the build,
                     # exactly as the serial loop did
                     graph_store.set_paper_extraction(data, paper.slug, extraction)
-                    extracted_since_checkpoint += 1
-                    if extracted_since_checkpoint >= spend_limits.GRAPH_TRANCHE_PAPERS:
-                        # Pay as we go. One admission cannot bound a cost that scales with the
-                        # corpus, and sizing that admission to the whole corpus refuses every
-                        # large build instead. Settling each tranche and reserving the next caps
-                        # the over-run at one tranche; when the account cannot afford another this
-                        # raises, the build stops, and every paper extracted so far stays cached.
-                        extracted_since_checkpoint = 0
-                        spend_ceiling.checkpoint(spend_limits.graph_tranche_nanousd())
                     # Persist after EACH paper, not just once at the end: each extraction
                     # is a real (paid) call taking tens of seconds, so an interrupted
                     # build keeps every paper completed so far and the next build only
