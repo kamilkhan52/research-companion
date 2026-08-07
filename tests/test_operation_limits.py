@@ -39,18 +39,19 @@ def _real_budgets() -> list[tuple[str, int]]:
     caller that raises its budget without raising its ceiling fails here instead of truncating a
     paid call in production.
     """
-    from app import discovery, graph, preview_jobs
+    from app import affiliations, agent, author_profiles, discovery, graph, preview_jobs
 
     return [
-        ("analysis", 16_000),                                   # agent.stream_messages
-        ("notes", 16_000),                                      # notes_jobs
+        ("analysis", agent.ANALYSIS_MAX_TOKENS),
+        ("notes", agent.NOTES_MAX_TOKENS),
         ("graph_extraction", graph.EXTRACTION_MAX_TOKENS),
         ("discovery", discovery.SCORING_MAX_TOKENS),
+        ("discovery", discovery.QUERIES_MAX_TOKENS),
         ("discovery_screen", discovery.TITLE_TRIAGE_MAX_TOKENS),
         ("discovery_screen", discovery.ABSTRACT_SCORING_MAX_TOKENS),
         ("listening_preview", preview_jobs.CUE_MAX_TOKENS),
-        ("affiliations", 800),
-        ("author_profile", 600),
+        ("affiliations", affiliations.AFFILIATION_MAX_TOKENS),
+        ("author_profile", author_profiles.PROFILE_MAX_TOKENS),
     ]
 
 
@@ -60,6 +61,37 @@ def test_every_ceiling_clears_what_that_operation_actually_asks_for(operation, n
     call is billed either way and the result is unusable."""
     assert operation_limits.clamp_tokens(operation, needs) == needs, (
         f"{operation}'s ceiling is below the {needs} tokens its caller requests"
+    )
+
+
+def test_the_lab_research_agent_bounds_its_output_too():
+    """The other Pydantic AI path. Built purely inline it was untestable, and reverting the bound
+    left the whole suite green — the same gap this round closed for `agent_harness`."""
+    from app import lab_research
+
+    assert lab_research._OUTPUT_TOKENS_LIMIT == (
+        operation_limits.tokens_for("lab_research") * lab_research.MAX_AGENT_REQUESTS
+    ), "it must read the shared table, not carry a second set of numbers"
+
+
+def test_the_agentic_turn_has_a_per_request_cap_not_only_a_run_level_abort():
+    """`output_tokens_limit` aborts a run that has already generated; `max_tokens` stops
+    generation at the ceiling. The raw client has always had the latter; the agentic path had
+    neither until this slice, and only the run-level abort until this fix."""
+    import ast
+    import inspect
+
+    from app import agent_harness
+
+    tree = ast.parse(inspect.getsource(agent_harness))
+    settings = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", getattr(node.func, "attr", None)) == "OpenRouterModelSettings"
+    ]
+    assert settings, "expected the agentic model settings to be constructed here"
+    assert any(kw.arg == "max_tokens" for call in settings for kw in call.keywords), (
+        "the agentic path must cap each request, not only abort the run after the fact"
     )
 
 

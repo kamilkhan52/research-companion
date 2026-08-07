@@ -459,7 +459,7 @@ def _single_shot_notes_events(prompt: str):
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": prompt}]
     pieces: list[str] = []
-    for piece in agent.stream_messages(messages, max_tokens=16000, operation="notes"):
+    for piece in agent.stream_messages(messages, max_tokens=agent.NOTES_MAX_TOKENS, operation="notes"):
         pieces.append(piece)
         yield {"type": "text", "text": piece}
     yield {"type": "final", "text": "".join(pieces)}

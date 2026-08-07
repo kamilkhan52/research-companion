@@ -82,6 +82,11 @@ AGENT_REQUEST_LIMIT = 12
 #
 # Summed across the whole run rather than per request: `output_tokens_limit` is what stops twelve
 # maximal responses from costing twelve times a single one.
+#
+# Worth being clear that tripping it costs MORE money, not less: the exceeded run is abandoned and
+# the fallback buys a full single-shot turn on top. That is the right trade for the reader — the
+# roadmap ranks blocking a paying user above a mild overspend — but it means this limit is a
+# safety valve against a runaway loop, not a saving.
 _USAGE_LIMITS = UsageLimits(
     request_limit=AGENT_REQUEST_LIMIT,
     output_tokens_limit=operation_limits.tokens_for("analysis") * AGENT_REQUEST_LIMIT,
@@ -278,6 +283,12 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
         settings=OpenRouterModelSettings(
             openrouter_provider=llm.routing_payload(),
             openrouter_usage={"include": True},
+            # The per-REQUEST cap, and the one that actually stops money being spent. The run-level
+            # `output_tokens_limit` below is an abort: on the non-streaming path it fires after a
+            # response has already been generated and billed. This is what the raw client's
+            # `max_tokens` does — generation physically stops at the ceiling — so the agentic path
+            # gets the same bound rather than only a backstop.
+            max_tokens=operation_limits.tokens_for("analysis"),
         ),
     )
 

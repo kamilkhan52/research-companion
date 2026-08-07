@@ -304,7 +304,15 @@ def canonical_prefix(raw: str) -> str:
     return strip_pseudo_tool_tags(rest.strip())
 
 
-def stream_messages(messages: list[dict], max_tokens: int = 16000, operation: str = "analysis",
+#: Completion budgets for the two long scholarly turns. Named rather than inlined so
+#: `operation_limits` can be asserted against the real number instead of a copy: a hand-copied
+#: literal is what let `discovery`'s ceiling sit three times below what its caller asked for.
+ANALYSIS_MAX_TOKENS = 16000
+NOTES_MAX_TOKENS = 16000
+
+
+def stream_messages(messages: list[dict], max_tokens: int = ANALYSIS_MAX_TOKENS,
+                    operation: str = "analysis",
                     model: str | None = None):
     """Yield raw content pieces of a streaming completion, translating the llm client's
     LLMError into AgentError. Public seam so callers (notes_jobs' single-shot editor) don't
