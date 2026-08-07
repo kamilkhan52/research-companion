@@ -10,10 +10,15 @@ request above the ceiling is clamped. That distinction matters because the value
 from what each operation actually needs today, and a caller that genuinely needs less should not
 be silently handed more.
 
+**This does not reach the agentic tool loop by itself.** `agent_harness` and `lab_research` run
+through Pydantic AI, which never touches `llm.complete`, so they are bounded by the token limits
+passed to `UsageLimits` instead — the same numbers, read from this table, applied at the only seam
+that path has. Anything using the raw client is clamped here.
+
 **Why in one table rather than at each call site.** `max_tokens` is currently a per-call argument
 with a permissive default (`llm.complete` allows 8,000, `stream` more), so a new call site
 inherits a budget nobody chose and an existing one can be edited upward without review. Clamping
-inside `llm` means a bound applies to every call by construction — the same reasoning that moved
+inside `llm` means a bound applies to every raw-client call by construction — the same reasoning that moved
 metering into `JobRegistry` rather than leaving it to each feature module.
 
 Sized generously against observed use: the point is to stop an absurd request, not to trim a
@@ -37,7 +42,15 @@ _LIMITS: dict[str, tuple[int, float]] = {
     "notes": (24_000, 600.0),
     "narration": (16_000, 300.0),
     "graph_extraction": (48_000, 300.0),
-    "discovery": (8_000, 300.0),
+    # 24,000 because `discovery.SCORING_MAX_TOKENS` asks for exactly that. The table is asserted
+    # against the real constants rather than hand-copied numbers — this entry was 8,000 and the
+    # test that was supposed to catch it simply did not list `discovery`.
+    "discovery": (24_000, 300.0),
+    # The app's highest-volume LLM operation (75 titles or 25 abstracts a batch). Given headroom
+    # rather than left on the default it exactly equalled, so a batch-size change cannot silently
+    # start truncating. Truncation degrades safely here — an unjudged title is kept — but the cost
+    # of that is pushing hundreds of unscreened candidates into the paid abstract stage.
+    "discovery_screen": (16_000, 300.0),
     "listening_preview": (1_000, 120.0),
     "affiliations": (2_000, 120.0),
     "author_profile": (4_000, 180.0),
@@ -48,6 +61,15 @@ _LIMITS: dict[str, tuple[int, float]] = {
 #: so a new ancillary call is bounded without having to be listed, while a genuinely long new
 #: operation is forced to declare itself here rather than inheriting a large budget by accident.
 _DEFAULT_LIMIT = (8_000, 300.0)
+
+
+def tokens_for(operation: str) -> int:
+    """The completion ceiling for `operation`, for callers that must apply it themselves.
+
+    The Pydantic AI paths cannot be clamped inside `llm` because they never go through it, so they
+    read the ceiling here and pass it to `UsageLimits`. One table, two enforcement points.
+    """
+    return _LIMITS.get(operation, _DEFAULT_LIMIT)[0]
 
 
 def clamp_tokens(operation: str, requested: int) -> int:

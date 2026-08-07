@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import config, graph, graph_store, model_provenance, prompts, store
+from . import config, graph, graph_store, model_provenance, operation_limits, prompts, store
 from .fileio import atomic_write_text
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -152,6 +152,11 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
         result = asyncio.run(
             ag.run(user, usage_limits=UsageLimits(
                 request_limit=MAX_AGENT_REQUESTS, tool_calls_limit=MAX_AGENT_TOOL_CALLS,
+                # Rounds and tool calls were bounded; output size was not. Read from the same
+                # table the raw client clamps against — this path never reaches `llm.complete`.
+                output_tokens_limit=(
+                    operation_limits.tokens_for("lab_research") * MAX_AGENT_REQUESTS
+                ),
             )),
         )
         run_usage = result.usage()

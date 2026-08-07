@@ -47,6 +47,7 @@ from . import (
     llm,
     logging_config,
     model_provenance,
+    operation_limits,
     prompts,
     research_tools,
     sessions,
@@ -73,7 +74,18 @@ AGENTIC_ENABLED = _flag_enabled(os.environ.get("RC_AGENTIC"))
 # default is 50; a research turn that needs more than this many tool rounds is misbehaving.
 # The final answer-writing request counts too, so this comfortably allows several tool rounds.
 AGENT_REQUEST_LIMIT = 12
-_USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
+# The request cap bounds how many ROUNDS a misbehaving loop can take; it says nothing about how
+# large each one may be. This path never goes through `llm.complete`, so `operation_limits`'
+# clamp cannot reach it — and it is the most expensive metered operation in the app (§2a: ~44,668
+# prompt tokens and $0.06 a turn across the loop). The token ceiling is read from the same table
+# the raw client clamps against, so there is one set of numbers with two enforcement points.
+#
+# Summed across the whole run rather than per request: `output_tokens_limit` is what stops twelve
+# maximal responses from costing twelve times a single one.
+_USAGE_LIMITS = UsageLimits(
+    request_limit=AGENT_REQUEST_LIMIT,
+    output_tokens_limit=operation_limits.tokens_for("analysis") * AGENT_REQUEST_LIMIT,
+)
 
 
 def _retain_authoritative_zero_cost(details: dict | None, provider_usage) -> dict | None:
