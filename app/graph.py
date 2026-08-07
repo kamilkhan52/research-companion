@@ -68,10 +68,17 @@ DEFAULT_GRAPH_MODEL = "deepseek/deepseek-v4-flash-0731"
 _GRAPH_MODEL_INC = ["deepseek", "v4", "flash"]
 # Same spirit as main.py's FAVORITE_GLOBAL_EXC: keep the match on a real chat/instruct model.
 _GRAPH_MODEL_EXC = ["image", "audio", "tts", "embedding", "embed", "vision", "ocr", "search",
-                    "guard", "moderation", "rerank", ":free", "distill", "chat", "lite"]
+                    "guard", "moderation", "rerank", ":free", "distill", "chat", "lite",
+                    # Added 2026-08-07: this list claims to mirror the favourites exclusions in
+                    # `routers/catalogue.py` and had drifted from them. `:online` bills a web
+                    # search on top of tokens and `:nitro` routes to a premium endpoint — either
+                    # would match the Flash family and, being newer, win the `created` sort, so
+                    # the catalogue could quietly re-price extraction without anyone choosing to.
+                    "online", "latest", "nitro"]
 
 MAX_FULL_TEXT_CHARS = 120_000  # ~30-40k tokens; comfortably covers this corpus's paper sizes
-# DeepSeek V4 Pro is a reasoning model: OpenRouter's response carries a separate
+# The extraction model is a reasoning model (V4 Pro was, and Flash-0731 is): OpenRouter's
+# response carries a separate
 # message.reasoning field, and usage.completion_tokens_details.reasoning_tokens confirms
 # those tokens count against max_tokens right alongside the visible content. On a large,
 # complex paper this can consume the ENTIRE budget on hidden reasoning with zero content

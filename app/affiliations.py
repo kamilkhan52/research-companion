@@ -99,8 +99,18 @@ def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] 
     if not text:
         return None
     complete = complete or llm.complete
+    # Late import: `graph` imports this module, so a top-level one would cycle.
+    from . import graph
+
     try:
+        # Pinned to the extraction tier, not left on the reader's ANALYSIS default. Pulling one
+        # institution out of a first page is the cheapest kind of ancillary call, but with no
+        # `model=` it inherited whatever the reader had selected — at a frontier model that is
+        # ~$0.045/paper against §2b's $0.00016, and the graph build calls this per project paper
+        # on its own thread, charging a $0.02 admission ticket. Same reasoning as pinning graph
+        # extraction: an ancillary call should never be able to cost more than the work it serves.
         raw = complete([{"role": "user", "content": _PROMPT.format(text=text)}],
+                       model=graph.resolve_model(),
                        temperature=0, max_tokens=800, timeout=60,
                        operation="affiliations")
     except llm.LLMError as e:

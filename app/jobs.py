@@ -582,7 +582,7 @@ class JobRegistry(Generic[J]):
                 # matters: the build binds its reservation on the fan-out thread, then hands the
                 # paper to the `paper-references` registry, whose worker runs on a THIRD thread
                 # that inherits nothing. The spend landed there and was dropped, so every build
-                # settled at $0 and the tranche checkpointing that bounds it never fired.
+                # settled at $0 and the per-paper gating that bounds a build never fired.
                 #
                 # Inheriting the caller's reservation puts that spend back where it belongs. The
                 # ownership flag is what keeps it safe: only the job that TOOK a hold may settle

@@ -39,7 +39,7 @@ class QuotaExceeded(QuotaError):
     def __init__(self, *, used_nanousd: int, requested_nanousd: int, limit_nanousd: int,
                  settled_nanousd: int | None = None):
         # The message is derived here, not in the HTTP handler, because most refusals never reach
-        # one: `spend_ceiling.checkpoint` raises mid-graph-build, the analysis continuation raises
+        # one: a paper's own hold raises mid-graph-build, the analysis continuation raises
         # inside the retrieval worker, and the narration continuation raises inside the chat
         # worker. Each of those turns the exception into an error STRING on a job, so a split that
         # lived only in `main` told a reader whose own in-flight holds collided — and who may have

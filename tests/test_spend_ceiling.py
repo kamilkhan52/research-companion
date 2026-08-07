@@ -386,7 +386,7 @@ def test_spend_inside_a_child_registrys_worker_reaches_the_parents_reservation(l
     A build binds its reservation on the fan-out thread, then hands each paper to a DIFFERENT
     registry (`paper-references`), whose worker runs on a third thread. That registry takes no
     reservation of its own, so it bound `None` and the extraction's cost was dropped — every build
-    settled at $0 however much it spent, and the tranche checkpointing that bounds a large build
+    settled at $0 however much it spent, and the per-paper gating that bounds a large build
     never fired because there was never any spend to settle.
 
     Binding `run_parallel` was not enough: this is a registry hop, not a pool hop.
