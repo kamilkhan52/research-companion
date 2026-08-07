@@ -12,6 +12,7 @@ These run only with `RC_TEST_DATABASE_URL` set (CI always sets it).
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 from app import config, db, quotas, spend_ceiling, spend_limits, tenancy
@@ -19,22 +20,24 @@ from app import config, db, quotas, spend_ceiling, spend_limits, tenancy
 TEST_DB = os.environ.get("RC_TEST_DATABASE_URL", "").strip()
 needs_pg = pytest.mark.skipif(not TEST_DB, reason="set RC_TEST_DATABASE_URL to run this")
 
-ALICE = "11111111-1111-4111-8111-111111111111"
-PID = "proj-ceiling"
+#: A fresh account and project per test. The reservation ledger is deliberately append-like —
+#: migration 0008's triggers refuse to delete attempt rows except through an account cascade — so
+#: isolation comes from never reusing an identity rather than from cleaning up after one. That
+#: also means this file never drops tables: doing so mid-suite pulled the schema out from under
+#: other database-backed tests ("relation rc_users does not exist").
+ALICE = ""
+PID = ""
 
 
 @pytest.fixture
 def database(monkeypatch):
+    global ALICE, PID
     monkeypatch.setenv("RC_DATABASE_URL", TEST_DB)
     db.close()
-    with db.pool().connection() as conn:
-        conn.execute(
-            "drop table if exists rc_usage_reservation_attempts, rc_usage_reservations, "
-            "rc_usage_events, rc_content_reports, rc_account_deletions, rc_project_trash, "
-            "rc_user_settings, rc_projects, rc_users, rc_schema_migrations cascade",
-        )
     db.migrate()
-    tenancy.ensure_user(ALICE, "alice@example.com")
+    ALICE = str(uuid.uuid4())
+    PID = f"proj-ceiling-{uuid.uuid4().hex[:8]}"
+    tenancy.ensure_user(ALICE, f"{ALICE}@example.com")
     tenancy.record_project(PID, ALICE)
     token_u = config.set_active_user(ALICE)
     token_p = config.set_active_project(PID)

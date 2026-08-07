@@ -176,6 +176,14 @@ def test_retention_stays_bounded_when_scopes_are_unbounded():
     for n in range(1, jobs_module._MAX_SCOPES_RETAINED + 12):
         _finished(f"project-{n:04d}", "only")
 
+    # The scope bound is enforced WHEN something registers or settles, so immediately after the
+    # last creation the newest scope has not yet been pruned against — that is what the +1
+    # tolerance was for, and under load a second settle lands in the same window and it reads +2.
+    # Register once more into an EXISTING scope: it adds no scope but runs the pruner, so the
+    # assertion sees the steady state instead of a moment mid-flight.
+    newest_scope = f"project-{jobs_module._MAX_SCOPES_RETAINED + 11:04d}"
+    _finished(newest_scope, "settling-tick")
+
     scopes = {getattr(j, "_rc_project_id", None) for j in registry.jobs.values()}
     assert len(scopes) <= jobs_module._MAX_SCOPES_RETAINED + 1, len(scopes)
     # The oldest scope is the one that went, not an arbitrary one.
