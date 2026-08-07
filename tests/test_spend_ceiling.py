@@ -378,3 +378,69 @@ def test_the_real_continuation_call_sites_hold_budget(ledger, temp_project, monk
         assert all(
             isinstance(v, ast.Constant) and v.value is True for v in values
         ), f"{module.__name__} must pass reserves=True — a continuation's spend is still spend"
+
+
+def test_spend_inside_a_child_registrys_worker_reaches_the_parents_reservation(ledger):
+    """The hop that made the whole graph ceiling inert.
+
+    A build binds its reservation on the fan-out thread, then hands each paper to a DIFFERENT
+    registry (`paper-references`), whose worker runs on a third thread. That registry takes no
+    reservation of its own, so it bound `None` and the extraction's cost was dropped — every build
+    settled at $0 however much it spent, and the tranche checkpointing that bounds a large build
+    never fired because there was never any spend to settle.
+
+    Binding `run_parallel` was not enough: this is a registry hop, not a pool hop.
+    """
+    parent: JobRegistry[SampleJob] = JobRegistry("parent", metered=True, operation="graph_build")
+    child: JobRegistry[SampleJob] = JobRegistry("child")   # unmetered, like paper-references
+
+    def child_work(_job):
+        spend_ceiling.note_spend(5_000_000)   # the extraction's real cost
+
+    def parent_work(_job):
+        job = child.start_or_join("paper", lambda: SampleJob(id=new_id()), child_work)
+        _settled(child, job.id)
+
+    token = config.set_active_user(ALICE)
+    try:
+        job = parent.start_or_join("build", lambda: SampleJob(id=new_id()), parent_work)
+        _settled(parent, job.id)
+        _wait_for(lambda: ledger["settle"], what="the build to settle")
+    finally:
+        config.reset_active_user(token)
+
+    assert len(ledger["reserve"]) == 1, "the child must not take a reservation of its own"
+    assert ledger["settle"] == [("res-1", 5_000_000)], (
+        "spend inside a child registry's worker must reach the parent's reservation"
+    )
+
+
+def test_a_child_job_never_settles_the_reservation_it_inherited(ledger):
+    """Inheriting is only safe if the child cannot finalize what it borrowed.
+
+    A build runs many short child jobs. If each settled the hold it inherited, the first paper
+    would close the build's reservation and every later one would fail against a settled row.
+    """
+    parent: JobRegistry[SampleJob] = JobRegistry("parent", metered=True, operation="graph_build")
+    child: JobRegistry[SampleJob] = JobRegistry("child")
+    settles_during_build: list[int] = []
+
+    def parent_work(_job):
+        for i in range(3):
+            job = child.start_or_join(
+                f"p{i}", lambda: SampleJob(id=new_id()),
+                lambda _j: spend_ceiling.note_spend(1_000_000),
+            )
+            _settled(child, job.id)
+        settles_during_build.append(len(ledger["settle"]))
+
+    token = config.set_active_user(ALICE)
+    try:
+        job = parent.start_or_join("build", lambda: SampleJob(id=new_id()), parent_work)
+        _settled(parent, job.id)
+        _wait_for(lambda: ledger["settle"], what="the build to settle")
+    finally:
+        config.reset_active_user(token)
+
+    assert settles_during_build == [0], "no child may settle the build's hold while it runs"
+    assert ledger["settle"] == [("res-1", 3_000_000)], "all three papers charged, settled once"

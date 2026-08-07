@@ -478,7 +478,7 @@ def active_user_id() -> str | None:
 
 
 @contextlib.contextmanager
-def bound_scope(project_id: str | None, user_id: str | None):
+def bound_scope(project_id: str | None, user_id: str | None, held=None):
     """Bind BOTH request-scoped contextvars for the duration of a worker thread (invariant 2).
 
     A thread inherits neither, and they are wrong in different ways when forgotten: a missing
@@ -488,14 +488,23 @@ def bound_scope(project_id: str | None, user_id: str | None):
     exists to stop being possible: capture with `active_project_id()`/`active_user_id()` on the
     calling thread, then enter this on the worker.
 
+    `held` is the third one, and the same argument applies: a worker that spends money without the
+    caller's reservation bound has its cost dropped, so the ceiling settles that job at zero. Pass
+    `spend_ceiling.active()` captured on the calling thread. Imported late because `spend_ceiling`
+    imports this module.
+
     `JobRegistry._run` does the same thing inline and predates it; it is not rewritten to use this
     because reindenting that method's body around a `with` is risk without benefit.
     """
+    from . import spend_ceiling
+
     project_token = _active_project.set(project_id)
     user_token = _active_user.set(user_id)
+    held_token = spend_ceiling.bind(held)
     try:
         yield
     finally:
+        spend_ceiling.reset(held_token)
         _active_user.reset(user_token)
         _active_project.reset(project_token)
 

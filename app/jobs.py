@@ -541,6 +541,7 @@ class JobRegistry(Generic[J]):
 
         cleanup: Callable[[], None] | None = None
         held: spend_ceiling._Held | None = None
+        owns_hold = False
         try:
             # Reached only by the caller that will genuinely CREATE a job — every joiner returned
             # above. So the ceiling counts real new spend, and a client polling a running job can
@@ -567,17 +568,31 @@ class JobRegistry(Generic[J]):
                 held = spend_ceiling.hold(
                     self.operation, job.id, maximum_nanousd=hold_max_nanousd,
                 )
+                owns_hold = True
+            else:
+                # This registry takes no reservation of its own — but it may be doing an admitted
+                # job's work on its behalf. A graph build's per-paper extraction is the case that
+                # matters: the build binds its reservation on the fan-out thread, then hands the
+                # paper to the `paper-references` registry, whose worker runs on a THIRD thread
+                # that inherits nothing. The spend landed there and was dropped, so every build
+                # settled at $0 and the tranche checkpointing that bounds it never fired.
+                #
+                # Inheriting the caller's reservation puts that spend back where it belongs. The
+                # ownership flag is what keeps it safe: only the job that TOOK a hold may settle
+                # or release it, or a short child job would finalize its parent's hold mid-build.
+                held = spend_ceiling.active()
             if prepare_new is not None:
                 cleanup = prepare_new(job)
         except BaseException:
-            spend_ceiling.release(held)
+            if owns_hold:
+                spend_ceiling.release(held)
             self._finish_admission(identity, admission)
             raise
 
         try:
             thread = threading.Thread(
                 target=self._run,
-                args=(job, work, pid, user_id, held),
+                args=(job, work, pid, user_id, held, owns_hold),
                 daemon=True,
                 name=f"{self.name}-{job.id[:8]}",
             )
@@ -620,7 +635,8 @@ class JobRegistry(Generic[J]):
                 admission.event.set()
         except BaseException:
             self._rollback_preparation(cleanup)
-            spend_ceiling.release(held)
+            if owns_hold:
+                spend_ceiling.release(held)
             self._finish_admission(identity, admission)
             raise
         log.info("start %s job=%s key=%s", self.name, job.id[:8], key, extra=tag)
@@ -703,7 +719,7 @@ class JobRegistry(Generic[J]):
                             str(e)[:200], extra=tag)
 
     def _run(self, job: J, work: Callable[[J], None], pid: str | None,
-             user_id: str | None = None, held=None) -> None:
+             user_id: str | None = None, held=None, owns_hold: bool = False) -> None:
         token = config.set_active_project(pid)
         user_token = config.set_active_user(user_id)
         # Bound like the project and the user, and for the same reason: the spend happens deep
@@ -755,7 +771,11 @@ class JobRegistry(Generic[J]):
             # is charged exactly what it spent and the unspent remainder goes back. A job that
             # never spent anything settles at zero rather than being released, so the ledger
             # records the admission as used rather than abandoned.
-            spend_ceiling.settle(held)
+            # Only the job that TOOK the hold settles it. An inherited one belongs to the
+            # caller still running above us, and settling it here would finalize a live build's
+            # reservation from inside one of its papers.
+            if owns_hold:
+                spend_ceiling.settle(held)
             spend_ceiling.reset(held_token)
             config.reset_active_project(token)
             config.reset_active_user(user_token)

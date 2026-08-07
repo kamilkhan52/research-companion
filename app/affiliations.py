@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import threading
 
-from . import config, graph_store, llm, logging_config, paper_metadata, store
+from . import config, graph_store, llm, logging_config, paper_metadata, spend_ceiling, store
 from .jobs import Job, JobRegistry, new_id
 
 log = logging_config.get("affiliations")
@@ -158,10 +158,13 @@ def _extract_with_deadline(slug: str, complete) -> tuple[bool, list[dict] | None
     stack new threads on top of a provider that never returns."""
     pid = config.active_project_id()
     uid = config.active_user_id()
+    # The caller's reservation too: this thread does an LLM call, and without it the cost is
+    # dropped and whatever job asked for the affiliation settles that much short.
+    held = spend_ceiling.active()
     result: dict = {}
 
     def _do():
-        with config.bound_scope(pid, uid):
+        with config.bound_scope(pid, uid, held):
             try:
                 result["ships"] = extract(slug, complete=complete)
             except Exception as e:  # noqa: BLE001 — retryable miss, logged, never raised
