@@ -21,7 +21,8 @@ class AffiliationJob(Job):
     affiliations: list[str] = field(default_factory=list)
 
 
-_registry: JobRegistry[AffiliationJob] = JobRegistry("paper-affiliations", max_finished=30)
+_registry: JobRegistry[AffiliationJob] = JobRegistry("paper-affiliations", max_finished=30, reserves=True,
+                                                    operation="affiliations")
 _jobs = _registry.jobs
 
 

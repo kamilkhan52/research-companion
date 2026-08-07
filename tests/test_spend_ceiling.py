@@ -444,3 +444,45 @@ def test_a_child_job_never_settles_the_reservation_it_inherited(ledger):
 
     assert settles_during_build == [0], "no child may settle the build's hold while it runs"
     assert ledger["settle"] == [("res-1", 3_000_000)], "all three papers charged, settled once"
+
+
+def test_a_child_that_outlives_its_parent_holds_its_own_budget(ledger):
+    """Fire-and-forget children were charged to a hold that had already settled.
+
+    `chat_jobs` starts the listening-cue coordinator and returns; the analysis hold settles; the
+    coordinator then runs for the whole narration wait, starting an uncapped stream of cues. Each
+    cue's spend landed on a dead reservation and was never charged. The retrieval worker does the
+    same with the canonical-warm chain. Inheriting is only safe while the parent is still running,
+    and these deliberately are not — so they reserve their own budget instead.
+    """
+    from app import affiliation_jobs, preview_jobs, reference_jobs
+
+    for registry, operation in (
+        (preview_jobs._registry, "listening_preview"),
+        (preview_jobs._coordinator_registry, "listening_preview"),
+        (reference_jobs._registry, "graph_extraction"),
+        (affiliation_jobs._registry, "affiliations"),
+    ):
+        assert registry.reserves, (
+            f"{registry.name} outlives the request that starts it, so it must hold its own budget"
+        )
+        assert registry.operation == operation
+        assert not registry.metered, (
+            f"{registry.name} is not an entry point a reader queues, so it must not consume one "
+            "of their concurrency slots"
+        )
+
+
+def test_reserving_and_rate_limiting_are_independent_registry_decisions(ledger):
+    """A registry can hold budget without counting against the concurrency ceiling, and the
+    default keeps them together so an ordinary entry point needs no extra thought."""
+    both: JobRegistry[SampleJob] = JobRegistry("both", metered=True, operation="analysis")
+    assert both.metered and both.reserves
+
+    budget_only: JobRegistry[SampleJob] = JobRegistry(
+        "budget-only", reserves=True, operation="analysis",
+    )
+    assert budget_only.reserves and not budget_only.metered
+
+    neither: JobRegistry[SampleJob] = JobRegistry("neither")
+    assert not neither.metered and not neither.reserves

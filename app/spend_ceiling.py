@@ -134,14 +134,32 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
     # a process death after this point leaves a *dispatched* row that the reconciler settles
     # conservatively — over-charging a possibly-billed attempt rather than silently losing spend,
     # which is the trade `04-ai-costs-quotas-and-abuse.md` states explicitly.
-    attempt, _created = quotas.begin_attempt(
-        reservation.id,
-        user_id=user_id,
-        attempt_key=f"{job_id}:work",
-        maximum_cost_nanousd=maximum,
-    )
+    try:
+        attempt, _created = quotas.begin_attempt(
+            reservation.id,
+            user_id=user_id,
+            attempt_key=f"{job_id}:work",
+            maximum_cost_nanousd=maximum,
+        )
+    except BaseException:
+        # The reservation exists but nothing points at it: `owns_hold` is only set once `hold`
+        # RETURNS, so the registry's rollback would not release it either. Left alone it sits at
+        # full maximum against the month for the whole lease — six hours for a graph build — for
+        # work that never started. Releasing is legal precisely here: it is not yet dispatched,
+        # which is the one case `release` below cannot handle.
+        _discard_undispatched(reservation.id, user_id)
+        raise
     return _Held(reservation_id=reservation.id, user_id=user_id, attempt_id=attempt.id,
                  operation=operation, job_id=job_id)
+
+
+def _discard_undispatched(reservation_id: str, user_id: str) -> None:
+    """Give back a reservation that was never marked dispatched. Best-effort."""
+    try:
+        quotas.release(reservation_id, user_id=user_id)
+    except Exception as e:  # noqa: BLE001 — must not replace the failure that brought us here
+        log.warning("could not release an undispatched reservation (id=%s error=%s)",
+                    reservation_id[:8], type(e).__name__)
 
 
 def checkpoint(tranche_nanousd: int) -> None:
@@ -192,12 +210,18 @@ def checkpoint(tranche_nanousd: int) -> None:
         limit_nanousd=spend_limits.monthly_limit_nanousd(),
         lease_seconds=spend_limits.lease_seconds(held.operation),
     )
-    attempt, _created = quotas.begin_attempt(
-        reservation.id,
-        user_id=held.user_id,
-        attempt_key=f"{held.job_id}:tranche:{reservation.id}",
-        maximum_cost_nanousd=tranche_nanousd,
-    )
+    try:
+        attempt, _created = quotas.begin_attempt(
+            reservation.id,
+            user_id=held.user_id,
+            attempt_key=f"{held.job_id}:tranche:{reservation.id}",
+            maximum_cost_nanousd=tranche_nanousd,
+        )
+    except BaseException:
+        # Same leak, one level in: the tranche is reserved but `held` still points at the tranche
+        # just settled, so nothing would ever finalize this one.
+        _discard_undispatched(reservation.id, held.user_id)
+        raise
     with held.lock:
         held.reservation_id = reservation.id
         held.attempt_id = attempt.id

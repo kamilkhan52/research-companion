@@ -22,7 +22,8 @@ class ReferenceJob(Job):
     content_hash: str = ""
 
 
-_registry: JobRegistry[ReferenceJob] = JobRegistry("paper-references", max_finished=30)
+_registry: JobRegistry[ReferenceJob] = JobRegistry("paper-references", max_finished=30, reserves=True,
+                                                  operation="graph_extraction")
 _jobs = _registry.jobs
 
 

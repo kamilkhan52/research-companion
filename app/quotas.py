@@ -38,7 +38,20 @@ class QuotaExceeded(QuotaError):
 
     def __init__(self, *, used_nanousd: int, requested_nanousd: int, limit_nanousd: int,
                  settled_nanousd: int | None = None):
-        super().__init__("Your usage limit has been reached. Try again after it resets.")
+        # The message is derived here, not in the HTTP handler, because most refusals never reach
+        # one: `spend_ceiling.checkpoint` raises mid-graph-build, the analysis continuation raises
+        # inside the retrieval worker, and the narration continuation raises inside the chat
+        # worker. Each of those turns the exception into an error STRING on a job, so a split that
+        # lived only in `main` told a reader whose own in-flight holds collided — and who may have
+        # spent almost nothing — to wait until the period rolls over. Same lesson as the hook's
+        # admission stamp: put the fact on the thing, not at every call site.
+        spent = used_nanousd if settled_nanousd is None else settled_nanousd
+        if spent + requested_nanousd <= limit_nanousd:
+            super().__init__(
+                "Your other tasks are still running. Give them a moment and try again.",
+            )
+        else:
+            super().__init__("Your usage limit has been reached. Try again after it resets.")
         self.used_nanousd = used_nanousd
         self.requested_nanousd = requested_nanousd
         self.limit_nanousd = limit_nanousd

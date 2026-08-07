@@ -87,6 +87,13 @@ _MAX_NANOUSD: dict[str, int] = {
     # work that fans out across an entire corpus, and `_MAX_NANOUSD` cannot see the corpus size.
     "graph_build": 10_000_000_000,  # $10.00
     "notes": 40_000_000,            # $0.04
+    # Cues run for as long as a narration takes to synthesize, at a cadence of one every few
+    # seconds with NO cap on how many (Kamil's 2026-07-30 call: silence during the wait is worse
+    # at any cost). §2b prices a cue at $0.00108 pinned, so this covers a long wait generously.
+    "listening_preview": 60_000_000,   # $0.06
+    "affiliations": 10_000_000,        # $0.01 — one small extraction per paper
+    # The single most expensive per-paper LLM call in the app; §2b puts it at $0.03343 pinned.
+    "graph_extraction": 100_000_000,   # $0.10
     "author_profile": 20_000_000,   # $0.02
     "lab_research": 40_000_000,     # $0.04
 }

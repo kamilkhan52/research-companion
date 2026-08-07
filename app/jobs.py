@@ -299,7 +299,7 @@ class JobRegistry(Generic[J]):
     """Owns a set of jobs of one kind. Thread-safe; one process (CLAUDE.md single-worker note)."""
 
     def __init__(self, name: str, *, max_finished: int | None = 20, metered: bool = False,
-                 operation: str | None = None):
+                 operation: str | None = None, reserves: bool | None = None):
         self.name = name
         # Whether starting a job here is a USER-INITIATED paid entry point, and therefore subject
         # to the per-account rate ceilings. Follow-on work a turn spawns internally (covers,
@@ -311,6 +311,13 @@ class JobRegistry(Generic[J]):
         # reservation held while a job runs. Defaults to the registry name, which already matches
         # for most; the ones that differ pass it explicitly.
         self.operation = operation or name
+        # Whether work here must HOLD BUDGET, as opposed to counting against the per-account
+        # concurrency ceiling. Usually the same answer, hence the default — but not always. A
+        # registry whose jobs outlive the request that started them (listening cues, the canonical
+        # warm chain) must reserve their own budget even though they are not an entry point a
+        # reader queues directly: inheriting the caller's reservation is only safe while the
+        # caller is still running, and these deliberately are not.
+        self.reserves = metered if reserves is None else reserves
         self._jobs: dict[str, J] = {}   # job id -> job (also each job carries its dedup key)
         self._lock = threading.Lock()
         self._max_finished = max_finished
@@ -553,7 +560,7 @@ class JobRegistry(Generic[J]):
             # account that asked for it. But money does not care who initiated the work: a
             # listening turn's narration is real TTS spend, and audio is the largest variable cost
             # in the app. Tying both to one flag left that spend entirely outside the ceiling.
-            reserves_budget = self.metered if reserves is None else reserves
+            reserves_budget = self.reserves if reserves is None else reserves
             if is_metered:
                 rate_limits.check_and_record(
                     user_id,
