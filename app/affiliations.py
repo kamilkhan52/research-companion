@@ -111,7 +111,7 @@ def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] 
         # extraction: an ancillary call should never be able to cost more than the work it serves.
         raw = complete([{"role": "user", "content": _PROMPT.format(text=text)}],
                        model=graph.resolve_model(),
-                       temperature=0, max_tokens=800, timeout=60,
+                       temperature=0, max_tokens=AFFILIATION_MAX_TOKENS, timeout=60,
                        operation="affiliations")
     except llm.LLMError as e:
         log.info("affiliation extraction failed for %s: %s", slug, str(e)[:120])
@@ -122,6 +122,9 @@ def extract(slug: str, *, complete=None, text: str | None = None) -> list[dict] 
 # Stalled workers can't be killed; they're daemons so they die with the process, but a
 # provider that stalls forever must not accumulate one live thread per rebuild either — the
 # guard below skips the pass while any previous orphan is still alive.
+#: One institution line out of a first page. Named for the same reason as the others.
+AFFILIATION_MAX_TOKENS = 800
+
 _orphans: list[threading.Thread] = []
 _orphans_lock = threading.Lock()
 _orphan_registry: JobRegistry[Job] = JobRegistry(

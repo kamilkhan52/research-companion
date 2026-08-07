@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import config, graph, graph_store, model_provenance, prompts, store
+from . import config, graph, graph_store, model_provenance, operation_limits, prompts, store
 from .fileio import atomic_write_text
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -116,6 +116,14 @@ def parse_result(output: str) -> dict:
 MAX_AGENT_REQUESTS = 10
 MAX_AGENT_TOOL_CALLS = 8
 
+#: The output ceiling for one research run, as a NUMBER rather than a `UsageLimits` instance:
+#: `pydantic_ai` is imported lazily here because it is heavyweight and tests inject a fake, so the
+#: object cannot be built at module scope. The number can, which is what makes it assertable —
+#: built purely inline, reverting this bound left the whole suite green, the same gap this round
+#: closed one file over. Rounds and tool calls were already bounded; output size was not.
+_OUTPUT_TOKENS_LIMIT = operation_limits.tokens_for("lab_research") * MAX_AGENT_REQUESTS
+
+
 
 def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict:
     # Imported lazily: pydantic_ai is heavyweight and tests inject research_fn instead.
@@ -151,7 +159,9 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     try:
         result = asyncio.run(
             ag.run(user, usage_limits=UsageLimits(
-                request_limit=MAX_AGENT_REQUESTS, tool_calls_limit=MAX_AGENT_TOOL_CALLS,
+                request_limit=MAX_AGENT_REQUESTS,
+                tool_calls_limit=MAX_AGENT_TOOL_CALLS,
+                output_tokens_limit=_OUTPUT_TOKENS_LIMIT,
             )),
         )
         run_usage = result.usage()

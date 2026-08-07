@@ -29,6 +29,10 @@ from . import (
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
+#: A cue is one short spoken sentence. Named rather than inlined so `operation_limits` can be
+#: asserted against the real budget instead of a copy of it — a hand-copied number is what let
+#: `discovery`'s ceiling sit three times below what its caller asked for.
+CUE_MAX_TOKENS = 180
 MAX_CUE_CHARS = 240
 TARGET_CUE_CHARS = 200
 CONTINUATION_POLL_SECONDS = 0.25
@@ -461,7 +465,7 @@ def _default_generate(messages: list[dict], model: str | None) -> str:
         messages,
         model=model,
         temperature=0.2,
-        max_tokens=180,
+        max_tokens=CUE_MAX_TOKENS,
         # Reasoning OFF, and this is the call where it matters most. `resolve_model` falls back to
         # the NARRATION model when no preview model is set, which is the default state — so cues
         # were being written by a reasoning model against a 180-token ceiling. It spends the

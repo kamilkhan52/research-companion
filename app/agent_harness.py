@@ -47,6 +47,7 @@ from . import (
     llm,
     logging_config,
     model_provenance,
+    operation_limits,
     prompts,
     research_tools,
     sessions,
@@ -73,7 +74,23 @@ AGENTIC_ENABLED = _flag_enabled(os.environ.get("RC_AGENTIC"))
 # default is 50; a research turn that needs more than this many tool rounds is misbehaving.
 # The final answer-writing request counts too, so this comfortably allows several tool rounds.
 AGENT_REQUEST_LIMIT = 12
-_USAGE_LIMITS = UsageLimits(request_limit=AGENT_REQUEST_LIMIT)
+# The request cap bounds how many ROUNDS a misbehaving loop can take; it says nothing about how
+# large each one may be. This path never goes through `llm.complete`, so `operation_limits`'
+# clamp cannot reach it — and it is the most expensive metered operation in the app (§2a: ~44,668
+# prompt tokens and $0.06 a turn across the loop). The token ceiling is read from the same table
+# the raw client clamps against, so there is one set of numbers with two enforcement points.
+#
+# Summed across the whole run rather than per request: `output_tokens_limit` is what stops twelve
+# maximal responses from costing twelve times a single one.
+#
+# Worth being clear that tripping it costs MORE money, not less: the exceeded run is abandoned and
+# the fallback buys a full single-shot turn on top. That is the right trade for the reader — the
+# roadmap ranks blocking a paying user above a mild overspend — but it means this limit is a
+# safety valve against a runaway loop, not a saving.
+_USAGE_LIMITS = UsageLimits(
+    request_limit=AGENT_REQUEST_LIMIT,
+    output_tokens_limit=operation_limits.tokens_for("analysis") * AGENT_REQUEST_LIMIT,
+)
 
 
 def _retain_authoritative_zero_cost(details: dict | None, provider_usage) -> dict | None:
@@ -266,6 +283,12 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
         settings=OpenRouterModelSettings(
             openrouter_provider=llm.routing_payload(),
             openrouter_usage={"include": True},
+            # The per-REQUEST cap, and the one that actually stops money being spent. The run-level
+            # `output_tokens_limit` below is an abort: on the non-streaming path it fires after a
+            # response has already been generated and billed. This is what the raw client's
+            # `max_tokens` does — generation physically stops at the ceiling — so the agentic path
+            # gets the same bound rather than only a backstop.
+            max_tokens=operation_limits.tokens_for("analysis"),
         ),
     )
 

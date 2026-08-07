@@ -31,6 +31,9 @@ class ProfileJob(Job):
     cached: bool = False
 
 
+#: A short grounded profile. Named so `operation_limits` binds to it.
+PROFILE_MAX_TOKENS = 600
+
 _registry: JobRegistry[ProfileJob] = JobRegistry("author-profile", max_finished=30, metered=True,
                                           operation="author_profile")
 _jobs = _registry.jobs
@@ -159,7 +162,7 @@ def start_profile(name: str) -> ProfileJob:
                 {"role": "user", "content": context},
             ],
             model=model,
-            max_tokens=600,
+            max_tokens=PROFILE_MAX_TOKENS,
             operation="author_profile",
         ).strip()
         if not text:
