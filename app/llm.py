@@ -37,7 +37,7 @@ from types import MappingProxyType
 
 import httpx
 
-from . import config, logging_config, spend_control, usage
+from . import config, logging_config, operation_limits, spend_control, usage
 
 log = logging_config.get("llm")
 
@@ -309,6 +309,12 @@ def complete(messages: list[dict], *, model: str | None = None, temperature: flo
     LLMError on transport / HTTP / malformed-response errors and (unless allow_empty) on an empty
     completion, with a diagnostic that surfaces reasoning-token exhaustion."""
     key, default_model = _key_and_default_model()
+    # Clamped here rather than trusted from the caller: `max_tokens` is a per-call argument with a
+    # permissive default, so a new call site inherits a budget nobody chose and an existing one can
+    # be raised without review. One runaway completion costs real money in a single shot, long
+    # before the monthly ledger notices.
+    max_tokens = operation_limits.clamp_tokens(operation, max_tokens)
+    timeout = operation_limits.clamp_timeout(operation, timeout)
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=False)
     try:
@@ -362,6 +368,11 @@ def stream(messages: list[dict], *, model: str | None = None, temperature: float
     `operation` once the stream completes. Raises LLMError on a fatal status, an exhausted retry,
     or a post-first-token failure."""
     key, default_model = _key_and_default_model()
+    # Same ceiling as the non-streaming path. A stream is if anything the more important of the
+    # two to bound: it bills as it emits, so an oversized budget is spent before anything can
+    # decide it was a mistake.
+    max_tokens = operation_limits.clamp_tokens(operation, max_tokens)
+    timeout = operation_limits.clamp_timeout(operation, timeout)
     body = _build_body(messages, model, default_model, temperature, max_tokens, reasoning,
                        stream=True)
     url = f"{config.OPENROUTER_BASE}/chat/completions"
