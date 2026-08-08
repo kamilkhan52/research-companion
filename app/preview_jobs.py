@@ -22,6 +22,7 @@ from . import (
     llm,
     logging_config,
     model_provenance,
+    operation_limits,
     prompts,
     store,
     tts,
@@ -192,6 +193,12 @@ _external_cache: dict[str, list[dict]] = {}
 _EXTERNAL_CACHE_MAX = 64
 MAX_RESEARCH_AGENT_REQUESTS = 7
 MAX_RESEARCH_AGENT_TOOL_CALLS = 5
+#: Module scope, not inline in the `UsageLimits(...)` call, purely so a test can assert it. Built
+#: inline it was deletable with the whole suite green — the same gap `lab_research._OUTPUT_TOKENS_
+#: LIMIT` was hoisted to close.
+_RESEARCH_OUTPUT_TOKENS_LIMIT = operation_limits.run_output_ceiling(
+    "listening_preview_research", MAX_RESEARCH_AGENT_REQUESTS,
+)
 
 # Per-cue context budget. The old 12K paper + 18K project slices were copied into EVERY cue, then
 # live sentences and three overlapping cue-history fields were added. Measured result: 11,373
@@ -208,7 +215,7 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
     from pydantic_ai import Agent, capture_run_messages
     from pydantic_ai.usage import RunUsage, UsageLimits
 
-    from . import agent_harness, operation_limits, research_tools
+    from . import agent_harness, research_tools
 
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search for reliable context. Use 1-3 focused queries; results include URLs."""
@@ -244,9 +251,7 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
                     usage_limits=UsageLimits(
                         request_limit=MAX_RESEARCH_AGENT_REQUESTS,
                         tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
-                        output_tokens_limit=operation_limits.run_output_ceiling(
-                            "listening_preview_research", MAX_RESEARCH_AGENT_REQUESTS,
-                        ),
+                        output_tokens_limit=_RESEARCH_OUTPUT_TOKENS_LIMIT,
                     ),
                     usage=run_usage,
                 ),

@@ -297,11 +297,11 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
         # Per-author isolation is for PARTIAL failure. When every attempted author failed
         # (missing API key, provider down), the pass accomplished nothing — surface that as a
         # job error instead of letting the client read "researched, no labs found".
-        if attempted and failed == attempted:
-            with _registry.lock:
-                job.status = "error"
-                job.error = f"Lab research failed for every author — {last_error}"
-        elif job.stopped_reason and not found_this_pass:
+        # Refusal first: one genuine per-author failure followed by a quota refusal satisfies
+        # `failed == attempted` too, and took that branch — reporting "Lab research failed for
+        # every author — you have used your monthly allowance", which frames a budget limit as a
+        # provider outage. The refusal is the more specific and more actionable fact.
+        if job.stopped_reason and not found_this_pass:
             # Stopped before finding anything. Reported as an error rather than a quiet `done`,
             # because `done` with zero labs is the one state the client explains as "not every
             # topic concentrates in labs" — telling a reader their field has no labs when in fact
@@ -314,6 +314,10 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
             with _registry.lock:
                 job.status = "error"
                 job.error = job.stopped_reason
+        elif attempted and failed == attempted:
+            with _registry.lock:
+                job.status = "error"
+                job.error = f"Lab research failed for every author — {last_error}"
 
     return _registry.start_or_join("labs", lambda: LabsJob(id=new_id()), work)
 

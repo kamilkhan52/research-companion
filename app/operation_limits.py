@@ -135,7 +135,7 @@ def clamp_timeout(operation: str, requested: float) -> float:
 #: ceiling of 172,800, so this fires only on a genuine runaway. The same check on the other three:
 #: labs writes one line per author (`author_profile` mean 600) against 48,000, and the preview
 #: research pass is capped at 6,000 characters of findings — about 1,500 tokens a request, ~10,500
-#: over its budget — against 16,800. Tightening this without re-measuring would abort working
+#: over its budget — against 25,200. Tightening this without re-measuring would abort working
 #: features, which is the failure mode a bound is supposed to prevent, not cause.
 _RUN_OUTPUT_FRACTION = 0.6
 

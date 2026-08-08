@@ -12,6 +12,25 @@ import pytest
 from app import llm, operation_limits
 
 
+def _agentic_request_limits() -> dict[str, int]:
+    """Every agentic path's request budget, read from the production constants.
+
+    Hardcoding 12/10/12/7 here matched today and would keep matching after someone halved a
+    production constant — leaving both ceiling tests asserting a bound nothing uses.
+    """
+    from app import agent_harness, lab_research, preview_jobs, retrieval_agent
+
+    return {
+        "analysis": agent_harness.AGENT_REQUEST_LIMIT,
+        "lab_research": lab_research.MAX_AGENT_REQUESTS,
+        "retrieval_hunt": retrieval_agent.MAX_HUNT_REQUESTS,
+        "listening_preview_research": preview_jobs.MAX_RESEARCH_AGENT_REQUESTS,
+    }
+
+
+_AGENTIC_REQUEST_LIMITS = _agentic_request_limits()
+
+
 def test_a_request_under_the_ceiling_is_left_alone():
     """These are ceilings, not defaults — a caller that needs less must keep what it asked for."""
     assert operation_limits.clamp_tokens("analysis", 4_000) == 4_000
@@ -175,10 +194,7 @@ def test_the_run_level_output_ceiling_can_actually_fire():
     asserted the tautology."""
     from app import operation_limits
 
-    for operation, request_limit in (
-        ("analysis", 12), ("lab_research", 10), ("retrieval_hunt", 12),
-        ("listening_preview_research", 7),
-    ):
+    for operation, request_limit in _AGENTIC_REQUEST_LIMITS.items():
         per_request = operation_limits.tokens_for(operation)
         ceiling = operation_limits.run_output_ceiling(operation, request_limit)
         assert ceiling < per_request * request_limit, (
@@ -207,15 +223,34 @@ def test_the_run_ceiling_clears_real_observed_output_by_a_wide_margin():
         "listening_preview_research": 1_500,
         "retrieval_hunt": 600,
     }
-    request_limits = {
-        "analysis": 12, "lab_research": 10,
-        "listening_preview_research": 7, "retrieval_hunt": 12,
-    }
     for operation, per_request in observed_per_request.items():
-        limit = request_limits[operation]
+        limit = _AGENTIC_REQUEST_LIMITS[operation]
         ceiling = operation_limits.run_output_ceiling(operation, limit)
         expected_run = per_request * limit
         assert ceiling > expected_run * 2, (
             f"{operation}'s ceiling ({ceiling}) leaves no margin over a typical run "
             f"({expected_run}); a normal run would abort"
         )
+
+
+def test_the_preview_research_run_ceiling_reaches_its_usage_limits():
+    """Built inline it was deletable with the whole suite green, which is why it is at module
+    scope — the same hoist `lab_research._OUTPUT_TOKENS_LIMIT` already had."""
+    from app import operation_limits, preview_jobs
+
+    assert preview_jobs._RESEARCH_OUTPUT_TOKENS_LIMIT == operation_limits.run_output_ceiling(
+        "listening_preview_research", preview_jobs.MAX_RESEARCH_AGENT_REQUESTS,
+    )
+    import ast
+    import inspect
+
+    src = inspect.getsource(preview_jobs._research_with_agent)
+    passed = [
+        kw.value.id for node in ast.walk(ast.parse(src.lstrip()))
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "output_tokens_limit" and isinstance(kw.value, ast.Name)
+    ]
+    assert "_RESEARCH_OUTPUT_TOKENS_LIMIT" in passed, (
+        "the research run must pass its output ceiling to UsageLimits"
+    )

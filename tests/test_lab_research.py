@@ -266,3 +266,36 @@ def test_a_refused_pass_is_not_masked_by_authors_cached_from_earlier_runs(
         f"cached a find (found={snap['found']})"
     )
     assert "usage limit" in (snap["error"] or "").lower(), snap["error"]
+
+
+def test_a_budget_refusal_outranks_the_every_author_failed_message(temp_project, monkeypatch):
+    """One genuine failure then a refusal satisfies `failed == attempted` too.
+
+    Taking that branch produced "Lab research failed for every author — you have used your monthly
+    allowance", which frames a budget limit as a provider outage and points the reader at the wrong
+    problem. The refusal is both more specific and more actionable.
+    """
+    from app import quotas, spend_ceiling
+
+    _seed(temp_project)
+    calls = {"n": 0}
+
+    def refuse_after_one_author(operation, job_id, **kw):
+        calls["n"] += 1
+        if calls["n"] > 2:  # ticket, first author, then out of budget
+            raise quotas.QuotaExceeded(used_nanousd=10, requested_nanousd=10, limit_nanousd=10)
+        return None
+
+    monkeypatch.setattr(spend_ceiling, "hold", refuse_after_one_author)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    def always_fails(name, affiliation, titles):
+        raise RuntimeError("provider down")
+
+    snap = _settled(lab_research.start_research(research_fn=always_fails).id)
+
+    assert snap["status"] == "error"
+    assert "usage limit" in (snap["error"] or "").lower(), snap["error"]
+    assert "every author" not in snap["error"], (
+        "a budget refusal was reported as a provider failure across all authors"
+    )
