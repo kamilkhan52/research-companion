@@ -239,7 +239,9 @@ function LabsView({
           showToast(
             next.status === 'done'
               ? `Lab research done — ${next.found} of ${next.total} top authors mapped`
-              : 'Lab research failed — try again',
+              // The server's own message, not a generic retry prompt: a pass can stop because the
+              // account is out of allowance, and "try again" is the one thing that will not help.
+              : next.error || 'Lab research failed — try again',
           );
         }
       } catch {
