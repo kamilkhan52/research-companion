@@ -278,7 +278,7 @@ def reserve(
         ) from None
 
 
-def period_usage(user_id: str) -> tuple[int, int]:
+def period_usage(user_id: str) -> tuple[int, int] | None:
     """What this account has SPENT and what it currently HOLDS in the live period, in nano-USD.
 
     Two numbers rather than one because they mean opposite things to a reader: spend does not come
@@ -287,8 +287,10 @@ def period_usage(user_id: str) -> tuple[int, int]:
     of budget when they have barely spent anything — the same confusion the transient/exhausted
     split in `QuotaExceeded` exists to remove.
 
-    Read-only and best-effort: this feeds a display, so with no database it reports zeroes rather
-    than raising and taking a page down with it.
+    Read-only: this feeds a display, so it never raises. But it distinguishes "no database" —
+    where zero is the honest answer, because the ceiling is inert too — from "the query failed",
+    where the answer is unknown. Returning zero for the second would tell a reader their whole
+    allowance is intact at the exact moment every job is failing closed.
     """
     if not db.enabled():
         return (0, 0)
@@ -307,7 +309,7 @@ def period_usage(user_id: str) -> tuple[int, int]:
         return (int(row[0]), int(row[1]))
     except Exception as e:  # noqa: BLE001 — a usage display must not fail the request
         log.warning("period usage unavailable (error=%s)", type(e).__name__)
-        return (0, 0)
+        return None
 
 
 def get(reservation_id: str, *, user_id: str) -> Reservation | None:

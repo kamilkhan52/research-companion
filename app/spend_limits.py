@@ -32,10 +32,6 @@ log = logging_config.get("spend_limits")
 #: Nano-USD in one credit. The peg the whole tier design rests on.
 NANOUSD_PER_CREDIT = 1_000_000  # $0.001
 
-#: Retained for callers that want a number with no account in hand. The real answer comes from
-#: `plans.monthly_credits`, which knows what the account is actually on.
-DEFAULT_MONTHLY_CREDITS = 2_500
-
 #: Fraction of the ceiling at which the client should warn, not refuse.
 SOFT_WARNING_AT = 0.8
 

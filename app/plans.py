@@ -16,10 +16,21 @@ cost.** Everything here is expressed in credits so the numbers can be read again
 `docs/production/20-pricing-analysis.md` §1 directly, and so a model price change is absorbed by
 re-pricing operations rather than re-pricing plans.
 
-**What this is not.** It is not entitlement. Nothing here decides whether an account has *paid* —
-`assign` is an operator/adopt-time affordance, and M4 replaces it with RevenueCat's answer. Keeping
-that boundary sharp is why the plan is stored as a plain name rather than a bundle of flags: a
-second source of truth about what someone bought is exactly what M4 must not inherit.
+**What exists today is one plan per DEPLOYMENT, not per account.** `for_user` takes a user id and
+ignores it: there is no column, table or migration storing a per-account plan, so every account is
+on `RC_DEFAULT_PLAN`. The signature is shaped for the per-account lookup it will become so callers
+do not change when M4 fills it in — but nobody should read it as already being that. Two accounts
+cannot currently be on different plans.
+
+**What this is not.** It is not entitlement. Nothing here decides whether an account has *paid*.
+Keeping that boundary sharp is why a plan is a plain name rather than a bundle of flags: a second
+source of truth about what someone bought is exactly what M4 must not inherit.
+
+**Two things to fix before the lookup is real.** It is called inline from `spend_ceiling.hold` on
+every admission, so a database round trip there lands on the request thread under one worker
+(invariant 6) — cache it first. And its fallback returns the MOST generous plan, which inverts the
+"the dangerous configuration is absence" discipline the rest of this system follows; once a real
+lookup can fail, an unresolved account should get the least generous plan or raise.
 """
 from __future__ import annotations
 

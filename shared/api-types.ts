@@ -333,6 +333,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Plan
+         * @description The signed-in account's plan and where it stands against it this period.
+         *
+         *     One call rather than two, because everything a client needs to render the surface is here and
+         *     a client that has to combine two responses will eventually render a mismatched pair.
+         *
+         *     `spent` and `held` are deliberately separate. Spend does not come back until the period rolls
+         *     over; a hold clears in seconds when its job settles. Adding them together would tell someone
+         *     with several jobs running that they are nearly out of allowance when they have barely spent
+         *     anything — the same confusion the transient/exhausted split in `QuotaExceeded` exists to
+         *     remove, and the reason `warn` is computed from SPEND alone.
+         *
+         *     With no database (local dev, the test suite) this reports the plan with zero usage rather than
+         *     failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
+         */
+        get: operations["get_plan_api_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage/unattributed": {
         parameters: {
             query?: never;
@@ -2735,6 +2767,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_plan_api_plan_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
