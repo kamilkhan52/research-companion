@@ -5,11 +5,56 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import auth, usage
+from .. import auth, plans, quotas, spend_limits, usage
 from . import make_project_router
 
 router = APIRouter()
 project_router = make_project_router()
+
+
+@router.get("/api/plan")
+def get_plan(request: Request):
+    """The signed-in account's plan and where it stands against it this period.
+
+    One call rather than two, because everything a client needs to render the surface is here and
+    a client that has to combine two responses will eventually render a mismatched pair.
+
+    `spent` and `held` are deliberately separate. Spend does not come back until the period rolls
+    over; a hold clears in seconds when its job settles. Adding them together would tell someone
+    with several jobs running that they are nearly out of allowance when they have barely spent
+    anything — the same confusion the transient/exhausted split in `QuotaExceeded` exists to
+    remove, and the reason `warn` is computed from SPEND alone.
+
+    With no database (local dev, the test suite) this reports the plan with zero usage rather than
+    failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
+    """
+    user_id = getattr(request.state, "user", None)
+    user_id = (user_id or {}).get("user_id") if isinstance(user_id, dict) else None
+    plan = plans.for_user(user_id)
+    limit = plan.monthly_credits * spend_limits.NANOUSD_PER_CREDIT
+    spent, held = quotas.period_usage(user_id) if user_id else (0, 0)
+    _, period_end = quotas.calendar_month()
+    return {
+        "plan": {
+            "name": plan.name,
+            "summary": plan.summary,
+            "premium_audio": plan.premium_audio,
+            "monthly_credits": plan.monthly_credits,
+        },
+        "limit_nanousd": limit,
+        "spent_nanousd": spent,
+        "held_nanousd": held,
+        "remaining_nanousd": max(0, limit - spent - held),
+        # Percentages are what a bar renders; sending them avoids each client deriving them
+        # differently and disagreeing about when the warning appears.
+        "spent_fraction": round(spent / limit, 4) if limit else 0.0,
+        "warn": bool(limit) and spent >= limit * spend_limits.SOFT_WARNING_AT,
+        "warn_at_fraction": spend_limits.SOFT_WARNING_AT,
+        "period_ends": period_end.isoformat(),
+        # False when there is no database or nobody signed in — the client should then say nothing
+        # about allowances rather than showing a confident zero.
+        "enforced": bool(user_id) and spend_limits.enabled(),
+    }
 
 
 @project_router.get("/usage")
