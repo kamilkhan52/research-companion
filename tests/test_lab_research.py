@@ -125,10 +125,84 @@ def test_agent_provider_error_excludes_upstream_message(temp_project, monkeypatc
             raise RuntimeError(secret)
 
     monkeypatch.setattr(pydantic_ai, "Agent", FailedAgent)
-    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None: object())
+    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None, operation="analysis": object())
     monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
 
     with pytest.raises(RuntimeError) as err:
         lab_research._research_with_agent("Researcher", "University", ["Paper"])
     assert "model provider" in str(err.value)
     assert secret not in str(err.value)
+
+
+def test_each_author_takes_its_own_hold(temp_project, monkeypatch):
+    """One agentic web pass per author, so one hold per author.
+
+    A single `lab_research` hold covering the whole pass under-reserved by the author count: a
+    reader admitted with roughly one author's worth of headroom went on to run ten. The job's
+    ticket is now nominal and the gate sits where the money is, exactly as a graph build is gated
+    paper by paper rather than corpus-wide.
+    """
+    from app import spend_ceiling
+
+    _seed(temp_project)
+    holds: list[str] = []
+    monkeypatch.setattr(spend_ceiling, "hold",
+                        lambda operation, job_id, **kw: holds.append(operation))
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    snap = _settled(lab_research.start_research(
+        research_fn=lambda n, a, t: {"found": False}).id)
+
+    assert snap["status"] == "done"
+    # One admission ticket for the job, then one per author. Before the split there was only the
+    # ticket, covering however many passes the loop happened to run.
+    assert holds == ["lab_research"] * 3, f"expected a ticket plus one hold per author, got {holds}"
+
+
+def test_running_out_of_budget_stops_the_pass_instead_of_failing_every_author(
+    temp_project, monkeypatch,
+):
+    """Out of budget is not the same as broken.
+
+    Grinding on to refuse each remaining author would cache a not-found for every one of them and
+    burn the ledger round trips to do it. Stopping leaves the unreached authors without a
+    fingerprint, so they retry once the period rolls over.
+    """
+    from app import graph, quotas, spend_ceiling
+
+    _seed(temp_project)
+    researched: list[str] = []
+    calls = {"n": 0}
+
+    def one_then_broke(operation, job_id, **kw):
+        calls["n"] += 1
+        if calls["n"] > 2:  # ticket, first author, then out of budget
+            raise quotas.QuotaExceeded(
+                used_nanousd=200_000_000, requested_nanousd=40_000_000,
+                limit_nanousd=200_000_000,
+            )
+        return None
+
+    monkeypatch.setattr(spend_ceiling, "hold", one_then_broke)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    def research(name, affiliation, titles):
+        researched.append(name)
+        return {"found": False}
+
+    snap = _settled(lab_research.start_research(research_fn=research).id)
+
+    assert snap["status"] == "done", "running out of budget is not a job failure"
+    assert len(researched) == 1, "the pass must stop, not refuse each remaining author in turn"
+
+    # The distinguishing property, and the reason this is a `break` rather than a `continue`: an
+    # author the pass never reached must carry NO cache entry. Falling through to the generic
+    # handler instead writes each unreached author a not-found record, which reads afterwards as
+    # "we looked and there was nothing there" — indistinguishable, to every later view, from a
+    # genuine miss.
+    cache = lab_research.load_cache()
+    unreached = [name for name in ("Song Han", "Ji Lin") if name not in researched]
+    for name in unreached:
+        assert graph._author_key(name) not in cache, (
+            f"{name} was never researched but was cached as a result"
+        )

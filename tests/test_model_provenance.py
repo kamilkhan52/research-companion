@@ -245,7 +245,7 @@ def test_every_pydantic_tool_agent_gets_the_fixed_policy(temp_project, monkeypat
             return Result()
 
     monkeypatch.setattr(pydantic_ai, "Agent", FakeAgent)
-    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None: object())
+    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None, operation="analysis": object())
     monkeypatch.setattr(preview_jobs, "resolve_model", lambda settings=None: "test/model")
     monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
 

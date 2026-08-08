@@ -102,6 +102,11 @@ _MAX_NANOUSD: dict[str, int] = {
     # month a build can consume, so pricing it off the wrong model was costing mapped papers.
     "graph_extraction": 30_000_000,    # $0.03
     "author_profile": 20_000_000,   # $0.02
+    # Doing double duty, and it can: the labs JOB's admission ticket, and the per-AUTHOR hold each
+    # web pass takes inside it (`spend_ceiling.per_unit`). One agentic pass is what $0.04 buys, so
+    # the same number is right for both — the job is admitted for roughly one author's worth and
+    # then gated author by author, exactly as a graph build is gated paper by paper. Before that
+    # split, one $0.04 ticket covered up to ten passes and under-reserved by an order of magnitude.
     "lab_research": 40_000_000,     # $0.04
 }
 

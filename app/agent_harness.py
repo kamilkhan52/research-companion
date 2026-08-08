@@ -171,10 +171,19 @@ class _LedgerOpenRouterModel(OpenRouterModel):
         return _LedgerOpenRouterStreamedResponse
 
 
-def _record_run_usage(
+def record_agent_run(
     run_usage, model: Model | None, operation: str, messages: Iterable | None = None
 ) -> None:
     """Best-effort, per-request accounting for an agentic run.
+
+    Public despite living here: every path that builds its own Pydantic AI agent — the hunt,
+    lab research, listening-preview research — must meter through this one function rather than
+    grow its own, and a leading underscore invited exactly the second, weaker accounting path
+    that had to be deleted from `usage.py`.
+
+    **Pass `messages` whenever you have them.** Only the per-response branch below reads
+    OpenRouter's authoritative `cost`; without messages a run records tokens with no dollars and
+    settles its reservation at zero, which reads as free work rather than as unmetered work.
 
     The native Pydantic AI OpenRouter adapter retains authoritative ``usage.cost`` and the
     provider response id on each ``ModelResponse``. Record those responses individually: one
@@ -264,7 +273,9 @@ TOOLS = [
 ]
 
 
-def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
+def _openrouter_model(
+    model_id: str | None = None, operation: str = "analysis"
+) -> OpenRouterModel:
     try:
         spend_control.require_enabled()
     except spend_control.ProviderSpendDisabled as exc:
@@ -288,7 +299,12 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
             # response has already been generated and billed. This is what the raw client's
             # `max_tokens` does — generation physically stops at the ceiling — so the agentic path
             # gets the same bound rather than only a backstop.
-            max_tokens=operation_limits.tokens_for("analysis"),
+            #
+            # Sized to the OPERATION rather than always to `analysis`. The hunt, lab research and
+            # preview research each declare a budget in `operation_limits` an order of magnitude
+            # smaller than an analysis turn, and every one of them was silently handed the analysis
+            # ceiling instead — so the table read as if it bound them while binding nothing.
+            max_tokens=operation_limits.tokens_for(operation),
         ),
     )
 
@@ -367,7 +383,7 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
             # so filtering the whole capture for provider_name=openrouter is safe. Do not slice by
             # the input length: Pydantic compacts consecutive ModelRequests before capture, making
             # those lengths differ after failed turns and dropping the new paid response.
-            _record_run_usage(run_usage, ag.model, "analysis", captured)
+            record_agent_run(run_usage, ag.model, "analysis", captured)
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -461,7 +477,7 @@ async def stream_agent_events(ag: Agent, prompt: str,
             raise agent_mod.AgentError(
                 "The model provider could not complete the agentic request.") from e
         finally:
-            _record_run_usage(run_usage, ag.model, operation, captured)
+            record_agent_run(run_usage, ag.model, operation, captured)
 
 
 async def stream_with_single_shot_fallback(

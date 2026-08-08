@@ -25,6 +25,7 @@ and the test suite behaving exactly as before.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import threading
 import uuid
@@ -214,3 +215,31 @@ def settle(held: _Held | None) -> None:
         # A conflict here means the integration is wrong, not that the database blipped.
         log.error("reservation settle failed (id=%s error=%s) — the ceiling did not record this "
                   "job's spend", held.reservation_id[:8], type(e).__name__)
+
+
+@contextlib.contextmanager
+def per_unit(operation: str, job_id: str, *, model: str | None = None):
+    """Hold, bind and settle ONE unit of repeated paid work inside a job that does many.
+
+    A job that loops — ten authors, N papers — cannot be gated by its admission ticket alone. One
+    hold sized for one unit under-reserves by the loop count; one sized for the whole loop refuses
+    readers who could comfortably afford part of it, and parks a large slice of the month in budget
+    that mostly never becomes spend. Neither is what a ceiling is for.
+
+    Gating per unit gives the honest answer to both: the account is checked against what the next
+    unit costs, and a reader with room for three authors gets three rather than nothing. It is the
+    same shape `paper-references` gives a graph build, where the build's own hold is nominal and
+    each paper holds for itself.
+
+    Rebinding is deliberate: `usage.record` credits whatever reservation is bound on this thread,
+    so the unit's spend lands on the unit's hold, and the job's ticket is restored on exit. Raises
+    `quotas.QuotaExceeded` when the account cannot afford this unit — the caller decides whether
+    that ends the job or just this unit.
+    """
+    held = hold(operation, job_id, model=model)
+    token = bind(held)
+    try:
+        yield held
+    finally:
+        reset(token)
+        settle(held)

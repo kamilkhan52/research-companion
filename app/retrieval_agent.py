@@ -18,11 +18,13 @@ import httpx
 from pydantic_ai import Agent
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
+from pydantic_ai.usage import UsageLimits
 
 from . import (
     agent_harness,
     logging_config,
     model_provenance,
+    operation_limits,
     prompts,
     research_tools,
     retriever,
@@ -32,6 +34,20 @@ from . import (
 log = logging_config.get("retrieval_agent")
 
 HUNT_MAX_PDF_BYTES = 40_000_000
+
+#: How many model requests one hunt may make, and how many tool calls within them.
+#:
+#: The hunt was the only agentic path in the app running unbounded — it inherited pydantic-ai's
+#: default `request_limit=50` and NO tool-call limit, each request able to emit an analysis-sized
+#: completion. That is the loosest budget in the app attached to the cheapest hold, which is
+#: precisely backwards. A hunt that has not found a PDF in eight tries is not about to.
+MAX_HUNT_REQUESTS = 8
+MAX_HUNT_TOOL_CALLS = 12
+_HUNT_LIMITS = UsageLimits(
+    request_limit=MAX_HUNT_REQUESTS,
+    tool_calls_limit=MAX_HUNT_TOOL_CALLS,
+    output_tokens_limit=operation_limits.tokens_for("retrieval_hunt") * MAX_HUNT_REQUESTS,
+)
 
 
 def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Agent:
@@ -74,7 +90,7 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
         return research_tools.web_search(objective, search_queries)
 
     framed_title = model_provenance.frame("paper_title", title)
-    return Agent(model or agent_harness._openrouter_model(),
+    return Agent(model or agent_harness._openrouter_model(operation="retrieval_hunt"),
                  system_prompt=(prompts.render("retrieval_hunt", title=framed_title)
                                 + "\n\n" + model_provenance.SYSTEM_POLICY),
                  tools=[web_search, fetch_pdf], output_type=str, retries=2)
@@ -85,10 +101,12 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
     {'type':'result', ok, full_text?, source?, summary}."""
     holder: dict = {}
     ag = build_hunt_agent(title, holder, model=model)
+    run = None
     try:
         async with ag.iter(
             "Find the working PDF for this paper title:\n\n"
-            + model_provenance.frame("paper_title", title)
+            + model_provenance.frame("paper_title", title),
+            usage_limits=_HUNT_LIMITS,
         ) as run:
             async for node in run:
                 if Agent.is_call_tools_node(node):
@@ -100,22 +118,6 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
                 if holder.get("full_text"):
                     break  # got the paper — no need to let the model keep narrating
         summary = (run.result.output if run.result else "") or ""
-        # The hunt is a full agentic tool loop and recorded NOTHING: it builds its own Pydantic AI
-        # agent, so it never passes through `llm.complete`'s accounting and never reached
-        # `usage.record`. Its cost sat entirely outside both the ledger and the spend ceiling,
-        # against a retrieval hold sized for a cheap extraction. Recorded from whatever the run
-        # actually used, priced or exact.
-        #
-        # Best-effort and deliberately last: a retrieval that found the paper must not be turned
-        # into a failure by an accounting problem.
-        try:
-            # `run.usage`, not `run.result.usage()`. Two separate errors lived in that line: usage
-            # is a property rather than a method, and the loop above BREAKS the moment the paper is
-            # found — so the graph never emits an End node and `run.result` is None precisely on
-            # the success path. Guarding on it skipped the only case worth recording.
-            agent_harness._record_run_usage(run.usage, ag.model, "retrieval_hunt", None)
-        except Exception as exc:  # noqa: BLE001 — accounting never fails the work it measures
-            log.warning("hunt usage not recorded (error=%s)", type(exc).__name__)
     except Exception:
         yield {
             "type": "result",
@@ -123,6 +125,29 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
             "summary": "The model provider could not complete the PDF hunt.",
         }
         return
+    finally:
+        # The hunt is a full agentic tool loop and recorded NOTHING: it builds its own Pydantic AI
+        # agent, so it never passes through `llm.complete`'s accounting and never reached
+        # `usage.record`. Its cost sat entirely outside both the ledger and the spend ceiling,
+        # against a retrieval hold sized for a cheap extraction.
+        #
+        # In `finally`, not at the end of the happy path: the hunt tries candidate after candidate,
+        # so tripping a request limit or a provider 5xx partway through is an ordinary outcome —
+        # that is what the `except` above exists for — and several generations have already been
+        # paid for by then. Recording only on success meters the cheap case and forgives the
+        # expensive one. `stream_agent_events` settled this the same way.
+        #
+        # `run.all_messages()`, not None: only the per-response branch of the recorder reads
+        # OpenRouter's authoritative `cost`, so passing no messages records tokens with no dollars
+        # and settles the reservation at exactly zero — the very hole this is here to close. The
+        # messages survive the early `break`; `run.result` does not.
+        if run is not None:
+            try:
+                agent_harness.record_agent_run(
+                    run.usage, ag.model, "retrieval_hunt", run.all_messages(),
+                )
+            except Exception as exc:  # noqa: BLE001 — accounting never fails the work it measures
+                log.warning("hunt usage not recorded (error=%s)", type(exc).__name__)
     yield {"type": "result", "ok": bool(holder.get("full_text")),
            "full_text": holder.get("full_text"), "source": holder.get("source"),
            "summary": summary[:300]}

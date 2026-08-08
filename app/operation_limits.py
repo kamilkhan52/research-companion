@@ -55,6 +55,10 @@ _LIMITS: dict[str, tuple[int, float]] = {
     "affiliations": (2_000, 120.0),
     "author_profile": (4_000, 180.0),
     "lab_research": (8_000, 300.0),
+    # The hunt emits tool calls and a short summary, never a document. It ran unbounded on both
+    # axes — pydantic-ai's default request limit and an analysis-sized per-request cap — which made
+    # the loosest budget in the app sit behind the cheapest hold.
+    "retrieval_hunt": (4_000, 180.0),
 }
 
 #: For an operation with no entry. Above every short call in the app and well below the long ones,

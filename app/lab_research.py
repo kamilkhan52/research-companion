@@ -18,9 +18,22 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from . import config, graph, graph_store, model_provenance, operation_limits, prompts, store
+from . import (
+    config,
+    graph,
+    graph_store,
+    logging_config,
+    model_provenance,
+    operation_limits,
+    prompts,
+    quotas,
+    spend_ceiling,
+    store,
+)
 from .fileio import atomic_write_text
 from .jobs import Job, JobRegistry, new_id, now_iso
+
+log = logging_config.get("lab_research")
 
 TOP_AUTHORS = 10
 # The contract keeps the JSON flat and on one line, so match within the line — a greedy
@@ -144,7 +157,7 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     paper_lines = "\n".join(f"- {t}" for t in titles[:8])
     model = graph.resolve_model()
     ag = Agent(
-        agent_harness._openrouter_model(model),
+        agent_harness._openrouter_model(model, operation="lab_research"),
         system_prompt=(prompts.get("lab_research")
                        + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],
@@ -179,7 +192,7 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     # rather than a second accounting path: it already extracts OpenRouter's authoritative cost
     # from each response's provider details, records the generations individually so an
     # interrupted one stays reconcilable, and falls back to a pending marker per response.
-    agent_harness._record_run_usage(run_usage, ag.model, "lab_research", result.all_messages())
+    agent_harness.record_agent_run(run_usage, ag.model, "lab_research", result.all_messages())
     return parse_result(output)
 
 
@@ -218,7 +231,19 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                       if p.get("kind") == "project"]
             attempted += 1
             try:
-                finding = research_fn(name, entry.get("affiliation") or "", titles)
+                # Each author is its own agentic web pass, so each takes its own hold. The job's
+                # admission ticket is nominal: one `lab_research` hold covering ten passes
+                # under-reserved by ten, and a reader admitted with $0.05 of headroom went on to
+                # spend $0.40. Gating here also means someone who can afford three authors gets
+                # three, instead of being refused a pass they could partly pay for.
+                with spend_ceiling.per_unit("lab_research", job.id, model=graph.resolve_model()):
+                    finding = research_fn(name, entry.get("affiliation") or "", titles)
+            except quotas.QuotaExceeded as exc:
+                # Out of budget mid-pass. Stop rather than grinding through the remaining authors
+                # to refuse each one in turn, and leave no fingerprint so they retry next month.
+                last_error = str(exc)[:200]
+                log.info("labs pass stopped at %s: %s", name, last_error)
+                break
             except Exception as exc:  # noqa: BLE001 — one author's failure must not kill
                 # the pass; an error is cached as not-found WITHOUT a fingerprint, so the
                 # next run retries this author.
