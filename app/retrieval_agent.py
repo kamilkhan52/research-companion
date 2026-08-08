@@ -54,7 +54,9 @@ MAX_HUNT_TOOL_CALLS = 10
 _HUNT_LIMITS = UsageLimits(
     request_limit=MAX_HUNT_REQUESTS,
     tool_calls_limit=MAX_HUNT_TOOL_CALLS,
-    output_tokens_limit=operation_limits.tokens_for("retrieval_hunt") * MAX_HUNT_REQUESTS,
+    output_tokens_limit=operation_limits.run_output_ceiling(
+        "retrieval_hunt", MAX_HUNT_REQUESTS,
+    ),
 )
 
 

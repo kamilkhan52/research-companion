@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RequestUsage
@@ -277,3 +278,71 @@ def test_the_preview_research_pass_is_not_capped_at_the_cue_budget(monkeypatch):
         "the research cap must fit the characters the function promises to return"
     )
     assert research_cap > operation_limits.tokens_for("listening_preview")
+
+
+def test_labs_meters_a_run_that_dies_partway(monkeypatch):
+    """The `finally` in `lab_research`, pinned behaviourally.
+
+    Review found this untested: moving the recorder onto the success path left the whole suite
+    green. The failure path is the one that matters — a blown request budget means the MOST
+    expensive author is precisely the one that raises, and since each author now holds separately,
+    an unmetered failure settles that author's own reservation at zero.
+    """
+    from app import agent_harness, graph, lab_research, research_tools, spend_ceiling
+    from pydantic_ai.messages import ToolCallPart
+
+    noted: list[int] = []
+    monkeypatch.setattr(spend_ceiling, "note_spend", noted.append)
+    monkeypatch.setattr(research_tools, "web_search", lambda *a, **k: "1. x — https://e.com")
+    monkeypatch.setattr(research_tools, "web_fetch", lambda *a, **k: "text")
+    monkeypatch.setattr(graph, "resolve_model", lambda: "m")
+    calls = {"n": 0}
+
+    def respond(messages, info):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("provider 503")
+        billed = _openrouter_response(0.003, gen_id="g1")
+        billed.parts = [ToolCallPart("web_search", {"objective": "o", "search_queries": ["q"]})]
+        return billed
+
+    monkeypatch.setattr(agent_harness, "_openrouter_model",
+                        lambda model_id=None, operation="analysis": FunctionModel(respond))
+
+    with pytest.raises(RuntimeError):
+        lab_research._research_with_agent("An Author", "MIT", ["A Paper"])
+
+    assert noted == [3_000_000], f"the failed author charged {noted} for a billed request"
+
+
+def test_preview_research_meters_a_run_that_dies_partway(monkeypatch):
+    """Same property for the listening-preview research pass, and untested for the same reason.
+
+    `external_sources` swallows this exception, so an unmetered failure here is invisible twice
+    over: the reader sees a preview with no external sources, and the ledger sees nothing at all.
+    """
+    from app import agent_harness, preview_jobs, research_tools, spend_ceiling
+    from pydantic_ai.messages import ToolCallPart
+
+    noted: list[int] = []
+    monkeypatch.setattr(spend_ceiling, "note_spend", noted.append)
+    monkeypatch.setattr(research_tools, "web_search", lambda *a, **k: "1. x — https://e.com")
+    monkeypatch.setattr(research_tools, "web_fetch", lambda *a, **k: "text")
+    monkeypatch.setattr(preview_jobs, "resolve_model", lambda settings=None: "m")
+    calls = {"n": 0}
+
+    def respond(messages, info):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("provider 503")
+        billed = _openrouter_response(0.003, gen_id="g1")
+        billed.parts = [ToolCallPart("web_search", {"objective": "o", "search_queries": ["q"]})]
+        return billed
+
+    monkeypatch.setattr(agent_harness, "_openrouter_model",
+                        lambda model_id=None, operation="analysis": FunctionModel(respond))
+
+    with pytest.raises(RuntimeError):
+        preview_jobs._research_with_agent("A Paper", "metadata")
+
+    assert noted == [3_000_000], f"the failed research run charged {noted}"

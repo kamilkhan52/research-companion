@@ -11,7 +11,7 @@ before execution.
 
 ---
 
-## Current position (updated 2026-08-05, after landing the Discovery and M3 stacks)
+## Current position (updated 2026-08-08, after M3 enforcement landed)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
@@ -60,9 +60,26 @@ never saw it; its guarantee survives on the job path.
 3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
    reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
    enough real timing/quality evidence to set a meaningful target.
-4. M3's mechanism is now in place; what remains is **enforcement in production** — per-turn model
-   limits and the tier/quota values themselves — before twelve testers spend against shared
-   provider credentials.
+4. **M3 enforcement landed 2026-08-07/08 in #325–#329**, closing what point 4 used to describe as
+   the remaining gap. Per-account rate limits (**#325**), the spend ceiling actually connected —
+   reserve on admission, settle to actual (**#326**), per-call token and timeout ceilings
+   (**#327**), named plans with `tester` as the default at 5,000 credits (**#328**), and the
+   metering of paths that held budget while charging nothing (**#329**).
+
+   Three things in that stack are worth carrying forward as lessons rather than line items. Spend
+   escapes through **unenumerated seams** — a pool thread, a registry hop, a partially-bound worker
+   — and binding a subset of contextvars fails OPEN, so `config.bound_scope` carries project, user
+   and reservation together or not at all. A job that loops cannot be gated by its admission ticket
+   alone, which is why `spend_ceiling.per_unit` exists and why the graph build's per-paper gating
+   became the pattern for labs-per-author and the retrieval hunt. And **#329 uncovered a production
+   defect unrelated to spend**: `AgentRunResult.usage` became a property in pydantic-ai 2.x, and
+   because the call sat inside `lab_research`'s own `try`, every Labs pass had failed silently
+   since 2026-07-17 — see DR-008 in `docs/device-review-ledger.md`.
+
+   Still open in M3: the plan/usage CLIENT surface (spec and frames in
+   `docs/design-references/plan-usage-2026-08/`), a per-account plan override for Kamil, and
+   `research_tools` web search, which is external API spend with no per-call cost the app can see
+   and needs a provider-side decision rather than a code change.
 
 ### Earlier production-bring-up handoff (historical, retained for rationale)
 

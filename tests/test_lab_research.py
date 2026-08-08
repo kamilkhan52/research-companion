@@ -217,3 +217,52 @@ def test_running_out_of_budget_stops_the_pass_instead_of_failing_every_author(
         assert graph._author_key(name) not in cache, (
             f"{name} was never researched but was cached as a result"
         )
+
+
+def test_a_refused_pass_is_not_masked_by_authors_cached_from_earlier_runs(
+    temp_project, monkeypatch,
+):
+    """`job.found` counts cache hits from PREVIOUS passes, so a pass that researched nobody could
+    still report `done — 1 of 2 mapped` and hand the reader a success toast. Re-running produced
+    the same cheerful nothing forever.
+
+    The distinguishing quantity is what THIS pass found, not what the cache holds.
+    """
+    from app import graph, quotas, spend_ceiling
+
+    _seed(temp_project)
+
+    # First pass: both authors researched and cached.
+    _settled(lab_research.start_research(
+        research_fn=lambda n, a, t: {"found": True, "lab_name": f"{n} Lab",
+                                     "institution": "MIT", "url": "u", "focus": "f",
+                                     "evidence": "e"}).id)
+
+    # Invalidate one author so the next pass must actually research them, then refuse its hold.
+    cache = lab_research.load_cache()
+    board = lab_research._board()
+    stale = board[1]["name"]
+    cache[graph._author_key(stale)]["fingerprint"] = "no-longer-matching"
+    lab_research._save_cache(cache)
+
+    # The job's own admission ticket is granted; the per-author hold that follows is refused. The
+    # cached author is skipped without a hold, so the stale one is the only unit that asks.
+    calls = {"n": 0}
+
+    def refuse_after_admission(operation, job_id, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise quotas.QuotaExceeded(used_nanousd=10, requested_nanousd=10, limit_nanousd=10)
+        return None
+
+    monkeypatch.setattr(spend_ceiling, "hold", refuse_after_admission)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    snap = _settled(lab_research.start_research(
+        research_fn=lambda n, a, t: {"found": True}).id)
+
+    assert snap["status"] == "error", (
+        f"a pass that researched nobody reported {snap['status']} because an EARLIER pass had "
+        f"cached a find (found={snap['found']})"
+    )
+    assert "usage limit" in (snap["error"] or "").lower(), snap["error"]

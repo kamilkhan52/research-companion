@@ -69,8 +69,8 @@ def test_the_lab_research_agent_bounds_its_output_too():
     left the whole suite green — the same gap this round closed for `agent_harness`."""
     from app import lab_research
 
-    assert lab_research._OUTPUT_TOKENS_LIMIT == (
-        operation_limits.tokens_for("lab_research") * lab_research.MAX_AGENT_REQUESTS
+    assert lab_research._OUTPUT_TOKENS_LIMIT == operation_limits.run_output_ceiling(
+        "lab_research", lab_research.MAX_AGENT_REQUESTS,
     ), "it must read the shared table, not carry a second set of numbers"
 
 
@@ -108,8 +108,8 @@ def test_the_agentic_paths_are_bounded_from_the_same_table():
     assert limits.output_tokens_limit is not None, (
         "the agentic loop must bound output size, not only round count"
     )
-    assert limits.output_tokens_limit == (
-        operation_limits.tokens_for("analysis") * agent_harness.AGENT_REQUEST_LIMIT
+    assert limits.output_tokens_limit == operation_limits.run_output_ceiling(
+        "analysis", agent_harness.AGENT_REQUEST_LIMIT
     ), "it must read the same table the raw client clamps against, not a second set of numbers"
 
 
@@ -165,3 +165,27 @@ def test_stream_clamps_too(monkeypatch):
                     max_tokens=10_000_000, operation="listening_preview"))
     assert real_stream is not httpx.stream  # the patch really took
     assert seen["max_tokens"] == 1_000, "stream must clamp like complete does"
+
+
+def test_the_run_level_output_ceiling_can_actually_fire():
+    """It used to be exactly `tokens_for(op) * request_limit` — the precise total that
+    `request_limit` maximal responses produce. pydantic-ai raises on `>`, not `>=`, so the sum
+    could equal the limit but never exceed it: `request_limit` always tripped first and the
+    backstop was unreachable by construction. The tests asserted that same product, so they
+    asserted the tautology."""
+    from app import operation_limits
+
+    for operation, request_limit in (
+        ("analysis", 12), ("lab_research", 10), ("retrieval_hunt", 12),
+        ("listening_preview_research", 7),
+    ):
+        per_request = operation_limits.tokens_for(operation)
+        ceiling = operation_limits.run_output_ceiling(operation, request_limit)
+        assert ceiling < per_request * request_limit, (
+            f"{operation}'s run ceiling equals its own maximum and can never be exceeded"
+        )
+        # And it must bind late enough to be a backstop rather than a second request limit.
+        fires_at = ceiling // per_request + 1
+        assert 2 < fires_at <= request_limit, (
+            f"{operation} aborts at request {fires_at} of {request_limit}"
+        )

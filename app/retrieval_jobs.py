@@ -170,6 +170,12 @@ def start_retrieval(
         # Deliberately not folded into the `retrieval` maximum: most retrievals never hunt, and
         # sizing every one of them for the rare escalation would park budget that never becomes
         # spend — measured on the graph build as roughly ten mapped papers a month.
+        # NOTE: `_persist` fans out from inside this block — affiliations, references, cover
+        # render, canonical warm. Any child registry that does NOT take its own reservation
+        # inherits this hold and settles microseconds later against it. That is safe today only
+        # because the two children that spend (`paper-affiliations`, `paper-references`) are
+        # `reserves=True`, and the rest make no LLM calls at all. A new child that spends and does
+        # not reserve would bill against a hold that has already closed.
         with spend_ceiling.per_unit("retrieval_hunt", job.id):
             asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
 

@@ -89,7 +89,7 @@ AGENT_REQUEST_LIMIT = 12
 # safety valve against a runaway loop, not a saving.
 _USAGE_LIMITS = UsageLimits(
     request_limit=AGENT_REQUEST_LIMIT,
-    output_tokens_limit=operation_limits.tokens_for("analysis") * AGENT_REQUEST_LIMIT,
+    output_tokens_limit=operation_limits.run_output_ceiling("analysis", AGENT_REQUEST_LIMIT),
 )
 
 

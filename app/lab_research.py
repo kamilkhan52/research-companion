@@ -141,7 +141,7 @@ MAX_AGENT_TOOL_CALLS = 8
 #: object cannot be built at module scope. The number can, which is what makes it assertable —
 #: built purely inline, reverting this bound left the whole suite green, the same gap this round
 #: closed one file over. Rounds and tool calls were already bounded; output size was not.
-_OUTPUT_TOKENS_LIMIT = operation_limits.tokens_for("lab_research") * MAX_AGENT_REQUESTS
+_OUTPUT_TOKENS_LIMIT = operation_limits.run_output_ceiling("lab_research", MAX_AGENT_REQUESTS)
 
 
 
@@ -226,6 +226,7 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
             job.total = len(top)
         attempted = 0
         failed = 0
+        found_this_pass = 0
         last_error = ""
         for entry in top:
             if _registry.is_cancelled(job):
@@ -292,6 +293,7 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 job.current = ""
                 if finding.get("found"):
                     job.found += 1
+                    found_this_pass += 1
         # Per-author isolation is for PARTIAL failure. When every attempted author failed
         # (missing API key, provider down), the pass accomplished nothing — surface that as a
         # job error instead of letting the client read "researched, no labs found".
@@ -299,12 +301,16 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
             with _registry.lock:
                 job.status = "error"
                 job.error = f"Lab research failed for every author — {last_error}"
-        elif job.stopped_reason and not job.found:
+        elif job.stopped_reason and not found_this_pass:
             # Stopped before finding anything. Reported as an error rather than a quiet `done`,
             # because `done` with zero labs is the one state the client explains as "not every
             # topic concentrates in labs" — telling a reader their field has no labs when in fact
             # we never looked. A partial pass that DID find labs keeps `done` and shows them,
             # carrying `stopped_reason` so the client can say the rest is unfinished.
+            #
+            # `found_this_pass`, NOT `job.found`: the latter counts cache hits from EARLIER passes
+            # too, so a refused pass over an already-mapped author reported `done — 1 of 2 mapped`
+            # having researched nobody, and re-running produced the same cheerful nothing forever.
             with _registry.lock:
                 job.status = "error"
                 job.error = job.stopped_reason

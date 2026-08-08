@@ -12,10 +12,11 @@ be silently handed more.
 
 **The agentic paths are bounded at two seams, both fed from this table.** `agent_harness`,
 `lab_research`, `preview_jobs` and `retrieval_agent` run through Pydantic AI and never touch
-`llm.complete`. They read `tokens_for(operation)` twice over: once as `max_tokens` in the model's
-`OpenRouterModelSettings`, which physically stops generation, and once to size the run-level
+`llm.complete`. They read this table twice over: once as `max_tokens` in the model's `OpenRouterModelSettings`,
+which physically stops generation, and once through `run_output_ceiling` to size the run-level
 `output_tokens_limit` in `UsageLimits`, which aborts a runaway loop after the fact. The first is
-what actually stops money being spent; the second is the backstop. Anything using the raw client is
+what actually stops money being spent; the second is the backstop, and see `run_output_ceiling`
+for why it is deliberately not the product of the two. Anything using the raw client is
 clamped here instead.
 
 **Why in one table rather than at each call site.** `max_tokens` is currently a per-call argument
@@ -114,3 +115,24 @@ def clamp_timeout(operation: str, requested: float) -> float:
     """
     ceiling = _LIMITS.get(operation, _DEFAULT_LIMIT)[1]
     return min(float(requested), ceiling)
+
+
+#: How much of a run's theoretical maximum output the run-level abort should allow before firing.
+#:
+#: Below 1.0 on purpose. `output_tokens_limit` was previously set to exactly
+#: `tokens_for(op) * request_limit` — the precise total that `request_limit` maximal responses
+#: produce — and pydantic-ai raises on `>`, not `>=`. So the sum could equal the limit but never
+#: exceed it, `request_limit` always tripped first, and the "backstop" was unreachable by
+#: construction. A backstop that cannot fire is not one.
+_RUN_OUTPUT_FRACTION = 0.6
+
+
+def run_output_ceiling(operation: str, request_limit: int) -> int:
+    """The run-level `output_tokens_limit` for a tool loop of at most `request_limit` requests.
+
+    The per-request `max_tokens` is what physically stops generation; this aborts a loop that is
+    burning its whole budget on output rather than converging. Sized so a run of consistently
+    maximal responses trips it BEFORE exhausting its request budget — which is the only case where
+    it has anything to say that `request_limit` does not.
+    """
+    return max(1, int(tokens_for(operation) * request_limit * _RUN_OUTPUT_FRACTION))
