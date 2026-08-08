@@ -120,16 +120,64 @@ def test_the_hunt_still_charges_for_a_run_that_failed_partway(monkeypatch):
     )
 
 
-def test_the_hunt_is_bounded_on_requests_and_tool_calls():
+def test_the_hunt_is_bounded_on_requests_and_tool_calls(monkeypatch):
     """It was the one agentic path with no `UsageLimits` at all, inheriting pydantic-ai's default
     `request_limit=50` and NO tool-call limit — the loosest budget in the app sitting behind the
-    cheapest hold."""
-    from app import retrieval_agent
+    cheapest hold.
 
-    limits = retrieval_agent._HUNT_LIMITS
-    assert limits.request_limit and limits.request_limit <= 10
-    assert limits.tool_calls_limit and limits.tool_calls_limit <= 20
+    Asserts the limits reach `ag.iter`. An earlier version asserted the shape of the `_HUNT_LIMITS`
+    constant, and stayed green with `usage_limits=` deleted from the real call — the table-not-the
+    -wiring failure this file complains about two tests down.
+    """
+    from app import retrieval_agent, spend_ceiling
+
+    monkeypatch.setattr(spend_ceiling, "note_spend", lambda n: None)
+    seen: list = []
+    real_iter = retrieval_agent.Agent.iter
+
+    def spy(self, *args, **kwargs):
+        seen.append(kwargs.get("usage_limits"))
+        return real_iter(self, *args, **kwargs)
+
+    monkeypatch.setattr(retrieval_agent.Agent, "iter", spy)
+
+    async def drain():
+        model = FunctionModel(lambda m, i: _openrouter_response(0.0001))
+        return [e async for e in retrieval_agent.stream_hunt("A Paper", model=model)]
+
+    asyncio.run(drain())
+
+    assert seen and seen[0] is not None, "the hunt ran with no usage limits at all"
+    limits = seen[0]
+    assert limits.request_limit, "no request limit: pydantic-ai's default of 50 applies"
+    assert limits.tool_calls_limit, "no tool-call limit"
     assert limits.output_tokens_limit
+    # Above what the prompt asks for (a search or two, up to 5 URLs, a final answer), or a hunt
+    # doing exactly what it was told trips our ceiling and gets told the provider failed.
+    assert limits.request_limit >= 10, "tighter than the hunt's own prompt budget"
+
+
+def test_our_own_request_ceiling_is_not_reported_as_a_provider_failure(monkeypatch):
+    """A tripped limit is our decision, not the provider's. Saying otherwise sends the reader
+    chasing an outage that never happened."""
+    from app import retrieval_agent, spend_ceiling
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    monkeypatch.setattr(spend_ceiling, "note_spend", lambda n: None)
+
+    def blow_up(self, *args, **kwargs):
+        raise UsageLimitExceeded("exceeded the request_limit")
+
+    monkeypatch.setattr(retrieval_agent.Agent, "iter", blow_up)
+
+    async def drain():
+        model = FunctionModel(lambda m, i: _openrouter_response(0.0001))
+        return [e async for e in retrieval_agent.stream_hunt("A Paper", model=model)]
+
+    events = asyncio.run(drain())
+
+    assert events[-1]["ok"] is False
+    assert "provider" not in events[-1]["summary"].lower(), events[-1]["summary"]
 
 
 def test_each_agentic_path_is_capped_at_its_own_budget_not_the_analysis_one(monkeypatch):

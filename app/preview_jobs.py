@@ -205,8 +205,8 @@ MAX_LIVE_SOURCE_CHARS = 2_000
 def _research_with_agent(title: str, paper_metadata: str) -> str:
     """Run a small read-only search/fetch agent and return its sourced findings."""
     # Imported lazily: pydantic_ai is heavyweight and tests inject a research function.
-    from pydantic_ai import Agent
-    from pydantic_ai.usage import UsageLimits
+    from pydantic_ai import Agent, capture_run_messages
+    from pydantic_ai.usage import RunUsage, UsageLimits
 
     from . import agent_harness, research_tools
 
@@ -227,26 +227,32 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
         output_type=str,
         retries=2,
     )
-    result = asyncio.run(
-        research_agent.run(
-            model_provenance.frame(
-                "paper_metadata",
-                f"Paper title: {title}\n\nKnown project metadata:\n{paper_metadata[:4_000]}",
-            ),
-            usage_limits=UsageLimits(
-                request_limit=MAX_RESEARCH_AGENT_REQUESTS,
-                tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
-            ),
-        ),
-    )
-    # Property, not a method (see `lab_research`): this raised TypeError before returning, so
-    # `external_sources` swallowed it and every preview research run was paid for, discarded and
-    # unrecorded.
-    run_usage = result.usage
-    # Same recorder as the other agentic paths, for the same reasons.
-    agent_harness.record_agent_run(
-        run_usage, research_agent.model, "listening_preview_research", result.all_messages(),
-    )
+    # Metered in a `finally` over `capture_run_messages`, not from `result`: a run that trips its
+    # request budget or dies mid-loop has already been billed for the requests it made, and
+    # `external_sources` swallows the exception — so those runs were paid for and recorded nothing
+    # at all. Recording only on success meters the cheap runs and forgives the expensive ones.
+    run_usage = RunUsage()
+    with capture_run_messages() as captured:
+        try:
+            result = asyncio.run(
+                research_agent.run(
+                    model_provenance.frame(
+                        "paper_metadata",
+                        f"Paper title: {title}\n\nKnown project metadata:\n"
+                        f"{paper_metadata[:4_000]}",
+                    ),
+                    usage_limits=UsageLimits(
+                        request_limit=MAX_RESEARCH_AGENT_REQUESTS,
+                        tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
+                    ),
+                    usage=run_usage,
+                ),
+            )
+        finally:
+            # Same recorder as the other agentic paths, for the same reasons.
+            agent_harness.record_agent_run(
+                run_usage, research_agent.model, "listening_preview_research", captured,
+            )
     return str(result.output or "")[:6_000]
 
 

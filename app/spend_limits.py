@@ -83,6 +83,12 @@ _MAX_NANOUSD: dict[str, int] = {
     # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
     "speech_synthesis": 600_000_000,
     "retrieval": 20_000_000,        # $0.02 — the fetch is free; extraction is cheap
+    # The escalation tier, and a different animal from the line above: a multi-turn tool loop with
+    # web search and page fetches, on the account's analysis-tier model, taken as its own hold only
+    # when the deterministic path has already failed. Generous rather than tight — refusing a
+    # legitimate reader is the failure the roadmap ranks worse than a mild overspend, and a reader
+    # who reaches the hunt has already had one retrieval fail.
+    "retrieval_hunt": 100_000_000,  # $0.10
     "discovery": 150_000_000,       # $0.15 — a measured cold run was $0.013; slice 2 widened recall
     # Nominal, and deliberately so: a build spends nothing on its own thread. Every paper it
     # extracts takes its own `graph_extraction` hold through `paper-references`, so the build is

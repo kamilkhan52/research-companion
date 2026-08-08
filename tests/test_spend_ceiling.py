@@ -486,3 +486,104 @@ def test_reserving_and_rate_limiting_are_independent_registry_decisions(ledger):
 
     neither: JobRegistry[SampleJob] = JobRegistry("neither")
     assert not neither.metered and not neither.reserves
+
+
+def test_per_unit_binds_the_units_hold_and_restores_the_parents(monkeypatch):
+    """The attribution property the context manager exists for.
+
+    The only test that reached `per_unit` stubbed `hold` to None and `settle` to a no-op, so bind
+    and reset ran in their inert form and nothing pinned where spend actually lands.
+    """
+    from app import spend_ceiling
+
+    parent = spend_ceiling._Held(
+        reservation_id="r-parent", user_id="u", attempt_id="a", operation="lab_research",
+        job_id="j",
+    )
+    unit = spend_ceiling._Held(
+        reservation_id="r-unit", user_id="u", attempt_id="a2", operation="lab_research",
+        job_id="j",
+    )
+    monkeypatch.setattr(spend_ceiling, "hold", lambda *a, **k: unit)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    token = spend_ceiling.bind(parent)
+    try:
+        with spend_ceiling.per_unit("lab_research", "j"):
+            spend_ceiling.note_spend(500)
+        spend_ceiling.note_spend(7)
+    finally:
+        spend_ceiling.reset(token)
+
+    assert unit.spent_nanousd == 500, "the unit's spend must land on the unit's hold"
+    assert parent.spent_nanousd == 7, "the parent's ticket must be restored on exit"
+
+
+def test_per_unit_settles_the_hold_even_when_the_body_raises(monkeypatch):
+    """A unit that fails has still spent whatever it spent before failing."""
+    from app import spend_ceiling
+
+    unit = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="lab_research", job_id="j",
+    )
+    settled: list = []
+    monkeypatch.setattr(spend_ceiling, "hold", lambda *a, **k: unit)
+    monkeypatch.setattr(spend_ceiling, "settle", settled.append)
+
+    with pytest.raises(RuntimeError):
+        with spend_ceiling.per_unit("lab_research", "j"):
+            spend_ceiling.note_spend(42)
+            raise RuntimeError("the unit failed")
+
+    assert settled == [unit]
+    assert unit.spent_nanousd == 42
+
+
+def test_per_unit_binds_nothing_when_the_hold_is_refused(monkeypatch):
+    """A refused unit must leave the parent's ticket exactly as it was."""
+    from app import quotas, spend_ceiling
+
+    parent = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="lab_research", job_id="j",
+    )
+
+    def refuse(*a, **k):
+        raise quotas.QuotaExceeded(
+            used_nanousd=10, requested_nanousd=10, limit_nanousd=10,
+        )
+
+    monkeypatch.setattr(spend_ceiling, "hold", refuse)
+
+    token = spend_ceiling.bind(parent)
+    try:
+        with pytest.raises(quotas.QuotaExceeded):
+            with spend_ceiling.per_unit("lab_research", "j"):
+                pass
+        assert spend_ceiling.active() is parent, "the parent must still be bound"
+        spend_ceiling.note_spend(3)
+    finally:
+        spend_ceiling.reset(token)
+
+    assert parent.spent_nanousd == 3
+
+
+def test_per_unit_refuses_to_unbind_an_active_parent(monkeypatch):
+    """`hold` returns None when ceilings are inert. Binding that over a live parent would send the
+    unit's spend nowhere — the fail-open shape `config.bound_scope` exists to prevent, since a
+    missing reservation loses money silently rather than failing loudly."""
+    from app import spend_ceiling
+
+    parent = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="lab_research", job_id="j",
+    )
+    monkeypatch.setattr(spend_ceiling, "hold", lambda *a, **k: None)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    token = spend_ceiling.bind(parent)
+    try:
+        with spend_ceiling.per_unit("lab_research", "j"):
+            spend_ceiling.note_spend(99)
+    finally:
+        spend_ceiling.reset(token)
+
+    assert parent.spent_nanousd == 99, "spend vanished: the parent was unbound by an inert hold"

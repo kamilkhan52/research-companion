@@ -192,7 +192,18 @@ def test_running_out_of_budget_stops_the_pass_instead_of_failing_every_author(
 
     snap = _settled(lab_research.start_research(research_fn=research).id)
 
-    assert snap["status"] == "done", "running out of budget is not a job failure"
+    # Reported as an error carrying the refusal, NOT a quiet `done`. A finished-looking pass with
+    # zero labs is rendered by the client as "not every topic concentrates in labs" — which tells
+    # a reader their field has no labs when the truth is we never looked. An earlier version of
+    # this test asserted `done` and locked that silence in.
+    assert snap["status"] == "error", "a pass that could not look must not read as having looked"
+    # The ledger's own refusal text, not a generic failure — it is what tells the reader whether
+    # to wait fifteen seconds or until the period rolls over.
+    assert "usage limit" in snap["error"].lower(), snap["error"]
+    assert "could not complete" not in snap["error"], (
+        "a budget refusal must not be dressed up as a provider failure"
+    )
+    assert snap["current"] == "", "the unreached author must not be left named as in progress"
     assert len(researched) == 1, "the pass must stop, not refuse each remaining author in turn"
 
     # The distinguishing property, and the reason this is a `break` rather than a `continue`: an

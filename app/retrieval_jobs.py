@@ -18,6 +18,7 @@ from . import (
     rate_limits,
     retrieval_agent,
     retriever,
+    spend_ceiling,
     store,
 )
 from .jobs import Job, JobRegistry, new_id, now_iso
@@ -159,7 +160,18 @@ def start_retrieval(
 
         with _registry.lock:
             job.phase = "hunting"
-        asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
+        # The hunt takes its OWN hold rather than riding the retrieval ticket. `retrieval` is
+        # priced at $0.02 for "the fetch is free; extraction is cheap" — a deterministic path that
+        # spends almost nothing. The hunt is the escalation tier: a multi-turn tool loop with web
+        # search and page fetches, on the account's analysis-tier model. Billing it against the
+        # cheap ticket admits a reader with two cents of headroom and then charges multiples of it,
+        # which is the same under-reservation this branch just fixed for labs.
+        #
+        # Deliberately not folded into the `retrieval` maximum: most retrievals never hunt, and
+        # sizing every one of them for the rare escalation would park budget that never becomes
+        # spend — measured on the graph build as roughly ten mapped papers a month.
+        with spend_ceiling.per_unit("retrieval_hunt", job.id):
+            asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
 
     def work_then_analyze(job: RetrievalJob) -> None:
         work(job)

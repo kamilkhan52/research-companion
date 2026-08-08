@@ -10,10 +10,13 @@ request above the ceiling is clamped. That distinction matters because the value
 from what each operation actually needs today, and a caller that genuinely needs less should not
 be silently handed more.
 
-**This does not reach the agentic tool loop by itself.** `agent_harness` and `lab_research` run
-through Pydantic AI, which never touches `llm.complete`, so they are bounded by the token limits
-passed to `UsageLimits` instead — the same numbers, read from this table, applied at the only seam
-that path has. Anything using the raw client is clamped here.
+**The agentic paths are bounded at two seams, both fed from this table.** `agent_harness`,
+`lab_research`, `preview_jobs` and `retrieval_agent` run through Pydantic AI and never touch
+`llm.complete`. They read `tokens_for(operation)` twice over: once as `max_tokens` in the model's
+`OpenRouterModelSettings`, which physically stops generation, and once to size the run-level
+`output_tokens_limit` in `UsageLimits`, which aborts a runaway loop after the fact. The first is
+what actually stops money being spent; the second is the backstop. Anything using the raw client is
+clamped here instead.
 
 **Why in one table rather than at each call site.** `max_tokens` is currently a per-call argument
 with a permissive default (`llm.complete` allows 8,000, `stream` more), so a new call site
@@ -63,7 +66,13 @@ _LIMITS: dict[str, tuple[int, float]] = {
     # The hunt emits tool calls and a short summary, never a document. It ran unbounded on both
     # axes — pydantic-ai's default request limit and an analysis-sized per-request cap — which made
     # the loosest budget in the app sit behind the cheapest hold.
-    "retrieval_hunt": (4_000, 180.0),
+    #
+    # 8,000 rather than the ~1,000 its visible output needs: this runs on the account's DEFAULT
+    # model, and OpenRouter counts hidden reasoning tokens against `max_tokens` for most providers.
+    # `graph_extraction` above carries the same warning and the same generosity for the same
+    # reason — a response truncated before it emits its tool call is a paid call that bought
+    # nothing, which is worse than the unbounded state this replaced.
+    "retrieval_hunt": (8_000, 180.0),
 }
 
 #: For an operation with no entry. Above every short call in the app and well below the long ones,

@@ -233,13 +233,28 @@ def per_unit(operation: str, job_id: str, *, model: str | None = None):
 
     Rebinding is deliberate: `usage.record` credits whatever reservation is bound on this thread,
     so the unit's spend lands on the unit's hold, and the job's ticket is restored on exit. Raises
-    `quotas.QuotaExceeded` when the account cannot afford this unit — the caller decides whether
-    that ends the job or just this unit.
+    `quotas.QuotaError` when the account cannot afford this unit or the ledger is unreachable —
+    the caller decides whether that ends the job or just this unit. Nothing is bound and nothing
+    settled when it raises, so a refused unit leaves the parent's ticket exactly as it was.
+
+    **It will not unbind an active parent.** `hold` returns None when ceilings are inert, and
+    binding that None over a live parent reservation would silently send the unit's spend nowhere
+    — the fail-open shape `config.bound_scope` exists to prevent, since a missing project corrupts
+    files loudly but a missing reservation just loses money. Inside a job the registry has already
+    bound a hold, so a None here means the precondition changed underneath us; the parent keeps the
+    spend rather than the ceiling quietly switching off.
     """
     held = hold(operation, job_id, model=model)
-    token = bind(held)
+    # See above: only rebind when we actually got a hold, or when there is nothing to displace.
+    token = bind(held) if (held is not None or _active.get() is None) else None
     try:
         yield held
     finally:
-        reset(token)
-        settle(held)
+        # Nested, not sequential: sharing one `finally` meant a failed `reset` skipped `settle`,
+        # leaking the hold until its lease expired — at which point the reconciler charges the
+        # FULL maximum rather than what was spent.
+        try:
+            if token is not None:
+                reset(token)
+        finally:
+            settle(held)

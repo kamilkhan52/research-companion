@@ -52,6 +52,13 @@ class LabsJob(Job):
     current: str = ""
     found: int = 0
     skipped_cached: int = 0
+    #: Set when the pass stopped early for a reason that is NOT "we looked and found nothing" —
+    #: today, the account running out of budget mid-pass. Without it a refused pass reported
+    #: `done` with zero labs, and the client explained that away as "not every topic concentrates
+    #: in labs" — an affirmatively wrong answer to "you are out of credit". `labs_board` says the
+    #: same thing in its own docstring: a pass that could not look must never read as having
+    #: looked.
+    stopped_reason: str = ""
 
 
 _registry: JobRegistry[LabsJob] = JobRegistry("lab-research", max_finished=10, metered=True,
@@ -140,8 +147,8 @@ _OUTPUT_TOKENS_LIMIT = operation_limits.tokens_for("lab_research") * MAX_AGENT_R
 
 def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict:
     # Imported lazily: pydantic_ai is heavyweight and tests inject research_fn instead.
-    from pydantic_ai import Agent
-    from pydantic_ai.usage import UsageLimits
+    from pydantic_ai import Agent, capture_run_messages
+    from pydantic_ai.usage import RunUsage, UsageLimits
 
     from . import agent_harness, research_tools
 
@@ -169,30 +176,39 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
         f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
         f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}",
     )
+    # A paid multi-request run outside `app.llm`. Recorded through the harness's own recorder
+    # rather than a second accounting path: it already extracts OpenRouter's authoritative cost
+    # from each response's provider details, records the generations individually so an
+    # interrupted one stays reconcilable, and falls back to a pending marker per response.
+    #
+    # `capture_run_messages` + `finally`, because the run that fails is the EXPENSIVE one. The
+    # comment below calls a blown request budget an honest not-found, which concedes it is
+    # ordinary — and it is reached only after ten requests have been billed. Recording from
+    # `result` alone meant the cheapest authors were metered and the priciest settled at zero,
+    # now against this author's own hold. Same reasoning as `stream_hunt` and the analysis loop.
+    run_usage = RunUsage()
     try:
-        result = asyncio.run(
-            ag.run(user, usage_limits=UsageLimits(
-                request_limit=MAX_AGENT_REQUESTS,
-                tool_calls_limit=MAX_AGENT_TOOL_CALLS,
-                output_tokens_limit=_OUTPUT_TOKENS_LIMIT,
-            )),
-        )
-        # A PROPERTY, not a method, since pydantic-ai 2.x. Calling it raised TypeError INSIDE this
-        # try, which the handler below turned into "the model provider could not complete lab
-        # research" — so every author in every labs pass failed after the run had been paid for.
-        # That is why the Labs view has had nothing lab-specific to show (DR-008).
-        run_usage = result.usage
-        output = result.output or ""
+        with capture_run_messages() as captured:
+            try:
+                result = asyncio.run(
+                    ag.run(user, usage_limits=UsageLimits(
+                        request_limit=MAX_AGENT_REQUESTS,
+                        tool_calls_limit=MAX_AGENT_TOOL_CALLS,
+                        output_tokens_limit=_OUTPUT_TOKENS_LIMIT,
+                    ), usage=run_usage),
+                )
+                # A PROPERTY, not a method, since pydantic-ai 2.x. Calling it raised TypeError
+                # INSIDE this try, which the handler below turned into "the model provider could
+                # not complete lab research" — so every author in every labs pass failed after the
+                # run had been paid for. That is why the Labs view had nothing to show (DR-008).
+                output = result.output or ""
+            finally:
+                agent_harness.record_agent_run(run_usage, ag.model, "lab_research", captured)
     except Exception as exc:
         # A blown request budget (or any run crash) is an honest not-found for THIS run,
         # cached without a fingerprint upstream so the author retries next pass.
         raise RuntimeError(
             "The model provider could not complete lab research.") from exc
-    # A paid multi-request run outside `app.llm`. Recorded through the harness's own recorder
-    # rather than a second accounting path: it already extracts OpenRouter's authoritative cost
-    # from each response's provider details, records the generations individually so an
-    # interrupted one stays reconcilable, and falls back to a pending marker per response.
-    agent_harness.record_agent_run(run_usage, ag.model, "lab_research", result.all_messages())
     return parse_result(output)
 
 
@@ -229,7 +245,6 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 job.current = name
             titles = [p.get("title") or "" for p in entry.get("papers") or []
                       if p.get("kind") == "project"]
-            attempted += 1
             try:
                 # Each author is its own agentic web pass, so each takes its own hold. The job's
                 # admission ticket is nominal: one `lab_research` hold covering ten passes
@@ -237,12 +252,24 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 # spend $0.40. Gating here also means someone who can afford three authors gets
                 # three, instead of being refused a pass they could partly pay for.
                 with spend_ceiling.per_unit("lab_research", job.id, model=graph.resolve_model()):
+                    # Counted only once the hold is granted. Counting before it meant a refused
+                    # author scored as attempted-but-not-failed, diluting the `failed == attempted`
+                    # check below — one real error followed by refusals reported `done`.
+                    attempted += 1
                     finding = research_fn(name, entry.get("affiliation") or "", titles)
-            except quotas.QuotaExceeded as exc:
-                # Out of budget mid-pass. Stop rather than grinding through the remaining authors
-                # to refuse each one in turn, and leave no fingerprint so they retry next month.
+            except quotas.QuotaError as exc:
+                # Out of budget, or the ledger is unreachable. Either way this pass cannot
+                # continue: stop rather than grinding through the remaining authors to refuse each
+                # one in turn, and leave no fingerprint so they retry once budget returns.
+                #
+                # Both branches of QuotaError, not just QuotaExceeded — an unreachable ledger fails
+                # closed by design, and letting it fall through to the generic handler would cache
+                # every remaining author as a not-found result for a lookup that never happened.
                 last_error = str(exc)[:200]
                 log.info("labs pass stopped at %s: %s", name, last_error)
+                with _registry.lock:
+                    job.stopped_reason = last_error
+                    job.current = ""  # it was never researched; leaving it named implies it was
                 break
             except Exception as exc:  # noqa: BLE001 — one author's failure must not kill
                 # the pass; an error is cached as not-found WITHOUT a fingerprint, so the
@@ -272,6 +299,15 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
             with _registry.lock:
                 job.status = "error"
                 job.error = f"Lab research failed for every author — {last_error}"
+        elif job.stopped_reason and not job.found:
+            # Stopped before finding anything. Reported as an error rather than a quiet `done`,
+            # because `done` with zero labs is the one state the client explains as "not every
+            # topic concentrates in labs" — telling a reader their field has no labs when in fact
+            # we never looked. A partial pass that DID find labs keeps `done` and shows them,
+            # carrying `stopped_reason` so the client can say the rest is unfinished.
+            with _registry.lock:
+                job.status = "error"
+                job.error = job.stopped_reason
 
     return _registry.start_or_join("labs", lambda: LabsJob(id=new_id()), work)
 

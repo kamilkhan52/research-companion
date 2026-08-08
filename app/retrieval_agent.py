@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
@@ -40,9 +41,16 @@ HUNT_MAX_PDF_BYTES = 40_000_000
 #: The hunt was the only agentic path in the app running unbounded — it inherited pydantic-ai's
 #: default `request_limit=50` and NO tool-call limit, each request able to emit an analysis-sized
 #: completion. That is the loosest budget in the app attached to the cheapest hold, which is
-#: precisely backwards. A hunt that has not found a PDF in eight tries is not about to.
-MAX_HUNT_REQUESTS = 8
-MAX_HUNT_TOOL_CALLS = 12
+#: precisely backwards.
+#:
+#: Sized ABOVE what the prompt asks for, not at it. `prompts._RETRIEVAL_HUNT` budgets a search
+#: (sometimes two — "add pdf or the venue when helpful") plus "try at most 5 URLs" plus a final
+#: answer: seven to eight requests before the agent's own `retries=2` is counted. A limit of
+#: exactly eight would be tripped by a hunt doing precisely what it was told, and the caller
+#: reports a tripped limit as "the model provider could not complete the PDF hunt" — our own
+#: ceiling, misattributed to the provider.
+MAX_HUNT_REQUESTS = 12
+MAX_HUNT_TOOL_CALLS = 10
 _HUNT_LIMITS = UsageLimits(
     request_limit=MAX_HUNT_REQUESTS,
     tool_calls_limit=MAX_HUNT_TOOL_CALLS,
@@ -118,6 +126,17 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
                 if holder.get("full_text"):
                     break  # got the paper — no need to let the model keep narrating
         summary = (run.result.output if run.result else "") or ""
+    except UsageLimitExceeded:
+        # Our ceiling, not the provider's. Reported separately because the generic message names
+        # the provider for something we did, and because a hunt that ran out of tries has usually
+        # searched — a different thing from one that could not start.
+        log.info("hunt hit its own request budget for %r", title[:80])
+        yield {
+            "type": "result",
+            "ok": False,
+            "summary": "Searched without finding a downloadable PDF.",
+        }
+        return
     except Exception:
         yield {
             "type": "result",
