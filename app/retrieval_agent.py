@@ -27,7 +27,6 @@ from . import (
     research_tools,
     retriever,
     safe_fetch,
-    usage,
 )
 
 log = logging_config.get("retrieval_agent")
@@ -110,10 +109,11 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
         # Best-effort and deliberately last: a retrieval that found the paper must not be turned
         # into a failure by an accounting problem.
         try:
-            if run.result is not None:
-                usage.record_agentic(
-                    "retrieval_hunt", getattr(ag.model, "model_name", None), run.result.usage(),
-                )
+            # `run.usage`, not `run.result.usage()`. Two separate errors lived in that line: usage
+            # is a property rather than a method, and the loop above BREAKS the moment the paper is
+            # found — so the graph never emits an End node and `run.result` is None precisely on
+            # the success path. Guarding on it skipped the only case worth recording.
+            agent_harness._record_run_usage(run.usage, ag.model, "retrieval_hunt", None)
         except Exception as exc:  # noqa: BLE001 — accounting never fails the work it measures
             log.warning("hunt usage not recorded (error=%s)", type(exc).__name__)
     except Exception:

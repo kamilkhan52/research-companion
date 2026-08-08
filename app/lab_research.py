@@ -130,7 +130,7 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     from pydantic_ai import Agent
     from pydantic_ai.usage import UsageLimits
 
-    from . import agent_harness, research_tools, usage
+    from . import agent_harness, research_tools
 
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search the web. objective = what you're establishing; search_queries = 1-3 short
@@ -164,19 +164,22 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
                 output_tokens_limit=_OUTPUT_TOKENS_LIMIT,
             )),
         )
-        run_usage = result.usage()
+        # A PROPERTY, not a method, since pydantic-ai 2.x. Calling it raised TypeError INSIDE this
+        # try, which the handler below turned into "the model provider could not complete lab
+        # research" — so every author in every labs pass failed after the run had been paid for.
+        # That is why the Labs view has had nothing lab-specific to show (DR-008).
+        run_usage = result.usage
         output = result.output or ""
     except Exception as exc:
         # A blown request budget (or any run crash) is an honest not-found for THIS run,
         # cached without a fingerprint upstream so the author retries next pass.
         raise RuntimeError(
             "The model provider could not complete lab research.") from exc
-    # This is a paid multi-request run outside app.llm, so record its tokens against the
-    # active project explicitly (cost stays 0 — OpenRouter's exact usage.cost isn't exposed
-    # through the Pydantic AI path; tokens keep the spend visible in /usage).
-    # Priced rather than recorded free: this holds budget through the `lab-research` registry,
-    # and a run that settles at zero is spend the ceiling never sees.
-    usage.record_agentic("lab_research", model, run_usage)
+    # A paid multi-request run outside `app.llm`. Recorded through the harness's own recorder
+    # rather than a second accounting path: it already extracts OpenRouter's authoritative cost
+    # from each response's provider details, records the generations individually so an
+    # interrupted one stays reconcilable, and falls back to a pending marker per response.
+    agent_harness._record_run_usage(run_usage, ag.model, "lab_research", result.all_messages())
     return parse_result(output)
 
 

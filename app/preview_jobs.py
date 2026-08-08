@@ -208,7 +208,7 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
     from pydantic_ai import Agent
     from pydantic_ai.usage import UsageLimits
 
-    from . import agent_harness, research_tools, usage
+    from . import agent_harness, research_tools
 
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search for reliable context. Use 1-3 focused queries; results include URLs."""
@@ -239,9 +239,14 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
             ),
         ),
     )
-    run_usage = result.usage()
-    # Same as lab_research: the cue coordinator holds budget, so an unpriced run settled at zero.
-    usage.record_agentic("listening_preview_research", model, run_usage)
+    # Property, not a method (see `lab_research`): this raised TypeError before returning, so
+    # `external_sources` swallowed it and every preview research run was paid for, discarded and
+    # unrecorded.
+    run_usage = result.usage
+    # Same recorder as the other agentic paths, for the same reasons.
+    agent_harness._record_run_usage(
+        run_usage, research_agent.model, "listening_preview_research", result.all_messages(),
+    )
     return str(result.output or "")[:6_000]
 
 

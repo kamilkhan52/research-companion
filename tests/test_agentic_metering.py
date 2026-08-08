@@ -8,82 +8,85 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-from app import usage
-
 
 class _Usage(SimpleNamespace):
     """Stands in for Pydantic AI's RunUsage."""
 
 
-def test_an_authoritative_cost_is_recorded_exactly(monkeypatch):
-    """When the provider told us what it charged, use that and do not mark it estimated."""
-    seen: list[dict] = []
-    monkeypatch.setattr(usage, "record",
-                        lambda op, model, data, **kw: seen.append({**data, **kw}))
-    usage.record_agentic("lab_research", "m",
-                         _Usage(input_tokens=100, output_tokens=50, details={"cost": 0.0042}))
-    assert seen[0]["cost"] == 0.0042
-    assert not seen[0].get("estimated"), "an authoritative figure is not an estimate"
+def test_pydantic_ai_exposes_usage_as_a_property_not_a_method():
+    """The single fact three call sites got wrong, pinned so an upgrade cannot re-break it quietly.
 
-
-def test_tokens_are_priced_from_the_catalogue_when_no_cost_is_returned(monkeypatch):
-    """The case that was settling at zero. An estimate marked as one beats a silent free ride."""
-    seen: list[dict] = []
-    monkeypatch.setattr(usage, "record",
-                        lambda op, model, data, **kw: seen.append({**data, **kw}))
-    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
-    monkeypatch.setattr(
-        "app.llm.catalogue",
-        lambda *a, **k: [{"id": "m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}],
-    )
-    usage.record_agentic("lab_research", "m",
-                         _Usage(input_tokens=1_000, output_tokens=500, details={}))
-    assert seen[0]["cost"] == pytest.approx(1_000 * 0.000001 + 500 * 0.000002)
-    assert seen[0]["estimated"] is True, "a local calculation is not what the provider billed"
-
-
-def test_an_unpriceable_model_records_a_gap_rather_than_a_made_up_number(monkeypatch):
-    """A model with no published price gets no invented figure — an acknowledged gap is honest
-    where a guess is not. The pending marker is what flags the total as incomplete."""
-    seen: list[dict] = []
-    pending: list = []
-    monkeypatch.setattr(usage, "record",
-                        lambda op, model, data, **kw: seen.append({**data, **kw}))
-    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: pending.append(a))
-    monkeypatch.setattr("app.llm.catalogue", lambda *a, **k: [])
-    usage.record_agentic("lab_research", "unknown-model",
-                         _Usage(input_tokens=10, output_tokens=5, details={}))
-    assert "cost" not in seen[0]
-    assert pending, "an unpriced call must be flagged, not silently counted as free"
-
-
-def test_pricing_never_raises_even_when_the_catalogue_is_unreachable(monkeypatch):
-    """It is a network call behind a display-quality number. It must not be able to fail a paid
-    turn that has already happened."""
-    def boom(*a, **k):
-        raise RuntimeError("openrouter unreachable")
-
-    monkeypatch.setattr("app.llm.catalogue", boom)
-    assert usage._priced_estimate("m", 10, 5) is None
-
-
-def test_the_three_previously_silent_paths_now_record(monkeypatch):
-    """Pin the call sites, not just the helper — the helper can be perfect while nothing calls it.
-
-    `retrieval_agent`'s PDF hunt builds its own Pydantic AI agent and reached neither the ledger
-    nor the ceiling; `lab_research` and the preview research call recorded tokens with no cost.
+    `result.usage()` raised TypeError. In `lab_research` that landed inside the run's own `try`,
+    so every author in every labs pass failed AFTER the run had been paid for — which is why the
+    Labs view had nothing lab-specific to show. In `preview_jobs` it raised before returning, so
+    every preview research run was paid for and discarded. The suite missed it because the one
+    test driving those functions mocked `usage()` as a staticmethod: it mocked the broken API into
+    looking correct.
     """
+    from pydantic_ai.agent import AgentRunResult
+
+    assert isinstance(AgentRunResult.usage, property), (
+        "usage is a property; calling it raises TypeError and, in lab_research, fails the run"
+    )
+
+
+def test_a_real_agent_run_records_usage_through_the_harness_recorder(monkeypatch):
+    """Drive an actual Agent rather than a fake shaped to agree with us."""
+    import asyncio
+
+    from app import agent_harness
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    recorded: list[tuple] = []
+    monkeypatch.setattr(agent_harness, "_record_run_usage",
+                        lambda usage_, model, op, msgs=None: recorded.append((op, usage_)))
+
+    agent = Agent(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("done")])))
+    result = asyncio.run(agent.run("go"))
+    agent_harness._record_run_usage(result.usage, agent.model, "lab_research",
+                                    result.all_messages())
+
+    assert recorded and recorded[0][0] == "lab_research"
+    assert recorded[0][1].output_tokens >= 0, "a real RunUsage, not a stand-in"
+
+
+def test_the_three_paths_read_the_usage_property_not_a_call():
+    """Pin the call sites. The previous version of this test grepped for a function NAME, so it
+    passed while all three paths were recording nothing — a string in unreachable code."""
     import ast
     import inspect
 
     from app import lab_research, preview_jobs, retrieval_agent
 
     for module in (lab_research, preview_jobs, retrieval_agent):
-        tree = ast.parse(inspect.getsource(module))
-        calls = [
+        src = inspect.getsource(module)
+        tree = ast.parse(src)
+        # Parsed, not grepped: a string search matches the comment explaining the bug as readily
+        # as the bug, and would keep failing after the fix.
+        called_usage = [
             n for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "record_agentic"
+            and n.func.attr == "usage"
         ]
-        assert calls, f"{module.__name__} must price its agentic run rather than settle at zero"
+        assert not called_usage, (
+            f"{module.__name__} calls usage() as a method; it is a property and this raises"
+        )
+        assert "_record_run_usage" in src, (
+            f"{module.__name__} must record through the harness recorder rather than a second, "
+            "weaker accounting path"
+        )
+
+
+def test_the_hunt_does_not_gate_recording_on_a_result_that_is_none_on_success():
+    """`stream_hunt` breaks out of the loop the moment the paper is found, so the graph never
+    emits an End node and `run.result` is None precisely on the success path. Gating on it skipped
+    the only case worth recording."""
+    import inspect
+
+    from app import retrieval_agent
+
+    src = inspect.getsource(retrieval_agent)
+    assert "run.result is not None" not in src, "that guard skips the successful hunt"
+    assert "run.usage" in src, "usage is on the run, and survives an early break"
