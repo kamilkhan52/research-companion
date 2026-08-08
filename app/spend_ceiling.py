@@ -46,6 +46,15 @@ class _Held:
     spent_nanousd: int = 0
     operation: str = ""
     job_id: str = ""
+    #: What this reservation held. Needed because settling EXACTLY is only honest when every
+    #: billed request's cost was actually observed; when one was not, this is what we fall back to.
+    maximum_nanousd: int = 0
+    #: Set when a request was billed but its cost could not be read — OpenRouter accepted the
+    #: generation and returned an id, but the usage block was missing or malformed. Analytics can
+    #: reconcile that later from the generation id; the RESERVATION cannot, because settling is
+    #: terminal. So an uncertain hold settles at its maximum instead of at the subset it happened
+    #: to see, which over-charges rather than letting real spend escape the ceiling entirely.
+    uncertain: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, nanousd: int) -> None:
@@ -53,6 +62,10 @@ class _Held:
             return
         with self.lock:
             self.spent_nanousd += nanousd
+
+    def mark_uncertain(self) -> None:
+        with self.lock:
+            self.uncertain = True
 
 
 #: The reservation covering work on this thread, or None. Set by the job registry around a worker.
@@ -71,6 +84,24 @@ def bind(held: _Held | None):
 
 def reset(token) -> None:
     _active.reset(token)
+
+
+def note_uncertain_spend() -> None:
+    """Record that a request was billed under this thread's reservation at an unknown price.
+
+    The gap this closes: `usage.record_pending` writes a reconcilable analytics marker, which is
+    the right answer for the ledger a human reads — the cost turns up later from the generation id.
+    But the RESERVATION is settled terminally the moment the job ends, and `usage.reconcile()`
+    cannot reopen it. So a run whose first generation cost $0.004 and whose second returned an id
+    with no usable cost used to settle at exactly $0.004, and the second generation left the
+    account's monthly ceiling permanently. Never raises: same rule as `note_spend`.
+    """
+    try:
+        held = _active.get()
+        if held is not None:
+            held.mark_uncertain()
+    except Exception as e:  # noqa: BLE001 — see the module docstring on rule 5
+        log.warning("uncertainty flag skipped (error=%s)", type(e).__name__)
 
 
 def note_spend(nanousd: int) -> None:
@@ -148,7 +179,7 @@ def hold(operation: str, job_id: str, *, model: str | None = None,
         _discard_undispatched(reservation.id, user_id)
         raise
     return _Held(reservation_id=reservation.id, user_id=user_id, attempt_id=attempt.id,
-                 operation=operation, job_id=job_id)
+                 operation=operation, job_id=job_id, maximum_nanousd=maximum)
 
 
 def _discard_undispatched(reservation_id: str, user_id: str) -> None:
@@ -199,6 +230,18 @@ def settle(held: _Held | None) -> None:
         return
     with held.lock:
         spent = held.spent_nanousd
+        # Conservative when a billed request's cost was never observed. Exactness here is a claim
+        # we cannot support: "this run cost $X" would be asserting that the requests we could not
+        # price were free. Over-charging is recoverable — a reader sees a high number and we can
+        # refund from the reconciled analytics — whereas under-settling silently removes real spend
+        # from the ceiling for good.
+        if held.uncertain and held.maximum_nanousd > spent:
+            log.warning(
+                "reservation %s settling at its maximum: a billed request under it had no "
+                "readable cost (operation=%s observed=%d maximum=%d)",
+                held.reservation_id[:8], held.operation, spent, held.maximum_nanousd,
+            )
+            spent = held.maximum_nanousd
     try:
         # The ledger's state machine, in the order it requires: resolve the dispatch to its actual
         # cost, declare dispatching finished, then settle exactly. An exact settle is rejected

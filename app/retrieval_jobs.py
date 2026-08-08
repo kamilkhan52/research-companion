@@ -49,7 +49,13 @@ class RetrievalJob(Job):
     canonical_job_id: str | None = None
 
 
-_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True)
+# `reserves=False` for the same reason as `lab-research`: this job's own thread dispatches nothing
+# to a provider. The deterministic path is an arXiv fetch and a local PDF extraction; the LLM spend
+# is the hunt, which now holds for itself, and the fan-out children that spend
+# (`paper-affiliations`, `paper-references`) each reserve their own. Holding $0.02 here on top of
+# the hunt's $0.10 refused readers who could afford the work and, on a crash, charged both.
+_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True,
+                                                   reserves=False)
 _jobs = _registry.jobs
 
 

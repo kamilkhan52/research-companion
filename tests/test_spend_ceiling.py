@@ -587,3 +587,99 @@ def test_per_unit_refuses_to_unbind_an_active_parent(monkeypatch):
         spend_ceiling.reset(token)
 
     assert parent.spent_nanousd == 99, "spend vanished: the parent was unbound by an inert hold"
+
+
+def test_a_billed_request_with_no_readable_cost_settles_at_the_maximum(monkeypatch):
+    """Exactness is a claim, and it has to be earned.
+
+    OpenRouter can accept a generation, return its id, and give back a usage block we cannot read
+    a cost from. Analytics handles that fine — `record_pending` leaves a marker and
+    `usage.reconcile()` fills the price in later. The RESERVATION cannot wait: it settles the
+    moment the job ends and settling is terminal, so a run whose first generation cost $0.004 and
+    whose second was unpriced used to settle at exactly $0.004, and the second left the account's
+    monthly ceiling for good.
+
+    Over-charging is recoverable; silently dropping real spend out of the ceiling is not.
+    """
+    from app import spend_ceiling
+
+    settled: list[int] = []
+    monkeypatch.setattr(quotas, "resolve_attempt", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "mark_dispatches_complete", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "settle",
+                        lambda reservation_id, user_id, actual_nanousd: settled.append(
+                            actual_nanousd))
+
+    held = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="retrieval_hunt",
+        maximum_nanousd=100_000_000,
+    )
+    token = spend_ceiling.bind(held)
+    try:
+        spend_ceiling.note_spend(4_000_000)      # the generation we could price
+        spend_ceiling.note_uncertain_spend()     # the one we could not
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert settled == [100_000_000], (
+        f"settled at {settled}; the unpriced generation escaped the ceiling permanently"
+    )
+
+
+def test_a_fully_priced_run_still_settles_exactly(monkeypatch):
+    """The conservative path must not swallow the normal one — settling every run at its maximum
+    would park most of a month in budget that was never spent."""
+    from app import spend_ceiling
+
+    settled: list[int] = []
+    monkeypatch.setattr(quotas, "resolve_attempt", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "mark_dispatches_complete", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "settle",
+                        lambda reservation_id, user_id, actual_nanousd: settled.append(
+                            actual_nanousd))
+
+    held = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="retrieval_hunt",
+        maximum_nanousd=100_000_000,
+    )
+    token = spend_ceiling.bind(held)
+    try:
+        spend_ceiling.note_spend(4_000_000)
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert settled == [4_000_000]
+
+
+def test_the_recorder_flags_uncertainty_on_the_active_hold(monkeypatch):
+    """End to end from the recorder, since that is where the fact originates."""
+    from app import agent_harness, spend_ceiling, usage
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.usage import RequestUsage
+
+    monkeypatch.setattr(usage, "record", lambda *a, **k: None)
+    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
+
+    def response(cost, gen_id):
+        return ModelResponse(
+            parts=[TextPart("x")], usage=RequestUsage(input_tokens=10, output_tokens=5),
+            model_name="m", provider_name="openrouter",
+            provider_details=({"cost": cost} if cost is not None else {}),
+            provider_response_id=gen_id,
+        )
+
+    held = spend_ceiling._Held(
+        reservation_id="r", user_id="u", attempt_id="a", operation="retrieval_hunt",
+        maximum_nanousd=100_000_000,
+    )
+    token = spend_ceiling.bind(held)
+    try:
+        agent_harness.record_agent_run(
+            None, None, "retrieval_hunt", [response(0.004, "g1"), response(None, "g2")],
+        )
+    finally:
+        spend_ceiling.reset(token)
+
+    assert held.uncertain, "an accepted generation with no readable cost left the hold exact"

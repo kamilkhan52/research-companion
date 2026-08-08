@@ -398,8 +398,13 @@ def test_the_hunt_takes_its_own_hold_not_the_cheap_retrieval_ticket(temp_project
         "p1", retrieve_fn=fail, hunt_fn=hunt).id)
 
     assert snap["status"] == "done"
-    assert "retrieval_hunt" in operations, (
-        f"the hunt rode the retrieval ticket instead of holding for itself: {operations}"
+    # EXACTLY the hunt's hold, and no `retrieval` ticket beside it. The retrieval job's own thread
+    # dispatches nothing to a provider — an arXiv fetch and a local PDF extraction — so a ticket
+    # here only stacks $0.02 on top of the hunt's $0.10, refusing readers who could afford the work
+    # and, on a crash, letting the reconciler conservatively charge both. Asserting `in` rather
+    # than equality let that stacking through.
+    assert operations == ["retrieval_hunt"], (
+        f"expected only the hunt's own hold, got {operations}"
     )
 
 

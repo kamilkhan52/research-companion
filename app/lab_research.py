@@ -61,8 +61,18 @@ class LabsJob(Job):
     stopped_reason: str = ""
 
 
+# `metered=True, reserves=False`: rate-limited like any paid job, but it takes NO reservation of
+# its own at admission. Every dollar this job spends is spent inside `spend_ceiling.per_unit`, one
+# author at a time.
+#
+# The two are separate questions and were briefly answered as one. A nominal ticket plus a per-unit
+# hold means a reader with $0.06 left is admitted on a $0.04 ticket and then cannot afford the
+# $0.04 author — refused despite having the money for it, and told so only after the job started.
+# Worse on a crash: both reservations are dispatched, neither `finally` runs, and the reconciler
+# conservatively charges both, so one author costs the ledger $0.08 for one $0.04 request. An
+# admission ticket that authorizes no provider dispatch should not occupy the spend ledger at all.
 _registry: JobRegistry[LabsJob] = JobRegistry("lab-research", max_finished=10, metered=True,
-                                        operation="lab_research")
+                                        operation="lab_research", reserves=False)
 _jobs = _registry.jobs
 
 

@@ -51,6 +51,7 @@ from . import (
     prompts,
     research_tools,
     sessions,
+    spend_ceiling,
     spend_control,
     usage,
 )
@@ -225,6 +226,11 @@ def record_agent_run(
                         generation_id=response.provider_response_id,
                     )
                 else:
+                    # Billed, but at a price we could not read. The analytics ledger takes a
+                    # reconcilable marker; the RESERVATION cannot wait for reconciliation, because
+                    # it settles terminally when this job ends. Flagging it makes that settle
+                    # conservative instead of exact-but-wrong.
+                    spend_ceiling.note_uncertain_spend()
                     usage.record_pending(operation, model_name, response.provider_response_id)
             return
         if not run_usage:
@@ -241,7 +247,10 @@ def record_agent_run(
             })
         if requests > 0:
             # A billed request happened but its dollar cost is unknowable on this path — flag
-            # totals estimated (no generation id to reconcile by) rather than implying $0.
+            # totals estimated (no generation id to reconcile by) rather than implying $0. Worse
+            # than the branch above for the ceiling, not better: there is no id to reconcile from
+            # later at all, so the reservation must not settle as though this were free.
+            spend_ceiling.note_uncertain_spend()
             usage.record_pending(operation, model_name, None)
     except Exception as e:  # noqa: BLE001 — accounting is best-effort
         log.debug("agentic usage accounting skipped (error=%s)", type(e).__name__)

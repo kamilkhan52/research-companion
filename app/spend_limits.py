@@ -82,6 +82,10 @@ _MAX_NANOUSD: dict[str, int] = {
     # measured is 36,987 ($0.555) — §2c. Narration length is unknown at admission and §8 records
     # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
     "speech_synthesis": 600_000_000,
+    # Kept for any caller that asks for a `retrieval` hold, but the retrieval JOB no longer takes
+    # one: its own thread dispatches nothing to a provider (arXiv fetch, local PDF extraction), and
+    # everything under it that does spend — the hunt, affiliations, references — reserves for
+    # itself. A ticket that authorizes no dispatch should not occupy the spend ledger.
     "retrieval": 20_000_000,        # $0.02 — the fetch is free; extraction is cheap
     # The escalation tier, and a different animal from the line above: a multi-turn tool loop with
     # web search and page fetches, on the account's analysis-tier model, taken as its own hold only
@@ -108,11 +112,10 @@ _MAX_NANOUSD: dict[str, int] = {
     # month a build can consume, so pricing it off the wrong model was costing mapped papers.
     "graph_extraction": 30_000_000,    # $0.03
     "author_profile": 20_000_000,   # $0.02
-    # Doing double duty, and it can: the labs JOB's admission ticket, and the per-AUTHOR hold each
-    # web pass takes inside it (`spend_ceiling.per_unit`). One agentic pass is what $0.04 buys, so
-    # the same number is right for both — the job is admitted for roughly one author's worth and
-    # then gated author by author, exactly as a graph build is gated paper by paper. Before that
-    # split, one $0.04 ticket covered up to ten passes and under-reserved by an order of magnitude.
+    # ONE author's web pass. Not an admission ticket as well — the labs registry is
+    # `reserves=False`, so this is reserved only inside `spend_ceiling.per_unit`, once per author.
+    # It briefly did double duty, which meant a reader with $0.06 was admitted on a $0.04 ticket
+    # and then could not afford the $0.04 author, and a crash mid-author charged both.
     "lab_research": 40_000_000,     # $0.04
 }
 
