@@ -182,6 +182,70 @@ def record(
         log.warning("usage event forwarding failed (error=%s)", type(e).__name__)
 
 
+def record_agentic(operation: str, model: str | None, run_usage) -> None:
+    """Record one Pydantic AI run, with a real cost rather than a silent zero.
+
+    `lab_research` and the listening-preview research call both recorded token counts and no
+    `cost` key, so `_apply` computed zero and the reservation covering them settled at zero. They
+    hold budget and spent nothing the ledger could see — the same shape as the unpriced speech
+    model, and the same fix: prefer the authoritative figure, fall back to a priced estimate, and
+    never record free.
+
+    Order of preference:
+      1. OpenRouter's own `cost`, when the adapter preserved it. Exact.
+      2. Tokens x the model's catalogue price. Marked `estimated`, because a catalogue lookup is a
+         local calculation and not what the provider actually billed.
+      3. Tokens with no cost, plus a pending marker — only when the model is not in the catalogue,
+         where a made-up number would be worse than an acknowledged gap.
+
+    Best-effort throughout: accounting must never fail the call it is measuring.
+    """
+    prompt_tokens = int(getattr(run_usage, "input_tokens", 0) or 0)
+    completion_tokens = int(getattr(run_usage, "output_tokens", 0) or 0)
+    payload: dict = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
+
+    details = getattr(run_usage, "details", None) or {}
+    exact = details.get("cost") if isinstance(details, dict) else None
+    if exact is not None:
+        payload["cost"] = exact
+        record(operation, model, payload)
+        return
+
+    estimate = _priced_estimate(model, prompt_tokens, completion_tokens)
+    if estimate is None:
+        record(operation, model, payload)
+        record_pending(operation, model, None)
+        return
+    payload["cost"] = estimate
+    record(operation, model, payload, estimated=True)
+
+
+def _priced_estimate(model: str | None, prompt_tokens: int, completion_tokens: int) -> float | None:
+    """Tokens x catalogue price, or None when the model has no published price.
+
+    Never raises: a catalogue fetch is a network call, and a display-quality estimate must not be
+    able to fail a paid turn that has already happened.
+    """
+    if not model or (not prompt_tokens and not completion_tokens):
+        return None
+    try:
+        from . import llm
+
+        entry = next((m for m in llm.catalogue() if m.get("id") == model), None)
+        pricing = (entry or {}).get("pricing") or {}
+        prompt_rate = float(pricing.get("prompt") or 0)
+        completion_rate = float(pricing.get("completion") or 0)
+    except Exception as e:  # noqa: BLE001 — see the docstring
+        log.warning("could not price %s (error=%s)", model, type(e).__name__)
+        return None
+    if not prompt_rate and not completion_rate:
+        return None
+    return prompt_tokens * prompt_rate + completion_tokens * completion_rate
+
+
 def record_pending(operation: str, model: str | None, generation_id: str | None) -> None:
     """Record that a streaming call was billed upstream but its cost is unknown here (it ended —
     by disconnect or truncation — without the final usage chunk). Stores a bounded pending

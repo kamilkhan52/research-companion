@@ -174,10 +174,9 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     # This is a paid multi-request run outside app.llm, so record its tokens against the
     # active project explicitly (cost stays 0 — OpenRouter's exact usage.cost isn't exposed
     # through the Pydantic AI path; tokens keep the spend visible in /usage).
-    usage.record("lab_research", model, {
-        "prompt_tokens": getattr(run_usage, "input_tokens", 0) or 0,
-        "completion_tokens": getattr(run_usage, "output_tokens", 0) or 0,
-    })
+    # Priced rather than recorded free: this holds budget through the `lab-research` registry,
+    # and a run that settles at zero is spend the ceiling never sees.
+    usage.record_agentic("lab_research", model, run_usage)
     return parse_result(output)
 
 

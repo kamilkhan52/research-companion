@@ -19,7 +19,18 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
 
-from . import agent_harness, model_provenance, prompts, research_tools, retriever, safe_fetch
+from . import (
+    agent_harness,
+    logging_config,
+    model_provenance,
+    prompts,
+    research_tools,
+    retriever,
+    safe_fetch,
+    usage,
+)
+
+log = logging_config.get("retrieval_agent")
 
 HUNT_MAX_PDF_BYTES = 40_000_000
 
@@ -90,6 +101,21 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
                 if holder.get("full_text"):
                     break  # got the paper — no need to let the model keep narrating
         summary = (run.result.output if run.result else "") or ""
+        # The hunt is a full agentic tool loop and recorded NOTHING: it builds its own Pydantic AI
+        # agent, so it never passes through `llm.complete`'s accounting and never reached
+        # `usage.record`. Its cost sat entirely outside both the ledger and the spend ceiling,
+        # against a retrieval hold sized for a cheap extraction. Recorded from whatever the run
+        # actually used, priced or exact.
+        #
+        # Best-effort and deliberately last: a retrieval that found the paper must not be turned
+        # into a failure by an accounting problem.
+        try:
+            if run.result is not None:
+                usage.record_agentic(
+                    "retrieval_hunt", getattr(ag.model, "model_name", None), run.result.usage(),
+                )
+        except Exception as exc:  # noqa: BLE001 — accounting never fails the work it measures
+            log.warning("hunt usage not recorded (error=%s)", type(exc).__name__)
     except Exception:
         yield {
             "type": "result",

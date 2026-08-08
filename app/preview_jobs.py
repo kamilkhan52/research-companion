@@ -240,10 +240,8 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
         ),
     )
     run_usage = result.usage()
-    usage.record("listening_preview_research", model, {
-        "prompt_tokens": getattr(run_usage, "input_tokens", 0) or 0,
-        "completion_tokens": getattr(run_usage, "output_tokens", 0) or 0,
-    })
+    # Same as lab_research: the cue coordinator holds budget, so an unpriced run settled at zero.
+    usage.record_agentic("listening_preview_research", model, run_usage)
     return str(result.output or "")[:6_000]
 
 
