@@ -148,7 +148,7 @@ def test_each_agentic_path_is_capped_at_its_own_budget_not_the_analysis_one(monk
                         lambda: {"openrouter_api_key": "sk-test", "model": "test/model"})
 
     analysis = operation_limits.tokens_for("analysis")
-    for operation in ("retrieval_hunt", "lab_research", "listening_preview"):
+    for operation in ("retrieval_hunt", "lab_research", "listening_preview_research"):
         model = agent_harness._openrouter_model(operation=operation)
         cap = model.settings.get("max_tokens")
         assert cap == operation_limits.tokens_for(operation), (
@@ -198,3 +198,34 @@ def test_the_three_paths_read_the_usage_property_and_record_through_the_harness(
                 f"{module.__name__} must pass the run's messages; without them the recorder "
                 "cannot read the provider's authoritative cost and the reservation settles at zero"
             )
+
+
+def test_the_preview_research_pass_is_not_capped_at_the_cue_budget(monkeypatch):
+    """A cue is one 180-token line; the research pass behind it returns up to 6,000 characters of
+    sourced findings. They are different operations and were briefly given the same ceiling, which
+    would have truncated the research output — a new defect dressed as a bound.
+
+    Asserts what `_research_with_agent` ACTUALLY builds its model with. Checking only that the
+    table holds a bigger number passes while the call site still asks for the cue's budget.
+    """
+    from app import agent_harness, operation_limits, preview_jobs
+
+    asked: list[str] = []
+
+    def capture(model_id=None, operation="analysis"):
+        asked.append(operation)
+        return FunctionModel(lambda m, i: _openrouter_response(0.0001))
+
+    monkeypatch.setattr(agent_harness, "_openrouter_model", capture)
+    monkeypatch.setattr(preview_jobs, "resolve_model", lambda settings=None: "test/model")
+
+    preview_jobs._research_with_agent("A Paper", "metadata")
+
+    assert asked == ["listening_preview_research"], (
+        f"the research pass built its model as {asked}, so it inherits the cue's ceiling"
+    )
+    research_cap = operation_limits.tokens_for("listening_preview_research")
+    assert research_cap >= preview_jobs.MAX_GROUNDED_SOURCE_CHARS / 4, (
+        "the research cap must fit the characters the function promises to return"
+    )
+    assert research_cap > operation_limits.tokens_for("listening_preview")

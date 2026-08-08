@@ -52,6 +52,11 @@ _LIMITS: dict[str, tuple[int, float]] = {
     # of that is pushing hundreds of unscreened candidates into the paid abstract stage.
     "discovery_screen": (16_000, 300.0),
     "listening_preview": (1_000, 120.0),
+    # The RESEARCH pass, not the cue. Distinct from `listening_preview` above because the cue is a
+    # 180-token line and this returns up to 6,000 characters of sourced findings — roughly 1,500
+    # tokens before the tool-call turns are counted. Capping it at the cue's budget would truncate
+    # a working feature, which is a new defect rather than a fix.
+    "listening_preview_research": (4_000, 180.0),
     "affiliations": (2_000, 120.0),
     "author_profile": (4_000, 180.0),
     "lab_research": (8_000, 300.0),

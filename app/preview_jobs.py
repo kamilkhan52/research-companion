@@ -220,7 +220,7 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
 
     model = resolve_model()
     research_agent = Agent(
-        agent_harness._openrouter_model(model, operation="listening_preview"),
+        agent_harness._openrouter_model(model, operation="listening_preview_research"),
         system_prompt=(prompts.get("listening_preview_research")
                        + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],
