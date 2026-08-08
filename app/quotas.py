@@ -278,6 +278,40 @@ def reserve(
         ) from None
 
 
+def period_usage(user_id: str) -> tuple[int, int] | None:
+    """What this account has SPENT and what it currently HOLDS in the live period, in nano-USD.
+
+    Two numbers rather than one because they mean opposite things to a reader: spend does not come
+    back until the period rolls over, while a hold clears in seconds when its job settles. A
+    surface that adds them together tells someone with four jobs running that they are nearly out
+    of budget when they have barely spent anything — the same confusion the transient/exhausted
+    split in `QuotaExceeded` exists to remove.
+
+    Read-only: this feeds a display, so it never raises. But it distinguishes "no database" —
+    where zero is the honest answer, because the ceiling is inert too — from "the query failed",
+    where the answer is unknown. Returning zero for the second would tell a reader their whole
+    allowance is intact at the exact moment every job is failing closed.
+    """
+    if not db.enabled():
+        return (0, 0)
+    start, end = calendar_month()
+    try:
+        with db.pool().connection() as conn:
+            row = conn.execute(
+                "select "
+                "coalesce(sum(case when state = 'settled' then actual_nanousd else 0 end), 0), "
+                "coalesce(sum(case when state = 'reserved' then reserved_nanousd else 0 end), 0) "
+                "from rc_usage_reservations "
+                "where user_id = %s and period_start = %s and period_end = %s "
+                "and state in ('reserved', 'settled')",
+                (user_id, start, end),
+            ).fetchone()
+        return (int(row[0]), int(row[1]))
+    except Exception as e:  # noqa: BLE001 — a usage display must not fail the request
+        log.warning("period usage unavailable (error=%s)", type(e).__name__)
+        return None
+
+
 def get(reservation_id: str, *, user_id: str) -> Reservation | None:
     """Fetch one reservation only within its verified owner scope."""
     if not db.enabled():

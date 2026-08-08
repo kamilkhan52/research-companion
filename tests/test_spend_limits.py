@@ -15,9 +15,16 @@ def test_the_credit_peg_is_a_tenth_of_a_cent():
     assert spend_limits.NANOUSD_PER_CREDIT == 1_000_000
 
 
-def test_the_default_ceiling_matches_the_pricing_analysis_basic_tier():
-    # 2,500 credits = $2.50 of variable cost against $8.40 net revenue (pricing analysis §1).
-    assert spend_limits.monthly_limit_nanousd() == 2_500 * 1_000_000
+def test_the_default_ceiling_comes_from_the_default_plan():
+    """The ceiling is a property of the account's PLAN now, not a bare constant.
+
+    That indirection is the point: a named plan is what the client can render and what M4's
+    entitlements map onto, whereas a lone env var is invisible to everyone but whoever set it.
+    """
+    from app import plans
+
+    expected = plans.PLANS[plans.DEFAULT_PLAN].monthly_credits * 1_000_000
+    assert spend_limits.monthly_limit_nanousd() == expected
 
 
 def test_the_ceiling_is_operator_configurable_in_credits(monkeypatch):
@@ -28,9 +35,13 @@ def test_the_ceiling_is_operator_configurable_in_credits(monkeypatch):
 @pytest.mark.parametrize("bad", ["", "  ", "lots", "-5", "0", "2.5"])
 def test_a_bad_ceiling_falls_back_to_the_default_rather_than_unlimited(monkeypatch, bad):
     """The dangerous configuration is absence: a typo must never read as 'no ceiling'."""
+    from app import plans
+
     monkeypatch.setenv("RC_MONTHLY_CREDITS", bad)
+    # Falls back to the PLAN, not to a bare constant — an unusable override must leave the account
+    # on what it is actually entitled to.
     assert spend_limits.monthly_limit_nanousd() == (
-        spend_limits.DEFAULT_MONTHLY_CREDITS * spend_limits.NANOUSD_PER_CREDIT
+        plans.monthly_credits(None) * spend_limits.NANOUSD_PER_CREDIT
     )
 
 
@@ -82,7 +93,10 @@ def test_the_holds_are_in_nano_usd_and_not_off_by_a_factor_of_a_thousand():
     assert 0.05 <= usd(spend_limits.max_cost_nanousd("analysis")) <= 1.0
     assert 0.10 <= usd(spend_limits.max_cost_nanousd("speech_synthesis")) <= 2.0
     assert 0.001 <= usd(spend_limits._DEFAULT_MAX_NANOUSD) <= 1.0
-    assert usd(spend_limits.monthly_limit_nanousd()) == 2.5
+    # The ceiling now follows the account's plan; assert the UNIT, which is what this test is
+    # about, rather than a number that moves whenever the default plan does.
+    from app import plans
+    assert usd(spend_limits.monthly_limit_nanousd()) == plans.monthly_credits(None) / 1000
 
 
 def test_the_analysis_hold_exceeds_the_measured_turn_cost():

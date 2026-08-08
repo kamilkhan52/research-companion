@@ -32,24 +32,25 @@ log = logging_config.get("spend_limits")
 #: Nano-USD in one credit. The peg the whole tier design rests on.
 NANOUSD_PER_CREDIT = 1_000_000  # $0.001
 
-#: Pricing analysis §1: Basic is 2,500 credits/month ($2.50 of variable cost) against $8.40 of net
-#: revenue. Free is 200. Defaulting to Basic keeps the single household and the current allowlisted
-#: testers working without per-account configuration; it is a ceiling, not an allowance to spend.
-DEFAULT_MONTHLY_CREDITS = 2_500
-
 #: Fraction of the ceiling at which the client should warn, not refuse.
 SOFT_WARNING_AT = 0.8
 
 
 def monthly_limit_nanousd() -> int:
-    """The hard monthly ceiling for one account, in nano-USD.
+    """The hard monthly ceiling for the active account, in nano-USD.
 
-    Operator-configurable in credits so the unit matches the pricing analysis. An invalid or
-    non-positive value falls back to the default rather than being read as "unlimited": the
-    dangerous configuration is absence, same discipline as the rate limits and the cache bounds.
+    Comes from the account's PLAN (`plans.py`) unless an operator override is set. The plan is the
+    normal answer and the override is the escape hatch, not the other way round: a named plan is
+    what the client can render and what M4's entitlements will map onto, whereas an env var is
+    invisible to everyone but whoever set it.
+
+    An invalid or non-positive override falls back rather than being honoured — the dangerous
+    configuration is absence, same discipline as the rate limits and the cache bounds.
     """
+    from . import plans
+
     raw = os.environ.get("RC_MONTHLY_CREDITS", "").strip()
-    credits = DEFAULT_MONTHLY_CREDITS
+    credits = plans.monthly_credits(config.active_user_id())
     if raw:
         try:
             parsed = int(raw)
