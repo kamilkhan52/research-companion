@@ -189,3 +189,33 @@ def test_the_run_level_output_ceiling_can_actually_fire():
         assert 2 < fires_at <= request_limit, (
             f"{operation} aborts at request {fires_at} of {request_limit}"
         )
+
+
+def test_the_run_ceiling_clears_real_observed_output_by_a_wide_margin():
+    """A bound sized below what the feature actually produces is a new defect, not a fix.
+
+    The numbers on the right are measured from Kamil's own usage ledgers (2026-08-08): the mean
+    analysis call emits 3,732 completion tokens, labs writes one line, and the preview research
+    pass is capped at 6,000 characters. Asserting a MARGIN rather than the exact fraction means
+    re-tuning `_RUN_OUTPUT_FRACTION` is safe but shrinking it past what the app really emits is not.
+    """
+    from app import operation_limits
+
+    observed_per_request = {
+        "analysis": 3_732,
+        "lab_research": 600,
+        "listening_preview_research": 1_500,
+        "retrieval_hunt": 600,
+    }
+    request_limits = {
+        "analysis": 12, "lab_research": 10,
+        "listening_preview_research": 7, "retrieval_hunt": 12,
+    }
+    for operation, per_request in observed_per_request.items():
+        limit = request_limits[operation]
+        ceiling = operation_limits.run_output_ceiling(operation, limit)
+        expected_run = per_request * limit
+        assert ceiling > expected_run * 2, (
+            f"{operation}'s ceiling ({ceiling}) leaves no margin over a typical run "
+            f"({expected_run}); a normal run would abort"
+        )

@@ -58,9 +58,13 @@ _LIMITS: dict[str, tuple[int, float]] = {
     "listening_preview": (1_000, 120.0),
     # The RESEARCH pass, not the cue. Distinct from `listening_preview` above because the cue is a
     # 180-token line and this returns up to 6,000 characters of sourced findings — roughly 1,500
-    # tokens before the tool-call turns are counted. Capping it at the cue's budget would truncate
-    # a working feature, which is a new defect rather than a fix.
-    "listening_preview_research": (4_000, 180.0),
+    # tokens before reasoning or the tool-call turns are counted. Capping it at the cue's budget
+    # would truncate a working feature, which is a new defect rather than a fix.
+    #
+    # 6,000 rather than 4,000 so the run-level ceiling derived from it keeps a real margin: at
+    # 4,000 the ceiling landed at 16,800 against a theoretical 10,500-token run, and a backstop
+    # only 1.6x above what the feature can legitimately emit is one bad run away from aborting it.
+    "listening_preview_research": (6_000, 180.0),
     "affiliations": (2_000, 120.0),
     "author_profile": (4_000, 180.0),
     "lab_research": (8_000, 300.0),
@@ -124,6 +128,15 @@ def clamp_timeout(operation: str, requested: float) -> float:
 #: produce — and pydantic-ai raises on `>`, not `>=`. So the sum could equal the limit but never
 #: exceed it, `request_limit` always tripped first, and the "backstop" was unreachable by
 #: construction. A backstop that cannot fire is not one.
+#:
+#: 0.6 measured, not guessed — against 101 real analysis calls in Kamil's own ledgers
+#: (`projects/*/.state/usage.json`, 2026-08-08), whose MEAN completion is 3,732 tokens. A
+#: twelve-request analysis run therefore emits on the order of 45,000 output tokens against a
+#: ceiling of 172,800, so this fires only on a genuine runaway. The same check on the other three:
+#: labs writes one line per author (`author_profile` mean 600) against 48,000, and the preview
+#: research pass is capped at 6,000 characters of findings — about 1,500 tokens a request, ~10,500
+#: over its budget — against 16,800. Tightening this without re-measuring would abort working
+#: features, which is the failure mode a bound is supposed to prevent, not cause.
 _RUN_OUTPUT_FRACTION = 0.6
 
 
