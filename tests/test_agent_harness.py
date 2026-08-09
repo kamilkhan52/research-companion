@@ -314,7 +314,7 @@ def test_non_openrouter_run_uses_estimated_aggregate_fallback(temp_project, monk
     # Injected/non-OpenRouter models do not expose authoritative provider cost. Preserve the old
     # aggregate token record plus an estimate marker rather than implying exact zero spend.
     recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(
+    agent_harness.record_agent_run(
         _usage_obj(input_tokens=100, output_tokens=40, requests=3), None, "analysis")
     assert recorded and recorded[0]["total_tokens"] == 140
     assert pending == [("analysis", None)]
@@ -344,7 +344,7 @@ def test_openrouter_tool_loop_records_each_request_with_exact_cost(temp_project,
 
     # The aggregate deliberately disagrees: captured provider responses are authoritative and
     # must not be followed by a duplicate aggregate record.
-    agent_harness._record_run_usage(
+    agent_harness.record_agent_run(
         _usage_obj(input_tokens=999, output_tokens=999, requests=2),
         None,
         "analysis",
@@ -365,7 +365,7 @@ def test_openrouter_exact_event_keeps_its_generation_id(temp_project, monkeypatc
         "record",
         lambda op, model, data, **kwargs: seen.append(kwargs.get("generation_id")),
     )
-    agent_harness._record_run_usage(
+    agent_harness.record_agent_run(
         _usage_obj(requests=1),
         None,
         "analysis",
@@ -380,7 +380,7 @@ def test_exact_openrouter_responses_leave_ledger_unestimated(temp_project):
         _openrouter_response(generation_id="gen-2", cost=0.002, prompt=30, completion=10),
     ]
 
-    agent_harness._record_run_usage(_usage_obj(requests=2), None, "analysis", responses)
+    agent_harness.record_agent_run(_usage_obj(requests=2), None, "analysis", responses)
 
     summary = agent_harness.usage.summary()
     assert summary["total"]["calls"] == 2
@@ -397,7 +397,7 @@ def test_openrouter_response_without_cost_is_pending_by_generation(temp_project,
         _openrouter_response(generation_id="gen-pending", cost=None, prompt=10, completion=2),
     ]
 
-    agent_harness._record_run_usage(_usage_obj(requests=2), None, "analysis", responses)
+    agent_harness.record_agent_run(_usage_obj(requests=2), None, "analysis", responses)
 
     assert recorded == [
         {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35, "cost": 0.002}
@@ -440,7 +440,7 @@ def test_billed_run_without_token_counts_still_records_a_pending_marker(temp_pro
     # A billed request whose token counts never arrived (interrupted mid-request) records no
     # token aggregate but still a pending marker, so it isn't invisible.
     recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(_usage_obj(requests=1), None, "analysis")
+    agent_harness.record_agent_run(_usage_obj(requests=1), None, "analysis")
     assert recorded == []
     assert pending == [("analysis", None)]
 
@@ -449,5 +449,5 @@ def test_zero_request_run_records_nothing(temp_project, monkeypatch):
     # A run that never issued a request (nothing billed) records neither an aggregate nor a
     # pending marker.
     recorded, pending = _capture_usage(monkeypatch)
-    agent_harness._record_run_usage(_usage_obj(requests=0), None, "analysis")
+    agent_harness.record_agent_run(_usage_obj(requests=0), None, "analysis")
     assert recorded == [] and pending == []

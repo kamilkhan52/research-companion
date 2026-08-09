@@ -683,6 +683,10 @@ export interface LabsResearchJob {
   current: string;
   found: number;
   skipped_cached: number;
+  /** Set when the pass ended early for a reason that is not "we looked and found nothing" —
+   *  today, the account running out of allowance mid-pass. A `done` job carrying this is
+   *  PARTIAL: reporting only its mapped count would call an interrupted pass finished. */
+  stopped_reason?: string;
 }
 
 /** GET /api/projects/{pid}/graph/authors */

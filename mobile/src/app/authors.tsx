@@ -238,8 +238,15 @@ function LabsView({
           qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
           showToast(
             next.status === 'done'
-              ? `Lab research done — ${next.found} of ${next.total} top authors mapped`
-              : 'Lab research failed — try again',
+              // `stopped_reason` means the pass ended early even though it found something —
+              // out of allowance, typically. Reporting only the mapped count would call an
+              // interrupted pass finished, and re-running it produces the same partial result.
+              ? next.stopped_reason
+                ? `Mapped ${next.found} of ${next.total} — ${next.stopped_reason}`
+                : `Lab research done — ${next.found} of ${next.total} top authors mapped`
+              // The server's own message, not a generic retry prompt: a pass can stop because the
+              // account is out of allowance, and "try again" is the one thing that will not help.
+              : next.error || 'Lab research failed — try again',
           );
         }
       } catch {

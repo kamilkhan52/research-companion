@@ -368,3 +368,74 @@ def test_hook_runs_inline_for_an_already_retrieved_paper(temp_project):
     # request and must be metered. Reporting `admitted=True` here was an unmetered LLM turn
     # (plus unmetered narration in listening mode) for any already-retrieved paper.
     assert kicked == [("p1", False)]
+
+
+def test_the_hunt_takes_its_own_hold_not_the_cheap_retrieval_ticket(temp_project, monkeypatch):
+    """`retrieval` is priced for the deterministic path — a fetch that is free and an extraction
+    that is cheap. The hunt is the escalation tier: a multi-turn tool loop with web search and page
+    fetches on the analysis-tier model. Billing it against the cheap ticket admits a reader with
+    two cents of headroom and then charges multiples of it.
+
+    Review found the hold could be deleted outright with the whole suite still green.
+    """
+    from app import spend_ceiling
+
+    _unretrieved_paper(temp_project)
+    monkeypatch.setattr(config, "has_api_key", lambda: True)
+    operations: list[str] = []
+    monkeypatch.setattr(spend_ceiling, "hold",
+                        lambda operation, job_id, **kw: operations.append(operation))
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    def fail(title, aid, url):
+        raise RetrievalError("arXiv unavailable")
+
+    async def hunt(title):
+        yield {"type": "result", "ok": True, "full_text": "found",
+               "source": "https://example.org/p.pdf"}
+
+    snap = _settled(retrieval_jobs.start_retrieval(
+        "p1", retrieve_fn=fail, hunt_fn=hunt).id)
+
+    assert snap["status"] == "done"
+    # EXACTLY the hunt's hold, and no `retrieval` ticket beside it. The retrieval job's own thread
+    # dispatches nothing to a provider — an arXiv fetch and a local PDF extraction — so a ticket
+    # here only stacks $0.02 on top of the hunt's $0.10, refusing readers who could afford the work
+    # and, on a crash, letting the reconciler conservatively charge both. Asserting `in` rather
+    # than equality let that stacking through.
+    assert operations == ["retrieval_hunt"], (
+        f"expected only the hunt's own hold, got {operations}"
+    )
+
+
+def test_a_hunt_refused_for_budget_reports_the_refusal_not_a_retrieval_failure(
+    temp_project, monkeypatch,
+):
+    """Out of allowance is not "we could not find your paper". Telling a reader to try a different
+    title when the real answer is that they are out of credit sends them somewhere useless."""
+    from app import quotas, spend_ceiling
+
+    _unretrieved_paper(temp_project)
+    monkeypatch.setattr(config, "has_api_key", lambda: True)
+
+    def refuse(operation, job_id, **kw):
+        if operation == "retrieval_hunt":
+            raise quotas.QuotaExceeded(
+                used_nanousd=10, requested_nanousd=10, limit_nanousd=10,
+            )
+        return None
+
+    monkeypatch.setattr(spend_ceiling, "hold", refuse)
+    monkeypatch.setattr(spend_ceiling, "settle", lambda held: None)
+
+    def fail(title, aid, url):
+        raise RetrievalError("arXiv unavailable")
+
+    async def hunt(title):  # never reached
+        yield {"type": "result", "ok": True, "full_text": "x", "source": "u"}
+
+    snap = _settled(retrieval_jobs.start_retrieval("p1", retrieve_fn=fail, hunt_fn=hunt).id)
+
+    assert snap["status"] == "error"
+    assert "usage limit" in (snap["error"] or "").lower(), snap["error"]
+    assert snap["retrieved"] is False

@@ -82,7 +82,17 @@ _MAX_NANOUSD: dict[str, int] = {
     # measured is 36,987 ($0.555) — §2c. Narration length is unknown at admission and §8 records
     # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
     "speech_synthesis": 600_000_000,
+    # Kept for any caller that asks for a `retrieval` hold, but the retrieval JOB no longer takes
+    # one: its own thread dispatches nothing to a provider (arXiv fetch, local PDF extraction), and
+    # everything under it that does spend — the hunt, affiliations, references — reserves for
+    # itself. A ticket that authorizes no dispatch should not occupy the spend ledger.
     "retrieval": 20_000_000,        # $0.02 — the fetch is free; extraction is cheap
+    # The escalation tier, and a different animal from the line above: a multi-turn tool loop with
+    # web search and page fetches, on the account's analysis-tier model, taken as its own hold only
+    # when the deterministic path has already failed. Generous rather than tight — refusing a
+    # legitimate reader is the failure the roadmap ranks worse than a mild overspend, and a reader
+    # who reaches the hunt has already had one retrieval fail.
+    "retrieval_hunt": 100_000_000,  # $0.10
     "discovery": 150_000_000,       # $0.15 — a measured cold run was $0.013; slice 2 widened recall
     # Nominal, and deliberately so: a build spends nothing on its own thread. Every paper it
     # extracts takes its own `graph_extraction` hold through `paper-references`, so the build is
@@ -102,6 +112,10 @@ _MAX_NANOUSD: dict[str, int] = {
     # month a build can consume, so pricing it off the wrong model was costing mapped papers.
     "graph_extraction": 30_000_000,    # $0.03
     "author_profile": 20_000_000,   # $0.02
+    # ONE author's web pass. Not an admission ticket as well — the labs registry is
+    # `reserves=False`, so this is reserved only inside `spend_ceiling.per_unit`, once per author.
+    # It briefly did double duty, which meant a reader with $0.06 was admitted on a $0.04 ticket
+    # and then could not afford the $0.04 author, and a crash mid-author charged both.
     "lab_research": 40_000_000,     # $0.04
 }
 

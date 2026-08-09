@@ -18,6 +18,7 @@ from . import (
     rate_limits,
     retrieval_agent,
     retriever,
+    spend_ceiling,
     store,
 )
 from .jobs import Job, JobRegistry, new_id, now_iso
@@ -48,7 +49,13 @@ class RetrievalJob(Job):
     canonical_job_id: str | None = None
 
 
-_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True)
+# `reserves=False` for the same reason as `lab-research`: this job's own thread dispatches nothing
+# to a provider. The deterministic path is an arXiv fetch and a local PDF extraction; the LLM spend
+# is the hunt, which now holds for itself, and the fan-out children that spend
+# (`paper-affiliations`, `paper-references`) each reserve their own. Holding $0.02 here on top of
+# the hunt's $0.10 refused readers who could afford the work and, on a crash, charged both.
+_registry: JobRegistry[RetrievalJob] = JobRegistry("retrieval", max_finished=30, metered=True,
+                                                   reserves=False)
 _jobs = _registry.jobs
 
 
@@ -159,7 +166,24 @@ def start_retrieval(
 
         with _registry.lock:
             job.phase = "hunting"
-        asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
+        # The hunt takes its OWN hold rather than riding the retrieval ticket. `retrieval` is
+        # priced at $0.02 for "the fetch is free; extraction is cheap" — a deterministic path that
+        # spends almost nothing. The hunt is the escalation tier: a multi-turn tool loop with web
+        # search and page fetches, on the account's analysis-tier model. Billing it against the
+        # cheap ticket admits a reader with two cents of headroom and then charges multiples of it,
+        # which is the same under-reservation this branch just fixed for labs.
+        #
+        # Deliberately not folded into the `retrieval` maximum: most retrievals never hunt, and
+        # sizing every one of them for the rare escalation would park budget that never becomes
+        # spend — measured on the graph build as roughly ten mapped papers a month.
+        # NOTE: `_persist` fans out from inside this block — affiliations, references, cover
+        # render, canonical warm. Any child registry that does NOT take its own reservation
+        # inherits this hold and settles microseconds later against it. That is safe today only
+        # because the two children that spend (`paper-affiliations`, `paper-references`) are
+        # `reserves=True`, and the rest make no LLM calls at all. A new child that spends and does
+        # not reserve would bill against a hold that has already closed.
+        with spend_ceiling.per_unit("retrieval_hunt", job.id):
+            asyncio.run(_consume_hunt(job, paper.title, first_error, hunt_fn))
 
     def work_then_analyze(job: RetrievalJob) -> None:
         work(job)

@@ -16,12 +16,48 @@ from collections.abc import AsyncIterator
 
 import httpx
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai.models import Model
+from pydantic_ai.usage import UsageLimits
 
-from . import agent_harness, model_provenance, prompts, research_tools, retriever, safe_fetch
+from . import (
+    agent_harness,
+    logging_config,
+    model_provenance,
+    operation_limits,
+    prompts,
+    research_tools,
+    retriever,
+    safe_fetch,
+)
+
+log = logging_config.get("retrieval_agent")
 
 HUNT_MAX_PDF_BYTES = 40_000_000
+
+#: How many model requests one hunt may make, and how many tool calls within them.
+#:
+#: The hunt was the only agentic path in the app running unbounded — it inherited pydantic-ai's
+#: default `request_limit=50` and NO tool-call limit, each request able to emit an analysis-sized
+#: completion. That is the loosest budget in the app attached to the cheapest hold, which is
+#: precisely backwards.
+#:
+#: Sized ABOVE what the prompt asks for, not at it. `prompts._RETRIEVAL_HUNT` budgets a search
+#: (sometimes two — "add pdf or the venue when helpful") plus "try at most 5 URLs" plus a final
+#: answer: seven to eight requests before the agent's own `retries=2` is counted. A limit of
+#: exactly eight would be tripped by a hunt doing precisely what it was told, and the caller
+#: reports a tripped limit as "the model provider could not complete the PDF hunt" — our own
+#: ceiling, misattributed to the provider.
+MAX_HUNT_REQUESTS = 12
+MAX_HUNT_TOOL_CALLS = 10
+_HUNT_LIMITS = UsageLimits(
+    request_limit=MAX_HUNT_REQUESTS,
+    tool_calls_limit=MAX_HUNT_TOOL_CALLS,
+    output_tokens_limit=operation_limits.run_output_ceiling(
+        "retrieval_hunt", MAX_HUNT_REQUESTS,
+    ),
+)
 
 
 def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Agent:
@@ -64,7 +100,7 @@ def build_hunt_agent(title: str, holder: dict, model: Model | None = None) -> Ag
         return research_tools.web_search(objective, search_queries)
 
     framed_title = model_provenance.frame("paper_title", title)
-    return Agent(model or agent_harness._openrouter_model(),
+    return Agent(model or agent_harness._openrouter_model(operation="retrieval_hunt"),
                  system_prompt=(prompts.render("retrieval_hunt", title=framed_title)
                                 + "\n\n" + model_provenance.SYSTEM_POLICY),
                  tools=[web_search, fetch_pdf], output_type=str, retries=2)
@@ -75,10 +111,12 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
     {'type':'result', ok, full_text?, source?, summary}."""
     holder: dict = {}
     ag = build_hunt_agent(title, holder, model=model)
+    run = None
     try:
         async with ag.iter(
             "Find the working PDF for this paper title:\n\n"
-            + model_provenance.frame("paper_title", title)
+            + model_provenance.frame("paper_title", title),
+            usage_limits=_HUNT_LIMITS,
         ) as run:
             async for node in run:
                 if Agent.is_call_tools_node(node):
@@ -90,6 +128,17 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
                 if holder.get("full_text"):
                     break  # got the paper — no need to let the model keep narrating
         summary = (run.result.output if run.result else "") or ""
+    except UsageLimitExceeded:
+        # Our ceiling, not the provider's. Reported separately because the generic message names
+        # the provider for something we did, and because a hunt that ran out of tries has usually
+        # searched — a different thing from one that could not start.
+        log.info("hunt hit its own request budget for %r", title[:80])
+        yield {
+            "type": "result",
+            "ok": False,
+            "summary": "Searched without finding a downloadable PDF.",
+        }
+        return
     except Exception:
         yield {
             "type": "result",
@@ -97,6 +146,29 @@ async def stream_hunt(title: str, model: Model | None = None) -> AsyncIterator[d
             "summary": "The model provider could not complete the PDF hunt.",
         }
         return
+    finally:
+        # The hunt is a full agentic tool loop and recorded NOTHING: it builds its own Pydantic AI
+        # agent, so it never passes through `llm.complete`'s accounting and never reached
+        # `usage.record`. Its cost sat entirely outside both the ledger and the spend ceiling,
+        # against a retrieval hold sized for a cheap extraction.
+        #
+        # In `finally`, not at the end of the happy path: the hunt tries candidate after candidate,
+        # so tripping a request limit or a provider 5xx partway through is an ordinary outcome —
+        # that is what the `except` above exists for — and several generations have already been
+        # paid for by then. Recording only on success meters the cheap case and forgives the
+        # expensive one. `stream_agent_events` settled this the same way.
+        #
+        # `run.all_messages()`, not None: only the per-response branch of the recorder reads
+        # OpenRouter's authoritative `cost`, so passing no messages records tokens with no dollars
+        # and settles the reservation at exactly zero — the very hole this is here to close. The
+        # messages survive the early `break`; `run.result` does not.
+        if run is not None:
+            try:
+                agent_harness.record_agent_run(
+                    run.usage, ag.model, "retrieval_hunt", run.all_messages(),
+                )
+            except Exception as exc:  # noqa: BLE001 — accounting never fails the work it measures
+                log.warning("hunt usage not recorded (error=%s)", type(exc).__name__)
     yield {"type": "result", "ok": bool(holder.get("full_text")),
            "full_text": holder.get("full_text"), "source": holder.get("source"),
            "summary": summary[:300]}

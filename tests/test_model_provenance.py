@@ -223,20 +223,29 @@ def test_every_pydantic_tool_agent_gets_the_fixed_policy(temp_project, monkeypat
     class Result:
         output = "RESULT: {\"found\": false}"
 
+        # `usage` is a PROPERTY on pydantic-ai's AgentRunResult, not a method. This fake used to
+        # declare it a staticmethod, which made the production bug — `result.usage()` — look
+        # correct here while raising TypeError against the real library. A fake that agrees with
+        # its caller rather than with the library under test proves nothing.
+        usage = SimpleNamespace(input_tokens=0, output_tokens=0, requests=1, details={})
+
         @staticmethod
-        def usage():
-            return SimpleNamespace(input_tokens=0, output_tokens=0)
+        def all_messages():
+            return []
 
     class FakeAgent:
         def __init__(self, _model, **kwargs):
             captured.append(kwargs["system_prompt"])
+            # Real `Agent` exposes the model it was built with; metering reads it to price the
+            # run. Omitting it here let the fake pass while production raised AttributeError.
+            self.model = _model
 
         async def run(self, prompt, *_args, **_kwargs):
             run_inputs.append(prompt)
             return Result()
 
     monkeypatch.setattr(pydantic_ai, "Agent", FakeAgent)
-    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None: object())
+    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None, operation="analysis": object())
     monkeypatch.setattr(preview_jobs, "resolve_model", lambda settings=None: "test/model")
     monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
 

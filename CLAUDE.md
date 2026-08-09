@@ -151,6 +151,26 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
   initiating project (or an app-global `UNATTRIBUTED` ledger); a billed-but-unknown stream stores
   a reconcilable `pending` record and flags totals `estimated`. `GET /api/projects/{pid}/usage`
   (`summary()`). Foundation for credits.
+- **The spend stack** (M3), four modules with one job each — keep the split, it is what stopped the
+  ceiling growing a second source of truth:
+  - `quotas.py` — the durable reservation LEDGER in Postgres: reserve a maximum atomically against
+    a ceiling, dispatch, settle to actual, reconcile orphans past their lease. Knows nothing about
+    what anything costs. Fails CLOSED — an unreachable ledger refuses, because a ceiling that opens
+    when its store is down is not a ceiling.
+  - `spend_limits.py` — the PRICES: the monthly ceiling, the pessimistic per-operation maximum to
+    hold at admission, and each operation's lease. Product decisions, kept out of the mechanism.
+  - `spend_ceiling.py` — the in-process BINDING: `hold`/`settle`, the reservation contextvar that
+    `usage.record` credits through `note_spend`, and `per_unit` for a job that does N units of paid
+    work and must be gated per unit rather than by its admission ticket alone (labs per author, the
+    retrieval hunt, mirroring the graph build's per-paper gating).
+  - `plans.py` — the named plans (`tester`/`free`/`basic`) an allowance comes from. One plan per
+    DEPLOYMENT today, not per account; `for_user` is shaped for the per-account lookup M4's
+    entitlements will make real.
+- `operation_limits.py` — per-CALL ceilings (max completion tokens, per-attempt timeout), as
+  distinct from the per-ACCOUNT monthly bound above: a single runaway request costs real money in
+  one shot, long before the monthly ledger notices. Clamped inside `llm.complete`/`stream` for the
+  raw client; the Pydantic AI paths read the same table for their model's `max_tokens` and, via
+  `run_output_ceiling`, their run-level `UsageLimits`.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
 - `committer.py` — the one component that writes approved changes + git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.

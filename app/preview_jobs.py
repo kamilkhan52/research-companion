@@ -22,6 +22,7 @@ from . import (
     llm,
     logging_config,
     model_provenance,
+    operation_limits,
     prompts,
     store,
     tts,
@@ -192,6 +193,12 @@ _external_cache: dict[str, list[dict]] = {}
 _EXTERNAL_CACHE_MAX = 64
 MAX_RESEARCH_AGENT_REQUESTS = 7
 MAX_RESEARCH_AGENT_TOOL_CALLS = 5
+#: Module scope, not inline in the `UsageLimits(...)` call, purely so a test can assert it. Built
+#: inline it was deletable with the whole suite green — the same gap `lab_research._OUTPUT_TOKENS_
+#: LIMIT` was hoisted to close.
+_RESEARCH_OUTPUT_TOKENS_LIMIT = operation_limits.run_output_ceiling(
+    "listening_preview_research", MAX_RESEARCH_AGENT_REQUESTS,
+)
 
 # Per-cue context budget. The old 12K paper + 18K project slices were copied into EVERY cue, then
 # live sentences and three overlapping cue-history fields were added. Measured result: 11,373
@@ -205,10 +212,10 @@ MAX_LIVE_SOURCE_CHARS = 2_000
 def _research_with_agent(title: str, paper_metadata: str) -> str:
     """Run a small read-only search/fetch agent and return its sourced findings."""
     # Imported lazily: pydantic_ai is heavyweight and tests inject a research function.
-    from pydantic_ai import Agent
-    from pydantic_ai.usage import UsageLimits
+    from pydantic_ai import Agent, capture_run_messages
+    from pydantic_ai.usage import RunUsage, UsageLimits
 
-    from . import agent_harness, research_tools, usage
+    from . import agent_harness, research_tools
 
     def web_search(objective: str, search_queries: list[str]) -> str:
         """Search for reliable context. Use 1-3 focused queries; results include URLs."""
@@ -220,30 +227,40 @@ def _research_with_agent(title: str, paper_metadata: str) -> str:
 
     model = resolve_model()
     research_agent = Agent(
-        agent_harness._openrouter_model(model),
+        agent_harness._openrouter_model(model, operation="listening_preview_research"),
         system_prompt=(prompts.get("listening_preview_research")
                        + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],
         output_type=str,
         retries=2,
     )
-    result = asyncio.run(
-        research_agent.run(
-            model_provenance.frame(
-                "paper_metadata",
-                f"Paper title: {title}\n\nKnown project metadata:\n{paper_metadata[:4_000]}",
-            ),
-            usage_limits=UsageLimits(
-                request_limit=MAX_RESEARCH_AGENT_REQUESTS,
-                tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
-            ),
-        ),
-    )
-    run_usage = result.usage()
-    usage.record("listening_preview_research", model, {
-        "prompt_tokens": getattr(run_usage, "input_tokens", 0) or 0,
-        "completion_tokens": getattr(run_usage, "output_tokens", 0) or 0,
-    })
+    # Metered in a `finally` over `capture_run_messages`, not from `result`: a run that trips its
+    # request budget or dies mid-loop has already been billed for the requests it made, and
+    # `external_sources` swallows the exception — so those runs were paid for and recorded nothing
+    # at all. Recording only on success meters the cheap runs and forgives the expensive ones.
+    run_usage = RunUsage()
+    with capture_run_messages() as captured:
+        try:
+            result = asyncio.run(
+                research_agent.run(
+                    model_provenance.frame(
+                        "paper_metadata",
+                        f"Paper title: {title}\n\nKnown project metadata:\n"
+                        f"{paper_metadata[:4_000]}",
+                    ),
+                    usage_limits=UsageLimits(
+                        request_limit=MAX_RESEARCH_AGENT_REQUESTS,
+                        tool_calls_limit=MAX_RESEARCH_AGENT_TOOL_CALLS,
+                        output_tokens_limit=_RESEARCH_OUTPUT_TOKENS_LIMIT,
+                    ),
+                    usage=run_usage,
+                ),
+            )
+        finally:
+            # Same recorder as the other agentic paths, for the same reasons.
+            agent_harness.record_agent_run(
+                run_usage, research_agent.model, "listening_preview_research", captured,
+            )
     return str(result.output or "")[:6_000]
 
 

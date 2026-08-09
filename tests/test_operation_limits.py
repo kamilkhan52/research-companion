@@ -12,6 +12,25 @@ import pytest
 from app import llm, operation_limits
 
 
+def _agentic_request_limits() -> dict[str, int]:
+    """Every agentic path's request budget, read from the production constants.
+
+    Hardcoding 12/10/12/7 here matched today and would keep matching after someone halved a
+    production constant — leaving both ceiling tests asserting a bound nothing uses.
+    """
+    from app import agent_harness, lab_research, preview_jobs, retrieval_agent
+
+    return {
+        "analysis": agent_harness.AGENT_REQUEST_LIMIT,
+        "lab_research": lab_research.MAX_AGENT_REQUESTS,
+        "retrieval_hunt": retrieval_agent.MAX_HUNT_REQUESTS,
+        "listening_preview_research": preview_jobs.MAX_RESEARCH_AGENT_REQUESTS,
+    }
+
+
+_AGENTIC_REQUEST_LIMITS = _agentic_request_limits()
+
+
 def test_a_request_under_the_ceiling_is_left_alone():
     """These are ceilings, not defaults — a caller that needs less must keep what it asked for."""
     assert operation_limits.clamp_tokens("analysis", 4_000) == 4_000
@@ -69,8 +88,8 @@ def test_the_lab_research_agent_bounds_its_output_too():
     left the whole suite green — the same gap this round closed for `agent_harness`."""
     from app import lab_research
 
-    assert lab_research._OUTPUT_TOKENS_LIMIT == (
-        operation_limits.tokens_for("lab_research") * lab_research.MAX_AGENT_REQUESTS
+    assert lab_research._OUTPUT_TOKENS_LIMIT == operation_limits.run_output_ceiling(
+        "lab_research", lab_research.MAX_AGENT_REQUESTS,
     ), "it must read the shared table, not carry a second set of numbers"
 
 
@@ -108,8 +127,8 @@ def test_the_agentic_paths_are_bounded_from_the_same_table():
     assert limits.output_tokens_limit is not None, (
         "the agentic loop must bound output size, not only round count"
     )
-    assert limits.output_tokens_limit == (
-        operation_limits.tokens_for("analysis") * agent_harness.AGENT_REQUEST_LIMIT
+    assert limits.output_tokens_limit == operation_limits.run_output_ceiling(
+        "analysis", agent_harness.AGENT_REQUEST_LIMIT
     ), "it must read the same table the raw client clamps against, not a second set of numbers"
 
 
@@ -165,3 +184,73 @@ def test_stream_clamps_too(monkeypatch):
                     max_tokens=10_000_000, operation="listening_preview"))
     assert real_stream is not httpx.stream  # the patch really took
     assert seen["max_tokens"] == 1_000, "stream must clamp like complete does"
+
+
+def test_the_run_level_output_ceiling_can_actually_fire():
+    """It used to be exactly `tokens_for(op) * request_limit` — the precise total that
+    `request_limit` maximal responses produce. pydantic-ai raises on `>`, not `>=`, so the sum
+    could equal the limit but never exceed it: `request_limit` always tripped first and the
+    backstop was unreachable by construction. The tests asserted that same product, so they
+    asserted the tautology."""
+    from app import operation_limits
+
+    for operation, request_limit in _AGENTIC_REQUEST_LIMITS.items():
+        per_request = operation_limits.tokens_for(operation)
+        ceiling = operation_limits.run_output_ceiling(operation, request_limit)
+        assert ceiling < per_request * request_limit, (
+            f"{operation}'s run ceiling equals its own maximum and can never be exceeded"
+        )
+        # And it must bind late enough to be a backstop rather than a second request limit.
+        fires_at = ceiling // per_request + 1
+        assert 2 < fires_at <= request_limit, (
+            f"{operation} aborts at request {fires_at} of {request_limit}"
+        )
+
+
+def test_the_run_ceiling_clears_real_observed_output_by_a_wide_margin():
+    """A bound sized below what the feature actually produces is a new defect, not a fix.
+
+    The numbers on the right are measured from Kamil's own usage ledgers (2026-08-08): the mean
+    analysis call emits 3,732 completion tokens, labs writes one line, and the preview research
+    pass is capped at 6,000 characters. Asserting a MARGIN rather than the exact fraction means
+    re-tuning `_RUN_OUTPUT_FRACTION` is safe but shrinking it past what the app really emits is not.
+    """
+    from app import operation_limits
+
+    observed_per_request = {
+        "analysis": 3_732,
+        "lab_research": 600,
+        "listening_preview_research": 1_500,
+        "retrieval_hunt": 600,
+    }
+    for operation, per_request in observed_per_request.items():
+        limit = _AGENTIC_REQUEST_LIMITS[operation]
+        ceiling = operation_limits.run_output_ceiling(operation, limit)
+        expected_run = per_request * limit
+        assert ceiling > expected_run * 2, (
+            f"{operation}'s ceiling ({ceiling}) leaves no margin over a typical run "
+            f"({expected_run}); a normal run would abort"
+        )
+
+
+def test_the_preview_research_run_ceiling_reaches_its_usage_limits():
+    """Built inline it was deletable with the whole suite green, which is why it is at module
+    scope — the same hoist `lab_research._OUTPUT_TOKENS_LIMIT` already had."""
+    from app import operation_limits, preview_jobs
+
+    assert preview_jobs._RESEARCH_OUTPUT_TOKENS_LIMIT == operation_limits.run_output_ceiling(
+        "listening_preview_research", preview_jobs.MAX_RESEARCH_AGENT_REQUESTS,
+    )
+    import ast
+    import inspect
+
+    src = inspect.getsource(preview_jobs._research_with_agent)
+    passed = [
+        kw.value.id for node in ast.walk(ast.parse(src.lstrip()))
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "output_tokens_limit" and isinstance(kw.value, ast.Name)
+    ]
+    assert "_RESEARCH_OUTPUT_TOKENS_LIMIT" in passed, (
+        "the research run must pass its output ceiling to UsageLimits"
+    )

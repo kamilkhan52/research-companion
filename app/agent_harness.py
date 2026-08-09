@@ -20,6 +20,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Callable, Iterable
 
+import httpx
 from openai import OpenAIError
 from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.messages import (
@@ -51,6 +52,7 @@ from . import (
     prompts,
     research_tools,
     sessions,
+    spend_ceiling,
     spend_control,
     usage,
 )
@@ -89,7 +91,7 @@ AGENT_REQUEST_LIMIT = 12
 # safety valve against a runaway loop, not a saving.
 _USAGE_LIMITS = UsageLimits(
     request_limit=AGENT_REQUEST_LIMIT,
-    output_tokens_limit=operation_limits.tokens_for("analysis") * AGENT_REQUEST_LIMIT,
+    output_tokens_limit=operation_limits.run_output_ceiling("analysis", AGENT_REQUEST_LIMIT),
 )
 
 
@@ -114,6 +116,29 @@ class _LedgerOpenRouterStreamedResponse(OpenRouterStreamedResponse):
             super()._map_provider_details(chunk), getattr(chunk, "usage", None)
         )
 
+    def _map_usage(self, chunk):
+        """Capture the cost here, because the override above never sees the chunk carrying it.
+
+        OpenRouter reports a streamed run's cost in a FINAL usage-only chunk whose `choices` is
+        empty. The base stream loop calls `_map_usage` for that chunk and then `continue`s on the
+        empty choices — several lines BEFORE it would consult `_map_provider_details`. So the
+        authoritative cost of every streamed turn was read and thrown away, and the ledger has
+        never had an exact price for the streamed chat and notes paths.
+
+        That was invisible while a cost-less response merely recorded tokens. It stopped being
+        invisible once an unpriced response started forcing a conservative settle: every ordinary
+        streamed turn began settling at its full maximum, turning a silent under-charge into a
+        37x over-charge. `get()` builds the final `ModelResponse` from `self.provider_details`,
+        so writing it here is what makes it survive.
+        """
+        usage = super()._map_usage(chunk)
+        retained = _retain_authoritative_zero_cost(
+            self.provider_details, getattr(chunk, "usage", None),
+        )
+        if retained is not None:
+            self.provider_details = retained
+        return usage
+
 
 class _OpenRouterSpendDisabled(OpenAIError):
     """Stops OpenAI SDK retries while the model wrapper restores the public AgentError."""
@@ -128,6 +153,86 @@ async def _require_openrouter_spend(_request) -> None:
         # error is explicitly propagated with no retry; the model wrapper translates it back to
         # the app's safe domain error below.
         raise _OpenRouterSpendDisabled(str(exc)) from exc
+    # Counted AFTER the kill switch, so a request the switch blocked is never treated as billable.
+    # This is the only place that knows a request truly went to the provider. Every signal above
+    # it — `RunUsage.requests`, the captured message history — is derived from a RESPONSE, so a
+    # dispatch that OpenRouter billed and then lost in transit is invisible to all of them, and the
+    # reservation settled as though the work were free.
+    #
+    # The SDK retries internally, so one logical model request can dispatch three times. Each is
+    # counted: if OpenRouter processed any of them, it billed for it.
+    spend_ceiling.note_dispatch()
+
+
+#: Statuses that mean the request was refused before any generation happened, so nothing was
+#: billed. Anything else — including a 200 whose body we then fail to read — must stay counted.
+#:
+#: Deliberately a small allowlist rather than "not 2xx": a 500 can follow a completed generation,
+#: and guessing wrong here converts a real charge into a silent freebie. Being wrong in the other
+#: direction only over-charges, and that is recoverable.
+#: OpenRouter's own documented error statuses. Every one of them means the request failed BEFORE a
+#: completion was produced: their errors doc states that once the first token has been written the
+#: `200 OK` status and headers are already committed and cannot change, so a mid-generation failure
+#: always arrives as a 200 carrying an error payload. A non-200 therefore never carries a
+#: completion we were billed for.
+#:
+#: Not quite "never billed", and worth being precise since this decides what a reader is charged:
+#: the same doc warns you "may still be charged for the prompt processing cost by the upstream
+#: provider, even if no content is generated". So treating these as free can under-charge by a
+#: fraction of a cent. The alternative is charging the operation's FULL per-turn maximum for a
+#: request that produced nothing — $0.15 for a rejected tool schema, repeatable on every turn until
+#: the bug is fixed, which would burn a Tester's whole month in thirty-three failures. Off by a
+#: fraction of a cent beats off by two orders of magnitude, in the direction that hurts the reader.
+#:
+#: 404 is ours rather than theirs (an unknown route) and belongs for the same reason. 409 stays out
+#: — OpenRouter documents no meaning for it, so there is no contract to reason from.
+_NOT_BILLED_STATUSES = frozenset({400, 401, 402, 403, 404, 408, 429, 502, 503})
+
+#: Transport failures that prove the request never reached OpenRouter, so nothing was generated
+#: and nothing billed. The connection was never established, or never taken from the pool.
+#:
+#: `ReadError`, `WriteError` and read timeouts are deliberately NOT here: those happen with the
+#: request already on the wire, which is exactly the ambiguous case the dispatch counter exists to
+#: catch. The rule is that only provably-pre-dispatch failures are discounted.
+_PRE_DISPATCH_TRANSPORT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
+class _DispatchAccountingTransport(httpx.AsyncBaseTransport):
+    """Discounts attempts that provably never reached the provider.
+
+    The request hook fires before the bytes go anywhere, so an attempt that then fails to even
+    connect is counted as possibly-billed. The OpenAI SDK retries internally, so one connection
+    blip followed by a successful retry left `dispatched=2, priced=1` — permanently uncertain, and
+    an ordinary turn settled at its maximum. Only the transport layer knows the difference between
+    "never connected" and "sent, and then something went wrong".
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request):
+        try:
+            return await self._inner.handle_async_request(request)
+        except _PRE_DISPATCH_TRANSPORT_ERRORS:
+            spend_ceiling.note_not_billed()
+            raise
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+async def _discount_unbilled_openrouter_response(response) -> None:
+    """HTTPX response hook: undo the dispatch count for a request the provider never ran.
+
+    Without it every auth failure and rate-limit rejection would leave an unaccounted dispatch and
+    settle the whole reservation at its maximum — turning a refused request into a charge.
+    """
+    if response.status_code in _NOT_BILLED_STATUSES:
+        spend_ceiling.note_not_billed()
 
 
 class _SpendControlledOpenRouterProvider(OpenRouterProvider):
@@ -139,14 +244,34 @@ class _SpendControlledOpenRouterProvider(OpenRouterProvider):
         factory = self._http_client_factory
         if client is None or factory is None:  # pragma: no cover - app always lets provider own it
             raise RuntimeError("Spend-controlled OpenRouter requires an owned HTTP client.")
-        client.event_hooks["request"].append(_require_openrouter_spend)
+        _attach_spend_hooks(client)
 
         def controlled_factory():
             replacement = factory()
-            replacement.event_hooks["request"].append(_require_openrouter_spend)
+            _attach_spend_hooks(replacement)
             return replacement
 
         self._http_client_factory = controlled_factory
+
+
+def _attach_spend_hooks(client) -> None:
+    """Install the spend hooks on `client`, exactly once.
+
+    Every step here is guarded, and they have to be guarded the SAME way. An earlier version
+    protected the transport against double-wrapping but appended the event hooks unconditionally,
+    so re-attaching to one client left three `note_dispatch` calls per request — inflating the
+    dispatch count, leaving every run permanently uncertain, and settling ordinary turns at their
+    maximum. A half-idempotent function is worse than one that is not idempotent at all, because it
+    looks safe to call twice.
+    """
+    if _require_openrouter_spend not in client.event_hooks["request"]:
+        client.event_hooks["request"].append(_require_openrouter_spend)
+    if _discount_unbilled_openrouter_response not in client.event_hooks["response"]:
+        client.event_hooks["response"].append(_discount_unbilled_openrouter_response)
+    # Wrapped, not replaced: the transport is the only layer that can tell a connection that was
+    # never made from one that carried the request and then broke.
+    if not isinstance(client._transport, _DispatchAccountingTransport):
+        client._transport = _DispatchAccountingTransport(client._transport)
 
 
 class _LedgerOpenRouterModel(OpenRouterModel):
@@ -171,10 +296,19 @@ class _LedgerOpenRouterModel(OpenRouterModel):
         return _LedgerOpenRouterStreamedResponse
 
 
-def _record_run_usage(
+def record_agent_run(
     run_usage, model: Model | None, operation: str, messages: Iterable | None = None
 ) -> None:
     """Best-effort, per-request accounting for an agentic run.
+
+    Public despite living here: every path that builds its own Pydantic AI agent — the hunt,
+    lab research, listening-preview research — must meter through this one function rather than
+    grow its own, and a leading underscore invited exactly the second, weaker accounting path
+    that had to be deleted from `usage.py`.
+
+    **Pass `messages` whenever you have them.** Only the per-response branch below reads
+    OpenRouter's authoritative `cost`; without messages a run records tokens with no dollars and
+    settles its reservation at zero, which reads as free work rather than as unmetered work.
 
     The native Pydantic AI OpenRouter adapter retains authoritative ``usage.cost`` and the
     provider response id on each ``ModelResponse``. Record those responses individually: one
@@ -215,7 +349,15 @@ def _record_run_usage(
                         },
                         generation_id=response.provider_response_id,
                     )
+                    # Balances the dispatch counted at the transport seam: this one came back and
+                    # we know what it cost. Whatever is still outstanding at settle time did not.
+                    spend_ceiling.note_priced_dispatch()
                 else:
+                    # Billed, but at a price we could not read. The analytics ledger takes a
+                    # reconcilable marker; the RESERVATION cannot wait for reconciliation, because
+                    # it settles terminally when this job ends. Flagging it makes that settle
+                    # conservative instead of exact-but-wrong.
+                    spend_ceiling.note_uncertain_spend()
                     usage.record_pending(operation, model_name, response.provider_response_id)
             return
         if not run_usage:
@@ -232,7 +374,10 @@ def _record_run_usage(
             })
         if requests > 0:
             # A billed request happened but its dollar cost is unknowable on this path — flag
-            # totals estimated (no generation id to reconcile by) rather than implying $0.
+            # totals estimated (no generation id to reconcile by) rather than implying $0. Worse
+            # than the branch above for the ceiling, not better: there is no id to reconcile from
+            # later at all, so the reservation must not settle as though this were free.
+            spend_ceiling.note_uncertain_spend()
             usage.record_pending(operation, model_name, None)
     except Exception as e:  # noqa: BLE001 — accounting is best-effort
         log.debug("agentic usage accounting skipped (error=%s)", type(e).__name__)
@@ -264,7 +409,9 @@ TOOLS = [
 ]
 
 
-def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
+def _openrouter_model(
+    model_id: str | None = None, operation: str = "analysis"
+) -> OpenRouterModel:
     try:
         spend_control.require_enabled()
     except spend_control.ProviderSpendDisabled as exc:
@@ -288,7 +435,12 @@ def _openrouter_model(model_id: str | None = None) -> OpenRouterModel:
             # response has already been generated and billed. This is what the raw client's
             # `max_tokens` does — generation physically stops at the ceiling — so the agentic path
             # gets the same bound rather than only a backstop.
-            max_tokens=operation_limits.tokens_for("analysis"),
+            #
+            # Sized to the OPERATION rather than always to `analysis`. The hunt, lab research and
+            # preview research each declare a budget in `operation_limits` an order of magnitude
+            # smaller than an analysis turn, and every one of them was silently handed the analysis
+            # ceiling instead — so the table read as if it bound them while binding nothing.
+            max_tokens=operation_limits.tokens_for(operation),
         ),
     )
 
@@ -367,7 +519,7 @@ def run_turn_agentic(slug: str, history: list[dict], model: Model | None = None)
             # so filtering the whole capture for provider_name=openrouter is safe. Do not slice by
             # the input length: Pydantic compacts consecutive ModelRequests before capture, making
             # those lengths differ after failed turns and dropping the new paid response.
-            _record_run_usage(run_usage, ag.model, "analysis", captured)
+            record_agent_run(run_usage, ag.model, "analysis", captured)
     return agent_mod._parse(
         result.output,
         allow_proposed_commit=sessions.proposal_expected(slug),
@@ -461,7 +613,7 @@ async def stream_agent_events(ag: Agent, prompt: str,
             raise agent_mod.AgentError(
                 "The model provider could not complete the agentic request.") from e
         finally:
-            _record_run_usage(run_usage, ag.model, operation, captured)
+            record_agent_run(run_usage, ag.model, operation, captured)
 
 
 async def stream_with_single_shot_fallback(
