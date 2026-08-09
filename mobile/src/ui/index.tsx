@@ -263,11 +263,16 @@ export function ProgressBar({
   value,
   color,
   height = 6,
+  testID,
 }: {
   /** 0..1 */
   value: number;
   color?: string;
   height?: number;
+  /** Applied to the FILL, not the track, so a test can assert the width actually rendered rather
+   *  than a number printed beside it. A bar and its caption drifting apart is not hypothetical:
+   *  see `test/plan-usage.test.tsx`. */
+  testID?: string;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -275,6 +280,7 @@ export function ProgressBar({
   return (
     <View style={[styles.progressTrack, { height, borderRadius: height / 2 }]}>
       <View
+        testID={testID}
         style={{
           width: `${pct * 100}%`,
           height,

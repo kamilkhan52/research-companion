@@ -41,6 +41,7 @@ export const keys = {
       ? ['project', pid, 'review', slug] as const
       : ['project', pid, 'review', slug, threadId] as const,
   settings: ['settings'] as const,
+  plan: ['plan'] as const,
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
@@ -192,6 +193,22 @@ export function useSettings() {
     queryKey: keys.settings,
     queryFn: api.getSettings,
     enabled: hasUrl,
+  });
+}
+
+/** The account's plan and month-to-date standing.
+ *
+ *  Refetched on focus rather than polled. Holds move on a timescale of seconds, but the detail
+ *  screen deliberately does not animate them: action and job polling already invalidate this key
+ *  when a reservation settles, so a poll here would burn battery to re-render a number the reader
+ *  is told not to treat as a countdown. */
+export function usePlan() {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: keys.plan,
+    queryFn: api.getPlan,
+    enabled: hasUrl,
+    refetchOnWindowFocus: true,
   });
 }
 

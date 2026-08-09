@@ -23,7 +23,15 @@ def get_plan(request: Request):
     over; a hold clears in seconds when its job settles. Adding them together would tell someone
     with several jobs running that they are nearly out of allowance when they have barely spent
     anything — the same confusion the transient/exhausted split in `QuotaExceeded` exists to
-    remove, and the reason `warn` is computed from SPEND alone.
+    remove.
+
+    That is a rule about DISPLAY, and `warn` is not a display value: it is computed from spend PLUS
+    holds precisely so it can precede a refusal, which admission also decides on the sum (see the
+    comment on the field). The two are not in tension, but they are easy to conflate — an earlier
+    revision of this docstring claimed `warn` came from spend alone, contradicting the line that
+    computes it. The client honours both by keeping them on different surfaces: the plan screen's
+    bar and its approaching-limit card track `spent_fraction` only, while `warn`/`at_capacity`
+    belong next to the refusal they anticipate. See `docs/plan-usage-surface-spec.md`.
 
     With no database (local dev, the test suite) this reports the plan with zero usage rather than
     failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
