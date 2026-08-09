@@ -20,7 +20,7 @@ import { Icon, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, space, type ThemePalette } from '@/theme/tokens';
 
-/** When present, the paper's figures are carded inline after the first paragraph that
+/** When present, the paper's figures are carded inline immediately before the first paragraph that
  *  references each one (R.10). Absent everywhere except the committed discussion transcript,
  *  so every other Markdown surface (notes, streaming) renders exactly as before. */
 export interface FigureContext {
@@ -122,11 +122,10 @@ export function Markdown({
       <View style={{ gap: density === 'tight' ? 6 : space.sm }}>
         {blocks.map((block, i) => (
           <Fragment key={i}>
-            <Block
-              block={block}
-              onLinkPress={handleLink}
-              sentenceAnnotations={sentenceAnnotations}
-            />
+            {/* BEFORE the block that first mentions the figure, not after it (DR-003). Carding
+                after meant reading "as Figure 3 shows, the loss diverges", scrolling past the
+                rest of the paragraph, and only then meeting Figure 3 — by which point the
+                sentence it illustrates is off-screen. */}
             {figureCards?.[i]?.map((fig) => (
               <FigureCard
                 key={fig.id}
@@ -136,6 +135,11 @@ export function Markdown({
                 version={figureContext!.version}
               />
             ))}
+            <Block
+              block={block}
+              onLinkPress={handleLink}
+              sentenceAnnotations={sentenceAnnotations}
+            />
           </Fragment>
         ))}
       </View>

@@ -34,9 +34,10 @@ export function figureNumbersInText(text: string): number[] {
 }
 
 /** Given each block's plain text (null for non-paragraph blocks) and the paper's manifest
- *  figures, decide which figures to card after which block: a figure is carded after the
- *  FIRST block whose text references its number, at most once per message (first mention
- *  wins). Figures never mentioned in the text are not carded; a mentioned number with no
+ *  figures, decide which figures to card at which block: a figure is carded immediately BEFORE
+ *  the FIRST block whose text references its number, at most once per message (first mention
+ *  wins), so the reader meets the figure as the sentence introduces it rather than after the
+ *  paragraph has scrolled past. Figures never mentioned in the text are not carded; a mentioned number with no
  *  matching manifest figure is skipped. Returns one PaperFigure[] per input block. */
 export function planFigurePlacement(
   blockTexts: (string | null)[],

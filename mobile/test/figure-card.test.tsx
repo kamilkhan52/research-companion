@@ -19,8 +19,19 @@ const context = (figures: PaperFigure[]): FigureContext => ({
   version: 1700000000,
 });
 
+/** Every string in the rendered tree, in render order. Position is the whole claim in DR-003, and
+ *  `getByText` proves only presence — the old test passed with the card on either side. */
+function renderedStrings(node: unknown, out: string[] = []): string[] {
+  if (typeof node === 'string') out.push(node);
+  else if (Array.isArray(node)) node.forEach((child) => renderedStrings(child, out));
+  else if (node && typeof node === 'object' && 'children' in node) {
+    renderedStrings((node as { children: unknown }).children, out);
+  }
+  return out;
+}
+
 describe('figure cards in the discussion', () => {
-  test('cards the referenced figure after its paragraph', async () => {
+  test('cards the referenced figure immediately BEFORE its paragraph (DR-003)', async () => {
     await renderAsync(
       <Markdown
         text={'The pipeline is complex.\n\nAs Figure 1 shows, the stages compose.'}
@@ -29,6 +40,13 @@ describe('figure cards in the discussion', () => {
     );
     expect(screen.getByText('Figure 1: the pipeline.')).toBeTruthy();
     expect(screen.getByText('from arXiv HTML')).toBeTruthy();
+
+    const strings = renderedStrings(screen.toJSON());
+    const caption = strings.findIndex((s) => s.includes('Figure 1: the pipeline.'));
+    const mention = strings.findIndex((s) => s.includes('the stages compose'));
+    const intro = strings.findIndex((s) => s.includes('The pipeline is complex'));
+    expect(caption).toBeGreaterThan(intro);   // not hoisted to the top of the message
+    expect(caption).toBeLessThan(mention);    // but ahead of the sentence that references it
   });
 
   test('an unreferenced figure is not carded', async () => {
