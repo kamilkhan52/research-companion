@@ -30,6 +30,7 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { hideSuggestion, unhideSuggestion } from '@/api/endpoints';
 import { keys, useAddPaper, useDiscovery, useProjectMembership } from '@/api/queries';
 import type { DiscoveryJob, HiddenRecommendation, PaperSuggestion } from '@/api/types';
+import { AddPaperInline } from '@/components/AddPaperInline';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { ScanningList } from '@/components/ScanningList';
 import { TabHeader } from '@/components/TopBar';
@@ -64,11 +65,6 @@ export default function DiscoverScreen() {
   // compact summary — the ranked list is the point of the screen then, and it stays one tap away.
   const [editingGoals, setEditingGoals] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
-  // ONE instance for the screen. The field renders in two mutually exclusive positions (inside
-  // the query card, and below a collapsed summary); two hook instances meant switching between
-  // them unmounted one mid-debounce and silently dropped what the reader had typed.
-  const addByRef = useAddByReference(pid);
-
   useEffect(() => {
     const accepted = discovery.data?.goals || discovery.data?.result?.goals || '';
     if (goalsDraft.submitted && accepted === goals.trim()) {
@@ -90,11 +86,9 @@ export default function DiscoverScreen() {
 
   const hasRunContext = runState.running || !!result;
   const showEditor = !hasRunContext || editingGoals;
-  // The deep link means "adding a known paper IS the task", so it holds regardless of whether a
-  // search has run — and unlike the ordinary inline field it is NOT hidden during a run, because
-  // the reader navigated here specifically to add a paper. Gating it on `!hasRunContext` meant a
-  // project with cached results silently fell back to the ordinary field, and a project mid-run
-  // showed no way to add a paper at all.
+  // The deep link keeps the ordinary Discover layout and focuses the ONE shared compact field.
+  // It remains visible during a run only for this explicit entry, so the route never lands on a
+  // hidden target while normal discovery keeps its focus on the search in progress.
   const specificEntry = specific === '1';
 
   async function runDiscovery() {
@@ -116,18 +110,7 @@ export default function DiscoverScreen() {
       />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-          {specificEntry && pid ? (
-            <>
-              <SpecificPaper add={addByRef} />
-              <Button
-                title="Discover papers instead"
-                icon="compass"
-                variant="ghost"
-                onPress={() => router.replace('/discover')}
-                style={{ marginTop: space.md }}
-              />
-            </>
-          ) : showEditor ? (
+          {showEditor ? (
             <Card style={{ gap: space.sm }}>
               <Text variant="overline">Explore</Text>
               <Text variant="caption">
@@ -155,7 +138,9 @@ export default function DiscoverScreen() {
               ) : null}
               {/* Only when it matters: a reader watching a search run does not want a second
                   way to add a paper competing for attention. */}
-              {addByRef && !runState.running ? <AddByReferenceInline add={addByRef} /> : null}
+              {pid && (specificEntry || !runState.running) ? (
+                <AddPaperInline pid={pid} autoFocus={specificEntry} />
+              ) : null}
             </Card>
           ) : (
             // Compact goals summary — the search is the focus now; tap to edit & search again.
@@ -241,8 +226,8 @@ export default function DiscoverScreen() {
           {/* Adding a known paper now lives inline under the query (see AddByReferenceInline),
               so nothing is repeated down here. The compact summary state has no query box of its
               own, so it keeps the affordance — still hidden while a search runs. */}
-          {addByRef && !specificEntry && !showEditor && !runState.running ? (
-            <AddByReferenceInline add={addByRef} />
+          {pid && !showEditor && (specificEntry || !runState.running) ? (
+            <AddPaperInline pid={pid} autoFocus={specificEntry} />
           ) : null}
         </ScrollView>
 
@@ -562,161 +547,8 @@ function SuggestionCard({
   );
 }
 
-// ---------- bring a specific paper (name / arXiv link / PDF link) ----------
-
-// Adding a known paper by title / arXiv id / DOI / PDF link. Shared by the compact field under
-// the search box and the full card the `?specific=1` deep link opens, so the reference parsing
-// below — which is subtle and was got wrong once — exists in exactly one place.
-function useAddByReference(pid: string | null) {
-  const router = useRouter();
-  const addPaper = useAddPaper(pid ?? '');
-  const textDraft = usePersistedDraft(
-    pid ? draftKey(pid, 'discover', 'specific-paper') : null, '');
-  const text = textDraft.value;
-  const setText = textDraft.setValue;
-  const [err, setErr] = useState<string | null>(null);
-
-  async function submit() {
-    const s = text.trim();
-    if (!s || !pid) return;
-    setErr(null);
-    await textDraft.markSubmitted();
-    // A paper name adds it by title (retrieval resolves it on open, escalating to the agentic
-    // hunt if needed). An arXiv link/id or PDF link is carried to the Discussion screen as
-    // ?source= so its Start fetches from exactly that source.
-    const arxiv = s.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i) ?? s.match(/^(\d{4}\.\d{4,5})(?:v\d+)?$/);
-    let title = s;
-    let source: string | null = null;
-    let arxivId: string | undefined;
-    if (arxiv) {
-      arxivId = arxiv[1];
-      title = `arXiv ${arxivId}`; // placeholder title; the discussion opens with the real paper
-      source = arxivId;
-    } else if (/^https?:\/\//i.test(s)) {
-      const tail = s.split('/').filter(Boolean).pop() ?? '';
-      title = tail.replace(/\.pdf.*$/i, '').replace(/[-_]+/g, ' ').trim() || 'Linked paper';
-      source = s;
-    }
-    try {
-      const result = await addPaper.mutateAsync({
-        title,
-        arxivId,
-        // A pasted non-arXiv URL is a direct PDF source; the analysis offer must fetch
-        // exactly it, mirroring what ?source= does for the manual Start path below.
-        pdfUrl: !arxivId && source ? source : undefined,
-      });
-      if (!result.paper) return;
-      const { paper } = result;
-      await textDraft.clear('');
-      router.push(
-        `/paper/${encodeURIComponent(paper.slug)}${source ? `?source=${encodeURIComponent(source)}` : ''}`,
-      );
-    } catch (e) {
-      setErr((e as Error).message ?? 'Could not add the paper.');
-    }
-  }
-
-  return { text, setText, submit, err, pending: addPaper.isPending };
-}
-
-// The compact form, shown under the search box. Replaces a "Have a specific paper? Add by name
-// or link" button that sat below the results: it was a second call to action competing with the
-// search, and it stayed on screen while a search was running, when it is the last thing the
-// reader wants. Now it is an "or" beneath the query, and it disappears during a run.
-function AddByReferenceInline({ add }: { add: ReturnType<typeof useAddByReference> }) {
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <View style={{ marginTop: space.md }}>
-      <View style={styles.orRow}>
-        <View style={styles.orLine} />
-        <Text variant="overline" color={t.muted}>
-          or
-        </Text>
-        <View style={styles.orLine} />
-      </View>
-      <TextInput
-        value={add.text}
-        onChangeText={add.setText}
-        style={styles.referenceInput}
-        placeholder="Add a paper you already know — title, DOI, or arXiv link"
-        placeholderTextColor={t.muted}
-        autoCapitalize="none"
-        autoCorrect={false}
-        returnKeyType="go"
-        onSubmitEditing={add.submit}
-      />
-      {add.text.trim() ? (
-        <Button
-          title="Add to library"
-          variant="ghost"
-          onPress={add.submit}
-          loading={add.pending}
-          style={{ marginTop: space.xs }}
-        />
-      ) : null}
-      {add.err ? (
-        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
-          {add.err}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// The full card, kept for the `?specific=1` deep link, where adding a known paper IS the task.
-function SpecificPaper({ add }: { add: ReturnType<typeof useAddByReference> }) {
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-
-  return (
-    <Card style={{ gap: space.sm }}>
-      <Text variant="title">Add a paper you already know</Text>
-      <Text variant="caption">
-        Paste a paper title, an arXiv link or id, or a direct PDF link. It’s added to your
-        library and fetched when you open it — with an agentic web hunt if it’s hard to find.
-      </Text>
-      <TextInput
-        value={add.text}
-        onChangeText={add.setText}
-        style={styles.specificInput}
-        placeholder="Paste arXiv link, DOI, or title"
-        placeholderTextColor={t.muted}
-        autoCapitalize="none"
-        autoCorrect={false}
-        onSubmitEditing={add.submit}
-      />
-      <Button
-        title="Add to library"
-        variant="ghost"
-        onPress={add.submit}
-        loading={add.pending}
-        disabled={!add.text.trim()}
-      />
-      {add.err ? (
-        <Text variant="caption" color={t.danger} style={{ marginTop: 4 }}>
-          {add.err}
-        </Text>
-      ) : null}
-    </Card>
-  );
-}
-
 const makeStyles = (t: ThemePalette) => StyleSheet.create({
   body: { padding: space.md, paddingBottom: space.xxl },
-  orRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm },
-  orLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.line2 },
-  referenceInput: {
-    backgroundColor: t.elevated,
-    borderWidth: 1,
-    borderColor: t.line2,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    color: t.text,
-    fontFamily: fonts.body,
-    fontSize: 14,
-  },
   finds: {
     marginTop: space.sm,
     padding: space.md,
@@ -739,17 +571,6 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     minHeight: 130,
     textAlignVertical: 'top',
     lineHeight: 22,
-  },
-  specificInput: {
-    backgroundColor: t.elevated,
-    borderWidth: 1,
-    borderColor: t.line2,
-    borderRadius: radius.md,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    color: t.text,
-    fontFamily: fonts.body,
-    fontSize: 15,
   },
   progressPanel: { gap: space.md, marginTop: space.md, alignItems: 'center' },
   stopButton: { alignSelf: 'stretch', height: 42 },
