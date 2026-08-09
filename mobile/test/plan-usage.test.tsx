@@ -7,7 +7,9 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { renderAsync, waitFor } from '@testing-library/react-native';
 
-import PlanScreen, { formatResetDate, formatSpentPercent, spentPercent } from '@/app/plan';
+import PlanScreen, {
+  formatResetDate, formatSpentPercent, spentPercent, spokenPercent,
+} from '@/app/plan';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { Plan } from '@/api/types';
@@ -208,13 +210,34 @@ test('the displayed percentage never flatters, at either end', () => {
   expect(spentPercent(0.799)).toBe(80);
 });
 
-test('focusing the screen refetches, since window focus does not exist in React Native', async () => {
+test('focus refetches exactly once and then settles, rather than looping', async () => {
   jest.mocked(api.getPlan).mockResolvedValue(plan());
 
   const view = await renderScreen();
   await waitFor(() => view.getByText('18%'));
 
-  // Two: the query's own initial fetch, plus the focus refetch. Returning from a paid turn to a
-  // stale figure was the failure this guards.
-  expect(jest.mocked(api.getPlan).mock.calls.length).toBeGreaterThanOrEqual(2);
+  // The request count must STOP growing once the data has arrived. The earlier version of this
+  // test asserted ">= 2", which passed happily while an unstable `useFocusEffect` dependency
+  // refetched on every render for as long as the screen stayed open. (An exact count is the wrong
+  // assertion: the focus refetch fires while the initial fetch is still in flight, and TanStack
+  // correctly dedupes the two into one request.)
+  const settled = jest.mocked(api.getPlan).mock.calls.length;
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  expect(jest.mocked(api.getPlan).mock.calls.length).toBe(settled);
+});
+
+test('what a screen reader hears matches what the screen shows, at the boundaries too', async () => {
+  // `spentPercent` rounds 0.0001 to 0. Building the spoken label from it told a screen-reader user
+  // "0 percent used" while the screen said "<1%" — the false claim the formatter exists to stop.
+  jest.mocked(api.getPlan).mockResolvedValue(plan({ spent_fraction: 0.0001 }));
+
+  const view = await renderScreen();
+
+  await waitFor(() => view.getByText('<1%'));
+  view.getByLabelText("Less than 1 percent of this month's allowance used.");
+  expect(spokenPercent(0.996)).toBe('More than 99 percent');
+  expect(spokenPercent(0.18)).toBe('18 percent');
+  expect(spokenPercent(1)).toBe('100 percent');
 });

@@ -1,4 +1,7 @@
+import { QueryClientProvider } from '@tanstack/react-query';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { createTestQueryClient } from './queryClient';
 import { act, renderAsync, waitFor } from '@testing-library/react-native';
 import TrackPlayer, { Event } from 'react-native-track-player';
 
@@ -16,11 +19,11 @@ const playbackService = require('../service') as () => Promise<void>;
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   return (
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider>{children}</AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>
+    </ProjectProvider></QueryClientProvider>
   );
 }
 

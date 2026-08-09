@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getServerGeneration } from '@/api/config';
 import { getGraph, getGraphBuildStatus, startGraphBuild } from '@/api/endpoints';
-import { keys } from '@/api/queries';
+import { invalidatePlan, keys } from '@/api/queries';
 import { showToast } from '@/ui/Toast';
 import type {
   GraphBuildJob,
@@ -182,6 +182,8 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       // only completion signal off the Map tab. applyJob only ever sees a settled job once
       // (polling stops right here), so this can't double-fire.
       if (job.status === 'done') showToast('Reference map ready');
+      // A build is metered per paper, so any terminal outcome changes the account's standing.
+      void invalidatePlan(qc);
       if (pid) {
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
         // A completed build refreshes authors/affiliations too (U.9) — an open Authors

@@ -665,6 +665,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // `adoptSession` below, leaving the app looking signed in with a live API token.
       failure = caught instanceof Error ? caught.message : 'Could not fully sign out.';
     }
+    // Same argument as the server switch below: every cached answer belongs to the identity that
+    // fetched it, and query keys carry no user id. Without this the next person to sign in on this
+    // device is served the previous one's cached data as fresh — for `/api/plan` that is their
+    // spend and their remaining allowance. `clear()` rather than `invalidateQueries()`, because
+    // invalidation keeps serving the stale data while it refetches.
+    queryClient.clear();
     // Unconditional, and not left to onAuthStateChange: if the client was never built (auth
     // disabled, or an unreachable server) there is no listener to fire at all.
     await adoptSession(null);
@@ -673,7 +679,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // on the device, and that is worth them knowing on a shared or lost phone.
       setError(`${failure} Signed out on this device; clear the app's data if it was shared.`);
     }
-  }, [adoptSession]);
+  }, [adoptSession, queryClient]);
 
   const reauthenticateForDeletion = useCallback(async () => {
     setError(null);

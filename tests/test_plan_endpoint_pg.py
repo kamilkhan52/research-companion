@@ -143,3 +143,24 @@ def test_the_warning_can_actually_precede_a_refusal(monkeypatch):
     assert body["spent_fraction"] < spend_limits.SOFT_WARNING_AT, "spend alone is still under 80%"
     assert body["warn"] is True, "but holds put the account past the line, so it must warn"
     assert body["at_capacity"] is True
+
+
+def test_a_real_charge_never_arrives_as_exactly_zero_or_exactly_one(monkeypatch):
+    """Rounding `spent_fraction` to four places erased the two cases the client works hardest to
+    render honestly: a small real charge became 0.0 and a hair under the limit became 1.0, so the
+    screen said "0%" or "100%" — the exact false claims its `<1%`/`>99%` labels exist to avoid."""
+    from app.routers import usage as usage_routes
+
+    monkeypatch.setenv("RC_MONTHLY_CREDITS", "2500")
+    monkeypatch.setattr(usage_routes.spend_limits, "enabled", lambda: True)
+
+    class _Req:
+        state = type("S", (), {"user": {"user_id": "u1"}})()
+
+    limit = spend_limits.monthly_limit_nanousd()
+    for spent in (1, 37, limit - 1):
+        monkeypatch.setattr(usage_routes.quotas, "period_usage", lambda _uid, s=spent: (s, 0))
+        fraction = usage_routes.get_plan(_Req())["spent_fraction"]
+        assert 0 < fraction < 1, (
+            f"{spent} nano-USD of {limit} must not collapse to a boundary, got {fraction}"
+        )

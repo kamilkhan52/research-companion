@@ -64,7 +64,13 @@ def get_plan(request: Request):
         # Percentages are what a bar renders; sending them avoids each client deriving them
         # differently and disagreeing about when the warning appears.
         # The bar tracks SPEND, because that is the irreversible part.
-        "spent_fraction": round(spent / limit, 4) if limit else 0.0,
+        #
+        # UNROUNDED, deliberately. Rounding to four places sent a small real charge as exactly 0.0
+        # and a hair under the limit as exactly 1.0, so the client — which goes to some trouble to
+        # render those as "<1%" and ">99%" rather than a false "0%"/"100%" — could not tell them
+        # apart from the real thing. Any value strictly between 0 and the limit must arrive
+        # strictly between 0 and 1.
+        "spent_fraction": (spent / limit) if limit else 0.0,
         # The warning tracks spend PLUS holds, because it exists to arrive before a refusal and
         # admission refuses on the sum. Computed from spend alone it could not fire at all in the
         # case that matters: a reader at 76% with one listening flow in flight ($0.81 held) is

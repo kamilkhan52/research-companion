@@ -1,3 +1,4 @@
+import { QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import { Pressable } from 'react-native';
 import TrackPlayer, { State } from 'react-native-track-player';
@@ -14,6 +15,8 @@ import { isHandoffEligible, registerEligibleHandoff } from '@/audio/handoffState
 import { messageAudioId, useListeningHandoffRecovery } from '@/audio/identity';
 import { ProjectProvider } from '@/store/project';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { createTestQueryClient } from './queryClient';
 
 import { ListeningProvider } from '@/store/listening';
 
@@ -67,11 +70,11 @@ test('queued listening audio is appended without interrupting current playback',
   jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValueOnce({ id: 'current-track' } as never);
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><QueueProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
 
@@ -89,11 +92,11 @@ test('the first queued listening track starts automatically', async () => {
   jest.mocked(TrackPlayer.getPlaybackState).mockResolvedValueOnce({ state: State.Ready });
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><QueueProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
 
@@ -111,11 +114,11 @@ test('a grounded preview plays when TrackPlayer is idle', async () => {
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   let played = false;
@@ -137,11 +140,11 @@ test('a grounded preview is dropped while another track is active', async () => 
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   let played = true;
@@ -167,11 +170,11 @@ test('preview cues keep playing while automatic final narration is preparing', a
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-1', title: 'Paper', text: 'Canonical answer.' },
@@ -203,11 +206,11 @@ test('a new preview queues behind a preview already speaking', async () => {
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   let played = false;
@@ -235,11 +238,11 @@ test('final narration removes queued cues but lets the active cue finish', async
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   audio.enqueueJob(
@@ -281,11 +284,11 @@ test('full-track mode (the default) waits for the stitched file and carries the 
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-full', title: 'Paper', text: 'Canonical response.' },
@@ -342,11 +345,11 @@ test('progressive narration starts segment one before the final segment is ready
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-progressive', title: 'Paper', text: 'Canonical response.' },
@@ -395,11 +398,11 @@ test('progressive falls back to the stitched track when a cached job exposes no 
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-cached', title: 'Paper', text: 'Canonical response.' },
@@ -457,11 +460,11 @@ test('progressive surfaces a synthesis failure that happens after segments alrea
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-partial', title: 'Paper', text: 'Canonical response.' },
@@ -513,11 +516,11 @@ test('manual Listen also begins from the first progressive segment', async () =>
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   let playing!: Promise<void>;
   await act(async () => {
@@ -557,11 +560,11 @@ test('first progressive segment drops queued cues without interrupting the activ
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   audio.enqueueJob(
@@ -586,11 +589,11 @@ test('cancellation removes a track whose add finishes after the queue was cleare
   jest.mocked(TrackPlayer.add).mockImplementationOnce(async () => deferredAdd);
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><QueueProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
   await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
@@ -618,11 +621,11 @@ test('regeneration replaces stale slot audio and queues the new handoff version'
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-1', title: 'Paper', text: 'Paper summary.' },
@@ -658,11 +661,11 @@ test('regeneration keeps the active slot playing and appends its replacement', a
     return null;
   }
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   audio.enqueueJob(
     { id: 'turn-1', title: 'Paper', text: 'Replacement response.' },
@@ -718,11 +721,11 @@ test('polling failure retains eligibility and recovers automatically after provi
     return null;
   }
   const first = await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><RecoveryProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await waitFor(
     () => expect(audio.errorById[messageAudioId('project-a', 'paper-a', 0, 'Canonical response.')]).toBe('Temporarily offline'),
@@ -732,11 +735,11 @@ test('polling failure retains eligibility and recovers automatically after provi
   await first.unmountAsync();
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><RecoveryProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
 
   await waitFor(() => expect(TrackPlayer.add).toHaveBeenCalledTimes(1));
@@ -761,11 +764,11 @@ test('cancelPrep POSTs the server cancel for the known job id', async () => {
   jest.mocked(TrackPlayer.getActiveTrack).mockResolvedValue(undefined as never);
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><QueueProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Queue response'));
   // The provider learned the server job id from its first poll (applyJob).
@@ -780,11 +783,11 @@ test('cancelPrep without a known server job is purely local', async () => {
   jest.mocked(api.cancelAudioJob).mockClear();
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><QueueProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Cancel queue'));
   expect(api.cancelAudioJob).not.toHaveBeenCalled();
@@ -811,11 +814,11 @@ test('cancel racing ahead of the start request still cancels the created job', a
   }
 
   await renderAsync(
-    <ProjectProvider>
+    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
       <ListeningProvider>
         <AudioProvider><PlayProbe /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider>,
+    </ProjectProvider></QueryClientProvider>,
   );
   await fireEventAsync.press(screen.getByLabelText('Play message'));
   // Cancel while startAudioJob is still in flight — no server job id is known yet.

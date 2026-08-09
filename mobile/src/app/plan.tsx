@@ -57,11 +57,21 @@ export function formatResetDate(iso: string): string | null {
   return `Resets ${date}`;
 }
 
-/** Whole-percent spend for the accessibility label. Rounded, not floored — see
- *  `formatSpentPercent` for why the two boundaries are special-cased instead. */
+/** Whole-percent spend, for `accessibilityValue`'s numeric slot only. Never build the spoken
+ *  label from it: at the boundaries it rounds to the same 0/100 that `formatSpentPercent` exists
+ *  to avoid, so a screen-reader user would hear the exact false claim a sighted one is protected
+ *  from. Use `spokenPercent`. */
 export function spentPercent(fraction: number): number {
   if (!Number.isFinite(fraction) || fraction <= 0) return 0;
   return Math.min(100, Math.round(fraction * 100));
+}
+
+/** The percentage spoken aloud — the same claim the visible number makes. */
+export function spokenPercent(fraction: number): string {
+  const shown = formatSpentPercent(fraction);
+  if (shown === '<1%') return 'Less than 1 percent';
+  if (shown === '>99%') return 'More than 99 percent';
+  return `${shown.replace('%', '')} percent`;
 }
 
 /** The percentage as the reader sees it.
@@ -85,6 +95,7 @@ export default function PlanScreen() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const query = usePlan();
+  const { refetch } = query;
   const plan = query.data;
 
   const goBack = useCallback(() => {
@@ -105,10 +116,13 @@ export default function PlanScreen() {
   // has no window focus events unless a `focusManager` bridge is installed, and Expo Router's
   // screen focus is a separate concept. Without this the reader can return from a paid turn to a
   // stale figure.
+  // `refetch` and not `query`: TanStack's result object is a new reference on every render, so
+  // depending on it recreates this callback, `useFocusEffect` re-runs it, and that starts another
+  // fetch — a refetch loop for as long as the screen is open.
   useFocusEffect(
     useCallback(() => {
-      void query.refetch();
-    }, [query]),
+      void refetch();
+    }, [refetch]),
   );
 
   if (unenforced) return null;
@@ -181,7 +195,7 @@ function PlanBody({ plan }: { plan: Plan }) {
             style={styles.bar}
             accessible
             accessibilityRole="progressbar"
-            accessibilityLabel={`${percent} percent of this month's allowance used.`}
+            accessibilityLabel={`${spokenPercent(plan.spent_fraction)} of this month's allowance used.`}
             accessibilityValue={{ min: 0, max: 100, now: percent }}
           >
             <ProgressBar

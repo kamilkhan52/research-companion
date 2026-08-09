@@ -1,7 +1,7 @@
 // TanStack Query hooks over the typed endpoints. Query keys are namespaced by project id so
 // switching projects swaps caches cleanly. Mutations invalidate the relevant queries.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useMemo, useSyncExternalStore } from 'react';
 
 import * as api from './endpoints';
@@ -207,6 +207,22 @@ export function useSettings() {
  *  focus is a different thing entirely. So the screen refetches through `useFocusEffect`, and
  *  `useStreamingTurn.settle` invalidates this key when a paid turn finishes — which is the moment
  *  both the spend and the hold actually changed. */
+/** Mark the account's standing stale after any metered job reaches a terminal state.
+ *
+ *  Every metered job both spends and releases a hold, so any terminal outcome — including an
+ *  ERROR, which can spend real money before it fails — changes what `/api/plan` would say.
+ *  Invalidating rather than refetching means nothing is requested unless a surface is mounted.
+ *
+ *  One known gap, tracked separately: `JobRegistry` publishes the terminal status before settling
+ *  the reservation in its `finally`, so an invalidation triggered by that status can read the
+ *  ledger a moment early. The screen's focus refetch and pull-to-refresh both correct it; closing
+ *  the race properly means publishing status after settlement, which is a change to the job
+ *  registry every job shares and belongs in its own PR.
+ */
+export function invalidatePlan(qc: QueryClient) {
+  return qc.invalidateQueries({ queryKey: keys.plan });
+}
+
 export function usePlan() {
   const hasUrl = !!useBaseUrl();
   return useQuery({
