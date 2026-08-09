@@ -11,8 +11,8 @@ of the Scholiast philosophy, *before* we prompt codex. This document is that fou
 > A *scholiast* is the ancient commentator who wrote explanatory notes in the margins of a
 > manuscript — a different and more literal image (margin, gloss, annotation, the reader in
 > conversation with a text) which is arguably closer to what the app does. **Any new icon work
-> should start from the scholiast idea, not the paradigm-shift one.** See `10-roadmap.md` step 3
-> for why the rename happened.
+> should start from the scholiast idea, not the paradigm-shift one.** See
+> `docs/production/90-history.md` ("Rebrand to Scholiast") for why the rename happened.
 
 ## What the name means (and how it should feel, not read)
 

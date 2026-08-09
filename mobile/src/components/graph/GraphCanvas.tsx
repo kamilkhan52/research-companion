@@ -38,8 +38,8 @@ const MAX_SCALE = 2.5;
 const INITIAL_SCALE = 0.65;
 // Margin so the outermost nodes/labels aren't flush against the viewport edge.
 const FIT_PADDING = 0.92;
-// Perf levers (docs/mobile-ui-polish-plan.md backlog → phase D). Arrowheads double the per-edge
-// view count, so on dense graphs only significant edges keep theirs.
+// Perf levers. Arrowheads double the per-edge view count, so on dense graphs only significant
+// edges keep theirs.
 //
 // Labels used to be shed wholesale below `LABEL_MIN_SCALE = 0.5`. That constant is gone: with
 // constant-size labels the old premise ("below this zoom the text is unreadable") is false, and

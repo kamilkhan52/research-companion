@@ -1,8 +1,14 @@
 # Current device-test checklist
 
-Canonical manual acceptance record for the current Android build. Update this file directly as
-tests are performed; the older Round-9/Round-10 queue documents remain historical implementation
-ledgers, not competing test lists.
+Canonical manual acceptance record for the current Android build — the **scenarios and how to run
+them**. Update this file directly as tests are performed.
+
+**What lives where** (four files look similar and are not):
+[`device-review-ledger.md`](device-review-ledger.md) owns each piece of feedback from report to
+device acceptance and is the answer to "what is waiting on Kamil"; this file owns the reproduction
+steps those rows link to; [`product-roadmap.md`](product-roadmap.md) decides product delivery order;
+[`production/10-roadmap.md`](production/10-roadmap.md) decides launch-milestone order. A failure
+recorded here opens or updates a `DR-###` row there — it does not become a queue of its own.
 
 ## How to record a result
 
