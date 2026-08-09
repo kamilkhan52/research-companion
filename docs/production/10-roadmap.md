@@ -76,6 +76,25 @@ never saw it; its guarantee survives on the job path.
    because the call sat inside `lab_research`'s own `try`, every Labs pass had failed silently
    since 2026-07-17 — see DR-008 in `docs/device-review-ledger.md`.
 
+   **Deployed to staging and production on 2026-08-09** (`03c1c87`). Code-only — 0007/0008 were
+   already applied — and verified on both: health 200, `/api/plan` answering 401 rather than 404
+   (so the new routes are live, not a stale image), and the data-API lockout asserting on 10/10
+   tables.
+
+   **#329 took ten review rounds**, and the shape of that is worth recording because it will repeat.
+   Five Opus passes converged on "mergeable"; GPT-5.6 Sol then found two P1s immediately, and four
+   more over the next three passes. Running one reviewer repeatedly stopped being useful around
+   pass three — later passes were checking whether the previous pass's fixes were right rather than
+   questioning the design, and it took a different model to ask whether `per_unit` was papering
+   over the fact that admission and per-unit gating are two mechanisms wearing one name. **Switch
+   reviewers before running the same one a fourth time.**
+
+   The other repeated lesson: three separate times a fix introduced an OVER-charge that no test
+   caught, because the tests all drove failure paths and none drove a successful one. The worst
+   would have settled every streamed turn at its maximum — $0.15 for a $0.004 turn, a Tester's
+   whole month in thirty-three turns. **A bound needs a test proving the ordinary case still
+   passes through it**, not only that the exceptional case is caught.
+
    Still open in M3: the plan/usage CLIENT surface (spec and frames in
    `docs/design-references/plan-usage-2026-08/`), a per-account plan override for Kamil, and
    `research_tools` web search, which is external API spend with no per-call cost the app can see
