@@ -19,6 +19,14 @@ instantly from the narration/mp3 caches without a thread. Each attempt's job id 
 so a cancel aimed at one attempt can never hit the fresh attempt a retry created under the
 same dedup key (job_id_for stays the deterministic pre-start handle; chat_jobs reconciles the
 recorded id with the started attempt's real id).
+
+**Audio is scoped per USER, not app-global.** Jobs register under `_audio_scope()` and every mp3
+path resolves through `user_audio_dir()` — as do the `/api/audio/{name}` route and the narration
+cache in `sessions.py`. Isolation is a property of the path rather than a check: the same passage
+yields the same file name for everybody and reaches a different file, so a leaked name buys
+nothing. The cost is duplicate synthesis, accepted as Kamil's 2026-07-26 decision in exchange for
+cancellation that is trivially correct and account deletion that is an `rmtree`. With nobody
+signed in it collapses to the single flat directory it always used.
 """
 from __future__ import annotations
 

@@ -13,7 +13,7 @@ Not an impression — these are counts taken on 2026-08-09.
 | `docs/production/10-roadmap.md` | **1,740 lines** | CLAUDE.md calls it "the live ledger"; ~60% is historical archive |
 | `docs/production/HUMAN_ACTIONS.md` | 829 lines | untouched since 2026-07-29 |
 | `docs/product-roadmap.md` | 775 lines | overlaps the device-review ledger and round-queue files |
-| `app/**.py` | 30,978 lines, **8,261 prose (27%)** | `prompts.py` 49%, `jobs.py` 42%, `config.py` 39%, `agent_harness.py` 38% |
+| `app/**.py` | 30,978 lines, 8,261 "prose" (27%) | **This number turned out to be misleading — see Phase 2.** It counts docstrings and prompt text as commentary; real `#` comments run 13–17%. |
 
 **The failure mode this causes is not verbosity, it is contradiction.** While surveying for this
 plan I found `_NOT_BILLED_STATUSES` in `app/agent_harness.py` carrying *two stacked rationales
@@ -97,33 +97,64 @@ re-derived rather than read. **`docs/README.md` now indexes every file** with th
 between them, and a scripted check confirms all 35 links resolve and no `.md` under `docs/` is
 missing from it.
 
-## Phase 2 — Comments: the four densest modules
+## Phase 2 — Comments — **DONE 2026-08-09, premise corrected**
 
-Target `prompts.py` (49%), `jobs.py` (42%), `config.py` (39%), `agent_harness.py` (38%).
+**The 27% "prose" figure was wrong, and the plan built a phase on it.** It counted docstrings and
+string literals as commentary. Counting only lines that actually begin with `#`:
 
-`prompts.py` at 49% is likely fine and possibly should not be touched — it is mostly prompt *text*,
-which is the product, not commentary. **Verify that before editing it**, and if so say so in the PR
-rather than silently skipping it.
+| Module | "prose" | real `#` comments |
+|---|---|---|
+| `prompts.py` | 49% | **2%** |
+| `jobs.py` | 42% | 17% |
+| `config.py` | 39% | 17% |
+| `agent_harness.py` | 38% | 13% |
 
-For the other three, the specific pattern to remove is **stacked rationale**: a fix explained, then
-a later fix explained beneath it, with the earlier one never removed. `#331` is the worked example.
-Search for it with consecutive-comment-run detection:
+`prompts.py` is 49% *prompt text*, which is the product. The plan suspected this and said to verify
+before editing; verified, and it should not be touched. The other three sit at 13–17%, which is
+ordinary. **There was no comment-density problem to fix.**
 
-```
-# blocks of >=8 consecutive comment lines are the candidates, not automatically wrong
-```
+The 46 comment blocks of ≥9 lines were read rather than trimmed. They hold measured evidence and
+traps — `llm.py`'s routing block is the justification for a published privacy policy and records
+that a `mappingproxy` in a request body raises `TypeError` on every LLM call. Principle 6 applies:
+length is not the bar.
 
-Known long blocks as of writing: `agent_harness.py:79` (13 lines), `jobs.py:155` (18),
-`jobs.py:580` (10), `spend_ceiling.py:295` (11).
+**The real defect class is the stale promise** — a comment describing a future that has since
+arrived, which then describes the opposite of what the code does. `grep` for "not yet", "next
+slice", "will attach", "cannot yet" found three, all fixed:
 
-**Do not bulk-edit.** Every removal is a judgement call against principle 5.
+- `tenancy.py` — "this slice records ownership; it does not enforce it … no route calls it to gate
+  anything yet", in the module whose job is refusing unauthorized access (fixed in Phase 3).
+- `quotas.py` — "Route/job integration lands in the next slice", with nine modules calling it.
+- `routers/settings.py` — clients "still gate their whole form on `is_operator`, so a reader cannot
+  yet reach their own preferences", which both clients have read since #240.
 
-## Phase 3 — CLAUDE.md (304 lines)
+**Use that grep, not a line-count threshold.** A long comment is usually someone who learned
+something the hard way; a comment promising the future is one that has probably already expired.
 
-It is doing two jobs: invariants (load-bearing, keep every word) and a module map that has drifted
-toward prose. Tighten the module map to one or two lines per module with pointers, and let the
-detailed rationale live in the modules' own docstrings. **Do not touch the six invariants or the
-"Environments and deployment" section.**
+## Phase 3 — CLAUDE.md — **DONE 2026-08-09**
+
+**304 → 241 lines**, all of it from the module map; the invariants and the environments section
+were not touched.
+
+The plan said to "let the detailed rationale live in the modules' own docstrings", which assumed it
+already did. **It did not.** `projects.py`'s import trust boundary, `db.py`'s Data-API lockout
+argument, `tts.py`'s `tts-1` decision, `sessions.py`'s retry branches and mutation lock, and
+`audio_jobs.py`'s per-user scoping existed *only* in CLAUDE.md. So Phase 3 was a **move**, not a
+delete — and what revealed that was reading each docstring before deleting the bullet that was
+supposed to duplicate it.
+
+That move is the actual win, not the line count. CLAUDE.md is loaded into **every** session (~9.5k
+tokens); a module docstring is read only by someone working in that module, which is exactly when
+its traps matter.
+
+`tenancy.py`'s docstring still said **"this slice records ownership; it does not enforce it … no
+route calls it to gate anything yet"** — written before M2 slice 2a, describing the opposite of what
+the module now does, in the file whose entire job is refusing unauthorized access.
+
+Also fixed: `auth.py` had been appended to the end of the `tts.py` bullet, so the auth module was
+invisible in the map; and `llm.py` still said token accounting "will attach here" after M3 shipped
+it. Verified by set difference that no module named in the old map lost its entry — `figures.py`
+did, and was restored.
 
 ## Verification
 

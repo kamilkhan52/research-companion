@@ -5,9 +5,10 @@ best-effort; reservations authorize spend and therefore raise when Postgres is u
 state machine is append-like at the accounting boundary: a reservation moves once from
 ``reserved`` to ``settled`` / ``released`` / ``expired`` and is never deleted before its account.
 
-Route/job integration lands in the next slice. Keeping the persistence contract independently
-tested first makes the concurrency and crash rules reviewable before every paid workflow depends
-on them.
+This module knows nothing about what anything costs. Prices, per-operation maximums and leases
+live in :mod:`app.spend_limits`; the in-process binding that holds a reservation for the duration
+of a job lives in :mod:`app.spend_ceiling`. Keeping the ledger free of product decisions is what
+stopped the ceiling growing a second source of truth about who may spend what.
 """
 from __future__ import annotations
 

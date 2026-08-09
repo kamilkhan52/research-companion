@@ -6,6 +6,26 @@ settings (API keys, model/TTS picks, prompts) live outside any project — see c
 
 The active project for a request is set by the use_project() dependency, which binds
 config's active-project contextvar so the store/sessions layers resolve the right paths.
+
+`project_path` / `_safe_pid` is the trust boundary that turns an untrusted project id into a
+filesystem path. It rejects traversal and absolute ids, so every id-to-path caller must go
+through it rather than joining a path itself.
+
+**Sharing a project moves it as a git bundle** (`export_bundle` / `import_bundle`), because the
+git history *is* the record (invariant 4) and a bundle carries it intact. It is also tiny:
+`.gitignore` excludes `.state/`, which is nearly all of a project on disk — 207 MB of one 214 MB
+project, against a 1.1 MB bundle produced in 0.17 s — so export is a plain request rather than a
+background job. `scripts/share-project.sh <pid> <target-url>` does both legs.
+
+Import always creates a NEW project. Merging two divergent histories of one reading list is a real
+design question, and choosing silently would be worse than ending up with two projects.
+
+**Import is a trust boundary of its own.** `git bundle verify` checks integrity, not safety, and
+git's own path rules stop only `..` and absolute paths — it will happily materialize a symlink
+pointing anywhere. So the clone is `--no-checkout`, the tree is inspected before anything lands
+(symlinks, gitlinks and any tracked `.state/` are refused), hooks are disabled, metadata is
+rebuilt rather than trusted, and publication is a single atomic rename from a staging directory
+inside `PROJECTS_ROOT`.
 """
 from __future__ import annotations
 

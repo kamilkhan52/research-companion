@@ -7,6 +7,15 @@ a human approves, and only then does anything commit). Putting reading content h
 create a second source of truth that can disagree with the record, so the schema deliberately
 stores none.
 
+**Every `rc_*` table is taken off Supabase's Data API** by `_enforce_data_api_lockout`: RLS on with
+no policies, plus revoked `anon`/`authenticated` grants. It runs on **every** migrate and
+enumerates tables from the catalog, so a new table needs no action.
+
+It is deliberately NOT a migration file. `migrate()` skips anything already named in
+`rc_schema_migrations`, and that ledger is itself in the exposed schema — so a lockout shipped as a
+migration could be suppressed forever by an anon-key caller inserting its filename first.
+`tests/test_tenancy.py` asserts both the end state and that poisoned-ledger case.
+
 **The database is optional.** With `RC_DATABASE_URL` unset there is no pool, `enabled()` is False,
 and every caller falls back to the single-tenant behaviour the app has today. That is what lets a
 local `./run.sh` and the whole test suite work with no server running, and it is why M2 can land in
