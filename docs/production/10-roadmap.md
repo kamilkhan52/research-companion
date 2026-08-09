@@ -101,10 +101,14 @@ never saw it; its guarantee survives on the job path.
    whole month in thirty-three turns. **A bound needs a test proving the ordinary case still
    passes through it**, not only that the exceptional case is caught.
 
-   Still open in M3: the plan/usage CLIENT surface (spec and frames in
-   `docs/design-references/plan-usage-2026-08/`), a per-account plan override for Kamil, and
-   `research_tools` web search, which is external API spend with no per-call cost the app can see
-   and needs a provider-side decision rather than a code change.
+   The plan/usage CLIENT surface shipped in [#336](https://github.com/kamilkhan52/research-companion/pull/336) —
+   a `Plan & usage` screen showing the spent percentage, the reset date and the plan's promise, with
+   held work on its own card so a reader with jobs in flight is never told their month is nearly
+   gone. Awaiting a device check as DR-038.
+
+   Still open in M3: a per-account plan override for Kamil; the mid-flow 402/429 refusal handling
+   (DR-034); and `research_tools` web search, which is external API spend with no per-call cost the
+   app can see and needs a provider-side decision rather than a code change.
 
 ### Still open, in order
 
