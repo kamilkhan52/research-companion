@@ -14,6 +14,7 @@ import {
   startNotesAgent,
 } from '@/api/endpoints';
 import type { NotesJob } from '@/api/types';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 
 const POLL_INTERVAL_MS = 1200;
 
@@ -42,6 +43,7 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
   const [error, setError] = useState<string | null>(null);
   const [stateScope, setStateScope] = useState(scope);
   const startingRef = useRef<string | null>(null);
+  const runRef = useRef<NotesAgentState['run']>(async () => false);
 
   const applyJob = useCallback((next: NotesJob | null | undefined) => {
     if (scopeRef.current !== scope) return;
@@ -63,7 +65,9 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
       return;
     }
     setRunning(false);
-    if (next.status === 'error') setError(next.error ?? 'The notes edit failed.');
+    if (next.status === 'error' && !presentSpendJobRefusal(next.error, { operation: 'other' })) {
+      setError(next.error ?? 'The notes edit failed.');
+    }
     if (next.status === 'done' && next.result) setProposal(next.result);
   }, [scope]);
 
@@ -114,6 +118,14 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
         return true;
       } catch (e) {
         if (scopeRef.current !== scope) return false;
+        if (presentSpendRefusal(e, {
+          operation: 'other',
+          retry: () => runRef.current(instruction),
+        })) {
+          setError(null);
+          setRunning(false);
+          return false;
+        }
         setError((e as Error).message ?? 'The notes edit failed.');
         setRunning(false);
         return false;
@@ -123,6 +135,7 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
     },
     [pid, target, scope, stateScope, running, applyJob],
   );
+  runRef.current = run;
 
   const resume = useCallback(async () => {
     if (!pid || !target) return;

@@ -208,6 +208,44 @@ test('Start reading automatically fetches before it starts the opening turn', as
   ));
 });
 
+test('known-paper navigation starts the durable analysis without another tap', async () => {
+  jest.mocked(api.startRetrievalJob).mockResolvedValue({ job: doneJob });
+  const stream = {
+    streaming: false,
+    items: [],
+    run: jest.fn(async () => undefined),
+    stop: jest.fn(),
+  };
+  await renderAsync(
+    wrapper(
+      <ComposeFirst
+        pid="project"
+        slug="rough"
+        title="Rough Ttle"
+        stream={stream as never}
+        chatStartPath="/chat/start"
+        initialSource="2401.00001"
+        autoStart
+        sessionState={null}
+        selectedModel={null}
+        retrieved={false}
+      />,
+    ),
+  );
+
+  await waitFor(() => expect(api.startRetrievalJob).toHaveBeenCalledWith(
+    'project',
+    'rough',
+    { arxiv_id: '2401.00001' },
+  ));
+  await waitFor(() => expect(stream.run).toHaveBeenCalledWith(
+    '/chat/start',
+    expect.objectContaining({ slug: 'rough', prompt: 'Give me a balanced first read.' }),
+    undefined,
+    expect.any(Function),
+  ));
+});
+
 test('a failed fetch exposes native PDF upload recovery', async () => {
   const failedJob: RetrievalJob = {
     ...doneJob,

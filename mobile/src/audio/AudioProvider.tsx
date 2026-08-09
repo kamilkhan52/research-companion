@@ -23,6 +23,7 @@ import { setupPlayer } from '@/audio/setup';
 import { consumeEligibleHandoff, dismissEligibleHandoffs } from '@/audio/handoffState';
 import { useActiveProject } from '@/store/project';
 import { showToast } from '@/ui/Toast';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { useListeningMode } from '@/store/listening';
 import {
   checkpointPlayback,
@@ -218,6 +219,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
   }, []);
   // Bumped whenever a new prep starts (or is cancelled); stale loops see it and exit quietly.
   const generation = useRef(0);
+  const playTextRef = useRef<(request: PlayRequest) => Promise<void>>(async () => {});
   const queueGeneration = useRef(0);
   // Server polling for queued final narrations remains ordered independently from native-player
   // mutations. Preview cues may use the player while that slow polling is in progress.
@@ -486,6 +488,13 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (job.status === 'error' || !job.url) {
+          if (presentSpendJobRefusal(job.error, {
+            operation: 'narration',
+            retry: () => playTextRef.current({ id, title, text }),
+          })) {
+            setPrep(null);
+            return;
+          }
           fail(job.error ?? 'Could not prepare audio.');
           return;
         }
@@ -520,11 +529,19 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         toastIfWaited();
         await TrackPlayer.play();
       } catch (e) {
+        if (presentSpendRefusal(e, {
+          operation: 'narration',
+          retry: () => playTextRef.current({ id, title, text }),
+        })) {
+          if (live()) setPrep(null);
+          return;
+        }
         fail((e as Error).message ?? 'Could not prepare audio.');
       }
     },
     [currentId, applyJob, cancelServerJob],
   );
+  playTextRef.current = playText;
 
   const playPreview = useCallback(async (id: string, title: string, url: string) => {
     const queueGen = queueGeneration.current;

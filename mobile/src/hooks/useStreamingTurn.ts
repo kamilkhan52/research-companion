@@ -13,6 +13,7 @@ import { apiPost, ApiError } from '@/api/client';
 import { cancelChatJob, getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import {
   consumeEligibleHandoff,
   currentHandoffEligibilityEpoch,
@@ -78,6 +79,7 @@ export function useStreamingTurn(
   // fast double-tap before React re-renders with the disabled button — can't both slip past
   // the check; state only updates on the next render, a ref updates immediately.
   const busyRef = useRef(false);
+  const runRef = useRef<StreamingTurn['run']>(async () => {});
   // Bumped whenever the conversation (pid/slug/thread) changes. An async resume()/run()
   // captures it on entry and re-checks before attaching a watcher, so a lookup started for
   // the previous conversation can never bind its job to the new one.
@@ -158,7 +160,9 @@ export function useStreamingTurn(
           if (snap.delivery_mode === 'listening') {
             await consumeEligibleHandoff(snap.id);
           }
-          setError(snap.error ?? 'The response failed.');
+          if (!presentSpendJobRefusal(snap.error, { operation: 'other' })) {
+            setError(snap.error ?? 'The response failed.');
+          }
           setStreaming(false);
           setPendingUser(null);
           setPreviewJobIds([]);
@@ -209,6 +213,15 @@ export function useStreamingTurn(
         await watch(job);
       } catch (e) {
         setPreviewParentJobId(null);
+        if (presentSpendRefusal(e, {
+          operation: 'other',
+          retry: () => runRef.current(path, body, optimisticUser, onAccepted),
+        })) {
+          setError(null);
+          setPendingUser(null);
+          setStreaming(false);
+          return;
+        }
         setError((e as Error).message ?? 'Could not start the response.');
         setPendingUser(null);
         let recoveredActiveJob = false;
@@ -236,6 +249,7 @@ export function useStreamingTurn(
     },
     [deliveryMode, pid, qc, slug, threadId, watch],
   );
+  runRef.current = run;
 
   const resume = useCallback(async () => {
     if (!pid || !slug || busyRef.current) return;

@@ -40,6 +40,7 @@ import { PaperSummaryOfferHost } from '@/components/PaperSummaryOffer';
 import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
 import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
+import { SpendRefusalHost } from '@/components/SpendRefusalSheet';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
 import { AuthProvider } from '@/auth/AuthProvider';
 import { AuthGate } from '@/components/AuthGate';
@@ -124,6 +125,8 @@ function ThemedShell() {
         <ExistingPaperOfferHost />
         {/* Global "start the paper summary?" offer, raised by useAddPaper from any add site. */}
         <PaperSummaryOfferHost />
+        {/* 402/429 admission refusals interrupt the action that caused them, app-wide. */}
+        <SpendRefusalHost />
       </View>
     </NavThemeProvider>
   );

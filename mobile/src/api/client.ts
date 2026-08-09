@@ -1,16 +1,53 @@
 // Thin JSON fetch wrapper around the backend. Adds the auth header, builds URLs from the
 // configured base, and turns non-2xx responses into a typed ApiError carrying the backend's
-// {detail} message. Long operations use start-job + poll helpers; audio URLs live in audio.ts.
+// structured error body. Long operations use start-job + poll helpers; audio URLs live in audio.ts.
 
 import { getBaseUrl, getMediaCacheNamespace, getToken } from './config';
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code: string | null;
+  used_nanousd: number | null;
+  settled_nanousd: number | null;
+  requested_nanousd: number | null;
+  limit_nanousd: number | null;
+  retryAfterSeconds: number | null;
+
+  constructor(
+    status: number,
+    message: string,
+    details: {
+      code?: string | null;
+      used_nanousd?: number | null;
+      settled_nanousd?: number | null;
+      requested_nanousd?: number | null;
+      limit_nanousd?: number | null;
+      retryAfterSeconds?: number | null;
+    } = {},
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = details.code ?? null;
+    this.used_nanousd = details.used_nanousd ?? null;
+    this.settled_nanousd = details.settled_nanousd ?? null;
+    this.requested_nanousd = details.requested_nanousd ?? null;
+    this.limit_nanousd = details.limit_nanousd ?? null;
+    this.retryAfterSeconds = details.retryAfterSeconds ?? null;
   }
+}
+
+function numericField(body: unknown, key: string): number | null {
+  if (!body || typeof body !== 'object') return null;
+  const value = (body as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function retryAfterSeconds(res: Response): number | null {
+  const raw = res.headers.get('Retry-After');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
 }
 
 /** Build an absolute URL for an API path (e.g. "/api/projects"). */
@@ -47,13 +84,28 @@ export function authenticatedMediaSource(path: string): {
 
 async function parseError(res: Response): Promise<never> {
   let detail = `Request failed (${res.status})`;
+  let body: unknown = null;
   try {
-    const body = await res.json();
-    if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+    body = await res.json();
+    if (body && typeof body === 'object' && 'detail' in body) {
+      const value = (body as { detail?: unknown }).detail;
+      if (value) detail = typeof value === 'string' ? value : JSON.stringify(value);
+    }
   } catch {
     // non-JSON error body; keep the generic message
   }
-  throw new ApiError(res.status, detail);
+  const code = body && typeof body === 'object'
+    && typeof (body as { code?: unknown }).code === 'string'
+    ? (body as { code: string }).code
+    : null;
+  throw new ApiError(res.status, detail, {
+    code,
+    used_nanousd: numericField(body, 'used_nanousd'),
+    settled_nanousd: numericField(body, 'settled_nanousd'),
+    requested_nanousd: numericField(body, 'requested_nanousd'),
+    limit_nanousd: numericField(body, 'limit_nanousd'),
+    retryAfterSeconds: retryAfterSeconds(res),
+  });
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
