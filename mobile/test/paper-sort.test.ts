@@ -1,4 +1,4 @@
-import { filterBucket, sortPapers } from '@/lib/paperSort';
+import { filterBucket, sortPapers, STATUS_FILTERS } from '@/lib/paperSort';
 import type { Paper } from '@/api/types';
 
 const paper = (over: Partial<Paper>): Paper => ({
@@ -75,5 +75,33 @@ describe('sortPapers', () => {
     const before = papers.map((p) => p.slug);
     sortPapers(papers, 'name');
     expect(papers.map((p) => p.slug)).toEqual(before);
+  });
+});
+
+describe('STATUS_FILTERS (DR-005)', () => {
+  // The complaint was that the chips gave instructions ("To read", "Done") rather than naming the
+  // state, so a paper you had only discussed sat under "Done". These assert the label against the
+  // bucket that actually decides membership — the two drifting apart IS the defect.
+  const labelFor = (p: Paper) =>
+    STATUS_FILTERS.find((f) => f.key === filterBucket(p))?.label;
+
+  test('each label names the state its bucket actually contains', () => {
+    expect(labelFor(paper({ session_state: null, list_status: 'unread' }))).toBe('Unread');
+    expect(labelFor(paper({ session_state: 'in_discussion' }))).toBe('Discussing');
+    expect(labelFor(paper({ session_state: 'notes_drafted' }))).toBe('Discussing');
+    expect(labelFor(paper({ session_state: 'committed' }))).toBe('Read');
+    expect(labelFor(paper({ list_status: 'read' }))).toBe('Read');
+  });
+
+  test('no label reads as an instruction rather than a state', () => {
+    for (const { label } of STATUS_FILTERS) {
+      expect(label).not.toMatch(/^To /);
+      expect(label).not.toBe('Done');
+      expect(label).not.toBe('In progress');
+    }
+  });
+
+  test('the persisted keys are unchanged, so saved filters survive', () => {
+    expect(STATUS_FILTERS.map((f) => f.key)).toEqual(['all', 'toread', 'inprogress', 'done']);
   });
 });

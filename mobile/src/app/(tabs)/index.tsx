@@ -42,6 +42,7 @@ import {
   paperStateKey,
   sortPapers,
   SORTS,
+  STATUS_FILTERS,
   type SortKey,
   type StatusFilter,
 } from '@/lib/paperSort';
@@ -73,13 +74,6 @@ import { floatShadow, fonts, radius, space, stateMetaFor, type ThemePalette } fr
 // remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
 // to a different/reachable server — is retried on the next mount rather than silently skipped.
 let coverBackfillDoneFor: string | null = null;
-
-const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'toread', label: 'To read' },
-  { key: 'inprogress', label: 'In progress' },
-  { key: 'done', label: 'Done' },
-];
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -359,7 +353,7 @@ export default function LibraryScreen() {
               showsHorizontalScrollIndicator={false}
               style={styles.filters}
               contentContainerStyle={{ gap: space.sm }}>
-              {FILTERS.map((f) => (
+              {STATUS_FILTERS.map((f) => (
                 <Chip
                   key={f.key}
                   label={`${f.label} ${counts[f.key]}`}
