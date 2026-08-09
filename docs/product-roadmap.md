@@ -580,7 +580,8 @@ Serialize session-index read/modify/write operations and update `updated_at` for
 assistant record. Add a cross-project recent-sessions endpoint containing project, paper, state,
 and activity time.
 
-Verification record ([PR #29](https://github.com/kamilkhan52/research-companion/pull/29)):
+Verification record (landed as `842dd15`, 2026-07-07 — [PR #29](https://github.com/kamilkhan52/research-companion/pull/29)
+was closed unmerged and the work was committed directly):
 
 - concurrent index writers are serialized without losing session metadata, and user/assistant
   records advance the authoritative activity timestamp;

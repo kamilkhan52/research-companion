@@ -17,22 +17,22 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-08, after M3 enforcement landed)
+## Current position (updated 2026-08-09, after M3 enforcement landed and deployed)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
-`https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all six
-migrations applied, tenancy lockout verified against the live schema (7 `rc_*` tables, RLS on, 0
-policies, 0 `anon`/`authenticated` grants), two accounts allowlisted, five of his projects imported
-with full git history, and his own prompt overrides and model picks in place. H26/H27/H28 are all
+`https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all migrations
+applied, tenancy lockout verified against the live schema (RLS on, 0 policies, 0
+`anon`/`authenticated` grants), two accounts allowlisted, five of his projects imported with full
+git history, and his own prompt overrides and model picks in place. H26/H27/H28 are all
 closed.
 
 **M2.5 is code-complete and the app is in continuous production-device review.** What gates the
 AAB is Kamil's sign-off plus H13, followed by the first production-profile build. Uploading before
 there are testers does not bank closed-test time and prematurely freezes the Android package name.
 
-**Main is at PR #323, and nothing is open.** Fifteen reviewed PRs had accumulated unmerged since
-2026-08-01 in two independent stacks; both landed on 2026-08-05. Discovery: **#310** cooperative
-Stop, **#311** slice 2, **#324** the device-review ledger. M3: **#312**–**#323** — exact-cost
+**Fifteen reviewed PRs had accumulated unmerged since 2026-08-01** in two independent stacks; both
+landed on 2026-08-05. Discovery: **#310** cooperative Stop, **#311** slice 2, **#324** the
+device-review ledger. M3: **#312**–**#323** — exact-cost
 metering for the agentic and speech paths, the retirement of the legacy blocking paid routes,
 per-user usage events, durable reservations with quota-gated job admission, an emergency
 provider-spend stop, audio-cache eviction, prompt-injection framing with bounded tool egress, and
@@ -66,11 +66,11 @@ never saw it; its guarantee survives on the job path.
 3. Discovery slice 3 adds the comparative reading path and its client surface after slice 2's
    reservoir is measured. Quick mode remains explicitly deferred until the optimized default has
    enough real timing/quality evidence to set a meaningful target.
-4. **M3 enforcement landed 2026-08-07/08 in #325–#329**, closing what point 4 used to describe as
-   the remaining gap. Per-account rate limits (**#325**), the spend ceiling actually connected —
-   reserve on admission, settle to actual (**#326**), per-call token and timeout ceilings
-   (**#327**), named plans with `tester` as the default at 5,000 credits (**#328**), and the
-   metering of paths that held budget while charging nothing (**#329**).
+4. **M3 enforcement landed across 2026-08-06 to 2026-08-09 in #325–#329**, closing what point 4
+   used to describe as the remaining gap. Per-account rate limits (**#325**), the spend ceiling
+   actually connected — reserve on admission, settle to actual (**#326**), per-call token and
+   timeout ceilings (**#327**), named plans with `tester` as the default at 5,000 credits
+   (**#328**), and the metering of paths that held budget while charging nothing (**#329**).
 
    Three things in that stack are worth carrying forward as lessons rather than line items. Spend
    escapes through **unenumerated seams** — a pool thread, a registry hop, a partially-bound worker
