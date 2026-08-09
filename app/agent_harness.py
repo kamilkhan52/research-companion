@@ -20,6 +20,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Callable, Iterable
 
+import httpx
 from openai import OpenAIError
 from pydantic_ai import Agent, capture_run_messages
 from pydantic_ai.messages import (
@@ -115,6 +116,29 @@ class _LedgerOpenRouterStreamedResponse(OpenRouterStreamedResponse):
             super()._map_provider_details(chunk), getattr(chunk, "usage", None)
         )
 
+    def _map_usage(self, chunk):
+        """Capture the cost here, because the override above never sees the chunk carrying it.
+
+        OpenRouter reports a streamed run's cost in a FINAL usage-only chunk whose `choices` is
+        empty. The base stream loop calls `_map_usage` for that chunk and then `continue`s on the
+        empty choices — several lines BEFORE it would consult `_map_provider_details`. So the
+        authoritative cost of every streamed turn was read and thrown away, and the ledger has
+        never had an exact price for the streamed chat and notes paths.
+
+        That was invisible while a cost-less response merely recorded tokens. It stopped being
+        invisible once an unpriced response started forcing a conservative settle: every ordinary
+        streamed turn began settling at its full maximum, turning a silent under-charge into a
+        37x over-charge. `get()` builds the final `ModelResponse` from `self.provider_details`,
+        so writing it here is what makes it survive.
+        """
+        usage = super()._map_usage(chunk)
+        retained = _retain_authoritative_zero_cost(
+            self.provider_details, getattr(chunk, "usage", None),
+        )
+        if retained is not None:
+            self.provider_details = retained
+        return usage
+
 
 class _OpenRouterSpendDisabled(OpenAIError):
     """Stops OpenAI SDK retries while the model wrapper restores the public AgentError."""
@@ -146,7 +170,47 @@ async def _require_openrouter_spend(_request) -> None:
 #: Deliberately a small allowlist rather than "not 2xx": a 500 can follow a completed generation,
 #: and guessing wrong here converts a real charge into a silent freebie. Being wrong in the other
 #: direction only over-charges, and that is recoverable.
-_NOT_BILLED_STATUSES = frozenset({401, 402, 403, 404, 429})
+#: 408 included on OpenRouter's documented contract: error statuses are returned BEFORE model
+#: processing begins, and anything failing after processing starts is carried under HTTP 200. 409
+#: is deliberately absent — OpenRouter documents no meaning for it, and guessing would convert a
+#: real charge into a silent freebie.
+_NOT_BILLED_STATUSES = frozenset({401, 402, 403, 404, 408, 429})
+
+#: Transport failures that prove the request never reached OpenRouter, so nothing was generated
+#: and nothing billed. The connection was never established, or never taken from the pool.
+#:
+#: `ReadError`, `WriteError` and read timeouts are deliberately NOT here: those happen with the
+#: request already on the wire, which is exactly the ambiguous case the dispatch counter exists to
+#: catch. The rule is that only provably-pre-dispatch failures are discounted.
+_PRE_DISPATCH_TRANSPORT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
+class _DispatchAccountingTransport(httpx.AsyncBaseTransport):
+    """Discounts attempts that provably never reached the provider.
+
+    The request hook fires before the bytes go anywhere, so an attempt that then fails to even
+    connect is counted as possibly-billed. The OpenAI SDK retries internally, so one connection
+    blip followed by a successful retry left `dispatched=2, priced=1` — permanently uncertain, and
+    an ordinary turn settled at its maximum. Only the transport layer knows the difference between
+    "never connected" and "sent, and then something went wrong".
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request):
+        try:
+            return await self._inner.handle_async_request(request)
+        except _PRE_DISPATCH_TRANSPORT_ERRORS:
+            spend_ceiling.note_not_billed()
+            raise
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
 
 
 async def _discount_unbilled_openrouter_response(response) -> None:
@@ -181,6 +245,10 @@ class _SpendControlledOpenRouterProvider(OpenRouterProvider):
 def _attach_spend_hooks(client) -> None:
     client.event_hooks["request"].append(_require_openrouter_spend)
     client.event_hooks["response"].append(_discount_unbilled_openrouter_response)
+    # Wrapped, not replaced: the transport is the only layer that can tell a connection that was
+    # never made from one that carried the request and then broke.
+    if not isinstance(client._transport, _DispatchAccountingTransport):
+        client._transport = _DispatchAccountingTransport(client._transport)
 
 
 class _LedgerOpenRouterModel(OpenRouterModel):

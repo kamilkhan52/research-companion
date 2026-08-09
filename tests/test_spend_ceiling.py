@@ -695,7 +695,18 @@ def _openrouter_model_with_transport(handler, monkeypatch, operation="analysis")
     monkeypatch.setattr(config, "load_settings",
                         lambda: {"openrouter_api_key": "sk-test", "model": "test/model"})
     model = agent_harness._openrouter_model(operation=operation)
-    model._provider._own_http_client._transport = httpx.MockTransport(handler)
+    client = model._provider._own_http_client
+    # Replace the INNER transport, keeping whatever the provider wrapped around it. Swapping
+    # `client._transport` wholesale would discard the production dispatch-accounting wrapper and
+    # leave these tests unable to notice it being removed — which is exactly what happened: a
+    # revert of the real wiring left the suite green because each test installed its own wrapper.
+    if isinstance(client._transport, agent_harness._DispatchAccountingTransport):
+        client._transport._inner = httpx.MockTransport(handler)
+    else:  # pragma: no cover — the provider always wraps; this keeps the failure legible
+        raise AssertionError(
+            "provider did not install _DispatchAccountingTransport; the hooks under test are "
+            "not wired up"
+        )
     return model
 
 
@@ -834,3 +845,179 @@ def test_an_ordinary_priced_run_still_settles_exactly_through_the_real_transport
     )
     assert not held.uncertain
     assert charged == [4_000_000], f"an ordinary $0.004 run settled at {charged}"
+
+
+def _sse(chunks) -> bytes:
+    import json
+    body = b"".join(f"data: {json.dumps(c)}\n\n".encode() for c in chunks)
+    return body + b"data: [DONE]\n\n"
+
+
+def test_an_ordinary_streamed_turn_settles_at_its_real_cost_not_its_maximum(monkeypatch):
+    """The most-used path in the app, and the one the ledger has never priced.
+
+    OpenRouter reports a streamed run's cost in a FINAL usage-only chunk whose `choices` is empty.
+    The base stream loop reads usage from that chunk and then `continue`s on the empty choices,
+    before it would ever consult `_map_provider_details` — so the authoritative cost was read and
+    discarded on every streamed chat and notes turn.
+
+    That was a silent under-charge until an unpriced response began forcing a conservative settle,
+    at which point it became a 37x OVER-charge: a $0.004 turn settling at the $0.15 maximum, on
+    every turn. Both directions are fixed by keeping the cost where `get()` will find it.
+    """
+    import asyncio
+
+    import httpx
+    from app import agent_harness, spend_ceiling, usage
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+    monkeypatch.setattr(usage, "record",
+                        lambda op, m, d, **k: spend_ceiling.note_spend(
+                            round(float(d.get("cost") or 0) * 1e9)))
+    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
+
+    base = {"id": "gen-1", "model": "test/model", "object": "chat.completion.chunk",
+            "created": 0, "provider": "DeepSeek"}
+    body = _sse([
+        {**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hello"},
+                              "finish_reason": None}]},
+        {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        {**base, "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                                          "total_tokens": 15, "cost": 0.004}},
+    ])
+
+    async def stream(request):
+        return httpx.Response(200, content=body,
+                              headers={"content-type": "text/event-stream"})
+
+    model = _openrouter_model_with_transport(stream, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        async def run():
+            async with Agent(model, output_type=str).run_stream("hi") as result:
+                async for _ in result.stream_text(delta=True):
+                    pass
+                return result.all_messages()
+
+        messages = asyncio.run(run())
+        agent_harness.record_agent_run(None, model, "analysis", messages)
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert held.priced == 1, "the streamed run's cost was never read back"
+    assert not held.uncertain
+    assert charged == [4_000_000], (
+        f"an ordinary streamed turn settled at {charged} instead of its real $0.004"
+    )
+
+
+def test_a_connection_that_never_opened_is_not_charged_as_a_lost_request(monkeypatch):
+    """The request hook fires before the bytes go anywhere, so a failure to even connect looked
+    identical to a request that reached OpenRouter and lost its response. With the SDK retrying
+    internally, one connection blip followed by a successful retry left the run permanently
+    uncertain and settled an ordinary turn at its maximum.
+
+    Only the transport knows the difference. `ReadError` stays counted — that is the genuinely
+    ambiguous case.
+    """
+    import asyncio
+
+    import httpx
+    from app import agent_harness, spend_ceiling, usage
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+    monkeypatch.setattr(usage, "record",
+                        lambda op, m, d, **k: spend_ceiling.note_spend(
+                            round(float(d.get("cost") or 0) * 1e9)))
+    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
+    attempts = {"n": 0}
+
+    async def blip_then_succeed(request):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise httpx.ConnectError("could not connect")
+        return httpx.Response(200, json={
+            "id": "g1", "model": "test/model", "object": "chat.completion", "created": 0,
+            "provider": "DeepSeek",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                      "cost": 0.004},
+        })
+
+    # No wrapper installed here on purpose: the provider's own wiring must be what discounts the
+    # failed connect, or this test cannot tell whether that wiring exists.
+    model = _openrouter_model_with_transport(blip_then_succeed, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        result = asyncio.run(Agent(model, output_type=str).run("hi"))
+        agent_harness.record_agent_run(result.usage, model, "analysis", result.all_messages())
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert attempts["n"] == 2, "the SDK must actually retry after the connect failure"
+    assert held.dispatched == held.priced == 1, (
+        f"dispatched={held.dispatched} priced={held.priced}: the failed connect stayed counted"
+    )
+    assert charged == [4_000_000], f"a connection blip turned a $0.004 turn into {charged}"
+
+
+def test_a_timeout_status_before_processing_is_not_charged(monkeypatch):
+    """408 sits in the non-billed allowlist on OpenRouter's documented contract: error statuses are
+    returned BEFORE model processing begins, and anything failing after processing starts is
+    carried under HTTP 200. So a 408 followed by a successful retry must settle at the real cost,
+    not the maximum.
+
+    409 is deliberately NOT in the allowlist — OpenRouter documents no meaning for it, and
+    guessing would turn a real charge into a silent freebie.
+    """
+    import asyncio
+
+    import httpx
+    from app import agent_harness, spend_ceiling, usage
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+    monkeypatch.setattr(usage, "record",
+                        lambda op, m, d, **k: spend_ceiling.note_spend(
+                            round(float(d.get("cost") or 0) * 1e9)))
+    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
+    attempts = {"n": 0}
+
+    async def timeout_then_succeed(request):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(408, json={"error": {"message": "request timeout"}})
+        return httpx.Response(200, json={
+            "id": "g1", "model": "test/model", "object": "chat.completion", "created": 0,
+            "provider": "DeepSeek",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                      "cost": 0.004},
+        })
+
+    model = _openrouter_model_with_transport(timeout_then_succeed, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        result = asyncio.run(Agent(model, output_type=str).run("hi"))
+        agent_harness.record_agent_run(result.usage, model, "analysis", result.all_messages())
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert attempts["n"] == 2, "the SDK must retry after the 408"
+    assert held.dispatched == held.priced == 1, (
+        f"dispatched={held.dispatched} priced={held.priced}: the 408 stayed counted as billable"
+    )
+    assert charged == [4_000_000], f"a 408 retry turned a $0.004 turn into {charged}"
