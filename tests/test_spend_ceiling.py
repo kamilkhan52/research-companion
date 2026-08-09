@@ -970,6 +970,46 @@ def test_a_connection_that_never_opened_is_not_charged_as_a_lost_request(monkeyp
     assert charged == [4_000_000], f"a connection blip turned a $0.004 turn into {charged}"
 
 
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 408, 429, 502, 503])
+def test_no_documented_error_status_consumes_a_turns_whole_budget(status, monkeypatch):
+    """Every status OpenRouter documents means the request failed before producing a completion.
+
+    Their errors doc: once the first token is written the `200 OK` status and headers are already
+    committed, so a mid-generation failure always arrives as a 200 carrying an error payload. A
+    non-200 therefore never carries a completion we were billed for.
+
+    Charging the operation's full per-turn maximum for one is off by two orders of magnitude in the
+    direction that hurts the reader: a rejected tool schema is a 400 on EVERY turn until it is
+    fixed, and at $0.15 a time that is a Tester's whole month in thirty-three failures.
+    """
+    import asyncio
+
+    import httpx
+    from app import spend_ceiling
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+
+    async def refused(request):
+        return httpx.Response(status, json={"error": {"message": "refused"}})
+
+    model = _openrouter_model_with_transport(refused, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        with pytest.raises(Exception):  # noqa: B017 — the status drives which type is raised
+            asyncio.run(Agent(model, output_type=str).run("hi"))
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert held.dispatched == 0, (
+        f"HTTP {status} stayed counted as possibly billed, so the turn settles at its maximum"
+    )
+    assert charged == [0], f"HTTP {status} charged {charged} for a request that produced nothing"
+
+
 def test_a_timeout_status_before_processing_is_not_charged(monkeypatch):
     """408 sits in the non-billed allowlist on OpenRouter's documented contract: error statuses are
     returned BEFORE model processing begins, and anything failing after processing starts is

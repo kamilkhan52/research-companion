@@ -170,11 +170,23 @@ async def _require_openrouter_spend(_request) -> None:
 #: Deliberately a small allowlist rather than "not 2xx": a 500 can follow a completed generation,
 #: and guessing wrong here converts a real charge into a silent freebie. Being wrong in the other
 #: direction only over-charges, and that is recoverable.
-#: 408 included on OpenRouter's documented contract: error statuses are returned BEFORE model
-#: processing begins, and anything failing after processing starts is carried under HTTP 200. 409
-#: is deliberately absent — OpenRouter documents no meaning for it, and guessing would convert a
-#: real charge into a silent freebie.
-_NOT_BILLED_STATUSES = frozenset({401, 402, 403, 404, 408, 429})
+#: OpenRouter's own documented error statuses. Every one of them means the request failed BEFORE a
+#: completion was produced: their errors doc states that once the first token has been written the
+#: `200 OK` status and headers are already committed and cannot change, so a mid-generation failure
+#: always arrives as a 200 carrying an error payload. A non-200 therefore never carries a
+#: completion we were billed for.
+#:
+#: Not quite "never billed", and worth being precise since this decides what a reader is charged:
+#: the same doc warns you "may still be charged for the prompt processing cost by the upstream
+#: provider, even if no content is generated". So treating these as free can under-charge by a
+#: fraction of a cent. The alternative is charging the operation's FULL per-turn maximum for a
+#: request that produced nothing — $0.15 for a rejected tool schema, repeatable on every turn until
+#: the bug is fixed, which would burn a Tester's whole month in thirty-three failures. Off by a
+#: fraction of a cent beats off by two orders of magnitude, in the direction that hurts the reader.
+#:
+#: 404 is ours rather than theirs (an unknown route) and belongs for the same reason. 409 stays out
+#: — OpenRouter documents no meaning for it, so there is no contract to reason from.
+_NOT_BILLED_STATUSES = frozenset({400, 401, 402, 403, 404, 408, 429, 502, 503})
 
 #: Transport failures that prove the request never reached OpenRouter, so nothing was generated
 #: and nothing billed. The connection was never established, or never taken from the pool.
