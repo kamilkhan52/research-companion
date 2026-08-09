@@ -35,7 +35,7 @@ describe('figureNumbersInText', () => {
 });
 
 describe('planFigurePlacement', () => {
-  test('cards a figure after the first paragraph that mentions it', () => {
+  test('attaches a figure to the first block that mentions it', () => {
     const texts = ['Intro with no figures.', 'Now Figure 1 shows the setup.', 'And Figure 2 later.'];
     const plan = planFigurePlacement(texts, [fig(1), fig(2)]);
     expect(plan[0]).toEqual([]);
