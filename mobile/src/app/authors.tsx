@@ -18,7 +18,7 @@ import { BottomSheet } from '@/components/BottomSheet';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { TopBar } from '@/components/TopBar';
 import { useActiveProject } from '@/store/project';
-import { Button, Chip, Icon, Screen, Text } from '@/ui';
+import { Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
@@ -154,33 +154,50 @@ function Segment({ label, active, onPress }: { label: string; active: boolean; o
   );
 }
 
+/** Icon + count, with the words carried by the accessibility label rather than the layout.
+ *
+ *  Three text chips reading "4 in project · 2 significant · 9 referenced" wrapped to two lines on
+ *  a phone and pushed the name out of view, which is what DR-008 was about. The counts are the
+ *  signal; the nouns are the same on every card. */
+function CountStat({ icon, count, color }: { icon: IconName; count: number; color: string }) {
+  const styles = useThemedStyles(makeStyles);
+  // No label of its own: the card is one accessible unit and its label already names all three
+  // counts in words. Labelling them here too would read every number twice.
+  return (
+    <View style={styles.countStat}>
+      <Icon name={icon} size={13} color={color} />
+      <Text variant="caption" color={color} style={styles.countStatValue}>{count}</Text>
+    </View>
+  );
+}
+
 function AuthorCard({ author, onPress }: { author: BoardAuthor; onPress: () => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const years = author.active_years;
+  // `active_years` is deliberately not shown. A bare "2019–2024" under a name reads as a career
+  // span; it is actually the range of publication years among THIS project's papers, which is a
+  // fact about the reading list rather than about the person (DR-008).
+  const parts = [`${author.in_project_count} in project`];
+  if (author.significant_count > 0) parts.push(`${author.significant_count} significant`);
+  if (author.external_count > 0) parts.push(`${author.external_count} referenced`);
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [styles.card, pressed && { opacity: 0.85 }]}
-      accessibilityLabel={`${author.name}, ${author.in_project_count} papers in project`}>
+      accessibilityLabel={`${author.name}. ${parts.join(', ')}.`}>
       <Text variant="heading" numberOfLines={2}>{author.name}</Text>
       {author.affiliation ? (
         <Text variant="caption" color={t.muted} numberOfLines={1}>{author.affiliation}</Text>
       ) : null}
       <View style={styles.chipRow}>
-        <Chip label={`${author.in_project_count} in project`} color={t.mint} dot={false} />
+        <CountStat icon="file-text" count={author.in_project_count} color={t.mint} />
         {author.significant_count > 0 ? (
-          <Chip label={`${author.significant_count} significant`} color={t.amber} dot={false} />
+          <CountStat icon="star" count={author.significant_count} color={t.amber} />
         ) : null}
         {author.external_count > 0 ? (
-          <Chip label={`${author.external_count} referenced`} color={t.muted} dot={false} />
+          <CountStat icon="link" count={author.external_count} color={t.muted} />
         ) : null}
       </View>
-      {years ? (
-        <Text variant="caption" color={t.muted}>
-          {years[0] === years[1] ? `${years[0]}` : `${years[0]}–${years[1]}`}
-        </Text>
-      ) : null}
     </Pressable>
   );
 }
@@ -451,7 +468,7 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
   return (
     <View style={{ marginTop: space.xs, gap: space.xs }}>
       <Button
-        title={state === 'running' ? 'Writing profile…' : 'Generate profile'}
+        title={state === 'running' ? 'Writing profile…' : 'Get profile'}
         variant="ghost"
         icon="user"
         onPress={() => void generate()}
@@ -588,6 +605,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     backgroundColor: t.surface,
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  // Icon + number, sized so three fit on one line of a phone-width card.
+  countStat: { flexDirection: 'row', alignItems: 'center', gap: 3, marginRight: 10 },
+  countStatValue: { fontVariant: ['tabular-nums'] },
   researchRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
   labCard: {
     backgroundColor: t.surface,

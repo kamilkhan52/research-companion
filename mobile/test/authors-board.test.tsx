@@ -51,9 +51,31 @@ test('renders the ranked author board with counts and affiliation', async () => 
   await renderAsync(wrap(<AuthorsScreen />));
   await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
   expect(screen.getByText('MIT')).toBeTruthy();
-  expect(screen.getByText('2 in project')).toBeTruthy();
-  expect(screen.getByText('3 significant')).toBeTruthy();
+  // Counts as compact icon+number, not wrapped text chips (DR-008). Asserted through the card's
+  // label: the bare numerals are ambiguous across cards, which is the point of the label.
+  screen.getByLabelText('Song Han. 2 in project, 3 significant, 5 referenced.');
   expect(screen.getByText('Tri Dao')).toBeTruthy();
+});
+
+test('the card carries counts as numbers and the words in its label (DR-008)', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+
+  // The nouns are identical on every card, so they belong to the screen reader rather than to
+  // three chips that wrapped to a second line and pushed the name out of view.
+  expect(screen.queryByText('2 in project')).toBeNull();
+  expect(screen.queryByText('3 significant')).toBeNull();
+  screen.getByLabelText('Song Han. 2 in project, 3 significant, 5 referenced.');
+});
+
+test('the publication-year range is not shown under the name (DR-008)', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+
+  // `active_years` is the span of THIS project's papers, not the person's career, so under a name
+  // it reads as a claim the data does not make. It stays in the API — `author_profiles` uses it.
+  expect(screen.queryByText('2022–2023')).toBeNull();
+  expect(screen.queryByText('2022')).toBeNull();
 });
 
 test('the scoring explainer is hidden until tapped', async () => {
