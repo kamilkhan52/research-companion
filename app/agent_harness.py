@@ -129,6 +129,34 @@ async def _require_openrouter_spend(_request) -> None:
         # error is explicitly propagated with no retry; the model wrapper translates it back to
         # the app's safe domain error below.
         raise _OpenRouterSpendDisabled(str(exc)) from exc
+    # Counted AFTER the kill switch, so a request the switch blocked is never treated as billable.
+    # This is the only place that knows a request truly went to the provider. Every signal above
+    # it — `RunUsage.requests`, the captured message history — is derived from a RESPONSE, so a
+    # dispatch that OpenRouter billed and then lost in transit is invisible to all of them, and the
+    # reservation settled as though the work were free.
+    #
+    # The SDK retries internally, so one logical model request can dispatch three times. Each is
+    # counted: if OpenRouter processed any of them, it billed for it.
+    spend_ceiling.note_dispatch()
+
+
+#: Statuses that mean the request was refused before any generation happened, so nothing was
+#: billed. Anything else — including a 200 whose body we then fail to read — must stay counted.
+#:
+#: Deliberately a small allowlist rather than "not 2xx": a 500 can follow a completed generation,
+#: and guessing wrong here converts a real charge into a silent freebie. Being wrong in the other
+#: direction only over-charges, and that is recoverable.
+_NOT_BILLED_STATUSES = frozenset({401, 402, 403, 404, 429})
+
+
+async def _discount_unbilled_openrouter_response(response) -> None:
+    """HTTPX response hook: undo the dispatch count for a request the provider never ran.
+
+    Without it every auth failure and rate-limit rejection would leave an unaccounted dispatch and
+    settle the whole reservation at its maximum — turning a refused request into a charge.
+    """
+    if response.status_code in _NOT_BILLED_STATUSES:
+        spend_ceiling.note_not_billed()
 
 
 class _SpendControlledOpenRouterProvider(OpenRouterProvider):
@@ -140,14 +168,19 @@ class _SpendControlledOpenRouterProvider(OpenRouterProvider):
         factory = self._http_client_factory
         if client is None or factory is None:  # pragma: no cover - app always lets provider own it
             raise RuntimeError("Spend-controlled OpenRouter requires an owned HTTP client.")
-        client.event_hooks["request"].append(_require_openrouter_spend)
+        _attach_spend_hooks(client)
 
         def controlled_factory():
             replacement = factory()
-            replacement.event_hooks["request"].append(_require_openrouter_spend)
+            _attach_spend_hooks(replacement)
             return replacement
 
         self._http_client_factory = controlled_factory
+
+
+def _attach_spend_hooks(client) -> None:
+    client.event_hooks["request"].append(_require_openrouter_spend)
+    client.event_hooks["response"].append(_discount_unbilled_openrouter_response)
 
 
 class _LedgerOpenRouterModel(OpenRouterModel):
@@ -225,6 +258,9 @@ def record_agent_run(
                         },
                         generation_id=response.provider_response_id,
                     )
+                    # Balances the dispatch counted at the transport seam: this one came back and
+                    # we know what it cost. Whatever is still outstanding at settle time did not.
+                    spend_ceiling.note_priced_dispatch()
                 else:
                     # Billed, but at a price we could not read. The analytics ledger takes a
                     # reconcilable marker; the RESERVATION cannot wait for reconciliation, because

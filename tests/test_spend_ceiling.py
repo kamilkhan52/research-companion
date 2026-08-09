@@ -683,3 +683,154 @@ def test_the_recorder_flags_uncertainty_on_the_active_hold(monkeypatch):
         spend_ceiling.reset(token)
 
     assert held.uncertain, "an accepted generation with no readable cost left the hold exact"
+
+
+def _openrouter_model_with_transport(handler, monkeypatch, operation="analysis"):
+    """A real `_LedgerOpenRouterModel` whose socket is replaced, so the request/response hooks
+    that do the dispatch accounting run exactly as they do in production."""
+    import httpx
+    from app import agent_harness, config, spend_control
+
+    monkeypatch.setattr(spend_control, "require_enabled", lambda: None)
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"openrouter_api_key": "sk-test", "model": "test/model"})
+    model = agent_harness._openrouter_model(operation=operation)
+    model._provider._own_http_client._transport = httpx.MockTransport(handler)
+    return model
+
+
+def _settle_capturing(monkeypatch) -> list[int]:
+    charged: list[int] = []
+    monkeypatch.setattr(quotas, "resolve_attempt", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "mark_dispatches_complete", lambda *a, **k: None)
+    monkeypatch.setattr(quotas, "settle",
+                        lambda reservation_id, user_id, actual_nanousd: charged.append(
+                            actual_nanousd))
+    return charged
+
+
+def test_a_request_billed_then_lost_in_transit_does_not_settle_as_free(monkeypatch):
+    """The last hole, and the one invisible from above the socket.
+
+    pydantic-ai counts a request only once a response returns or a stream opens. If OpenRouter
+    processes and BILLS a request whose response is then lost, there is no captured `ModelResponse`
+    and `RunUsage.requests` is 0 — so the run looks identical to one that never happened, and the
+    reservation settled at $0. Counting at the transport seam is the only place that knows.
+    """
+    import asyncio
+
+    import httpx
+    from app import spend_ceiling
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+    attempts = {"n": 0}
+
+    async def lost(request):
+        attempts["n"] += 1
+        raise httpx.ReadError("billed, then the response was lost")
+
+    from pydantic_ai.exceptions import ModelAPIError
+
+    model = _openrouter_model_with_transport(lost, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        with pytest.raises(ModelAPIError):
+            asyncio.run(Agent(model, output_type=str).run("hello"))
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert attempts["n"] >= 1, "the request must actually reach the transport"
+    assert held.dispatched == attempts["n"], "every wire attempt must be counted"
+    assert held.priced == 0
+    assert charged == [150_000_000], (
+        f"a possibly-billed request settled at {charged}; it escaped the ceiling"
+    )
+
+
+def test_a_refused_request_is_not_turned_into_a_charge(monkeypatch):
+    """The other direction, and the reason this is an allowlist rather than "not 2xx".
+
+    A 429 is refused before anything is generated, so it costs nothing. Counting it as an
+    unaccounted dispatch would settle the whole reservation at its maximum — converting a rejected
+    request into a charge, which is worse than the gap the counter closes.
+    """
+    import asyncio
+
+    import httpx
+    from app import spend_ceiling
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+
+    async def rate_limited(request):
+        return httpx.Response(429, json={"error": {"message": "slow down"}})
+
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    model = _openrouter_model_with_transport(rate_limited, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        with pytest.raises(ModelHTTPError):
+            asyncio.run(Agent(model, output_type=str).run("hello"))
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert held.dispatched == 0, "a refused request must not stay counted as possibly billed"
+    assert charged == [0], f"a rate-limited request was charged {charged}"
+
+
+def test_an_ordinary_priced_run_still_settles_exactly_through_the_real_transport(monkeypatch):
+    """The counter must not turn every successful run into a maximum charge.
+
+    `note_dispatch` fires for every request on the wire, so without the balancing `note_priced`
+    a perfectly normal run finishes with `dispatched=1, priced=0`, reads as unaccounted, and
+    settles at its full maximum. That would park most of a month in budget nobody spent — a far
+    more damaging bug than the transport gap this machinery exists to close, and it survived the
+    first revert-verify pass because no test drove a SUCCESSFUL run through the real hooks.
+    """
+    import asyncio
+
+    import httpx
+    from app import spend_ceiling
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+
+    async def priced(request):
+        return httpx.Response(200, json={
+            "id": "gen-abc",
+            "model": "test/model",
+            "object": "chat.completion",
+            "created": 0,
+            "provider": "DeepSeek",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                      "cost": 0.004},
+        })
+
+    model = _openrouter_model_with_transport(priced, monkeypatch)
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        result = asyncio.run(Agent(model, output_type=str).run("hello"))
+        from app import agent_harness
+        agent_harness.record_agent_run(result.usage, model, "analysis", result.all_messages())
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert held.dispatched == held.priced == 1, (
+        f"dispatched={held.dispatched} priced={held.priced}: the counter is unbalanced, so a "
+        "normal run will settle at its maximum"
+    )
+    assert not held.uncertain
+    assert charged == [4_000_000], f"an ordinary $0.004 run settled at {charged}"

@@ -55,6 +55,14 @@ class _Held:
     #: terminal. So an uncertain hold settles at its maximum instead of at the subset it happened
     #: to see, which over-charges rather than letting real spend escape the ceiling entirely.
     uncertain: bool = False
+    #: HTTP requests actually put on the wire to a billing provider under this reservation, and
+    #: how many of them we managed to price. Counted at the transport seam rather than inferred
+    #: from the agent's own result, because a request that OpenRouter processes and BILLS but whose
+    #: response is lost in transit produces neither a captured `ModelResponse` nor a `requests`
+    #: increment — pydantic-ai counts a request only once a response returns or a stream opens. So
+    #: the run looked, from every signal above the socket, exactly like a run that never happened.
+    dispatched: int = 0
+    priced: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, nanousd: int) -> None:
@@ -66,6 +74,20 @@ class _Held:
     def mark_uncertain(self) -> None:
         with self.lock:
             self.uncertain = True
+
+    def note_dispatch(self) -> None:
+        with self.lock:
+            self.dispatched += 1
+
+    def note_not_billed(self) -> None:
+        """A dispatch that provably cost nothing — the provider refused it before generating."""
+        with self.lock:
+            self.dispatched = max(0, self.dispatched - 1)
+
+    def note_priced(self) -> None:
+        with self.lock:
+            self.priced += 1
+
 
 
 #: The reservation covering work on this thread, or None. Set by the job registry around a worker.
@@ -102,6 +124,46 @@ def note_uncertain_spend() -> None:
             held.mark_uncertain()
     except Exception as e:  # noqa: BLE001 — see the module docstring on rule 5
         log.warning("uncertainty flag skipped (error=%s)", type(e).__name__)
+
+
+def note_dispatch() -> None:
+    """One HTTP request is going to a billing provider under this thread's reservation.
+
+    Paired with `note_priced` when its cost is successfully read. Anything left over at settle time
+    was put on the wire and never accounted for, which is the only honest description of a request
+    whose response never came back. Never raises.
+    """
+    try:
+        held = _active.get()
+        if held is not None:
+            held.note_dispatch()
+    except Exception as e:  # noqa: BLE001 — see the module docstring on rule 5
+        log.warning("dispatch count skipped (error=%s)", type(e).__name__)
+
+
+def note_not_billed() -> None:
+    """The provider refused a dispatch before generating anything, so it cost nothing.
+
+    Without this every auth failure and rate-limit rejection would look like an unaccounted
+    dispatch and settle the whole reservation at its maximum — turning a refused request into a
+    charge, which is worse than the gap it is here to close.
+    """
+    try:
+        held = _active.get()
+        if held is not None:
+            held.note_not_billed()
+    except Exception as e:  # noqa: BLE001
+        log.warning("non-billable dispatch not discounted (error=%s)", type(e).__name__)
+
+
+def note_priced_dispatch() -> None:
+    """A dispatch whose actual cost was read and recorded. Balances `note_dispatch`."""
+    try:
+        held = _active.get()
+        if held is not None:
+            held.note_priced()
+    except Exception as e:  # noqa: BLE001
+        log.warning("priced dispatch not counted (error=%s)", type(e).__name__)
 
 
 def note_spend(nanousd: int) -> None:
@@ -230,11 +292,24 @@ def settle(held: _Held | None) -> None:
         return
     with held.lock:
         spent = held.spent_nanousd
-        # Conservative when a billed request's cost was never observed. Exactness here is a claim
-        # we cannot support: "this run cost $X" would be asserting that the requests we could not
-        # price were free. Over-charging is recoverable — a reader sees a high number and we can
-        # refund from the reconciled analytics — whereas under-settling silently removes real spend
-        # from the ceiling for good.
+        # Conservative when a billed request's cost was never observed. Exactness is a claim we
+        # have to earn: "this run cost $X" asserts that the requests we could not price were free.
+        # Over-charging is recoverable — a reader sees a high number and the reconciled analytics
+        # can correct it — whereas under-settling removes real spend from the ceiling for good.
+        #
+        # Two ways to be uncertain. The provider returned a response we could not read a cost from
+        # (`uncertain`, set by the recorder), or a request went out and nothing came back at all
+        # (`dispatched > priced`). The second is invisible to every signal above the socket:
+        # pydantic-ai counts a request only once a response returns or a stream opens, so a
+        # dispatch that OpenRouter billed and then lost in transit looks exactly like a run that
+        # never happened.
+        unaccounted = max(0, held.dispatched - held.priced)
+        if unaccounted and not held.uncertain:
+            log.warning(
+                "reservation %s has %d dispatch(es) put on the wire with no cost read back "
+                "(operation=%s)", held.reservation_id[:8], unaccounted, held.operation,
+            )
+            held.uncertain = True
         if held.uncertain and held.maximum_nanousd > spent:
             log.warning(
                 "reservation %s settling at its maximum: a billed request under it had no "
