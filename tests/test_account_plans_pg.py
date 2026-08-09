@@ -127,8 +127,8 @@ def test_clearing_a_grant_returns_the_account_to_the_default(database):
 def test_only_the_operator_can_grant_a_plan(database, monkeypatch):
     """A route that hands out allowances is the one place a missing gate is most expensive, and
     `is_operator` says yes in dev — so the check has to be asserted, not assumed."""
-    from fastapi import HTTPException
     from app.routers import usage as usage_routes
+    from fastapi import HTTPException
 
     monkeypatch.setattr(usage_routes.auth, "is_operator", lambda _u: False)
 
