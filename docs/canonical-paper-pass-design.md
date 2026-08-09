@@ -219,6 +219,7 @@ So the acceptance test is a live repro, which is why it was flagged "needs Kamil
   force Map refresh, retiring the divergent second affiliation pass while retaining the graph's
   provider-first application/cache shape.
 
-Related: [[round12-queue]] (I2, R12.9, R12.11/D06), `docs/round12-queue.md`,
+Related: [`device-review-ledger.md`](device-review-ledger.md) (DR-013 — the incoming-citation
+acceptance this design owes),
 `docs/canonical-title-identity-design.md` (R12.13 — a *different* "canonical title" concern, do
 not conflate), CLAUDE.md invariants 1-6.

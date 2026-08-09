@@ -64,7 +64,7 @@ plus **2.8 GB** of TTS audio cache.
 
 **Clients** — `mobile/` (Expo SDK 56, RN 0.85, managed workflow, `expo-dev-client`, EAS profiles
 for development/preview/production, `appVersionSource: remote`, package
-`com.kamilkhan.researchcompanion`, version 1.0.0, never submitted to any store) is the active
+`io.scholiast.app` since the 2026-07-29 rebrand, version 1.0.0, never submitted to any store) is the active
 client. `web/` is a React + Vite SPA at rough parity.
 
 **Money** — none. No payment code, no store configuration, no entitlement concept.

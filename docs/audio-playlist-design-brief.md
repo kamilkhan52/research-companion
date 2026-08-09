@@ -93,5 +93,5 @@ Kamil's device pass must verify:
 - progressive and full-track modes, including skipping remaining segments to the next response;
 - cancelling preparation still cancels paid synthesis and removes upcoming tracks.
 
-Related: [[round12-queue]] (R12.7), [[device-test-preparation]],
+Related: [`device-review-ledger.md`](device-review-ledger.md) (DR-014), [[device-test-preparation]],
 `docs/player-jump-controls-design-brief.md`, CLAUDE.md invariant 1, and `usage.py`.

@@ -285,7 +285,8 @@ Two Fly settings are correctness, not tuning: `auto_stop_machines = "off"` with
 invariant 1), and exactly one machine (invariant 6). **A deploy still stops the machine**, so
 in-flight jobs die: until the drain hook lands with M6, check for active jobs before deploying.
 
-The full production plan is `docs/production/` — `10-roadmap.md` is the live ledger.
+The full production plan is `docs/production/` — `10-roadmap.md` is the live ledger (what is
+open); completed milestones and dated handoffs are in `90-history.md`.
 
 ## Conventions
 

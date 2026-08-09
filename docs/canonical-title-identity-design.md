@@ -152,5 +152,6 @@ continues to cover the committed deletion behavior.
    `Paper.title_confirmed` response are client-agnostic; no current web rename surface shares this
    UI.
 
-Related: [[round12-queue]] (R12.13/D12), `docs/round12-queue.md`, R12.2 last-opened-thread resume
-(#204), `docs/canonical-paper-pass-design.md` (the *other* canonical — data, not title).
+Related: [`device-review-ledger.md`](device-review-ledger.md) (DR-012), last-opened-thread resume
+([#204](https://github.com/kamilkhan52/research-companion/pull/204)),
+`docs/canonical-paper-pass-design.md` (the *other* canonical — data, not title).

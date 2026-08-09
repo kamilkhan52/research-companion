@@ -1,5 +1,11 @@
 # Discover quality evaluation
 
+> **Kept for the fixture, not the pipeline (noted 2026-08-09).** The recall design below describes
+> Discover *before* the 2026-07-30 rebuild, which replaced it with a recall-then-screen funnel. What
+> is still live is the second half: `tests/fixtures/discovery_quality.json`, the properties the
+> deterministic evaluation proves, and the blended score — the rebuild deliberately reuses that
+> formula. Read the pipeline section as history; read the fixture section as current.
+
 ## Audit result
 
 Before R10.11, Discover generated arXiv expressions, searched only arXiv, and asked the model

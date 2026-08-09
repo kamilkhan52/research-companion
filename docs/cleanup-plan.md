@@ -42,39 +42,60 @@ Judgement calls, so the rule matters more than any individual edit:
 6. **When in doubt, keep it.** Deleting a hard-won explanation is expensive; a slightly long comment
    is cheap. The bar for deletion is redundancy or contradiction, not length alone.
 
-## Phase 1 — Docs: delete and archive (highest value, lowest risk)
+## Phase 1 — Docs: delete and archive (highest value, lowest risk) — **DONE 2026-08-09**
 
-**1a. Retire superseded plan documents.** Each has shipped and is referenced by nothing:
+**1a. Retire superseded plan documents.** The plan claimed seven were "referenced by nothing."
+**Three of them were**, which is why the sweep runs before the delete and not after:
 
-| File | Lines | Disposition |
+| File | Lines | Outcome |
 |---|---|---|
-| `docs/initial-plan.md` | 282 | delete — 2026-06-21, superseded by every roadmap since |
-| `docs/mobile-ui-polish-plan.md` | 329 | delete — PRs #39+ shipped |
-| `docs/round12-queue.md` | 56 | delete — superseded by `device-review-ledger.md` |
-| `docs/device-test-r12-followups.md` | 270 | delete — same |
-| `docs/web-mobile-parity.md` | 38 | delete — 2026-07-10, stale |
-| `docs/device-pass-mobile-auth.md` | 38 | delete — one-off, resolved |
-| `docs/discovery-quality-evaluation.md` | 60 | fold one paragraph into `discovery-rebuild-plan` if any, else delete |
+| `docs/mobile-ui-polish-plan.md` | 329 | **deleted** — its "Round 2 is next" framing was ten rounds stale, and phase D's label-LOD lever is contradicted by the code that cites it |
+| `docs/round12-queue.md` | 56 | **deleted** — every row reconciled into the ledger; the mapping for its secondary-polish backlog was written into the ledger first |
+| `docs/web-mobile-parity.md` | 38 | **deleted** — describes the web client the rebuild is replacing |
+| `docs/device-pass-mobile-auth.md` | 38 | **deleted** — one-off, resolved; duplicates CLAUDE.md's device section |
+| `docs/device-test-r12-followups.md` | 270 | **kept** — four `implemented — verify` ledger rows point at it for the actual acceptance steps, and the ledger's own header names follow-up files as part of its design |
+| `docs/discovery-quality-evaluation.md` | 60 | **kept** — it is the only prose explaining what the live `tests/fixtures/discovery_quality.json` proves, and the rebuild deliberately reuses its blended score. Given a header marking the pipeline half as history |
+| `docs/initial-plan.md` | 282 | **kept** — labeled history with an accurate staleness warning, so it is neither redundant nor contradictory: it does not meet the bar in principle 6 |
 
-Deletion is safe **because git keeps them** — that is the whole argument. Do it in one PR titled so
-the history is findable, and list every deleted file in the commit body with one line on why.
+Deletion is safe **because git keeps them** — that is the whole argument. One PR, every deleted file
+listed in the commit body with one line on why.
 
-**1b. Split `10-roadmap.md` (1,740 → target ~400).** Move everything under "Earlier
-production-bring-up handoff", the R14 device-pass list, and the completed-milestone bodies (M1, M2,
-M2.5, M3) into `docs/production/90-history.md`. Keep in the roadmap: current position, locked
-decisions, architectural rules, the milestone *table* with status, and the open milestones (M4–M11).
-Leave a one-line pointer to the history file.
+**1b. Split `10-roadmap.md`.** **Done: 1,740 → 480**, with `docs/production/90-history.md` (1,271)
+for completed milestones M1/M2/M2.5/M3, the bring-up handoffs and the R14 pass, and
+`docs/production/40-device-test-runbook.md` (28) for the procedure. The roadmap keeps current
+position, what is still open, locked decisions, architectural rules, the milestone table, and
+M4–M11.
 
-**1c. Audit `HUMAN_ACTIONS.md` (829 lines).** Untouched for 11 days while M3 shipped, so it is
-probably stale. Mark each item done/open/obsolete; move done ones to the history file.
+Two things that split badly and will again: the roadmap's headings had **drifted from its content**
+— 188 lines of staging/cost history sat under the "Device-test runbook" heading, so a line-range
+split by heading silently mis-files them. And the milestone table's statuses were stale in the
+direction that matters (M3 read `queued` after it shipped). **Verify a split is lossless by set
+difference, not by eye**: every non-blank original line must appear somewhere in the outputs, and
+each one that does not must be a rewrite you can name.
 
-**1d. Resolve the four-way overlap** between `product-roadmap.md`, `device-review-ledger.md`,
-`current-device-test-checklist.md` and the round-queue files. **The ledger is the survivor** —
-CLAUDE.md's memory index already calls it "the ONE live list". The others either point at it or go.
+**1c. Audit `HUMAN_ACTIONS.md`.** Done — and it held the **most consequential contradiction in the
+repo**. H8 told Kamil to create the Play listing for `com.kamilkhan.researchcompanion`; the app has
+shipped `io.scholiast.app` since the rebrand, and **Play freezes the package name on first upload**.
+A stale doc would have caused an irreversible mistake in the one place this project cannot take one.
+The same name was wrong in `00-current-state-audit.md` and in H5's OAuth note, along with the
+`researchcompanion` deep-link scheme (now `scholiast`). Also refreshed: the "waiting on Kamil"
+summary (11 days stale, pointing at a roadmap section that no longer exists) and H15, which M3
+narrowed from "set the tier system" to "set the numbers".
 
-**1e. Check the remaining orphans** — `performance-proposal.md`, `paper-discussion-threads.md`,
-`audio-playlist-design-brief.md`, `cross-project-paper-identity.md`, `plan-usage-surface-spec.md`.
-The last is live (it drives the plan UI work); the rest need a keep/delete decision each.
+Not moved to history. The done H-items are mostly operational traps — the `@` in the Postgres
+password, the Supabase bootstrap ordering — and they are worth more where an operator will hit them
+than filed as history.
+
+**1d. Resolve the four-way overlap.** Mostly already resolved by the ledger's own header. Made
+explicit both ways: `current-device-test-checklist.md` now opens with a "what lives where" note
+saying a failure recorded there opens a `DR-###` row rather than becoming a queue of its own.
+
+**1e. The orphans: indexed, not deleted.** All five are live or are rationale for shipped features —
+`plan-usage-surface-spec.md` is the open remainder of M3. Being referenced by nothing is the actual
+defect, and deleting them would be treating the symptom: an unreachable design doc is one that gets
+re-derived rather than read. **`docs/README.md` now indexes every file** with the authority order
+between them, and a scripted check confirms all 35 links resolve and no `.md` under `docs/` is
+missing from it.
 
 ## Phase 2 — Comments: the four densest modules
 

@@ -12,14 +12,14 @@ every agent session.
 
 ---
 
-## What is actually waiting on Kamil, as of 2026-07-29
+## What is actually waiting on Kamil, as of 2026-08-09
 
 Everything in this short list blocks the closed track. Everything below it in this file is either
 done or a later milestone. Read this before the H-numbered sections.
 
-1. **His own sign-off on the app.** He has done one production device pass and produced a fix list
-   (tracked in `10-roadmap.md` → "Where this session left off"). Testers are gated on this, and
-   correctly so.
+1. **His own sign-off on the app.** Device feedback is now tracked per item in
+   [`../device-review-ledger.md`](../device-review-ledger.md) — every row there that is not `closed`
+   is waiting on him, and merging never closes one. Testers are gated on this, and correctly so.
 2. **H13 — Data safety answers** in Play Console. `02-security-and-privacy.md` holds the
    code-derived inventory the answers must match, and the published policy must match both.
 3. **The Firecrawl key.** Set on production 2026-07-29 via in-app Settings, which is the right
@@ -32,8 +32,8 @@ done or a later milestone. Read this before the H-numbered sections.
    (Parallel over Firecrawl) on result shape — see PR #290 if tool-round counts become a problem.
 
 **Not blocking, but decided and worth not re-litigating:** the AAB should NOT be rushed — see the
-correction under step 6 of `10-roadmap.md`'s next-steps list. Uploading early freezes the Android
-package name and banks no tester-clock time.
+correction under "Then the AAB and the closed track" in `10-roadmap.md`. Uploading early freezes the
+Android package name and banks no tester-clock time.
 
 ## Blocking now (M1)
 
@@ -585,9 +585,9 @@ Google provider requires, so an Android client cannot satisfy this step.
 
 **A separate Android OAuth client is *probably* not needed at all.** Mobile sign-in (built in M2,
 see P0-15) will use Supabase's `signInWithOAuth` through `expo-web-browser`, redirecting back via
-the app's `researchcompanion` scheme — that flow uses the Web client. An Android client is only
+the app's `scholiast` scheme — that flow uses the Web client. An Android client is only
 required for the *native* Google ID-token flow. If one is ever created it needs package name
-`com.kamilkhan.researchcompanion` (from `mobile/app.json`, not `com.example`) and the SHA-1 from
+`io.scholiast.app` (read it from `mobile/app.json`) and the SHA-1 from
 `eas credentials`, since EAS holds the signing keystore.
 
 **Why not an agent:** Google Cloud account ownership.
@@ -643,7 +643,10 @@ Create the account and project, connect the Play app.
 RevenueCat v2 API key or OAuth credentials.**
 
 ### H8 — Play Console: create the app, agreements, tax and banking · `todo`
-Create the app listing for `com.kamilkhan.researchcompanion`, accept the developer agreements, and
+Create the app listing for **`io.scholiast.app`** — the post-rebrand package in `mobile/app.json`,
+not the `com.kamilkhan.researchcompanion` this file named before #272. **Play freezes the package
+name on first upload**, so read it off `mobile/app.json` rather than from any document, including
+this one. Accept the developer agreements, and
 complete tax and banking setup (required before any paid product can be sold).
 **Why not an agent:** legal agreements and financial identity.
 **Report back:** app created, agreements accepted, payments profile active.
@@ -752,10 +755,16 @@ call on how to respond (tier it, change caching, seek permission) is yours.
 
 ## Blocking M3 (quotas)
 
-### H15 — Set tier limits and pricing · `todo`
-The free allowance, Pro quotas, and hard ceilings are business decisions. M3's event data gives you
-real cost-per-paper numbers to base them on — expect to set them provisionally and revise at M10.
-**Report back:** free tier allowance, Pro quotas, hard ceiling per user, and behavior at the limit.
+### H15 — Set tier limits and pricing · `todo — narrowed by M3`
+The mechanism shipped: named plans (`tester`/`free`/`basic` in `app/plans.py`), a credit pegged at
+$0.001 of metered variable cost, per-operation maximums in `app/spend_limits.py`, and a durable
+reservation ledger that refuses at the ceiling. **What is still yours is the numbers**, which the
+code carries as provisional defaults from `20-pricing-analysis.md` rather than as decisions.
+
+One plan applies per DEPLOYMENT today, not per account; `plans.for_user` is shaped for the per-account
+lookup M4's entitlements make real, so revising values is a config change and not a migration.
+**Report back:** free allowance, Basic allowance, the hard ceiling per user, and behaviour at the
+limit (today: refuse, with a soft warning at 80%).
 
 ---
 
