@@ -419,6 +419,35 @@ test('signing out clears the token, not just the UI state', async () => {
   await waitFor(() => expect(apiConfig.setToken).toHaveBeenLastCalledWith(null));
 });
 
+test('signing out clears the query cache, so the next account starts empty', async () => {
+  // Query keys carry a project id but no user id. Until this, the cache was cleared on a server
+  // change and on account deletion but NOT on an ordinary sign-out, so the next person to sign in
+  // on a shared device was served the previous account's cached answers as fresh — including
+  // `/api/plan`, which is their spend and their remaining allowance.
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: { session: { access_token: 'a-jwt', user: { email: 'first@example.com' } } },
+  });
+
+  const client = createTestQueryClient();
+  client.setQueryData(['plan'], { spent_fraction: 0.9 });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() {
+    auth = useAuth();
+    return <Text>{auth.status}</Text>;
+  }
+  const { getByText } = await renderAsync(
+    <QueryClientProvider client={client}><AuthProvider><Capture /></AuthProvider></QueryClientProvider>,
+  );
+  await waitFor(() => getByText('signed-in'));
+  expect(client.getQueryData(['plan'])).toBeDefined();
+
+  await auth!.signOut();
+
+  await waitFor(() => expect(client.getQueryData(['plan'])).toBeUndefined());
+});
+
 test('an unreachable server is not reported as signed out', async () => {
   // Telling someone to sign in when the server is down sends them to fix the wrong thing, and no
   // password they type will help.

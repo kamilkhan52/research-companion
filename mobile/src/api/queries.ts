@@ -41,6 +41,7 @@ export const keys = {
       ? ['project', pid, 'review', slug] as const
       : ['project', pid, 'review', slug, threadId] as const,
   settings: ['settings'] as const,
+  plan: ['plan'] as const,
   favoriteModels: ['favoriteModels'] as const,
   prompts: (pid: string | null) => ['prompts', pid ?? 'default'] as const,
   graph: (pid: string) => ['project', pid, 'graph'] as const,
@@ -191,6 +192,26 @@ export function useSettings() {
   return useQuery({
     queryKey: keys.settings,
     queryFn: api.getSettings,
+    enabled: hasUrl,
+  });
+}
+
+/** The account's plan and month-to-date standing.
+ *
+ *  Not polled. Holds move on a timescale of seconds, but the detail screen deliberately does not
+ *  animate them — the reader is explicitly told not to treat the number as a countdown, so a poll
+ *  would burn battery re-rendering something that is not meant to tick.
+ *
+ *  There are exactly two refresh paths, and `refetchOnWindowFocus` is NOT one of them: React Native
+ *  fires no window focus events without a `focusManager` bridge, and Expo Router screen focus is a
+ *  different thing entirely. The screen refetches through `useFocusEffect`, and the reader can pull
+ *  to refresh. Nothing invalidates this key when a job settles — DR-036 owns that, because doing it
+ *  correctly means covering every metered subsystem's terminal outcomes, not three of them. */
+export function usePlan() {
+  const hasUrl = !!useBaseUrl();
+  return useQuery({
+    queryKey: keys.plan,
+    queryFn: api.getPlan,
     enabled: hasUrl,
   });
 }

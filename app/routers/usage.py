@@ -23,7 +23,17 @@ def get_plan(request: Request):
     over; a hold clears in seconds when its job settles. Adding them together would tell someone
     with several jobs running that they are nearly out of allowance when they have barely spent
     anything — the same confusion the transient/exhausted split in `QuotaExceeded` exists to
-    remove, and the reason `warn` is computed from SPEND alone.
+    remove.
+
+    That is a rule about DISPLAY, and `warn` is not a display value: it is computed from spend PLUS
+    holds precisely so it can precede a refusal, which admission also decides on the sum (see the
+    comment on the field). The two are not in tension, but they are easy to conflate — an earlier
+    revision of this docstring claimed `warn` came from spend alone, contradicting the line that
+    computes it. The client honours both by keeping them on different surfaces: the plan screen's
+    bar and its approaching-limit card track `spent_fraction` only, while `warn`/`at_capacity`
+    belong to reservation pressure, not to the month. Read `warn` as "a refusal is close", never as
+    "the allowance is nearly gone", and never as grounds for a client to refuse on its own — the
+    402/429 modals are selected from the actual refusal. See `docs/plan-usage-surface-spec.md`.
 
     With no database (local dev, the test suite) this reports the plan with zero usage rather than
     failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
@@ -37,13 +47,24 @@ def get_plan(request: Request):
     # the screen would show a bar at 15% and "$4.25 remaining" beside a refusal saying the limit
     # was reached. A usage display that disagrees with the refusal beside it is worse than none.
     limit = spend_limits.monthly_limit_nanousd()
+    # The plan's headline promise ("20 papers a month") describes the plan's OWN allowance. An
+    # operator override changes the enforced limit without changing the plan, and production has
+    # one set — so sending both unchanged told a reader on Basic with a 750-credit override that
+    # they had 20 papers a month while enforcing 30% of that. When they disagree, the quantitative
+    # promise is withdrawn rather than adjusted: the credits-to-papers conversion is an estimate
+    # from the pricing analysis, and inventing a new number from an override would be a second
+    # guess presented as a fact.
+    plan_allowance = plan.monthly_credits * spend_limits.NANOUSD_PER_CREDIT
+    summary = plan.summary if limit == plan_allowance else (
+        "A custom monthly allowance set for this deployment."
+    )
     usage_period = quotas.period_usage(user_id) if user_id else (0, 0)
     spent, held = usage_period if usage_period is not None else (0, 0)
     _, period_end = quotas.calendar_month()
     return {
         "plan": {
             "name": plan.name,
-            "summary": plan.summary,
+            "summary": summary,
             "premium_audio": plan.premium_audio,
             "monthly_credits": plan.monthly_credits,
         },
@@ -54,7 +75,13 @@ def get_plan(request: Request):
         # Percentages are what a bar renders; sending them avoids each client deriving them
         # differently and disagreeing about when the warning appears.
         # The bar tracks SPEND, because that is the irreversible part.
-        "spent_fraction": round(spent / limit, 4) if limit else 0.0,
+        #
+        # UNROUNDED, deliberately. Rounding to four places sent a small real charge as exactly 0.0
+        # and a hair under the limit as exactly 1.0, so the client — which goes to some trouble to
+        # render those as "<1%" and ">99%" rather than a false "0%"/"100%" — could not tell them
+        # apart from the real thing. Any value strictly between 0 and the limit must arrive
+        # strictly between 0 and 1.
+        "spent_fraction": (spent / limit) if limit else 0.0,
         # The warning tracks spend PLUS holds, because it exists to arrive before a refusal and
         # admission refuses on the sum. Computed from spend alone it could not fire at all in the
         # case that matters: a reader at 76% with one listening flow in flight ($0.81 held) is

@@ -27,6 +27,7 @@ import {
   useResetPrompt,
   useSavePrompt,
   useSaveSettings,
+  usePlan,
   useSettings,
   useUsage,
 } from '@/api/queries';
@@ -45,7 +46,7 @@ import {
   useThemeMode,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { Button, Card, Screen, Text } from '@/ui';
+import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { useToast } from '@/ui/Toast';
 import type { ThemeMode } from '@/theme/tokens';
@@ -279,6 +280,7 @@ export default function SettingsScreen() {
               <Text variant="body" color={t.muted} style={{ marginBottom: space.md }}>
                 {authEmail ? `Signed in as ${authEmail}.` : 'Signed in.'}
               </Text>
+              <PlanRow />
               <Button title="Sign out" onPress={() => { void handleSignOut(); }} />
               <Button
                 title="Delete account"
@@ -741,6 +743,38 @@ function LegalSection() {
   );
 }
 
+/** `Plan & usage` entry — a chevron row, never a balance badge.
+ *
+ *  Absent entirely when the deployment applies no allowance (`enforced: false`), which is also the
+ *  local-dev and signed-out case. Showing it disabled, or with a zero, would be a claim about an
+ *  allowance that is not being applied. A failed read leaves the row visible with no subtitle: the
+ *  screen behind it explains itself, and hiding the way in because one request failed is worse. */
+function PlanRow() {
+  const router = useRouter();
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { data } = usePlan();
+  if (data && !data.enforced) return null;
+  return (
+    <Pressable
+      onPress={() => router.push('/plan')}
+      accessibilityRole="button"
+      accessibilityLabel="Plan and usage"
+      style={({ pressed }) => [styles.planRow, pressed && { opacity: 0.82 }]}
+    >
+      <View style={{ flex: 1 }}>
+        <Text variant="heading">Plan &amp; usage</Text>
+        {data ? (
+          <Text variant="caption" color={t.muted} numberOfLines={2} style={styles.planRowSummary}>
+            {data.plan.summary}
+          </Text>
+        ) : null}
+      </View>
+      <Icon name="chevron-right" size={18} color={t.muted} />
+    </Pressable>
+  );
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: space.lg }}>
@@ -852,6 +886,17 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   content: {
     padding: tight ? space.sm : space.md,
     paddingBottom: space.xxl * 2,
+  },
+  // 13px floor for supporting copy on the allowance surfaces (see `app/plan.tsx`); `caption` is
+  // 12.5 normally and 12 under Tight.
+  planRowSummary: { fontSize: 13 },
+  planRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    // 48px minimum touch target (spec: accessibility constraints).
+    minHeight: 48,
+    paddingVertical: space.sm,
+    marginBottom: space.md,
   },
   lockedRow: {
     flexDirection: 'row',

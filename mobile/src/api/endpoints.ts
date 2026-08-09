@@ -28,6 +28,7 @@ import type {
   GraphBuildStatusResponse,
   GraphResponse,
   NotesDoc,
+  Plan,
   NotesJob,
   RelatedWork,
   ModelOption,
@@ -60,6 +61,9 @@ export const startAccountDeletion = () =>
 export const reportContent = (body: ContentReportRequest) =>
   apiPost<{ report: { id: string; created_at: string } }>('/api/reports/content', body);
 export const getHealth = () => apiGet<{ ok: boolean; title: string; dev: boolean }>('/api/health');
+/** The account's plan and where it stands this period. One call, because a client that had to
+ *  combine two responses would eventually render a mismatched pair. */
+export const getPlan = () => apiGet<Plan>('/api/plan');
 export const getSettings = () => apiGet<Settings>('/api/settings');
 export const saveSettings = (body: Partial<Settings> & Record<string, unknown>) =>
   apiPost<Settings>('/api/settings', body);

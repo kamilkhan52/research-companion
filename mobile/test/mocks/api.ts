@@ -11,6 +11,8 @@ export const startAccountDeletion = unexpected('startAccountDeletion');
 export const reportContent = unexpected('reportContent');
 export const getHealth = jest.fn(async () => ({ ok: true, title: 'Test', dev: false }));
 export const getSettings = unexpected('getSettings');
+// Fails loudly by default: a screen that reads the allowance must say which allowance it read.
+export const getPlan = unexpected('getPlan');
 export const saveSettings = unexpected('saveSettings');
 export const getModels = unexpected('getModels');
 export const getFavoriteModels = jest.fn(async () => ({ models: [] }));

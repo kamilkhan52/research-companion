@@ -74,10 +74,19 @@ Job snapshots can also carry these safe refusal strings after background continu
 the same modal treatment rather than exposing a generic job error. Do not infer “busy” from
 `held_nanousd > 0`; only the server refusal says the new action cannot fit.
 
-The stated endpoint contract defines `warn` as the 80% spend warning, so it should agree with the
-two `spent_fraction` conditions above. Treat disagreement as a contract fault, not permission to
-turn held work into an approaching-monthly-limit warning. A holds-only threshold belongs in the
-separate live-work/busy treatment.
+**On the server's `warn` flag (corrected 2026-08-09).** An earlier revision of this spec assumed
+`warn` was the 80%-of-spend warning and told implementers to treat any disagreement with
+`spent_fraction` as a contract fault. It is not that flag. `warn` is computed from spend **plus
+holds**, deliberately, so that it can fire before admission refuses — and admission refuses on the
+sum. Read it as *reservation pressure*, not as "the month is nearly gone".
+
+That makes it the wrong input for everything on this screen: at 76% spent with a listening flow in
+flight it is true, while the month is three-quarters intact. So **the Approaching card and the bar
+key off `spent_fraction` alone**, and `warn`/`at_capacity` are not rendered here at all.
+
+They are also **not** a way to infer a refusal. Every modal in the table above is selected from an
+actual `402`/`429` action response, never from a flag predicting one — a client that opened the
+exhausted modal because `warn` was true would be refusing work the server was still willing to do.
 
 ## Plan copy
 
@@ -114,7 +123,9 @@ not imply separate audio credits. `monthly_credits` and all nano-USD fields rema
 
 - Progress bar animation: 250 ms ease-out on refetch; never animate from zero on every focus.
 - Pull to refresh and refetch on screen focus. Do not poll the detail screen merely to animate
-  holds; action/job polling already refreshes plan data on settlement.
+  holds. Those two are currently the ONLY refresh paths: nothing invalidates the plan when a job
+  settles, which is DR-036 rather than an oversight — covering it means every metered subsystem'''s
+  terminal outcomes, and covering three of them is what produced two rounds of review findings.
 - Busy retry: parse `Retry-After` seconds, use a monotonic local countdown, and enable retry at
   zero. Do not auto-submit the action.
 - Modal dismissal: Android back and `Not now`/`Keep reading` both return to the exact prior flow.

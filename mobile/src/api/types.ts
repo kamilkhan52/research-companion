@@ -885,3 +885,46 @@ export interface ContentReportRequest {
   reference?: string | null;
   reporter_note?: string | null;
 }
+
+/** `GET /api/plan` — the account's plan and where it stands against it this period.
+ *
+ *  Nano-USD fields are transport data. The reader is shown neither credits nor dollars
+ *  (`docs/plan-usage-surface-spec.md`): a credit balance looks precise without being actionable,
+ *  because nobody can predict whether the next paper costs 8 of them or 800. */
+export interface Plan {
+  plan: {
+    name: 'tester' | 'free' | 'basic' | string;
+    summary: string;
+    premium_audio: boolean;
+    monthly_credits: number;
+  };
+  limit_nanousd: number;
+  spent_nanousd: number;
+  /** Budget set aside for work running RIGHT NOW, released as each job settles. Never add this to
+   *  spend for display — that is the false "nearly out" alarm the two fields exist to prevent. */
+  held_nanousd: number;
+  remaining_nanousd: number;
+  /** Durable month-to-date spend as a 0..1 fraction. The only numeric usage signal in the UI, and
+   *  the only thing that drives the progress bar and the approaching-limit card. */
+  spent_fraction: number;
+  /** Reservation pressure: spend PLUS holds past the soft line, computed server-side so it can
+   *  fire before admission refuses (admission refuses on the sum too). NOT "the month is nearly
+   *  gone" — at 76% spent with one listening flow in flight it is true while the month is three
+   *  quarters intact, which is why the plan screen renders `spent_fraction` instead.
+   *
+   *  Never infer a 402/429 modal from this. Those are selected from the actual refusal response;
+   *  opening one here would refuse work the server was still willing to do. */
+  warn: boolean;
+  warn_at_fraction: number;
+  /** Nothing more can start right now. Distinct from `warn`: this is about live work, not the
+   *  month. */
+  at_capacity: boolean;
+  /** ISO timestamp. Render as a local calendar date, never raw and never as "days left". */
+  period_ends: string;
+  /** False with no database or nobody signed in. Then say NOTHING about allowances — no zero, no
+   *  empty bar, no disabled card. */
+  enforced: boolean;
+  /** The ceiling can be live while this particular read failed. `enforced: true` with
+   *  `usage_available: false` means "we cannot show you where you stand", not "you have it all". */
+  usage_available: boolean;
+}

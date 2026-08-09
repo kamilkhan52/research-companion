@@ -162,7 +162,7 @@ export function useStreamingTurn(
           setStreaming(false);
           setPendingUser(null);
           setPreviewJobIds([]);
-          return;
+                return;
         }
       }
     },
