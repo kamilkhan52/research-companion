@@ -2,6 +2,7 @@ import { fireEventAsync, renderAsync, screen } from '@testing-library/react-nati
 
 import {
   GRAPH_PAGE_SIZE,
+  FilterBar,
   GraphPagerOverlay,
 } from '@/app/(tabs)/graph';
 import { DISCOVER_PLACEHOLDER } from '@/app/(tabs)/discover';
@@ -48,4 +49,32 @@ test('shared progress steps render completed checks for both Map and Discover ti
   expect(screen.getByText('Planned')).toBeTruthy();
   expect(screen.getByText('Searched')).toBeTruthy();
   expect(screen.getByText('Ranked')).toBeTruthy();
+});
+
+test('Map filters start as one active-chip row and expand inline', async () => {
+  const onFilterChange = jest.fn();
+  await renderAsync(
+    <FilterBar
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={[
+        { key: 'project', label: 'In project' },
+        { key: 'external', label: 'External' },
+        { key: 'significant', label: 'Significant' },
+      ]}
+      filter="significant"
+      onFilterChange={onFilterChange}
+      visibleCount={23}
+    />,
+  );
+
+  expect(screen.getByText('Significant')).toBeTruthy();
+  expect(screen.getByText('23 nodes visible')).toBeTruthy();
+  expect(screen.queryByText('External')).toBeNull();
+
+  await fireEventAsync.press(screen.getByLabelText(/Show map filters/));
+  expect(screen.getByText('External')).toBeTruthy();
+  await fireEventAsync.press(screen.getByText('External'));
+  expect(onFilterChange).toHaveBeenCalledWith('external');
 });
