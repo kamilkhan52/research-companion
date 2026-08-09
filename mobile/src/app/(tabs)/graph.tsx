@@ -3,6 +3,7 @@
 // add next. Reachable from the Library's project bar. See app/graph.py for the pipeline.
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
@@ -318,11 +319,13 @@ export default function GraphScreen() {
       ) : !graph ? (
         <>
           {refreshFailed}
-          <EmptyBuildState status={status} build={build} />
+          <EmptyBuildState status={status} build={build} projectId={activePid} />
         </>
       ) : (
         <>
-          {build.building ? <BuildProgressBanner progress={build.progress} /> : null}
+          {build.building ? (
+            <BuildProgressBanner progress={build.progress} projectId={activePid} />
+          ) : null}
 
           {needsEnrichment ? <SkeletonResume build={build} /> : null}
 
@@ -337,6 +340,7 @@ export default function GraphScreen() {
             filters={filters}
             filter={filter}
             onFilterChange={setFilter}
+            visibleCount={visibleGraph.nodes.length}
           />
 
           {filter === 'significant' && filteredNodes.length === 0 && graph.stage === 'skeleton' ? (
@@ -400,13 +404,21 @@ export default function GraphScreen() {
   );
 }
 
-function EmptyBuildState({ status, build }: { status: GraphStatus | null; build: GraphBuildState }) {
+function EmptyBuildState({
+  status,
+  build,
+  projectId,
+}: {
+  status: GraphStatus | null;
+  build: GraphBuildState;
+  projectId: string;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   if (build.building) {
     return (
       <View style={styles.emptyWrap}>
-        <BuildProgressBanner progress={build.progress} large />
+        <BuildProgressBanner progress={build.progress} large projectId={projectId} />
       </View>
     );
   }
@@ -602,13 +614,45 @@ const SKELETON_HINT =
 // a new hint replaces the old one.
 const HINT_MS = 6000;
 
-export function BuildProgressBanner({ progress, large }: { progress: GraphBuildState['progress']; large?: boolean }) {
+export function BuildProgressBanner({
+  progress,
+  large,
+  projectId,
+}: {
+  progress: GraphBuildState['progress'];
+  large?: boolean;
+  projectId?: string | null;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
   const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
   const skeletonReady = progress?.graphStage === 'skeleton';
   const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    setExpanded(true);
+    if (!projectId) return;
+    let current = true;
+    AsyncStorage.getItem(`rc.graph.buildDetails.${projectId}`)
+      .then((value) => {
+        if (current && value === 'collapsed') setExpanded(false);
+      })
+      .catch(() => {});
+    return () => { current = false; };
+  }, [projectId]);
+
+  const toggleExpanded = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (projectId) {
+      void AsyncStorage.setItem(
+        `rc.graph.buildDetails.${projectId}`,
+        next ? 'expanded' : 'collapsed',
+      );
+    }
+  };
 
   const [hint, setHint] = useState<string | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -631,13 +675,25 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
 
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+      <Pressable
+        onPress={toggleExpanded}
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} map build details`}
+        accessibilityState={{ expanded }}
+        style={styles.buildHeader}
+      >
         <ActivityIndicator color={t.mint} />
         <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
           Building map…
         </Text>
-      </View>
-      {progress ? (
+        {progress ? (
+          <Text variant="caption" color={t.muted} numberOfLines={1}>
+            {progress.ready} of {progress.total} ready
+          </Text>
+        ) : null}
+        <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
+      </Pressable>
+      {progress && expanded ? (
         <>
           <ProgressSteps
             dotSize={22}
@@ -672,9 +728,7 @@ export function BuildProgressBanner({ progress, large }: { progress: GraphBuildS
           <View style={[styles.progressTrack, { marginTop: space.sm }]}>
             <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
           </View>
-          <Text variant="caption" style={{ marginTop: 4 }}>
-            {progress.ready} of {progress.total} ready · {progress.done} analyzed
-          </Text>
+          <Text variant="caption" style={{ marginTop: 4 }}>{progress.done} analyzed</Text>
         </>
       ) : null}
     </Card>
@@ -694,13 +748,14 @@ function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => v
   );
 }
 
-function FilterBar({
+export function FilterBar({
   query,
   onQueryChange,
   showSearch,
   filters,
   filter,
   onFilterChange,
+  visibleCount,
 }: {
   query: string;
   onQueryChange: (v: string) => void;
@@ -708,9 +763,12 @@ function FilterBar({
   filters: { key: FilterKind; label: string }[];
   filter: FilterKind;
   onFilterChange: (f: FilterKind) => void;
+  visibleCount: number;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const [expanded, setExpanded] = useState(false);
+  const active = filters.find((item) => item.key === filter) ?? filters[0];
   return (
     <View style={styles.filterBar}>
       {showSearch ? (
@@ -725,19 +783,36 @@ function FilterBar({
           autoFocus
         />
       ) : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.sm }}>
-        <View style={{ flexDirection: 'row', gap: space.sm }}>
-          {filters.map((f) => (
-            <Chip
-              key={f.key}
-              label={f.label}
-              dot={false}
-              selected={f.key === filter}
-              onPress={() => onFilterChange(f.key)}
-            />
-          ))}
-        </View>
-      </ScrollView>
+      <Pressable
+        onPress={() => setExpanded((value) => !value)}
+        accessibilityRole="button"
+        accessibilityLabel={`${expanded ? 'Collapse' : 'Show'} map filters. ${active?.label ?? filter} selected. ${visibleCount} nodes visible.`}
+        accessibilityState={{ expanded }}
+        style={styles.filterSummary}
+      >
+        {active ? <Chip label={active.label} dot={false} selected /> : null}
+        <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+          {visibleCount} {visibleCount === 1 ? 'node' : 'nodes'} visible
+        </Text>
+        <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
+      </Pressable>
+      {expanded ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={styles.filterChips}>
+            {filters.map((f) => (
+              <Pressable
+                key={f.key}
+                onPress={() => onFilterChange(f.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: f.key === filter }}
+                style={styles.filterChipTarget}
+              >
+                <Chip label={f.label} dot={false} selected={f.key === filter} />
+              </Pressable>
+            ))}
+          </View>
+        </ScrollView>
+      ) : null}
     </View>
   );
 }
@@ -837,6 +912,12 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingHorizontal: 4,
   },
   bannerLarge: { width: '100%', margin: 0 },
+  buildHeader: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
   progressTrack: {
     height: 6,
     borderRadius: 3,
@@ -878,6 +959,14 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   pagerBtnDisabled: { opacity: 0.4 },
   filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
+  filterSummary: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
+  filterChips: { flexDirection: 'row', gap: space.xs },
+  filterChipTarget: { minHeight: 48, justifyContent: 'center' },
   searchInput: {
     backgroundColor: t.elevated,
     borderWidth: 1,

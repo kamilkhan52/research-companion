@@ -1,4 +1,4 @@
-import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
+import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 
 import { BuildProgressBanner } from '@/app/(tabs)/graph';
 import { Marquee } from '@/ui/Marquee';
@@ -33,7 +33,8 @@ test('build banner separates status hint, steps, and the current paper line', as
   expect(
     screen.getByLabelText(`Enriching ${base.currentTitle}`),
   ).toBeTruthy();
-  expect(screen.getByText('10 of 12 ready · 4 analyzed')).toBeTruthy();
+  expect(screen.getByText('10 of 12 ready')).toBeTruthy();
+  expect(screen.getByText('4 analyzed')).toBeTruthy();
 });
 
 test('metadata phase shows no skeleton hint and the mapping verb', async () => {
@@ -63,4 +64,27 @@ test('marquee renders its full text and exposes it to accessibility', async () =
   await renderAsync(<Marquee text="Short title" />);
   expect(screen.getByText('Short title')).toBeTruthy();
   expect(screen.getByLabelText('Short title')).toBeTruthy();
+});
+
+test('build details collapse while the live ready count remains in the header', async () => {
+  const first = await renderAsync(
+    <BuildProgressBanner progress={base as never} projectId="project-a" />,
+  );
+  expect(screen.getByText('10 of 12 ready')).toBeTruthy();
+  expect(screen.getByText('Mapped')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByLabelText('Collapse map build details'));
+  expect(screen.getByText('10 of 12 ready')).toBeTruthy();
+  expect(screen.queryByText('Mapped')).toBeNull();
+  expect(screen.queryByLabelText(`Enriching ${base.currentTitle}`)).toBeNull();
+  await first.unmountAsync();
+
+  const view = await renderAsync(
+    <BuildProgressBanner progress={base as never} projectId="project-a" />,
+  );
+  await waitFor(() => expect(screen.queryByText('Mapped')).toBeNull());
+  await view.rerenderAsync(
+    <BuildProgressBanner progress={base as never} projectId="project-b" />,
+  );
+  await waitFor(() => expect(screen.getByText('Mapped')).toBeTruthy());
 });
