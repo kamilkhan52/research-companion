@@ -69,7 +69,6 @@ class ChatJob(Job):
     # Honest reader-facing description while no canonical text is visible yet. It reflects
     # context actually available to this turn and updates when the agent begins tool work.
     activity: str = "Reading the paper…"
-    activity_detail: str | None = None
     # Best-effort stop requested by the user. The consume loops check it between runner events,
     # so the turn ends at the next event boundary; whatever canonical text already streamed is
     # recorded marked as stopped. The job still settles as 'done' — pollers see it finish early.
@@ -140,7 +139,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     )
     runner = runner or (lambda s, h: _default_events(s, h, model=model))
 
-    activity, activity_detail = _preparation_activity(slug)
+    activity = _preparation_activity(slug)
 
     def generate(job: ChatJob) -> None:
         model_label = override_label(model)
@@ -296,7 +295,6 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             thread_id=thread_id,
             delivery_mode=delivery_mode,
             activity=activity,
-            activity_detail=activity_detail,
         ),
         work,
         metered=metered,
@@ -306,32 +304,38 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
     )
 
 
-def _preparation_activity(slug: str) -> tuple[str, str | None]:
-    """Describe real context available to the pending turn, without exposing model internals."""
+def _preparation_activity(slug: str) -> str:
+    """Describe real context available to the pending turn, without exposing model internals.
+
+    One short phrase, no explanatory second line. Each of these used to carry a subtitle that
+    restated it in longer words — "Reviewing the discussion…" over "Connecting your message to the
+    paper and prior turns." — which is prose occupying the moment a reader is waiting, and says
+    nothing the phrase above it did not (DR-006). Genuine progress state still belongs in the UI;
+    see the notes-revision card, which reports characters drafted.
+    """
     if sessions.read_records(slug):
-        return "Reviewing the discussion…", "Connecting your message to the paper and prior turns."
+        return "Reviewing the discussion…"
     manifest = figures.manifest_for(slug) or {}
     has_figures = manifest.get("status") == "done" and bool(manifest.get("figures"))
     has_citers = bool(graph.project_citers_for(slug))
     if has_figures:
-        detail = "Reading the paper"
-        if has_citers:
-            detail += " and tracing how later project papers cite it"
-        return "Viewing figures…", detail + "."
+        return "Viewing figures…"
     if has_citers:
-        return "Tracing project citations…", "Reading the paper in its project context."
-    return "Reading the paper…", "Building a grounded response from the full text."
+        return "Tracing project citations…"
+    return "Reading the paper…"
 
 
-def _tool_activity(name: str) -> tuple[str, str | None]:
+def _tool_activity(name: str) -> str:
+    """The one-line status for a tool call. See `_preparation_activity` on why there is no
+    second line."""
     labels = {
-        "web_search": ("Searching the literature…", "Looking for relevant external evidence."),
-        "web_fetch": ("Reading sources…", "Opening the most relevant research sources."),
-        "read_paper_text": ("Comparing project papers…", "Reading another paper in this project."),
-        "related_papers": ("Tracing project citations…", "Mapping how project papers connect."),
-        "list_project_papers": ("Reviewing the project…", "Checking the surrounding reading list."),
+        "web_search": "Searching the literature…",
+        "web_fetch": "Reading sources…",
+        "read_paper_text": "Comparing project papers…",
+        "related_papers": "Tracing project citations…",
+        "list_project_papers": "Reviewing the project…",
     }
-    return labels.get(name, ("Gathering evidence…", None))
+    return labels.get(name, "Gathering evidence…")
 
 
 def _single_shot_events(slug: str, history: list, model: str | None = None):
@@ -405,7 +409,6 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         pieces.clear()
         with _registry.lock:
             job.activity = "Analyzing results…"
-            job.activity_detail = "Connecting the gathered evidence into the response."
             # At most one live text item exists (each boundary demotes the previous one); it
             # sits before any tool items from the same segment, so demote it in place.
             for i in range(len(job.items) - 1, -1, -1):
@@ -437,7 +440,7 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     elif ev["type"] == "tool":
         with _registry.lock:
             job.items.append({"kind": "tool", "name": ev["name"], "detail": ev.get("detail", "")})
-            job.activity, job.activity_detail = _tool_activity(str(ev.get("name") or ""))
+            job.activity = _tool_activity(str(ev.get("name") or ""))
         # Surface agentic tool use (web search, paper fetch, …) as grounded sources so listening
         # cues can narrate what the agent is doing, not just the prose it has written so far.
         acts = getattr(job, "_tool_activity", None)
