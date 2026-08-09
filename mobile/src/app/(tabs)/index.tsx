@@ -28,6 +28,7 @@ import {
   useRemovePapers,
 } from '@/api/queries';
 import type { Paper, RecentSession } from '@/api/types';
+import { AddPaperInline } from '@/components/AddPaperInline';
 import { OptionsSheet } from '@/components/chat/OptionsSheet';
 import { MoveToProjectSheet } from '@/components/MoveToProjectSheet';
 import { PaperCover } from '@/components/PaperCover';
@@ -425,7 +426,7 @@ export default function LibraryScreen() {
           />
         ) : papers.length === 0 ? (
           <EmptyProjectHub
-            onAddSpecific={() => router.push('/discover?specific=1')}
+            pid={activePid}
             onDiscover={() => router.push('/discover')}
           />
         ) : visiblePapers.length === 0 ? (
@@ -864,10 +865,10 @@ function Empty({ heading, body, action }: { heading: string; body: string; actio
 }
 
 function EmptyProjectHub({
-  onAddSpecific,
+  pid,
   onDiscover,
 }: {
-  onAddSpecific: () => void;
+  pid: string;
   onDiscover: () => void;
 }) {
   const t = useTheme();
@@ -883,22 +884,8 @@ function EmptyProjectHub({
       <Text variant="body" color={t.muted} style={styles.emptyProjectIntro}>
         Start with a paper you know, or explore ranked suggestions for this project.
       </Text>
+      <AddPaperInline pid={pid} showDivider={false} />
       <View style={styles.entryChoices}>
-        <Pressable
-          onPress={onAddSpecific}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.entryChoice, pressed && { opacity: 0.82 }]}>
-          <View style={styles.entryChoiceIcon}>
-            <Icon name="file-plus" size={19} color={t.mint} />
-          </View>
-          <View style={styles.entryChoiceText}>
-            <Text variant="heading">Add a specific paper</Text>
-            <Text variant="caption" color={t.muted} numberOfLines={2}>
-              Use a title, arXiv ID, DOI, or PDF link
-            </Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={t.muted} />
-        </Pressable>
         <Pressable
           onPress={onDiscover}
           accessibilityRole="button"

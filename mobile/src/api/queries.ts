@@ -471,6 +471,7 @@ export function useAddPaper(pid: string) {
       abstract,
       year,
       pdfUrl,
+      autoAnalyze,
     }: {
       title: string;
       group?: string;
@@ -480,6 +481,9 @@ export function useAddPaper(pid: string) {
       /** Direct PDF link when the caller has one (URL adds) — not sent to the add itself,
        *  but carried into the initial-analysis offer so retrieval fetches that exact source. */
       pdfUrl?: string;
+      /** The known-paper entry point navigates straight to the running discussion and starts
+       *  there, so it must not also open the optional analysis-offer sheet. */
+      autoAnalyze?: boolean;
     }): Promise<AddPaperOutcome> => {
       const preflight = async () => {
         try {
@@ -521,13 +525,13 @@ export function useAddPaper(pid: string) {
         throw e;
       }
     },
-    onSuccess: (res, { arxivId, pdfUrl }) => {
+    onSuccess: (res, { arxivId, pdfUrl, autoAnalyze }) => {
       if (!res.paper) return;
       qc.invalidateQueries({ queryKey: keys.projectState(pid) });
       qc.invalidateQueries({ queryKey: keys.sessionsIn(pid) });  // membership → citation counts
       qc.invalidateQueries({ queryKey: keys.graph(pid) });
       qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });  // membership → board changes
-      if (res.action !== 'added') return;  // reused papers already carry their reading work
+      if (res.action !== 'added' || autoAnalyze) return;
       // Instead of a bare "added" toast, offer to kick the paper summary off in the
       // background (R7.8). The offer sheet has its own "Not now".
       offerPaperSummary({
