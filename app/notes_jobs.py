@@ -19,7 +19,7 @@ import threading
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 
-from . import agent, agent_harness, committer, config, prompts, store
+from . import agent, agent_harness, committer, config, prompts, sessions, store
 from .jobs import Job, JobRegistry, new_id
 
 # The pseudo-target for the cross-paper working notes; anything else is a paper slug.
@@ -232,15 +232,16 @@ def start_split_destination(
             "=== CURRENT DESTINATION WORKING NOTES ===\n"
             f"{current.strip() or '(none yet)'}\n"
             "=== END CURRENT WORKING NOTES ===\n\n"
-            "=== COMMITTED NOTES FROM THE MIGRATED PAPERS ===\n"
-            f"{_paper_notes_context(usable)}\n"
-            "=== END MIGRATED PAPER NOTES ===\n\n"
+            "=== MIGRATED PAPER CONTEXT ===\n"
+            f"{_paper_notes_context(usable, include_research_context=True)}\n"
+            "=== END MIGRATED PAPER CONTEXT ===\n\n"
             "Instruction: Produce the COMPLETE destination working-notes document. Integrate "
             "the migrated papers' established findings, methods, relationships, tensions, and "
             "open questions into the current document; if it is empty, create a concise, "
-            "well-structured first synthesis. Use ONLY the supplied committed Notes and current "
-            "document. Do not research, invent facts, or imply relationships unsupported by "
-            "them. Preserve current content unless integration requires reorganization."
+            "well-structured first synthesis. Use ONLY the supplied committed Notes, paper "
+            "text, discussion context, and current document. Do not add external research, "
+            "invent facts, or imply unsupported relationships. Preserve current content unless "
+            "integration requires reorganization."
         )
         return _start_proposal(
             WORKING,
@@ -377,13 +378,43 @@ def _usable_papers(papers: list[dict]) -> list[dict]:
     return [p for p in papers if str(p.get("notes") or "").strip()]
 
 
-def _paper_notes_context(papers: list[dict]) -> str:
+def _paper_discussion_context(slug: str) -> str:
+    sections: list[str] = []
+    for thread in sessions.list_threads(slug):
+        turns: list[str] = []
+        for record in sessions.read_records(slug, thread["id"]):
+            if record.get("role") == "user" and record.get("kind") == "reply":
+                turns.append(f"Reader: {record.get('text', '').strip()}")
+            elif (record.get("role") == "user" and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                turns.append(f"Reader revision: {record['authored_text'].strip()}")
+            elif (record.get("role") == "assistant" and not record.get("proposed_commit")
+                  and record.get("canonical", "").strip()):
+                turns.append(f"Analyst: {record['canonical'].strip()}")
+        if turns:
+            sections.append(
+                f"### Discussion: {thread['title']}\n" + "\n\n".join(turns)
+            )
+    return "\n\n".join(sections)
+
+
+def _paper_notes_context(
+    papers: list[dict], *, include_research_context: bool = False
+) -> str:
     sections = []
     for paper in papers:
         title = str(paper.get("title") or paper.get("slug") or "Untitled paper").strip()
         slug = str(paper.get("slug") or "").strip()
         label = f"{title} (slug: {slug})" if slug else title
-        sections.append(f"## {label}\n{str(paper['notes']).strip()}")
+        parts = [f"## {label}", "### Committed Notes", str(paper["notes"]).strip()]
+        if include_research_context and slug:
+            full_text = store.read_full_text(slug).strip()
+            if full_text:
+                parts.extend(["### Full paper text", full_text])
+            discussion = _paper_discussion_context(slug)
+            if discussion:
+                parts.extend(["### Relevant discussion", discussion])
+        sections.append("\n".join(parts))
     return "\n\n".join(sections)
 
 

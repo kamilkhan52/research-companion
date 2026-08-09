@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from app import notes_jobs, projects, store
+from app import notes_jobs, projects, sessions, store
 from fastapi import HTTPException
 
 from tests.conftest import add_paper
@@ -237,6 +237,31 @@ def test_split_destination_drafts_from_committed_notes_when_working_notes_are_em
     assert "Four-bit weights work" in captured["prompt"]
     assert "Unread" not in captured["prompt"]
     assert notes_jobs.read(notes_jobs.WORKING) == ""  # proposal only
+
+
+def test_split_destination_receives_full_paper_and_discussion_context(temp_project):
+    add_paper(temp_project, "awq", "Activation-aware Weight Quantization")
+    sessions.start_session("awq", "Activation-aware Weight Quantization")
+    sessions.record_user("awq", "How does the calibration set affect the result?")
+    sessions._append_record("awq", {
+        "role": "assistant",
+        "canonical": "It identifies salient activation channels before quantization.",
+    })
+    captured = {}
+
+    def runner(target, prompt):
+        captured["prompt"] = prompt
+        yield {"type": "final", "text": "# Working notes\n\nGrounded integration."}
+
+    job = notes_jobs.start_split_destination(
+        [{"slug": "awq", "title": "AWQ", "notes": "## Notes\n\nFour-bit weights work."}],
+        source_name="Inference",
+        runner=runner,
+    )
+    assert _wait_until_settled(job.id).status == "done"
+    assert "### Full paper text\nfull text" in captured["prompt"]
+    assert "How does the calibration set affect the result?" in captured["prompt"]
+    assert "It identifies salient activation channels" in captured["prompt"]
 
 
 def test_relocation_notes_integrate_and_commit_one_paper_at_a_time(temp_project):

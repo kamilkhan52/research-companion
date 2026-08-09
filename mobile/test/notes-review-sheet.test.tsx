@@ -25,13 +25,29 @@ const review: Review = {
 beforeEach(async () => {
   await setBaseUrl('https://api.test');
   jest.mocked(api.getReview).mockResolvedValue(review);
+  jest.mocked(api.getNotes).mockResolvedValue({
+    target: 'awq',
+    title: 'AWQ',
+    markdown: 'Key idea: ordinary quantization.',
+  });
 });
 
-function render(onCommitted = jest.fn(), onClose = jest.fn()) {
+function render(
+  onCommitted = jest.fn(),
+  onClose = jest.fn(),
+  extras: Partial<React.ComponentProps<typeof NotesReviewSheet>> = {},
+) {
   const client = createTestQueryClient();
   return renderAsync(
     <QueryClientProvider client={client}>
-      <NotesReviewSheet visible pid="proj" slug="awq" onClose={onClose} onCommitted={onCommitted} />
+      <NotesReviewSheet
+        visible
+        pid="proj"
+        slug="awq"
+        onClose={onClose}
+        onCommitted={onCommitted}
+        {...extras}
+      />
     </QueryClientProvider>,
   );
 }
@@ -41,6 +57,37 @@ test('renders the proposed notes and synthesis for review', async () => {
   await waitFor(() => expect(screen.getByText('AWQ')).toBeTruthy());
   expect(screen.getByText(/activation-aware quantization/)).toBeTruthy();
   expect(screen.getByText('New synthesis paragraph.')).toBeTruthy();
+  expect(screen.getAllByLabelText('Added line').length).toBeGreaterThan(0);
+  expect(screen.getAllByLabelText('Removed line').length).toBeGreaterThan(0);
+});
+
+test('keeps approve, request edits, and cancel in the review sheet', async () => {
+  const onRequestEdits = jest.fn().mockResolvedValue(undefined);
+  const onClose = jest.fn();
+  await render(jest.fn(), onClose, { onRequestEdits });
+  await waitFor(() => expect(screen.getByText('AWQ')).toBeTruthy());
+
+  expect(screen.getByText('Approve & commit')).toBeTruthy();
+  expect(screen.getByText('Cancel')).toBeTruthy();
+  await fireEventAsync.press(screen.getByText('Request edits'));
+  expect(screen.getByPlaceholderText('Tell the analyst what to revise…')).toBeTruthy();
+  fireEvent.changeText(screen.getByPlaceholderText('Tell the analyst what to revise…'), 'Keep the caveat.');
+  await fireEventAsync.press(screen.getByText('Send edit request'));
+
+  expect(onRequestEdits).toHaveBeenCalledWith('Keep the caveat.');
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+test('shows the real request phase and counts drafted words', async () => {
+  await render(jest.fn(), jest.fn(), {
+    onRequestEdits: jest.fn(),
+    requesting: true,
+    requestActivity: 'Checking the cited evidence…',
+    requestItems: [{ kind: 'text', text: 'Three precise words' }],
+  });
+  await waitFor(() => expect(screen.getByText('Checking the cited evidence…')).toBeTruthy());
+  expect(screen.getByText('3 words drafted')).toBeTruthy();
+  expect(screen.queryByText(/characters drafted/)).toBeNull();
 });
 
 test('an unedited approve sends the reviewed payload with the revision token', async () => {
