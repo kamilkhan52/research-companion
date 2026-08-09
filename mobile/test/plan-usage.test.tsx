@@ -5,7 +5,8 @@
 // zero when nothing is known, or showing an allowance on a deployment that applies none.
 
 import { QueryClientProvider } from '@tanstack/react-query';
-import { renderAsync, waitFor } from '@testing-library/react-native';
+import { act, renderAsync, waitFor } from '@testing-library/react-native';
+import { RefreshControl } from 'react-native';
 
 import PlanScreen, {
   formatResetDate, formatSpentPercent, spentPercent, spokenPercent,
@@ -18,12 +19,15 @@ import { createTestQueryClient } from './queryClient';
 
 const mockBack = jest.fn();
 const mockReplace = jest.fn();
+const focusCallbacks: (() => void | (() => void))[] = [];
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ back: mockBack, replace: mockReplace, push: jest.fn(), canGoBack: () => true }),
-  // Runs the effect once, like a focused screen.
+  // Runs the effect like a focused screen, and records the callback so a test can drive a focus
+  // transition explicitly rather than relying on mount.
   useFocusEffect: (cb: () => void | (() => void)) => {
     const { useEffect } = require('react');
+    focusCallbacks.push(cb);
     useEffect(() => cb(), [cb]);
   },
 }));
@@ -67,6 +71,7 @@ async function renderScreen() {
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  focusCallbacks.length = 0;
   // The plan query is gated on a configured server, same as every other app-global query.
   await setBaseUrl('https://api.test');
 });
@@ -98,8 +103,11 @@ test('a live hold gets its own card, with no percentage of its own', async () =>
 
   await waitFor(() => view.getByText('IN PROGRESS NOW'));
   view.getByText('Some work is finishing');
+  // The label must not promise the whole hold comes back: what the work costs becomes durable
+  // spend, and only the unused remainder is released.
   view.getByLabelText(
-    'Work in progress. Some allowance is temporarily set aside and returns when the work finishes.',
+    'Work in progress. Some allowance is set aside while it runs. Whatever the work costs is '
+    + 'added above; the rest is released.',
   );
 });
 
@@ -131,9 +139,9 @@ test('spend past the warning line does show the approaching card, and blocks not
   const view = await renderScreen();
 
   await waitFor(() => view.getByText("You're getting close"));
-  view.getByText(
-    "Nothing is blocked. Scholiast will keep working until this month's allowance is used.",
-  );
+  // Not "nothing is blocked": holds can fill the remainder, so at 86% spent a new job may still be
+  // refused. What stays true is that the allowance itself is not spent.
+  view.getByText("Scholiast keeps working until this month's allowance is used.");
 });
 
 test('an unenforced deployment leaves the screen rather than explaining itself', async () => {
@@ -187,9 +195,15 @@ test('the plan summary is rendered verbatim from the server', async () => {
   view.getByText('Tester');
 });
 
-test('the reset date is the server period, not the device timezone', () => {
-  // The exact date, not just the prefix. Asserting `/^Resets /` passed happily while every user
-  // west of Greenwich was told "Resets August 31" — a date on which nothing resets.
+test('the reset date is formatted in the server period, not the device timezone', () => {
+  // CI runs in UTC, where the buggy and correct implementations agree — so asserting the date
+  // alone is green on CI whether or not the fix is present. Assert the REQUEST instead: the
+  // formatter must be told which zone to use.
+  const spy = jest.spyOn(Date.prototype, 'toLocaleDateString');
+  formatResetDate('2026-09-01T00:00:00+00:00');
+  expect(spy).toHaveBeenCalledWith(undefined, expect.objectContaining({ timeZone: 'UTC' }));
+  spy.mockRestore();
+
   expect(formatResetDate('2026-09-01T00:00:00+00:00')).toBe('Resets September 1');
   expect(formatResetDate('2026-09-01T00:00:00+00:00')).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   expect(formatResetDate('2026-09-01T00:00:00+00:00')).not.toMatch(/day/i);
@@ -210,7 +224,35 @@ test('the displayed percentage never flatters, at either end', () => {
   expect(spentPercent(0.799)).toBe(80);
 });
 
-test('focus refetches exactly once and then settles, rather than looping', async () => {
+test('the screen refetches when focus returns to it', async () => {
+  // Deleting the whole `useFocusEffect` block left the previous version of this test green: the
+  // mock ran the effect alongside the query's own first fetch, so "requests stopped growing" was
+  // true either way. Drive a focus transition AFTER the first result and require a new request.
+  jest.mocked(api.getPlan)
+    .mockResolvedValueOnce(plan({ spent_fraction: 0.18 }))
+    .mockResolvedValue(plan({ spent_fraction: 0.42 }));
+
+  const view = await renderScreen();
+  await waitFor(() => view.getByText('18%'));
+
+  focusCallbacks.forEach((cb) => cb());
+  await waitFor(() => view.getByText('42%'));
+});
+
+test('pull to refresh asks the server again', async () => {
+  jest.mocked(api.getPlan)
+    .mockResolvedValueOnce(plan({ spent_fraction: 0.18 }))
+    .mockResolvedValue(plan({ spent_fraction: 0.51 }));
+
+  const view = await renderScreen();
+  await waitFor(() => view.getByText('18%'));
+
+  const scroll = view.UNSAFE_getByType(RefreshControl);
+  await act(async () => { scroll.props.onRefresh(); });
+  await waitFor(() => view.getByText('51%'));
+});
+
+test('focus refetching settles rather than looping', async () => {
   jest.mocked(api.getPlan).mockResolvedValue(plan());
 
   const view = await renderScreen();

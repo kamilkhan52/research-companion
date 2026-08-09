@@ -164,3 +164,32 @@ def test_a_real_charge_never_arrives_as_exactly_zero_or_exactly_one(monkeypatch)
         assert 0 < fraction < 1, (
             f"{spent} nano-USD of {limit} must not collapse to a boundary, got {fraction}"
         )
+
+
+def test_an_override_withdraws_the_plan_headline_promise(monkeypatch):
+    """`plan.summary` describes the PLAN's allowance. An operator override changes the enforced
+    limit without changing the plan — and production has one set — so sending both unchanged told
+    a reader on Basic with a 750-credit override that they had "20 papers a month" while enforcing
+    30% of that. The promise is withdrawn rather than restated: converting credits to papers is an
+    estimate, and a new number derived from an override would be a guess presented as a fact."""
+    from app.routers import usage as usage_routes
+
+    monkeypatch.setattr(usage_routes.spend_limits, "enabled", lambda: True)
+    monkeypatch.setattr(usage_routes.quotas, "period_usage", lambda _uid: (0, 0))
+    monkeypatch.setattr(usage_routes.plans, "for_user",
+                        lambda _uid: plans.PLANS["basic"])
+
+    class _Req:
+        state = type("S", (), {"user": {"user_id": "u1"}})()
+
+    monkeypatch.delenv("RC_MONTHLY_CREDITS", raising=False)
+    matched = usage_routes.get_plan(_Req())
+    assert matched["plan"]["summary"] == plans.PLANS["basic"].summary
+
+    monkeypatch.setenv("RC_MONTHLY_CREDITS", "750")
+    overridden = usage_routes.get_plan(_Req())
+    assert overridden["limit_nanousd"] != matched["limit_nanousd"]
+    assert overridden["plan"]["summary"] != plans.PLANS["basic"].summary, (
+        "the plan's own promise must not be shown beside a limit that is not the plan's"
+    )
+    assert "20" not in overridden["plan"]["summary"]

@@ -26,19 +26,17 @@ import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 import { Button, Card, Icon, ProgressBar, Screen, Text } from '@/ui';
 
-/** Plan promise in reading terms. `plan.summary` is authoritative and rendered verbatim; this only
- *  supplies the display label and the supporting line the spec specifies per plan. */
-const PLAN_LABELS: Record<string, { label: string; supporting: string }> = {
-  tester: {
-    label: 'Tester',
-    supporting: 'Testing plan — generous allowance while the app is in review',
-  },
-  free: { label: 'Free', supporting: "3–4 papers a month, your device's voice" },
-  basic: { label: 'Basic', supporting: '20 papers a month, 45 minutes of studio narration' },
+/** Display names only. The plan's PROMISE comes from `plan.summary` and nothing else: an operator
+ *  override changes the enforced limit without changing the plan, so a second copy of "20 papers a
+ *  month" living here would keep making that promise after the server had withdrawn it. */
+const PLAN_LABELS: Record<string, string> = {
+  tester: 'Tester',
+  free: 'Free',
+  basic: 'Basic',
 };
 
 function planLabel(name: string): string {
-  return PLAN_LABELS[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1);
+  return PLAN_LABELS[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 /** `Resets September 1` — a calendar date, never a raw ISO string and never "days left", which
@@ -146,7 +144,7 @@ export default function PlanScreen() {
           <Card>
             <Text variant="heading">Couldn't load your plan</Text>
             <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
-              Nothing is blocked — this is only the usage view.
+              This only affects what this screen can show. Your allowance is unchanged.
             </Text>
             <Button title="Try again" onPress={() => { void query.refetch(); }} style={styles.cardAction} />
           </Card>
@@ -164,7 +162,6 @@ function PlanBody({ plan }: { plan: Plan }) {
   const percent = spentPercent(plan.spent_fraction);
   const percentLabel = formatSpentPercent(plan.spent_fraction);
   const resets = formatResetDate(plan.period_ends);
-  const supporting = PLAN_LABELS[plan.plan.name]?.supporting;
   // The 80% card keys off SPEND alone, matching the bar beside it. See the header note.
   const approaching = plan.spent_fraction >= plan.warn_at_fraction && plan.spent_fraction < 1;
 
@@ -175,9 +172,6 @@ function PlanBody({ plan }: { plan: Plan }) {
         <Text variant="heading" style={styles.planName}>{planLabel(plan.plan.name)}</Text>
         {/* Server copy verbatim: it is the single source of what this plan promises. */}
         <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>{plan.plan.summary}</Text>
-        {supporting && supporting !== plan.plan.summary ? (
-          <Text variant="caption" color={t.muted} style={[styles.supporting, styles.supportingMin]}>{supporting}</Text>
-        ) : null}
         <View style={styles.audioRow}>
           <Icon name={plan.plan.premium_audio ? 'volume-2' : 'smartphone'} size={14} color={t.muted} />
           <Text variant="caption" color={t.muted} style={[styles.audioLabel, styles.supportingMin]}>
@@ -196,7 +190,11 @@ function PlanBody({ plan }: { plan: Plan }) {
             accessible
             accessibilityRole="progressbar"
             accessibilityLabel={`${spokenPercent(plan.spent_fraction)} of this month's allowance used.`}
-            accessibilityValue={{ min: 0, max: 100, now: percent }}
+            // `text` as well as `now`: the numeric slot is rounded, so at 0.01% it announces 0 and
+            // at 99.6% it announces 100 — the boundary claims the visible text avoids. A
+            // progressbar's value is announced independently of its label, so without `text` a
+            // screen-reader user still hears the false number.
+            accessibilityValue={{ min: 0, max: 100, now: percent, text: spokenPercent(plan.spent_fraction) }}
           >
             <ProgressBar
               testID="plan-spend-bar"
@@ -227,7 +225,7 @@ function PlanBody({ plan }: { plan: Plan }) {
         <Card style={[styles.spaced, styles.noticeCard, { borderColor: t.amberLine, backgroundColor: t.amberWash }]}>
           <Text variant="heading" color={t.amber}>You're getting close</Text>
           <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
-            Nothing is blocked. Scholiast will keep working until this month's allowance is used.
+            Scholiast keeps working until this month's allowance is used.
           </Text>
         </Card>
       ) : null}
@@ -237,7 +235,8 @@ function PlanBody({ plan }: { plan: Plan }) {
           style={[styles.spaced, styles.noticeCard, { borderColor: t.amberLine, backgroundColor: t.amberWash }]}
           accessible
           accessibilityLabel={
-            'Work in progress. Some allowance is temporarily set aside and returns when the work finishes.'
+            'Work in progress. Some allowance is set aside while it runs. Whatever the work costs '
+            + 'is added above; the rest is released.'
           }
         >
           <View style={styles.audioRow}>
@@ -247,7 +246,8 @@ function PlanBody({ plan }: { plan: Plan }) {
           <Text variant="heading" style={styles.planName}>Some work is finishing</Text>
           {/* Deliberately no percentage and no shared axis with the bar above. */}
           <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
-            A little room is temporarily set aside. It returns as the work finishes.
+            Room is set aside while it runs. What the work costs is added above when it finishes;
+            the rest is released.
           </Text>
         </Card>
       ) : null}

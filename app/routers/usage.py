@@ -47,13 +47,24 @@ def get_plan(request: Request):
     # the screen would show a bar at 15% and "$4.25 remaining" beside a refusal saying the limit
     # was reached. A usage display that disagrees with the refusal beside it is worse than none.
     limit = spend_limits.monthly_limit_nanousd()
+    # The plan's headline promise ("20 papers a month") describes the plan's OWN allowance. An
+    # operator override changes the enforced limit without changing the plan, and production has
+    # one set — so sending both unchanged told a reader on Basic with a 750-credit override that
+    # they had 20 papers a month while enforcing 30% of that. When they disagree, the quantitative
+    # promise is withdrawn rather than adjusted: the credits-to-papers conversion is an estimate
+    # from the pricing analysis, and inventing a new number from an override would be a second
+    # guess presented as a fact.
+    plan_allowance = plan.monthly_credits * spend_limits.NANOUSD_PER_CREDIT
+    summary = plan.summary if limit == plan_allowance else (
+        "A custom monthly allowance set for this deployment."
+    )
     usage_period = quotas.period_usage(user_id) if user_id else (0, 0)
     spent, held = usage_period if usage_period is not None else (0, 0)
     _, period_end = quotas.calendar_month()
     return {
         "plan": {
             "name": plan.name,
-            "summary": plan.summary,
+            "summary": summary,
             "premium_audio": plan.premium_audio,
             "monthly_credits": plan.monthly_credits,
         },

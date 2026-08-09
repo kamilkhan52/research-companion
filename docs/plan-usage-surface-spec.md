@@ -123,7 +123,9 @@ not imply separate audio credits. `monthly_credits` and all nano-USD fields rema
 
 - Progress bar animation: 250 ms ease-out on refetch; never animate from zero on every focus.
 - Pull to refresh and refetch on screen focus. Do not poll the detail screen merely to animate
-  holds; action/job polling already refreshes plan data on settlement.
+  holds. Those two are currently the ONLY refresh paths: nothing invalidates the plan when a job
+  settles, which is DR-036 rather than an oversight — covering it means every metered subsystem'''s
+  terminal outcomes, and covering three of them is what produced two rounds of review findings.
 - Busy retry: parse `Retry-After` seconds, use a monotonic local countdown, and enable retry at
   zero. Do not auto-submit the action.
 - Modal dismissal: Android back and `Not now`/`Keep reading` both return to the exact prior flow.
