@@ -7,7 +7,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { renderAsync, waitFor } from '@testing-library/react-native';
 
-import PlanScreen, { formatResetDate, spentPercent } from '@/app/plan';
+import PlanScreen, { formatResetDate, formatSpentPercent, spentPercent } from '@/app/plan';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { Plan } from '@/api/types';
@@ -19,6 +19,11 @@ const mockReplace = jest.fn();
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ back: mockBack, replace: mockReplace, push: jest.fn(), canGoBack: () => true }),
+  // Runs the effect once, like a focused screen.
+  useFocusEffect: (cb: () => void | (() => void)) => {
+    const { useEffect } = require('react');
+    useEffect(() => cb(), [cb]);
+  },
 }));
 
 function plan(
@@ -129,14 +134,17 @@ test('spend past the warning line does show the approaching card, and blocks not
   );
 });
 
-test('an unenforced deployment shows no allowance, no bar, and no zero', async () => {
+test('an unenforced deployment leaves the screen rather than explaining itself', async () => {
+  // An "allowance unavailable" page is still a page about the allowance, and it strands the
+  // reader one tap from where they were.
   jest.mocked(api.getPlan).mockResolvedValue(plan({ enforced: false }));
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText('This server is not applying a monthly allowance.'));
+  await waitFor(() => expect(mockBack).toHaveBeenCalled());
   expect(view.queryByText('0%')).toBeNull();
   expect(view.queryByText('THIS MONTH')).toBeNull();
+  expect(view.queryByText('YOUR PLAN')).toBeNull();
 });
 
 test('an unreadable usage row says so instead of showing a full allowance', async () => {
@@ -177,17 +185,36 @@ test('the plan summary is rendered verbatim from the server', async () => {
   view.getByText('Tester');
 });
 
-test('reset date renders as a local calendar date, never a raw timestamp or a countdown', () => {
-  expect(formatResetDate('2026-09-01T00:00:00+00:00')).toMatch(/^Resets /);
+test('the reset date is the server period, not the device timezone', () => {
+  // The exact date, not just the prefix. Asserting `/^Resets /` passed happily while every user
+  // west of Greenwich was told "Resets August 31" — a date on which nothing resets.
+  expect(formatResetDate('2026-09-01T00:00:00+00:00')).toBe('Resets September 1');
   expect(formatResetDate('2026-09-01T00:00:00+00:00')).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   expect(formatResetDate('2026-09-01T00:00:00+00:00')).not.toMatch(/day/i);
   expect(formatResetDate('not a date')).toBeNull();
 });
 
-test('spend percentage floors and clamps, so a settled overshoot cannot exceed 100', () => {
-  // Floors: 99.6% must not round up to a reassuring 100 while work is still permitted.
-  expect(spentPercent(0.996)).toBe(99);
-  expect(spentPercent(1.04)).toBe(100);
-  expect(spentPercent(0)).toBe(0);
-  expect(spentPercent(Number.NaN)).toBe(0);
+test('the displayed percentage never flatters, at either end', () => {
+  // Real spend must never read as a flat 0%, and a limit that has not been reached must never
+  // read as 100%. Both are claims about money that the number cannot support.
+  expect(formatSpentPercent(0.0001)).toBe('<1%');
+  expect(formatSpentPercent(0.996)).toBe('>99%');
+  expect(formatSpentPercent(1)).toBe('100%');
+  expect(formatSpentPercent(1.04)).toBe('100%');
+  expect(formatSpentPercent(0)).toBe('0%');
+  expect(formatSpentPercent(Number.NaN)).toBe('0%');
+  // The interior rounds rather than floors, so 79.9% is not reported as 79%.
+  expect(formatSpentPercent(0.799)).toBe('80%');
+  expect(spentPercent(0.799)).toBe(80);
+});
+
+test('focusing the screen refetches, since window focus does not exist in React Native', async () => {
+  jest.mocked(api.getPlan).mockResolvedValue(plan());
+
+  const view = await renderScreen();
+  await waitFor(() => view.getByText('18%'));
+
+  // Two: the query's own initial fetch, plus the focus refetch. Returning from a paid turn to a
+  // stale figure was the failure this guards.
+  expect(jest.mocked(api.getPlan).mock.calls.length).toBeGreaterThanOrEqual(2);
 });

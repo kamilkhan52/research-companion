@@ -907,9 +907,13 @@ export interface Plan {
   /** Durable month-to-date spend as a 0..1 fraction. The only numeric usage signal in the UI, and
    *  the only thing that drives the progress bar and the approaching-limit card. */
   spent_fraction: number;
-  /** Server-side soft warning, computed from spend PLUS holds so it can precede a refusal. The
-   *  detail screen deliberately does not render this: on that surface a hold-driven warning would
-   *  claim the month is nearly gone when it is not. It is here for refusal-adjacent surfaces. */
+  /** Reservation pressure: spend PLUS holds past the soft line, computed server-side so it can
+   *  fire before admission refuses (admission refuses on the sum too). NOT "the month is nearly
+   *  gone" — at 76% spent with one listening flow in flight it is true while the month is three
+   *  quarters intact, which is why the plan screen renders `spent_fraction` instead.
+   *
+   *  Never infer a 402/429 modal from this. Those are selected from the actual refusal response;
+   *  opening one here would refuse work the server was still willing to do. */
   warn: boolean;
   warn_at_fraction: number;
   /** Nothing more can start right now. Distinct from `warn`: this is about live work, not the

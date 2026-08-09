@@ -15,8 +15,8 @@
 // that it can precede a refusal. That is the right signal next to a refusal and the wrong one here:
 // on this screen it would say the month is nearly gone because something is running.
 
-import { useRouter } from 'expo-router';
-import { useCallback } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import { usePlan } from '@/api/queries';
@@ -41,19 +41,43 @@ function planLabel(name: string): string {
   return PLAN_LABELS[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-/** `Resets September 1` — a local calendar date, never a raw ISO string and never "days left",
- *  which drifts across midnight and reads as a countdown the allowance is not. */
+/** `Resets September 1` — a calendar date, never a raw ISO string and never "days left", which
+ *  drifts across midnight and reads as a countdown the allowance is not.
+ *
+ *  Formatted in **UTC**, because that is the period the server actually resets on
+ *  (`quotas.calendar_month` builds a UTC month boundary). Rendering the device's local date turned
+ *  `2026-09-01T00:00:00Z` into "Resets August 31" everywhere west of Greenwich — a date on which
+ *  nothing resets, told to the reader waiting for it. */
 export function formatResetDate(iso: string): string | null {
   const when = new Date(iso);
   if (Number.isNaN(when.getTime())) return null;
-  return `Resets ${when.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}`;
+  const date = when.toLocaleDateString(undefined, {
+    month: 'long', day: 'numeric', timeZone: 'UTC',
+  });
+  return `Resets ${date}`;
 }
 
-/** Whole-percent spend, floored so 99.6% never renders as a reassuring "100%" while work is still
- *  permitted, and clamped because a settled overshoot can push the fraction just past 1. */
+/** Whole-percent spend for the accessibility label. Rounded, not floored — see
+ *  `formatSpentPercent` for why the two boundaries are special-cased instead. */
 export function spentPercent(fraction: number): number {
   if (!Number.isFinite(fraction) || fraction <= 0) return 0;
-  return Math.min(100, Math.floor(fraction * 100));
+  return Math.min(100, Math.round(fraction * 100));
+}
+
+/** The percentage as the reader sees it.
+ *
+ *  Neither rounding rule is safe on its own at the ends, and both failures are about money.
+ *  Flooring shows real spend as a flat `0%`, which claims nothing has been spent. Rounding shows
+ *  99.6% as `100%`, which claims the allowance is gone while work is still permitted. So the
+ *  interior rounds — never systematically flattering — and the two ends say `<1%` and `>99%`,
+ *  which are true at every value they cover. `100%` is reserved for actually reaching the limit. */
+export function formatSpentPercent(fraction: number): string {
+  if (!Number.isFinite(fraction) || fraction <= 0) return '0%';
+  if (fraction >= 1) return '100%';
+  const rounded = Math.round(fraction * 100);
+  if (rounded <= 0) return '<1%';
+  if (rounded >= 100) return '>99%';
+  return `${rounded}%`;
 }
 
 export default function PlanScreen() {
@@ -69,21 +93,25 @@ export default function PlanScreen() {
   }, [router]);
 
   // Enforcement can end while this screen is open (sign-out, or a config/connectivity change).
-  // Leave rather than fall back to a zeroed bar: a confident "0% used" would be a claim about an
-  // allowance this deployment is no longer applying.
-  if (plan && !plan.enforced) {
-    return (
-      <Screen>
-        <TopBar title="Plan & usage" onBack={goBack} />
-        <View style={styles.centered}>
-          <Text variant="body" color={t.muted} style={styles.centeredText}>
-            This server is not applying a monthly allowance.
-          </Text>
-          <Button title="Back to settings" onPress={goBack} style={{ marginTop: space.md }} />
-        </View>
-      </Screen>
-    );
-  }
+  // LEAVE, rather than explain: the spec's rule is that an unenforced deployment shows nothing
+  // about allowances at all, and an "allowance unavailable" page is still a page about the
+  // allowance. It also strands the reader one tap from where they were.
+  const unenforced = plan != null && !plan.enforced;
+  useEffect(() => {
+    if (unenforced) goBack();
+  }, [unenforced, goBack]);
+
+  // Refetch when the screen is focused. `refetchOnWindowFocus` does nothing here: React Native
+  // has no window focus events unless a `focusManager` bridge is installed, and Expo Router's
+  // screen focus is a separate concept. Without this the reader can return from a paid turn to a
+  // stale figure.
+  useFocusEffect(
+    useCallback(() => {
+      void query.refetch();
+    }, [query]),
+  );
+
+  if (unenforced) return null;
 
   return (
     <Screen>
@@ -99,11 +127,11 @@ export default function PlanScreen() {
         }
       >
         {query.isLoading ? (
-          <Text variant="body" color={t.muted}>Loading your plan…</Text>
+          <Text variant="body" color={t.muted} style={styles.bodyMin}>Loading your plan…</Text>
         ) : query.isError || !plan ? (
           <Card>
             <Text variant="heading">Couldn't load your plan</Text>
-            <Text variant="body" color={t.muted} style={styles.cardBody}>
+            <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
               Nothing is blocked — this is only the usage view.
             </Text>
             <Button title="Try again" onPress={() => { void query.refetch(); }} style={styles.cardAction} />
@@ -120,6 +148,7 @@ function PlanBody({ plan }: { plan: Plan }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const percent = spentPercent(plan.spent_fraction);
+  const percentLabel = formatSpentPercent(plan.spent_fraction);
   const resets = formatResetDate(plan.period_ends);
   const supporting = PLAN_LABELS[plan.plan.name]?.supporting;
   // The 80% card keys off SPEND alone, matching the bar beside it. See the header note.
@@ -131,13 +160,13 @@ function PlanBody({ plan }: { plan: Plan }) {
         <Text variant="overline" color={t.muted}>YOUR PLAN</Text>
         <Text variant="heading" style={styles.planName}>{planLabel(plan.plan.name)}</Text>
         {/* Server copy verbatim: it is the single source of what this plan promises. */}
-        <Text variant="body" color={t.muted} style={styles.cardBody}>{plan.plan.summary}</Text>
+        <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>{plan.plan.summary}</Text>
         {supporting && supporting !== plan.plan.summary ? (
-          <Text variant="caption" color={t.muted} style={styles.supporting}>{supporting}</Text>
+          <Text variant="caption" color={t.muted} style={[styles.supporting, styles.supportingMin]}>{supporting}</Text>
         ) : null}
         <View style={styles.audioRow}>
           <Icon name={plan.plan.premium_audio ? 'volume-2' : 'smartphone'} size={14} color={t.muted} />
-          <Text variant="caption" color={t.muted} style={styles.audioLabel}>
+          <Text variant="caption" color={t.muted} style={[styles.audioLabel, styles.supportingMin]}>
             {plan.plan.premium_audio ? 'Studio narration included' : 'Device voice'}
           </Text>
         </View>
@@ -146,8 +175,8 @@ function PlanBody({ plan }: { plan: Plan }) {
       {plan.usage_available ? (
         <Card style={styles.spaced}>
           <Text variant="overline" color={t.muted}>THIS MONTH</Text>
-          <Text variant="display" style={styles.percent}>{percent}%</Text>
-          <Text variant="body" color={t.muted} style={styles.cardBody}>of your monthly allowance used</Text>
+          <Text variant="display" style={styles.percent}>{percentLabel}</Text>
+          <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>of your monthly allowance used</Text>
           <View
             style={styles.bar}
             accessible
@@ -165,7 +194,7 @@ function PlanBody({ plan }: { plan: Plan }) {
           {resets ? (
             <View style={styles.resetRow}>
               <Icon name="calendar" size={14} color={t.muted} />
-              <Text variant="caption" color={t.muted} style={styles.resetLabel}>{resets}</Text>
+              <Text variant="caption" color={t.muted} style={[styles.resetLabel, styles.supportingMin]}>{resets}</Text>
             </View>
           ) : null}
         </Card>
@@ -174,7 +203,7 @@ function PlanBody({ plan }: { plan: Plan }) {
         // misleading pair the screen could show: a full allowance at the moment it cannot be read.
         <Card style={styles.spaced}>
           <Text variant="overline" color={t.muted}>THIS MONTH</Text>
-          <Text variant="body" color={t.muted} style={styles.cardBody}>
+          <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
             Usage isn't available right now. Your allowance is unchanged — pull down to try again.
           </Text>
         </Card>
@@ -183,7 +212,7 @@ function PlanBody({ plan }: { plan: Plan }) {
       {approaching ? (
         <Card style={[styles.spaced, styles.noticeCard, { borderColor: t.amberLine, backgroundColor: t.amberWash }]}>
           <Text variant="heading" color={t.amber}>You're getting close</Text>
-          <Text variant="body" color={t.muted} style={styles.cardBody}>
+          <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
             Nothing is blocked. Scholiast will keep working until this month's allowance is used.
           </Text>
         </Card>
@@ -203,7 +232,7 @@ function PlanBody({ plan }: { plan: Plan }) {
           </View>
           <Text variant="heading" style={styles.planName}>Some work is finishing</Text>
           {/* Deliberately no percentage and no shared axis with the bar above. */}
-          <Text variant="body" color={t.muted} style={styles.cardBody}>
+          <Text variant="body" color={t.muted} style={[styles.cardBody, styles.bodyMin]}>
             A little room is temporarily set aside. It returns as the work finishes.
           </Text>
         </Card>
@@ -214,6 +243,13 @@ function PlanBody({ plan }: { plan: Plan }) {
 
 function makeStyles(t: ThemePalette) {
   return StyleSheet.create({
+    // The spec fixes minimum type sizes for this surface: body >=15, supporting >=13. The shared
+    // variants do not meet them — `body` drops to 14 under Tight density and `caption` is 12.5
+    // even at Comfortable. Overriding here rather than changing the variants, because Tight is a
+    // deliberate app-wide preference (DR-028) and this is one screen asking to opt out of it:
+    // misreading a number about money costs more than the density it buys back.
+    bodyMin: { fontSize: 15 },
+    supportingMin: { fontSize: 13 },
     content: { padding: space.lg, paddingBottom: space.xl },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.lg },
     centeredText: { textAlign: 'center' },

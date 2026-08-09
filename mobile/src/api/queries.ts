@@ -198,17 +198,21 @@ export function useSettings() {
 
 /** The account's plan and month-to-date standing.
  *
- *  Refetched on focus rather than polled. Holds move on a timescale of seconds, but the detail
- *  screen deliberately does not animate them: action and job polling already invalidate this key
- *  when a reservation settles, so a poll here would burn battery to re-render a number the reader
- *  is told not to treat as a countdown. */
+ *  Not polled. Holds move on a timescale of seconds, but the detail screen deliberately does not
+ *  animate them — the reader is explicitly told not to treat the number as a countdown, so a poll
+ *  would burn battery re-rendering something that is not meant to tick.
+ *
+ *  Freshness comes from two places instead, and `refetchOnWindowFocus` is NOT one of them: React
+ *  Native fires no window focus events without a `focusManager` bridge, and Expo Router screen
+ *  focus is a different thing entirely. So the screen refetches through `useFocusEffect`, and
+ *  `useStreamingTurn.settle` invalidates this key when a paid turn finishes — which is the moment
+ *  both the spend and the hold actually changed. */
 export function usePlan() {
   const hasUrl = !!useBaseUrl();
   return useQuery({
     queryKey: keys.plan,
     queryFn: api.getPlan,
     enabled: hasUrl,
-    refetchOnWindowFocus: true,
   });
 }
 

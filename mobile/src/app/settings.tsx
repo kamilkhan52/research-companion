@@ -765,7 +765,7 @@ function PlanRow() {
       <View style={{ flex: 1 }}>
         <Text variant="heading">Plan &amp; usage</Text>
         {data ? (
-          <Text variant="caption" color={t.muted} numberOfLines={2}>
+          <Text variant="caption" color={t.muted} numberOfLines={2} style={styles.planRowSummary}>
             {data.plan.summary}
           </Text>
         ) : null}
@@ -887,6 +887,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     padding: tight ? space.sm : space.md,
     paddingBottom: space.xxl * 2,
   },
+  // 13px floor for supporting copy on the allowance surfaces (see `app/plan.tsx`); `caption` is
+  // 12.5 normally and 12 under Tight.
+  planRowSummary: { fontSize: 13 },
   planRow: {
     flexDirection: 'row',
     alignItems: 'center',

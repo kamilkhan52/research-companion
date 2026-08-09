@@ -31,7 +31,9 @@ def get_plan(request: Request):
     revision of this docstring claimed `warn` came from spend alone, contradicting the line that
     computes it. The client honours both by keeping them on different surfaces: the plan screen's
     bar and its approaching-limit card track `spent_fraction` only, while `warn`/`at_capacity`
-    belong next to the refusal they anticipate. See `docs/plan-usage-surface-spec.md`.
+    belong to reservation pressure, not to the month. Read `warn` as "a refusal is close", never as
+    "the allowance is nearly gone", and never as grounds for a client to refuse on its own — the
+    402/429 modals are selected from the actual refusal. See `docs/plan-usage-surface-spec.md`.
 
     With no database (local dev, the test suite) this reports the plan with zero usage rather than
     failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
