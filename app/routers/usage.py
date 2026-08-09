@@ -4,8 +4,9 @@ Named `usage_routes`-style module; drives the `app.usage` service."""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
-from .. import auth, plans, quotas, spend_limits, usage
+from .. import account_plans, auth, db, plans, quotas, spend_limits, usage
 from . import make_project_router
 
 router = APIRouter()
@@ -109,6 +110,39 @@ def get_usage(pid: str):
     per-operation breakdowns, cost in USD + exact nano-USD). `estimated` is true when some
     billed streams dropped before their final usage chunk. Cheap read of .state/usage.json."""
     return usage.summary()
+
+
+class PlanGrant(BaseModel):
+    user_id: str
+    #: `None` clears the grant, returning the account to the deployment default.
+    plan: str | None = None
+
+
+@router.post("/api/admin/account-plan")
+def set_account_plan(body: PlanGrant, request: Request):
+    """Put one account on a named plan. Operator only.
+
+    This is the manual half of entitlements, and it exists before the automated half deliberately:
+    a plan can be granted and revoked, and the ceiling checked against it, without a store, a
+    subscription, or a webhook being involved. When RevenueCat arrives it writes through the same
+    table with `source="revenuecat"`, and this route stays as the escape hatch for the case a
+    payment provider always eventually produces — someone who has paid and whose entitlement did
+    not arrive.
+    """
+    if not auth.is_operator(getattr(request.state, "user", None)):
+        raise HTTPException(status_code=403, detail="Granting a plan is restricted to the operator.")
+    if not db.enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Per-account plans need a database; this instance has none.")
+    try:
+        if body.plan is None:
+            account_plans.clear_plan(body.user_id)
+        else:
+            account_plans.set_plan(body.user_id, body.plan, source="operator")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"user_id": body.user_id, "plan": plans.for_user(body.user_id).name}
 
 
 @router.get("/api/usage/unattributed")

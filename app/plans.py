@@ -16,21 +16,20 @@ cost.** Everything here is expressed in credits so the numbers can be read again
 `docs/production/20-pricing-analysis.md` §1 directly, and so a model price change is absorbed by
 re-pricing operations rather than re-pricing plans.
 
-**What exists today is one plan per DEPLOYMENT, not per account.** `for_user` takes a user id and
-ignores it: there is no column, table or migration storing a per-account plan, so every account is
-on `RC_DEFAULT_PLAN`. The signature is shaped for the per-account lookup it will become so callers
-do not change when M4 fills it in — but nobody should read it as already being that. Two accounts
-cannot currently be on different plans.
+**A plan is per ACCOUNT, with a deployment-wide default.** `rc_account_plans` stores the grant and
+`RC_DEFAULT_PLAN` covers every account without one, so a single-tenant instance and the test suite
+behave exactly as they did before per-account plans existed.
 
 **What this is not.** It is not entitlement. Nothing here decides whether an account has *paid*.
 Keeping that boundary sharp is why a plan is a plain name rather than a bundle of flags: a second
 source of truth about what someone bought is exactly what M4 must not inherit.
 
-**Two things to fix before the lookup is real.** It is called inline from `spend_ceiling.hold` on
-every admission, so a database round trip there lands on the request thread under one worker
-(invariant 6) — cache it first. And its fallback returns the MOST generous plan, which inverts the
-"the dangerous configuration is absence" discipline the rest of this system follows; once a real
-lookup can fail, an unresolved account should get the least generous plan or raise.
+**The lookup is now real** (`account_plans`), and both things this docstring asked for first were
+settled rather than skipped. The read is memoized per context, because it happens inline in
+`spend_ceiling.hold` on every admission. And the fallback stays the deployment default rather than
+becoming the least generous plan: `quotas` already fails closed on any store failure, so a failed
+plan read cannot become an overspend path, while demoting a paying reader over a transient blip is
+the failure the roadmap ranks worst. That argument is recorded in `account_plans`.
 """
 from __future__ import annotations
 
@@ -109,9 +108,19 @@ def _configured_default() -> str:
 def for_user(user_id: str | None) -> Plan:
     """The plan governing `user_id`.
 
-    Today every account is on the configured default; the per-account lookup this will become is
-    M4's entitlement answer, and the signature is shaped for it so callers do not change then.
+    A per-account grant wins; otherwise the deployment default. See `account_plans` for where the
+    grant is stored, why the read is memoized per context, and why a failed read answers with the
+    default rather than the least generous plan.
     """
+    from . import account_plans  # local: account_plans imports db, which imports config
+
+    granted = account_plans.load(user_id)
+    if granted is not None and granted in PLANS:
+        return PLANS[granted]
+    if granted is not None:
+        # Storable only through a CHECK constraint listing the same names, so this means the
+        # constraint and this table have drifted — worth a line rather than a silent default.
+        log.warning("account plan %r is not a known plan; using the deployment default", granted)
     return PLANS[_configured_default()]
 
 

@@ -351,6 +351,7 @@ def migrate() -> list[str]:
 #: adding a table without adding it here fails in CI rather than in production.
 _REQUIRED_TABLES = (
     "rc_account_deletions",
+    "rc_account_plans",
     "rc_content_reports",
     "rc_project_trash",
     "rc_projects",
