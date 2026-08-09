@@ -118,12 +118,30 @@ Known long blocks as of writing: `agent_harness.py:79` (13 lines), `jobs.py:155`
 
 **Do not bulk-edit.** Every removal is a judgement call against principle 5.
 
-## Phase 3 — CLAUDE.md (304 lines)
+## Phase 3 — CLAUDE.md — **DONE 2026-08-09**
 
-It is doing two jobs: invariants (load-bearing, keep every word) and a module map that has drifted
-toward prose. Tighten the module map to one or two lines per module with pointers, and let the
-detailed rationale live in the modules' own docstrings. **Do not touch the six invariants or the
-"Environments and deployment" section.**
+**304 → 241 lines**, all of it from the module map; the invariants and the environments section
+were not touched.
+
+The plan said to "let the detailed rationale live in the modules' own docstrings", which assumed it
+already did. **It did not.** `projects.py`'s import trust boundary, `db.py`'s Data-API lockout
+argument, `tts.py`'s `tts-1` decision, `sessions.py`'s retry branches and mutation lock, and
+`audio_jobs.py`'s per-user scoping existed *only* in CLAUDE.md. So Phase 3 was a **move**, not a
+delete — and what revealed that was reading each docstring before deleting the bullet that was
+supposed to duplicate it.
+
+That move is the actual win, not the line count. CLAUDE.md is loaded into **every** session (~9.5k
+tokens); a module docstring is read only by someone working in that module, which is exactly when
+its traps matter.
+
+`tenancy.py`'s docstring still said **"this slice records ownership; it does not enforce it … no
+route calls it to gate anything yet"** — written before M2 slice 2a, describing the opposite of what
+the module now does, in the file whose entire job is refusing unauthorized access.
+
+Also fixed: `auth.py` had been appended to the end of the `tts.py` bullet, so the auth module was
+invisible in the map; and `llm.py` still said token accounting "will attach here" after M3 shipped
+it. Verified by set difference that no module named in the old map lost its entry — `figures.py`
+did, and was restored.
 
 ## Verification
 

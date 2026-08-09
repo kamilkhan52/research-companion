@@ -6,6 +6,15 @@ across many app sessions and resume server-side without losing context.
 
 The giant opening message (paper full text) is NOT stored in the transcript — it is
 regenerated from the cached corpus text when reconstructing history, keeping logs compact.
+
+**Retry branches (U.14).** A retry archives the live tail under `.state/branches/` and
+`/branch_switch` swaps tails; committing finalizes whichever branch was chosen, stamping
+`proposal_committed` inside the approved commit. The branches are working state and are never
+committed — the transcript itself is.
+
+**Any route that rewrites a transcript holds `mutation_lock(slug)` across its whole
+check-then-mutate sequence.** Checking under the lock and mutating outside it is the same as not
+locking at all; new routes of this shape must do the same.
 """
 from __future__ import annotations
 

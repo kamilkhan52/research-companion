@@ -9,6 +9,13 @@ Two providers:
 
 The narration TEXT is always produced by the stage-2 narration model first (see agent.narrate);
 this module only turns that text into sound.
+
+**The default OpenAI model is `tts-1`** (H22, revised 2026-07-25), and the reason is metering
+rather than quality. It is character-priced at $15/1M, so the cost of a narration is exactly
+computable *before* synthesis — which is what the spend ceiling needs, since this API returns raw
+mp3 with no usage payload and never reports a cost back. It is also half the price of `tts-1-hd`,
+and audio is the largest variable cost in the app. `tts-1-hd` and `gpt-4o-mini-tts` stay
+selectable; the latter is the only one that accepts the `tts_instructions` steerability prompt.
 """
 from __future__ import annotations
 

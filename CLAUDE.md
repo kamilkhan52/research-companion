@@ -59,140 +59,76 @@ last-valid prompt state, caches) lives in `.app-state/`. Repo-local defaults are
 
 ## Module map (`app/`)
 
+Each module's own docstring carries its rationale — the traps, the decisions and why they went the
+way they did. This is an index, not a substitute for reading them.
+
 - `main.py` — FastAPI **app assembly only**: auth middleware, router registration, static SPA
-  mount. The routes themselves live in `routers/` (below).
-- `routers/` — HTTP routes, one module per feature area, each owning its routes + the request
-  models + helpers they use. App-global routes hang off a plain `router`; per-project routes
-  hang off `routers.make_project_router()`, which pre-binds the `/api/projects/{pid}` prefix and
-  the `use_project` dependency in one place (a module may expose both). Modules: `system` (health/
-  auth-config), `settings`, `catalogue` (models/favorites), `projects_api` (project mgmt + state),
-  `usage`, `audio`, `session` (retrieval + all turn-delivery paths: SSE/job/plain), `notes`
-  (notes + review/approve + add-paper), `discovery`, `graph`. Add a new route to its feature
-  module (or a new module + `include_router` in main.py), not to main.py.
-- `config.py` — settings (app-global) + the active-project contextvar + vault/path precedence.
-- `projects.py` — multi-project registry; `use_project` dependency binds the contextvar.
-  Also **project sharing**: `export_bundle`/`import_bundle` move a project between instances as a
-  **git bundle**, because the git history *is* the record (invariant 4) and a bundle carries it
-  intact. It is also tiny — `.gitignore` excludes `.state/`, which is nearly all of a project on
-  disk (207 MB of one 214 MB project; the bundle is 1.1 MB in 0.17 s), so export is a plain request
-  rather than a job. Import always creates a NEW project: merging two divergent histories of one
-  reading list is a real design question, and picking silently would be worse than two projects.
-  **Import is a trust boundary**: `git bundle verify` checks integrity, not safety, and git's path
-  rules only stop `..` and absolute paths — it will happily materialize a **symlink**. So the clone
-  is `--no-checkout`, the tree is inspected first (symlinks, gitlinks, and any tracked `.state/`
-  are refused), hooks are disabled, metadata is rebuilt rather than trusted, and publication is a
-  single atomic rename from staging inside `PROJECTS_ROOT`.
-  `scripts/share-project.sh <pid> <target-url>` does both legs.
-  `project_path`/`_safe_pid` is the trust boundary that turns an untrusted project id into a
-  path — it rejects traversal/absolute ids, so every id-to-path caller must go through it.
-- `db.py` — Postgres: the pool, the `:6543` transaction-pooler refusal, and the migration runner
-  over `supabase/migrations/*.sql` (`main` applies them on boot, retrying in the background on
-  failure rather than refusing to start, because on Fly that is a crash loop). Every `rc_*` table is
-  taken off Supabase's Data API — RLS with no policies, plus revoked `anon`/`authenticated` grants —
-  by `_enforce_data_api_lockout`, which runs on **every** migrate and enumerates tables from the
-  catalog. Deliberately not a migration file: `migrate()` skips anything named in
-  `rc_schema_migrations`, and that ledger is itself in the exposed schema, so a lockout shipped as a
-  migration could be suppressed by an anon-key caller inserting its filename first. New tables need
-  no action; `tests/test_tenancy.py` asserts both the end state and the poisoned-ledger case. **Ownership and index rows only** — content stays in git,
-  because the history *is* the record (invariant 4), and a second copy here could disagree with it.
-  **Optional**: with `RC_DATABASE_URL` unset there is no pool, `enabled()` is False, and every
-  caller falls back to today's single-tenant behaviour — which is what lets local dev and the test
-  suite run with no server. Never log or print the URL; use `safe_target()`.
-- `tenancy.py` — who owns which project, and (since M2 slice 2a) the enforcement. `may_access` is
-  the gate: with no database it is single-tenant and everything is reachable; with one, an unowned
-  project is reachable by **nobody**, which is the correct failure but looks like data loss — hence
-  `RC_ADOPT_OWNER` for projects that predate ownership. `use_project` checks it BEFORE existence, so
-  a foreign project and an invented one answer identically. Routes that name a project somewhere
-  other than the URL path (a request body, a `?project=` query, a cross-project scan) do **not** get
-  it for free and must call it themselves — that was the source of every miss during slice 2a.
+  mount. Routes live in `routers/`.
+- `routers/` — HTTP routes, one module per feature area, each owning its routes, request models and
+  helpers. App-global routes hang off a plain `router`; per-project routes hang off
+  `routers.make_project_router()`, which pre-binds the `/api/projects/{pid}` prefix and the
+  `use_project` dependency (a module may expose both). Modules: `system`, `settings`, `catalogue`,
+  `projects_api`, `usage`, `audio`, `session` (retrieval + every turn-delivery path), `notes`
+  (notes + review/approve + add-paper), `discovery`, `graph`, `account`, `legal`, `covers`,
+  `figures_api`. A new route goes in its feature module, or a new module registered in `main.py` —
+  never in `main.py` itself.
+- `config.py` — settings (app-global), the active-project contextvar, vault/path precedence.
+- `auth.py` — Supabase / static-token / open auth, and `assert_environment_safe`.
+- `projects.py` — multi-project registry; `use_project` binds the contextvar. Also project sharing
+  by git bundle. **`project_path`/`_safe_pid` is the trust boundary** for untrusted project ids, and
+  **import is a second one** — read the docstring before touching either.
+- `tenancy.py` — who owns which project, and `may_access`, the gate. **A route that names a project
+  anywhere but the URL path must call it itself.**
+- `db.py` — the Postgres pool, the `:6543` pooler refusal, the migration runner, and the Data-API
+  lockout. Ownership and index rows only; content stays in git (invariant 4). Optional: unset
+  `RC_DATABASE_URL` and every caller falls back to single-tenant. Never log the URL — `safe_target()`.
 - `store.py` — the deterministic spine (reading list, corpus, notes). No LLM, no network.
-- `sessions.py` — per-paper session state + transcript JSONL + narration cache + retry
-  branches (U.14): a retry archives the live tail under `.state/branches/` (working state,
-  never committed — the transcript itself IS committed) and `/branch_switch` swaps tails;
-  commits finalize the chosen branch (`proposal_committed` stamp inside the approved
-  commit). Transcript-rewriting routes hold `sessions.mutation_lock(slug)` across their
-  check-then-mutate sequence; keep new ones doing the same.
+- `sessions.py` — per-paper session state, transcript JSONL, narration cache, retry branches.
+  Transcript-rewriting routes hold `sessions.mutation_lock(slug)`.
 - `assembler.py` — builds the per-turn reading context (method, working notes, prior notes).
-- `agent.py` — analysis turn (single-shot + streaming) and stage-2 narration; the marker parser.
-- `agent_harness.py` — agentic tool-loop turn via Pydantic AI (the default turn path; `RC_AGENTIC=0` opts out).
-- `llm.py` — the one raw-HTTP OpenRouter client: `complete`/`stream` (auth, retries+backoff,
-  empty-response diagnostics, `LLMError`) + a TTL-cached model `catalogue()`. Every raw LLM
-  call goes through it (agent/discovery/graph translate `LLMError` into their own error type);
-  `agent_harness` keeps its Pydantic AI client by design. Token/cost accounting will attach here.
-- `safe_fetch.py` — the guarded path for fetching a URL the app did **not** choose itself
-  (client-supplied `pdf_url`, an LLM-proposed candidate, a stored `source_url`). Public
-  destinations only (`is_global`, which unlike an enumeration of private ranges also covers
-  `100.64.0.0/10` — the Tailscale range), every redirect hop re-validated, a required `max_bytes`
-  ceiling enforced against WIRE bytes actually read, and a total wall-clock deadline (httpx's
-  timeout is per-operation and a slow-drip server never trips it). It **does not decompress**:
-  requests are sent `Accept-Encoding: identity` and any content coding is refused unread — a
-  bounded decoder needed four separate limits and still kept yielding defects, so the class is
-  deleted rather than bounded. `retriever._fetch`,
-  `cover_jobs._download_pdf`, `retrieval_agent.fetch_pdf` and `research_tools._direct_fetch` all
-  go through it; a new outbound fetch of an untrusted URL must too. (`figures.py` keeps its own
-  fetchers — it additionally pins hosts to arxiv/ar5iv — but uses the same `is_global` test.)
+- `agent.py` — analysis turn (single-shot + streaming), stage-2 narration, the marker parser.
+- `agent_harness.py` — the agentic tool-loop turn via Pydantic AI. The default path; `RC_AGENTIC=0`
+  opts out.
+- `llm.py` — the one raw-HTTP OpenRouter client: `complete`/`stream` plus a TTL-cached
+  `catalogue()`. Every raw LLM call goes through it and is metered there; `agent_harness` keeps its
+  Pydantic AI client by design.
+- `safe_fetch.py` — the guarded path for fetching any URL the app did not choose itself. Public
+  destinations only, every redirect re-validated, a required byte ceiling, a wall-clock deadline,
+  and no decompression. **A new outbound fetch of an untrusted URL goes through it.**
 - `research_tools.py` — read-only tools the agent can call (project reads + web search/fetch).
-- `user_settings.py` — the per-user half of `/api/settings`. `config._SETTING_KEYS` partitions into
-  `OPERATOR_SETTING_KEYS` (the provider keys — one deployment, one account) and
-  `USER_SETTING_KEYS` (model/voice/prior-notes scope — how one person reads). `load_settings()`
-  layers the caller's rows over the instance document, keyed off a `config._active_user`
-  contextvar bound by the auth middleware and rebound by `JobRegistry` (invariant 2, same as the
-  project). With no database or no signed-in user the layer is skipped entirely, which is what
-  keeps `./run.sh` behaving as before. Adding a preference needs a migration: the allowed keys are
-  mirrored by a CHECK constraint, so a user cannot store a provider key even if the Python filter
-  is wrong.
-- `prompts.py` — current prompt registry + live Markdown loader with last-valid fallback.
-- `logging_config.py` — `rc.*` stdlib logging: `configure()` (idempotent, called in `main.py`)
-  + `get(name)`; a contextvar filter stamps the active project on every line. Log at job
-  lifecycle, LLM boundaries, and commits — not in the deterministic store.
-- `usage.py` — per-project LLM token/cost accounting (`.state/usage.json`), fed by `llm.py`
-  (cost from OpenRouter's `usage.cost`, stored as exact integer nano-USD). Records against the
-  active project (invariant 2); best-effort, never fails a turn. Audio narration bills the
-  initiating project (or an app-global `UNATTRIBUTED` ledger); a billed-but-unknown stream stores
-  a reconcilable `pending` record and flags totals `estimated`. `GET /api/projects/{pid}/usage`
-  (`summary()`). Foundation for credits.
-- **The spend stack** (M3), four modules with one job each — keep the split, it is what stopped the
-  ceiling growing a second source of truth:
-  - `quotas.py` — the durable reservation LEDGER in Postgres: reserve a maximum atomically against
-    a ceiling, dispatch, settle to actual, reconcile orphans past their lease. Knows nothing about
-    what anything costs. Fails CLOSED — an unreachable ledger refuses, because a ceiling that opens
-    when its store is down is not a ceiling.
-  - `spend_limits.py` — the PRICES: the monthly ceiling, the pessimistic per-operation maximum to
-    hold at admission, and each operation's lease. Product decisions, kept out of the mechanism.
-  - `spend_ceiling.py` — the in-process BINDING: `hold`/`settle`, the reservation contextvar that
-    `usage.record` credits through `note_spend`, and `per_unit` for a job that does N units of paid
-    work and must be gated per unit rather than by its admission ticket alone (labs per author, the
-    retrieval hunt, mirroring the graph build's per-paper gating).
-  - `plans.py` — the named plans (`tester`/`free`/`basic`) an allowance comes from. One plan per
-    DEPLOYMENT today, not per account; `for_user` is shaped for the per-account lookup M4's
-    entitlements will make real.
+- `figures.py` — figure extraction. Keeps its own fetchers (it pins hosts to arxiv/ar5iv) but uses
+  `safe_fetch`'s `is_global` test.
+- `model_provenance.py` — frames untrusted text before it reaches a model.
+- `user_settings.py` — the per-user half of `/api/settings`, layered over the instance document.
+  Adding a preference needs a migration: a CHECK constraint mirrors the allowed keys.
+- `prompts.py` — prompt registry + live Markdown loader with last-valid fallback.
+- `logging_config.py` — `rc.*` stdlib logging. Log at job lifecycle, LLM boundaries and commits —
+  never in the deterministic store.
+- `usage.py` — per-project token/cost accounting in exact nano-USD. Best-effort, never fails a turn.
+- **The spend stack** (M3) — four modules, one job each. Keep the split; it is what stopped the
+  ceiling growing a second source of truth.
+  - `quotas.py` — the durable reservation LEDGER. Knows nothing about what anything costs. Fails
+    CLOSED: a ceiling that opens when its store is down is not a ceiling.
+  - `spend_limits.py` — the PRICES: monthly ceiling, per-operation maximum, per-operation lease.
+  - `spend_ceiling.py` — the in-process BINDING: `hold`/`settle`, the reservation contextvar, and
+    `per_unit` for a job that must be gated per unit of paid work rather than by its admission
+    ticket alone.
+  - `plans.py` — the named plans (`tester`/`free`/`basic`). One plan per DEPLOYMENT today.
 - `operation_limits.py` — per-CALL ceilings (max completion tokens, per-attempt timeout), as
-  distinct from the per-ACCOUNT monthly bound above: a single runaway request costs real money in
-  one shot, long before the monthly ledger notices. Clamped inside `llm.complete`/`stream` for the
-  raw client; the Pydantic AI paths read the same table for their model's `max_tokens` and, via
-  `run_output_ceiling`, their run-level `UsageLimits`.
+  distinct from the per-ACCOUNT monthly bound: one runaway request costs real money in a single
+  shot, long before the monthly ledger notices.
 - `retriever.py` / `retrieval_agent.py` — arXiv/PDF retrieval; agentic PDF hunt fallback.
-- `committer.py` — the one component that writes approved changes + git-commits.
+- `committer.py` — the one component that writes approved changes and git-commits.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.
-- `discovery.py` — goals → ranked arXiv reading suggestions.
-- `jobs.py` — the shared `JobRegistry` behind every background job (dict+lock, pruning, thread
-  spawn, the contextvar rebind of invariant 2, error capture, persist-before-done finalize).
-- `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`) — background-job modules (see
-  invariant 1). Each defines its payload dataclass (a `jobs.Job` subclass) + a `work(job)`
-  function and delegates lifecycle to a `JobRegistry`; keep new long ops to this shape.
-- `audio_jobs.py` — audio is scoped **per user**, not app-global: jobs register under
-  `_audio_scope()` and every mp3 path resolves through `user_audio_dir()` (as does the
-  `/api/audio/{name}` route and the narration cache in `sessions.py`). Isolation is a property of
-  the path, not a check — the same passage yields the same file name for everybody and reaches a
-  different file, so a leaked name buys nothing. Kamil's 2026-07-26 decision: duplicate synthesis
-  is the price of trivially-correct cancellation and `rmtree`-able account deletion. With no
-  signed-in user it collapses to the one flat directory it always used.
-- `tts.py` — OpenAI TTS behind a swappable interface. Default model `tts-1` (H22, revised
-  2026-07-25): character-priced at $15/1M, so audio cost is exactly computable *before* synthesis —
-  which is what M3's quota needs — and half the price of `tts-1-hd`, which matters because audio is
-  the largest variable cost in the app. It returns raw mp3 with no usage payload, so audio spend is
-  computed from input length, never reported back. `tts-1-hd` and `gpt-4o-mini-tts` stay selectable;
-  the latter is the only model that takes the `tts_instructions` steerability prompt. `auth.py` — Supabase/token/open auth.
+- `discovery.py` — goals → ranked reading suggestions.
+- `jobs.py` — the shared `JobRegistry` behind every background job: thread spawn, the contextvar
+  rebind of invariant 2, error capture, persist-before-done finalize.
+- `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`, `retrieval`, `canonical`,
+  `reference`, `cover`) — background-job modules (invariant 1). Each defines a payload dataclass and
+  a `work(job)`, delegating lifecycle to a `JobRegistry`. Keep new long ops to this shape.
+  `audio_jobs.py` additionally scopes everything **per user**, by path rather than by check.
+- `tts.py` — OpenAI TTS behind a swappable interface. Default `tts-1`, chosen because
+  character pricing makes audio cost computable before synthesis.
 
 ## Dev workflow
 

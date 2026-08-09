@@ -1,14 +1,20 @@
-"""Ownership: who owns which project.
+"""Ownership: who owns which project, and the enforcement of it.
 
-**This slice records ownership; it does not enforce it.** Nothing here refuses a request, and no
-route calls it to gate anything yet — enforcement lands in the next slice, together with the
-per-user `PROJECTS_ROOT` namespacing and the cross-user isolation tests. Splitting it that way is
-deliberate: `projects.project_path` / `_safe_pid` is the trust boundary that turns an untrusted id
-into a filesystem path, and changing what that boundary *does* in the same change that introduces
-the tables it reads from would leave no working state to compare against if something is wrong.
+`may_access` is the gate. With no database it is single-tenant and everything is reachable; with
+one, a project nobody owns is reachable by **nobody**. That is the correct failure and it looks
+exactly like data loss, which is why `RC_ADOPT_OWNER` exists for projects that predate ownership.
 
-With no database configured every function here is a no-op returning the single-tenant answer, so
-a local `./run.sh` and the whole test suite behave exactly as before.
+`use_project` checks access BEFORE existence, so a project belonging to someone else and a project
+that was never created answer identically — otherwise the 404/403 split enumerates other people's
+project ids.
+
+**A route that names a project anywhere other than the URL path does not get this for free.** A
+request body, a `?project=` query, a cross-project scan: each must call `may_access` itself. That
+was the source of every miss found while enforcement was being rolled out, and it is the thing to
+check when adding a route that touches more than one project.
+
+With no database configured every function here returns the single-tenant answer, so a local
+`./run.sh` and the whole test suite behave exactly as before.
 """
 from __future__ import annotations
 
