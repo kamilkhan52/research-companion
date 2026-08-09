@@ -58,9 +58,9 @@ def read_settings(request: Request):
         # differently: `is_operator` covers the provider keys, `can_edit_preferences` covers the
         # model/voice/scope picks the values above already reflect for this caller.
         #
-        # `web/` and `mobile/` still gate their whole form on `is_operator`, so a reader cannot yet
-        # reach their own preferences from the UI even though the API now accepts them — that
-        # client wiring is the follow-up to this backend change.
+        # Both clients read `can_edit_preferences` and fall back to `is_operator` when the server
+        # is older than the flag, so a non-operator reaches their own preferences without being
+        # offered the provider keys.
         "is_operator": auth.is_operator(getattr(request.state, "user", None)),
         "can_edit_preferences": (
             config.user_settings_available()
