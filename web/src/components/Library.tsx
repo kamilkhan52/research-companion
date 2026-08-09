@@ -25,9 +25,11 @@ const STATE_COLORS: Record<string, string> = {
 };
 
 type StatusFilter = 'all' | 'toread' | 'inprogress' | 'done';
+// Names the state, not an instruction (DR-005). Keep in step with the mobile Library and with
+// `paperStatus` below; the keys are persisted, so only labels change.
 const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'All' }, { key: 'toread', label: 'To read' },
-  { key: 'inprogress', label: 'In progress' }, { key: 'done', label: 'Done' },
+  { key: 'all', label: 'All' }, { key: 'toread', label: 'Unread' },
+  { key: 'inprogress', label: 'Discussing' }, { key: 'done', label: 'Read' },
 ];
 
 function paperStatus(p: Paper): string {

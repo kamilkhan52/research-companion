@@ -35,6 +35,22 @@ export function filterBucket(p: Paper): StatusBucket {
   return 'toread';
 }
 
+/** The Library's status chips.
+ *
+ *  Here rather than in the screen so the label sits beside `filterBucket`, which is what actually
+ *  decides membership. Each label names the STATE a paper is in — not an instruction to the reader
+ *  ("To read", "Done"), which was DR-005: a chip that says "Done" beside a paper you have merely
+ *  finished discussing claims something the bucket does not check.
+ *
+ *  Keys are persisted per project (#202). Change a label freely; changing a key silently resets
+ *  everyone's saved filter. */
+export const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'toread', label: 'Unread' },
+  { key: 'inprogress', label: 'Discussing' },
+  { key: 'done', label: 'Read' },
+];
+
 export const SORTS: PaperSortOption[] = [
   {
     key: 'added',
