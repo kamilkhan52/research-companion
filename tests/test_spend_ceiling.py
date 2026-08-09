@@ -1061,3 +1061,64 @@ def test_a_timeout_status_before_processing_is_not_charged(monkeypatch):
         f"dispatched={held.dispatched} priced={held.priced}: the 408 stayed counted as billable"
     )
     assert charged == [4_000_000], f"a 408 retry turned a $0.004 turn into {charged}"
+
+
+def test_attaching_the_spend_hooks_twice_does_not_double_count_dispatches(monkeypatch):
+    """`_attach_spend_hooks` must be idempotent in every step, not just some of them.
+
+    It guarded the transport against double-wrapping but appended the event hooks unconditionally,
+    so a second call left three `note_dispatch` calls per request. That inflates the dispatch count
+    past `priced`, makes every run permanently uncertain, and settles ordinary turns at their
+    maximum — the same over-charge, arrived at from a third direction.
+
+    A half-idempotent function is worse than one that is plainly not, because it looks safe to
+    call twice.
+    """
+    import asyncio
+
+    import httpx
+    from app import agent_harness, spend_ceiling, usage
+    from pydantic_ai import Agent
+
+    charged = _settle_capturing(monkeypatch)
+    monkeypatch.setattr(usage, "record",
+                        lambda op, m, d, **k: spend_ceiling.note_spend(
+                            round(float(d.get("cost") or 0) * 1e9)))
+    monkeypatch.setattr(usage, "record_pending", lambda *a, **k: None)
+
+    async def priced(request):
+        return httpx.Response(200, json={
+            "id": "g1", "model": "test/model", "object": "chat.completion", "created": 0,
+            "provider": "DeepSeek",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                      "cost": 0.004},
+        })
+
+    model = _openrouter_model_with_transport(priced, monkeypatch)
+    client = model._provider._own_http_client
+    agent_harness._attach_spend_hooks(client)
+    agent_harness._attach_spend_hooks(client)
+
+    assert len(client.event_hooks["request"]) == 1
+    assert len(client.event_hooks["response"]) == 1
+    inner = client._transport
+    depth = 0
+    while isinstance(inner, agent_harness._DispatchAccountingTransport):
+        depth += 1
+        inner = inner._inner
+    assert depth == 1, f"the transport was wrapped {depth} times"
+
+    held = spend_ceiling._Held(reservation_id="r", user_id="u", attempt_id="a",
+                               operation="analysis", maximum_nanousd=150_000_000)
+    token = spend_ceiling.bind(held)
+    try:
+        result = asyncio.run(Agent(model, output_type=str).run("hi"))
+        agent_harness.record_agent_run(result.usage, model, "analysis", result.all_messages())
+    finally:
+        spend_ceiling.reset(token)
+    spend_ceiling.settle(held)
+
+    assert held.dispatched == 1, f"one request counted {held.dispatched} dispatches"
+    assert charged == [4_000_000]

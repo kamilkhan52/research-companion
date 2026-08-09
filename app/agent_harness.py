@@ -255,8 +255,19 @@ class _SpendControlledOpenRouterProvider(OpenRouterProvider):
 
 
 def _attach_spend_hooks(client) -> None:
-    client.event_hooks["request"].append(_require_openrouter_spend)
-    client.event_hooks["response"].append(_discount_unbilled_openrouter_response)
+    """Install the spend hooks on `client`, exactly once.
+
+    Every step here is guarded, and they have to be guarded the SAME way. An earlier version
+    protected the transport against double-wrapping but appended the event hooks unconditionally,
+    so re-attaching to one client left three `note_dispatch` calls per request — inflating the
+    dispatch count, leaving every run permanently uncertain, and settling ordinary turns at their
+    maximum. A half-idempotent function is worse than one that is not idempotent at all, because it
+    looks safe to call twice.
+    """
+    if _require_openrouter_spend not in client.event_hooks["request"]:
+        client.event_hooks["request"].append(_require_openrouter_spend)
+    if _discount_unbilled_openrouter_response not in client.event_hooks["response"]:
+        client.event_hooks["response"].append(_discount_unbilled_openrouter_response)
     # Wrapped, not replaced: the transport is the only layer that can tell a connection that was
     # never made from one that carried the request and then broke.
     if not isinstance(client._transport, _DispatchAccountingTransport):
