@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiPost, ApiError } from '@/api/client';
 import { cancelChatJob, getActiveChatJob, getChatJob } from '@/api/endpoints';
-import { invalidatePlan, keys } from '@/api/queries';
+import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
 import {
   consumeEligibleHandoff,
@@ -98,7 +98,6 @@ export function useStreamingTurn(
       await qc.invalidateQueries({ queryKey: keys.session(pid, slug, threadId) });
       await qc.invalidateQueries({ queryKey: keys.projectState(pid) });
     }
-    await invalidatePlan(qc);
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
@@ -163,13 +162,11 @@ export function useStreamingTurn(
           setStreaming(false);
           setPendingUser(null);
           setPreviewJobIds([]);
-          // A failed turn still settles its hold, and can have spent real money before failing.
-          await invalidatePlan(qc);
-          return;
+                return;
         }
       }
     },
-    [pid, qc, settle],
+    [pid, settle],
   );
 
   const run = useCallback(

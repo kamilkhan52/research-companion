@@ -670,6 +670,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // device is served the previous one's cached data as fresh — for `/api/plan` that is their
     // spend and their remaining allowance. `clear()` rather than `invalidateQueries()`, because
     // invalidation keeps serving the stale data while it refetches.
+    //
+    // NOT sufficient on its own, and DR-037 tracks the rest: this covers the Settings sign-out but
+    // not session expiry or a failed refresh, and `clear()` cannot stop an in-flight request that
+    // bypassed cancellation from calling `setQueryData` afterwards. The complete fix rotates to a
+    // new QueryClient on every identity transition, centralized in `adoptSession`.
     queryClient.clear();
     // Unconditional, and not left to onAuthStateChange: if the client was never built (auth
     // disabled, or an unreachable server) there is no listener to fire at all.

@@ -1,8 +1,5 @@
-import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderAsync, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-import { createTestQueryClient } from './queryClient';
 import TrackPlayer, { Event, useTrackPlayerEvents } from 'react-native-track-player';
 
 import * as api from '@/api/endpoints';
@@ -21,11 +18,11 @@ test('manual Play next is always allowed while automatic queue-end advance is to
     return null;
   }
   await renderAsync(
-    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
+    <ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider></QueryClientProvider>,
+    </ProjectProvider>,
   );
 
   const current = messageAudioId('project-a', 'paper-a', 1, 'Current response.');
@@ -104,11 +101,11 @@ test('queue exhaustion prepares the next existing response through the billed jo
     return null;
   }
   await renderAsync(
-    <QueryClientProvider client={createTestQueryClient()}><ProjectProvider>
+    <ProjectProvider>
       <ListeningProvider>
         <AudioProvider><Capture /></AudioProvider>
       </ListeningProvider>
-    </ProjectProvider></QueryClientProvider>,
+    </ProjectProvider>,
   );
   jest.mocked(TrackPlayer.getQueue).mockResolvedValue([
     { id: current, slotId: current, url: 'current.mp3' },

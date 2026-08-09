@@ -10,11 +10,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 import TrackPlayer, { Event, State, useTrackPlayerEvents } from 'react-native-track-player';
 
-import { useQueryClient } from '@tanstack/react-query';
-
 import { apiUrl, authHeaders } from '@/api/client';
 import * as api from '@/api/endpoints';
-import { invalidatePlan } from '@/api/queries';
 import type { AudioJob } from '@/api/types';
 import { messageAudioId, parseMessageAudioId, sessionAddressFromAudioSlug } from '@/audio/identity';
 import {
@@ -181,9 +178,6 @@ export async function stopPlaybackForSessionEnd(
 }
 
 export function AudioProvider({ children }: { children: ReactNode }) {
-  // Narration is the largest variable cost in the app, so a finished or failed prep moves the
-  // account's standing as much as a chat turn does.
-  const qc = useQueryClient();
   const [prep, setPrep] = useState<PrepState | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [currentTitle, setCurrentTitle] = useState<string | null>(null);
@@ -493,13 +487,11 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         }
         if (job.status === 'error' || !job.url) {
           fail(job.error ?? 'Could not prepare audio.');
-          void invalidatePlan(qc);
           return;
         }
 
         if (addedSegments > 0) {
           setPrep(null);
-          void invalidatePlan(qc);
           return;
         }
 
@@ -768,7 +760,6 @@ export function AudioProvider({ children }: { children: ReactNode }) {
         }
         if (job.status === 'error' || !job.url) {
           terminalAudioFailure = true;
-          void invalidatePlan(qc);
           throw new Error(job.error ?? 'Could not prepare queued audio.');
         }
 
@@ -776,7 +767,6 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           if (persistHandoff) await markHandoffHandled(handoffKey);
           if (chatJobId) await consumeEligibleHandoff(chatJobId);
           setPrep(null);
-          void invalidatePlan(qc);
           return;
         }
 

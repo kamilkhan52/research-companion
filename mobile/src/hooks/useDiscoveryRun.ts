@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { cancelDiscovery, getDiscovery, startDiscovery } from '@/api/endpoints';
-import { invalidatePlan, keys } from '@/api/queries';
+import { keys } from '@/api/queries';
 import type { DiscoveryJob, DiscoveryResponse } from '@/api/types';
 
 const POLL_INTERVAL_MS = 1500;
@@ -68,8 +68,6 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
       // deliberately remains. In either case refresh so this and future visits render the
       // authoritative persisted state.
       if (pid) qc.invalidateQueries({ queryKey: keys.discovery(pid) });
-      // Discovery is metered; any terminal outcome moves the account's standing.
-      void invalidatePlan(qc);
     },
     [pid, qc],
   );
