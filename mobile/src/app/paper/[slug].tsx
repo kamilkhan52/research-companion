@@ -1754,7 +1754,6 @@ function DiscussionThread({
         <StreamingTurnBody
           items={msg.streamItems}
           activity={stream.activity}
-          activityDetail={stream.activityDetail}
         />
       );
     }
@@ -1786,7 +1785,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.activityDetail, styles, figureContext, sentenceAnnotationsFor]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2428,11 +2427,7 @@ export function ComposeFirst({
       <View style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.streamingOnly}>
           <Card style={styles.assistantCard}>
-            <StreamingTurnBody
-              items={stream.items}
-              activity={stream.activity}
-              activityDetail={stream.activityDetail}
-            />
+            <StreamingTurnBody items={stream.items} activity={stream.activity} />
           </Card>
         </ScrollView>
         <View style={styles.startFooter}>
@@ -2950,11 +2945,9 @@ function SmoothMarkdown({ text }: { text: string }) {
 function StreamingTurnBody({
   items,
   activity,
-  activityDetail,
 }: {
   items: StreamItem[];
   activity: string;
-  activityDetail: string | null;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -2963,11 +2956,8 @@ function StreamingTurnBody({
   return (
     <View style={styles.assistantBody}>
       {!hasVisibleText ? (
-        <AgentActivity
-          status={activity}
-          detail={activityDetail ?? undefined}
-          testID="assistant-activity"
-        />
+        // One phrase, no explanatory subtitle beneath it (DR-006).
+        <AgentActivity status={activity} testID="assistant-activity" />
       ) : null}
       {visibleItems.map((it, i) =>
         it.kind === 'text' ? (

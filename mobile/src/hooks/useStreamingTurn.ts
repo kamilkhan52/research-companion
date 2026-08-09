@@ -36,7 +36,6 @@ export interface StreamingTurn {
   items: StreamItem[];
   /** Reader-facing work description while no answer text is visible yet. */
   activity: string;
-  activityDetail: string | null;
   /** Grounded cue jobs published while this turn is still generating. */
   previewJobIds: string[];
   /** Parent job whose finished snapshot may keep publishing cues during narration prep. */
@@ -67,7 +66,6 @@ export function useStreamingTurn(
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
   const [activity, setActivity] = useState('Reading the paper…');
-  const [activityDetail, setActivityDetail] = useState<string | null>(null);
   const [previewJobIds, setPreviewJobIds] = useState<string[]>([]);
   const [previewParentJobId, setPreviewParentJobId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -104,7 +102,6 @@ export function useStreamingTurn(
     setStreaming(false);
     setItems([]);
     setActivity('Reading the paper…');
-    setActivityDetail(null);
     setPreviewJobIds([]);
   }, [pid, slug, qc, threadId]);
 
@@ -116,7 +113,6 @@ export function useStreamingTurn(
       setStreaming(true);
       setItems(job.items);
       setActivity(job.activity ?? 'Reading the paper…');
-      setActivityDetail(job.activity_detail ?? null);
       setPreviewJobIds(job.preview_job_ids);
       let misses = 0;
       while (aliveRef.current && watchRef.current === job.id) {
@@ -144,7 +140,6 @@ export function useStreamingTurn(
         if (!aliveRef.current || watchRef.current !== job.id) return;
         setItems(snap.items);
         setActivity(snap.activity ?? 'Reading the paper…');
-        setActivityDetail(snap.activity_detail ?? null);
         setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
@@ -186,7 +181,6 @@ export function useStreamingTurn(
       setError(null);
       setItems([]);
       setActivity('Reading the paper…');
-      setActivityDetail(null);
       setPreviewJobIds([]);
       setPreviewParentJobId(null);
       setPendingUser(optimisticUser ?? null);
@@ -285,7 +279,6 @@ export function useStreamingTurn(
     setPendingUser(null);
     setItems([]);
     setActivity('Reading the paper…');
-    setActivityDetail(null);
     setPreviewJobIds([]);
     setPreviewParentJobId(null);
     setError(null);
@@ -326,7 +319,6 @@ export function useStreamingTurn(
     pendingUser,
     items,
     activity,
-    activityDetail,
     previewJobIds,
     previewParentJobId,
     run,

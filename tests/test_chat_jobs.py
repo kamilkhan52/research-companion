@@ -153,7 +153,9 @@ def test_items_interleave_tool_calls_with_canonical_only_text(temp_project):
     assert [it["kind"] for it in finished.items] == ["text", "tool", "text"]
     assert finished.items[1]["name"] == "web_search"
     assert finished.activity == "Searching the literature…"
-    assert finished.activity_detail == "Looking for relevant external evidence."
+    # One phrase and no second line: the subtitle that used to restate this in longer words is
+    # gone (DR-006), and the ChatJob no longer carries a field for one.
+    assert not hasattr(finished, "activity_detail")
     # Only CANONICAL text ever reaches items — never the protocol scaffolding.
     joined = "".join(it["text"] for it in finished.items if it["kind"] == "text")
     assert joined.strip() == "Part one. Part two."
@@ -171,10 +173,11 @@ def test_first_turn_activity_reflects_available_figures_and_citation_context(
     })
     monkeypatch.setattr(chat_jobs.graph, "project_citers_for", lambda slug: [{"slug": "later"}])
 
-    status, detail = chat_jobs._preparation_activity("p")
+    status = chat_jobs._preparation_activity("p")
 
     assert status == "Viewing figures…"
-    assert detail == "Reading the paper and tracing how later project papers cite it."
+    # A phrase, not a sentence: the pending card shows this alone (DR-006).
+    assert "." not in status
 
 
 def test_runner_failure_is_an_error_job_and_session_is_untouched(temp_project):

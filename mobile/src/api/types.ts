@@ -381,8 +381,9 @@ export interface ChatJob {
   preview_phase: string | null;
   preview_progress: Record<string, unknown>;
   timings: Record<string, string>;
+  /** One short phrase. There is deliberately no second, explanatory line — see
+   *  `chat_jobs._preparation_activity` (DR-006). */
   activity?: string;
-  activity_detail?: string | null;
   /** True once a best-effort stop was requested; the job still settles as 'done'. */
   cancelled: boolean;
 }
