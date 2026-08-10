@@ -13,7 +13,7 @@ import {
 } from '@expo-google-fonts/newsreader';
 import { Feather } from '@expo/vector-icons';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { useFonts } from 'expo-font';
 // Theme APIs come from expo-router itself: as of SDK 56 the bundler rejects any direct
 // `@react-navigation/*` import in application code (expo-router vendors react-navigation).
@@ -33,8 +33,8 @@ import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { loadConfig, subscribeBaseUrl } from '@/api/config';
-import { createQueryClient, setActiveQueryClient } from '@/api/queryClient';
+import { loadConfig } from '@/api/config';
+import { useActiveQueryClient } from '@/api/queryClient';
 import { AudioProvider } from '@/audio/AudioProvider';
 import { PaperSummaryOfferHost } from '@/components/PaperSummaryOffer';
 import { ExistingPaperOfferHost } from '@/components/ExistingPaperOffer';
@@ -42,7 +42,7 @@ import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { SpendRefusalHost } from '@/components/SpendRefusalSheet';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
-import { AuthProvider } from '@/auth/AuthProvider';
+import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
 import { ListeningProvider } from '@/store/listening';
@@ -132,30 +132,35 @@ function ThemedShell() {
   );
 }
 
-/** A QueryClient scoped to the current server. See `createQueryClient` for why this is replaced
- *  rather than cleared: a stale continuation cannot write into a client that no longer exists. */
-function useServerScopedQueryClient(): QueryClient {
-  const [client, setClient] = useState(() => {
-    const created = createQueryClient();
-    setActiveQueryClient(created);
-    return created;
-  });
-  useEffect(() => subscribeBaseUrl(() => {
-    setClient((previous) => {
-      previous.unmount();  // it holds focus/online subscriptions and GC timers
-      const created = createQueryClient();
-      // Registered so module-level code — the analysis and paper-offer chains, which run outside
-      // React and cannot call useQueryClient() — invalidates the cache that is actually rendered.
-      setActiveQueryClient(created);
-      return created;
-    });
-  }), []);
-  return client;
+/** Everything below ProjectProvider holds account-derived in-memory state. Key the boundary to
+ *  the Supabase subject so a direct A -> B auth event remounts it even if React batches away the
+ *  brief `unknown` gate state. Persisted account state is cleared before `userId` changes. */
+function AccountScopedApp() {
+  const { userId } = useAuth();
+  return (
+    <AuthGate>
+      <ProjectProvider key={userId ?? 'no-account'}>
+        <ListeningProvider>
+          <GraphSettingsProvider>
+          <AudioProvider>
+          <BottomSheetModalProvider>
+          <PaperEntityProvider>
+          <ThemedShell />
+          </PaperEntityProvider>
+          </BottomSheetModalProvider>
+          </AudioProvider>
+          </GraphSettingsProvider>
+        </ListeningProvider>
+      </ProjectProvider>
+    </AuthGate>
+  );
 }
 
 export default function RootLayout() {
   const [configLoaded, setConfigLoaded] = useState(false);
-  const queryClient = useServerScopedQueryClient();
+  // This snapshot rotates for both server and account transitions. Module-level completion
+  // chains read the same active object, so their invalidations always target the rendered cache.
+  const queryClient = useActiveQueryClient();
   const [fontsLoaded] = useFonts({
     GoogleSans_500Medium: require('../../assets/brand/GoogleSans-Medium.ttf'),
     Manrope_400Regular,
@@ -204,27 +209,10 @@ export default function RootLayout() {
                 auth headers on mount — below the gate they cannot fire a protected request with a
                 stale cached token while Supabase is still restoring the session, which on an
                 overnight cold start would cache a 401 or break audio restoration. */}
-            <AuthGate>
-            <ProjectProvider>
-              <ListeningProvider>
-                <GraphSettingsProvider>
-                <AudioProvider>
-                {/* Portal hosts render their nodes at the provider's own tree position. Keep
-                    this inside the query/project/listening/audio contexts, but outside
-                    PaperEntityProvider: that provider renders its app-wide RelatedWorksSheet
-                    after `children`, so nesting the modal provider below it leaves that sheet
-                    without BottomSheetModalInternalContext at launch. The outer ToastProvider
-                    still paints confirmations above portalled sheets. */}
-                <BottomSheetModalProvider>
-                <PaperEntityProvider>
-                <ThemedShell />
-                </PaperEntityProvider>
-                </BottomSheetModalProvider>
-                </AudioProvider>
-                </GraphSettingsProvider>
-              </ListeningProvider>
-            </ProjectProvider>
-            </AuthGate>
+            {/* Portal hosts stay inside query/project/listening/audio contexts. The modal
+                provider remains outside PaperEntityProvider because that provider's app-wide
+                RelatedWorksSheet needs BottomSheetModalInternalContext at launch. */}
+            <AccountScopedApp />
             </AuthProvider>
           </QueryClientProvider>
         </KeyboardProvider>

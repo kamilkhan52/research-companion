@@ -51,17 +51,25 @@ const ACCOUNT_KEYS = new Set([
 ]);
 const ACCOUNT_PREFIXES = [
   'rc.draft.v1:',
+  'rc.graph.buildDetails.',
   'rc.lastThread.v1:',
   'rc.paperSort.v1:',
 ];
 
-/** Purge local traces that could expose or revive the deleted account's research state. */
-export async function clearDeletedAccountStorage(): Promise<void> {
+/** Purge account/project-linked persistence while retaining device preferences and server choice.
+ *  Used for every identity transition as well as deletion: a shared device must never mount the
+ *  next account around the previous account's selected project, drafts, or job handoff state. */
+export async function clearAccountScopedStorage(): Promise<void> {
   const keys = await AsyncStorage.getAllKeys();
   const accountKeys = keys.filter(
     (key) => ACCOUNT_KEYS.has(key) || ACCOUNT_PREFIXES.some((prefix) => key.startsWith(prefix)),
   );
   if (accountKeys.length) await AsyncStorage.multiRemove(accountKeys);
+}
+
+/** Purge local traces that could expose or revive the deleted account's research state. */
+export async function clearDeletedAccountStorage(): Promise<void> {
+  await clearAccountScopedStorage();
   // Covers and paper figures are protected research data cached by expo-image outside
   // AsyncStorage. Its cache API is global rather than key-selective, so deletion deliberately
   // clears all image entries instead of trying to infer which opaque files belonged to the user.

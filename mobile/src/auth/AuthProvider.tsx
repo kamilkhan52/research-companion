@@ -17,17 +17,16 @@ import * as WebBrowser from 'expo-web-browser';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useQueryClient } from '@tanstack/react-query';
-
 import { stopPlaybackForSessionEnd } from '@/audio/AudioProvider';
 import { getAuthConfig } from '@/api/endpoints';
 import { setMediaCacheNamespace, setToken, subscribeBaseUrl } from '@/api/config';
+import { rotateActiveQueryClient } from '@/api/queryClient';
 import type { AuthConfig } from '@/api/types';
 
 import {
   clearAccountDeleted,
   clearAccountDeletionIntent,
+  clearAccountScopedStorage,
   clearDeletedAccountStorage,
   hasAccountDeleted,
   hasAccountDeletionIntent,
@@ -224,7 +223,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const queryClient = useQueryClient();
   const client = useRef<SupabaseClient | null>(null);
   /** A callback URL that arrived before the Supabase client existed (cold start). */
   const [accountDeleted, setAccountDeleted] = useState(false);
@@ -235,19 +233,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    *  refresh completing on a REPLACED client cannot write its token back after we cleared it —
    *  which, on a server switch, would send the old project's JWT to the new host. */
   const generation = useRef(0);
+  /** Newest auth event wins within a server generation. Supabase callbacks are fire-and-forget,
+   *  so B sign-in cleanup can overlap a later sign-out unless every async continuation checks a
+   *  per-adoption epoch before publishing token/user/status. */
+  const adoptionEpoch = useRef(0);
+  /** `undefined` means no session has been adopted in this process yet. That distinction preserves
+   *  the remembered project on an ordinary cold restore of the SAME persisted session; every
+   *  subsequent null/user or user/user change is a real identity boundary and is purged. */
+  const identity = useRef<string | null | undefined>(undefined);
 
   /** Local deletion recovery must not depend on a restorable Supabase session or reachable API. */
-  const recoverLocalDeletion = useCallback(async (): Promise<'none' | 'cleared' | 'failed'> => {
+  const recoverLocalDeletion = useCallback(async (
+    playbackAlreadyStopped = false,
+  ): Promise<'none' | 'cleared' | 'failed'> => {
     // Read before the early return: a cold start on a device whose deletion already completed has
     // no intent marker left, and must still show the acknowledgement.
     if (await hasAccountDeleted().catch(() => false)) setAccountDeleted(true);
     if (!(await hasAccountDeletionIntent().catch(() => false))) return 'none';
-    queryClient.clear();
+    rotateActiveQueryClient();
     let failed = false;
-    try {
-      await stopPlaybackForSessionEnd({ failClosed: true });
-    } catch {
-      failed = true;
+    if (!playbackAlreadyStopped) {
+      try {
+        await stopPlaybackForSessionEnd({ failClosed: true });
+      } catch {
+        failed = true;
+      }
     }
     try {
       await clearDeletedAccountStorage();
@@ -272,7 +282,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return 'failed';
     }
     return 'cleared';
-  }, [queryClient]);
+  }, []);
 
   /** The one place a session becomes an API token. Every path that changes the session — restore,
    *  sign-in, refresh, sign-out — goes through here, because `src/api/client.ts` reads the token
@@ -283,6 +293,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // so the old client stays subscribed for a moment after the base URL changes; if its refresh
     // lands in that window it would restore the old token on top of the clear.
     if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    const myAdoption = ++adoptionEpoch.current;
+    const isCurrentAdoption = () => (
+      myAdoption === adoptionEpoch.current
+      && (forGeneration === undefined || forGeneration === generation.current)
+    );
+    const nextIdentity = session?.user?.id ?? (session?.access_token ? '__signed-in__' : null);
+    const previousIdentity = identity.current;
+    const identityChanged = previousIdentity !== undefined && previousIdentity !== nextIdentity;
+    let identityPlaybackStopped = false;
+    if (identityChanged) {
+      // Gate the old account's provider tree before changing its bearer token. The cache rotation
+      // is synchronous, so an uncancellable A continuation can only ever write into A's retired
+      // object. Playback teardown increments its epoch synchronously before its first await, so a
+      // queued A track cannot restart while persisted cleanup runs. Both halves are fail-closed.
+      setStatus('unknown');
+      rotateActiveQueryClient();
+      const [playback, storage] = await Promise.allSettled([
+        stopPlaybackForSessionEnd({ failClosed: true }),
+        clearAccountScopedStorage(),
+      ]);
+      if (!isCurrentAdoption()) return;
+      if (playback.status === 'rejected' || storage.status === 'rejected') {
+        setMediaCacheNamespace(undefined);
+        await setToken(null);
+        if (!isCurrentAdoption()) return;
+        setUserId(null);
+        setEmail(null);
+        setError(
+          'Account-linked data could not be cleared from this device. '
+          + 'Clear the app’s data before another person uses it.',
+        );
+        statusRef.current = 'cleanup-required';
+        setStatus('cleanup-required');
+        return;
+      }
+      identityPlaybackStopped = true;
+    }
+    identity.current = nextIdentity;
     // Change both in-memory request identities before SecureStore yields. Otherwise an account
     // switch has a window where requests carry B's token but protected images use A's cache key,
     // placing B's media where a later A session can read it locally.
@@ -292,12 +340,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // first check, pause here, and resume after the base-URL subscriber has retired its client —
     // then flip the app to `signed-in` for the OLD server, mounting every API consumer against the
     // new one before its session exists, which caches 401s the user has to restart to clear.
-    if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    if (!isCurrentAdoption()) return;
+    let playbackAlreadyStopped = false;
     if (!session) {
       // Auth identity deletion can make refresh impossible before the app next opens. The local
       // intent is therefore an independent recovery signal: purge private device state even when
       // no JWT remains with which to observe the server's completed tombstone.
-      const recovery = await recoverLocalDeletion();
+      const recovery = await recoverLocalDeletion(identityPlaybackStopped);
+      if (!isCurrentAdoption()) return;
+      playbackAlreadyStopped = recovery !== 'none';
       if (recovery === 'failed') {
         setUserId(null);
         setEmail(null);
@@ -306,7 +357,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
     }
-    if (forGeneration !== undefined && forGeneration !== generation.current) return;
+    if (!isCurrentAdoption()) return;
     setUserId(session?.user?.id ?? null);
     setEmail(session?.user?.email ?? null);
     const next = session?.access_token ? 'signed-in' : 'signed-out';
@@ -316,10 +367,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     //
     // Covers every way a session ends, not just the Settings button: an expiring token and a
     // failed refresh both land here, and neither goes near that button.
-    if (statusRef.current === 'signed-in' && next !== 'signed-in') void stopPlaybackForSessionEnd();
+    if (
+      !playbackAlreadyStopped
+      && statusRef.current === 'signed-in'
+      && (next !== 'signed-in' || identityChanged)
+    ) {
+      void stopPlaybackForSessionEnd();
+    }
     statusRef.current = next;
     setStatus(next);
-  }, [queryClient, recoverLocalDeletion]);
+  }, [recoverLocalDeletion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,6 +389,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // bootstrap always owns a generation no earlier callback can match.
     generation.current += 1;
     const mine = generation.current;
+    adoptionEpoch.current += 1;
 
     void (async () => {
       let config: AuthConfig;
@@ -445,24 +503,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // current, so a refresh landing in the gap passes the generation check and restores the token
     // we just cleared. The new server's very first request could then carry the old project's JWT.
     generation.current += 1;
+    const mine = generation.current;
     statusRef.current = 'unknown';
+    setStatus('unknown');
     client.current?.auth.stopAutoRefresh();
     client.current = null;
     void setToken(null);
 
-    // Every cached answer belongs to the server that gave it. Query keys carry a project id but no
-    // server identity, so without this the new server renders the OLD one's projects, papers and
-    // settings — as fresh data, with no refetch to correct it — and an action can fire at server B
-    // using a pid that only exists on A. `clear()` and not `invalidateQueries()`: invalidation
-    // marks data stale but keeps serving it, which is exactly the wrong half of the behaviour here.
-    queryClient.clear();
-    void stopPlaybackForSessionEnd();
-    // The remembered project is server-scoped for the same reason, and it is persisted, so it
-    // would otherwise survive even a restart onto the new server.
-    void AsyncStorage.removeItem('rc.activeProject');
-
-    setAttempt((n) => n + 1);
-  }), [queryClient]);
+    // Server identity is an account boundary too. Replace the object, because a late manual cache
+    // write can survive `clear()`, and forget which account the retired server had adopted.
+    rotateActiveQueryClient();
+    identity.current = null;
+    // Do not let the replacement auth bootstrap mount until both private singleton playback and
+    // account-scoped persistence are gone. Unmounting AudioProvider cannot stop TrackPlayer.
+    void Promise.allSettled([
+      stopPlaybackForSessionEnd({ failClosed: true }),
+      clearAccountScopedStorage(),
+    ]).then(([playback, storage]) => {
+      if (mine !== generation.current) return;
+      if (playback.status === 'rejected' || storage.status === 'rejected') {
+        setUserId(null);
+        setEmail(null);
+        setError(
+          'Account-linked data could not be cleared from this device. '
+          + 'Clear the app’s data before another person uses it.',
+        );
+        statusRef.current = 'cleanup-required';
+        setStatus('cleanup-required');
+        return;
+      }
+      setAttempt((n) => n + 1);
+    });
+  }), []);
 
   // supabase-js refreshes on a timer, and a backgrounded RN app has its timers throttled or
   // stopped. Without this, a phone left locked overnight wakes with an expired access token and
@@ -665,17 +737,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // `adoptSession` below, leaving the app looking signed in with a live API token.
       failure = caught instanceof Error ? caught.message : 'Could not fully sign out.';
     }
-    // Same argument as the server switch below: every cached answer belongs to the identity that
-    // fetched it, and query keys carry no user id. Without this the next person to sign in on this
-    // device is served the previous one's cached data as fresh — for `/api/plan` that is their
-    // spend and their remaining allowance. `clear()` rather than `invalidateQueries()`, because
-    // invalidation keeps serving the stale data while it refetches.
-    //
-    // NOT sufficient on its own, and DR-037 tracks the rest: this covers the Settings sign-out but
-    // not session expiry or a failed refresh, and `clear()` cannot stop an in-flight request that
-    // bypassed cancellation from calling `setQueryData` afterwards. The complete fix rotates to a
-    // new QueryClient on every identity transition, centralized in `adoptSession`.
-    queryClient.clear();
     // Unconditional, and not left to onAuthStateChange: if the client was never built (auth
     // disabled, or an unreachable server) there is no listener to fire at all.
     await adoptSession(null);
@@ -684,7 +745,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // on the device, and that is worth them knowing on a shared or lost phone.
       setError(`${failure} Signed out on this device; clear the app's data if it was shared.`);
     }
-  }, [adoptSession, queryClient]);
+  }, [adoptSession]);
 
   const reauthenticateForDeletion = useCallback(async () => {
     setError(null);
@@ -815,12 +876,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (caught) {
       failure = caught instanceof Error ? caught.message : 'Could not clear the local session.';
     }
-    queryClient.clear();
     await adoptSession(null);
     if (failure) {
       setError(`${failure} Clear the app's data before another person uses this device.`);
     }
-  }, [adoptSession, queryClient]);
+  }, [adoptSession]);
 
   const value = useMemo<AuthState>(
     () => ({
