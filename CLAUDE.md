@@ -74,9 +74,14 @@ way they did. This is an index, not a substitute for reading them.
   never in `main.py` itself.
 - `config.py` — settings (app-global), the active-project contextvar, vault/path precedence.
 - `auth.py` — Supabase / static-token / open auth, and `assert_environment_safe`.
-- `projects.py` — multi-project registry; `use_project` binds the contextvar. Also project sharing
-  by git bundle. **`project_path`/`_safe_pid` is the trust boundary** for untrusted project ids, and
-  **import is a second one** — read the docstring before touching either.
+- `projects.py` — multi-project registry; `use_project` binds the contextvar.
+  **`project_path`/`_safe_pid` is the trust boundary** for untrusted project ids — read the
+  docstring before touching it.
+  Also **export/import by git bundle, which is NOT a shipped product feature** (Kamil, 2026-08-10).
+  It was built to migrate his own projects onto production and did that job. A future sharing or
+  public-projects feature may well reuse the mechanism — the bundle, the hostile-tree rejection, the
+  atomic publish — but nothing should be designed around the current shape, and its import path is
+  a trust boundary maintained for that latent use rather than for a live one.
 - `tenancy.py` — who owns which project, and `may_access`, the gate. **A route that names a project
   anywhere but the URL path must call it itself.**
 - `db.py` — the Postgres pool, the `:6543` pooler refusal, the migration runner, and the Data-API

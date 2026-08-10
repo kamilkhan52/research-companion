@@ -19,6 +19,8 @@ Start with `README.md` and `CLAUDE.md` at the repo root. This index covers `docs
 | [`production/HUMAN_ACTIONS.md`](production/HUMAN_ACTIONS.md) | Things only Kamil can do. Agents must not attempt or work around these. |
 | [`improvements.md`](improvements.md) | The standing code-quality plan. |
 | [`cleanup-plan.md`](cleanup-plan.md) | The docs/comment cleanup this index came from, and its phase status. |
+| [`design-system-additions.md`](design-system-additions.md) | Every runtime token, its value and intent, and each component's states — written so someone with Figma access can reproduce them. |
+| [`figma-runtime-design-handoff.md`](figma-runtime-design-handoff.md) | **The Figma node IDs.** 11 component sets, 189 variants, 22 section-17 screens. Search these before creating anything; `Usage` is `90:116` and must be updated in place, never duplicated. |
 
 ## Production reference
 
@@ -55,10 +57,12 @@ plans, and nothing in them is outstanding work unless a ledger row says so.
 - [`web-rebuild-plan.md`](web-rebuild-plan.md) — the phased React+Vite rebuild; still in progress.
 - [`mobile-app-plan.md`](mobile-app-plan.md) — the native-app direction; phases C/D still ahead.
 
-## Proposals and specs not yet built
+## Specs and proposals
 
-- [`plan-usage-surface-spec.md`](plan-usage-surface-spec.md) — the plan/usage client surface, with
-  frames in `design-references/plan-usage-2026-08/`. **This is the open remainder of M3.**
+- [`plan-usage-surface-spec.md`](plan-usage-surface-spec.md) — the plan/usage client surface.
+  **Shipped** (#336, reframed to remaining in #350); the spec's own header records the part that was
+  superseded. The SVG frames in `design-references/plan-usage-2026-08/` are a stale fallback handoff
+  — the live design is in Figma, see the node IDs above.
 - [`performance-proposal.md`](performance-proposal.md) — mobile performance suggestions, 2026-08-03.
   Nothing here has been actioned.
 - [`author-affiliation-view-proposal.md`](author-affiliation-view-proposal.md) — Authors/Labs view.
@@ -70,4 +74,6 @@ plans, and nothing in them is outstanding work unless a ledger row says so.
   has since diverged; treat it as provenance, never as instruction.
 - [`discovery-quality-evaluation.md`](discovery-quality-evaluation.md) — the pre-rebuild Discover
   pipeline. Its **fixture** half is still live; its pipeline half is not.
-- [`figma-workflow.md`](figma-workflow.md) — how UI design work is driven through Codex + Figma.
+- [`figma-workflow.md`](figma-workflow.md) — how UI design work was driven through Codex + Figma.
+  Codex is out of quota as of 2026-08-10, so read this as the shape of the workflow rather than the
+  current tooling.

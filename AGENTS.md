@@ -112,6 +112,19 @@ here:
 - **Absence.** A bulk edit to a test file once silently deleted twenty-seven tests, including every
   SSRF regression, and the suite stayed green for two commits. Flag a diff that removes tests
   without saying so.
+- **A test that is green on CI for a reason the author did not intend.** CI runs in UTC. A date
+  assertion that only fails west of Greenwich passes every CI run whether or not the fix is present
+  — it was written to guard a bug that rendered "Resets August 31" for most of the world. Assert the
+  *request* (that the formatter was told which timezone to use), not the rendered output, whenever
+  the environment can mask the difference.
+- **A threshold that accepts the bug.** A test asserting "at least two requests" passed an unbounded
+  refetch loop that fired on every render. When the hazard is unboundedness, assert that the count
+  *stops growing*, not that it reached some floor.
+- **A test that asserts one side of a two-sided contract.** Checking that the client matches its own
+  string constant proves nothing — both sides drift together and stay green. A fake that declares an
+  API the way the caller wishes it were is the same error: one such fake made
+  `AgentRunResult.usage` look correct as a method for three weeks while every Labs run failed in
+  production. Bind the test to the *other* side.
 
 Isolation tests must give both users the **same** project id and the same paper slug and run
 concurrently; a test that gives them different ids proves nothing.
