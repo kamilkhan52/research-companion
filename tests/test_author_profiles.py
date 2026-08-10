@@ -42,9 +42,11 @@ def _settled(job_id, timeout=5.0):
 def test_profile_job_generates_caches_and_merges(temp_project, monkeypatch):
     _seed_graph(temp_project)
     calls: list[str] = []
+    kwargs_seen: list[dict] = []
 
     def fake_complete(messages, **kwargs):
         calls.append(messages[1]["content"])
+        kwargs_seen.append(kwargs)
         return "Song Han leads efficient-ML research central to this project."
 
     monkeypatch.setattr(author_profiles.llm, "complete", fake_complete)
@@ -52,6 +54,11 @@ def test_profile_job_generates_caches_and_merges(temp_project, monkeypatch):
     snap = _settled(author_profiles.start_profile("Song Han").id)
     assert snap["status"] == "done"
     assert "efficient-ML" in snap["profile"]
+    # DR-047: a profile is a rewrite of supplied context — hidden reasoning must be off, or a
+    # reasoning model can spend the whole 600-token budget thinking and emit nothing.
+    assert kwargs_seen[0]["reasoning"] == {"enabled": False}
+    # And the staged-progress marker reached the snapshot: the model call is the last stage.
+    assert snap["stage"] == "writing"
     # Generous context: the project brief and both paper groups reached the model.
     assert "AWQ" in calls[0] and "StreamingLLM" in calls[0]
 

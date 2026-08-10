@@ -91,6 +91,26 @@ def test_agentic_path_sends_the_routing_constraint(monkeypatch):
     settings = model.settings or {}
     assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
     assert settings.get("openrouter_usage") == {"include": True}
+    # Reasoning stays the model's own default unless a caller opts out — the analysis turn
+    # must never inherit a lookup job's no-reasoning hint.
+    assert "openrouter_reasoning" not in settings
+
+
+def test_no_reasoning_opt_out_rides_the_native_settings(monkeypatch):
+    """`no_reasoning=True` (lab research — DR-047) must reach OpenRouter as the same
+    `{"enabled": false}` payload `llm.NO_REASONING` sends on the raw path."""
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "anthropic/claude-test"},
+    )
+
+    model = agent_harness._openrouter_model(no_reasoning=True)
+
+    settings = model.settings or {}
+    assert settings.get("openrouter_reasoning") == {"enabled": False}
+    # The opt-out must not displace the unconditional privacy constraint.
+    assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
 
 
 def _zero_cost_response_payload(*, streamed: bool) -> dict:

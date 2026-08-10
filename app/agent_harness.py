@@ -396,7 +396,8 @@ TOOLS = [
 
 
 def _openrouter_model(
-    model_id: str | None = None, operation: str = "analysis"
+    model_id: str | None = None, operation: str = "analysis", *,
+    no_reasoning: bool = False,
 ) -> OpenRouterModel:
     try:
         spend_control.require_enabled()
@@ -408,6 +409,13 @@ def _openrouter_model(
         raise agent_mod.AgentError("No OpenRouter API key set. Add it in Settings.")
     provider = _SpendControlledOpenRouterProvider(
         api_key=key, app_url="http://localhost", app_title=config.APP_TITLE)
+    # `no_reasoning` mirrors `llm.NO_REASONING` for a lookup-shaped agent run (lab research):
+    # the model reads pages and reports what they say — hidden reasoning only spends the budget.
+    # Unlike `llm.complete`, this path has NO retry-without-the-hint: a model that rejects it
+    # fails the run. Acceptable here because the callers that set it run on the graph model
+    # (DeepSeek family), where disabling reasoning is what un-broke narration; the analysis turn
+    # never sets it.
+    extra: dict = {"openrouter_reasoning": llm.no_reasoning_payload()} if no_reasoning else {}
     # Native OpenRouter settings retain the same unconditional privacy constraint while also
     # requesting the authoritative usage/cost block on every tool-loop request.
     return _LedgerOpenRouterModel(
@@ -416,6 +424,7 @@ def _openrouter_model(
         settings=OpenRouterModelSettings(
             openrouter_provider=llm.routing_payload(),
             openrouter_usage={"include": True},
+            **extra,
             # The per-REQUEST cap, and the one that actually stops money being spent. The run-level
             # `output_tokens_limit` below is an abort: on the non-streaming path it fires after a
             # response has already been generated and billed. This is what the raw client's

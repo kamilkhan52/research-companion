@@ -174,7 +174,7 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
     paper_lines = "\n".join(f"- {t}" for t in titles[:8])
     model = graph.resolve_model()
     ag = Agent(
-        agent_harness._openrouter_model(model, operation="lab_research"),
+        agent_harness._openrouter_model(model, operation="lab_research", no_reasoning=True),
         system_prompt=(prompts.get("lab_research")
                        + "\n\n" + model_provenance.SYSTEM_POLICY),
         tools=[web_search, web_fetch],

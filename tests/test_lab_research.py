@@ -111,6 +111,37 @@ def test_total_failure_errors_the_job_and_does_not_claim_researched(temp_project
     assert lab_research.labs_board(lab_research._board())["researched"] is False
 
 
+def test_agent_run_disables_reasoning(temp_project, monkeypatch):
+    """Lab research is a lookup, not a problem to think about: the run must ask the model builder
+    to turn hidden reasoning off (DR-047 — a reasoning model on this job can spend the entire
+    budget thinking and emit nothing, exactly the failure that broke Get profile)."""
+    import pydantic_ai
+    from app import agent_harness, graph
+
+    captured: dict = {}
+
+    class QuietAgent:
+        def __init__(self, *args, **kwargs):
+            self.model = object()
+
+        async def run(self, *args, **kwargs):
+            class Result:
+                output = 'RESULT: {"found": false}'
+            return Result()
+
+    def fake_model(model=None, operation="analysis", **kw):
+        captured.update(kw, operation=operation)
+        return object()
+
+    monkeypatch.setattr(pydantic_ai, "Agent", QuietAgent)
+    monkeypatch.setattr(agent_harness, "_openrouter_model", fake_model)
+    monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
+
+    lab_research._research_with_agent("Researcher", "University", ["Paper"])
+    assert captured["no_reasoning"] is True
+    assert captured["operation"] == "lab_research"
+
+
 def test_agent_provider_error_excludes_upstream_message(temp_project, monkeypatch):
     import pydantic_ai
     from app import agent_harness, graph
@@ -125,7 +156,8 @@ def test_agent_provider_error_excludes_upstream_message(temp_project, monkeypatc
             raise RuntimeError(secret)
 
     monkeypatch.setattr(pydantic_ai, "Agent", FailedAgent)
-    monkeypatch.setattr(agent_harness, "_openrouter_model", lambda model=None, operation="analysis": object())
+    monkeypatch.setattr(agent_harness, "_openrouter_model",
+                        lambda model=None, operation="analysis", **kw: object())
     monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
 
     with pytest.raises(RuntimeError) as err:

@@ -29,6 +29,10 @@ class ProfileJob(Job):
     author: str = ""
     profile: str = ""
     cached: bool = False
+    #: "context" while the corpus context is assembled, "writing" once the model call is in
+    #: flight — so the client can show staged progress instead of a spinner that moves only at
+    #: the end (DR-047).
+    stage: str = ""
 
 
 #: A short grounded profile. Named so `operation_limits` binds to it.
@@ -153,9 +157,18 @@ def start_profile(name: str) -> ProfileJob:
         ))
 
     def work(job: ProfileJob) -> None:
+        with _registry.lock:
+            job.stage = "context"
         project_name, goals_now = _project_brief()
         context = _build_context(entry, project_name, goals_now)
         model = graph.resolve_model()
+        with _registry.lock:
+            job.stage = "writing"
+        # Reasoning OFF: a profile is a short grounded rewrite of context we hand the model, not
+        # a problem to think about — and the default graph model is a reasoning model that spent
+        # the whole 600-token budget on hidden reasoning and emitted nothing (DR-047, the same
+        # failure narration hit on 2026-07-30). `complete()` drops the hint and retries once if
+        # the chosen model cannot accept it.
         text = llm.complete(
             [
                 {"role": "system", "content": prompts.get("author_profile")},
@@ -163,6 +176,7 @@ def start_profile(name: str) -> ProfileJob:
             ],
             model=model,
             max_tokens=PROFILE_MAX_TOKENS,
+            reasoning=llm.no_reasoning_payload(),
             operation="author_profile",
         ).strip()
         if not text:
