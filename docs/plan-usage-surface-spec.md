@@ -12,6 +12,17 @@ When Figma write access returns, refine the existing `Usage` frame (`90:116`) in
 `Not enforced`, each with `Light` and `Dark` suffixes. Do not create a duplicate page or leave any
 variant loose on the canvas.
 
+## Superseded in part, 2026-08-10 — remaining, not consumed
+
+Kamil's first tester pass reversed one decision below: the surface should show what is **remaining**,
+not what has been consumed (DR-041). Everything else here still holds, including the rule that
+governs how to do it — **remaining must be `limit - spent`, never `remaining_nanousd`**, which
+subtracts holds too and would tell a reader with several jobs running that most of their month is
+gone. That is the exact false alarm the spend/held split exists to prevent; it would simply be
+arriving through the front door instead.
+
+Read the percentage sections below as being about the same number seen from the other side.
+
 ## Product decision
 
 The reader sees **neither credits nor dollars**. The surface shows the server-authoritative
