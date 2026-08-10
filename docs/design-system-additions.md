@@ -1,7 +1,8 @@
 # Runtime design-system additions to reproduce in Figma
 
-Status: code is authoritative for this pass. Figma was unavailable because the MCP server had no
-credential; do not treat this file as evidence that the changes already exist in Figma.
+Status: implemented in Figma on 2026-08-09, with code remaining authoritative. See
+[`figma-runtime-design-handoff.md`](figma-runtime-design-handoff.md) for exact node IDs, component
+matrices, validation results, and continuation guidance.
 
 Destination: `Research Companion — UI Redesign Proposal`. Add shared foundations and components to
 `01 · Design System`; update the production-readiness frames in `02 · Mobile Screens`, section
