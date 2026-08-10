@@ -439,6 +439,22 @@ For every scenario:
   - Record only device-specific spacing/type issues; functional behavior belongs in D01/D08/D12.
   - **Result:** PASS
   - **Notes / evidence / screenshot paths:** Long-title layout was not a major problem across Library, Continue Reading, Discussion TopBar, project sheets, or canonical-title confirmation. Keyboard-open state remains poor for new project naming, but that functional/layout defect is already recorded under D08 rather than blocking this screenshot-polish sweep.
+
+## H. Account-isolation follow-up
+
+- [ ] **D42 — Switching accounts starts from that account's own state** (DR-037, DR-044)
+  - Sign in as account A, select a project, leave a draft in a discussion, and begin audio if
+    practical. Sign out normally, then sign in as account B without clearing app data.
+  - B must land in its own Library with no project from A selected. It must not briefly show A's
+    plan, project, draft, graph, Continue card, or narration. Navigate between tabs once to catch
+    any provider state that survived the auth transition.
+  - Force a session-expiry/sign-out event if practical and repeat; that path must behave exactly
+    like the Settings sign-out. Finally cold-launch while still signed in as B and confirm B's own
+    selected project is remembered across that ordinary restore.
+  - **Result:** NOT TESTED
+  - **Notes / evidence:** Automated coverage reproduces an A request completing after B signs in,
+    but physical-device acceptance remains required after the implementation PR merges.
+
 ## Explicitly outside this Android pass
 
 - iOS acceptance (background audio, native icon/splash, Apple sign-in/TestFlight) remains deferred
@@ -454,7 +470,7 @@ For every scenario:
 - **Passed:** 29 — D01, D02, D04, D05, D07, D09–D11, D13–D16, D18–D26, D28–D30, D32, D36–D37, D40–D41
 - **Failed:** 7 — D03, D06, D08, D12, D17, D27, D39
 - **Blocked:** 5 — D31, D33–D35, D38 (D13 native PDF-upload sub-path also blocked by installed dev client)
-- **Not tested:** 0
+- **Not tested:** 1 — D42
 - **Highest-priority follow-ups:**
   1. Preserve active discussion identity/state across explicit paper addition and canonical-title updates; opening an already-started analysis must show its live/existing thread.
   2. Repair Notes generation/review UX: visible progress, automatic review opening, coherent edit request action, and robust diff-based review.

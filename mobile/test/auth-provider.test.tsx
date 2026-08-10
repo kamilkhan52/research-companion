@@ -24,7 +24,12 @@ import {
   markAccountDeleted,
   markAccountDeletionIntent,
 } from '@/auth/accountCleanup';
-import { createTestQueryClient } from './queryClient';
+import {
+  getActiveQueryClient,
+  rotateActiveQueryClient,
+  useActiveQueryClient,
+} from '@/api/queryClient';
+import { ProjectProvider, useActiveProject } from '@/store/project';
 
 let authStateCallback: ((event: string, session: unknown) => void) | undefined;
 const mockAuth = {
@@ -119,10 +124,15 @@ function Probe() {
   return <Text>{status}</Text>;
 }
 
-/** AuthProvider clears the query cache on a server switch, so it needs a client above it. */
-function withQuery(children: React.ReactNode) {
-  const client = createTestQueryClient();
+/** The production root follows this same external-store snapshot. Keeping the real wiring in the
+ *  test is what proves an auth rotation changes the cache that descendants actually render. */
+function QueryScope({ children }: { children: React.ReactNode }) {
+  const client = useActiveQueryClient();
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
+function withQuery(children: React.ReactNode) {
+  return <QueryScope>{children}</QueryScope>;
 }
 
 async function renderProvider() {
@@ -131,6 +141,7 @@ async function renderProvider() {
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  rotateActiveQueryClient();
   await AsyncStorage.clear();
   // clearAllMocks resets CALLS, not implementations — a mockResolvedValue set by one test would
   // otherwise deliver its cold-start URL to every test after it.
@@ -419,17 +430,17 @@ test('signing out clears the token, not just the UI state', async () => {
   await waitFor(() => expect(apiConfig.setToken).toHaveBeenLastCalledWith(null));
 });
 
-test('signing out clears the query cache, so the next account starts empty', async () => {
+test('signing out rotates the query cache, so the next account starts empty', async () => {
   // Query keys carry a project id but no user id. Until this, the cache was cleared on a server
   // change and on account deletion but NOT on an ordinary sign-out, so the next person to sign in
   // on a shared device was served the previous account's cached answers as fresh — including
   // `/api/plan`, which is their spend and their remaining allowance.
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
   mockAuth.getSession.mockResolvedValue({
-    data: { session: { access_token: 'a-jwt', user: { email: 'first@example.com' } } },
+    data: { session: { access_token: 'a-jwt', user: { id: 'user-a', email: 'first@example.com' } } },
   });
 
-  const client = createTestQueryClient();
+  const client = getActiveQueryClient();
   client.setQueryData(['plan'], { spent_fraction: 0.9 });
 
   let auth: ReturnType<typeof useAuth> | undefined;
@@ -437,15 +448,155 @@ test('signing out clears the query cache, so the next account starts empty', asy
     auth = useAuth();
     return <Text>{auth.status}</Text>;
   }
-  const { getByText } = await renderAsync(
-    <QueryClientProvider client={client}><AuthProvider><Capture /></AuthProvider></QueryClientProvider>,
-  );
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
   await waitFor(() => getByText('signed-in'));
   expect(client.getQueryData(['plan'])).toBeDefined();
 
   await auth!.signOut();
 
-  await waitFor(() => expect(client.getQueryData(['plan'])).toBeUndefined());
+  await waitFor(() => expect(getActiveQueryClient()).not.toBe(client));
+  expect(getActiveQueryClient().getQueryData(['plan'])).toBeUndefined();
+});
+
+test('account B cannot observe account A persistence or a late cache continuation', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: { access_token: 'a-jwt', user: { id: 'user-a', email: 'first@example.com' } },
+    },
+  });
+  await AsyncStorage.multiSet([
+    ['rc.activeProject', 'shared-project'],
+    ['rc.draft.v1:shared-project:paper', '{"value":"A private draft"}'],
+  ]);
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function ProjectProbe() {
+    const { activePid, ready } = useActiveProject();
+    return <Text>{ready ? `project:${activePid ?? 'none'}` : 'project:loading'}</Text>;
+  }
+  function Capture() {
+    auth = useAuth();
+    return (
+      <>
+        <Text>{`${auth.status}:${auth.userId ?? 'none'}`}</Text>
+        {auth.status === 'signed-in' ? (
+          <ProjectProvider key={auth.userId}>
+            <ProjectProbe />
+          </ProjectProvider>
+        ) : null}
+      </>
+    );
+  }
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Capture /></AuthProvider>));
+  await waitFor(() => getByText('signed-in:user-a'));
+  await waitFor(() => getByText('project:shared-project'));
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBe('shared-project');
+
+  const accountAClient = getActiveQueryClient();
+  let release!: (value: { owner: string }) => void;
+  const response = new Promise<{ owner: string }>((resolve) => { release = resolve; });
+  const lateContinuation = response.then((value) => {
+    accountAClient.setQueryData(['project', 'shared-project', 'graph'], value);
+  });
+
+  await act(async () => {
+    authStateCallback!('SIGNED_IN', {
+      access_token: 'b-jwt', user: { id: 'user-b', email: 'second@example.com' },
+    });
+  });
+  await waitFor(() => getByText('signed-in:user-b'));
+  await waitFor(() => getByText('project:none'));
+
+  const accountBClient = getActiveQueryClient();
+  expect(accountBClient).not.toBe(accountAClient);
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await AsyncStorage.getItem('rc.draft.v1:shared-project:paper')).toBeNull();
+
+  accountBClient.setQueryData(
+    ['project', 'shared-project', 'graph'],
+    { owner: 'B' },
+  );
+  release({ owner: 'A' });
+  await lateContinuation;
+
+  expect(accountBClient.getQueryData(['project', 'shared-project', 'graph']))
+    .toEqual({ owner: 'B' });
+  expect(accountAClient.getQueryData(['project', 'shared-project', 'graph']))
+    .toEqual({ owner: 'A' });
+  accountAClient.clear();
+  accountBClient.clear();
+});
+
+test('a failed account-state purge stops A playback and prevents B from mounting', async () => {
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: { access_token: 'a-jwt', user: { id: 'user-a', email: 'first@example.com' } },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() {
+    auth = useAuth();
+    return <Text>{`${auth.status}:${auth.userId ?? 'none'}`}</Text>;
+  }
+  const { getByText, queryByText } = await renderAsync(
+    withQuery(<AuthProvider><Capture /></AuthProvider>),
+  );
+  await waitFor(() => getByText('signed-in:user-a'));
+  (AsyncStorage.getAllKeys as jest.Mock).mockRejectedValueOnce(new Error('storage unavailable'));
+
+  await act(async () => {
+    authStateCallback!('SIGNED_IN', {
+      access_token: 'b-jwt', user: { id: 'user-b', email: 'second@example.com' },
+    });
+  });
+
+  await waitFor(() => getByText('cleanup-required:none'));
+  expect(queryByText('signed-in:user-b')).toBeNull();
+  expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalledWith({ failClosed: true });
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
+});
+
+test('an older sign-in cleanup cannot overwrite a newer signed-out session', async () => {
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: { access_token: 'a-jwt', user: { id: 'user-a', email: 'first@example.com' } },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() {
+    auth = useAuth();
+    return <Text>{`${auth.status}:${auth.userId ?? 'none'}`}</Text>;
+  }
+  const { getByText, queryByText } = await renderAsync(
+    withQuery(<AuthProvider><Capture /></AuthProvider>),
+  );
+  await waitFor(() => getByText('signed-in:user-a'));
+
+  let releaseB!: (keys: string[]) => void;
+  (AsyncStorage.getAllKeys as jest.Mock)
+    .mockImplementationOnce(() => new Promise<string[]>((resolve) => { releaseB = resolve; }))
+    .mockResolvedValueOnce([]);
+
+  act(() => {
+    authStateCallback!('SIGNED_IN', {
+      access_token: 'b-jwt', user: { id: 'user-b', email: 'second@example.com' },
+    });
+  });
+  await waitFor(() => getByText('unknown:user-a'));
+
+  await act(async () => { authStateCallback!('SIGNED_OUT', null); });
+  await waitFor(() => getByText('signed-out:none'));
+
+  await act(async () => { releaseB([]); });
+  await waitFor(() => expect(queryByText('signed-in:user-b')).toBeNull());
+  expect(getByText('signed-out:none')).toBeTruthy();
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
 });
 
 test('an unreachable server is not reported as signed out', async () => {
@@ -848,18 +999,46 @@ test('switching servers drops the previous server\'s cached data', async () => {
   // pid that only exists on A. invalidateQueries is not enough: it marks data stale and keeps
   // serving it, which is the wrong half of the behaviour.
   jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
-  const client = createTestQueryClient();
+  const client = getActiveQueryClient();
   client.setQueryData(['projects'], [{ id: 'from-server-a' }]);
 
-  const { getByText } = await renderAsync(
-    <QueryClientProvider client={client}><AuthProvider><Probe /></AuthProvider></QueryClientProvider>,
-  );
+  const { getByText } = await renderAsync(withQuery(<AuthProvider><Probe /></AuthProvider>));
   await waitFor(() => getByText('signed-out'));
 
   const notify = (apiConfig.subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
   notify();
 
-  expect(client.getQueryData(['projects'])).toBeUndefined();
+  expect(getActiveQueryClient()).not.toBe(client);
+  expect(getActiveQueryClient().getQueryData(['projects'])).toBeUndefined();
+});
+
+test('a server switch cannot mount the replacement server if A playback survives', async () => {
+  const audio = jest.requireMock('@/audio/AudioProvider');
+  jest.spyOn(endpoints, 'getAuthConfig').mockResolvedValue(SUPABASE_CONFIG);
+  mockAuth.getSession.mockResolvedValue({
+    data: {
+      session: { access_token: 'a-jwt', user: { id: 'user-a', email: 'first@example.com' } },
+    },
+  });
+
+  let auth: ReturnType<typeof useAuth> | undefined;
+  function Capture() {
+    auth = useAuth();
+    return <Text>{`${auth.status}:${auth.userId ?? 'none'}`}</Text>;
+  }
+  const { getByText, queryByText } = await renderAsync(
+    withQuery(<AuthProvider><Capture /></AuthProvider>),
+  );
+  await waitFor(() => getByText('signed-in:user-a'));
+  audio.stopPlaybackForSessionEnd.mockRejectedValueOnce(new Error('native player busy'));
+
+  const notify = (apiConfig.subscribeBaseUrl as jest.Mock).mock.calls.at(-1)![0] as () => void;
+  await act(async () => { notify(); });
+
+  await waitFor(() => getByText('cleanup-required:none'));
+  expect(queryByText('signed-in:user-a')).toBeNull();
+  expect(audio.stopPlaybackForSessionEnd).toHaveBeenCalledWith({ failClosed: true });
+  expect(apiConfig.setToken).toHaveBeenLastCalledWith(null);
 });
 
 

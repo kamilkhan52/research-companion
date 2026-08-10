@@ -3,6 +3,7 @@ import { Image } from 'expo-image';
 
 import {
   clearAccountDeletionIntent,
+  clearAccountScopedStorage,
   clearDeletedAccountStorage,
   hasAccountDeletionIntent,
   markAccountDeletionIntent,
@@ -23,6 +24,7 @@ test('deletion purges account research state but keeps device preferences and se
   await AsyncStorage.multiSet([
     ['rc.activeProject', 'project-a'],
     ['rc.draft.v1:project-a:paper', '{"value":"private draft"}'],
+    ['rc.graph.buildDetails.project-a', '{"stage":"ready"}'],
     ['rc.lastThread.v1:project-a:paper', 'thread-a'],
     ['rc.paperSort.v1:project-a', 'year'],
     ['rc.eligibleListeningHandoffs', '["job-a"]'],
@@ -43,6 +45,7 @@ test('deletion purges account research state but keeps device preferences and se
   expect(await AsyncStorage.multiGet([
     'rc.activeProject',
     'rc.draft.v1:project-a:paper',
+    'rc.graph.buildDetails.project-a',
     'rc.lastThread.v1:project-a:paper',
     'rc.paperSort.v1:project-a',
     'rc.eligibleListeningHandoffs',
@@ -52,6 +55,7 @@ test('deletion purges account research state but keeps device preferences and se
   ])).toEqual([
     ['rc.activeProject', null],
     ['rc.draft.v1:project-a:paper', null],
+    ['rc.graph.buildDetails.project-a', null],
     ['rc.lastThread.v1:project-a:paper', null],
     ['rc.paperSort.v1:project-a', null],
     ['rc.eligibleListeningHandoffs', null],
@@ -78,6 +82,22 @@ test('deletion purges account research state but keeps device preferences and se
     ['rc.playbackRate', '1.25'],
     ['rc.graph.allowAllFilter', 'true'],
   ]);
+});
+
+test('ordinary identity cleanup drops research state without flushing shared image caches', async () => {
+  await AsyncStorage.multiSet([
+    ['rc.activeProject', 'project-a'],
+    ['rc.draft.v1:project-a:paper', '{"value":"private draft"}'],
+    ['rc.themeMode', 'black'],
+  ]);
+
+  await clearAccountScopedStorage();
+
+  expect(await AsyncStorage.getItem('rc.activeProject')).toBeNull();
+  expect(await AsyncStorage.getItem('rc.draft.v1:project-a:paper')).toBeNull();
+  expect(await AsyncStorage.getItem('rc.themeMode')).toBe('black');
+  expect(Image.clearMemoryCache).not.toHaveBeenCalled();
+  expect(Image.clearDiskCache).not.toHaveBeenCalled();
 });
 
 test('deletion intent survives data cleanup until the authenticated flow is finished', async () => {
