@@ -1,9 +1,12 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import { ApiError } from '@/api/client';
 import { setBaseUrl } from '@/api/config';
 import {
   classifySpendRefusal,
+  presentSpendJobRefusal,
   presentSpendRefusal,
   resetLabel,
   SpendRefusalHost,
@@ -48,6 +51,31 @@ test('classifies all four states from the refusal response, not a plan warning',
   expect(classifySpendRefusal({ warn: true, at_capacity: true })).toBeNull();
 });
 
+test.each([
+  [
+    'Your other tasks are still running. Give them a moment and try again.',
+    'A few things are finishing.',
+  ],
+  [
+    'This task needs more than your whole monthly allowance.',
+    "This action won't fit your plan.",
+  ],
+  [
+    'Your usage limit has been reached. Try again after it resets.',
+    "This month's allowance is used.",
+  ],
+])('maps the exact background-job refusal contract: %s', async (message, title) => {
+  await renderHost();
+
+  let consumed = false;
+  act(() => {
+    consumed = presentSpendJobRefusal(message);
+  });
+
+  expect(consumed).toBe(true);
+  expect(await screen.findByText(title)).toBeTruthy();
+});
+
 test('busy refusal counts down, stays disabled, and retries only after zero', async () => {
   jest.useFakeTimers();
   const retry = jest.fn();
@@ -59,6 +87,7 @@ test('busy refusal counts down, stays disabled, and retries only after zero', as
   });
 
   await waitFor(() => expect(screen.getByText('A few things are finishing.')).toBeTruthy());
+  expect(screen.getByText('WORK IN PROGRESS')).toBeTruthy();
   expect(screen.getByText('Try again in 2s')).toBeDisabled();
   expect(screen.queryByText(/reset/i)).toBeNull();
   fireEvent.press(screen.getByText('Try again in 2s'));
@@ -88,6 +117,7 @@ test('exhausted refusal loads the authoritative reset date and links to plan usa
     month: 'long', day: 'numeric', timeZone: 'UTC',
   });
   expect(await screen.findByText("This month's allowance is used.")).toBeTruthy();
+  expect(screen.getByText('MONTHLY ALLOWANCE')).toBeTruthy();
   expect(await screen.findByText(`Resets ${expectedReset}`)).toBeTruthy();
   expect(screen.getByText(/hand-editing notes/)).toBeTruthy();
   fireEvent.press(screen.getByText('View plan & usage'));
@@ -102,6 +132,9 @@ test('too-large narration offers device voice while other work asks for a smalle
     }), { operation: 'narration' });
   });
   await waitFor(() => expect(screen.getByText('Use device voice')).toBeTruthy());
+  expect(screen.getByText("This narration won't fit your plan.")).toBeTruthy();
+  expect(screen.getByText('Device voice is included')).toBeTruthy();
+  expect(screen.queryByText(/upgrade/i)).toBeNull();
   fireEvent.press(screen.getByText('Not now'));
 
   act(() => {
@@ -110,4 +143,20 @@ test('too-large narration offers device voice while other work asks for a smalle
     }), { operation: 'other' });
   });
   await waitFor(() => expect(screen.getByText('Choose a smaller action')).toBeTruthy());
+  expect(screen.getByText("This action won't fit your plan.")).toBeTruthy();
+});
+
+test('tight density keeps refusal body and supporting copy above the money floor', async () => {
+  await AsyncStorage.setItem('rc.layoutDensity', 'tight');
+  await renderHost();
+  act(() => {
+    presentSpendRefusal(new ApiError(402, 'large', {
+      code: 'quota_exceeded', requested_nanousd: 21, limit_nanousd: 20,
+    }), { operation: 'narration' });
+  });
+
+  const body = await screen.findByText(/studio-voice version is larger/);
+  expect(StyleSheet.flatten(body.props.style)).toMatchObject({ fontSize: 15, lineHeight: 23 });
+  const supporting = screen.getByText('Device voice is included');
+  expect(StyleSheet.flatten(supporting.props.style)).toMatchObject({ fontSize: 13, lineHeight: 18 });
 });

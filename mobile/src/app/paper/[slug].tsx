@@ -75,6 +75,7 @@ import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { AgentActivity } from '@/components/AgentActivity';
+import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
@@ -115,7 +116,16 @@ import {
   type PendingSentenceComment,
   type SelectedSentence,
 } from '@/lib/sentenceComments';
-import { Button, Card, Chip, Icon, IconButton, Screen, Text, type IconName } from '@/ui';
+import {
+  Button,
+  Card,
+  Chip,
+  Icon,
+  IconButton,
+  Screen,
+  Text,
+  type IconName,
+} from '@/ui';
 import {
   useTheme,
   useThemedStyles,
@@ -1917,17 +1927,23 @@ function DiscussionThread({
   ]);
 
   const renderChatFooter = useCallback(() => {
-    if (!stream.error) return null;
+    if (!stream.error && !stream.connectionNotice) return null;
     // The chat footer renders below the message list at the physical bottom, where the composer
     // now floats absolutely (R12.6). Lift it above the composer by its measured height so the
-    // error text + Dismiss button aren't hidden behind the pill.
-    return (
+    // terminal error or quiet reconnect status isn't hidden behind the pill.
+    if (stream.error) return (
       <Card style={[styles.errorCard, { marginBottom: composerHeight + space.md }]}>
         <Text variant="body" color={theme.danger}>{stream.error}</Text>
         <Button title="Dismiss" variant="ghost" onPress={stream.clearError} style={{ marginTop: space.sm }} />
       </Card>
     );
-  }, [stream.clearError, stream.error, styles, theme, composerHeight]);
+    return (
+      <ConnectionNotice
+        message={stream.connectionNotice!}
+        style={[styles.connectionNotice, { marginBottom: composerHeight + space.md }]}
+      />
+    );
+  }, [stream.clearError, stream.connectionNotice, stream.error, styles, theme, composerHeight]);
 
   const placeholder = editing
     ? 'Edit your message…'
@@ -3160,6 +3176,9 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   thoughtLine: { fontStyle: 'italic', paddingLeft: space.sm },
   errorCard: { borderColor: t.danger, margin: space.md },
+  connectionNotice: {
+    margin: space.md,
+  },
   // Overrides the library's white default circle (its content is our Icon; see
   // scrollToBottomComponent) into the app's circular icon-button idiom.
   scrollToBottomBtn: {

@@ -171,6 +171,56 @@ test('refetches accepted state when the start response is lost', async () => {
   client.clear();
 });
 
+test('a sustained poll outage gets a quiet notice that clears on the first successful poll', async () => {
+  jest.useFakeTimers();
+  const done: ChatJob = {
+    ...baseJob,
+    status: 'done',
+    finished_at: '2026-07-06T00:00:01Z',
+  };
+  jest.mocked(apiPost).mockResolvedValueOnce({ job: baseJob });
+  for (let i = 0; i < 6; i += 1) {
+    jest.mocked(api.getChatJob).mockRejectedValueOnce(new Error('briefly offline'));
+  }
+  jest.mocked(api.getChatJob).mockResolvedValueOnce({ job: done });
+  const client = createTestQueryClient();
+  function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  }
+  const { result, unmountAsync } = await renderHookAsync(
+    () => useStreamingTurn('project', 'paper'),
+    { wrapper: Wrapper },
+  );
+
+  let running: Promise<void>;
+  try {
+    act(() => {
+      running = result.current.run('/turn', { slug: 'paper', text: 'Question' });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    for (let i = 0; i < 6; i += 1) {
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(900);
+      });
+    }
+    expect(result.current.connectionNotice).toBe('Reconnecting… Your response is safe.');
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(900);
+      await running!;
+    });
+    expect(result.current.connectionNotice).toBeNull();
+  } finally {
+    await unmountAsync();
+    client.clear();
+    jest.useRealTimers();
+  }
+
+});
+
 test('an independent thread qualifies the turn body and cache without changing main', async () => {
   const sideJob: ChatJob = {
     ...baseJob,

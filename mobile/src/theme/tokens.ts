@@ -185,6 +185,34 @@ export const space = {
   xxl: 32,
 } as const;
 
+/** Geometry that must stay stable when layout density changes. Density may tighten rhythm, but it
+ *  must never make an interactive control harder to hit or make a financial statement harder to
+ *  read. These values are shared by the production-readiness surfaces instead of being repeated in
+ *  each screen. */
+export const control = {
+  minTouch: 48,
+  standard: 50,
+  iconHalo: 48,
+  iconHaloCompact: 36,
+  progress: 8,
+} as const;
+
+/** Type floors for allowance, billing, and refusal UI. They deliberately override Tight density:
+ *  compactness is useful until it makes a consequential number or explanation easier to misread. */
+export const moneyType = {
+  body: 15,
+  bodyLine: 23,
+  supporting: 13,
+  supportingLine: 18,
+} as const;
+
+/** Shared motion durations. Components still consult the OS reduce-motion preference before using
+ *  these; a duration token is not permission to animate. */
+export const motion = {
+  quick: 160,
+  standard: 250,
+} as const;
+
 /** Subtle lift for rounded surfaces that float over other content — the discussion
  * composer, the mini player, the project pill (R12.6). Their wrappers stay fully
  * transparent (no full-width strip behind the rounded shape).

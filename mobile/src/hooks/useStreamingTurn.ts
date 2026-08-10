@@ -31,6 +31,8 @@ export interface StreamingTurn {
   liveText: string;
   streaming: boolean;
   error: string | null;
+  /** Quiet, self-clearing poll status. Unlike `error`, this never asks the reader to dismiss it. */
+  connectionNotice: string | null;
   /** Optional optimistic user text shown while the turn streams (cleared on settle). */
   pendingUser: string | null;
   /** The turn's text and tool invocations in arrival order, so the UI can interleave them. */
@@ -71,6 +73,7 @@ export function useStreamingTurn(
   const [previewParentJobId, setPreviewParentJobId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   // Job id currently being watched; also the loop-exit signal (cancel/unmount nulls it).
   const watchRef = useRef<string | null>(null);
@@ -105,6 +108,7 @@ export function useStreamingTurn(
     setItems([]);
     setActivity('Reading the paper…');
     setPreviewJobIds([]);
+    setConnectionNotice(null);
   }, [pid, slug, qc, threadId]);
 
   /** Poll one job until it settles (or we stop watching). */
@@ -116,6 +120,7 @@ export function useStreamingTurn(
       setItems(job.items);
       setActivity(job.activity ?? 'Reading the paper…');
       setPreviewJobIds(job.preview_job_ids);
+      setConnectionNotice(null);
       let misses = 0;
       while (aliveRef.current && watchRef.current === job.id) {
         await sleep(POLL_MS);
@@ -124,6 +129,7 @@ export function useStreamingTurn(
         try {
           snap = (await getChatJob(pid!, job.id)).job;
           misses = 0;
+          setConnectionNotice(null);
         } catch (e) {
           if (e instanceof ApiError && e.status === 404) {
             // Server restarted and forgot the job; whatever completed is in the session.
@@ -135,7 +141,7 @@ export function useStreamingTurn(
           // Transient network blip: the turn is safe server-side, so keep polling and only
           // warn (without giving up) if the connection stays down.
           if (++misses >= OFFLINE_AFTER) {
-            setError('Connection lost — the response is still being generated and will appear once you’re back online.');
+            setConnectionNotice('Reconnecting… Your response is safe.');
           }
           continue;
         }
@@ -166,7 +172,8 @@ export function useStreamingTurn(
           setStreaming(false);
           setPendingUser(null);
           setPreviewJobIds([]);
-                return;
+          setConnectionNotice(null);
+          return;
         }
       }
     },
@@ -183,6 +190,7 @@ export function useStreamingTurn(
       if (busyRef.current) return;
       busyRef.current = true;
       setError(null);
+      setConnectionNotice(null);
       setItems([]);
       setActivity('Reading the paper…');
       setPreviewJobIds([]);
@@ -296,6 +304,7 @@ export function useStreamingTurn(
     setPreviewJobIds([]);
     setPreviewParentJobId(null);
     setError(null);
+    setConnectionNotice(null);
   }, [pid, slug, threadId]);
 
   const cancel = useCallback(() => {
@@ -304,6 +313,7 @@ export function useStreamingTurn(
     setStreaming(false);
     setPendingUser(null);
     setPreviewJobIds([]);
+    setConnectionNotice(null);
   }, []);
 
   const stop = useCallback(async () => {
@@ -330,6 +340,7 @@ export function useStreamingTurn(
     liveText,
     streaming,
     error,
+    connectionNotice,
     pendingUser,
     items,
     activity,

@@ -59,6 +59,9 @@ test('renders the proposed notes and synthesis for review', async () => {
   expect(screen.getByText('New synthesis paragraph.')).toBeTruthy();
   expect(screen.getAllByLabelText('Added line').length).toBeGreaterThan(0);
   expect(screen.getAllByLabelText('Removed line').length).toBeGreaterThan(0);
+  expect(screen.getByText('What this paper contributes on its own.')).toBeTruthy();
+  expect(screen.getByText('How this changes the argument across your reading.')).toBeTruthy();
+  expect(screen.getByText(/Nothing joins the project until you approve/)).toBeTruthy();
 });
 
 test('keeps approve, request edits, and cancel in the review sheet', async () => {
@@ -69,6 +72,7 @@ test('keeps approve, request edits, and cancel in the review sheet', async () =>
 
   expect(screen.getByText('Approve & commit')).toBeTruthy();
   expect(screen.getByText('Cancel')).toBeTruthy();
+  expect(screen.getByText('FINISH REVIEW')).toBeTruthy();
   await fireEventAsync.press(screen.getByText('Request edits'));
   expect(screen.getByPlaceholderText('Tell the analyst what to revise…')).toBeTruthy();
   fireEvent.changeText(screen.getByPlaceholderText('Tell the analyst what to revise…'), 'Keep the caveat.');

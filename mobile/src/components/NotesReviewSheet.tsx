@@ -7,7 +7,7 @@
 // Agent proposes, human commits (CLAUDE.md invariant 4).
 
 import { useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, Modal, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 
@@ -17,8 +17,8 @@ import type { StreamItem } from '@/api/types';
 import { useNotes, useReview } from '@/api/queries';
 import { AgentActivity } from '@/components/AgentActivity';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
-import { Button, IconButton, Screen, Text } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
+import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function NotesReviewSheet({
@@ -147,15 +147,25 @@ export function NotesReviewSheet({
           <View style={styles.centered}><ActivityIndicator color={t.mint} /></View>
         ) : review.isError || !data ? (
           <View style={styles.centered}>
-            <Text variant="caption" color={t.muted} style={{ textAlign: 'center' }}>
-              Could not load the proposed notes.
-            </Text>
-            <Button title="Retry" variant="ghost" onPress={() => void review.refetch()} />
+            <ToneSurface tone="neutral" style={styles.loadCard}>
+              <ToneIcon name="file-text" />
+              <Text variant="heading" style={styles.loadTitle}>The proposal is taking a moment</Text>
+              <Text variant="body" color={t.muted} style={styles.loadBody}>
+                Nothing has been committed. Try loading the review again.
+              </Text>
+              <Button title="Try again" variant="ghost" onPress={() => void review.refetch()} style={styles.loadAction} />
+            </ToneSurface>
           </View>
         ) : (
           <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
             <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-              <Text variant="serifTitle">{data.title}</Text>
+              <View style={styles.intro}>
+                <Text variant="overline" color={t.violet}>PROPOSED CHANGES</Text>
+                <Text variant="serifTitle" style={styles.paperTitle}>{data.title}</Text>
+                <Text variant="body" color={t.muted} style={styles.introBody}>
+                  Read what changed. Nothing joins the project until you approve it.
+                </Text>
+              </View>
 
               {requesting ? (
                 <AgentActivity
@@ -166,89 +176,107 @@ export function NotesReviewSheet({
                 />
               ) : null}
 
-              <Text variant="overline" style={styles.sectionLabel}>Notes for this paper</Text>
-              {editing ? (
-                <TextInput
-                  value={notes}
-                  onChangeText={setNotes}
-                  multiline
-                  editable={!busy}
-                  style={styles.editor}
-                  textAlignVertical="top"
-                />
-              ) : currentNotes.isLoading ? (
-                <ActivityIndicator color={t.mint} />
-              ) : (
-                <NotesDiff
-                  before={currentNotes.data?.markdown ?? ''}
-                  after={notes}
-                  onLinkPress={openProposalLink}
-                />
-              )}
-
-              <Text variant="overline" style={styles.sectionLabel}>Project synthesis</Text>
-              {editing ? (
-                <TextInput
-                  value={synthesis}
-                  onChangeText={setSynthesis}
-                  multiline
-                  editable={!busy}
-                  style={styles.editor}
-                  textAlignVertical="top"
-                />
-              ) : (
-                <NotesDiff
-                  before={data.synthesis_current}
-                  after={synthesis}
-                  onLinkPress={openProposalLink}
-                />
-              )}
-
-              {requestOpen ? (
-                <View style={styles.requestBox}>
-                  <Text variant="label">What should change?</Text>
+              <ReviewSection
+                icon="file-text"
+                title="Notes for this paper"
+                description="What this paper contributes on its own."
+              >
+                {editing ? (
                   <TextInput
-                    value={instruction}
-                    onChangeText={setInstruction}
-                    placeholder="Tell the analyst what to revise…"
-                    placeholderTextColor={t.muted}
+                    value={notes}
+                    onChangeText={setNotes}
                     multiline
-                    autoFocus
-                    editable={!requesting}
-                    style={styles.requestInput}
-                    selectionColor={t.mint}
+                    editable={!busy}
+                    style={styles.editor}
+                    textAlignVertical="top"
                   />
-                  <Button
-                    title={requesting ? 'Requesting…' : 'Send edit request'}
-                    onPress={() => void requestEdits()}
-                    disabled={requesting || !instruction.trim()}
-                    loading={requesting}
+                ) : currentNotes.isLoading ? (
+                  <ActivityIndicator color={t.mint} />
+                ) : (
+                  <NotesDiff
+                    before={currentNotes.data?.markdown ?? ''}
+                    after={notes}
+                    onLinkPress={openProposalLink}
                   />
-                </View>
-              ) : null}
+                )}
+              </ReviewSection>
+
+              <ReviewSection
+                icon="layers"
+                title="Project synthesis"
+                description="How this changes the argument across your reading."
+              >
+                {editing ? (
+                  <TextInput
+                    value={synthesis}
+                    onChangeText={setSynthesis}
+                    multiline
+                    editable={!busy}
+                    style={styles.editor}
+                    textAlignVertical="top"
+                  />
+                ) : (
+                  <NotesDiff
+                    before={data.synthesis_current}
+                    after={synthesis}
+                    onLinkPress={openProposalLink}
+                  />
+                )}
+              </ReviewSection>
 
               {error ? (
-                <Text variant="caption" color={t.danger} style={{ marginTop: space.md }}>{error}</Text>
+                <ToneSurface tone="danger" style={styles.errorBox}>
+                  <ToneIcon name="alert-circle" tone="danger" compact />
+                  <Text variant="body" color={t.danger} style={styles.errorText}>{error}</Text>
+                </ToneSurface>
               ) : null}
 
-              <Button
-                title={busy ? 'Committing…' : 'Approve & commit'}
-                icon="check"
-                onPress={() => void commit()}
-                loading={busy}
-                disabled={busy || requesting}
-                style={{ marginTop: space.lg }}
-              />
-              {onRequestEdits ? (
+              <Card style={styles.actionCard}>
+                <Text variant="overline" color={t.muted}>FINISH REVIEW</Text>
+                <Text variant="body" color={t.muted} style={styles.actionIntro}>
+                  Approve these changes, or keep the proposal open and ask for another pass.
+                </Text>
+                {requestOpen ? (
+                  <ToneSurface tone="neutral" style={styles.requestBox}>
+                    <Text variant="heading">What should change?</Text>
+                    <TextInput
+                      value={instruction}
+                      onChangeText={setInstruction}
+                      placeholder="Tell the analyst what to revise…"
+                      placeholderTextColor={t.muted}
+                      multiline
+                      autoFocus
+                      editable={!requesting}
+                      style={styles.requestInput}
+                      selectionColor={t.mint}
+                    />
+                    <Button
+                      title={requesting ? 'Requesting…' : 'Send edit request'}
+                      onPress={() => void requestEdits()}
+                      disabled={requesting || !instruction.trim()}
+                      loading={requesting}
+                    />
+                  </ToneSurface>
+                ) : null}
                 <Button
-                  title="Request edits"
-                  variant="ghost"
-                  onPress={() => setRequestOpen(true)}
-                  disabled={busy || requesting || requestOpen}
-                  style={styles.secondaryButton}
+                  title={busy ? 'Committing…' : 'Approve & commit'}
+                  icon="check"
+                  onPress={() => void commit()}
+                  loading={busy}
+                  disabled={busy || requesting}
+                  style={styles.approveButton}
                 />
-              ) : null}
-              <Button title="Cancel" variant="ghost" onPress={onClose} disabled={busy || requesting} />
+                {onRequestEdits ? (
+                  <Button
+                    title="Request edits"
+                    variant="ghost"
+                    onPress={() => setRequestOpen(true)}
+                    disabled={busy || requesting || requestOpen}
+                    style={styles.secondaryButton}
+                  />
+                ) : null}
+                <Button title="Cancel" variant="ghost" onPress={onClose} disabled={busy || requesting} />
+              </Card>
             </ScrollView>
           </KeyboardAvoidingView>
         )}
@@ -257,7 +285,34 @@ export function NotesReviewSheet({
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+function ReviewSection({
+  icon,
+  title,
+  description,
+  children,
+}: {
+  icon: 'file-text' | 'layers';
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <Card style={styles.reviewSection}>
+      <View style={styles.sectionHeader}>
+        <ToneIcon name={icon} tone="violet" compact />
+        <View style={styles.sectionCopy}>
+          <Text variant="heading">{title}</Text>
+          <Text variant="caption" color={t.muted} style={styles.sectionDescription}>{description}</Text>
+        </View>
+      </View>
+      <View style={styles.sectionContent}>{children}</View>
+    </Card>
+  );
+}
+
+const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -267,9 +322,22 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: t.line,
   },
-  body: { padding: space.lg, gap: space.sm, paddingBottom: space.xxl },
-  sectionLabel: { marginTop: space.md },
-  requestBox: { gap: space.sm, marginTop: space.md },
+  body: {
+    padding: density === 'tight' ? space.md : space.lg,
+    gap: density === 'tight' ? space.md : space.lg,
+    paddingBottom: space.xxl,
+  },
+  intro: { paddingHorizontal: space.xs },
+  paperTitle: { marginTop: space.xs },
+  introBody: { marginTop: space.xs },
+  reviewSection: { padding: density === 'tight' ? space.md : space.lg },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  sectionCopy: { flex: 1, minWidth: 0 },
+  sectionDescription: { marginTop: 2 },
+  sectionContent: { marginTop: space.md },
+  actionCard: { backgroundColor: t.elevated },
+  actionIntro: { marginTop: space.xs },
+  requestBox: { gap: space.sm, marginTop: space.lg, padding: space.md },
   requestInput: {
     minHeight: 88,
     maxHeight: 180,
@@ -283,6 +351,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  errorBox: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  errorText: { flex: 1, minWidth: 0 },
+  approveButton: { marginTop: space.lg },
   secondaryButton: { borderWidth: 1, borderColor: t.line2 },
   editor: {
     minHeight: 180,
@@ -293,8 +364,12 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     backgroundColor: t.surface,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: density === 'tight' ? 14 : 15,
+    lineHeight: density === 'tight' ? 21 : 23,
   },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xl },
+  loadCard: { width: '100%', maxWidth: 360 },
+  loadTitle: { marginTop: space.md },
+  loadBody: { marginTop: space.xs },
+  loadAction: { marginTop: space.lg },
 });

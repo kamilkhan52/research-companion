@@ -12,21 +12,17 @@ When Figma write access returns, refine the existing `Usage` frame (`90:116`) in
 `Not enforced`, each with `Light` and `Dark` suffixes. Do not create a duplicate page or leave any
 variant loose on the canvas.
 
-## Superseded in part, 2026-08-10 — remaining, not consumed
+## Corrected 2026-08-10 — remaining, not consumed
 
-Kamil's first tester pass reversed one decision below: the surface should show what is **remaining**,
-not what has been consumed (DR-041). Everything else here still holds, including the rule that
-governs how to do it — **remaining must be `limit - spent`, never `remaining_nanousd`**, which
+Kamil's first tester pass reversed the original framing: the surface shows what is **remaining**.
+Remaining is `(limit_nanousd - spent_nanousd) / limit_nanousd`, never `remaining_nanousd`, which
 subtracts holds too and would tell a reader with several jobs running that most of their month is
-gone. That is the exact false alarm the spend/held split exists to prevent; it would simply be
-arriving through the front door instead.
-
-Read the percentage sections below as being about the same number seen from the other side.
+gone. Live holds remain a separate, numberless card.
 
 ## Product decision
 
 The reader sees **neither credits nor dollars**. The surface shows the server-authoritative
-percentage of the monthly allowance that has actually been spent, the reset date, and the plan's
+percentage of the monthly allowance that remains after actual spend, the reset date, and the plan's
 promise in reading terms.
 
 - Dollars describe Scholiast's provider cost, not value to a reader.
@@ -35,8 +31,8 @@ promise in reading terms.
 - Papers and narration minutes are understandable promises, but the balance is fungible and the
   API does not split it into per-feature buckets. They therefore describe the plan, never a
   remaining estimate.
-- Percentage is the only numeric usage signal in the primary UI. It comes directly from
-  `spent_fraction`; the client does not derive it from nano-USD fields.
+- Percentage is the only numeric usage signal in the primary UI. It is derived from `limit - spent`;
+  the transport's `remaining_nanousd` is not a display value because it also subtracts holds.
 
 Internal QA still needs the plan constants: tester = 5,000 credits / $5.00; free = 200 credits /
 $0.20; basic = 2,500 credits / $2.50. Those numbers do not appear in reader-facing copy.
@@ -56,10 +52,10 @@ turning every Settings visit into a usage check. When `enforced` is false, omit 
 If `/plan` is already visible when enforcement becomes false (sign-out or connectivity/config
 change), navigate back without showing a zero or an allowance-unavailable card.
 
-## The core visual rule: spent and held never share a bar
+## The core visual rule: remaining and held never share a bar
 
-`spent_fraction` owns the single violet progress bar. It is durable month-to-date spend and is the
-only value that can trigger the 80% warning.
+Spend-only remaining owns the single violet progress bar. It begins full and shortens as durable
+month-to-date spend lands. `spent_fraction` remains the only value that can trigger the 80% warning.
 
 When `held_nanousd > 0`, show a separate amber-tinted live-work card below the spend card:
 
@@ -74,8 +70,8 @@ subtracts holds and would recreate the exact false alarm this design is intended
 
 | Surface | Authoritative condition | Treatment and copy |
 |---|---|---|
-| Normal | `enforced && spent_fraction < warn_at_fraction` | Detail screen. Violet spend-only bar, reset date, plan promise. Optional separate live-work card when held is non-zero. |
-| Approaching | `enforced && spent_fraction >= warn_at_fraction && spent_fraction < 1` | Same geometry. Violet spend bar plus amber information card: `You're getting close` / `Nothing is blocked. Scholiast will keep working until this month's allowance is used.` |
+| Normal | `enforced && spent_fraction < warn_at_fraction` | Detail screen. Violet remaining bar, reset date, plan promise. Optional separate live-work card when held is non-zero. |
+| Approaching | `enforced && spent_fraction >= warn_at_fraction && spent_fraction < 1` | Same geometry. Short Violet remaining bar plus Amber information card: `A little room remains` / `Nothing changes until the allowance reaches zero. Scholiast keeps working in the meantime.` |
 | Exhausted | Action response `402`, `code: quota_exceeded`, and `requested_nanousd <= limit_nanousd` | Mid-flow modal: `This month's allowance is used`. Say exactly when paid work returns. Primary `Keep reading`; secondary `View plan & usage`. No upgrade CTA. |
 | Busy, not exhausted | Action response `429`, `code: holds_outstanding` | Mid-flow amber modal: `A few things are finishing`. Explain that running work briefly has room set aside. Disable retry until `Retry-After`; button counts down, then becomes `Try again`. Never mention the monthly reset. |
 | Too large for plan | Action response `402`, `code: quota_exceeded`, and `requested_nanousd > limit_nanousd` | Contextual mid-flow modal: `This narration won't fit your plan`. State that waiting will not help. Prefer an available no-cost alternative (`Use device voice` for premium narration); otherwise `Choose a smaller action`. No upgrade CTA. |
@@ -148,8 +144,8 @@ not imply separate audio credits. `monthly_credits` and all nano-USD fields rema
 
 ## Accessibility and copy constraints
 
-- Progress accessibility label: `18 percent of this month's allowance used.` It must not include
-  held work.
+- Progress accessibility label: `82 percent of this month's allowance remaining.` It must not
+  include held work.
 - Live-work card label: `Work in progress. Some allowance is temporarily set aside and returns
   when the work finishes.`
 - Minimum touch target 48 × 48; body copy at least 15 px; supporting copy 13 px.
