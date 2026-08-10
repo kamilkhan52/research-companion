@@ -255,14 +255,11 @@ def test_another_users_running_work_does_not_count_against_you(monkeypatch):
 
 
 def test_the_ceiling_releases_when_the_worker_exits_not_when_the_client_sees_done(monkeypatch):
-    """The ceiling is held slightly longer than the client-visible status, on purpose.
+    """Done follows accounting settlement, but callbacks still run inside worker liveness.
 
-    `status` flips to done/cancelled while the worker thread is still inside its `finally` —
-    that is deliberate (cancellation is terminal to clients while the worker drains), and the
-    settle callbacks that run in that window can themselves admit follow-on work. So the count
-    tracks `_worker_is_active`, not `status`. Asserting `== 0` the instant `_settle` returns is
-    therefore asserting something the registry never promised, and passed only because a quiet
-    machine won the race — it failed under a full-suite run.
+    The concurrency count tracks `_worker_is_active`, not status, because settle callbacks can
+    themselves admit follow-on work before the worker finally releases its slot. Cancellation is
+    also client-visible while its cooperative worker is still draining.
     """
     monkeypatch.setenv("RC_RATE_LIMIT_CONCURRENT_JOBS", "1")
     monkeypatch.setenv("RC_RATE_LIMIT_STARTS_PER_MINUTE", "50")

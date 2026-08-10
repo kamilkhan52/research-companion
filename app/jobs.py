@@ -11,10 +11,11 @@ Two things this makes structural rather than per-module discipline:
   * **The contextvar rebind.** Threads don't inherit the request's active project; the registry
     captures it and rebinds it inside the worker, so a feature module can't forget (getting it
     wrong silently reads/writes the wrong project's files).
-  * **Persist-before-done ordering.** The worker sets its result fields and returns; the registry
-    flips status to "done" only after `work` fully returns. A client that observes "done" has
-    therefore always seen the side effects (recorded turn, saved file) complete — closing the
-    poll race that each module otherwise had to avoid by hand.
+  * **Persist-and-settle-before-done/error ordering.** The worker sets its result fields and
+    returns; the registry settles any owned spend reservation before publishing "done" or
+    "error". A client that observes either state therefore sees both persisted side effects and
+    the account ledger complete. Cooperative cancellation remains immediately visible by design,
+    but `finished_at` stays null until the worker has unwound and its reservation was settled.
 """
 from __future__ import annotations
 
@@ -86,6 +87,14 @@ _STARTED_MONO_ATTR = "_rc_started_mono"
 _CANCELLED_ATTR = "_rc_cancelled"
 _WORKER_ACTIVE_ATTR = "_rc_worker_active"
 _ON_SETTLE_ATTR = "_rc_on_settle"
+# A worker can commit an outcome while its spend reservation is still settling. Keeping that
+# outcome private prevents polling from observing done/error before `/api/plan` can observe the
+# same job's spend. It also closes the completion-vs-Stop window for workers such as Discovery,
+# which persist their result under the registry lock before returning.
+_PENDING_OUTCOME_ATTR = "_rc_pending_outcome"
+# Set in the same critical section that snapshots settle callbacks. Once true, a newly attached
+# callback must run inline instead of joining a list the worker has already consumed.
+_FINALIZED_ATTR = "_rc_finalized"
 # Monotonic tick stamped on a job when it stops running, used to rank scopes by recency in
 # `_prune`. Deliberately not a timestamp: `started_at`/`finished_at` are ISO strings at SECOND
 # resolution, so everything a busy instance settles inside one second compares equal and the
@@ -243,13 +252,14 @@ def request_cancellation_for_scopes(scopes: set[str | None]) -> int:
                 # liveness from deletion.
                 if scope not in scopes or getattr(job, _WORKER_ACTIVE_ATTR, None) is not True:
                     continue
+                # Once work has returned/committed its outcome, cancellation has lost the race.
+                # The status deliberately remains running while the owned reservation settles.
+                if getattr(job, _PENDING_OUTCOME_ATTR, None) is not None:
+                    continue
                 setattr(job, _CANCELLED_ATTR, True)
                 if job.status == "running":
                     job.status = "cancelled"
-                    job.finished_at = now_iso()
-                    reg._stamp_settled(job)
                     cancelled.append((reg.name, job, scope))
-            reg._prune()
     for name, job, scope in cancelled:
         log.info("cancel %s job=%s", name, job.id[:8], extra=_log_tag(scope))
     return len(cancelled)
@@ -402,11 +412,14 @@ class JobRegistry(Generic[J]):
     def cancel(self, job_id: str, *, project_id=_AMBIENT) -> J | None:
         """Request cooperative cancellation of a running job (project-scoped like get()).
 
-        Threads can't be killed, so this marks the job terminal immediately — the client's next
+        Threads can't be killed, so this marks the job cancelled immediately — the client's next
         poll sees `cancelled` — and sets a flag the worker checks via is_cancelled() at its own
-        checkpoints (typically between paid upstream calls) to stop doing further work. Because
-        `_running_for` only matches running jobs, the dedup key frees up right away; a stale
-        worker that hasn't noticed yet only ever finishes writing shared idempotent caches.
+        checkpoints (typically between paid upstream calls) to stop doing further work. The job's
+        `finished_at` deliberately remains null until that worker exits and its spend reservation
+        settles; terminal finalizers must use that field rather than treating the immediate Stop
+        acknowledgement as accounting completion. Because `_running_for` only matches running
+        jobs, the dedup key frees up right away; a stale worker that hasn't noticed yet only ever
+        finishes writing shared idempotent caches.
         Returns the job (whatever its status — cancelling an already-finished job is a no-op),
         or None when the id is unknown/not owned by this project."""
         pid = _resolve_pid(project_id)
@@ -414,13 +427,15 @@ class JobRegistry(Generic[J]):
             job = self._jobs.get(job_id)
             if job is None or getattr(job, _PID_ATTR, None) != pid:
                 return None
-            setattr(job, _CANCELLED_ATTR, True)
-            was_running = job.status == "running"
+            # Work that already returned has committed to its outcome and is only waiting for
+            # reservation settlement. A Stop arriving in that gap must not turn persisted success
+            # into cancellation, and must not publish a terminal status ahead of the ledger.
+            outcome_pending = getattr(job, _PENDING_OUTCOME_ATTR, None) is not None
+            if not outcome_pending:
+                setattr(job, _CANCELLED_ATTR, True)
+            was_running = job.status == "running" and not outcome_pending
             if was_running:
                 job.status = "cancelled"
-                job.finished_at = now_iso()
-                self._stamp_settled(job)
-                self._prune()   # this job just became prunable; see _prune's note on settling
         if was_running:
             log.info("cancel %s job=%s", self.name, job.id[:8], extra=_log_tag(pid))
         return job
@@ -456,6 +471,7 @@ class JobRegistry(Generic[J]):
             # cache hit spawned no worker, so it never counts toward the concurrency ceiling.
             setattr(job, _USER_ATTR, config.active_user_id())
             self._jobs[job.id] = job
+            setattr(job, _FINALIZED_ATTR, True)
             self._stamp_settled(job)   # `put` registers an ALREADY-terminal job
             self._prune()
         return job
@@ -702,13 +718,16 @@ class JobRegistry(Generic[J]):
             raise RuntimeError(f"Project {pid} is being modified; not accepting new jobs.")
 
     def add_settle_callback(self, job: J, cb: Callable[[J], None]) -> bool:
-        """Register cb(job) to run on the worker thread immediately after the job settles
-        (status flipped, project still bound). Returns False if the job has ALREADY settled —
-        the callbacks are read in the same critical section that flips the status, so a False
-        return is the caller's cue to handle the settled job inline; there is no window where
-        an attachment can be lost."""
+        """Register cb(job) to run on the worker thread immediately after reservation settlement
+        and terminal publication, while the project remains bound.
+
+        Returns False if the worker has ALREADY finalized. Cancellation is client-visible before
+        finalization, so status alone is not the gate: a callback attached to a cancelled but
+        unwinding worker must still wait for its spend to settle. The callbacks are read in the
+        same critical section that publishes ``finished_at``, leaving no attachment window.
+        """
         with self._lock:
-            if job.status != "running":
+            if getattr(job, _FINALIZED_ATTR, False):
                 return False
             cbs = getattr(job, _ON_SETTLE_ATTR, None)
             if cbs is None:
@@ -716,6 +735,19 @@ class JobRegistry(Generic[J]):
                 setattr(job, _ON_SETTLE_ATTR, cbs)
             cbs.append(cb)
             return True
+
+    def set_outcome_locked(self, job: J, status: str, *, error: str | None = None) -> None:
+        """Commit a worker outcome without publishing it before reservation settlement.
+
+        The caller MUST hold :attr:`lock`. This is for workers whose result persistence must be
+        atomic with winning a completion-vs-cancellation race (Discovery), or whose generator
+        reports a job-level error as data (Graph). Ordinary workers simply return or raise.
+        """
+        if status not in {"done", "error"}:
+            raise ValueError(f"invalid worker outcome: {status}")
+        setattr(job, _PENDING_OUTCOME_ATTR, status)
+        if error is not None:
+            job.error = error
 
     def _fire_settle(self, job: J, cbs: list, tag: dict) -> None:
         for cb in cbs:
@@ -734,14 +766,63 @@ class JobRegistry(Generic[J]):
         held_token = spend_ceiling.bind(held)
         tag = _log_tag(pid)
         t0 = time.monotonic()
+        failure: Exception | None = None
+        settlement_attempted = False
         try:
-            work(job)
+            try:
+                work(job)
+            except Exception as exc:  # noqa: BLE001 — every worker failure becomes job state
+                failure = exc
+
+            # Commit the worker's outcome under the same lock cancellation uses, but keep normal
+            # completion/error private while the reservation settles. Once this marker exists a
+            # Stop has lost the race: the work and its persisted side effects are complete.
             with self._lock:
-                if job.status == "running":   # worker didn't set a terminal status itself
-                    job.status = "done"
-                    job.finished_at = now_iso()
+                if job.status == "cancelled":
+                    outcome = "cancelled"
+                elif failure is not None:
+                    outcome = "error"
+                else:
+                    outcome = getattr(job, _PENDING_OUTCOME_ATTR, None)
+                    if outcome is None:
+                        # Compatibility for a worker that assigned status directly. Shared workers
+                        # should use set_outcome_locked so polling cannot observe this early.
+                        outcome = job.status if job.status != "running" else "done"
+                setattr(job, _PENDING_OUTCOME_ATTR, outcome)
+                if job.status != "cancelled":
+                    # Hide a directly assigned worker outcome during the settlement window.
+                    job.status = "running"
+                    job.finished_at = None
+
+            # Settlement is part of finalization, not worker cleanup. Publishing done/error first
+            # lets a client invalidate `/api/plan` against a ledger that still contains the hold or
+            # lacks the just-incurred spend. Cancellation remains immediately visible, but its
+            # `finished_at` stays null and settle callbacks remain queued until this attempt ends.
+            if owns_hold:
+                settlement_attempted = True
+                try:
+                    spend_ceiling.settle(held)
+                except Exception as exc:  # noqa: BLE001 — settle itself is best-effort by contract
+                    # `spend_ceiling.settle` currently swallows and logs ledger failures. Keep the
+                    # registry fail-safe if an injected adapter violates that contract: the
+                    # settlement was attempted, and hiding a persisted result forever is worse.
+                    log.error(
+                        "reservation settle escaped kind=%s job=%s error=%s",
+                        self.name,
+                        job.id[:8],
+                        type(exc).__name__,
+                        extra=tag,
+                    )
+
+            with self._lock:
+                final = getattr(job, _PENDING_OUTCOME_ATTR)
+                if job.status != "cancelled":
+                    job.status = final
+                if failure is not None and job.status != "cancelled":
+                    job.error = str(failure)[:400]
+                job.finished_at = now_iso()
                 self._stamp_settled(job)
-                final = job.status
+                setattr(job, _FINALIZED_ATTR, True)
                 settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
                 self._prune()
             dur = time.monotonic() - t0
@@ -752,37 +833,27 @@ class JobRegistry(Generic[J]):
                 # final == "cancelled" means the worker wound down after a cancel() request.
                 log.info("%s %s job=%s in %.1fs", final, self.name, job.id[:8], dur, extra=tag)
             self._fire_settle(job, settle_cbs, tag)
-        except Exception as e:
-            with self._lock:
-                # A cancelled job stays cancelled: the worker unwinding (often *because* it was
-                # cancelled mid-call) must not resurface to clients as an error.
-                if job.status != "cancelled":
-                    job.status = "error"
-                    job.error = str(e)[:400]
-                    job.finished_at = now_iso()
-                self._stamp_settled(job)
-                settle_cbs = list(getattr(job, _ON_SETTLE_ATTR, ()))
-                self._prune()
-            log.warning("error %s job=%s in %.1fs: %s", self.name, job.id[:8],
-                        time.monotonic() - t0, str(e)[:200], extra=tag)
-            self._fire_settle(job, settle_cbs, tag)
         finally:
+            # Preserve the old fail-safe for a BaseException or an internal finalization failure:
+            # even if no client-visible outcome can be published, an owned reservation must not
+            # remain stranded until lease expiry. Keep the worker active during this last attempt.
+            if owns_hold and not settlement_attempted:
+                try:
+                    spend_ceiling.settle(held)
+                except Exception as exc:  # noqa: BLE001 — same adapter boundary as above
+                    log.error(
+                        "reservation fallback settle escaped kind=%s job=%s error=%s",
+                        self.name,
+                        job.id[:8],
+                        type(exc).__name__,
+                        extra=tag,
+                    )
             # Last action while this worker is still logically inside the registry. Settle
             # callbacks above can touch the project or admit follow-on work, so a deletion sweep
             # must continue to see the worker until they have returned too.
             with self._lock:
                 setattr(job, _WORKER_ACTIVE_ATTR, False)
                 self._prune()
-            # Settle before unbinding, and inside the same `finally` that clears the active
-            # marker: whatever the worker did — returned, raised, or was cancelled — the account
-            # is charged exactly what it spent and the unspent remainder goes back. A job that
-            # never spent anything settles at zero rather than being released, so the ledger
-            # records the admission as used rather than abandoned.
-            # Only the job that TOOK the hold settles it. An inherited one belongs to the
-            # caller still running above us, and settling it here would finalize a live build's
-            # reservation from inside one of its papers.
-            if owns_hold:
-                spend_ceiling.settle(held)
             spend_ceiling.reset(held_token)
             config.reset_active_project(token)
             config.reset_active_user(user_token)

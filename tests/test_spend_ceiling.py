@@ -64,7 +64,11 @@ def ledger(monkeypatch):
 
 
 def _settled(reg, job_id, timeout=5.0):
-    """Wait for the client-visible status to go terminal."""
+    """Wait for a client-visible terminal status.
+
+    Done/error now imply reservation settlement. Cooperative cancellation is the deliberate
+    exception: it is acknowledged immediately and has ``finished_at is None`` until finalization.
+    """
     import time
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -76,13 +80,7 @@ def _settled(reg, job_id, timeout=5.0):
 
 
 def _wait_for(predicate, timeout=5.0, what="condition"):
-    """Wait for the RESERVATION to settle, which is later than the status flip.
-
-    `status` goes terminal inside the worker while it is still unwinding; the reservation is
-    settled in the same `finally` that clears the worker marker, strictly afterwards. Asserting
-    immediately after `_settled` therefore reads an empty ledger — and passed in isolation only
-    because a quiet machine won the race, then failed under a full-suite run.
-    """
+    """Wait for asynchronous worker cleanup not represented by the assertion under test."""
     import time
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -136,6 +134,105 @@ def test_the_job_settles_to_what_was_actually_spent_not_the_maximum_held(ledger)
     _wait_for(lambda: ledger["settle"], what="the reservation to settle")
     assert ledger["settle"] == [("res-1", 2_000)]
     assert ledger["settle"][0][1] < spend_limits.max_cost_nanousd("analysis")
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_done_and_error_stay_running_until_reservation_settlement_finishes(
+    ledger, monkeypatch, fails,
+):
+    """DR-035: a terminal poll must never outrun the account ledger it invalidates against."""
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="analysis")
+    settling = threading.Event()
+    release_settlement = threading.Event()
+    real_settle = spend_ceiling.settle
+
+    def gated_settle(held):
+        settling.set()
+        assert release_settlement.wait(5)
+        real_settle(held)
+
+    monkeypatch.setattr(spend_ceiling, "settle", gated_settle)
+
+    def work(_job):
+        spend_ceiling.note_spend(2_000)
+        if fails:
+            raise RuntimeError("provider exploded")
+
+    token = config.set_active_user(ALICE)
+    try:
+        job = reg.start_or_join("k", lambda: SampleJob(id=new_id()), work)
+        assert settling.wait(5)
+        during = reg.snapshot(job.id)
+        assert during["status"] == "running"
+        assert during["finished_at"] is None
+        assert during["error"] is None
+        assert ledger["settle"] == []
+        # Work has already committed its outcome. Stop cannot rewrite persisted success/error
+        # during the private settlement window.
+        assert reg.cancel(job.id) is job
+        assert job.status == "running"
+        assert reg.is_cancelled(job) is False
+
+        release_settlement.set()
+        final = _settled(reg, job.id)
+    finally:
+        config.reset_active_user(token)
+
+    assert final.status == ("error" if fails else "done")
+    assert final.finished_at is not None
+    assert final.error == ("provider exploded" if fails else None)
+    assert ledger["settle"] == [("res-1", 2_000)]
+
+
+def test_cancel_is_immediate_but_finished_at_and_callbacks_wait_for_settlement(
+    ledger, monkeypatch,
+):
+    """Stop stays responsive without letting a terminal finalizer read the ledger too early."""
+    reg: JobRegistry[SampleJob] = JobRegistry("t", metered=True, operation="analysis")
+    working = threading.Event()
+    release_work = threading.Event()
+    settling = threading.Event()
+    release_settlement = threading.Event()
+    callback_seen: list[tuple[str, str | None]] = []
+    real_settle = spend_ceiling.settle
+
+    def gated_settle(held):
+        settling.set()
+        assert release_settlement.wait(5)
+        real_settle(held)
+
+    monkeypatch.setattr(spend_ceiling, "settle", gated_settle)
+
+    def work(_job):
+        working.set()
+        assert release_work.wait(5)
+        spend_ceiling.note_spend(3_000)
+
+    token = config.set_active_user(ALICE)
+    try:
+        job = reg.start_or_join("k", lambda: SampleJob(id=new_id()), work)
+        assert working.wait(5)
+        cancelled = reg.cancel(job.id)
+        assert cancelled.status == "cancelled"
+        assert cancelled.finished_at is None
+        assert reg.add_settle_callback(
+            job, lambda settled: callback_seen.append((settled.status, settled.finished_at)),
+        ) is True
+
+        release_work.set()
+        assert settling.wait(5)
+        assert job.status == "cancelled"
+        assert job.finished_at is None
+        assert callback_seen == []
+        assert ledger["settle"] == []
+
+        release_settlement.set()
+        _wait_for(lambda: job.finished_at is not None, what="cancelled job finalization")
+    finally:
+        config.reset_active_user(token)
+
+    assert ledger["settle"] == [("res-1", 3_000)]
+    assert callback_seen == [("cancelled", job.finished_at)]
 
 
 def test_a_job_that_spends_nothing_still_settles_at_zero(ledger):

@@ -4,10 +4,21 @@
 This is the execution ledger — update the Status column as milestones land, same convention as
 `docs/product-roadmap.md`.*
 
-**Workflow per milestone:** branch → Opus implements → codex CLI review (GPT 5.6 Sol, high
-reasoning) in `/loop` → fix findings → PR → merge. Milestones that change external billing
-configuration, the production database, or store configuration need explicit human approval
-before execution.
+**Workflow per milestone:** branch → implement → review → fix findings → PR → merge. Milestones
+that change external billing configuration, the production database, or store configuration need
+explicit human approval before execution.
+
+**Reviews are Claude's, as of 2026-08-10** — the codex account is out of quota. That changes what
+review is worth guarding against, because the two reviewers fail differently: running one model
+repeatedly stops questioning the design by about the third pass and starts checking its own
+previous fixes. When rounds are limited, spend them on the highest-severity finding and its test,
+not on breadth. `AGENTS.md` is the review contract and states what counts as a finding.
+
+**A reviewer's proposed fix is not automatically safer than the code.** On 2026-08-10 a review of
+[#350](https://github.com/kamilkhan52/research-companion/pull/350) proposed replacing a threshold
+check with one derived from the number already on screen; it would have failed at exactly the
+threshold (`0.2 <= 1 - 0.8` is false in IEEE 754) and fired when the allowance was exhausted.
+Verify a proposed fix as carefully as the line it replaces.
 
 **Scope of this file:** what is open, and the decisions that bind future work. Completed milestone
 detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-history.md) on
@@ -17,7 +28,7 @@ detail, dated handoffs, and the R14 device pass moved to [`90-history.md`](90-hi
 
 ---
 
-## Current position (updated 2026-08-09, after M3 enforcement landed and deployed)
+## Current position (updated 2026-08-10)
 
 **M1 is complete and production is LIVE, running Kamil's real corpus.**
 `https://research-companion.fly.dev` in `sjc`: volume attached, database connected, all migrations
@@ -101,14 +112,24 @@ never saw it; its guarantee survives on the job path.
    whole month in thirty-three turns. **A bound needs a test proving the ordinary case still
    passes through it**, not only that the exceptional case is caught.
 
-   The plan/usage CLIENT surface shipped in [#336](https://github.com/kamilkhan52/research-companion/pull/336) —
-   a `Plan & usage` screen showing the spent percentage, the reset date and the plan's promise, with
-   held work on its own card so a reader with jobs in flight is never told their month is nearly
-   gone. Awaiting a device check as DR-038.
+   **M3 is functionally complete as of 2026-08-10.** The plan/usage surface shipped in
+   [#336](https://github.com/kamilkhan52/research-companion/pull/336) and was reframed to show what
+   REMAINS rather than what was consumed ([#350](https://github.com/kamilkhan52/research-companion/pull/350),
+   DR-041). Per-account plans landed in [#342](https://github.com/kamilkhan52/research-companion/pull/342),
+   so two accounts can differ and an operator can grant one. The mid-flow 402/429 refusals landed in
+   #345/#346 (DR-034). Account isolation across sign-in landed in
+   [#351](https://github.com/kamilkhan52/research-companion/pull/351) (DR-037, DR-044), and
+   `codex/job-terminal-after-settlement` publishes a job's terminal status only after its
+   reservation settles (DR-035).
 
-   Still open in M3: a per-account plan override for Kamil; the mid-flow 402/429 refusal handling
-   (DR-034); and `research_tools` web search, which is external API spend with no per-call cost the
-   app can see and needs a provider-side decision rather than a code change.
+   Still open in M3: `research_tools` web search, which is external API spend with no per-call cost
+   the app can see and needs a provider-side decision rather than a code change; DR-036, refreshing
+   the account's standing after every metered job; and DR-049, giving background-job refusals
+   structured metadata so a client stops classifying them by exact server prose.
+
+   **What actually gates progress now is device acceptance, not code.** Thirty-six ledger rows sit
+   at `implemented — verify`. Merging is not acceptance, and a row only closes when Kamil has seen
+   it.
 
 ### Still open, in order
 
@@ -156,6 +177,14 @@ P0-17 (`DeliveryReq.model` bypassing settings, which is M3's tier check).
 
 Settled 2026-07-24 with the product owner. These are the assumptions the whole sequence rests on;
 revisiting one invalidates the milestones downstream of it.
+
+**Project export/import is not a product feature (Kamil, 2026-08-10).** The git-bundle
+export/import in `projects.py` was built to migrate Kamil's own projects onto production, and it
+did that. It may later be the mechanism under a sharing or public-projects feature, but it is not
+one today. Do not design around its current shape, schedule work to polish it, or treat its absence
+from the client as a gap. Its import path stays a maintained trust boundary because a latent
+capability that materializes untrusted trees is worth keeping safe, not because a feature depends
+on it.
 
 | Decision | Choice | Reversibility |
 |---|---|---|

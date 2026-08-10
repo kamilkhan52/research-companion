@@ -24,8 +24,17 @@ For every scenario:
 ## Test baseline
 
 - **Current app-code baseline:** `main` merge `31e9179` (PR
-  [#198](https://github.com/kamilkhan52/research-companion/pull/198)). Later docs-only merges do
-  not change the served application tree.
+  [#198](https://github.com/kamilkhan52/research-companion/pull/198)).
+
+  > **STALE, and the results below are stale with it (noted 2026-08-10).** `main` is roughly 150
+  > PRs past that baseline. Whole surfaces have been rebuilt since — the Library chips, the pending
+  > activity line, the Map controls, Add, the notes review flow, author cards, and an allowance
+  > screen that did not exist. A `PASS` recorded here describes an app that no longer exists, so
+  > treat every result as evidence about the past rather than about the build in your hand.
+  >
+  > What is live and waiting is in [`device-review-ledger.md`](device-review-ledger.md): every row
+  > that is not `closed`. Re-baseline this file before the next full pass rather than amending
+  > results scenario by scenario.
 - **Backend URL:** `http://100.83.161.127:8000`
 - **Metro dev-client link:**
   `exp+research-companion://expo-development-client/?url=http%3A%2F%2F100.83.161.127%3A8081`

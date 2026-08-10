@@ -383,6 +383,7 @@ def test_cancelled_worker_blocks_project_deletion_until_its_thread_exits():
         "k", lambda: SampleJob(id=new_id()), work, project_id="drain-project")
     assert entered.wait(2)
     assert reg.cancel(job.id, project_id="drain-project").status == "cancelled"
+    assert job.finished_at is None  # Stop acknowledged; worker/reservation not finalized yet.
     assert jobs.any_running_for_project("drain-project") == "cancel-drain"
 
     # A terminal cleanup sweep must not erase the only record that the live worker still exists.
@@ -394,6 +395,7 @@ def test_cancelled_worker_blocks_project_deletion_until_its_thread_exits():
     while jobs.any_running_for_project("drain-project") and time.time() < deadline:
         time.sleep(0.01)
     assert jobs.any_running_for_project("drain-project") is None
+    assert job.finished_at is not None
 
     jobs.forget_finished_for_project("drain-project")
     assert job.id not in reg.jobs
@@ -494,8 +496,7 @@ def test_explicit_project_id_overrides_ambient_for_the_worker(monkeypatch):
 
 
 def test_settle_callback_fires_after_terminal_status():
-    """add_settle_callback: registered on a running job -> fires on the worker thread after
-    the status flip; on a settled job -> returns False so the caller handles it inline."""
+    """A callback fires after terminal publication; a finalized job refuses late attachment."""
     from app import jobs
 
     reg = jobs.JobRegistry("settle-test")
