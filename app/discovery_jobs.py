@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from . import config, discovery
-from .jobs import Job, JobRegistry, new_id, now_iso
+from .jobs import Job, JobRegistry, new_id
 
 RunFn = Callable[..., "Iterator[dict]"]
 
@@ -119,12 +119,11 @@ def start_discovery(pid: str, goals: str, run_fn: RunFn = discovery.run_discover
                         discovery.save_result(event["result"])
                     _apply_event(job, event)
                     if event["type"] == "done":
-                        # Completion and cancellation share this lock. Marking done here closes
-                        # the otherwise tiny window in which Stop could arrive after persistence
-                        # but before JobRegistry._run settled the worker, producing a cancelled
-                        # snapshot even though a complete result had already replaced the old one.
-                        job.status = "done"
-                        job.finished_at = now_iso()
+                        # Completion and cancellation share this lock. Commit the outcome here to
+                        # close the otherwise tiny window in which Stop could arrive after
+                        # persistence, but do not PUBLISH done until JobRegistry has settled this
+                        # run's spend reservation.
+                        _registry.set_outcome_locked(job, "done")
         finally:
             # A generator can own provider clients or a bounded parallel frontier. Closing it on
             # cancellation releases those resources immediately after the current event boundary

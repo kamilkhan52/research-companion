@@ -122,7 +122,9 @@ way they did. This is an index, not a substitute for reading them.
 - `graph.py` / `graph_store.py` / `graph_layout.py` / `citations.py` — reference graph pipeline.
 - `discovery.py` — goals → ranked reading suggestions.
 - `jobs.py` — the shared `JobRegistry` behind every background job: thread spawn, the contextvar
-  rebind of invariant 2, error capture, persist-before-done finalize.
+  rebind of invariant 2, error capture, and persist-plus-reservation-settle before publishing
+  done/error. Cooperative Stop is visible immediately, but `finished_at` remains null until its
+  worker and accounting finalize.
 - `*_jobs.py` (`audio`, `chat`, `preview`, `graph`, `discovery`, `notes`, `retrieval`, `canonical`,
   `reference`, `cover`) — background-job modules (invariant 1). Each defines a payload dataclass and
   a `work(job)`, delegating lifecycle to a `JobRegistry`. Keep new long ops to this shape.

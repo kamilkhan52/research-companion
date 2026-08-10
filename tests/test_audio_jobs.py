@@ -332,7 +332,7 @@ def test_cancel_flips_status_immediately_and_stops_paid_synthesis():
     cancelled = audio_jobs.cancel_job(job.id)
     assert cancelled is not None
     assert cancelled.status == "cancelled"          # visible to the next poll immediately
-    assert cancelled.finished_at is not None
+    assert cancelled.finished_at is None             # accounting/worker finalization is pending
 
     calls_at_cancel = len(synth_calls)
     release.set()
@@ -342,12 +342,13 @@ def test_cancel_flips_status_immediately_and_stops_paid_synthesis():
     deadline = time.time() + 5.0
     while time.time() < deadline:
         time.sleep(0.02)
-        if len(synth_calls) == calls_at_cancel:
+        current = audio_jobs.get_job(job.id)
+        if current is not None and current.finished_at is not None:
             break
-    time.sleep(0.1)
     final = audio_jobs.get_job(job.id)
     assert final is not None
     assert final.status == "cancelled"
+    assert final.finished_at is not None
     assert final.url is None
     assert len(synth_calls) == calls_at_cancel
 

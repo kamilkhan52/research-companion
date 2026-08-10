@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import graph, sessions, store
-from .jobs import Job, JobRegistry, now_iso
+from .jobs import Job, JobRegistry
 
 
 @dataclass
@@ -140,8 +140,6 @@ def _apply_event(job: BuildJob, event: dict) -> None:
         job.current_slug = None
         job.current_title = None
     elif etype == "error":
-        # A job-level error event ends the build in error; the registry's finalize only sets
-        # "done" when the job is still "running", so this terminal status is preserved.
-        job.status = "error"
-        job.error = event["detail"]
-        job.finished_at = now_iso()
+        # A job-level error event ends the build in error, but the status remains private until
+        # the registry settles this run's spend reservation. The caller holds `_registry.lock`.
+        _registry.set_outcome_locked(job, "error", error=event["detail"])

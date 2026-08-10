@@ -215,8 +215,9 @@ def start_retrieval(
     if after_retrieved is not None and not created:
         # Joined a retrieval another request started (possibly without a hook): attach the
         # continuation and register a settle callback — the registry reads callbacks in the
-        # same critical section that flips the status, so either the callback fires on the
-        # worker thread or add returns False and the settled job is handled inline here.
+        # same critical section that publishes `finished_at` after reservation settlement, so
+        # either the callback fires on the worker thread or add returns False and the finalized
+        # job is handled inline here.
         # The claim flag dedupes against the worker's own end-of-work check.
         with _registry.lock:
             if getattr(job, "_after_retrieved", None) is None:

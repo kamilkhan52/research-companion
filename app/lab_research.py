@@ -322,12 +322,14 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
             # too, so a refused pass over an already-mapped author reported `done — 1 of 2 mapped`
             # having researched nobody, and re-running produced the same cheerful nothing forever.
             with _registry.lock:
-                job.status = "error"
-                job.error = job.stopped_reason
+                _registry.set_outcome_locked(job, "error", error=job.stopped_reason)
         elif attempted and failed == attempted:
             with _registry.lock:
-                job.status = "error"
-                job.error = f"Lab research failed for every author — {last_error}"
+                _registry.set_outcome_locked(
+                    job,
+                    "error",
+                    error=f"Lab research failed for every author — {last_error}",
+                )
 
     return _registry.start_or_join("labs", lambda: LabsJob(id=new_id()), work)
 
