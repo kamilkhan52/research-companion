@@ -637,10 +637,22 @@ prompt-editor. Reading settings stays open to everyone (keys return as 6-char hi
 `GET /api/settings` reports `is_operator` so clients can render shared controls read-only instead
 of failing on submit.
 
-### H7 — RevenueCat account and project · `todo`
-Create the account and project, connect the Play app.
-**Report back:** project confirmation and how the API key should be provided. **Never commit the
-RevenueCat v2 API key or OAuth credentials.**
+### H7 — RevenueCat account and project · ✅ `done` (2026-08-09), with two follow-ups
+Account created. The onboarding SDK key `test_dqtvFSZJjVnTwblxjtuopPRAClP` is a **publishable**
+key — RevenueCat SDK keys ship inside the app binary by design, so it is not a secret and needs no
+special handling. Two things about it still matter:
+
+1. **It is a TEST key, and it is not platform-specific.** A real Android build needs the
+   Play-specific key (`goog_…`) that RevenueCat issues once the Play app is connected. The
+   onboarding snippet uses the same test key for iOS and Android, which is a placeholder, not a
+   configuration. iOS is out of scope entirely — there is no Apple developer account.
+2. **The v2 / secret API key is a different thing and must never be pasted or committed.** It is
+   what the server would use to call RevenueCat, and it grants account-wide access.
+
+**Still blocked on H8/H9:** products and offerings cannot be configured in RevenueCat until the
+Play Console app exists and its product IDs are authored, and no purchase can be tested until a
+build is on a track. The server-side half — per-account plans — does not depend on any of that and
+shipped first.
 
 ### H8 — Play Console: create the app, agreements, tax and banking · `todo`
 Create the app listing for **`io.scholiast.app`** — the post-rebrand package in `mobile/app.json`,
