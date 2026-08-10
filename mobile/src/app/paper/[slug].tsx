@@ -73,6 +73,7 @@ import { BottomSheet, BottomSheetTextInput } from '@/components/BottomSheet';
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { AgentActivity } from '@/components/AgentActivity';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
@@ -2260,12 +2261,17 @@ export function ComposeFirst({
         return false;
       }
       if (settled.status !== 'done' || !settled.retrieved) {
+        if (presentSpendJobRefusal(settled.error, { operation: 'other', retry })) return false;
         setLocalError(settled.error || 'The paper could not be fetched.');
         return false;
       }
       if (sourceText) await sourceDraft.clear('');
       return true;
     } catch (e) {
+      if (presentSpendRefusal(e, {
+        operation: 'other',
+        retry: retry ?? (() => fetchPaper(source, sourceText)),
+      })) return false;
       setLocalError((e as Error).message ?? 'Could not fetch the paper.');
       return false;
     } finally {
