@@ -2,6 +2,10 @@
 
 *Reviewed 2026-07: full backend (`app/`), mobile client (`mobile/src/`), tests, and repo tooling.*
 
+> **Status marked 2026-08-10.** This was a snapshot review, and most of section 1 has since
+> shipped. Each heading now says so. An unmarked heading means nobody has checked it recently, not
+> that it is outstanding — verify against the code before starting.
+
 ## Where the codebase stands
 
 The design is genuinely strong in the places that matter for this product: a deterministic
@@ -20,6 +24,10 @@ sequencing at the end.
 ## 1. Backend architecture
 
 ### 1.1 Unify the five job modules into one framework (highest-leverage refactor)
+**SHIPPED.** `app/jobs.py` is that framework: `JobRegistry` owns the dict+lock, pruning, thread
+spawn, the contextvar rebind, error capture and persist-before-done finalize, and every `*_jobs.py`
+module delegates to it.
+
 
 `chat_jobs.py`, `audio_jobs.py`, `notes_jobs.py`, `graph_jobs.py`, and `discovery_jobs.py`
 are five hand-rolled copies of the same machine: a dataclass with `status/started_at/
@@ -127,6 +135,10 @@ All job state is in-process memory. Two consequences worth addressing explicitly
   queue (SQLite table is enough) and poll it from any worker."
 
 ### 1.5 Harden the file store: atomic writes, locking, and cheap reads
+**SHIPPED in part.** `app/fileio.py` holds the atomic write-and-replace used across the store, and
+`sessions.mutation_lock` covers check-then-mutate on transcripts. The cheap-read caching half was
+not done and is still worth doing.
+
 
 The markdown-in-git store is the right call for this product, but the I/O layer under it has
 three growing pains:
@@ -154,6 +166,10 @@ three growing pains:
   per-hash files like the audio cache already does.
 
 ### 1.6 Split `main.py` (1,088 lines) into routers
+**SHIPPED.** `app/routers/` is one module per feature area, with `make_project_router()` binding the
+`/api/projects/{pid}` prefix and `use_project` in one place. `main.py` is 471 lines and is app
+assembly only.
+
 
 `main.py` currently holds middleware, 20+ request models, SSE helpers, favorite-model
 resolution logic, and ~50 routes. Split by feature into `app/routers/` (settings, audio,
@@ -187,6 +203,9 @@ refactor was meant to remove.
 ## 2. API contract and typing
 
 ### 2.1 Typed responses end-to-end
+**SHIPPED.** `shared/api-types.ts` is generated from the OpenAPI schema by
+`scripts/gen-api-types.sh`; the mobile client consumes it.
+
 
 `scripts/gen-api-types.sh` generates TS types from the OpenAPI schema — but nearly every
 endpoint returns a hand-built `dict`, so the schema says little and `mobile/src/api/types.ts`
@@ -214,6 +233,11 @@ conventions to know what's safe to call and change; violating them invites bad e
 ## 3. Agent-friendliness (for coding agents and contributors)
 
 ### 3.1 Add a CLAUDE.md that encodes the invariants
+**SHIPPED, and this item is why you should not trust an unmarked heading here.** `CLAUDE.md` exists
+at the repo root with six numbered invariants, the module map and the dev workflow — including every
+bullet listed below. On 2026-08-10 an agent read this section as an open task and started writing a
+second one.
+
 
 There is no CLAUDE.md / contributor doc, yet this codebase runs on a handful of non-obvious,
 hard-won invariants that currently live scattered in docstrings:
@@ -235,6 +259,9 @@ single improvement in the whole document, and the one with the most compounding 
 agent-driven development.
 
 ### 3.2 Repo tooling: pyproject, lint, types, CI
+**SHIPPED.** `pyproject.toml`, ruff in CI, and three path-filtered workflows
+(`ci-backend`, `ci-mobile`, `ci-web`).
+
 
 There is currently no `pyproject.toml`, no linter, no type checker, and no CI (`.github/`
 doesn't exist), for a codebase that is ~5,500 lines of typed-annotation Python plus a TS
