@@ -1,12 +1,12 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { useAddPaper } from '@/api/queries';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
-import { Button, Text } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { Icon, Text, ToneIcon, ToneSurface } from '@/ui';
+import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
+import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function parseKnownPaper(value: string): {
   title: string;
@@ -82,53 +82,105 @@ export function AddPaperInline({
       {showDivider ? (
         <View style={styles.orRow}>
           <View style={styles.orLine} />
-          <Text variant="overline" color={t.muted}>or</Text>
+          <Text variant="overline" color={t.muted}>OR ADD DIRECTLY</Text>
           <View style={styles.orLine} />
         </View>
       ) : null}
-      <TextInput
-        ref={inputRef}
-        value={textDraft.value}
-        onChangeText={textDraft.setValue}
-        style={styles.input}
-        placeholder="Add a paper you already know — title, DOI, or arXiv link"
-        placeholderTextColor={t.muted}
-        autoCapitalize="none"
-        autoCorrect={false}
-        autoFocus={autoFocus}
-        returnKeyType="go"
-        onSubmitEditing={() => void submit()}
-        accessibilityLabel="Paper title, DOI, or arXiv link"
-      />
-      {textDraft.value.trim() ? (
-        <Button
-          title="Add and start analysis"
-          variant="ghost"
-          onPress={() => void submit()}
-          loading={addPaper.isPending}
-          style={styles.action}
+      <View style={[styles.field, error && styles.fieldError]}>
+        <ToneIcon name="link-2" tone={error ? 'danger' : 'violet'} compact />
+        <TextInput
+          ref={inputRef}
+          value={textDraft.value}
+          onChangeText={textDraft.setValue}
+          style={styles.input}
+          placeholder="Title, DOI, or arXiv link"
+          placeholderTextColor={t.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoFocus={autoFocus}
+          returnKeyType="go"
+          onSubmitEditing={() => void submit()}
+          accessibilityLabel="Paper title, DOI, or arXiv link"
         />
+        <Pressable
+          onPress={() => void submit()}
+          disabled={!textDraft.value.trim() || addPaper.isPending}
+          accessibilityRole="button"
+          accessibilityLabel="Add and start analysis"
+          accessibilityState={{ disabled: !textDraft.value.trim() || addPaper.isPending, busy: addPaper.isPending }}
+          style={({ pressed }) => [
+            styles.action,
+            textDraft.value.trim() && styles.actionReady,
+            pressed && styles.actionPressed,
+          ]}
+        >
+          {addPaper.isPending ? (
+            <ActivityIndicator size="small" color={t.mintInk} />
+          ) : (
+            <>
+              <Text variant="label" color={textDraft.value.trim() ? t.mintInk : t.muted} style={styles.actionLabel}>Add</Text>
+              <Icon name="arrow-right" size={15} color={textDraft.value.trim() ? t.mintInk : t.muted} />
+            </>
+          )}
+        </Pressable>
+      </View>
+      {error ? (
+        <ToneSurface tone="danger" style={styles.errorBox} accessibilityLiveRegion="polite">
+          <Icon name="alert-circle" size={16} color={t.danger} />
+          <Text variant="caption" color={t.danger} style={styles.errorText}>{error}</Text>
+        </ToneSurface>
       ) : null}
-      {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
     </View>
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
   root: { marginTop: space.md },
-  orRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.md },
   orLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.line2 },
-  input: {
-    minHeight: 48,
+  field: {
+    minHeight: density === 'tight' ? 52 : 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
     backgroundColor: t.elevated,
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: radius.md,
-    paddingHorizontal: space.md,
+    paddingLeft: density === 'tight' ? space.sm : space.md,
+    paddingRight: space.xs,
+  },
+  fieldError: { borderColor: t.danger },
+  input: {
+    flex: 1,
+    minWidth: 0,
+    alignSelf: 'stretch',
     paddingVertical: space.sm,
     color: t.text,
     fontFamily: fonts.body,
-    fontSize: 15,
+    fontSize: density === 'tight' ? 14 : 15,
   },
-  action: { marginTop: space.xs, minHeight: 48 },
+  action: {
+    minWidth: 72,
+    height: control.minTouch,
+    borderRadius: radius.md - 2,
+    borderWidth: 1,
+    borderColor: t.line2,
+    backgroundColor: t.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.xs,
+  },
+  actionReady: { backgroundColor: t.mint, borderColor: t.mint },
+  actionPressed: { opacity: 0.82 },
+  actionLabel: { fontFamily: fonts.bodySemiBold },
+  errorBox: {
+    marginTop: space.sm,
+    padding: space.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+  },
+  errorText: { flex: 1, minWidth: 0 },
 });

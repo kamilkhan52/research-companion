@@ -4,9 +4,12 @@
 // 'serifTitle', 'serifBody', 'serifItalic') for headings and long-form reading moments.
 
 import { Feather } from '@expo/vector-icons';
-import { type ComponentProps, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
+  Animated,
+  Easing,
   Pressable,
   type PressableProps,
   ScrollView,
@@ -24,7 +27,14 @@ import {
   useThemedStyles,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import {
+  control,
+  fonts,
+  motion,
+  radius,
+  space,
+  type ThemePalette,
+} from '@/theme/tokens';
 
 type TextVariant =
   | 'display'
@@ -212,6 +222,58 @@ export function Card({ style, children, ...rest }: ViewProps) {
   );
 }
 
+export type SurfaceTone = 'neutral' | 'mint' | 'violet' | 'amber' | 'danger';
+
+function toneFor(t: ThemePalette, tone: SurfaceTone) {
+  if (tone === 'mint') return { ink: t.mint, fill: t.mintWash, line: t.mint };
+  if (tone === 'violet') return { ink: t.violet, fill: t.violetWash, line: t.violet };
+  if (tone === 'amber') return { ink: t.amber, fill: t.amberWash, line: t.amberLine };
+  if (tone === 'danger') return { ink: t.danger, fill: t.dangerWash, line: t.danger };
+  return { ink: t.muted, fill: t.elevated, line: t.line2 };
+}
+
+/** A semantic tinted surface for status and interruption UI. The tone always travels with text or
+ *  an icon at call sites; it is never the only state signal. */
+export function ToneSurface({
+  tone = 'neutral',
+  style,
+  children,
+  ...rest
+}: ViewProps & { tone?: SurfaceTone }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const colors = toneFor(t, tone);
+  return (
+    <View
+      style={[styles.toneSurface, { backgroundColor: colors.fill, borderColor: colors.line }, style]}
+      {...rest}
+    >
+      {children}
+    </View>
+  );
+}
+
+/** Icon treatment paired with ToneSurface. Keeping the geometry here stops each status card from
+ *  inventing a slightly different halo. */
+export function ToneIcon({
+  name,
+  tone = 'neutral',
+  compact = false,
+}: {
+  name: IconName;
+  tone?: SurfaceTone;
+  compact?: boolean;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const colors = toneFor(t, tone);
+  return (
+    <View style={[styles.toneIcon, compact && styles.toneIconCompact, { borderColor: colors.line }]}>
+      <Icon name={name} size={compact ? 16 : 20} color={colors.ink} />
+    </View>
+  );
+}
+
 export function Divider() {
   const styles = useThemedStyles(makeStyles);
   return <View style={styles.divider} />;
@@ -283,6 +345,81 @@ export function ProgressBar({
         testID={testID}
         style={{
           width: `${pct * 100}%`,
+          height,
+          borderRadius: height / 2,
+          backgroundColor: color ?? t.mint,
+        }}
+      />
+    </View>
+  );
+}
+
+function useReduceMotion(): boolean {
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    let current = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
+      if (current) setReduceMotion(enabled);
+    });
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
+    return () => {
+      current = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduceMotion;
+}
+
+/** Progress that eases between server snapshots without replaying from zero on focus. The initial
+ *  value is painted immediately; later changes animate unless the OS asks for reduced motion. */
+export function AnimatedProgressBar({
+  value,
+  color,
+  height = control.progress,
+  testID,
+}: {
+  value: number;
+  color?: string;
+  height?: number;
+  testID?: string;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const pct = Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+  const progress = useRef(new Animated.Value(pct)).current;
+  const reduceMotion = useReduceMotion();
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    if (!mounted.current || reduceMotion) {
+      progress.setValue(pct);
+      mounted.current = true;
+      return;
+    }
+    const animation = Animated.timing(progress, {
+      toValue: pct,
+      duration: motion.standard,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [pct, progress, reduceMotion]);
+
+  return (
+    <View
+      testID={testID}
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      // Kept on the hidden visual node so regression tests can prove the fill receives the same
+      // value as the spoken parent progressbar. It is not a second accessibility announcement.
+      accessibilityValue={{ min: 0, max: 100, now: pct * 100 }}
+      style={[styles.progressTrack, { height, borderRadius: height / 2 }]}
+    >
+      <Animated.View
+        style={{
+          width: progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
           height,
           borderRadius: height / 2,
           backgroundColor: color ?? t.mint,
@@ -375,6 +512,8 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
   },
   chipDot: { width: 6, height: 6, borderRadius: 3 },
   iconBtn: {
+    // The 42px visible halo keeps existing top bars stable; IconButton's 8px hitSlop makes the
+    // effective target 58px without changing those layouts.
     width: 42,
     height: 42,
     borderRadius: radius.pill,
@@ -391,8 +530,27 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     overflow: 'hidden',
     flexGrow: 1,
   },
+  toneSurface: {
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: tight ? space.md : space.lg,
+  },
+  toneIcon: {
+    width: control.iconHalo,
+    height: control.iconHalo,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    backgroundColor: t.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toneIconCompact: {
+    width: control.iconHaloCompact,
+    height: control.iconHaloCompact,
+  },
   btn: {
-    height: tight ? 48 : 50,
+    minHeight: control.minTouch,
+    height: tight ? control.minTouch : control.standard,
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',

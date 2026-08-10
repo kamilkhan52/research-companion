@@ -4,7 +4,7 @@ import { StyleSheet, View } from 'react-native';
 import { Markdown, type LinkHandler } from '@/components/Markdown';
 import type { StreamItem } from '@/api/types';
 import { Text } from '@/ui';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export type DiffLine = { kind: 'same' | 'add' | 'remove'; text: string };
@@ -119,7 +119,13 @@ export function NotesDiff({
     <View accessibilityLabel="Proposed line changes" style={styles.root}>
       {lines.map((line, index) => {
         if (line.kind === 'gap') {
-          return <Text key={`gap-${index}`} variant="caption" color={t.muted} style={styles.gap}>•••</Text>;
+          return (
+            <View key={`gap-${index}`} style={styles.gap} accessibilityLabel="Unchanged lines omitted">
+              <View style={styles.gapLine} />
+              <Text variant="caption" color={t.muted}>•••</Text>
+              <View style={styles.gapLine} />
+            </View>
+          );
         }
         const prefix = line.kind === 'add' ? '+' : line.kind === 'remove' ? '−' : ' ';
         return (
@@ -131,6 +137,16 @@ export function NotesDiff({
               line.kind === 'remove' && styles.removed,
             ]}
           >
+            <View
+              style={[
+                styles.changeRail,
+                {
+                  backgroundColor: line.kind === 'add'
+                    ? t.mint
+                    : line.kind === 'remove' ? t.danger : 'transparent',
+                },
+              ]}
+            />
             <Text
               accessibilityLabel={line.kind === 'add' ? 'Added line' : line.kind === 'remove' ? 'Removed line' : 'Context line'}
               style={[styles.marker, line.kind === 'add' && { color: t.mint }, line.kind === 'remove' && { color: t.danger }]}
@@ -147,29 +163,42 @@ export function NotesDiff({
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
   root: {
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: t.line2,
     borderRadius: radius.sm,
+    backgroundColor: t.elevated,
   },
   line: {
-    minHeight: 28,
+    minHeight: density === 'tight' ? 32 : 36,
     flexDirection: 'row',
-    gap: space.sm,
-    paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
+    gap: density === 'tight' ? space.xs : space.sm,
+    paddingRight: space.sm,
+    paddingVertical: density === 'tight' ? 3 : space.xs,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: t.line,
   },
   added: { backgroundColor: t.mintWash },
   removed: { backgroundColor: t.dangerWash },
+  changeRail: { width: 3, alignSelf: 'stretch' },
   marker: {
-    width: 14,
+    width: 18,
+    textAlign: 'center',
     color: t.muted,
     fontFamily: fonts.bodyBold,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
   },
   content: { flex: 1, minWidth: 0 },
-  gap: { paddingHorizontal: space.md, paddingVertical: space.xs },
+  gap: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+  },
+  gapLine: { width: space.xl, height: StyleSheet.hairlineWidth, backgroundColor: t.line2 },
 });

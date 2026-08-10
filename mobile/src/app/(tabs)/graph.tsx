@@ -21,9 +21,9 @@ import { readableError } from '@/api/errorMessage';
 import { useGraphBuild, type GraphBuildState } from '@/hooks/useGraphBuild';
 import { useActiveProject } from '@/store/project';
 import { useGraphSettings } from '@/store/graphSettings';
-import { Button, Card, Chip, Icon, Screen, Text } from '@/ui';
+import { AnimatedProgressBar, Button, Card, Icon, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { Marquee } from '@/ui/Marquee';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
+import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 type FilterKind = 'all' | 'project' | 'external' | 'significant';
@@ -682,15 +682,18 @@ export function BuildProgressBanner({
         accessibilityState={{ expanded }}
         style={styles.buildHeader}
       >
-        <ActivityIndicator color={t.mint} />
-        <Text variant="heading" style={{ flex: 1 }} numberOfLines={1}>
-          Building map…
-        </Text>
-        {progress ? (
-          <Text variant="caption" color={t.muted} numberOfLines={1}>
-            {progress.ready} of {progress.total} ready
-          </Text>
-        ) : null}
+        <ToneIcon name="share-2" tone="mint" compact />
+        <View style={styles.buildHeading}>
+          <Text variant="overline" color={t.mint}>MAP BUILD</Text>
+          <View style={styles.buildTitleRow}>
+            <Text variant="heading" style={styles.buildTitle} numberOfLines={1}>Building map…</Text>
+            {progress ? (
+              <Text variant="caption" color={t.muted} numberOfLines={1}>
+                {progress.ready} of {progress.total} ready
+              </Text>
+            ) : null}
+          </View>
+        </View>
         <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
       </Pressable>
       {progress && expanded ? (
@@ -708,27 +711,25 @@ export function BuildProgressBanner({
           />
           {hint ? (
             <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
-              <Text variant="caption" color={t.mint} style={{ marginTop: space.sm }}>
-                {hint}
-              </Text>
+              <ToneSurface tone="mint" style={styles.buildHint}>
+                <Text variant="caption" color={t.text}>{hint}</Text>
+              </ToneSurface>
             </Pressable>
           ) : null}
           {progress.currentTitle ? (
-            <View style={{ marginTop: space.sm }}>
-              <Text variant="caption" color={t.muted}>
-                {verb}
-              </Text>
+            <ToneSurface tone="neutral" style={styles.currentPaper}>
+              <Text variant="overline" color={t.muted}>{verb}</Text>
               <Marquee
                 text={progress.currentTitle}
-                textStyle={{ color: t.text, fontSize: 14, lineHeight: 20 }}
+                textStyle={styles.currentPaperTitle}
                 accessibilityLabel={`${verb} ${progress.currentTitle}`}
               />
-            </View>
+            </ToneSurface>
           ) : null}
-          <View style={[styles.progressTrack, { marginTop: space.sm }]}>
-            <View style={[styles.progressFill, { width: `${Math.round(pct * 100)}%` }]} />
+          <View style={styles.progressRow}>
+            <AnimatedProgressBar value={pct} color={t.mint} height={6} />
+            <Text variant="caption" color={t.muted}>{progress.done} analyzed</Text>
           </View>
-          <Text variant="caption" style={{ marginTop: 4 }}>{progress.done} analyzed</Text>
         </>
       ) : null}
     </Card>
@@ -790,8 +791,12 @@ export function FilterBar({
         accessibilityState={{ expanded }}
         style={styles.filterSummary}
       >
-        {active ? <Chip label={active.label} dot={false} selected /> : null}
-        <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
+        <ToneIcon name="sliders" tone="violet" compact />
+        <View style={styles.filterHeading}>
+          <Text variant="overline" color={t.violet}>FILTER</Text>
+          <Text variant="heading" numberOfLines={1}>{active?.label ?? filter}</Text>
+        </View>
+        <Text variant="caption" color={t.muted}>
           {visibleCount} {visibleCount === 1 ? 'node' : 'nodes'} visible
         </Text>
         <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
@@ -805,9 +810,10 @@ export function FilterBar({
                 onPress={() => onFilterChange(f.key)}
                 accessibilityRole="button"
                 accessibilityState={{ selected: f.key === filter }}
-                style={styles.filterChipTarget}
+                style={[styles.filterChipTarget, f.key === filter && styles.filterChipTargetActive]}
               >
-                <Chip label={f.label} dot={false} selected={f.key === filter} />
+                {f.key === filter ? <Icon name="check" size={15} color={t.mint} /> : null}
+                <Text variant="label" color={f.key === filter ? t.mint : t.text}>{f.label}</Text>
               </Pressable>
             ))}
           </View>
@@ -889,7 +895,7 @@ function Centered({ text, loading, action }: { text?: string; loading?: boolean;
   );
 }
 
-const makeStyles = (t: ThemePalette) => StyleSheet.create({
+const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   emptyWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
   banner: { margin: space.md, marginBottom: 0 },
@@ -918,13 +924,19 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     alignItems: 'center',
     gap: space.sm,
   },
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: t.elevated,
-    overflow: 'hidden',
+  buildHeading: { flex: 1, minWidth: 0 },
+  buildTitleRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: 2 },
+  buildTitle: { flex: 1, minWidth: 0 },
+  buildHint: { marginTop: space.md, padding: density === 'tight' ? space.sm : space.md },
+  currentPaper: { marginTop: space.sm, padding: density === 'tight' ? space.sm : space.md },
+  currentPaperTitle: {
+    color: t.text,
+    fontFamily: fonts.bodyMedium,
+    fontSize: density === 'tight' ? 13 : 14,
+    lineHeight: density === 'tight' ? 18 : 20,
+    marginTop: 2,
   },
-  progressFill: { height: '100%', backgroundColor: t.mint, borderRadius: 3 },
+  progressRow: { marginTop: space.md, gap: space.xs },
   pagerOverlay: {
     position: 'absolute',
     top: space.sm,
@@ -958,15 +970,36 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderColor: t.line2,
   },
   pagerBtnDisabled: { opacity: 0.4 },
-  filterBar: { paddingHorizontal: space.md, paddingTop: space.sm },
+  filterBar: {
+    marginHorizontal: space.md,
+    marginTop: space.sm,
+    paddingHorizontal: density === 'tight' ? space.sm : space.md,
+    backgroundColor: t.surface,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.md,
+  },
   filterSummary: {
-    minHeight: 48,
+    minHeight: density === 'tight' ? 56 : 64,
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
   },
-  filterChips: { flexDirection: 'row', gap: space.xs },
-  filterChipTarget: { minHeight: 48, justifyContent: 'center' },
+  filterHeading: { flex: 1, minWidth: 0, gap: 2 },
+  filterChips: { flexDirection: 'row', gap: space.sm, paddingBottom: space.sm },
+  filterChipTarget: {
+    minHeight: 48,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  filterChipTargetActive: { borderColor: t.mint, backgroundColor: t.mintWash },
   searchInput: {
     backgroundColor: t.elevated,
     borderWidth: 1,

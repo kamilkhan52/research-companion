@@ -6,10 +6,14 @@
 
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderAsync, waitFor } from '@testing-library/react-native';
-import { RefreshControl } from 'react-native';
+import { AccessibilityInfo, RefreshControl } from 'react-native';
 
 import PlanScreen, {
-  formatResetDate, formatSpentPercent, spentPercent, spokenPercent,
+  formatRemainingPercent,
+  formatResetDate,
+  remainingFraction,
+  remainingPercent,
+  spokenRemainingPercent,
 } from '@/app/plan';
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
@@ -36,6 +40,9 @@ function plan(
   overrides: Omit<Partial<Plan>, 'plan'> & { plan?: Partial<Plan['plan']> } = {},
 ): Plan {
   const { plan: planOverrides, ...rest } = overrides;
+  const limit = rest.limit_nanousd ?? 2_500_000_000;
+  const spentFraction = rest.spent_fraction ?? 0.18;
+  const spent = rest.spent_nanousd ?? Math.round(limit * spentFraction);
   return {
     plan: {
       name: 'basic',
@@ -44,11 +51,11 @@ function plan(
       monthly_credits: 2500,
       ...planOverrides,
     },
-    limit_nanousd: 2_500_000_000,
-    spent_nanousd: 450_000_000,
+    limit_nanousd: limit,
+    spent_nanousd: spent,
     held_nanousd: 0,
-    remaining_nanousd: 2_050_000_000,
-    spent_fraction: 0.18,
+    remaining_nanousd: limit - spent,
+    spent_fraction: spentFraction,
     warn: false,
     warn_at_fraction: 0.8,
     at_capacity: false,
@@ -71,29 +78,37 @@ async function renderScreen() {
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
   focusCallbacks.length = 0;
   // The plan query is gated on a configured server, same as every other app-global query.
   await setBaseUrl('https://api.test');
 });
 
-test('the bar and its accessibility label report spend alone, never spend plus holds', async () => {
-  // 18% spent with a large hold in flight. Adding them would read 50% — the false "nearly out"
-  // alarm the separate fields exist to prevent.
+afterEach(() => jest.restoreAllMocks());
+
+test('the bar reports limit minus spend, never the transport remainder that also subtracts holds', async () => {
+  // 18% spent with a large hold in flight. `remaining_nanousd` says 50%, but the truthful
+  // spend-only remainder is 82% — work in progress has its own card below.
   jest.mocked(api.getPlan).mockResolvedValue(
-    plan({ spent_fraction: 0.18, held_nanousd: 800_000_000 }),
+    plan({
+      spent_fraction: 0.18,
+      held_nanousd: 800_000_000,
+      remaining_nanousd: 1_250_000_000,
+    }),
   );
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText('18%'));
-  view.getByLabelText("18 percent of this month's allowance used.");
+  await waitFor(() => view.getByText('82%'));
+  view.getByLabelText("82 percent of this month's allowance remaining.");
   expect(view.queryByText('50%')).toBeNull();
 
   // The BAR itself, not just the caption beside it. Asserting only the text let the bar be
   // switched to spend+held with every test still green — the one rule the spec calls
   // load-bearing, unguarded. 32% of the allowance is held here; the fill must ignore it.
-  const fill = view.getByTestId('plan-spend-bar');
-  expect(fill.props.style.width).toBe('18%');
+  const bar = view.getByTestId('plan-remaining-bar', { includeHiddenElements: true });
+  expect(bar.props.accessibilityValue.now).toBe(82);
+  expect(remainingFraction(2_500_000_000, 450_000_000)).toBe(0.82);
 });
 
 test('a live hold gets its own card, with no percentage of its own', async () => {
@@ -116,7 +131,7 @@ test('no hold means no live-work card at all', async () => {
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText('18%'));
+  await waitFor(() => view.getByText('82%'));
   expect(view.queryByText('IN PROGRESS NOW')).toBeNull();
 });
 
@@ -129,8 +144,8 @@ test('the approaching card keys off SPEND, so holds alone never trigger it', asy
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText('76%'));
-  expect(view.queryByText("You're getting close")).toBeNull();
+  await waitFor(() => view.getByText('24%'));
+  expect(view.queryByText('A little room remains')).toBeNull();
 });
 
 test('spend past the warning line does show the approaching card, and blocks nothing', async () => {
@@ -138,10 +153,10 @@ test('spend past the warning line does show the approaching card, and blocks not
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText("You're getting close"));
+  await waitFor(() => view.getByText('A little room remains'));
   // Not "nothing is blocked": holds can fill the remainder, so at 86% spent a new job may still be
   // refused. What stays true is that the allowance itself is not spent.
-  view.getByText("Scholiast keeps working until this month's allowance is used.");
+  view.getByText(/Nothing changes until the allowance reaches zero/);
 });
 
 test('an unenforced deployment leaves the screen rather than explaining itself', async () => {
@@ -166,7 +181,8 @@ test('an unreadable usage row says so instead of showing a full allowance', asyn
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText(/Usage isn't available right now/));
+  await waitFor(() => view.getByText('Usage is taking a moment'));
+  view.getByText(/Your allowance is unchanged/);
   expect(view.queryByText('0%')).toBeNull();
 });
 
@@ -175,7 +191,7 @@ test('neither credits nor dollars reach the reader', async () => {
 
   const view = await renderScreen();
 
-  await waitFor(() => view.getByText('18%'));
+  await waitFor(() => view.getByText('82%'));
   // Asserted against rendered TEXT, not the tree dump: the transport fields are legitimately in
   // the props, and the claim being made is about what a reader can read.
   expect(view.queryAllByText(/\$/)).toHaveLength(0);
@@ -210,18 +226,17 @@ test('the reset date is formatted in the server period, not the device timezone'
   expect(formatResetDate('not a date')).toBeNull();
 });
 
-test('the displayed percentage never flatters, at either end', () => {
-  // Real spend must never read as a flat 0%, and a limit that has not been reached must never
-  // read as 100%. Both are claims about money that the number cannot support.
-  expect(formatSpentPercent(0.0001)).toBe('<1%');
-  expect(formatSpentPercent(0.996)).toBe('>99%');
-  expect(formatSpentPercent(1)).toBe('100%');
-  expect(formatSpentPercent(1.04)).toBe('100%');
-  expect(formatSpentPercent(0)).toBe('0%');
-  expect(formatSpentPercent(Number.NaN)).toBe('0%');
-  // The interior rounds rather than floors, so 79.9% is not reported as 79%.
-  expect(formatSpentPercent(0.799)).toBe('80%');
-  expect(spentPercent(0.799)).toBe(80);
+test('the displayed remaining percentage stays truthful at both boundaries', () => {
+  expect(formatRemainingPercent(0.0001)).toBe('<1%');
+  expect(formatRemainingPercent(0.996)).toBe('>99%');
+  expect(formatRemainingPercent(1)).toBe('100%');
+  expect(formatRemainingPercent(1.04)).toBe('100%');
+  expect(formatRemainingPercent(0)).toBe('0%');
+  expect(formatRemainingPercent(Number.NaN)).toBe('0%');
+  expect(formatRemainingPercent(0.799)).toBe('80%');
+  expect(remainingPercent(0.799)).toBe(80);
+  expect(remainingFraction(100, 101)).toBe(0);
+  expect(remainingFraction(0, 0)).toBe(0);
 });
 
 test('the screen refetches when focus returns to it', async () => {
@@ -233,10 +248,10 @@ test('the screen refetches when focus returns to it', async () => {
     .mockResolvedValue(plan({ spent_fraction: 0.42 }));
 
   const view = await renderScreen();
-  await waitFor(() => view.getByText('18%'));
+  await waitFor(() => view.getByText('82%'));
 
   focusCallbacks.forEach((cb) => cb());
-  await waitFor(() => view.getByText('42%'));
+  await waitFor(() => view.getByText('58%'));
 });
 
 test('pull to refresh asks the server again', async () => {
@@ -245,18 +260,18 @@ test('pull to refresh asks the server again', async () => {
     .mockResolvedValue(plan({ spent_fraction: 0.51 }));
 
   const view = await renderScreen();
-  await waitFor(() => view.getByText('18%'));
+  await waitFor(() => view.getByText('82%'));
 
   const scroll = view.UNSAFE_getByType(RefreshControl);
   await act(async () => { scroll.props.onRefresh(); });
-  await waitFor(() => view.getByText('51%'));
+  await waitFor(() => view.getByText('49%'));
 });
 
 test('focus refetching settles rather than looping', async () => {
   jest.mocked(api.getPlan).mockResolvedValue(plan());
 
   const view = await renderScreen();
-  await waitFor(() => view.getByText('18%'));
+  await waitFor(() => view.getByText('82%'));
 
   // The request count must STOP growing once the data has arrived. The earlier version of this
   // test asserted ">= 2", which passed happily while an unstable `useFocusEffect` dependency
@@ -270,16 +285,14 @@ test('focus refetching settles rather than looping', async () => {
   expect(jest.mocked(api.getPlan).mock.calls.length).toBe(settled);
 });
 
-test('what a screen reader hears matches what the screen shows, at the boundaries too', async () => {
-  // `spentPercent` rounds 0.0001 to 0. Building the spoken label from it told a screen-reader user
-  // "0 percent used" while the screen said "<1%" — the false claim the formatter exists to stop.
-  jest.mocked(api.getPlan).mockResolvedValue(plan({ spent_fraction: 0.0001 }));
+test('what a screen reader hears matches remaining at the boundaries too', async () => {
+  jest.mocked(api.getPlan).mockResolvedValue(plan({ spent_fraction: 0.9999 }));
 
   const view = await renderScreen();
 
   await waitFor(() => view.getByText('<1%'));
-  view.getByLabelText("Less than 1 percent of this month's allowance used.");
-  expect(spokenPercent(0.996)).toBe('More than 99 percent');
-  expect(spokenPercent(0.18)).toBe('18 percent');
-  expect(spokenPercent(1)).toBe('100 percent');
+  view.getByLabelText("Less than 1 percent of this month's allowance remaining.");
+  expect(spokenRemainingPercent(0.996)).toBe('More than 99 percent');
+  expect(spokenRemainingPercent(0.18)).toBe('18 percent');
+  expect(spokenRemainingPercent(1)).toBe('100 percent');
 });

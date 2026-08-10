@@ -4,9 +4,9 @@ import { AccessibilityInfo, findNodeHandle, StyleSheet, View } from 'react-nativ
 
 import { apiGet, ApiError } from '@/api/client';
 import { BottomSheet } from '@/components/BottomSheet';
-import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { radius, space, type ThemePalette } from '@/theme/tokens';
-import { Button, Icon, Text } from '@/ui';
+import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
+import { moneyType, space, type ThemePalette } from '@/theme/tokens';
+import { Button, Icon, Text, ToneIcon, ToneSurface, type SurfaceTone } from '@/ui';
 
 export type SpendRefusalKind = 'exhausted' | 'busy' | 'too_large' | 'rate_limited';
 
@@ -147,23 +147,31 @@ export function SpendRefusalHost() {
   const timed = refusal.kind === 'busy' || refusal.kind === 'rate_limited';
   const icon = refusal.kind === 'busy' || refusal.kind === 'rate_limited'
     ? 'clock' : refusal.kind === 'too_large' ? 'minimize-2' : 'calendar';
-  const accent = timed ? t.amber : t.violet;
+  const tone: SurfaceTone = timed ? 'amber' : 'violet';
+  const accent = tone === 'amber' ? t.amber : t.violet;
 
   let title: string;
   let body: string;
+  let eyebrow: string;
   if (refusal.kind === 'exhausted') {
+    eyebrow = 'MONTHLY ALLOWANCE';
     title = "This month's allowance is used.";
     body = reset
       ? `Paid work returns ${reset}. Reading anything already retrieved, hand-editing notes, and device voice still work.`
       : 'Paid work returns when the monthly allowance resets. Reading anything already retrieved, hand-editing notes, and device voice still work.';
   } else if (refusal.kind === 'busy') {
+    eyebrow = 'WORK IN PROGRESS';
     title = 'A few things are finishing.';
     body = 'Work already running has a little room set aside. That room returns within seconds when it finishes.';
   } else if (refusal.kind === 'rate_limited') {
+    eyebrow = 'TRY AGAIN SHORTLY';
     title = 'New work is starting too quickly.';
     body = 'Scholiast limits how quickly new work can start. Wait a few seconds, then try again.';
   } else {
-    title = "This won't fit your plan.";
+    eyebrow = refusal.operation === 'narration' ? 'NARRATION' : 'THIS ACTION';
+    title = refusal.operation === 'narration'
+      ? "This narration won't fit your plan."
+      : "This action won't fit your plan.";
     body = refusal.operation === 'narration'
       ? "This studio-voice version is larger than your plan's whole monthly allowance. Waiting won't help."
       : "This action is larger than your plan's whole monthly allowance. Waiting won't help; choose a smaller action.";
@@ -186,9 +194,8 @@ export function SpendRefusalHost() {
   return (
     <BottomSheet visible onClose={close} maxHeightPct={75}>
       <View style={styles.sheet}>
-        <View style={[styles.icon, { backgroundColor: timed ? t.amberWash : t.violetWash }]}>
-          <Icon name={icon} size={24} color={accent} />
-        </View>
+        <ToneIcon name={icon} tone={tone} />
+        <Text variant="overline" color={accent} style={styles.eyebrow}>{eyebrow}</Text>
         <View
           ref={headingRef}
           accessible
@@ -200,10 +207,21 @@ export function SpendRefusalHost() {
         <Text variant="body" color={t.muted} style={styles.body}>{body}</Text>
 
         {refusal.kind === 'exhausted' && reset ? (
-          <View style={[styles.notice, { borderColor: t.violet, backgroundColor: t.violetWash }]}>
-            <View style={[styles.dot, { backgroundColor: t.violet }]} />
-            <Text variant="label" color={t.violet} style={styles.supportingMin}>Resets {reset}</Text>
-          </View>
+          <ToneSurface tone="violet" style={styles.notice}>
+            <Icon name="calendar" size={16} color={t.violet} />
+            <View style={styles.noticeCopy}>
+              <Text variant="overline" color={t.violet}>PAID WORK RETURNS</Text>
+              <Text variant="label" color={t.text} style={styles.supportingMin}>Resets {reset}</Text>
+            </View>
+          </ToneSurface>
+        ) : refusal.kind === 'too_large' && refusal.operation === 'narration' ? (
+          <ToneSurface tone="violet" style={styles.notice}>
+            <Icon name="smartphone" size={16} color={t.violet} />
+            <View style={styles.noticeCopy}>
+              <Text variant="overline" color={t.violet}>AVAILABLE NOW</Text>
+              <Text variant="label" color={t.text} style={styles.supportingMin}>Device voice is included</Text>
+            </View>
+          </ToneSurface>
         ) : null}
 
         {timed ? (
@@ -244,30 +262,25 @@ export function SpendRefusalHost() {
   );
 }
 
-const makeStyles = (_t: ThemePalette) => StyleSheet.create({
-  sheet: { paddingBottom: space.sm },
-  icon: {
-    width: 56,
-    height: 56,
-    borderRadius: radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
+const makeStyles = (_t: ThemePalette, density: DensityMode) => StyleSheet.create({
+  sheet: { paddingBottom: space.sm, paddingTop: density === 'tight' ? 0 : space.xs },
+  eyebrow: { marginTop: space.md },
+  title: {
+    marginTop: space.xs,
+    fontSize: density === 'tight' ? 27 : 29,
+    lineHeight: density === 'tight' ? 32 : 35,
   },
-  title: { marginTop: space.md },
   // Spend-adjacent copy opts out of Tight's smaller shared variants.
-  body: { marginTop: space.sm, fontSize: 15, lineHeight: 23 },
-  supportingMin: { fontSize: 13 },
+  body: { marginTop: space.sm, fontSize: moneyType.body, lineHeight: moneyType.bodyLine },
+  supportingMin: { fontSize: moneyType.supporting, lineHeight: moneyType.supportingLine },
   notice: {
-    minHeight: 54,
-    borderWidth: 1,
-    borderRadius: radius.md,
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    paddingHorizontal: space.md,
     marginTop: space.lg,
   },
-  dot: { width: 8, height: 8, borderRadius: radius.pill },
+  noticeCopy: { flex: 1, minWidth: 0, gap: 2 },
   primary: { marginTop: space.lg },
   secondary: { marginTop: space.sm },
 });
