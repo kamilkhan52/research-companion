@@ -178,7 +178,8 @@ function PlanBody({ plan }: { plan: Plan }) {
   const percent = remainingPercent(remaining);
   const percentLabel = formatRemainingPercent(remaining);
   const resets = formatResetDate(plan.period_ends);
-  // The 80% card keys off SPEND alone, matching the bar beside it. See the header note.
+  // The 80% card keys off the server's SPEND fraction; the remaining bar is its complement.
+  // Keep the upper bound so the approaching treatment never appears once the allowance is gone.
   const approaching = plan.spent_fraction >= plan.warn_at_fraction && plan.spent_fraction < 1;
 
   return (

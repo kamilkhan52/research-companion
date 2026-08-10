@@ -6,6 +6,7 @@ import { ApiError } from '@/api/client';
 import { setBaseUrl } from '@/api/config';
 import {
   classifySpendRefusal,
+  presentSpendJobRefusal,
   presentSpendRefusal,
   resetLabel,
   SpendRefusalHost,
@@ -48,6 +49,31 @@ test('classifies all four states from the refusal response, not a plan warning',
     code: 'rate_limited', retryAfterSeconds: 10,
   }))).toBe('rate_limited');
   expect(classifySpendRefusal({ warn: true, at_capacity: true })).toBeNull();
+});
+
+test.each([
+  [
+    'Your other tasks are still running. Give them a moment and try again.',
+    'A few things are finishing.',
+  ],
+  [
+    'This task needs more than your whole monthly allowance.',
+    "This action won't fit your plan.",
+  ],
+  [
+    'Your usage limit has been reached. Try again after it resets.',
+    "This month's allowance is used.",
+  ],
+])('maps the exact background-job refusal contract: %s', async (message, title) => {
+  await renderHost();
+
+  let consumed = false;
+  act(() => {
+    consumed = presentSpendJobRefusal(message);
+  });
+
+  expect(consumed).toBe(true);
+  expect(await screen.findByText(title)).toBeTruthy();
 });
 
 test('busy refusal counts down, stays disabled, and retries only after zero', async () => {
