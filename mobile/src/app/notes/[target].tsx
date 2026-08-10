@@ -8,7 +8,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -26,6 +26,7 @@ import { keys, useNotes, useProjectState } from '@/api/queries';
 import type { StreamItem } from '@/api/types';
 import { Markdown } from '@/components/Markdown';
 import { AgentActivity } from '@/components/AgentActivity';
+import { draftedWordCount, notesAgentPhase, NotesDiff } from '@/components/NotesDiff';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
@@ -89,11 +90,20 @@ export default function NotesScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const markdown = notes.data?.markdown ?? '';
   const title = notes.data?.title ?? (target === 'working' ? 'Working notes' : 'Notes');
   const paper = target === 'working' ? undefined : projectState.data?.papers.find((item) => item.slug === target);
   const paperUrl = paper ? fullPaperUrl(paper) : null;
+  const openProposalLink = (href: string) => {
+    if (href.startsWith('rc-paper:')) {
+      const slug = href.slice('rc-paper:'.length);
+      if (slug) router.push(`/paper/${encodeURIComponent(slug)}`);
+    } else if (/^https?:\/\//i.test(href)) {
+      void Linking.openURL(href).catch(() => undefined);
+    }
+  };
 
   // This tab stays mounted across project switches. Keep local editor/proposal metadata scoped
   // to the active document; persisted drafts reload from their own project-keyed storage below.
@@ -304,7 +314,13 @@ export default function NotesScreen() {
         </KeyboardAvoidingView>
       ) : (
         <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding" keyboardVerticalOffset={8}>
-          <ScrollView contentContainerStyle={styles.body}>
+          <ScrollView
+            ref={scrollRef}
+            contentContainerStyle={styles.body}
+            onContentSizeChange={() => {
+              if (agent.running) scrollRef.current?.scrollToEnd({ animated: true });
+            }}
+          >
             {showProposal ? (
               <Card style={styles.proposalCard}>
                 <View style={styles.proposalHead}>
@@ -325,7 +341,11 @@ export default function NotesScreen() {
             ) : null}
 
             {showProposal ? (
-              <Markdown text={agent.proposal!} />
+              <NotesDiff
+                before={markdown}
+                after={agent.proposal!}
+                onLinkPress={openProposalLink}
+              />
             ) : markdown.trim() ? (
               <Markdown text={markdown} />
             ) : (
@@ -342,20 +362,10 @@ export default function NotesScreen() {
           </ScrollView>
 
           {showProposal ? (
-            <View style={styles.footerRow}>
-              <Button title="Discard" variant="ghost" onPress={agent.dismissProposal} style={{ flex: 1 }} />
+            <View style={styles.reviewActions}>
               <Button
-                title="Edit first"
-                variant="ghost"
-                onPress={() => startEdit(agent.proposal!, {
-                  baseRevision: agent.job?.base_revision ?? '',
-                  jobId: agent.job?.id ?? '',
-                  summary: agent.job?.summary ?? '',
-                })}
-                style={{ flex: 1 }}
-              />
-              <Button
-                title="Apply"
+                title="Approve & commit"
+                icon="check"
                 onPress={() =>
                   void persist(
                     agent.proposal!,
@@ -368,7 +378,21 @@ export default function NotesScreen() {
                   )
                 }
                 loading={saving}
-                style={{ flex: 1.4 }}
+              />
+              <Button
+                title="Edit before committing"
+                variant="ghost"
+                onPress={() => startEdit(agent.proposal!, {
+                  baseRevision: agent.job?.base_revision ?? '',
+                  jobId: agent.job?.id ?? '',
+                  summary: agent.job?.summary ?? '',
+                })}
+                style={styles.reviewSecondary}
+              />
+              <Button
+                title="Discard proposal"
+                variant="ghost"
+                onPress={agent.dismissProposal}
               />
             </View>
           ) : asking ? (
@@ -408,23 +432,21 @@ export default function NotesScreen() {
   );
 }
 
-/** Live progress of the server-side edit: tool calls as a compact trail, plus a character
- *  count of the revision streamed so far (the text itself is reviewed at the end). */
+/** Live progress of the server-side edit: the current real phase, recent tool calls, and the
+ *  number of words actually streamed so far (the text itself is reviewed at the end). */
 function AgentProgress({ items }: { items: StreamItem[] }) {
   // Palette named `theme` here: the tool-trail map callback below already uses `t`.
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const tools = items.filter((it) => it.kind === 'tool') as Extract<StreamItem, { kind: 'tool' }>[];
-  const chars = useMemo(
-    () => items.reduce((n, it) => (it.kind === 'text' ? n + it.text.length : n), 0),
-    [items],
-  );
+  const words = draftedWordCount(items);
   return (
     <View style={styles.progressCard}>
       <AgentActivity
         emphasis="panel"
-        status="Preparing a notes revision…"
-        detail={chars > 0 ? `${chars} characters drafted` : 'The analyst is reviewing the current notes.'}
+        status={notesAgentPhase(items)}
+        detail={words > 0 ? `${words} words drafted` : undefined}
+        testID="notes-agent-activity"
       />
       {tools.slice(-3).map((t, i) => (
         <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
@@ -492,6 +514,8 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     paddingBottom: space.md,
     paddingTop: space.xs,
   },
+  reviewActions: { gap: space.sm, paddingHorizontal: space.md, paddingBottom: space.md },
+  reviewSecondary: { borderWidth: 1, borderColor: t.line2 },
   askBar: { paddingTop: space.xs },
   askInput: {
     marginHorizontal: space.md,

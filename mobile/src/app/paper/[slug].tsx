@@ -206,11 +206,12 @@ export default function DiscussionScreen() {
   const qc = useQueryClient();
   // `source` (optional) carries a pasted arXiv id / PDF link from the Discover screen's
   // "specific paper" box, so the first fetch uses exactly that source.
-  const { slug, source, project, thread } = useLocalSearchParams<{
+  const { slug, source, project, thread, autoStart } = useLocalSearchParams<{
     slug: string;
     source?: string;
     project?: string;
     thread?: string;
+    autoStart?: string;
   }>();
   const { activePid, setActivePid } = useActiveProject();
   // Continue Reading can target a session in a different project. Prefer its explicit route
@@ -611,6 +612,7 @@ export default function DiscussionScreen() {
           stream={stream}
           chatStartPath={paths!.chatStart}
           initialSource={typeof source === 'string' && source ? source : undefined}
+          autoStart={autoStart === '1'}
           sessionState={state}
           selectedModel={selectedModel}
           modelLabel={selectedModelLabel}
@@ -1229,8 +1231,6 @@ function DiscussionThread({
   const [annotatingAssistant, setAnnotatingAssistant] = useState<number | null>(null);
   const [selectedSentence, setSelectedSentence] = useState<SelectedSentence | null>(null);
   const [sentenceCommentText, setSentenceCommentText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
   // The composer floats over the message list (Gemini/ChatGPT pattern): measured here so the
   // inverted list gets an equal bottom inset and content scrolls clear of the pill (R12.6).
   const [composerHeight, setComposerHeight] = useState(0);
@@ -1253,7 +1253,7 @@ function DiscussionThread({
     setSentenceCommentText('');
   }, [threadId]);
 
-  const disabled = stream.streaming || busy;
+  const disabled = stream.streaming;
   // See the headerHeight comment in DiscussionScreen: the library's own KeyboardAvoidingView
   // offset (insets.top alone) doesn't know about our TopBar, so the composer surfaces under
   // the keyboard without this correction.
@@ -1542,16 +1542,12 @@ function DiscussionThread({
     );
   }
 
-  async function requestChanges() {
-    const t = textDraft.value.trim();
+  async function requestChanges(feedback: string) {
+    const t = feedback.trim();
     if (!t) return;
-    setActionError(null);
-    await textDraft.markSubmitted(acceptedDrafts.length);
     await stream.run(
       paths.requestChanges,
       { slug, text: t, model: selectedModel ?? undefined },
-      undefined,
-      () => textDraft.clear(''),
     );
   }
 
@@ -1590,22 +1586,8 @@ function DiscussionThread({
     handleRetry(0, config);
   }, [handleRetry]);
 
-  async function reopen() {
-    setBusy(true);
-    setActionError(null);
-    try {
-      await api.reopen(pid, slug, threadId);
-      onMutated();
-    } catch (e) {
-      setActionError((e as Error).message ?? 'Could not reopen the discussion.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const handleSend = useCallback(() => {
     if (editing) void submitEdit();
-    else if (state === 'notes_drafted') void requestChanges();
     else void send();
     // The handlers close over draft state; deps list the state they read. stream.run is a
     // dep because it captures the delivery mode — omitting it would send with a stale mode
@@ -1846,32 +1828,9 @@ function DiscussionThread({
         </View>
       );
     }
-    if (state === 'notes_drafted') {
-      return (
-        <View style={styles.accessoryCol}>
-          {actionError ? (
-            <Text variant="caption" color={theme.danger}>{actionError}</Text>
-          ) : null}
-          <View style={styles.accessoryRow}>
-            {inputText.trim() ? (
-              <Button title="Request changes" variant="ghost" onPress={handleSend} disabled={disabled} style={{ flex: 1 }} />
-            ) : (
-              <Button title="Reopen" variant="ghost" onPress={() => void reopen()} loading={busy} disabled={disabled} style={{ flex: 1 }} />
-            )}
-            <Button
-              title="Review & commit"
-              onPress={() => setReviewOpen(true)}
-              loading={busy}
-              disabled={disabled || !!inputText.trim()}
-              style={{ flex: 1 }}
-            />
-          </View>
-        </View>
-      );
-    }
     // "Finish reading" lives in the kebab menu only (polish plan H.1) — no composer chip.
     return null;
-  }, [actionError, busy, disabled, editing, handleSend, inputText, state, styles, theme, editDraft.clear, reopen]);
+  }, [editing, styles, editDraft.clear]);
 
   const renderInputToolbar = useCallback((props: InputToolbarProps<DiscussionMessage>) => {
     if (state === 'committed') {
@@ -1887,6 +1846,18 @@ function DiscussionThread({
             variant="ghost"
             onPress={onContinue}
             style={{ alignSelf: 'center', marginTop: space.xs }}
+          />
+        </View>
+      );
+    }
+    if (state === 'notes_drafted') {
+      return (
+        <View style={styles.committedBar}>
+          <Button
+            title="Review notes"
+            onPress={() => setReviewOpen(true)}
+            disabled={stream.streaming}
+            style={{ alignSelf: 'center' }}
           />
         </View>
       );
@@ -1940,6 +1911,7 @@ function DiscussionThread({
     sentenceCommentText,
     sentenceComments,
     state,
+    stream.streaming,
     styles,
   ]);
 
@@ -1958,9 +1930,7 @@ function DiscussionThread({
 
   const placeholder = editing
     ? 'Edit your message…'
-    : state === 'notes_drafted'
-      ? 'Request changes to the draft…'
-      : transcript.length === 0
+    : transcript.length === 0
         ? 'Start with any question about this paper…'
         : 'Reply';
 
@@ -2056,6 +2026,11 @@ function DiscussionThread({
       threadId={threadId}
       onClose={() => setReviewOpen(false)}
       onCommitted={() => { setReviewOpen(false); onMutated(); }}
+      onRequestEdits={requestChanges}
+      requesting={stream.streaming}
+      requestActivity={stream.activity}
+      requestItems={stream.items}
+      refreshNonce={reviewReadyNonce}
     />
     </>
   );
@@ -2097,6 +2072,7 @@ export function ComposeFirst({
   stream,
   chatStartPath,
   initialSource,
+  autoStart = false,
   sessionState,
   selectedModel,
   retrieved,
@@ -2111,6 +2087,7 @@ export function ComposeFirst({
   stream: ReturnType<typeof useStreamingTurn>;
   chatStartPath: string;
   initialSource?: string;
+  autoStart?: boolean;
   sessionState: string | null;
   selectedModel: string | null;
   retrieved: boolean;
@@ -2141,6 +2118,7 @@ export function ComposeFirst({
   const [retrievalJob, setRetrievalJob] = useState<RetrievalJob | null>(null);
   const [titleDecisionConfirmed, setTitleDecisionConfirmed] = useState(titleConfirmed);
   const [updatingTitle, setUpdatingTitle] = useState(false);
+  const autoStartAttempted = useRef(false);
   const manualSource = sourceDraft.value;
   const setManualSource = sourceDraft.setValue;
   // Every Reading Mode is a visible prompt template. Customize Prompt is a peer template
@@ -2266,6 +2244,7 @@ export function ComposeFirst({
   async function fetchPaper(
     source?: { arxiv_id?: string; pdf_url?: string },
     sourceText?: string,
+    retry?: () => void | Promise<unknown>,
   ): Promise<boolean> {
     setFetching(true);
     setLocalError(null);
@@ -2305,6 +2284,7 @@ export function ComposeFirst({
         (await fetchPaper(
           sourceText ? parseSource(sourceText) : undefined,
           sourceText,
+          () => startReading(),
         ));
       if (!ready) return;
       if (template === 'custom') await promptDraft.markSubmitted();
@@ -2333,6 +2313,26 @@ export function ComposeFirst({
       setStarting(false);
     }
   }
+
+  // The shared known-paper field is an explicit request to add AND begin. Wait until both
+  // persisted inputs and the server-authored opening prompt are ready, then invoke the exact
+  // same durable retrieval → chat-job path as the visible Start button. Never auto-submit a
+  // second time on rerender; any refusal modal exposes its own deliberate retry action.
+  useEffect(() => {
+    if (
+      !autoStart
+      || autoStartAttempted.current
+      || !promptDraft.ready
+      || !sourceDraft.ready
+      || !opening.data
+      || !prompt.trim()
+    ) return;
+    autoStartAttempted.current = true;
+    void startReading();
+    // startReading deliberately closes over the now-ready prompt/source/model selection. The
+    // ref is the one-shot boundary; adding the function itself would retrigger every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, opening.data, prompt, promptDraft.ready, sourceDraft.ready]);
 
   function fetchFromManual() {
     const s = manualSource.trim();

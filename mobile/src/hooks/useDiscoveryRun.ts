@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { cancelDiscovery, getDiscovery, startDiscovery } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { DiscoveryJob, DiscoveryResponse } from '@/api/types';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -38,6 +39,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
   // from project A must never block the first tap in project B or apply A's late response
   // to B's UI — same protection as useGraphBuild.
   const startGenerationRef = useRef(0);
+  const runRef = useRef<DiscoveryRunState['run']>(async () => false);
 
   useEffect(() => {
     startGenerationRef.current += 1;
@@ -63,7 +65,9 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
       }
       setRunning(false);
       setCancelling(false);
-      if (next.status === 'error') setError(next.error ?? 'Discovery failed.');
+      if (next.status === 'error' && !presentSpendJobRefusal(next.error, { operation: 'other' })) {
+        setError(next.error ?? 'Discovery failed.');
+      }
       // done: the result is already persisted server-side. cancelled: the old completed result
       // deliberately remains. In either case refresh so this and future visits render the
       // authoritative persisted state.
@@ -124,6 +128,14 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
         return true;
       } catch (e) {
         if (generation !== startGenerationRef.current) return false;
+        if (presentSpendRefusal(e, {
+          operation: 'other',
+          retry: () => runRef.current(goals),
+        })) {
+          setError(null);
+          setRunning(false);
+          return false;
+        }
         // The POST response can be lost while the run started fine server-side —
         // reconcile with the registry before declaring failure (see useGraphBuild).
         try {
@@ -146,6 +158,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
     },
     [pid, running, applyJob, qc],
   );
+  runRef.current = run;
 
   const resume = useCallback(
     (next: DiscoveryJob | null | undefined) => {

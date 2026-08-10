@@ -13,6 +13,7 @@ import { READING_MODE_LABELS, type ReadingMode, type RetrievalJob } from '@/api/
 import { useListeningMode } from '@/store/listening';
 import { showToast } from '@/ui/Toast';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 
 export interface AnalysisOffer {
   pid: string;
@@ -69,6 +70,10 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
   try {
     startedJob = (await api.startRetrievalJob(offer.pid, offer.slug, startOpts)).job;
   } catch (e) {
+    if (presentSpendRefusal(e, {
+      operation: 'other',
+      retry: () => runChain(offer, mode, listening),
+    })) return;
     showToast(`Couldn't start the analysis for “${name}” — ${(e as Error).message ?? 'server unreachable'}`);
     return;
   }
@@ -101,6 +106,10 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
       return;
     }
     if (!job.analysis_job_id) {
+      if (presentSpendJobRefusal(job.analysis_error, {
+        operation: 'other',
+        retry: () => runChain(offer, mode, listening),
+      })) return;
       showToast(`“${name}” fetched, but the analysis didn't start${job.analysis_error ? ` — ${job.analysis_error}` : ''}`);
       return;
     }
@@ -116,6 +125,10 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
     if (chat.status === 'done') {
       showToast(`Paper summary ready · ${name}`);
     } else if (chat.status === 'error') {
+      if (presentSpendJobRefusal(chat.error, {
+        operation: 'other',
+        retry: () => runChain(offer, mode, listening),
+      })) return;
       showToast(`Analysis failed for “${name}” — open it to retry`);
     }
   } catch {

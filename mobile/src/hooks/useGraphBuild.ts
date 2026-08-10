@@ -19,6 +19,7 @@ import type {
   GraphRetrievalCandidate,
   ReferenceGraph,
 } from '@/api/types';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -82,6 +83,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
   // This hook remains mounted while the active project changes. A pending start from project A
   // must never block the first tap in project B or apply A's late response to B's UI.
   const startGenerationRef = useRef(0);
+  const runRef = useRef<GraphBuildState['run']>(async () => {});
   const loadedSnapshotRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -176,7 +178,9 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       }
       // done | error
       setBuilding(false);
-      if (job.status === 'error') setError(job.error ?? 'Graph build failed.');
+      if (job.status === 'error' && !presentSpendJobRefusal(job.error, { operation: 'other' })) {
+        setError(job.error ?? 'Graph build failed.');
+      }
       // R6.5 — a build takes minutes and finishes while the user is usually elsewhere in the
       // app (tab screens stay mounted, so this poll loop keeps running); a quiet toast is the
       // only completion signal off the Map tab. applyJob only ever sees a settled job once
@@ -244,6 +248,14 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
         applyJob(build);
       } catch (e) {
         if (generation !== startGenerationRef.current) return;
+        if (presentSpendRefusal(e, {
+          operation: 'other',
+          retry: () => runRef.current(force, retrievalSources),
+        })) {
+          setError(null);
+          setBuilding(false);
+          return;
+        }
         // The POST response can be lost while the job started fine server-side (the tunnel
         // kills long requests). Reconcile with the registry before declaring failure, so a
         // real running build is never left untracked.
@@ -268,6 +280,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
     },
     [pid, building, applyJob, qc],
   );
+  runRef.current = run;
 
   const resume = useCallback(
     (job: GraphBuildJob | null | undefined) => {

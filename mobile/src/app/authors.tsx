@@ -17,6 +17,7 @@ import { showToast } from '@/ui/Toast';
 import { BottomSheet } from '@/components/BottomSheet';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import { TopBar } from '@/components/TopBar';
+import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { useActiveProject } from '@/store/project';
 import { Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -253,7 +254,10 @@ function LabsView({
         setJob(next);
         if (next.status !== 'running') {
           qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
-          showToast(
+          const stopped = next.stopped_reason ?? next.error;
+          if (!presentSpendJobRefusal(stopped, {
+            operation: 'other', retry: startResearch,
+          })) showToast(
             next.status === 'done'
               // `stopped_reason` means the pass ended early even though it found something —
               // out of allowance, typically. Reporting only the mapped count would call an
@@ -283,6 +287,7 @@ function LabsView({
     try {
       setJob((await api.startLabsResearch(pid)).job);
     } catch (e) {
+      if (presentSpendRefusal(e, { operation: 'other', retry: startResearch })) return;
       showToast((e as Error).message ?? 'Could not start lab research.');
     } finally {
       setStarting(false);
@@ -448,11 +453,19 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
         // (and the Labs view) sees it without regenerating.
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       } else {
+        if (presentSpendJobRefusal(job.error, { operation: 'other', retry: generate })) {
+          setState('idle');
+          return;
+        }
         setState('error');
         setError(job.error ?? 'Profile generation timed out — try again.');
       }
     } catch (e) {
       if (!alive.current) return;
+      if (presentSpendRefusal(e, { operation: 'other', retry: generate })) {
+        setState('idle');
+        return;
+      }
       setState('error');
       setError((e as Error).message ?? 'Could not generate the profile.');
     }
