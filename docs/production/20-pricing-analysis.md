@@ -74,6 +74,17 @@ Before the tables, three measured facts that matter more than the tier design:
 
 ## 1. Headline recommendation
 
+> **Revised 2026-08-10 (DR-042, Kamil's decision): audio quality is NOT a plan dimension.**
+> The `premium_audio` flag is removed from `app/plans.py`; every plan may spend its allowance on
+> studio narration, and the credit ceiling — live and enforced since M3 — is what bounds the
+> cost, not a feature flag. This supersedes the free-tier voice-gating below and §5's
+> upgrade-trigger framing: plans now differ in ALLOWANCE (and later projects/papers/models),
+> never in audio quality. The tier tables' credit totals are unchanged — Free's 200 credits
+> ($0.20) bound a free account's worst case regardless of the spend mix, and one mean narration
+> at `tts-1` is ~160 credits, so narration on Free is a real trade against reading rather than a
+> gated feature. The plan summaries in `app/plans.py` say so.
+
+
 ### Free — "3 papers a month, your device's voice"
 
 | What the user sees | Internal |
@@ -81,7 +92,7 @@ Before the tables, three measured facts that matter more than the tier design:
 | **15 analysis turns / month** (≈ 3–4 papers discussed) | 150 credits |
 | Reference graph: **1 build / month** | 17 credits |
 | Discovery: **2 runs / month** | 2 credits |
-| Audio: **unlimited, device voice only** (`BrowserTTS`) | 0 credits |
+| Audio: device voice unlimited; **studio narration by the piece** (short pieces fit — DR-042) | 0 credits |
 | Web search in chat: **off** | — |
 | **Total allowance** | **200 credits** |
 
@@ -155,7 +166,7 @@ Measured constant: **970 characters per minute of speech** (largest narration, 3
 | | per 1M chars | per minute | per narration (10,702 chars) |
 |---|---:|---:|---:|
 | `tts-1` (**current default**, H22 revised 2026-07-25) | $15.00 | **$0.01455** | **$0.1605** |
-| `tts-1-hd` (the previous default; still selectable) | $30.00 | **$0.0291** | **$0.3211** |
+| `tts-1-hd` (the previous default; retired 2026-08-10, DR-042 — `app/tts.py` maps it to `tts-1`) | $30.00 | **$0.0291** | **$0.3211** |
 | `BrowserTTS` | $0 | $0 | $0 |
 
 ### 2d. Unmetered variable costs (not in any ledger)
@@ -292,6 +303,11 @@ subscribers**. That is an acceptable customer-acquisition cost.
 - **If premium TTS is available on Free.** 15 turns × 10,702 chars at `tts-1-hd` = $4.82/user-
   month → **$4,820/month at 1,000 free users**. This is a 34× blowout and is the single reason
   `BrowserTTS` must be hard-enforced server-side on Free, not merely defaulted in the UI.
+  > **Closed 2026-08-10 (DR-042).** This scenario assumed an UNCAPPED free account. The credit
+  > ceiling now meters `speech_synthesis` like everything else, so a free account's worst case
+  > is its 200-credit allowance ($0.20/month) whatever it spends it on — the blowout is
+  > structurally impossible, and premium TTS is deliberately available on every plan. `tts-1-hd`
+  > itself is retired (`app/tts.py` maps it to `tts-1`).
 - **If web search is available on Free.** It nearly doubles the per-turn cost ($0.0081 → $0.0156)
   and it is billed by a third party we cannot rate-limit per user today.
 

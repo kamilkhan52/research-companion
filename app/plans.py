@@ -51,10 +51,7 @@ class Plan:
     #: What the reader is told they get. Deliberately in reading terms rather than credits —
     #: "20 papers" is a promise someone can check; "2,500 credits" is not.
     summary: str
-    #: Whether premium (studio) narration is included, or only the device voice. The pricing
-    #: analysis makes this the main lever between Free and Basic, because audio is the largest
-    #: variable cost in the app.
-    premium_audio: bool
+
 
 
 #: The plans, keyed by the name stored against an account.
@@ -70,19 +67,23 @@ PLANS: dict[str, Plan] = {
         # is not simply "basic".
         monthly_credits=5_000,
         summary="Testing plan — generous allowance while the app is in review",
-        premium_audio=True,
     ),
     "free": Plan(
         name="free",
         monthly_credits=200,
-        summary="3–4 papers a month, your device's voice",
-        premium_audio=False,
+        # Audio quality is deliberately NOT a plan dimension (DR-042): any plan may spend its
+        # allowance on studio narration, and the credit ceiling — not a feature flag — bounds
+        # the cost. The speech hold is sized from the text (spend_limits.speech_hold_nanousd),
+        # so a short piece admits here while a mean full-paper narration (~160 credits of TTS,
+        # ~200 with margin and the rewrite) is honestly refused as larger than what remains —
+        # the refusal sheet then offers the device voice. The summary promises only what the
+        # arithmetic delivers.
+        summary="3–4 papers a month, with studio narration for shorter pieces",
     ),
     "basic": Plan(
         name="basic",
         monthly_credits=2_500,
-        summary="20 papers a month, 45 minutes of studio narration",
-        premium_audio=True,
+        summary="20 papers a month, with narration to match",
     ),
 }
 

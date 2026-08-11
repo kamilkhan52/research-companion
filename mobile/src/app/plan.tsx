@@ -291,12 +291,6 @@ function PlanBody({ plan }: { plan: Plan }) {
         </View>
         {/* Server copy verbatim: it is the single source of what this plan promises. */}
         <Text variant="body" color={t.muted} style={[styles.planSummary, styles.bodyMin]}>{plan.plan.summary}</Text>
-        <View style={styles.audioRow}>
-          <Icon name={plan.plan.premium_audio ? 'volume-2' : 'smartphone'} size={15} color={t.muted} />
-          <Text variant="caption" color={t.muted} style={[styles.audioLabel, styles.supportingMin]}>
-            {plan.plan.premium_audio ? 'Studio narration included' : 'Device voice'}
-          </Text>
-        </View>
       </Card>
     </>
   );
@@ -324,8 +318,6 @@ function makeStyles(t: ThemePalette, density: DensityMode) {
     percentRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm, marginTop: space.sm },
     remainingLabel: { paddingBottom: tight ? 2 : 3 },
     cardBody: { marginTop: space.xs },
-    audioRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.sm },
-    audioLabel: { marginLeft: space.xs },
     percent: { color: t.violet, fontFamily: fonts.bodySemiBold, fontSize: tight ? 34 : 38, lineHeight: tight ? 40 : 44 },
     bar: { marginTop: space.lg },
     resetRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.md },

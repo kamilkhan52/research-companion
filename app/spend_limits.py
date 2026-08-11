@@ -78,9 +78,12 @@ _MAX_NANOUSD: dict[str, int] = {
     # and §8 lists provider pinning as an unmet precondition. 2.5x that, not 3x the aspiration.
     "analysis": 150_000_000,
     "narration": 40_000_000,        # $0.04
-    # $0.60. The MEAN cached narration is 10,702 characters ($0.1605 at tts-1) and the largest
-    # measured is 36,987 ($0.555) — §2c. Narration length is unknown at admission and §8 records
-    # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
+    # $0.60 — the FALLBACK bound only, covering the largest measured narration (36,987 chars,
+    # $0.555 at tts-1 — §2c). A caller that knows its text passes `speech_hold_nanousd(chars)`
+    # instead: character pricing makes the cost computable at admission, and the flat maximum
+    # exceeded the whole Free ceiling ($0.20), refusing every narration on Free regardless of
+    # length — a de-facto quality tier, which DR-042 removes. audio_jobs sizes its hold from the
+    # canonical text it was handed.
     "speech_synthesis": 600_000_000,
     # Kept for any caller that asks for a `retrieval` hold, but the retrieval JOB no longer takes
     # one: its own thread dispatches nothing to a provider (arXiv fetch, local PDF extraction), and
@@ -118,6 +121,37 @@ _MAX_NANOUSD: dict[str, int] = {
     # and then could not afford the $0.04 author, and a crash mid-author charged both.
     "lab_research": 40_000_000,     # $0.04
 }
+
+#: ASSUMED stage-2 expansion of canonical text into narration. Not a measured distribution —
+#: the pricing doc's token means imply a mean ratio near 1.1, and the local transcripts hold too
+#: few pairs to call it more than that — so this sits modestly above the implied mean rather
+#: than claiming to bound the spread. The ceiling may legitimately settle ABOVE the hold when a
+#: narration expands past it: `quotas.settle` charges actual, so the overage is billed, not
+#: lost (see `speech_hold_nanousd`).
+_SPEECH_TEXT_MARGIN = 1.25
+
+def speech_hold_nanousd(chars: int, rate_nanousd_per_char: int | None) -> int:
+    """The admission hold for narrating a text of `chars` characters (DR-042).
+
+    Sized from the text at THE CONFIGURED MODEL'S rate (the caller resolves it via
+    `tts.nanousd_per_char`), with margin, plus the stage-2 narration LLM lease — never the flat
+    worst-case, which alone exceeded the Free ceiling and refused every narration on the
+    smallest plan. Round 2 of the review is why the rate is a parameter: sizing every hold at
+    tts-1's 15,000 nano/char under-reserved 2.7x for `gpt-4o-mini-tts`, letting one job admit on
+    Free and settle 40% past the whole monthly ceiling. An unknown model's rate (None) falls
+    back to the flat bound, as does an unknown length — never to a free pass.
+
+    The hold is an ESTIMATE the settlement may exceed: a narration that expands past the margin
+    is charged at actual. That direction is safe for the ledger (the money is billed) and bounded
+    by the per-request caps; the clamp below only stops a pathological length from reserving more
+    than the old flat bound did.
+    """
+    if chars <= 0 or rate_nanousd_per_char is None or rate_nanousd_per_char <= 0:
+        return _MAX_NANOUSD["speech_synthesis"]
+    estimated = int(chars * rate_nanousd_per_char * _SPEECH_TEXT_MARGIN)
+    return min(_MAX_NANOUSD["speech_synthesis"],
+               estimated + _MAX_NANOUSD["narration"])
+
 
 #: Used when an operation has no entry. Generous rather than tight: refusing a legitimate reader is
 #: the failure the roadmap ranks worse than a mild overspend, and an unknown operation is far more

@@ -47,7 +47,6 @@ function plan(
     plan: {
       name: 'basic',
       summary: '20 papers a month, 45 minutes of studio narration',
-      premium_audio: true,
       monthly_credits: 2500,
       ...planOverrides,
     },

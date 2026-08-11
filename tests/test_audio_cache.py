@@ -106,3 +106,19 @@ def test_invalid_limits_keep_finite_defaults(monkeypatch):
     monkeypatch.setenv("RC_AUDIO_CACHE_TOTAL_BYTES", "0")
     assert audio_cache.per_user_limit() == audio_cache.DEFAULT_PER_USER_BYTES
     assert audio_cache.total_limit() == audio_cache.DEFAULT_TOTAL_BYTES
+
+
+def test_a_retired_tts_model_shares_the_live_models_cache_bucket(monkeypatch):
+    """DR-042: a persisted tts-1-hd setting synthesizes tts-1 audio, so its cache key must be
+    the tts-1 key — a raw-setting key kept a second namespace of identical, twice-billed
+    audio."""
+    from app import audio_jobs, config
+
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"speech_provider": "openai", "tts_model": "tts-1-hd",
+                                 "tts_voice": "alloy"})
+    retired = audio_jobs._voice_key()
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"speech_provider": "openai", "tts_model": "tts-1",
+                                 "tts_voice": "alloy"})
+    assert retired == audio_jobs._voice_key()

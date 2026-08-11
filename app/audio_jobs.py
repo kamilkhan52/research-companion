@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agent, audio_cache, config, sessions, tts, usage
+from . import agent, audio_cache, config, sessions, spend_limits, tts, usage
 from .fileio import atomic_write_bytes
 from .jobs import Job, JobRegistry, new_id, now_iso
 
@@ -120,7 +120,10 @@ def _audio_scope() -> str | None:
 
 def _voice_key() -> str:
     s = config.load_settings()
-    return f"openai|{s.get('tts_model')}|{s.get('tts_voice')}"
+    # Resolve the retired model first: a persisted tts-1-hd setting synthesizes tts-1 audio
+    # (DR-042), and keying the cache on the raw setting would keep a permanent second namespace
+    # of identical, twice-billed audio.
+    return f"openai|{tts.resolve_model(s.get('tts_model'))}|{s.get('tts_voice')}"
 
 
 def job_id_for(text: str) -> str:
@@ -290,4 +293,11 @@ def start_job(text: str, billing_project: str | None = None,
 
     return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work,
                                    project_id=_audio_scope(), metered=metered,
-                                   reserves=True)
+                                   reserves=True,
+                                   # Sized from the text at the configured model's rate, so a
+                                   # short narration admits on a small ceiling (DR-042) and an
+                                   # expensive model cannot under-reserve.
+                                   hold_max_nanousd=spend_limits.speech_hold_nanousd(
+                                       len(text),
+                                       tts.nanousd_per_char(tts.resolve_model(
+                                           config.load_settings().get("tts_model")))))
