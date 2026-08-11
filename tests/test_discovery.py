@@ -619,6 +619,29 @@ def test_load_result_upgrades_arxiv_only_persisted_shape_without_rewriting(temp_
     assert path.read_text() == before
 
 
+def test_load_result_backfills_authors_and_reasons_missing_entirely(temp_project):
+    """A result persisted before these fields existed has the KEYS ABSENT, not empty — the
+    genuine historical shape, reproducing the client crash: `s.authors.length` /
+    `s.reasons[0]` throw on `undefined`, taking the whole screen down with them."""
+    old = {
+        "goals": "g",
+        "suggestions": [{
+            "arxiv_id": "2201.00003",
+            "title": "Older still",
+            "relevance": 9,
+            "score": 10,
+            # authors and reasons deliberately absent
+        }],
+    }
+    path = config.project_dir() / ".state" / "discovery.json"
+    path.write_text(json.dumps(old))
+
+    loaded = discovery.load_result()
+
+    assert loaded["suggestions"][0]["authors"] == []
+    assert loaded["suggestions"][0]["reasons"] == []
+
+
 def test_load_result_returns_none_when_absent_or_corrupt(temp_project):
     assert discovery.load_result() is None
     (config.project_dir() / ".state" / "discovery.json").write_text("{not json")
