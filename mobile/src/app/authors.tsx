@@ -16,7 +16,7 @@ import { keys, useGraphAuthors } from '@/api/queries';
 import { showToast } from '@/ui/Toast';
 import { BottomSheet } from '@/components/BottomSheet';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
-import { ProgressSteps } from '@/components/ProgressSteps';
+import { ProgressSteps, type ProgressStepItem } from '@/components/ProgressSteps';
 import { TopBar } from '@/components/TopBar';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { useActiveProject } from '@/store/project';
@@ -320,7 +320,7 @@ function LabsView({
               Researching labs · {job!.done} of {job!.total} authors
             </Text>
           </View>
-          <AnimatedProgressBar value={job!.total > 0 ? job!.done / job!.total : 0} />
+          <AnimatedProgressBar value={labsFraction(job!.done, job!.total)} />
           {job!.current ? (
             <Text variant="caption" color={t.muted} numberOfLines={1}>
               Searching the web for {job!.current}'s group…
@@ -430,6 +430,23 @@ function LabsView({
 
 /** The one-paragraph LLM profile: shows the cached paragraph when the board carries one,
  *  else offers to generate it (background job + polling, like every LLM op). */
+/** The two real stages of a profile job as ProgressSteps items (DR-047). The server publishes
+ *  "context" then "writing"; an empty stage (a snapshot taken before the worker's first write,
+ *  or a server predating the field) reads as the first stage under way — never as done. */
+export function profileSteps(stage: string): ProgressStepItem[] {
+  const writing = stage === 'writing';
+  return [
+    { key: 'context', label: 'Reading the papers', state: writing ? 'done' : 'active' },
+    { key: 'writing', label: 'Writing the profile', state: writing ? 'active' : 'pending' },
+  ];
+}
+
+/** The labs pass as a fraction for AnimatedProgressBar; an unstarted or empty pass is 0. */
+export function labsFraction(done: number, total: number): number {
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(1, done / total));
+}
+
 function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAuthor }) {
   const t = useTheme();
   const qc = useQueryClient();
@@ -495,22 +512,7 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
     // The same staged treatment as the map build (DR-047): which part of the work is under way,
     // not a spinner that only moves at the end.
     return (
-      <ProgressSteps
-        dotSize={22}
-        style={{ marginTop: space.sm }}
-        steps={[
-          {
-            key: 'context',
-            label: 'Reading the papers',
-            state: stage === 'writing' ? 'done' : 'active',
-          },
-          {
-            key: 'writing',
-            label: 'Writing the profile',
-            state: stage === 'writing' ? 'active' : 'pending',
-          },
-        ]}
-      />
+      <ProgressSteps dotSize={22} style={{ marginTop: space.sm }} steps={profileSteps(stage)} />
     );
   }
   return (

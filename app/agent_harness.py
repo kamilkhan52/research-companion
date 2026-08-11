@@ -411,10 +411,11 @@ def _openrouter_model(
         api_key=key, app_url="http://localhost", app_title=config.APP_TITLE)
     # `no_reasoning` mirrors `llm.NO_REASONING` for a lookup-shaped agent run (lab research):
     # the model reads pages and reports what they say — hidden reasoning only spends the budget.
-    # Unlike `llm.complete`, this path has NO retry-without-the-hint: a model that rejects it
-    # fails the run. Acceptable here because the callers that set it run on the graph model
-    # (DeepSeek family), where disabling reasoning is what un-broke narration; the analysis turn
-    # never sets it.
+    # Unlike `llm.complete`, this path has NO built-in retry-without-the-hint, and per llm.py
+    # there is no verified evidence of how a reasoning-mandatory model answers a request that
+    # tries to disable it. A caller that sets this MUST therefore provide its own fallback —
+    # lab_research catches the run failure, tests it with `llm._rejected_for_reasoning`, and
+    # retries once on a model built without the hint. The analysis turn never sets this.
     extra: dict = {"openrouter_reasoning": llm.no_reasoning_payload()} if no_reasoning else {}
     # Native OpenRouter settings retain the same unconditional privacy constraint while also
     # requesting the authoritative usage/cost block on every tool-loop request.

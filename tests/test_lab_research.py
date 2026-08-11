@@ -142,6 +142,70 @@ def test_agent_run_disables_reasoning(temp_project, monkeypatch):
     assert captured["operation"] == "lab_research"
 
 
+def test_reasoning_rejection_retries_without_the_hint(temp_project, monkeypatch):
+    """The agentic mirror of `llm.complete`'s fallback. The graph model is an operator override
+    (`RC_GRAPH_LLM_MODEL`) that can name a reasoning-mandatory model; without the retry, every
+    author in every labs pass fails with a scrubbed message and no in-app remedy."""
+    import pydantic_ai
+    from app import agent_harness, graph
+
+    built: list[bool] = []
+
+    class RejectsTheHint:
+        def __init__(self, *args, **kwargs):
+            self.model = object()
+
+        async def run(self, *args, **kwargs):
+            if built[-1]:  # constructed with the no-reasoning hint
+                raise RuntimeError(
+                    "Provider returned 400: reasoning cannot be disabled for this model")
+
+            class Result:
+                output = 'RESULT: {"found": false}'
+            return Result()
+
+    def fake_model(model=None, operation="analysis", **kw):
+        built.append(bool(kw.get("no_reasoning")))
+        return object()
+
+    monkeypatch.setattr(pydantic_ai, "Agent", RejectsTheHint)
+    monkeypatch.setattr(agent_harness, "_openrouter_model", fake_model)
+    monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
+
+    out = lab_research._research_with_agent("Researcher", "University", ["Paper"])
+    assert built == [True, False], built
+    assert out == {"found": False}
+
+
+def test_an_unrelated_failure_does_not_retry(temp_project, monkeypatch):
+    """The fallback is for the hint being refused, not a second attempt at every error — a
+    quota blowout or provider outage retried once would double the most expensive failures."""
+    import pydantic_ai
+    from app import agent_harness, graph
+
+    built: list[bool] = []
+
+    class AlwaysDown:
+        def __init__(self, *args, **kwargs):
+            self.model = object()
+
+        async def run(self, *args, **kwargs):
+            raise RuntimeError("provider 503")
+
+    def fake_model(model=None, operation="analysis", **kw):
+        built.append(bool(kw.get("no_reasoning")))
+        return object()
+
+    monkeypatch.setattr(pydantic_ai, "Agent", AlwaysDown)
+    monkeypatch.setattr(agent_harness, "_openrouter_model", fake_model)
+    monkeypatch.setattr(graph, "resolve_model", lambda: "test/model")
+
+    with pytest.raises(RuntimeError) as err:
+        lab_research._research_with_agent("Researcher", "University", ["Paper"])
+    assert built == [True], "an unrelated failure must not trigger the reasoning retry"
+    assert "model provider" in str(err.value)
+
+
 def test_agent_provider_error_excludes_upstream_message(temp_project, monkeypatch):
     import pydantic_ai
     from app import agent_harness, graph

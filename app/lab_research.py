@@ -22,6 +22,7 @@ from . import (
     config,
     graph,
     graph_store,
+    llm,
     logging_config,
     model_provenance,
     operation_limits,
@@ -173,31 +174,34 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
 
     paper_lines = "\n".join(f"- {t}" for t in titles[:8])
     model = graph.resolve_model()
-    ag = Agent(
-        agent_harness._openrouter_model(model, operation="lab_research", no_reasoning=True),
-        system_prompt=(prompts.get("lab_research")
-                       + "\n\n" + model_provenance.SYSTEM_POLICY),
-        tools=[web_search, web_fetch],
-        output_type=str,
-        retries=2,
-    )
     user = model_provenance.frame(
         "author_and_paper_metadata",
         f"Author: {name}\nAffiliation (from paper metadata, may be broad): "
         f"{affiliation or 'unknown'}\nTheir papers in this project:\n{paper_lines}",
     )
-    # A paid multi-request run outside `app.llm`. Recorded through the harness's own recorder
-    # rather than a second accounting path: it already extracts OpenRouter's authoritative cost
-    # from each response's provider details, records the generations individually so an
-    # interrupted one stays reconcilable, and falls back to a pending marker per response.
-    #
-    # `capture_run_messages` + `finally`, because the run that fails is the EXPENSIVE one. The
-    # comment below calls a blown request budget an honest not-found, which concedes it is
-    # ordinary — and it is reached only after ten requests have been billed. Recording from
-    # `result` alone meant the cheapest authors were metered and the priciest settled at zero,
-    # now against this author's own hold. Same reasoning as `stream_hunt` and the analysis loop.
-    run_usage = RunUsage()
-    try:
+
+    def _run_once(*, no_reasoning: bool) -> str:
+        ag = Agent(
+            agent_harness._openrouter_model(model, operation="lab_research",
+                                            no_reasoning=no_reasoning),
+            system_prompt=(prompts.get("lab_research")
+                           + "\n\n" + model_provenance.SYSTEM_POLICY),
+            tools=[web_search, web_fetch],
+            output_type=str,
+            retries=2,
+        )
+        # A paid multi-request run outside `app.llm`. Recorded through the harness's own recorder
+        # rather than a second accounting path: it already extracts OpenRouter's authoritative
+        # cost from each response's provider details, records the generations individually so an
+        # interrupted one stays reconcilable, and falls back to a pending marker per response.
+        #
+        # `capture_run_messages` + `finally`, because the run that fails is the EXPENSIVE one. The
+        # caller treats a blown request budget as an honest not-found, which concedes it is
+        # ordinary — and it is reached only after ten requests have been billed. Recording from
+        # `result` alone meant the cheapest authors were metered and the priciest settled at zero,
+        # now against this author's own hold. Same reasoning as `stream_hunt` and the analysis
+        # loop.
+        run_usage = RunUsage()
         with capture_run_messages() as captured:
             try:
                 result = asyncio.run(
@@ -211,9 +215,23 @@ def _research_with_agent(name: str, affiliation: str, titles: list[str]) -> dict
                 # INSIDE this try, which the handler below turned into "the model provider could
                 # not complete lab research" — so every author in every labs pass failed after the
                 # run had been paid for. That is why the Labs view had nothing to show (DR-008).
-                output = result.output or ""
+                return result.output or ""
             finally:
                 agent_harness.record_agent_run(run_usage, ag.model, "lab_research", captured)
+
+    try:
+        try:
+            output = _run_once(no_reasoning=True)
+        except Exception as exc:  # noqa: BLE001 — classified below, then re-raised or retried
+            # Mirror `llm.complete`'s contract: disabling reasoning is an optimization, never a
+            # requirement, and the graph model is an operator override (`RC_GRAPH_LLM_MODEL`)
+            # that could name a reasoning-mandatory model. Without this retry every author in
+            # every labs pass would fail with a scrubbed message and no in-app remedy.
+            chain = f"{exc} {exc.__cause__ or ''}"
+            if not llm._rejected_for_reasoning(chain):
+                raise
+            log.info("labs run retrying without the reasoning hint (model=%s)", model)
+            output = _run_once(no_reasoning=False)
     except Exception as exc:
         # A blown request budget (or any run crash) is an honest not-found for THIS run,
         # cached without a fingerprint upstream so the author retries next pass.
