@@ -202,11 +202,13 @@ export function useSettings() {
  *  animate them — the reader is explicitly told not to treat the number as a countdown, so a poll
  *  would burn battery re-rendering something that is not meant to tick.
  *
- *  There are exactly two refresh paths, and `refetchOnWindowFocus` is NOT one of them: React Native
- *  fires no window focus events without a `focusManager` bridge, and Expo Router screen focus is a
- *  different thing entirely. The screen refetches through `useFocusEffect`, and the reader can pull
- *  to refresh. Nothing invalidates this key when a job settles — DR-036 owns that, because doing it
- *  correctly means covering every metered subsystem's terminal outcomes, not three of them. */
+ *  Three refresh paths, and `refetchOnWindowFocus` is NOT one of them: React Native fires no
+ *  window focus events without a `focusManager` bridge, and Expo Router screen focus is a
+ *  different thing entirely. The screen refetches through `useFocusEffect`, the reader can pull
+ *  to refresh, and — DR-036 — any job snapshot observed anywhere in the client whose status
+ *  changed invalidates this key via `planInvalidation.notePlanAffectingJob`, wired once at the
+ *  endpoint layer rather than per call site (the per-call-site attempt in #336 missed paths
+ *  twice). */
 export function usePlan() {
   const hasUrl = !!useBaseUrl();
   return useQuery({

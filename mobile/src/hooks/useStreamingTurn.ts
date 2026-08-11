@@ -10,6 +10,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiPost, ApiError } from '@/api/client';
+import { notePlanAffectingJob } from '@/api/planInvalidation';
 import { cancelChatJob, getActiveChatJob, getChatJob } from '@/api/endpoints';
 import { keys } from '@/api/queries';
 import type { ChatJob, StreamItem } from '@/api/types';
@@ -208,6 +209,9 @@ export function useStreamingTurn(
             }
           : body;
         const { job } = await apiPost<{ job: ChatJob }>(path, payload);
+        // The one job start that bypasses endpoints.ts (paths come from turnJobPaths):
+        // report it so the plan screen sees the new hold without waiting for a poll.
+        notePlanAffectingJob(job);
         if (job.delivery_mode === 'listening') {
           await registerEligibleHandoff(job.id, handoffEpoch);
         }

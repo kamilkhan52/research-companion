@@ -1,6 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
+import { noting } from './planInvalidation';
 import {
   apiDelete,
   apiForm,
@@ -85,14 +86,14 @@ export const resetPrompt = (key: string) =>
  *  `project` is the initiating project — audio is app-global (shared cache), but the narration
  *  LLM spend is billed to that project's usage ledger (unattributed if omitted). */
 export const startAudioJob = (text: string, project?: string | null) =>
-  apiPost<{ job: AudioJob }>('/api/audio/jobs', project ? { text, project } : { text });
+  apiPost<{ job: AudioJob }>('/api/audio/jobs', project ? { text, project } : { text }).then(noting((r) => r.job));
 /** Poll a preparation job's live progress. Cheap; safe to call every second. */
 export const getAudioJob = (id: string) =>
-  apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** Cancel an in-flight preparation server-side: the job flips to 'cancelled' immediately and
  *  the worker stops spending on narration/TTS at its next checkpoint. No-op when finished. */
 export const cancelAudioJob = (id: string) =>
-  apiPost<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}/cancel`, {});
+  apiPost<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}/cancel`, {}).then(noting((r) => r.job));
 
 // ---------- projects (management) ----------
 
@@ -164,13 +165,13 @@ export const startRetrievalJob = (
     mode?: ReadingMode;
     delivery_mode?: 'reading' | 'listening';
   } = {},
-) => apiPost<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs`, { slug, ...opts });
+) => apiPost<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs`, { slug, ...opts }).then(noting((r) => r.job));
 export const getRetrievalJob = (pid: string, id: string) =>
-  apiGet<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: RetrievalJob }>(`/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 export const getLatestRetrievalJob = (pid: string, slug: string) =>
   apiGet<{ job: RetrievalJob | null }>(
     `/api/projects/${encodeURIComponent(pid)}/retrieval/jobs/latest/${encodeURIComponent(slug)}`,
-  );
+  ).then(noting((r) => r.job));
 
 // ---------- per-project ----------
 
@@ -277,7 +278,7 @@ export const uploadPaper = (pid: string, slug: string, file: NativeUploadFile) =
     name: file.name,
     type: file.mimeType || 'application/pdf',
   } as unknown as Blob);
-  return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body);
+  return apiForm<{ job: RetrievalJob }>(`${P(pid)}/upload_paper`, body).then(noting((r) => r.job));
 };
 
 /** Remove several papers in ONE atomic commit (the multi-select Delete). All-or-nothing, so a
@@ -315,25 +316,25 @@ export const turnJobPaths = (pid: string) => ({
 });
 /** Poll a turn job's live snapshot (interleaved text/tool items). Cheap; safe every ~1s. */
 export const getChatJob = (pid: string, id: string) =>
-  apiGet<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** The turn job currently generating for a session, if any — for reattaching on screen entry. */
 export const getActiveChatJob = (pid: string, slug: string, threadId = 'main') =>
   apiGet<{ job: ChatJob | null }>(
     `${P(pid)}/chat/jobs/active/${encodeURIComponent(slug)}?thread_id=${encodeURIComponent(threadId)}`,
-  );
+  ).then(noting((r) => r.job));
 /** Best-effort stop for a running turn: the partial response is recorded marked as stopped
  * and the job settles through its normal done path (keep polling; it finishes early). */
 export const cancelChatJob = (pid: string, id: string) =>
-  apiPost<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}/cancel`, {});
+  apiPost<{ job: ChatJob }>(`${P(pid)}/chat/jobs/${encodeURIComponent(id)}/cancel`, {}).then(noting((r) => r.job));
 /** Poll one independently generated grounded listening cue. */
 export const getPreviewJob = (pid: string, id: string) =>
-  apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: PreviewJob }>(`${P(pid)}/preview/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** Tell later cue generations that the audio layer accepted this cue for playback. */
 export const markPreviewPlayed = (pid: string, id: string) =>
   apiPost<{ job: PreviewJob }>(
     `${P(pid)}/preview/jobs/${encodeURIComponent(id)}/played`,
     {},
-  );
+  ).then(noting((r) => r.job));
 
 // ---------- committed notes (view / edit / agent-assisted edit) ----------
 // target = a paper slug, or 'working' for the cross-paper working notes.
@@ -362,15 +363,15 @@ export const saveNotes = (
 export const startNotesAgent = (pid: string, target: string, instruction: string) =>
   apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/agent_job`, {
     instruction,
-  });
+  }).then(noting((r) => r.job));
 export const getNotesJob = (pid: string, id: string) =>
-  apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** The notes-edit job currently running for a target, if any — for reattaching on entry. */
 export const getActiveNotesJob = (pid: string, target: string) =>
-  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/active/${encodeURIComponent(target)}`);
+  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/active/${encodeURIComponent(target)}`).then(noting((r) => r.job));
 /** Latest retained proposal for re-entry, including a job that completed while away. */
 export const getLatestNotesJob = (pid: string, target: string) =>
-  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`);
+  apiGet<{ job: NotesJob | null }>(`${P(pid)}/notes/jobs/latest/${encodeURIComponent(target)}`).then(noting((r) => r.job));
 export const discardNotesJob = (pid: string, id: string) =>
   apiPost<{ ok: boolean; next_job: NotesJob | null; next_error: string | null }>(
     `${P(pid)}/notes/jobs/${encodeURIComponent(id)}/discard`,
@@ -382,13 +383,14 @@ export const discardNotesJob = (pid: string, id: string) =>
 /** Start (or join) a background discovery run for the project's goals. Returns immediately
  *  with the job snapshot; the run keeps going regardless of the client. Poll getDiscovery. */
 export const startDiscovery = (pid: string, goals: string) =>
-  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals });
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals }).then(noting((r) => r.job));
 /** Live job snapshot + the last persisted result + saved goals. Cheap; safe every ~1.5s. */
-export const getDiscovery = (pid: string) => apiGet<DiscoveryResponse>(`${P(pid)}/discover`);
+export const getDiscovery = (pid: string) =>
+  apiGet<DiscoveryResponse>(`${P(pid)}/discover`).then(noting((r) => r.job));
 /** Cooperatively stop the current run. The last completed result is preserved server-side;
  *  the returned cancelled snapshot retains any live finds already gathered. */
 export const cancelDiscovery = (pid: string) =>
-  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {});
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {}).then(noting((r) => r.job));
 /** Hide one recommended paper from every recommendation surface (R12.3). Send the rendered
  *  suggestion; the server derives all its identities (arXiv/DOI/S2/title). */
 export const hideSuggestion = (pid: string, candidate: object) =>
@@ -401,17 +403,17 @@ export const unhideSuggestion = (pid: string, keys: string[]) =>
 
 export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
 export const getGraphAuthors = (pid: string) =>
-  apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`);
+  apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`).then(noting((r) => r.labs_job));
 /** Start (or join) the agentic lab pass over the project's top authors (R7.7). */
 export const startLabsResearch = (pid: string) =>
-  apiPost<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research`, {});
+  apiPost<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research`, {}).then(noting((r) => r.job));
 export const getLabsResearchJob = (pid: string, id: string) =>
-  apiGet<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: LabsResearchJob }>(`${P(pid)}/graph/labs/research/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** Start (or join) one board author's profile generation (LLM ⇒ background job; cached). */
 export const startAuthorProfile = (pid: string, name: string) =>
-  apiPost<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/job`, { name });
+  apiPost<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/job`, { name }).then(noting((r) => r.job));
 export const getAuthorProfileJob = (pid: string, id: string) =>
-  apiGet<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/jobs/${encodeURIComponent(id)}`);
+  apiGet<{ job: AuthorProfileJob }>(`${P(pid)}/graph/authors/profile/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 export const getRelated = (pid: string, slug: string) =>
   apiGet<{ related: RelatedWork[] }>(`${P(pid)}/related/${encodeURIComponent(slug)}`);
 /** Start (or join) a server-side background build. Returns immediately with the job snapshot;
@@ -423,10 +425,10 @@ export const startGraphBuild = (
 ) => apiPost<GraphBuildStartResponse>(`${P(pid)}/graph/build`, {
   force,
   retrieval_sources: retrievalSources,
-});
+}).then(noting((r) => r.build));
 /** Poll for the current/most-recent build job's progress. Cheap; safe to call every ~1.5s. */
 export const getGraphBuildStatus = (pid: string) =>
-  apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`);
+  apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`).then(noting((r) => r.build));
 
 /** Kick a one-shot, server-deduped pass that renders covers for every retrieved-but-coverless
  *  paper across all projects, so pre-existing papers don't render on-demand when first shown.
