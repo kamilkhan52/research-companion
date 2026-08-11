@@ -7,6 +7,8 @@ __pycache__/
 # the code repo. `project/` is the pre-multiproject store; `projects/` holds per-project repos.
 project/
 projects/
+projects.bak-*
+projects-backup-*
 # App-global state: keys/settings, legacy prompt overrides, last-valid prompt state, caches.
 .app-state/
 *.log
