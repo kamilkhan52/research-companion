@@ -438,3 +438,7 @@ def test_a_reader_who_can_afford_one_author_gets_one_author(temp_project, monkey
     # stopped.
     assert snap["status"] == "done" and snap["found"] == 1
     assert "usage limit" in snap["stopped_reason"].lower(), snap["stopped_reason"]
+    # DR-049: the stop is a refusal even on a `done` partial pass, so the structured payload
+    # must ride the job — the registry's central stamp only covers a refusal that FAILS it.
+    assert snap["refusal"]["code"] == "quota_exceeded"
+    assert snap["refusal"]["limit_nanousd"] == 200_000_000

@@ -168,6 +168,8 @@ export interface RetrievalJob {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   slug: string;
   phase: 'resolving' | 'hunting' | 'confirmation' | 'done';
   detail: string;
@@ -179,6 +181,8 @@ export interface RetrievalJob {
   source?: string | null;
   analysis_job_id: string | null;
   analysis_error: string | null;
+  /** Structured refusal when the chained analysis was refused (DR-049). */
+  analysis_refusal?: SpendRefusalPayload | null;
   enrichment: {
     status: 'running' | 'done' | 'error' | 'cancelled';
     step: string;
@@ -369,6 +373,8 @@ export interface ChatJob {
   turn: Turn | null;
   state: SessionState | null;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
   delivery_mode: 'reading' | 'listening';
@@ -405,6 +411,8 @@ export interface PreviewJob {
   played_at: string | null;
   timings: Record<string, string>;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -435,6 +443,8 @@ export interface NotesJob {
   items: StreamItem[];
   result: string | null;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -597,6 +607,8 @@ export interface GraphBuildJob {
   graph: ReferenceGraph | null;
   recommendations: GraphRecommendation[] | null;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -650,6 +662,8 @@ export interface AuthorProfileJob {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   author: string;
   profile: string;
   cached: boolean;
@@ -682,6 +696,8 @@ export interface LabsResearchJob {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   total: number;
   done: number;
   current: string;
@@ -787,6 +803,8 @@ export interface DiscoveryJob {
   finds_stage: '' | 'searching' | 'grounded' | 'screened' | 'ranked';
   result: DiscoveryResult | null;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
 }
@@ -824,6 +842,19 @@ export interface HiddenRecommendation {
 /** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running
  * server-side in a background thread. The client polls — same pattern as GraphBuildJob —
  * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */
+/** Structured spend/rate refusal on a job snapshot (DR-049) — the server exception's own
+ *  `refusal_payload()`, identical to the HTTP admission body. Classify `code`; `detail` is
+ *  display copy the server may edit without a client release. */
+export interface SpendRefusalPayload {
+  code: string;
+  detail: string;
+  used_nanousd?: number;
+  settled_nanousd?: number;
+  requested_nanousd?: number;
+  limit_nanousd?: number;
+  retry_after_seconds?: number;
+}
+
 export interface AudioJob {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';
@@ -835,6 +866,8 @@ export interface AudioJob {
   segments: Array<{ index: number; text: string; url: string }>;
   timings: Record<string, string>;
   error: string | null;
+  /** Structured refusal when the failure was a spend/rate refusal (DR-049). */
+  refusal?: SpendRefusalPayload | null;
   started_at: string;
   finished_at: string | null;
 }

@@ -255,8 +255,7 @@ function LabsView({
         setJob(next);
         if (next.status !== 'running') {
           qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
-          const stopped = next.stopped_reason ?? next.error;
-          if (!presentSpendJobRefusal(stopped, {
+          if (!presentSpendJobRefusal(next.refusal, {
             operation: 'other', retry: startResearch,
           })) showToast(
             next.status === 'done'
@@ -483,7 +482,7 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
         // (and the Labs view) sees it without regenerating.
         qc.invalidateQueries({ queryKey: keys.graphAuthors(pid) });
       } else {
-        if (presentSpendJobRefusal(job.error, { operation: 'other', retry: generate })) {
+        if (presentSpendJobRefusal(job.refusal, { operation: 'other', retry: generate })) {
           setState('idle');
           return;
         }

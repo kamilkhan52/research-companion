@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Generic, TypeVar
 
-from . import config, logging_config, rate_limits, spend_ceiling
+from . import config, logging_config, quotas, rate_limits, spend_ceiling
 
 log = logging_config.get("jobs")
 
@@ -48,6 +48,13 @@ class Job:
     id: str
     status: str = "running"          # running | done | error | cancelled
     error: str | None = None
+    #: Structured spend/rate refusal (DR-049), stamped centrally by the registry when the worker
+    #: failed with a `QuotaError`/`RateLimited` — the exceptions' own `refusal_payload()`, i.e.
+    #: exactly what the HTTP admission handler would have answered. Clients classify `code`
+    #: instead of matching the prose in `error`. None for every other failure: arbitrary
+    #: exception text stays in `error` (already scrubbed at its sources) and never gains
+    #: structure it does not have.
+    refusal: dict | None = None
     started_at: str = field(default_factory=now_iso)
     finished_at: str | None = None
 
@@ -820,6 +827,8 @@ class JobRegistry(Generic[J]):
                     job.status = final
                 if failure is not None and job.status != "cancelled":
                     job.error = str(failure)[:400]
+                    if isinstance(failure, (quotas.QuotaError, rate_limits.RateLimited)):
+                        job.refusal = failure.refusal_payload()
                 job.finished_at = now_iso()
                 self._stamp_settled(job)
                 setattr(job, _FINALIZED_ATTR, True)

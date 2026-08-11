@@ -29,6 +29,18 @@ _PROVIDERS = {"openrouter", "openai", "firecrawl", "openalex", "semantic_scholar
 class QuotaError(RuntimeError):
     """A safe, user-displayable admission failure."""
 
+    def refusal_payload(self) -> dict:
+        """The structured, client-safe description of this refusal (DR-049).
+
+        One derivation for both delivery paths: the HTTP handler in `main` answers admission
+        refusals with it directly, and `JobRegistry` stamps it onto a job whose WORKER was
+        refused mid-flight — so the mobile client classifies a code instead of matching exact
+        server prose (which pinned a copy edit to a client release). Everything here is the
+        account's own message and figures; provider bodies and arbitrary exception text never
+        enter it.
+        """
+        return {"code": "quota_unavailable", "detail": str(self)}
+
 
 class QuotaUnavailable(QuotaError):
     """The authoritative store could not prove that spend is allowed."""
@@ -75,6 +87,25 @@ class QuotaExceeded(QuotaError):
     def is_transient(self) -> bool:
         """Whether outstanding holds — not real spend — are what leaves no room."""
         return self.settled_nanousd + self.requested_nanousd <= self.limit_nanousd
+
+    def refusal_payload(self) -> dict:
+        if self.is_transient:
+            return {
+                "code": "holds_outstanding",
+                "detail": str(self),
+                "used_nanousd": self.used_nanousd,
+                "settled_nanousd": self.settled_nanousd,
+                "limit_nanousd": self.limit_nanousd,
+                "retry_after_seconds": 15,
+            }
+        return {
+            "code": "quota_exceeded",
+            "detail": str(self),
+            "used_nanousd": self.used_nanousd,
+            "settled_nanousd": self.settled_nanousd,
+            "requested_nanousd": self.requested_nanousd,
+            "limit_nanousd": self.limit_nanousd,
+        }
 
 
 class ReservationConflict(QuotaError):

@@ -65,7 +65,7 @@ export function useDiscoveryRun(pid: string | null): DiscoveryRunState {
       }
       setRunning(false);
       setCancelling(false);
-      if (next.status === 'error' && !presentSpendJobRefusal(next.error, { operation: 'other' })) {
+      if (next.status === 'error' && !presentSpendJobRefusal(next.refusal, { operation: 'other' })) {
         setError(next.error ?? 'Discovery failed.');
       }
       // done: the result is already persisted server-side. cancelled: the old completed result

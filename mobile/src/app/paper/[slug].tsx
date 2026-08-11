@@ -2277,7 +2277,7 @@ export function ComposeFirst({
         return false;
       }
       if (settled.status !== 'done' || !settled.retrieved) {
-        if (presentSpendJobRefusal(settled.error, { operation: 'other', retry })) return false;
+        if (presentSpendJobRefusal(settled.refusal, { operation: 'other', retry })) return false;
         setLocalError(settled.error || 'The paper could not be fetched.');
         return false;
       }

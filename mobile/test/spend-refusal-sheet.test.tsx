@@ -53,27 +53,38 @@ test('classifies all four states from the refusal response, not a plan warning',
 
 test.each([
   [
-    'Your other tasks are still running. Give them a moment and try again.',
+    { code: 'holds_outstanding', detail: 'Busy copy the server may edit.', retry_after_seconds: 15 },
     'A few things are finishing.',
   ],
   [
-    'This task needs more than your whole monthly allowance.',
+    { code: 'quota_exceeded', detail: 'Too-large copy.', requested_nanousd: 21, limit_nanousd: 20 },
     "This action won't fit your plan.",
   ],
   [
-    'Your usage limit has been reached. Try again after it resets.',
+    { code: 'quota_exceeded', detail: 'Exhausted copy.', requested_nanousd: 10, limit_nanousd: 100 },
     "This month's allowance is used.",
   ],
-])('maps the exact background-job refusal contract: %s', async (message, title) => {
+  [
+    { code: 'rate_limited', detail: 'Slow down copy.', retry_after_seconds: 5 },
+    'New work is starting too quickly.',
+  ],
+])('classifies the structured job-refusal payload (DR-049): %j', async (refusal, title) => {
   await renderHost();
 
   let consumed = false;
   act(() => {
-    consumed = presentSpendJobRefusal(message);
+    consumed = presentSpendJobRefusal(refusal);
   });
 
   expect(consumed).toBe(true);
   expect(await screen.findByText(title)).toBeTruthy();
+});
+
+test('an unknown code and a missing payload fall through to the caller', () => {
+  // quota_unavailable (ledger unreachable) has no sheet state — guessing would misinform.
+  expect(presentSpendJobRefusal({ code: 'quota_unavailable', detail: 'x' })).toBe(false);
+  expect(presentSpendJobRefusal(null)).toBe(false);
+  expect(presentSpendJobRefusal(undefined)).toBe(false);
 });
 
 test('busy refusal counts down, stays disabled, and retries only after zero', async () => {
