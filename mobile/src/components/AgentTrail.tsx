@@ -5,6 +5,7 @@
 
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import type { AgentTrailItem } from '@/api/types';
 import { Icon, Text, type IconName } from '@/ui';
@@ -21,7 +22,19 @@ export const TOOL_META: Record<string, { icon: IconName; label: string }> = {
   // retrieval-job steps
   arxiv: { icon: 'book-open', label: 'Resolving on arXiv' },
   fetch_pdf: { icon: 'download', label: 'Trying a PDF' },
+  // DR-043's in-conversation tool — also rendered as an always-visible action row below,
+  // since a job started this way (unlike the menu button) never navigates the reader to it.
+  propose_notes_update: { icon: 'edit-3', label: 'Drafting a notes update' },
 };
+
+// The one tool name that starts something the reader needs a way BACK to (DR-043 reopened,
+// 2026-08-11): the menu's "Update notes from discussion" starts the same server job and
+// immediately navigates to the notes screen, but the agent calling this tool mid-conversation
+// has no client-side hook to do that — the reader was told "it will appear for your review
+// shortly" with nothing to tap. The notes screen already resumes whatever job is latest for
+// this paper regardless of what started it, so a plain link there is a complete fix, not a
+// workaround.
+const NOTES_UPDATE_TOOL = 'propose_notes_update';
 
 export function ToolLine({ name, detail }: { name: string; detail: string }) {
   const t = useTheme();
@@ -39,10 +52,12 @@ export function ToolLine({ name, detail }: { name: string; detail: string }) {
   );
 }
 
-export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
+export function AgentTrail({ trail, slug }: { trail: AgentTrailItem[]; slug?: string }) {
   const t = useTheme();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const tools = trail.filter((item) => item.kind === 'tool').length;
+  const startedNotesUpdate = trail.some((it) => it.kind === 'tool' && it.name === NOTES_UPDATE_TOOL);
   const summary = tools > 0
     ? `Researched with ${tools} tool ${tools === 1 ? 'call' : 'calls'}`
     : 'Agent activity';
@@ -72,6 +87,20 @@ export function AgentTrail({ trail }: { trail: AgentTrailItem[] }) {
             ),
           )
         : null}
+      {startedNotesUpdate && slug ? (
+        <Pressable
+          onPress={() => router.push(`/notes/${encodeURIComponent(slug)}`)}
+          style={[styles.notesUpdateRow, { borderColor: t.mint }]}
+          accessibilityRole="button"
+          accessibilityLabel="A notes update is drafting from this discussion. Tap to review it."
+        >
+          <Icon name="edit-3" size={13} color={t.mint} />
+          <Text variant="caption" color={t.mint} style={styles.notesUpdateText}>
+            Notes update drafting from this discussion — tap to review
+          </Text>
+          <Icon name="chevron-right" size={13} color={t.mint} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -86,4 +115,15 @@ const styles = StyleSheet.create({
   thoughtLine: { fontStyle: 'italic', paddingLeft: space.sm },
   toolRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   toolDetail: { flex: 1 },
+  notesUpdateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: 4,
+    paddingVertical: 6,
+    paddingHorizontal: space.sm,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  notesUpdateText: { flex: 1 },
 });
