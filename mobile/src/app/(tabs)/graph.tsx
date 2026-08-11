@@ -422,19 +422,13 @@ function EmptyBuildState({
       </View>
     );
   }
+  // DR-045: no map means say that and nothing else. The mechanics of how a build works
+  // (Semantic Scholar, arXiv matching, full-text retrieval) belong to the build's own staged
+  // progress, not to an empty screen.
   return (
     <View style={styles.emptyWrap}>
-      <Text variant="title" style={{ textAlign: 'center', marginBottom: space.sm }}>
-        No reference graph yet
-      </Text>
-      <Text variant="body" color={t.muted} style={{ textAlign: 'center', marginBottom: space.lg }}>
-        {status
-          ? status.semantic_scholar_enabled
-            ? `Build a fast reference map for ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'} ` +
-              'from Semantic Scholar metadata, then retrieve missing full text when a confident arXiv source is available.'
-            : `Build it from this project's ${status.total_papers} paper${status.total_papers === 1 ? '' : 's'}. ` +
-              'Cached full text is analyzed directly; missing text is retrieved from arXiv when a source can be matched confidently.'
-          : 'Papers are analyzed to find how they cite each other and which outside work they depend on.'}
+      <Text variant="title" style={{ textAlign: 'center', marginBottom: space.lg }}>
+        No map yet
       </Text>
       {build.error ? (
         <Text variant="caption" color={t.danger} style={{ textAlign: 'center', marginBottom: space.md }}>
@@ -446,15 +440,10 @@ function EmptyBuildState({
         build={build}
       />
       <Button
-        title="Build graph"
+        title="Build map"
         onPress={() => build.run(false)}
         disabled={!canStartGraphBuild(status)}
       />
-      {status && status.retrievable_papers === 0 ? (
-        <Text variant="caption" style={{ marginTop: space.md, textAlign: 'center' }}>
-          Missing papers will be matched through arXiv. You will be asked to confirm any ambiguous source.
-        </Text>
-      ) : null}
     </View>
   );
 }
