@@ -29,6 +29,10 @@ set -euo pipefail
 
 APP=research-companion
 LOCAL_PROJECTS="/Users/kamil/research-companion/projects"
+# Outside the repo entirely, not a sibling dir like `projects.bak-*`: `.gitignore` only covers
+# `projects/` exactly, so a backup left next to it is one `git add -A` away from committing
+# Kamil's real reading data into history.
+BACKUP_ROOT="$HOME/.research-companion-backups"
 TS="$(date +%Y%m%dT%H%M%S)"
 
 direction="${1:-}"
@@ -49,7 +53,8 @@ if [[ "$direction" == "down" ]]; then
   [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
 
   if [[ -d "$LOCAL_PROJECTS" ]]; then
-    backup="${LOCAL_PROJECTS}.bak-${TS}"
+    mkdir -p "$BACKUP_ROOT"
+    backup="$BACKUP_ROOT/projects-${TS}"
     echo "-> backing up existing local projects/ to $backup"
     mv "$LOCAL_PROJECTS" "$backup"
   fi
