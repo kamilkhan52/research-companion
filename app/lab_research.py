@@ -298,6 +298,11 @@ def start_research(research_fn: ResearchFn = _research_with_agent) -> LabsJob:
                 log.info("labs pass stopped at %s: %s", name, last_error)
                 with _registry.lock:
                     job.stopped_reason = last_error
+                    # DR-049: the stop is a refusal even when the pass keeps `done` (it found
+                    # labs before the money ran out), so the structured payload rides the job
+                    # regardless of final status — the registry's central stamp only covers a
+                    # refusal that FAILS the worker.
+                    job.refusal = exc.refusal_payload()
                     job.current = ""  # it was never researched; leaving it named implies it was
                 break
             except Exception as exc:  # noqa: BLE001 — one author's failure must not kill

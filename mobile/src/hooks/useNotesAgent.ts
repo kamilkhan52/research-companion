@@ -65,7 +65,7 @@ export function useNotesAgent(pid: string | null, target: string | null): NotesA
       return;
     }
     setRunning(false);
-    if (next.status === 'error' && !presentSpendJobRefusal(next.error, { operation: 'other' })) {
+    if (next.status === 'error' && !presentSpendJobRefusal(next.refusal, { operation: 'other' })) {
       setError(next.error ?? 'The notes edit failed.');
     }
     if (next.status === 'done' && next.result) setProposal(next.result);

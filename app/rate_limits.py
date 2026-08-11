@@ -51,6 +51,15 @@ class RateLimited(RuntimeError):
         super().__init__(message)
         self.retry_after_seconds = max(1, int(retry_after_seconds))
 
+    def refusal_payload(self) -> dict:
+        """The structured client-safe description (DR-049), mirroring `QuotaError`'s — a rate
+        refusal reaching a job (the analysis chain) must classify by code like any other."""
+        return {
+            "code": "rate_limited",
+            "detail": str(self),
+            "retry_after_seconds": self.retry_after_seconds,
+        }
+
 
 def _bound(name: str, default: int) -> int:
     """Read a positive integer ceiling from the environment.

@@ -178,7 +178,7 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       }
       // done | error
       setBuilding(false);
-      if (job.status === 'error' && !presentSpendJobRefusal(job.error, { operation: 'other' })) {
+      if (job.status === 'error' && !presentSpendJobRefusal(job.refusal, { operation: 'other' })) {
         setError(job.error ?? 'Graph build failed.');
       }
       // R6.5 — a build takes minutes and finishes while the user is usually elsewhere in the

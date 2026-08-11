@@ -488,7 +488,7 @@ export function AudioProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (job.status === 'error' || !job.url) {
-          if (presentSpendJobRefusal(job.error, {
+          if (presentSpendJobRefusal(job.refusal, {
             operation: 'narration',
             retry: () => playTextRef.current({ id, title, text }),
           })) {

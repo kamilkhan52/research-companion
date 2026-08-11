@@ -46,6 +46,9 @@ class RetrievalJob(Job):
     # response (and audio) is ready. Best-effort: a failure here never fails the retrieval.
     analysis_job_id: str | None = None
     analysis_error: str | None = None
+    #: Structured refusal (DR-049) when the chained analysis was REFUSED rather than failed —
+    #: the chat job that would carry it was never created, so this job is the only carrier.
+    analysis_refusal: dict | None = None
     canonical_job_id: str | None = None
 
 
@@ -81,9 +84,11 @@ def set_analysis_job(job: RetrievalJob, chat_job_id: str) -> None:
         job.analysis_job_id = chat_job_id
 
 
-def set_analysis_error(job: RetrievalJob, message: str) -> None:
+def set_analysis_error(job: RetrievalJob, message: str, *, refusal: dict | None = None) -> None:
     with _registry.lock:
         job.analysis_error = message[:400]
+        if refusal is not None:
+            job.analysis_refusal = refusal
 
 
 def start_retrieval(
@@ -299,7 +304,8 @@ def _call_analysis_hook(
         # tasks running") and a server-side quota outage both reached the reader as a monthly
         # limit. That is the same wait-a-month-versus-wait-seconds misdirection the transient
         # split exists to remove.
-        set_analysis_error(job, str(exc) or "The analysis could not be started.")
+        set_analysis_error(job, str(exc) or "The analysis could not be started.",
+                           refusal=exc.refusal_payload())
     except Exception as exc:  # noqa: BLE001 — the analysis chain is best-effort; a failure
         # here must never turn a successful retrieval into an error.
         set_analysis_error(job, str(exc))

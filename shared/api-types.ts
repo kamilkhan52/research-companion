@@ -351,7 +351,17 @@ export interface paths {
          *     over; a hold clears in seconds when its job settles. Adding them together would tell someone
          *     with several jobs running that they are nearly out of allowance when they have barely spent
          *     anything — the same confusion the transient/exhausted split in `QuotaExceeded` exists to
-         *     remove, and the reason `warn` is computed from SPEND alone.
+         *     remove.
+         *
+         *     That is a rule about DISPLAY, and `warn` is not a display value: it is computed from spend PLUS
+         *     holds precisely so it can precede a refusal, which admission also decides on the sum (see the
+         *     comment on the field). The two are not in tension, but they are easy to conflate — an earlier
+         *     revision of this docstring claimed `warn` came from spend alone, contradicting the line that
+         *     computes it. The client honours both by keeping them on different surfaces: the plan screen's
+         *     bar and its approaching-limit card track `spent_fraction` only, while `warn`/`at_capacity`
+         *     belong to reservation pressure, not to the month. Read `warn` as "a refusal is close", never as
+         *     "the allowance is nearly gone", and never as grounds for a client to refuse on its own — the
+         *     402/429 modals are selected from the actual refusal. See `docs/plan-usage-surface-spec.md`.
          *
          *     With no database (local dev, the test suite) this reports the plan with zero usage rather than
          *     failing: the ceiling is inert there too, so zero is the honest answer, not a placeholder.
@@ -359,6 +369,33 @@ export interface paths {
         get: operations["get_plan_api_plan_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/account-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Account Plan
+         * @description Put one account on a named plan. Operator only.
+         *
+         *     This is the manual half of entitlements, and it exists before the automated half deliberately:
+         *     a plan can be granted and revoked, and the ceiling checked against it, without a store, a
+         *     subscription, or a webhook being involved. When RevenueCat arrives it writes through the same
+         *     table with `source="revenuecat"`, and this route stays as the escape hatch for the case a
+         *     payment provider always eventually produces — someone who has paid and whose entitlement did
+         *     not arrive.
+         */
+        post: operations["set_account_plan_api_admin_account_plan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2026,6 +2063,13 @@ export interface components {
              */
             title_confirmed: boolean;
         };
+        /** PlanGrant */
+        PlanGrant: {
+            /** User Id */
+            user_id: string;
+            /** Plan */
+            plan?: string | null;
+        };
         /** ProjectReq */
         ProjectReq: {
             /** Name */
@@ -2787,6 +2831,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    set_account_plan_api_admin_account_plan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlanGrant"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

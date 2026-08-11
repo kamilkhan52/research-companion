@@ -337,6 +337,31 @@ def test_after_retrieved_hook_failure_is_best_effort(temp_project):
     snap = _settled(job.id)
     assert snap["status"] == "done" and snap["retrieved"] is True  # retrieval still succeeded
     assert "no API key" in snap["analysis_error"]
+    # An ordinary failure gains no structure — only a refusal does (DR-049).
+    assert snap["analysis_refusal"] is None
+
+
+def test_a_refused_analysis_chain_carries_the_structured_payload(temp_project):
+    """The chat job that would carry the refusal was never created, so the retrieval job is the
+    only carrier — the client classifies `analysis_refusal.code` instead of prose (DR-049)."""
+    from app import quotas
+
+    _unretrieved_paper(temp_project)
+
+    def refused_hook(job, *, admitted=True):
+        raise quotas.QuotaExceeded(
+            used_nanousd=100, settled_nanousd=100, requested_nanousd=10, limit_nanousd=100)
+
+    job = retrieval_jobs.start_retrieval(
+        "p1",
+        retrieve_fn=lambda title, aid, url: {"full_text": "text", "arxiv_id": None,
+                                             "source": "s"},
+        after_retrieved=refused_hook,
+    )
+    snap = _settled(job.id)
+    assert snap["status"] == "done" and snap["retrieved"] is True
+    assert snap["analysis_refusal"]["code"] == "quota_exceeded"
+    assert snap["analysis_error"] == snap["analysis_refusal"]["detail"]
 
 
 def test_after_retrieved_hook_skipped_on_confirmation(temp_project):

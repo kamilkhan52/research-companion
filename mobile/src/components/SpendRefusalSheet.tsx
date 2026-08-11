@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, findNodeHandle, StyleSheet, View } from 'react-native';
 
 import { apiGet, ApiError } from '@/api/client';
+import type { SpendRefusalPayload } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { moneyType, space, type ThemePalette } from '@/theme/tokens';
@@ -55,27 +56,31 @@ export function presentSpendRefusal(
   return true;
 }
 
-/** Job continuations retain only safe server text, not an HTTP response body. */
+/** A refusal delivered on a JOB snapshot rather than as an HTTP response (DR-049): the server's
+ *  `refusal_payload()` — the same dict the admission handler answers with — stamped onto the
+ *  job by the registry. The client classifies `code`; the prose in `detail` is display copy the
+ *  server may edit freely. (This replaced an exact-prose matcher that pinned three server
+ *  messages to a client release.) */
 export function presentSpendJobRefusal(
-  message: string | null | undefined,
+  refusal: SpendRefusalPayload | null | undefined,
   options: SpendRefusalOptions = {},
 ): boolean {
-  if (!message) return false;
-  if (message === 'Your other tasks are still running. Give them a moment and try again.') {
-    return presentSpendRefusal(new ApiError(429, message, {
-      code: 'holds_outstanding', retryAfterSeconds: 15,
+  if (!refusal?.code || !refusal.detail) return false;
+  if (refusal.code === 'holds_outstanding' || refusal.code === 'rate_limited') {
+    return presentSpendRefusal(new ApiError(429, refusal.detail, {
+      code: refusal.code,
+      retryAfterSeconds: refusal.retry_after_seconds ?? 15,
     }), options);
   }
-  if (message === 'This task needs more than your whole monthly allowance.') {
-    return presentSpendRefusal(new ApiError(402, message, {
-      code: 'quota_exceeded', requested_nanousd: 1, limit_nanousd: 0,
+  if (refusal.code === 'quota_exceeded') {
+    return presentSpendRefusal(new ApiError(402, refusal.detail, {
+      code: 'quota_exceeded',
+      requested_nanousd: refusal.requested_nanousd,
+      limit_nanousd: refusal.limit_nanousd,
     }), options);
   }
-  if (message === 'Your usage limit has been reached. Try again after it resets.') {
-    return presentSpendRefusal(new ApiError(402, message, {
-      code: 'quota_exceeded', requested_nanousd: 0, limit_nanousd: 1,
-    }), options);
-  }
+  // Unknown codes (e.g. quota_unavailable) fall through to the caller's generic error
+  // handling — a sheet that guesses at a state it does not understand is worse than a toast.
   return false;
 }
 

@@ -167,7 +167,7 @@ export function useStreamingTurn(
           if (snap.delivery_mode === 'listening') {
             await consumeEligibleHandoff(snap.id);
           }
-          if (!presentSpendJobRefusal(snap.error, { operation: 'other' })) {
+          if (!presentSpendJobRefusal(snap.refusal, { operation: 'other' })) {
             setError(snap.error ?? 'The response failed.');
           }
           setStreaming(false);

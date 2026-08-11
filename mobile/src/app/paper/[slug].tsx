@@ -323,6 +323,9 @@ export default function DiscussionScreen() {
     }
     if (!listeningMode || job.delivery_mode !== 'listening') return;
     if (!(await isHandoffEligible(job.id))) return;
+    // A REFUSED narration start opens the refusal sheet (device voice included) instead of
+    // surfacing the raw server sentence as an error toast (DR-049).
+    if (presentSpendJobRefusal(job.audio_refusal, { operation: 'narration' })) return;
     if (job.audio_error) throw new Error(job.audio_error);
     const canonical = job.turn?.canonical;
     if (!job.audio_job_id || !canonical || job.assistant_index == null || !pid || !slug) return;
@@ -2277,7 +2280,7 @@ export function ComposeFirst({
         return false;
       }
       if (settled.status !== 'done' || !settled.retrieved) {
-        if (presentSpendJobRefusal(settled.error, { operation: 'other', retry })) return false;
+        if (presentSpendJobRefusal(settled.refusal, { operation: 'other', retry })) return false;
         setLocalError(settled.error || 'The paper could not be fetched.');
         return false;
       }

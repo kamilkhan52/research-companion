@@ -106,7 +106,7 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
       return;
     }
     if (!job.analysis_job_id) {
-      if (presentSpendJobRefusal(job.analysis_error, {
+      if (presentSpendJobRefusal(job.analysis_refusal, {
         operation: 'other',
         retry: () => runChain(offer, mode, listening),
       })) return;
@@ -125,7 +125,7 @@ async function runChain(offer: AnalysisOffer, mode: ReadingMode, listening: bool
     if (chat.status === 'done') {
       showToast(`Paper summary ready · ${name}`);
     } else if (chat.status === 'error') {
-      if (presentSpendJobRefusal(chat.error, {
+      if (presentSpendJobRefusal(chat.refusal, {
         operation: 'other',
         retry: () => runChain(offer, mode, listening),
       })) return;

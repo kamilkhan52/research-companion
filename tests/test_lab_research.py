@@ -304,6 +304,11 @@ def test_running_out_of_budget_stops_the_pass_instead_of_failing_every_author(
     assert "could not complete" not in snap["error"], (
         "a budget refusal must not be dressed up as a provider failure"
     )
+    # DR-049: this ERROR path never propagates an exception through the registry (the worker
+    # returns after set_outcome_locked), so only the direct assignment in the quota-stop branch
+    # can carry the structured payload — and it must, because a refused pass that found nothing
+    # is the branch the client's refusal sheet hits most.
+    assert snap["refusal"]["code"] == "quota_exceeded"
     assert snap["current"] == "", "the unreached author must not be left named as in progress"
     assert len(researched) == 1, "the pass must stop, not refuse each remaining author in turn"
 
@@ -438,3 +443,7 @@ def test_a_reader_who_can_afford_one_author_gets_one_author(temp_project, monkey
     # stopped.
     assert snap["status"] == "done" and snap["found"] == 1
     assert "usage limit" in snap["stopped_reason"].lower(), snap["stopped_reason"]
+    # DR-049: the stop is a refusal even on a `done` partial pass, so the structured payload
+    # must ride the job — the registry's central stamp only covers a refusal that FAILS it.
+    assert snap["refusal"]["code"] == "quota_exceeded"
+    assert snap["refusal"]["limit_nanousd"] == 200_000_000
