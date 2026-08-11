@@ -1,7 +1,7 @@
 // Typed wrappers for each backend route. Project-scoped routes take the project id and build
 // the /api/projects/{pid}/... path. Keep these 1:1 with app/main.py.
 
-import { noting } from './planInvalidation';
+import { noting, scopedJob } from './planInvalidation';
 import {
   apiDelete,
   apiForm,
@@ -135,7 +135,8 @@ export const splitProject = (
     cleanup_source_notes: boolean;
   },
 ) => apiPost<RelocationResult>(
-  `/api/projects/${encodeURIComponent(pid)}/split`, body);
+  `/api/projects/${encodeURIComponent(pid)}/split`, body,
+).then(noting((r) => [r.notes_jobs?.destination, r.notes_jobs?.source_cleanup]));
 
 /** Move (or copy) selected papers into an EXISTING project (R9.13). Same result shape as
  *  splitProject — `new_pid` is the destination, so the caller switches to it the same way. */
@@ -149,7 +150,8 @@ export const moveProject = (
     cleanup_source_notes: boolean;
   },
 ) => apiPost<RelocationResult>(
-  `/api/projects/${encodeURIComponent(pid)}/move`, body);
+  `/api/projects/${encodeURIComponent(pid)}/move`, body,
+).then(noting((r) => [r.notes_jobs?.destination, r.notes_jobs?.source_cleanup]));
 
 // ---------- background retrieval + auto-analysis (R7.8) ----------
 
@@ -357,7 +359,7 @@ export const saveNotes = (
   }>(
     `${P(pid)}/notes/${encodeURIComponent(target)}`,
     { markdown, ...opts },
-  );
+  ).then(noting((r) => r.next_job));
 /** Start (or join) a background agent revision from a natural-language instruction. The
  *  result is a proposal — preview it, then apply via saveNotes. Poll getNotesJob. */
 export const startNotesAgent = (pid: string, target: string, instruction: string) =>
@@ -376,21 +378,21 @@ export const discardNotesJob = (pid: string, id: string) =>
   apiPost<{ ok: boolean; next_job: NotesJob | null; next_error: string | null }>(
     `${P(pid)}/notes/jobs/${encodeURIComponent(id)}/discard`,
     {},
-  );
+  ).then(noting((r) => r.next_job));
 
 // ---------- discovery (goals -> suggested readings) ----------
 
 /** Start (or join) a background discovery run for the project's goals. Returns immediately
  *  with the job snapshot; the run keeps going regardless of the client. Poll getDiscovery. */
 export const startDiscovery = (pid: string, goals: string) =>
-  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals }).then(noting((r) => r.job));
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover`, { goals }).then(noting((r) => scopedJob(`discovery:${pid}`, r.job)));
 /** Live job snapshot + the last persisted result + saved goals. Cheap; safe every ~1.5s. */
 export const getDiscovery = (pid: string) =>
-  apiGet<DiscoveryResponse>(`${P(pid)}/discover`).then(noting((r) => r.job));
+  apiGet<DiscoveryResponse>(`${P(pid)}/discover`).then(noting((r) => scopedJob(`discovery:${pid}`, r.job)));
 /** Cooperatively stop the current run. The last completed result is preserved server-side;
  *  the returned cancelled snapshot retains any live finds already gathered. */
 export const cancelDiscovery = (pid: string) =>
-  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {}).then(noting((r) => r.job));
+  apiPost<{ job: DiscoveryJob }>(`${P(pid)}/discover/cancel`, {}).then(noting((r) => scopedJob(`discovery:${pid}`, r.job)));
 /** Hide one recommended paper from every recommendation surface (R12.3). Send the rendered
  *  suggestion; the server derives all its identities (arXiv/DOI/S2/title). */
 export const hideSuggestion = (pid: string, candidate: object) =>
@@ -401,7 +403,8 @@ export const unhideSuggestion = (pid: string, keys: string[]) =>
 
 // ---------- reference graph ----------
 
-export const getGraph = (pid: string) => apiGet<GraphResponse>(`${P(pid)}/graph`);
+export const getGraph = (pid: string) =>
+  apiGet<GraphResponse>(`${P(pid)}/graph`).then(noting((r) => scopedJob(`graph-build:${pid}`, r.build)));
 export const getGraphAuthors = (pid: string) =>
   apiGet<AuthorBoardResponse>(`${P(pid)}/graph/authors`).then(noting((r) => r.labs_job));
 /** Start (or join) the agentic lab pass over the project's top authors (R7.7). */
@@ -425,10 +428,10 @@ export const startGraphBuild = (
 ) => apiPost<GraphBuildStartResponse>(`${P(pid)}/graph/build`, {
   force,
   retrieval_sources: retrievalSources,
-}).then(noting((r) => r.build));
+}).then(noting((r) => scopedJob(`graph-build:${pid}`, r.build)));
 /** Poll for the current/most-recent build job's progress. Cheap; safe to call every ~1.5s. */
 export const getGraphBuildStatus = (pid: string) =>
-  apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`).then(noting((r) => r.build));
+  apiGet<GraphBuildStatusResponse>(`${P(pid)}/graph/build/status`).then(noting((r) => scopedJob(`graph-build:${pid}`, r.build)));
 
 /** Kick a one-shot, server-deduped pass that renders covers for every retrieved-but-coverless
  *  paper across all projects, so pre-existing papers don't render on-demand when first shown.
