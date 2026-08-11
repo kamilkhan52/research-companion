@@ -955,7 +955,9 @@ Two facts from that work that change planning assumptions:
 The full design is `~/.claude/plans/keen-finding-rabin.md`, written from two independent agent
 proposals (Opus and GPT-5.6-Sol) that converged on the same architecture. **Scope decisions Kamil
 made: paper discovery only (gap mode deferred to its own plan), and user-triggered only (no
-scheduler — that needs spend caps and collides with invariant 6).**
+scheduler — that needs spend caps and collides with invariant 6).** *(The no-scheduler half was
+superseded 2026-08-10 by Kamil's DR-051 request; the design that answers both objections is
+[`../scheduled-discovery-design.md`](../scheduled-discovery-design.md).)*
 
 **The diagnosis was recall lost BEFORE any semantic judgment**, not bad ranking. `MAX_CANDIDATES =
 50` capped the universe before an LLM saw anything, and `graph.score_recommendations`

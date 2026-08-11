@@ -63,6 +63,15 @@ plans, and nothing in them is outstanding work unless a ledger row says so.
   **Shipped** (#336, reframed to remaining in #350); the spec's own header records the part that was
   superseded. The SVG frames in `design-references/plan-usage-2026-08/` are a stale fallback handoff
   — the live design is in Figma, see the node IDs above.
+- [`job-notifications-design.md`](job-notifications-design.md) — DR-050: push notifications on
+  long-job completion. Planned; nothing built.
+- [`scheduled-discovery-design.md`](scheduled-discovery-design.md) — DR-051: plan-bound scheduled
+  discovery via a persisted next-run timestamp (supersedes the rebuild plan's no-scheduler
+  decision). Planned; nothing built.
+- [`map-discover-merge-design.md`](map-discover-merge-design.md) — DR-052: one corpus-neighbourhood
+  pipeline beneath the Map and Discover tabs. Planned; nothing built.
+- [`comment-mode-polish-design.md`](comment-mode-polish-design.md) — DR-053: comment-mode fixes and
+  the dead-taps investigation (shared root cause suspected with DR-055). Planned; nothing built.
 - [`performance-proposal.md`](performance-proposal.md) — mobile performance suggestions, 2026-08-03.
   Nothing here has been actioned.
 - [`author-affiliation-view-proposal.md`](author-affiliation-view-proposal.md) — Authors/Labs view.
