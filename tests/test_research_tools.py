@@ -57,6 +57,52 @@ def test_related_papers_uses_graph_edges(temp_project):
     assert "b: \"Paper B\"" in _framed_content(out)  # a cites b, surfaced from the graph edge
 
 
+def test_related_papers_empty_answer_states_its_scope(temp_project):
+    """DR-054: with no built map, a bare "(none)" read as "this paper has no references" and the
+    model said so while the paper's bibliography sat in the same context. The empty answer must
+    name what this lookup could actually see — as declarative fact; the instruction never to
+    generalize it lives in the analyst tool guidance, the trusted channel."""
+    add_paper(temp_project, "a", "Paper A", full_text="t")
+    out = _framed_content(research_tools.related_papers("a"))
+    assert "(none)" not in out
+    assert "reference map has not been built" in out
+
+    # A BUILT map with zero edges is still a built map: a skeleton snapshot or an interrupted
+    # build persists `edges: []`, and a first review shipped "has not been built" for exactly
+    # that state — a false statement asserted as evidence, the failure class pointed the other
+    # way. The discriminator is graph EXISTENCE, matching `has_graph`.
+    data = graph_store.load()
+    data["graph"] = {"nodes": [], "edges": []}
+    graph_store.save(data)
+    out = _framed_content(research_tools.related_papers("a"))
+    assert "has not been built" not in out
+    assert "(none among this project's papers)" in out
+    # This paper has no completed extraction, so the answer still says what it could not see.
+    assert "not itself been analyzed" in out
+
+    # Map built AND this paper analyzed: the bounded claim needs no caveat at all.
+    data = graph_store.load()
+    data["papers"]["a"] = {"status": "done"}
+    data["graph"] = {"nodes": [], "edges": [{"source": "x", "target": "y"}]}
+    graph_store.save(data)
+    out = _framed_content(research_tools.related_papers("a"))
+    assert "(none among this project's papers)" in out
+    assert "Note:" not in out
+
+
+def test_the_analyst_guidance_carries_the_related_papers_instruction(temp_project):
+    """The imperative half of DR-054's fix. It cannot ride inside the provenance envelope —
+    that channel is stamped evidence-only and the model is told to ignore instructions there —
+    so it must live in the system-side tool guidance."""
+    from app import prompts
+
+    # Whitespace-normalised: the source wraps prose at 100 columns, so the phrase spans a line
+    # break in the file while reading as one sentence to the model.
+    guidance = " ".join(prompts.get("analyst_tool_guidance").split())
+    assert "Never report a paper as having no references" in guidance
+    assert "an empty answer says nothing about a paper's actual bibliography" in guidance
+
+
 # ---- web tools: fetch_url ----
 
 # ---- web tools: provider chain (Firecrawl -> DuckDuckGo) ----
