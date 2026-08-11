@@ -226,13 +226,28 @@ def start_discussion_update(target: str, thread_id: str | None = None,
         if target == WORKING:
             raise NotesError("Discussion updates target a paper's notes, not the working notes.")
         current = read(target)
+        # The same filter `_paper_discussion_context` uses, because the record shapes are the
+        # same trap: assistant records carry `canonical` (never `text` — the first cut read a
+        # field production doesn't write and folded only the reader's questions), user records
+        # of kind `finish`/`revision` are rendered templates carrying the marker protocol and
+        # other threads' transcripts (the reader's own words in a revision live in
+        # `authored_text`), and an assistant record WITH a proposed_commit is a draft proposal,
+        # not discussion.
         parts: list[str] = []
         for record in sessions.read_records(target, thread_id):
             role = record.get("role")
-            text = (record.get("text") or "").strip()
-            if role in ("user", "assistant") and text:
-                parts.append(f"[{role}] {text}")
-        discussion = "\n\n".join(parts)[-DISCUSSION_CONTEXT_CHARS:]
+            if role == "user" and record.get("kind") == "reply" and record.get("text", "").strip():
+                parts.append(f"Reader: {record['text'].strip()}")
+            elif (role == "user" and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                parts.append(f"Reader revision: {record['authored_text'].strip()}")
+            elif (role == "assistant" and not record.get("proposed_commit")
+                  and record.get("canonical", "").strip()):
+                parts.append(f"Analyst: {record['canonical'].strip()}")
+        discussion = "\n\n".join(parts)
+        if len(discussion) > DISCUSSION_CONTEXT_CHARS:
+            discussion = ("…[earlier discussion omitted]\n\n"
+                          + discussion[-DISCUSSION_CONTEXT_CHARS:])
         if not discussion.strip():
             raise NotesError("There is no discussion to fold into the notes yet.")
         title = title_for(target)
@@ -260,6 +275,10 @@ def start_discussion_update(target: str, thread_id: str | None = None,
             runner=runner,
             kind="discussion_update",
             summary=f"Notes from the discussion: {title}",
+            # Deliberately target-keyed like every notes proposal: the notes screen resumes by
+            # target, so a thread-scoped key would strand the job from its own review surface.
+            # The accepted cost is that a second thread's request while one is running joins
+            # the first thread's proposal.
             reject_running=False,
         )
 

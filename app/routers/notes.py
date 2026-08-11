@@ -194,7 +194,8 @@ def notes_discussion_update_job(target: str, req: DiscussionUpdateReq):
         raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
     try:
         job = notes_jobs.start_discussion_update(target, req.thread_id)
-    except notes_jobs.NotesError as e:
+    except (notes_jobs.NotesError, ValueError) as e:
+        # ValueError: an invalid thread id from validate_thread_id — a 400, not a 500.
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"job": notes_jobs.snapshot(job.id)}
 

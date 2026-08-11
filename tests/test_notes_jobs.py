@@ -452,14 +452,19 @@ def test_default_notes_editor_includes_math_contract(monkeypatch):
 # ---- DR-043: notes proposal from the discussion, any time ----
 
 def _discussed_paper(temp_project, slug="p1"):
+    """Seed through the REAL recording path. The first version hand-wrote an assistant record
+    with a `text` key — a shape production never writes (assistant records carry `canonical`)
+    — and both discussion tests stayed green while the feature folded only the reader's
+    questions. A fake that declares the API the way the caller wishes it were."""
+    from app.models import Turn
+
     add_paper(temp_project, slug, "Paper One", full_text="text")
     sessions.start_session(slug, "Paper One")
     sessions.record_user(slug, "What is the key finding?", kind="reply")
-    # Assistant records go through record_assistant(Turn); appending the record directly keeps
-    # this seed independent of the Turn machinery — read_records is the consumer under test.
-    sessions._append_record(slug, {
-        "role": "assistant", "text": "The key finding is X improves Y by 40%.",
-    })
+    sessions.record_assistant(slug, Turn(
+        role="assistant", canonical="The key finding is X improves Y by 40%.",
+        state_signal="in_discussion",
+    ))
     return slug
 
 
@@ -486,9 +491,42 @@ def test_discussion_update_prompt_carries_the_discussion_and_current_notes(temp_
         return iter([{"type": "final", "text": "## Notes\nMerged."}])
 
     _wait_until_settled(notes_jobs.start_discussion_update(slug, runner=runner).id)
-    assert "X improves Y by 40%" in prompts_seen[0]          # the discussion reached the model
+    # BOTH sides of the conversation reached the model — the assistant's canonical prose is
+    # the half the first cut silently dropped.
+    assert "Analyst: The key finding is X improves Y by 40%" in prompts_seen[0]
+    assert "Reader: What is the key finding?" in prompts_seen[0]
     assert "Earlier committed point." in prompts_seen[0]     # so did the committed notes
     assert "ONLY the supplied discussion" in prompts_seen[0]  # and the grounding constraint
+
+
+def test_internal_kinds_and_draft_proposals_stay_out_of_the_discussion(temp_project):
+    """`finish`/`revision` user records are rendered templates carrying the marker protocol
+    (and other threads' transcripts); an assistant record WITH a proposed_commit is a draft
+    proposal. None of them are discussion. The reader's own words in a revision live in
+    `authored_text` and ARE folded."""
+    from app.models import Turn
+
+    slug = _discussed_paper(temp_project)
+    sessions.record_user(slug, "###NOTES_BLOCK### draft the notes now", kind="finish")
+    sessions.record_user(slug, "rendered revision template ###SYNTHESIS###", kind="revision",
+                         authored_text="Please emphasize the ablation results.")
+    sessions.record_assistant(slug, Turn(
+        role="assistant", canonical="Here is my proposed commit preview.",
+        state_signal="ready_to_draft_notes",
+        proposed_commit={"summary": "s", "notes_block": "n", "synthesis": "y"},
+    ))
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        return iter([{"type": "final", "text": "## Notes\nok"}])
+
+    _wait_until_settled(notes_jobs.start_discussion_update(slug, runner=runner).id)
+    prompt = prompts_seen[0]
+    assert "###NOTES_BLOCK###" not in prompt
+    assert "###SYNTHESIS###" not in prompt
+    assert "proposed commit preview" not in prompt
+    assert "Please emphasize the ablation results." in prompt
 
 
 def test_discussion_update_refuses_working_target_and_empty_discussions(temp_project):
@@ -511,7 +549,9 @@ def test_the_analyst_tool_starts_the_proposal_in_its_own_thread(temp_project, mo
     calls = []
 
     def capture(target, thread_id=None, runner=None):
-        calls.append((target, sessions.active_thread_id()))
+        # Record the ARGUMENT too: asserting only the ambient var stayed green when the tool
+        # passed an explicit thread, which is exactly the property this test exists to pin.
+        calls.append((target, thread_id, sessions.active_thread_id()))
         return notes_jobs.NotesJob(id="fake", target=target)
 
     monkeypatch.setattr(notes_jobs, "start_discussion_update", capture)
@@ -528,6 +568,30 @@ def test_the_analyst_tool_starts_the_proposal_in_its_own_thread(temp_project, mo
     # copies context into its executor).
     with sessions.thread_scope("side-1"):
         out = fn(reason="capture the 40% result")
-    assert calls == [(slug, "side-1")]
+    assert calls == [(slug, None, "side-1")]
     assert "review" in out.lower() or "approval" in out.lower()
+
+def test_a_refused_tool_start_is_the_tools_answer_not_the_turns_death(temp_project, monkeypatch):
+    """A quota/rate refusal escaping the tool becomes AgentError, and the single-shot fallback
+    silently re-runs the WHOLE turn at full price — precisely when the account is at its cap.
+    The tool must answer with the refusal instead."""
+    from app import agent_harness, quotas
+    from pydantic_ai.models.test import TestModel
+
+    slug = _discussed_paper(temp_project)
+
+    def refused(target, thread_id=None, runner=None):
+        raise quotas.QuotaExceeded(
+            used_nanousd=100, settled_nanousd=100, requested_nanousd=10, limit_nanousd=100)
+
+    monkeypatch.setattr(notes_jobs, "start_discussion_update", refused)
+    ag = agent_harness.build_agent(slug, model=TestModel())
+    fn = None
+    for toolset in getattr(ag, "toolsets", []):
+        for name, tool in (getattr(toolset, "tools", {}) or {}).items():
+            if "propose_notes_update" in str(name):
+                fn = getattr(tool, "function", None)
+    out = fn(reason="try")
+    assert "Could not start a notes update" in out
+    assert "usage limit" in out.lower()
 

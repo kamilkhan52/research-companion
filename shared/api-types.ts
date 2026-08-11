@@ -1385,6 +1385,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/notes/{target}/discussion_update_job": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Notes Discussion Update Job
+         * @description Start (or join) a notes proposal from the discussion so far (DR-043) — available after
+         *     any response, not only at paper finish. Poll /notes/jobs/{id}; apply via POST
+         *     /notes/{target}. The agent's `propose_notes_update` tool reaches the same machinery.
+         */
+        post: operations["notes_discussion_update_job_api_projects__pid__notes__target__discussion_update_job_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/review/{slug}": {
         parameters: {
             query?: never;
@@ -1871,6 +1893,11 @@ export interface components {
         DiscoverReq: {
             /** Goals */
             goals: string;
+        };
+        /** DiscussionUpdateReq */
+        DiscussionUpdateReq: {
+            /** Thread Id */
+            thread_id?: string | null;
         };
         /** EditReq */
         EditReq: {
@@ -4435,6 +4462,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NotesAgentReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    notes_discussion_update_job_api_projects__pid__notes__target__discussion_update_job_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DiscussionUpdateReq"];
             };
         };
         responses: {

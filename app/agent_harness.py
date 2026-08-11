@@ -466,10 +466,16 @@ def build_agent(slug: str, model: Model | None = None,
         # client's Update-notes button starts. No thread argument — inside a chat worker the
         # ambient thread contextvar names the conversation this tool was called from, and
         # Pydantic AI's tool threadpool copies context.
-        from . import notes_jobs
+        from . import notes_jobs, quotas, rate_limits
         try:
             notes_jobs.start_discussion_update(slug)
-        except notes_jobs.NotesError as exc:
+        except (notes_jobs.NotesError, quotas.QuotaError,
+                rate_limits.RateLimited, RuntimeError) as exc:
+            # A refused start is this tool's ANSWER, never an exception: anything escaping here
+            # becomes AgentError, and the single-shot fallback then silently re-runs the whole
+            # turn at full price — precisely when the account is at its cap. Every message
+            # below is app-authored (quota/rate refusals and the registry's busy gates), safe
+            # to hand to the model.
             return f"Could not start a notes update: {exc}"
         return ("A notes draft is being prepared in the background from this discussion. "
                 "Tell the reader it will appear for their review shortly; nothing is saved "
