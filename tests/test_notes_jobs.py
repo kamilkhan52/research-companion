@@ -448,3 +448,150 @@ def test_default_notes_editor_includes_math_contract(monkeypatch):
 
     assert notes_jobs.agent.MATH_MARKDOWN_CONTRACT in captured["messages"][0]["content"]
     assert events[-1] == {"type": "final", "text": "revised notes"}
+
+# ---- DR-043: notes proposal from the discussion, any time ----
+
+def _discussed_paper(temp_project, slug="p1"):
+    """Seed through the REAL recording path. The first version hand-wrote an assistant record
+    with a `text` key — a shape production never writes (assistant records carry `canonical`)
+    — and both discussion tests stayed green while the feature folded only the reader's
+    questions. A fake that declares the API the way the caller wishes it were."""
+    from app.models import Turn
+
+    add_paper(temp_project, slug, "Paper One", full_text="text")
+    sessions.start_session(slug, "Paper One")
+    sessions.record_user(slug, "What is the key finding?", kind="reply")
+    sessions.record_assistant(slug, Turn(
+        role="assistant", canonical="The key finding is X improves Y by 40%.",
+        state_signal="in_discussion",
+    ))
+    return slug
+
+
+def test_discussion_update_drafts_notes_that_do_not_exist_yet(temp_project):
+    """Mid-paper is exactly when committed notes usually don't exist — unlike start_edit,
+    the discussion update drafts rather than refusing."""
+    slug = _discussed_paper(temp_project)
+    job = notes_jobs.start_discussion_update(
+        slug, runner=_sync_runner([{"type": "final", "text": "## Notes\nX improves Y."}]))
+    finished = _wait_until_settled(job.id)
+    assert finished.status == "done"
+    assert finished.result == "## Notes\nX improves Y."
+    # Invariant 4: a proposal only — nothing on disk until save().
+    assert notes_jobs.read(slug).strip() == ""
+
+
+def test_discussion_update_prompt_carries_the_discussion_and_current_notes(temp_project):
+    slug = _discussed_paper(temp_project)
+    notes_jobs.save(slug, "## Notes\nEarlier committed point.")
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        return iter([{"type": "final", "text": "## Notes\nMerged."}])
+
+    _wait_until_settled(notes_jobs.start_discussion_update(slug, runner=runner).id)
+    # BOTH sides of the conversation reached the model — the assistant's canonical prose is
+    # the half the first cut silently dropped.
+    assert "Analyst: The key finding is X improves Y by 40%" in prompts_seen[0]
+    assert "Reader: What is the key finding?" in prompts_seen[0]
+    assert "Earlier committed point." in prompts_seen[0]     # so did the committed notes
+    assert "ONLY the supplied discussion" in prompts_seen[0]  # and the grounding constraint
+
+
+def test_internal_kinds_and_draft_proposals_stay_out_of_the_discussion(temp_project):
+    """`finish`/`revision` user records are rendered templates carrying the marker protocol
+    (and other threads' transcripts); an assistant record WITH a proposed_commit is a draft
+    proposal. None of them are discussion. The reader's own words in a revision live in
+    `authored_text` and ARE folded."""
+    from app.models import Turn
+
+    slug = _discussed_paper(temp_project)
+    sessions.record_user(slug, "###NOTES_BLOCK### draft the notes now", kind="finish")
+    sessions.record_user(slug, "rendered revision template ###SYNTHESIS###", kind="revision",
+                         authored_text="Please emphasize the ablation results.")
+    sessions.record_assistant(slug, Turn(
+        role="assistant", canonical="Here is my proposed commit preview.",
+        state_signal="ready_to_draft_notes",
+        proposed_commit={"summary": "s", "notes_block": "n", "synthesis": "y"},
+    ))
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        return iter([{"type": "final", "text": "## Notes\nok"}])
+
+    _wait_until_settled(notes_jobs.start_discussion_update(slug, runner=runner).id)
+    prompt = prompts_seen[0]
+    assert "###NOTES_BLOCK###" not in prompt
+    assert "###SYNTHESIS###" not in prompt
+    assert "proposed commit preview" not in prompt
+    assert "Please emphasize the ablation results." in prompt
+
+
+def test_discussion_update_refuses_working_target_and_empty_discussions(temp_project):
+    add_paper(temp_project, "quiet", "Quiet Paper", full_text="t")
+    with pytest.raises(notes_jobs.NotesError):
+        notes_jobs.start_discussion_update("working")
+    with pytest.raises(notes_jobs.NotesError):
+        notes_jobs.start_discussion_update("quiet")   # no discussion yet
+
+
+def test_the_analyst_tool_starts_the_proposal_in_its_own_thread(temp_project, monkeypatch):
+    """The propose_notes_update tool passes no thread: the ambient thread contextvar names the
+    conversation it was called from, which is what must reach the notes job. The tool is found
+    through the AGENT'S registered toolset — asserting on a module-level list would stay green
+    with the registration deleted."""
+    from app import agent_harness
+    from pydantic_ai.models.test import TestModel
+
+    slug = _discussed_paper(temp_project)
+    calls = []
+
+    def capture(target, thread_id=None, runner=None):
+        # Record the ARGUMENT too: asserting only the ambient var stayed green when the tool
+        # passed an explicit thread, which is exactly the property this test exists to pin.
+        calls.append((target, thread_id, sessions.active_thread_id()))
+        return notes_jobs.NotesJob(id="fake", target=target)
+
+    monkeypatch.setattr(notes_jobs, "start_discussion_update", capture)
+
+    ag = agent_harness.build_agent(slug, model=TestModel())
+    fn = None
+    for toolset in getattr(ag, "toolsets", []):
+        for name, tool in (getattr(toolset, "tools", {}) or {}).items():
+            if "propose_notes_update" in str(name):
+                fn = getattr(tool, "function", None)
+    assert fn is not None, "propose_notes_update is not registered on the session agent"
+
+    # Call the closure inside a bound side thread, as the tool threadpool would (Pydantic AI
+    # copies context into its executor).
+    with sessions.thread_scope("side-1"):
+        out = fn(reason="capture the 40% result")
+    assert calls == [(slug, None, "side-1")]
+    assert "review" in out.lower() or "approval" in out.lower()
+
+def test_a_refused_tool_start_is_the_tools_answer_not_the_turns_death(temp_project, monkeypatch):
+    """A quota/rate refusal escaping the tool becomes AgentError, and the single-shot fallback
+    silently re-runs the WHOLE turn at full price — precisely when the account is at its cap.
+    The tool must answer with the refusal instead."""
+    from app import agent_harness, quotas
+    from pydantic_ai.models.test import TestModel
+
+    slug = _discussed_paper(temp_project)
+
+    def refused(target, thread_id=None, runner=None):
+        raise quotas.QuotaExceeded(
+            used_nanousd=100, settled_nanousd=100, requested_nanousd=10, limit_nanousd=100)
+
+    monkeypatch.setattr(notes_jobs, "start_discussion_update", refused)
+    ag = agent_harness.build_agent(slug, model=TestModel())
+    fn = None
+    for toolset in getattr(ag, "toolsets", []):
+        for name, tool in (getattr(toolset, "tools", {}) or {}).items():
+            if "propose_notes_update" in str(name):
+                fn = getattr(tool, "function", None)
+    out = fn(reason="try")
+    assert "Could not start a notes update" in out
+    assert "usage limit" in out.lower()
+

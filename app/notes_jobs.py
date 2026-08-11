@@ -205,6 +205,84 @@ def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) ->
         )
 
 
+#: Cap on the discussion context folded into a mid-paper notes proposal. The tail is kept —
+#: the newest exchanges are the ones not yet in the notes.
+DISCUSSION_CONTEXT_CHARS = 24_000
+
+
+def start_discussion_update(target: str, thread_id: str | None = None,
+                            runner: RunnerFn | None = None) -> NotesJob:
+    """Propose a notes update from the discussion so far (DR-043) — any time, not only at
+    paper finish. Reached from the client's Update-notes button and from the analyst's
+    `propose_notes_update` tool (which passes no thread: inside a chat worker the ambient
+    thread contextvar names the conversation the tool was called from).
+
+    Unlike `start_edit`, the target may have no committed notes yet — mid-paper is exactly when
+    they usually don't exist — so the model drafts or integrates. Invariant 4 is untouched:
+    the result is a proposal on the job, applied only by an explicit human `save()`.
+    """
+    with mutation_lock(target):
+        _require_target(target)
+        if target == WORKING:
+            raise NotesError("Discussion updates target a paper's notes, not the working notes.")
+        current = read(target)
+        # The same filter `_paper_discussion_context` uses, because the record shapes are the
+        # same trap: assistant records carry `canonical` (never `text` — the first cut read a
+        # field production doesn't write and folded only the reader's questions), user records
+        # of kind `finish`/`revision` are rendered templates carrying the marker protocol and
+        # other threads' transcripts (the reader's own words in a revision live in
+        # `authored_text`), and an assistant record WITH a proposed_commit is a draft proposal,
+        # not discussion.
+        parts: list[str] = []
+        for record in sessions.read_records(target, thread_id):
+            role = record.get("role")
+            if role == "user" and record.get("kind") == "reply" and record.get("text", "").strip():
+                parts.append(f"Reader: {record['text'].strip()}")
+            elif (role == "user" and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                parts.append(f"Reader revision: {record['authored_text'].strip()}")
+            elif (role == "assistant" and not record.get("proposed_commit")
+                  and record.get("canonical", "").strip()):
+                parts.append(f"Analyst: {record['canonical'].strip()}")
+        discussion = "\n\n".join(parts)
+        if len(discussion) > DISCUSSION_CONTEXT_CHARS:
+            discussion = ("…[earlier discussion omitted]\n\n"
+                          + discussion[-DISCUSSION_CONTEXT_CHARS:])
+        if not discussion.strip():
+            raise NotesError("There is no discussion to fold into the notes yet.")
+        title = title_for(target)
+        action = "Integrate the discussion into" if current.strip() else "Draft"
+        instruction = f"Fold the discussion so far into the notes for {title}."
+        prompt = (
+            "=== CURRENT COMMITTED NOTES ===\n"
+            f"{current.strip() or '(none yet)'}\n"
+            "=== END CURRENT NOTES ===\n\n"
+            "=== DISCUSSION SO FAR (newest last) ===\n"
+            f"{discussion}\n"
+            "=== END DISCUSSION ===\n\n"
+            f"Instruction: {action} this paper's notes and return the COMPLETE document. "
+            "Capture the findings, methods, quantitative results, quoted evidence, and open "
+            "questions the discussion has established that the current notes do not yet hold. "
+            "Use ONLY the supplied discussion and current notes — no external research, no "
+            "invented material. Preserve existing content unless the integration requires "
+            "reorganizing it; keep the paper's own terminology and any markdown links intact."
+        )
+        return _start_proposal(
+            target,
+            instruction,
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="discussion_update",
+            summary=f"Notes from the discussion: {title}",
+            # Deliberately target-keyed like every notes proposal: the notes screen resumes by
+            # target, so a thread-scoped key would strand the job from its own review surface.
+            # The accepted cost is that a second thread's request while one is running joins
+            # the first thread's proposal.
+            reject_running=False,
+        )
+
+
 def start_split_destination(
     papers: list[dict],
     *,

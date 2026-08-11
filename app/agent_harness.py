@@ -455,7 +455,34 @@ def build_agent(slug: str, model: Model | None = None,
     system = (agent_mod._system_for(slug, latest_user_text)
               + "\n\n" + prompts.get("analyst_tool_guidance")
               + "\n\n" + model_provenance.SYSTEM_POLICY)
-    return Agent(model or _openrouter_model(), system_prompt=system, tools=TOOLS,
+
+    def propose_notes_update(reason: str) -> str:
+        """Start drafting an update to THIS paper's committed notes from the discussion so far.
+        Use when the discussion has established findings worth recording now, or when the
+        reader asks for the notes to be updated. The reader reviews and approves the draft
+        before anything is saved. `reason` = one sentence on what should be captured."""
+        # The one deliberately non-read-only tool (DR-043). It still writes nothing: it starts
+        # a metered background proposal the reader must approve (invariant 4), exactly what the
+        # client's Update-notes button starts. No thread argument — inside a chat worker the
+        # ambient thread contextvar names the conversation this tool was called from, and
+        # Pydantic AI's tool threadpool copies context.
+        from . import notes_jobs, quotas, rate_limits
+        try:
+            notes_jobs.start_discussion_update(slug)
+        except (notes_jobs.NotesError, quotas.QuotaError,
+                rate_limits.RateLimited, RuntimeError) as exc:
+            # A refused start is this tool's ANSWER, never an exception: anything escaping here
+            # becomes AgentError, and the single-shot fallback then silently re-runs the whole
+            # turn at full price — precisely when the account is at its cap. Every message
+            # below is app-authored (quota/rate refusals and the registry's busy gates), safe
+            # to hand to the model.
+            return f"Could not start a notes update: {exc}"
+        return ("A notes draft is being prepared in the background from this discussion. "
+                "Tell the reader it will appear for their review shortly; nothing is saved "
+                "without their approval.")
+
+    return Agent(model or _openrouter_model(), system_prompt=system,
+                 tools=TOOLS + [propose_notes_update],
                  output_type=str, retries=2)
 
 
