@@ -20,7 +20,8 @@ The cost of keeping them separate is concrete and already being paid: identity r
 twice (the graph build resolves anchors, then a Discovery run re-resolves whatever the graph
 lacks), `graph.score_recommendations` is computed by the Map and consumed by Discovery through
 a side-channel read, staleness is bidirectional (a Map built after papers were added doesn't
-refresh Discovery's reservoir; a Discovery run's fresh OpenAlex data never lands in the graph),
+refresh Discovery's reservoir, and only Discovery's anchor ids flow back into the graph store —
+its citation and topic data never do),
 and the reader sees two buttons that each take minutes and partially redo each other's work.
 
 ## The merged shape: one neighbourhood pass, two views
@@ -67,16 +68,28 @@ for both.
 1. **Substrate extraction:** `graph.py`'s steps 1–2 move behind `neighbourhood_jobs` with the
    graph build calling it — behavior-identical, Map tab unchanged. The job registry, staged
    progress, and retrieval confirmations carry over.
-2. **Discovery reads the substrate:** R1/R2 (and R5's recommendations) consume the substrate,
-   triggering a neighbourhood refresh only when stale; Discovery's own OpenAlex fetching
-   shrinks to goal-search (R4). Its fresh data writes BACK to the substrate.
+2. **Discovery reads the substrate:** R1/R2/R3 — the OpenAlex lanes (anchors, forward
+   citations, topic sweep) — and R5's recommendations consume the substrate, triggering a
+   neighbourhood refresh only when stale; what remains Discovery-owned is R4, the Semantic
+   Scholar goal search, which is goal-dependent and has no place in a goal-agnostic substrate.
+   Fresh provider data writes BACK to the substrate.
 3. **Client convergence:** both tabs show the shared "neighbourhood freshness" line; the near-
    instant second-view behavior lands; cross-links optional.
 
-Risks: the graph store becomes a genuinely shared mutable substrate — writes from two job kinds
-need the store's existing revisioning to prevent a Discover write clobbering a mid-build state
-(the registry's per-project dedup already serializes the heavy pass; the rule to enforce is
-*one neighbourhood job per project at a time*, which `start_or_join`'s keying gives for free).
+Risks — and the two mechanisms PR 1 must BUILD, because neither exists today:
+
+- **The graph store has no revisioning.** `save()` is a whole-document atomic write; last
+  writer wins silently. The clobber is not hypothetical even now: a graph build load-mutate-
+  saves the document many times mid-build while `discovery.py` saves resolved anchors into the
+  same file. PR 1 adds a store revision counter checked on write (stale write → reload, merge,
+  retry), which also retroactively closes today's race.
+- **Nothing serializes the two features.** Graph and discovery run in SEPARATE registries with
+  different key schemes, so "one neighbourhood job per project" must be designed, not
+  inherited. The rule: the neighbourhood pass is one registry keyed on bare `pid`; a request
+  whose `breadth` exceeds the running job's does NOT silently join it (a joined narrow pass
+  would hand Discover an incomplete reservoir with no signal) — it queues a follow-up sweep for
+  the missing lanes, and the views read whatever revision is complete for their needs.
+
 DR-046's lesson applies: substrate absence must render as "not built yet + offer", never as
 loss.
 

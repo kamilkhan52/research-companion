@@ -836,6 +836,16 @@ the disposable-account run above has passed.
 
 ---
 
+## Blocking planned features (DR-050/DR-053 designs)
+
+- **Expo push access token** (DR-050, when it is built): create one in the Expo dashboard and
+  `flyctl secrets set` it — never in the repo. The same feature needs a NEW dev-client build for
+  your phone (`expo-notifications` is a native module); this is the dev build only, NOT the AAB.
+- **Figma MCP credential** (blocks DR-053 §3 and any further Figma work): create the Keychain
+  item — `security add-generic-password -a "$USER" -s figma-console-mcp -w` — with your Figma
+  token. Setup context is in `docs/figma-workflow.md`; the MCP server currently starts with an
+  empty token because this item does not exist (exit 44).
+
 ## Standing rules
 
 - **No secrets in the repository, in documentation examples, in logs, or in chat.** Publishable keys

@@ -22,14 +22,20 @@ a Figma pass for the sentence-interaction treatment should precede the code for 
 
 Kamil: too large, too transparent, hard to read over thread text. Fix directions:
 
-- The count badge inherits the SENTENCE's font size for its line box; the `fontSize: 10` inner
-  text sits in an oversized violet block. Render the badge as a proper superscript-style chip:
-  `moneyType.supporting`-floor size is wrong here — this is a marginal marker, so 10–11px text
-  in a chip with `radius.sm`, **near-opaque background** (`t.violet` at full opacity, `t.bg`
-  text), vertical alignment tuned so it doesn't distort line height.
-- "Maybe a slight transparency is okay for immersion but not too much": the *underline wash* on
-  annotated sentences may keep a light `violetWash`; the *badge* goes opaque. Both densities,
-  all three palettes — Black's washes are the ones that vanish, test there first.
+- **First, diagnose — the obvious fix is already the code.** The badge ALREADY renders
+  `backgroundColor: t.violet` (a solid hex in all three palettes; only `violetWash` carries
+  alpha) with `t.bg` text. Whatever Kamil is reading as "too transparent" is therefore NOT the
+  badge's declared background — candidates: nested-`RNText` background rendering on Android
+  (text backgrounds paint per-line-fragment and can composite oddly over the bubble), the
+  UNDERLINE + `violetWash` selection treatment being mistaken for the indicator, or a Dim/Black
+  wash behind the text lowering effective contrast. Reproduce on his palette/density first;
+  this belongs to the same Metro session as §2's investigation.
+- The size half stands on its own: the badge inherits the sentence's line box and reads
+  oversized. Render it as a proper superscript-style chip — 10–11px text, `radius.sm`, vertical
+  alignment tuned so it doesn't distort line height. The *underline wash* on annotated
+  sentences may keep a light `violetWash` ("slight transparency is okay for immersion"); the
+  badge stays opaque. Both densities, all three palettes — Black's washes are the ones that
+  vanish, test there first.
 
 ## 2. The floating bar (defect × 2: looks unfinished, taps do nothing)
 
@@ -81,12 +87,17 @@ recorded in the handoff doc.
 
 1. Investigation §2 (dead taps) — it may reshape the positioning fix and resolve DR-055.
 2. §1 badge + §2 surface (one PR, pure styling + the hit-test fix).
-3. §3 after its Figma pass (needs the credential Keychain item — see HUMAN_ACTIONS).
+3. §3 after its Figma pass (needs the `figma-console-mcp` Keychain credential — setup is
+   documented in [`figma-workflow.md`](figma-workflow.md); it is Kamil's action and now listed
+   in HUMAN_ACTIONS).
 
 ## Test surface
 
-Jest: badge renders opaque at both densities (style snapshot on the extracted chip component);
-the queue tray exposes accessible tap targets ≥48px (`Done`, each chip) — the a11y query IS the
-hit-target regression test; comment-mode header present only in mode. The hit-testing bug gets
-a device verification script in the checklist, not a Jest test — it is native layout behavior
-Jest cannot see.
+Jest: style/prop assertions on the extracted chip component (opaque background token, size);
+comment-mode header present only in mode. Tap targets: `@testing-library/react-native` has no
+layout engine, so a role query proves nothing about 48px — the honest test asserts the STYLE
+and PROPS that produce the size (`minHeight`/`hitSlop`), and the one real defect is already
+identifiable that way: the `Done` control is a bare `Pressable` around a `Text` with no
+`hitSlop` and no minimum size, while the chips already carry `minHeight: 54`. The hit-testing
+bug gets a device verification script in the checklist, not a Jest test — it is native layout
+behavior Jest cannot see.

@@ -38,19 +38,28 @@ A new Postgres table (same optionality rule as everything in `db.py` — unset `
 means the feature is quietly off, single-tenant dev keeps working):
 
 ```sql
-rc_push_tokens (user_id uuid, token text primary key, platform text,
+rc_push_tokens (user_id uuid references rc_users(id) on delete cascade,
+                token text primary key, platform text,
                 created_at timestamptz, last_seen_at timestamptz)
 ```
 
 Tokens are per-USER, not per-project. `tenancy` rules apply to the registration routes; the
-sender reads tokens only by the job's bound user id.
+sender reads tokens only by the job's bound user id. The `on delete cascade` is load-bearing:
+`account_deletion` purges per-user tables through cascades, and a token table without one keeps
+pushing to a deleted account's devices. Shipping this also requires (a) a row in
+`production/02-security-and-privacy.md`'s data inventory — that doc's own checklist demands it
+before a new store ships — and (b) Expo's push service (and APNs/FCM beneath it) added as a
+third-party processor plus a device-identifier disclosure in the H13 Data Safety answers.
 
 ### Server: the send hook
 
 `jobs.add_settle_callback` is the designed-for hook: it fires on the worker thread **after**
 terminal publication and reservation settlement (DR-035's ordering), with the project still
-bound. The graph and discovery job modules attach a callback at start when the job's owner has
-registered tokens AND the notification setting is on:
+bound. The graph and discovery job modules attach a callback when the job's owner has
+registered tokens AND the notification setting is on — **the CREATOR attaches it, exactly
+once**: `start_or_join` hands joiners the existing job, and a callback attached per caller
+sends one push per device-tap (`retrieval_jobs`' creator/joiner flag is the precedent — the
+"admission state belongs on the work" lesson applies to notification state too):
 
 - fire only for terminal `done`/`error` (never `cancelled` — the reader did that themselves);
 - **suppress when the app is foreground**: the client heartbeats a `last_active_at` on its
@@ -58,9 +67,11 @@ registered tokens AND the notification setting is on:
 - best-effort by contract, like `usage.py`: a failed send logs and never fails the job.
 
 Delivery is one HTTPS POST to Expo's push API (`exp.host/--/api/v2/push/send`), batched sends
-unnecessary at this scale. The POST happens on the settle callback's thread — it is a
-sub-second call and the worker is already unwound; if it ever grows retries, it moves to its
-own tiny queue, not into the job's lifetime.
+unnecessary at this scale. The POST happens on the settle callback's thread with a **mandatory
+short timeout (~5s), non-negotiable**: the worker's liveness marker clears only after settle
+callbacks return, and `any_running_for_project` keys deletion/split "busy" answers on it — a
+hung POST would hold a project undeletable for the account-deletion drain's full 600s. Retries,
+if ever wanted, move to their own tiny queue, never into the job's lifetime.
 
 Receipts: a `DeviceNotRegistered` receipt deletes the token. No other receipt handling in v1.
 

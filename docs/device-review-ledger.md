@@ -20,6 +20,7 @@ me?", now has one answer: every row in this file that is not `closed`.
    when the items can ship independently.
 3. Use exactly one lifecycle state:
    - `open` — understood, not implemented;
+   - `planned` — a design doc exists and is linked from the row; implementation not started;
    - `partial` — some acceptance clauses shipped, with the remainder stated explicitly;
    - `implemented — verify` — code is merged, but the real-device/human-quality check is open;
    - `deferred` — deliberately postponed, with the decision boundary named;
