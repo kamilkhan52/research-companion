@@ -1,5 +1,5 @@
 // End-of-chat notes review (R.11). When a discussion reaches notes_drafted, the analyst has
-// PROPOSED a Notes block for this paper plus an updated project synthesis. This full-screen
+// PROPOSED a Notes block for this paper plus a rewrite of the working notes. This full-screen
 // surface fetches that proposal (GET /review/{slug}), lets the reader read it in full and edit
 // either part inline (view markdown ↔ raw editor, same shape as the Notes screen), then commit
 // with "Approve & commit" — carrying the proposal_revision token so a branch switch or
@@ -16,6 +16,8 @@ import { ApiError } from '@/api/client';
 import type { StreamItem } from '@/api/types';
 import { useNotes, useReview } from '@/api/queries';
 import { AgentActivity } from '@/components/AgentActivity';
+import { ProgressSteps } from '@/components/ProgressSteps';
+import { finishSteps } from '@/lib/finishSteps';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
 import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
@@ -32,6 +34,7 @@ export function NotesReviewSheet({
   requesting = false,
   requestActivity = 'Reviewing notes…',
   requestItems = [],
+  requestPhase = null,
   refreshNonce = 0,
 }: {
   visible: boolean;
@@ -44,6 +47,10 @@ export function NotesReviewSheet({
   requesting?: boolean;
   requestActivity?: string;
   requestItems?: StreamItem[];
+  /** DR-056: the redraft's marker phase — stages the requesting panel like the Finish
+   *  card. The sheet stays open during Request changes, so this is where the stages
+   *  must live to be seen. */
+  requestPhase?: 'notes' | 'synthesis' | null;
   refreshNonce?: number;
 }) {
   const t = useTheme();
@@ -168,12 +175,19 @@ export function NotesReviewSheet({
               </View>
 
               {requesting ? (
-                <AgentActivity
-                  emphasis="panel"
-                  status={requestActivity}
-                  detail={words > 0 ? `${words} words drafted` : undefined}
-                  testID="notes-review-activity"
-                />
+                <>
+                  <ProgressSteps
+                    dotSize={20}
+                    style={styles.requestSteps}
+                    steps={finishSteps(requestPhase ?? 'drafting')}
+                  />
+                  <AgentActivity
+                    emphasis="panel"
+                    status={requestActivity}
+                    detail={words > 0 ? `${words} words drafted` : undefined}
+                    testID="notes-review-activity"
+                  />
+                </>
               ) : null}
 
               <ReviewSection
@@ -203,8 +217,8 @@ export function NotesReviewSheet({
 
               <ReviewSection
                 icon="layers"
-                title="Project synthesis"
-                description="How this changes the argument across your reading."
+                title="Working notes"
+                description="The proposed rewrite of your working notes — the synthesis across everything read so far."
               >
                 {editing ? (
                   <TextInput
@@ -313,6 +327,7 @@ function ReviewSection({
 }
 
 const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
+  requestSteps: { marginBottom: space.sm },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -79,6 +79,7 @@ import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
+import { finishSteps } from '@/lib/finishSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
@@ -1786,6 +1787,7 @@ function DiscussionThread({
         <StreamingTurnBody
           items={msg.streamItems}
           activity={stream.activity}
+          finishPhase={stream.proposalTurn ? stream.notesPhase ?? 'drafting' : null}
         />
       );
     }
@@ -1817,7 +1819,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, styles, figureContext, sentenceAnnotationsFor]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2084,6 +2086,7 @@ function DiscussionThread({
       onCommitted={() => { setReviewOpen(false); onMutated(); }}
       onRequestEdits={requestChanges}
       requesting={stream.streaming}
+      requestPhase={stream.notesPhase}
       requestActivity={stream.activity}
       requestItems={stream.items}
       refreshNonce={reviewReadyNonce}
@@ -3006,9 +3009,11 @@ function SmoothMarkdown({ text }: { text: string }) {
 function StreamingTurnBody({
   items,
   activity,
+  finishPhase = null,
 }: {
   items: StreamItem[];
   activity: string;
+  finishPhase?: string | null;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -3016,6 +3021,12 @@ function StreamingTurnBody({
   const hasVisibleText = visibleItems.some((item) => item.kind === 'text');
   return (
     <View style={styles.assistantBody}>
+      {finishPhase ? (
+        // The graph build's staged treatment (DR-056): what is actually happening behind
+        // Stop, kept visible for the whole wait — the preview streaming below does not
+        // replace it.
+        <ProgressSteps dotSize={20} style={styles.finishSteps} steps={finishSteps(finishPhase)} />
+      ) : null}
       {!hasVisibleText ? (
         // One phrase, no explanatory subtitle beneath it (DR-006).
         <AgentActivity status={activity} testID="assistant-activity" />
@@ -3139,6 +3150,7 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => {
     alignSelf: 'flex-start',
     marginTop: space.sm,
   },
+  finishSteps: { marginBottom: space.md, marginTop: space.xs },
   assistantBody: {
     paddingHorizontal: tight ? space.sm : space.md,
     paddingVertical: tight ? 6 : space.sm,

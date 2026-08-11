@@ -20,6 +20,7 @@ twin of the client's double-tap guard), while independent threads may generate c
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
@@ -61,6 +62,13 @@ class ChatJob(Job):
     delivery_mode: str = "reading"  # reading | listening
     audio_job_id: str | None = None
     audio_error: str | None = None
+    #: DR-056 — which section of the marker document the model is currently writing, so the
+    #: client can stage the Finish-reading wait honestly: None/'drafting' (canonical preview),
+    #: 'notes' (###NOTES_BLOCK### has appeared — the paper's notes are being drafted),
+    #: 'synthesis' (###SYNTHESIS### — the working notes are being rewritten). Derived from the
+    #: RAW stream server-side; markers never reach client items (only the canonical prefix
+    #: streams), so the server is the only place this can be observed. Forward-only.
+    notes_phase: str | None = None
     #: Structured refusal (DR-049) when starting the listening audio was REFUSED — the AudioJob
     #: that would carry it was never created, so this job is the only carrier (the exact shape
     #: of retrieval's `analysis_refusal`).
@@ -405,6 +413,31 @@ def _trail(job: ChatJob) -> list[dict]:
         return [dict(it) for it in job.items if it.get("kind") in ("tool", "thought")]
 
 
+# Tolerant of heading drift like agent._parse ("## NOTES_BLOCK"), but anchored to a line of
+# its own: the finish prompt asks the CANONICAL preview to talk ABOUT the notes and synthesis,
+# so prose like "## SYNTHESIS OF RESULTS" must not skip a stage — that is precisely the
+# dishonesty DR-056 exists to remove.
+_NOTES_MARKER_RE = re.compile(r"^\s*#{2,}\s*NOTES_BLOCK\s*#*\s*$", re.M)
+_SYNTHESIS_MARKER_RE = re.compile(r"^\s*#{2,}\s*SYNTHESIS\s*#*\s*$", re.M)
+#: Base scan window. The effective window also covers the whole incoming delta (plus slack for
+#: a straddled marker): a provider that emits its completion in one large chunk would otherwise
+#: hide a marker deeper than any fixed tail.
+_PHASE_SCAN_TAIL = 4_000
+
+
+def _advance_notes_phase(job: ChatJob, full: str, delta_len: int = 0) -> None:
+    """Forward-only phase advance from the raw stream (DR-056). Cheap: scans a tail sized to
+    the delta, and only for markers not yet seen. Ordinary turns emit no NOTES/SYNTHESIS marker
+    lines, so their phase stays None and the client's staged card never renders for them."""
+    tail = full[-max(_PHASE_SCAN_TAIL, delta_len + 200):]
+    if job.notes_phase != "synthesis" and _SYNTHESIS_MARKER_RE.search(tail):
+        with _registry.lock:
+            job.notes_phase = "synthesis"
+    elif job.notes_phase is None and _NOTES_MARKER_RE.search(tail):
+        with _registry.lock:
+            job.notes_phase = "notes"
+
+
 def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     """Fold one runner event into the job's items. Text deltas surface only their CANONICAL
     prefix (same incremental extraction the SSE path used), merged into the trailing text item;
@@ -418,6 +451,10 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         pieces.clear()
         with _registry.lock:
             job.activity = "Analyzing results…"
+            # The boundary means "the answer starts over" — including the single-shot fallback
+            # replaying the whole turn. notes_phase must restart with the document, or pre-tool
+            # commentary that named a marker pins a stage before the real document exists.
+            job.notes_phase = None
             # At most one live text item exists (each boundary demotes the previous one); it
             # sits before any tool items from the same segment, so demote it in place.
             for i in range(len(job.items) - 1, -1, -1):
@@ -434,7 +471,9 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         return 0
     if ev["type"] == "text":
         pieces.append(ev["text"])
-        canon = agent.canonical_prefix("".join(pieces))
+        full = "".join(pieces)
+        _advance_notes_phase(job, full, len(ev["text"]))
+        canon = agent.canonical_prefix(full)
         if len(canon) > sent:
             delta = canon[sent:]
             with _registry.lock:

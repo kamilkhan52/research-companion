@@ -31,6 +31,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface StreamingTurn {
   liveText: string;
   streaming: boolean;
+  /** DR-056: the marker section currently being written on a proposal turn (server-derived);
+   *  null on ordinary turns and before the first poll. */
+  notesPhase: 'notes' | 'synthesis' | null;
+  /** DR-056: the current turn drafts a proposal (finish/request-changes) — drives the staged
+   *  Finish card. Derived from the run path; restored on resume from the job's notes_phase. */
+  proposalTurn: boolean;
   error: string | null;
   /** Quiet, self-clearing poll status. Unlike `error`, this never asks the reader to dismiss it. */
   connectionNotice: string | null;
@@ -70,6 +76,11 @@ export function useStreamingTurn(
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
   const [activity, setActivity] = useState('Reading the paper…');
+  const [notesPhase, setNotesPhase] = useState<'notes' | 'synthesis' | null>(null);
+  // DR-056: whether the CURRENT turn drafts a proposal (finish / request-changes), known here
+  // because run() sees the path — a screen-local flag was stuck true when run() early-returned
+  // busy, and an ordinary reply then rendered the Finish card.
+  const [proposalTurn, setProposalTurn] = useState(false);
   const [previewJobIds, setPreviewJobIds] = useState<string[]>([]);
   const [previewParentJobId, setPreviewParentJobId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -107,6 +118,8 @@ export function useStreamingTurn(
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
+    setNotesPhase(null);
+    setProposalTurn(false);
     setActivity('Reading the paper…');
     setPreviewJobIds([]);
     setConnectionNotice(null);
@@ -120,6 +133,10 @@ export function useStreamingTurn(
       setStreaming(true);
       setItems(job.items);
       setActivity(job.activity ?? 'Reading the paper…');
+      // Resume (invariant 1's whole point) must restore the staged Finish card too: a job
+      // that already has a notes_phase is a proposal turn by definition.
+      setNotesPhase(job.notes_phase ?? null);
+      if (job.notes_phase) setProposalTurn(true);
       setPreviewJobIds(job.preview_job_ids);
       setConnectionNotice(null);
       let misses = 0;
@@ -149,6 +166,7 @@ export function useStreamingTurn(
         if (!aliveRef.current || watchRef.current !== job.id) return;
         setItems(snap.items);
         setActivity(snap.activity ?? 'Reading the paper…');
+        setNotesPhase(snap.notes_phase ?? null);
         setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
@@ -193,6 +211,8 @@ export function useStreamingTurn(
       setError(null);
       setConnectionNotice(null);
       setItems([]);
+      setNotesPhase(null);
+      setProposalTurn(path.endsWith('/finish_job') || path.endsWith('/request_changes_job'));
       setActivity('Reading the paper…');
       setPreviewJobIds([]);
       setPreviewParentJobId(null);
@@ -304,6 +324,8 @@ export function useStreamingTurn(
     setStreaming(false);
     setPendingUser(null);
     setItems([]);
+    setNotesPhase(null);
+    setProposalTurn(false);
     setActivity('Reading the paper…');
     setPreviewJobIds([]);
     setPreviewParentJobId(null);
@@ -343,6 +365,8 @@ export function useStreamingTurn(
   return {
     liveText,
     streaming,
+    notesPhase,
+    proposalTurn,
     error,
     connectionNotice,
     pendingUser,
