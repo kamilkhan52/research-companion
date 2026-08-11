@@ -55,7 +55,7 @@ const NOTES_UPDATE_TRAIL: AgentTrailItem[] = [
 test('a notes-update tool call renders an always-visible link to review it', () => {
   const screen = render(<AgentTrail trail={NOTES_UPDATE_TRAIL} slug="attention-is-all-you-need" />);
 
-  const link = screen.getByText(/Notes update drafting from this discussion/);
+  const link = screen.getByText(/Notes update requested from this discussion/);
   expect(link).toBeTruthy();
 
   fireEvent.press(link);
@@ -64,8 +64,19 @@ test('a notes-update tool call renders an always-visible link to review it', () 
 
 test('the notes-update link is absent without a slug, and for trails that never called it', () => {
   const withoutSlug = render(<AgentTrail trail={NOTES_UPDATE_TRAIL} />);
-  expect(withoutSlug.queryByText(/Notes update drafting/)).toBeNull();
+  expect(withoutSlug.queryByText(/Notes update requested/)).toBeNull();
 
   const unrelated = render(<AgentTrail trail={TRAIL} slug="attention-is-all-you-need" />);
-  expect(unrelated.queryByText(/Notes update drafting/)).toBeNull();
+  expect(unrelated.queryByText(/Notes update requested/)).toBeNull();
+});
+
+test('the link reads the same on a message from the past, not just a just-finished one', () => {
+  // Opus review, PR #371: this trail comes straight from the persisted transcript with no live
+  // job-status check, so a turn from last week whose proposal was reviewed days ago renders
+  // identically to one from seconds ago. The copy must not claim an in-progress state it can't
+  // verify either way — this test exists so a future "is drafting"/"is ready" regression fails
+  // here instead of only being caught by re-reading old messages on device.
+  const screen = render(<AgentTrail trail={NOTES_UPDATE_TRAIL} slug="attention-is-all-you-need" />);
+  expect(screen.queryByText(/is drafting/)).toBeNull();
+  expect(screen.queryByText(/is ready/)).toBeNull();
 });

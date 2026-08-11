@@ -92,11 +92,15 @@ export function AgentTrail({ trail, slug }: { trail: AgentTrailItem[]; slug?: st
           onPress={() => router.push(`/notes/${encodeURIComponent(slug)}`)}
           style={[styles.notesUpdateRow, { borderColor: t.mint }]}
           accessibilityRole="button"
-          accessibilityLabel="A notes update is drafting from this discussion. Tap to review it."
+          accessibilityLabel="A notes update was requested from this discussion. Tap to open notes."
         >
           <Icon name="edit-3" size={13} color={t.mint} />
+          {/* Tense-neutral on purpose (Opus review, PR #371): this trail item comes from the
+              persisted transcript with no live job-status check, so it renders identically for
+              a turn from seconds ago and one from last week whose proposal was reviewed and
+              applied days ago. "is drafting" claimed an in-progress state this can't verify. */}
           <Text variant="caption" color={t.mint} style={styles.notesUpdateText}>
-            Notes update drafting from this discussion — tap to review
+            Notes update requested from this discussion — open notes
           </Text>
           <Icon name="chevron-right" size={13} color={t.mint} />
         </Pressable>

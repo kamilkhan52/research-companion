@@ -101,7 +101,14 @@ export function DevTestBubble() {
     }
   }, []);
 
-  const sections = useMemo(() => sectionItems(items), [items]);
+  // Exclude the pinned "Just added" item from its normal section — Opus review, PR #371: it
+  // used to render there too, a second mounted `ItemCard` for the same item.id sharing one
+  // AsyncStorage draft key with independent in-memory state, so submitting a verdict on one
+  // instance's debounced write could resurrect it on the other.
+  const sections = useMemo(
+    () => sectionItems(justCreated ? items.filter((i) => i.id !== justCreated.id) : items),
+    [items, justCreated],
+  );
 
   return (
     <>
@@ -212,7 +219,8 @@ function Section({ label, tone }: { label: string; tone: string }) {
 interface NewItemDraft { title: string; description: string }
 const NEW_ITEM_DRAFT_FALLBACK: NewItemDraft = { title: '', description: '' };
 
-function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void }) {
+// Exported for a direct persistence test (DR-065), same reasoning as ItemCard above.
+export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   // DR-065: an unfinished new-issue draft used to vanish the moment the sheet closed (Modal
