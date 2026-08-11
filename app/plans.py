@@ -71,11 +71,14 @@ PLANS: dict[str, Plan] = {
     "free": Plan(
         name="free",
         monthly_credits=200,
-        # Audio quality is deliberately NOT a plan dimension (DR-042): every plan may spend its
-        # allowance on studio narration, and the credit ceiling — not a feature flag — is what
-        # bounds the cost. One mean narration at tts-1 is ~160 credits, so on Free it is a real
-        # trade against reading; the summary says so instead of promising a voice tier.
-        summary="3–4 papers a month — studio narration spends the same allowance",
+        # Audio quality is deliberately NOT a plan dimension (DR-042): any plan may spend its
+        # allowance on studio narration, and the credit ceiling — not a feature flag — bounds
+        # the cost. The speech hold is sized from the text (spend_limits.speech_hold_nanousd),
+        # so a short piece admits here while a mean full-paper narration (~160 credits of TTS,
+        # ~200 with margin and the rewrite) is honestly refused as larger than what remains —
+        # the refusal sheet then offers the device voice. The summary promises only what the
+        # arithmetic delivers.
+        summary="3–4 papers a month, with studio narration for shorter pieces",
     ),
     "basic": Plan(
         name="basic",

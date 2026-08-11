@@ -69,3 +69,56 @@ def test_the_explicit_override_still_wins_over_the_plan(monkeypatch):
     """The escape hatch stays, for a deployment that needs a number no plan expresses."""
     monkeypatch.setenv("RC_MONTHLY_CREDITS", "12345")
     assert spend_limits.monthly_limit_nanousd() == 12_345 * spend_limits.NANOUSD_PER_CREDIT
+
+def test_the_plan_response_carries_no_audio_tier(temp_project):
+    """The wire half of DR-042 — re-adding `premium_audio` to the response dict would leave the
+    dataclass test green while the client regrew an audio row. Served without a database: the
+    ledger falls back to zero usage, which is all this test needs."""
+    from app.main import app
+    from starlette.testclient import TestClient
+
+    body = TestClient(app).get("/api/plan").json()
+    assert "premium_audio" not in body["plan"]
+    assert body["plan"]["summary"] == plans.PLANS[plans.DEFAULT_PLAN].summary
+
+
+def test_speech_holds_scale_with_the_text():
+    """DR-042's enforcement half: the flat speech hold ($0.60) exceeded the whole Free ceiling
+    ($0.20), so every narration on Free was refused regardless of length — a de-facto quality
+    tier. Sized from the text, a short piece admits on the smallest plan while a full-paper
+    narration still cannot outrun the old bound."""
+    from app import spend_limits
+
+    free_ceiling = plans.PLANS["free"].monthly_credits * 1_000_000
+    # A short summary (~5k chars) must fit inside an untouched Free month.
+    assert spend_limits.speech_hold_nanousd(5_000) < free_ceiling
+    # The mean full-paper narration (10,702 chars — pricing §2c) must NOT fit: ~160 credits of
+    # TTS plus margin and the rewrite lease is more than the month, and the refusal sheet's
+    # "won't fit your plan / use device voice" is the honest answer.
+    assert spend_limits.speech_hold_nanousd(10_702) > free_ceiling
+    # A pathological length clamps to the old flat bound rather than reserving beyond it.
+    assert spend_limits.speech_hold_nanousd(10_000_000) == 600_000_000
+    # No text information falls back to the flat bound — never to a free pass.
+    assert spend_limits.speech_hold_nanousd(0) == 600_000_000
+
+
+def test_audio_admission_holds_what_the_text_costs(temp_project, monkeypatch):
+    """The hold reaching the registry is the sized one, not the flat table entry."""
+    from app import audio_jobs, spend_limits
+
+    seen = {}
+    real = audio_jobs._registry.start_or_join
+
+    def capture(*args, **kwargs):
+        seen["hold"] = kwargs.get("hold_max_nanousd")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(audio_jobs._registry, "start_or_join", capture)
+    monkeypatch.setattr(audio_jobs, "_synthesize", lambda *a, **k: b"mp3", raising=False)
+    text = "x" * 5_000
+    try:
+        audio_jobs.start_job(text)
+    except Exception:
+        pass  # synthesis internals are not under test; the admission kwargs are
+    assert seen["hold"] == spend_limits.speech_hold_nanousd(5_000)
+

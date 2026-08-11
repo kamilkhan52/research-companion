@@ -46,7 +46,7 @@ export function Settings({ onClose }: Props) {
       if (cancelled) return;
       setData(settings); setModel(settings.model || ''); setNarrationModel(settings.narration_model || '');
       setPreviewModel(settings.preview_model || ''); setSpeechProvider(settings.speech_provider || 'openai'); setVoice(settings.tts_voice || 'alloy');
-      setTtsModel(settings.tts_model || 'tts-1');
+      setTtsModel(settings.tts_model === 'tts-1-hd' ? 'tts-1' : settings.tts_model || 'tts-1');
       setPriorNotesScope(settings.prior_notes_scope || 'related');
       setAutoplay(localStorage.getItem('rc_autoplay') === '1');
     }).catch((caught) => { if (!cancelled) setLoadError(caught instanceof Error ? caught.message : 'Failed to load settings');

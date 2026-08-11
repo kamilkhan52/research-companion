@@ -154,6 +154,23 @@ def _friendly_tts_error(status: int, raw: str) -> str:
     return f"OpenAI declined speech synthesis (HTTP {status}). Check Speech settings and retry."
 
 
+def resolve_model(configured: str | None) -> str:
+    """The model that will actually synthesize, from a stored setting or override.
+
+    `tts-1-hd` is retired (DR-042, Kamil 2026-08-10): not audibly better than tts-1, slower,
+    and twice the price — and audio quality is no longer a plan dimension. Mapped here rather
+    than only removed from pickers, so a persisted setting or an RC_TTS_MODEL override naming
+    it cannot quietly double every narration's cost. The audio cache key uses this same
+    resolution, so a retired setting shares the tts-1 bucket instead of re-billing identical
+    audio under a second namespace.
+    """
+    model = configured or "tts-1"
+    if model == "tts-1-hd":
+        log.info("tts-1-hd is retired; synthesizing with tts-1")
+        model = "tts-1"
+    return model
+
+
 def openai_speech(text: str) -> bytes:
     """Synthesize one passage to mp3 bytes via OpenAI, retrying transient failures.
     Settings supply key/model/voice."""
@@ -161,14 +178,7 @@ def openai_speech(text: str) -> bytes:
     key = s.get("openai_api_key")
     if not key:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
-    model = s.get("tts_model") or "tts-1"
-    if model == "tts-1-hd":
-        # Retired as a selectable model (DR-042, Kamil 2026-08-10): not audibly better than
-        # tts-1, slower, and twice the price — and audio quality is no longer a plan dimension.
-        # Mapped here rather than only removed from pickers, so a stored setting or an
-        # RC_TTS_MODEL override naming it cannot quietly double every narration's cost.
-        log.info("tts-1-hd is retired; synthesizing with tts-1")
-        model = "tts-1"
+    model = resolve_model(s.get("tts_model"))
     voice = s.get("tts_voice") or "alloy"
     spoken_text = normalize_for_speech(text)
     body = {"model": model, "voice": voice, "input": spoken_text,

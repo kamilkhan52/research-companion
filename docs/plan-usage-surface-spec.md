@@ -42,7 +42,7 @@ $0.20; basic = 2,500 credits / $2.50. Those numbers do not appear in reader-faci
 Add one row near the top of Settings, in an `ACCOUNT` group:
 
 - Label: `Plan & usage`
-- Subtitle: plan summary (for example, `Testing plan` or `20 papers a month · 45 min studio voice`)
+- Subtitle: plan summary (for example, `Testing plan` or `20 papers a month, with narration to match`)
 - Trailing: chevron only; no balance badge
 - Tap: push `/plan`, retaining the existing Settings top-bar/back behavior
 
@@ -102,8 +102,8 @@ Use server `plan.summary` verbatim in the plan card. Presentation labels are tit
 | `plan.name` | Display label | Supporting treatment |
 |---|---|---|
 | `tester` | `Tester` | `Testing plan — generous allowance while the app is in review` |
-| `free` | `Free` | `3–4 papers a month, your device's voice` |
-| `basic` | `Basic` | `20 papers a month, 45 minutes of studio narration` |
+| `free` | `Free` | `3–4 papers a month, with studio narration for shorter pieces` |
+| `basic` | `Basic` | `20 papers a month, with narration to match` |
 
 `premium_audio` is GONE (DR-042, 2026-08-10): audio quality is not a plan dimension, so the
 plan card carries no audio row. `monthly_credits` and all nano-USD fields remain transport data.

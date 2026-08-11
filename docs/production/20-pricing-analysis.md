@@ -92,7 +92,7 @@ Before the tables, three measured facts that matter more than the tier design:
 | **15 analysis turns / month** (≈ 3–4 papers discussed) | 150 credits |
 | Reference graph: **1 build / month** | 17 credits |
 | Discovery: **2 runs / month** | 2 credits |
-| Audio: **unlimited, device voice only** (`BrowserTTS`) | 0 credits |
+| Audio: device voice unlimited; **studio narration by the piece** (short pieces fit — DR-042) | 0 credits |
 | Web search in chat: **off** | — |
 | **Total allowance** | **200 credits** |
 
@@ -166,7 +166,7 @@ Measured constant: **970 characters per minute of speech** (largest narration, 3
 | | per 1M chars | per minute | per narration (10,702 chars) |
 |---|---:|---:|---:|
 | `tts-1` (**current default**, H22 revised 2026-07-25) | $15.00 | **$0.01455** | **$0.1605** |
-| `tts-1-hd` (the previous default; still selectable) | $30.00 | **$0.0291** | **$0.3211** |
+| `tts-1-hd` (the previous default; retired 2026-08-10, DR-042 — `app/tts.py` maps it to `tts-1`) | $30.00 | **$0.0291** | **$0.3211** |
 | `BrowserTTS` | $0 | $0 | $0 |
 
 ### 2d. Unmetered variable costs (not in any ledger)

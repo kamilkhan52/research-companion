@@ -78,9 +78,12 @@ _MAX_NANOUSD: dict[str, int] = {
     # and §8 lists provider pinning as an unmet precondition. 2.5x that, not 3x the aspiration.
     "analysis": 150_000_000,
     "narration": 40_000_000,        # $0.04
-    # $0.60. The MEAN cached narration is 10,702 characters ($0.1605 at tts-1) and the largest
-    # measured is 36,987 ($0.555) — §2c. Narration length is unknown at admission and §8 records
-    # it as still uncapped, so the hold has to cover the observed maximum, not the mean.
+    # $0.60 — the FALLBACK bound only, covering the largest measured narration (36,987 chars,
+    # $0.555 at tts-1 — §2c). A caller that knows its text passes `speech_hold_nanousd(chars)`
+    # instead: character pricing makes the cost computable at admission, and the flat maximum
+    # exceeded the whole Free ceiling ($0.20), refusing every narration on Free regardless of
+    # length — a de-facto quality tier, which DR-042 removes. audio_jobs sizes its hold from the
+    # canonical text it was handed.
     "speech_synthesis": 600_000_000,
     # Kept for any caller that asks for a `retrieval` hold, but the retrieval JOB no longer takes
     # one: its own thread dispatches nothing to a provider (arXiv fetch, local PDF extraction), and
@@ -118,6 +121,29 @@ _MAX_NANOUSD: dict[str, int] = {
     # and then could not afford the $0.04 author, and a crash mid-author charged both.
     "lab_research": 40_000_000,     # $0.04
 }
+
+#: tts-1's published character rate (§2c/§7): $15 per 1M characters = 15,000 nano-USD/char.
+_TTS1_NANOUSD_PER_CHAR = 15_000
+#: Stage-2 narration rewrite can expand the canonical text for the ear; 1.25x covers the
+#: observed variation without re-inflating the hold past small ceilings.
+_SPEECH_TEXT_MARGIN = 1.25
+
+def speech_hold_nanousd(chars: int) -> int:
+    """The admission hold for narrating a text of `chars` characters (DR-042).
+
+    Character-priced synthesis is exactly computable before dispatch, so the hold is the text's
+    own cost with margin, plus the stage-2 narration LLM lease — never the flat worst-case,
+    which alone exceeded the Free ceiling and refused every narration on the smallest plan. A
+    short piece therefore admits on any plan; a long one is refused honestly as larger than the
+    allowance, with the device-voice path offered. Clamped to the flat bound so a pathological
+    length cannot reserve more than the old ceiling did.
+    """
+    if chars <= 0:
+        return _MAX_NANOUSD["speech_synthesis"]
+    estimated = int(chars * _TTS1_NANOUSD_PER_CHAR * _SPEECH_TEXT_MARGIN)
+    return min(_MAX_NANOUSD["speech_synthesis"],
+               estimated + _MAX_NANOUSD["narration"])
+
 
 #: Used when an operation has no entry. Generous rather than tight: refusing a legitimate reader is
 #: the failure the roadmap ranks worse than a mild overspend, and an unknown operation is far more
