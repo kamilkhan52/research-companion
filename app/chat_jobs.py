@@ -33,6 +33,8 @@ from . import (
     graph,
     logging_config,
     preview_jobs,
+    quotas,
+    rate_limits,
     sessions,
 )
 from .agent import AgentError
@@ -59,6 +61,10 @@ class ChatJob(Job):
     delivery_mode: str = "reading"  # reading | listening
     audio_job_id: str | None = None
     audio_error: str | None = None
+    #: Structured refusal (DR-049) when starting the listening audio was REFUSED — the AudioJob
+    #: that would carry it was never created, so this job is the only carrier (the exact shape
+    #: of retrieval's `analysis_refusal`).
+    audio_refusal: dict | None = None
     assistant_index: int | None = None
     preview_job_ids: list[str] = field(default_factory=list)
     preview_coordinator_id: str | None = None
@@ -225,6 +231,9 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
             except Exception as exc:
                 audio_job_id = None
                 audio_error = f"Could not start listening audio: {str(exc)[:240]}"
+                if isinstance(exc, (quotas.QuotaError, rate_limits.RateLimited)):
+                    with _registry.lock:
+                        job.audio_refusal = exc.refusal_payload()
                 sessions.update_assistant_audio(
                     job.slug,
                     assistant_ts,

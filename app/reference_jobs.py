@@ -192,6 +192,11 @@ def ensure_for_text(
             settled.wait()
     final = _registry.get(job.id)
     if final is None or final.status == "error":
+        # NOTE(DR-049): this converts a child job's failure into a plain RuntimeError, so a
+        # structured refusal raised INSIDE the child worker would lose its payload here. Not
+        # reachable today — the child's only refusal (its admission hold) is taken on the
+        # caller's thread and propagates untouched — but re-raise the refusal type if that
+        # changes.
         raise RuntimeError((final.error if final else None) or "Reference extraction failed.")
     record = paper_metadata.reference_record(slug)
     if record is None or record.get("content_hash") != graph_store.content_hash(full_text):

@@ -111,6 +111,15 @@ class QuotaExceeded(QuotaError):
 class ReservationConflict(QuotaError):
     """An idempotency key or state transition does not describe the same reservation."""
 
+    def refusal_payload(self) -> dict:
+        # Mirror `main`'s HTTP handler exactly: same code, same generic copy. A conflict is a
+        # server-side accounting fault, and its internal message describes ledger state — the
+        # payload deliberately does not carry it.
+        return {
+            "code": "reservation_conflict",
+            "detail": "Usage accounting is temporarily inconsistent. Please try again.",
+        }
+
 
 @dataclass(frozen=True)
 class Reservation:

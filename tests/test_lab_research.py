@@ -304,6 +304,11 @@ def test_running_out_of_budget_stops_the_pass_instead_of_failing_every_author(
     assert "could not complete" not in snap["error"], (
         "a budget refusal must not be dressed up as a provider failure"
     )
+    # DR-049: this ERROR path never propagates an exception through the registry (the worker
+    # returns after set_outcome_locked), so only the direct assignment in the quota-stop branch
+    # can carry the structured payload — and it must, because a refused pass that found nothing
+    # is the branch the client's refusal sheet hits most.
+    assert snap["refusal"]["code"] == "quota_exceeded"
     assert snap["current"] == "", "the unreached author must not be left named as in progress"
     assert len(researched) == 1, "the pass must stop, not refuse each remaining author in turn"
 

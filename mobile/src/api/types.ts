@@ -380,6 +380,9 @@ export interface ChatJob {
   delivery_mode: 'reading' | 'listening';
   audio_job_id: string | null;
   audio_error: string | null;
+  /** Structured refusal when starting the listening audio was refused (DR-049) — the AudioJob
+   *  that would carry it was never created, so this job is the only carrier. */
+  audio_refusal?: SpendRefusalPayload | null;
   assistant_index: number | null;
   preview_job_ids: string[];
   preview_coordinator_id: string | null;
@@ -839,9 +842,6 @@ export interface HiddenRecommendation {
   hidden_at: string;
 }
 
-/** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running
- * server-side in a background thread. The client polls — same pattern as GraphBuildJob —
- * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */
 /** Structured spend/rate refusal on a job snapshot (DR-049) — the server exception's own
  *  `refusal_payload()`, identical to the HTTP admission body. Classify `code`; `detail` is
  *  display copy the server may edit without a client release. */
@@ -855,6 +855,9 @@ export interface SpendRefusalPayload {
   retry_after_seconds?: number;
 }
 
+/** An audio preparation job (app/audio_jobs.py AudioJob): narrate → synthesize, running
+ * server-side in a background thread. The client polls — same pattern as GraphBuildJob —
+ * so a tunnel timeout or the app backgrounding can't kill a preparation in flight. */
 export interface AudioJob {
   id: string;
   status: 'running' | 'done' | 'error' | 'cancelled';

@@ -317,6 +317,41 @@ def test_snapshot_is_a_plain_dict_safe_for_polling(temp_project):
     assert chat_jobs.snapshot("nope") is None
 
 
+def test_a_refused_narration_start_carries_the_structured_payload(temp_project, monkeypatch):
+    """DR-049's third invisible carrier: the narration continuation's hold is taken on the CHAT
+    worker thread, and a refusal there was folded into `audio_error` prose with no structure —
+    the AudioJob that would carry it was never created. The turn itself stays `done` (the
+    response exists and is readable); only the audio half was refused."""
+    from app import quotas
+
+    slug = _session_with_reply()
+    monkeypatch.setattr(
+        chat_jobs.config,
+        "load_settings",
+        lambda: {"speech_provider": "openai"},
+    )
+
+    def refused_audio(text, billing_project=None, metered=True):
+        raise quotas.QuotaExceeded(
+            used_nanousd=100, settled_nanousd=100, requested_nanousd=10, limit_nanousd=100)
+
+    monkeypatch.setattr(chat_jobs.audio_jobs, "start_job", refused_audio)
+    job = chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "final", "text": PROTO}]),
+        delivery_mode="listening",
+    )
+    finished = _wait_until_settled(job.id)
+
+    assert finished.status == "done"
+    assert finished.audio_job_id is None
+    assert "usage limit" in (finished.audio_error or "").lower()
+    assert finished.audio_refusal["code"] == "quota_exceeded"
+    assert finished.audio_refusal["limit_nanousd"] == 100
+    # The turn-level refusal field stays empty: the TURN was not refused.
+    assert finished.refusal is None
+
+
 def test_listening_turn_starts_audio_after_recording(temp_project, monkeypatch):
     slug = _session_with_reply()
     captured = {}

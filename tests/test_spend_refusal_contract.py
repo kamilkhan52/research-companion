@@ -60,6 +60,10 @@ def test_http_body_is_the_exceptions_own_payload(kwargs, status, code):
         assert "retry_after_seconds" not in body  # header, not body, on the HTTP path
     else:
         assert body["requested_nanousd"] == kwargs["requested_nanousd"]
+    # Bind the server's message choice to the client's classification rule: the "too large"
+    # state is exactly `requested > limit`, which is what the sheet uses to pick its state.
+    if "whole monthly allowance" in str(refusal):
+        assert payload["requested_nanousd"] > payload["limit_nanousd"]
 
 
 def _settled(registry: JobRegistry, job_id: str, timeout: float = 5.0) -> dict:
