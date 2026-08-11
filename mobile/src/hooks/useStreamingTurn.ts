@@ -31,6 +31,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface StreamingTurn {
   liveText: string;
   streaming: boolean;
+  /** DR-056: the marker section currently being written on a proposal turn (server-derived);
+   *  null on ordinary turns and before the first poll. */
+  notesPhase: 'notes' | 'synthesis' | null;
   error: string | null;
   /** Quiet, self-clearing poll status. Unlike `error`, this never asks the reader to dismiss it. */
   connectionNotice: string | null;
@@ -70,6 +73,7 @@ export function useStreamingTurn(
   const qc = useQueryClient();
   const [items, setItems] = useState<StreamItem[]>([]);
   const [activity, setActivity] = useState('Reading the paper…');
+  const [notesPhase, setNotesPhase] = useState<'notes' | 'synthesis' | null>(null);
   const [previewJobIds, setPreviewJobIds] = useState<string[]>([]);
   const [previewParentJobId, setPreviewParentJobId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -107,6 +111,7 @@ export function useStreamingTurn(
     setPendingUser(null);
     setStreaming(false);
     setItems([]);
+    setNotesPhase(null);
     setActivity('Reading the paper…');
     setPreviewJobIds([]);
     setConnectionNotice(null);
@@ -149,6 +154,7 @@ export function useStreamingTurn(
         if (!aliveRef.current || watchRef.current !== job.id) return;
         setItems(snap.items);
         setActivity(snap.activity ?? 'Reading the paper…');
+        setNotesPhase(snap.notes_phase ?? null);
         setPreviewJobIds(snap.preview_job_ids);
         if (snap.status === 'done') {
           watchRef.current = null;
@@ -193,6 +199,7 @@ export function useStreamingTurn(
       setError(null);
       setConnectionNotice(null);
       setItems([]);
+      setNotesPhase(null);
       setActivity('Reading the paper…');
       setPreviewJobIds([]);
       setPreviewParentJobId(null);
@@ -304,6 +311,7 @@ export function useStreamingTurn(
     setStreaming(false);
     setPendingUser(null);
     setItems([]);
+    setNotesPhase(null);
     setActivity('Reading the paper…');
     setPreviewJobIds([]);
     setPreviewParentJobId(null);
@@ -343,6 +351,7 @@ export function useStreamingTurn(
   return {
     liveText,
     streaming,
+    notesPhase,
     error,
     connectionNotice,
     pendingUser,

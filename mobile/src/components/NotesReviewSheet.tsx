@@ -1,5 +1,5 @@
 // End-of-chat notes review (R.11). When a discussion reaches notes_drafted, the analyst has
-// PROPOSED a Notes block for this paper plus an updated project synthesis. This full-screen
+// PROPOSED a Notes block for this paper plus a rewrite of the working notes. This full-screen
 // surface fetches that proposal (GET /review/{slug}), lets the reader read it in full and edit
 // either part inline (view markdown ↔ raw editor, same shape as the Notes screen), then commit
 // with "Approve & commit" — carrying the proposal_revision token so a branch switch or
@@ -203,8 +203,8 @@ export function NotesReviewSheet({
 
               <ReviewSection
                 icon="layers"
-                title="Project synthesis"
-                description="How this changes the argument across your reading."
+                title="Working notes"
+                description="The proposed rewrite of your working notes — the synthesis across everything read so far."
               >
                 {editing ? (
                   <TextInput

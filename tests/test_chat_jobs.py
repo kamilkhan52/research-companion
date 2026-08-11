@@ -742,3 +742,53 @@ def test_empty_final_falls_back_to_last_segment_text_only(temp_project):
 
     assert finished.status == "done"
     assert finished.turn["canonical"] == "The grounded answer."
+
+def test_finish_stream_advances_the_notes_phase(temp_project):
+    """DR-056: the client stages the Finish wait from `notes_phase`, which only the server can
+    observe (markers never reach client items). The phase advances as sections arrive and the
+    settled snapshot retains the last one."""
+    slug = _session_with_reply()
+    chunks = [
+        "###CANONICAL###\nHere is the review preview.",
+        "\n###STATE###\nready_to_draft_notes\n###COMMIT_SUMMARY###\nDone.",
+        "\n###NOTES_BLOCK###\n## Notes\nA finding.",
+        "\n###SYNTHESIS###\nThe synthesis so far.",
+        "\n###END###",
+    ]
+    def runner(s2, h):
+        for c in chunks:
+            yield {"type": "text", "text": c}
+        yield {"type": "final", "text": "".join(chunks)}
+
+    finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=runner).id)
+    assert finished.notes_phase == "synthesis"
+
+
+def test_notes_phase_advances_live_and_forward_only():
+    """The phase must move DURING the stream (the client stages the wait from polls), advance
+    in section order, and never regress — a SYNTHESIS heading quoted inside later prose must
+    not bounce the phase back to notes."""
+    job = chat_jobs.ChatJob(id="j", slug="p")
+    chat_jobs._advance_notes_phase(job, "###CANONICAL###\npreview text")
+    assert job.notes_phase is None
+    chat_jobs._advance_notes_phase(job, "###CANONICAL###\npreview\n###NOTES_BLOCK###\n## Notes")
+    assert job.notes_phase == "notes"
+    chat_jobs._advance_notes_phase(job, "…\n###SYNTHESIS###\nthe working notes")
+    assert job.notes_phase == "synthesis"
+    chat_jobs._advance_notes_phase(job, "…later text mentioning ###NOTES_BLOCK### again")
+    assert job.notes_phase == "synthesis"  # forward-only
+    # Tolerant of heading drift, like agent._parse.
+    job2 = chat_jobs.ChatJob(id="j2", slug="p")
+    chat_jobs._advance_notes_phase(job2, "## NOTES_BLOCK\ncontent")
+    assert job2.notes_phase == "notes"
+
+
+def test_an_ordinary_turn_never_gains_a_notes_phase(temp_project):
+    slug = _session_with_reply()
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        slug,
+        runner=_sync_runner([{"type": "text", "text": "###CANONICAL###\nJust an answer."},
+                             {"type": "final", "text": "###CANONICAL###\nJust an answer.\n###STATE###\nin_discussion\n###END###"}]),
+    ).id)
+    assert finished.notes_phase is None
+

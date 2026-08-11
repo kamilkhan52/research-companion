@@ -20,6 +20,7 @@ twin of the client's double-tap guard), while independent threads may generate c
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
@@ -61,6 +62,13 @@ class ChatJob(Job):
     delivery_mode: str = "reading"  # reading | listening
     audio_job_id: str | None = None
     audio_error: str | None = None
+    #: DR-056 — which section of the marker document the model is currently writing, so the
+    #: client can stage the Finish-reading wait honestly: None/'drafting' (canonical preview),
+    #: 'notes' (###NOTES_BLOCK### has appeared — the paper's notes are being drafted),
+    #: 'synthesis' (###SYNTHESIS### — the working notes are being rewritten). Derived from the
+    #: RAW stream server-side; markers never reach client items (only the canonical prefix
+    #: streams), so the server is the only place this can be observed. Forward-only.
+    notes_phase: str | None = None
     #: Structured refusal (DR-049) when starting the listening audio was REFUSED — the AudioJob
     #: that would carry it was never created, so this job is the only carrier (the exact shape
     #: of retrieval's `analysis_refusal`).
@@ -405,6 +413,27 @@ def _trail(job: ChatJob) -> list[dict]:
         return [dict(it) for it in job.items if it.get("kind") in ("tool", "thought")]
 
 
+# Tolerant like agent._parse: the model drifts to markdown headings ("## NOTES_BLOCK").
+_NOTES_MARKER_RE = re.compile(r"#{2,}\s*NOTES_BLOCK")
+_SYNTHESIS_MARKER_RE = re.compile(r"#{2,}\s*SYNTHESIS")
+#: A marker arrives within one recent delta; scanning the whole accumulated text per delta is
+#: quadratic for nothing. The window comfortably covers any delta plus a straddled marker.
+_PHASE_SCAN_TAIL = 4_000
+
+
+def _advance_notes_phase(job: ChatJob, full: str) -> None:
+    """Forward-only phase advance from the raw stream (DR-056). Cheap: scans the tail, and only
+    for markers not yet seen. Ordinary turns emit no NOTES/SYNTHESIS markers, so their phase
+    stays None and the client's staged card never renders for them."""
+    tail = full[-_PHASE_SCAN_TAIL:]
+    if job.notes_phase != "synthesis" and _SYNTHESIS_MARKER_RE.search(tail):
+        with _registry.lock:
+            job.notes_phase = "synthesis"
+    elif job.notes_phase is None and _NOTES_MARKER_RE.search(tail):
+        with _registry.lock:
+            job.notes_phase = "notes"
+
+
 def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     """Fold one runner event into the job's items. Text deltas surface only their CANONICAL
     prefix (same incremental extraction the SSE path used), merged into the trailing text item;
@@ -434,7 +463,9 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         return 0
     if ev["type"] == "text":
         pieces.append(ev["text"])
-        canon = agent.canonical_prefix("".join(pieces))
+        full = "".join(pieces)
+        _advance_notes_phase(job, full)
+        canon = agent.canonical_prefix(full)
         if len(canon) > sent:
             delta = canon[sent:]
             with _registry.lock:

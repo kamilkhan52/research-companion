@@ -383,6 +383,10 @@ export interface ChatJob {
   /** Structured refusal when starting the listening audio was refused (DR-049) — the AudioJob
    *  that would carry it was never created, so this job is the only carrier. */
   audio_refusal?: SpendRefusalPayload | null;
+  /** DR-056: which section of the marker document is being written — null/'drafting'
+   *  (preview), 'notes' (paper notes drafting), 'synthesis' (working-notes rewrite). Drives
+   *  the staged Finish-reading card; ordinary turns stay null. */
+  notes_phase?: 'notes' | 'synthesis' | null;
   assistant_index: number | null;
   preview_job_ids: string[];
   preview_coordinator_id: string | null;
