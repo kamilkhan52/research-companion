@@ -161,6 +161,11 @@ way they did. This is an index, not a substitute for reading them.
   because a slow-drip server is the one failure an `httpx.MockTransport` cannot express (it returns
   a response object without ever doing a socket read). Reach for that only when the behaviour under
   test *is* the transport.
+- **Device-test feedback loop (DR-060):** dev builds show a floating DevTest bubble (gated on
+  the server's `RC_DEV`) listing the device-review ledger's items with pass/fail/remark +
+  screenshots. Kamil's inputs land in `.dev-feedback/` (gitignored, append-only — never edit or
+  delete them); the `/device-feedback` skill triages them into the ledger and advances the
+  cursor. When Kamil says "look at my device feedback", that skill is what he means.
 - **Mobile:** see `mobile/README.md`. Typecheck with `npx tsc --noEmit` in `mobile/`.
 - **Web:** `cd web && npm run dev` (Vite HMR on `:5173`). Build: `npm run build` (outputs to
   `web/dist/`). Test: `npm test`. Typecheck: `npx tsc --noEmit`. The backend auto-detects

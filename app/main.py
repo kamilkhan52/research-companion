@@ -36,6 +36,7 @@ from .routers import (
     audio,
     catalogue,
     covers,
+    devtest,
     discovery,
     figures_api,
     graph,
@@ -427,6 +428,7 @@ app.include_router(covers.router)
 app.include_router(projects_api.router)
 app.include_router(usage.router)
 app.include_router(audio.router)
+app.include_router(devtest.router)
 app.include_router(projects_api.project_router)
 app.include_router(usage.project_router)
 app.include_router(session.project_router)

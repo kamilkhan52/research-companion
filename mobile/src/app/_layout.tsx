@@ -42,6 +42,7 @@ import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { SpendRefusalHost } from '@/components/SpendRefusalSheet';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
+import { useDevMode } from '@/api/queries';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
@@ -54,6 +55,18 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // The four tab screens render NowPlaying inside the tab bar (above the tab row); the root
 // copy covers only stack screens pushed over the tabs, so the card never doubles up.
+function DevTestOverlay() {
+  // Dev builds only, twice over: the server's RC_DEV flag is the runtime gate (production
+  // reports dev:false, and every /api/devtest route 404s there regardless), and the __DEV__
+  // guard keeps the component — and react-native-view-shot — out of the release bundle
+  // entirely (Metro strips the conditional require when __DEV__ is false).
+  const dev = useDevMode();
+  if (!__DEV__ || !dev) return null;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { DevTestBubble } = require('@/components/DevTestBubble');
+  return <DevTestBubble />;
+}
+
 function StackNowPlaying() {
   const pathname = usePathname();
   if (!shouldShowStackNowPlaying(pathname)) return null;
@@ -121,6 +134,7 @@ function ThemedShell() {
           </Stack>
         </View>
         <StackNowPlaying />
+        <DevTestOverlay />
         {/* Cross-project duplicate preflight raised by useAddPaper from every add surface. */}
         <ExistingPaperOfferHost />
         {/* Global "start the paper summary?" offer, raised by useAddPaper from any add site. */}

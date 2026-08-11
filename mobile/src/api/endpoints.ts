@@ -95,6 +95,39 @@ export const getAudioJob = (id: string) =>
 export const cancelAudioJob = (id: string) =>
   apiPost<{ job: AudioJob }>(`/api/audio/jobs/${encodeURIComponent(id)}/cancel`, {}).then(noting((r) => r.job));
 
+// ---------- device-test companion (dev-only; server 404s these outside RC_DEV) ----------
+
+export interface DevTestItem {
+  id: string;
+  raised: string;
+  title: string;
+  state: string;
+  how_to_test: string;
+  feedback_count: number;
+}
+export interface DevTestFeedbackEntry {
+  ts: string;
+  item_id: string;
+  verdict: 'pass' | 'fail' | 'remark';
+  comment: string;
+  route: string;
+  screenshot: string | null;
+}
+export const getDevTestItems = () => apiGet<{ items: DevTestItem[] }>('/api/devtest/items');
+export const createDevTestItem = (title: string, description?: string) =>
+  apiPost<{ item: DevTestItem }>('/api/devtest/items', { title, description });
+export const recordDevTestFeedback = (body: {
+  item_id: string;
+  verdict: 'pass' | 'fail' | 'remark';
+  comment?: string;
+  route?: string;
+  screenshot_b64?: string;
+}) => apiPost<{ entry: DevTestFeedbackEntry }>('/api/devtest/feedback', body);
+export const getDevTestFeedback = (itemId: string) =>
+  apiGet<{ entries: DevTestFeedbackEntry[] }>(
+    `/api/devtest/feedback?item_id=${encodeURIComponent(itemId)}`,
+  );
+
 // ---------- projects (management) ----------
 
 export const listProjects = () => apiGet<{ projects: Project[] }>('/api/projects');

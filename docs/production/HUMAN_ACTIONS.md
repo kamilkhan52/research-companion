@@ -841,6 +841,10 @@ the disposable-account run above has passed.
 - **Expo push access token** (DR-050, when it is built): create one in the Expo dashboard and
   `flyctl secrets set` it — never in the repo. The same feature needs a NEW dev-client build for
   your phone (`expo-notifications` is a native module); this is the dev build only, NOT the AAB.
+- **Dev-client rebuild for screenshots** (DR-060, shipped): `react-native-view-shot` is now a
+  dependency, but your installed dev client predates it — the DevTest bubble works today except
+  the screenshot button, which says so. One `eas build --profile development` (or local
+  `npx expo run:android`) picks it up; bundle it with DR-050's rebuild when that lands.
 - **Figma MCP credential** (blocks DR-053 §3 and any further Figma work): create the Keychain
   item — `security add-generic-password -a "$USER" -s figma-console-mcp -w` — with your Figma
   token. Setup context is in `docs/figma-workflow.md`; the MCP server currently starts with an

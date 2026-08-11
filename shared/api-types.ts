@@ -521,6 +521,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/devtest/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Items
+         * @description Every ledger row plus app-created items not yet triaged into the ledger, with the
+         *     tester-facing ordering hint (open → verify → the rest) left to the client.
+         */
+        get: operations["list_items_api_devtest_items_get"];
+        put?: never;
+        /**
+         * Create Item
+         * @description A new issue raised from the device. It gets a LOCAL id (`NEW-<epoch>`); the triage skill
+         *     assigns the real DR number when it writes the ledger row — the app never edits the ledger.
+         */
+        post: operations["create_item_api_devtest_items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/devtest/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Feedback
+         * @description Prior entries — so closed items can be revisited and commented on later with their
+         *     history visible.
+         */
+        get: operations["list_feedback_api_devtest_feedback_get"];
+        put?: never;
+        /** Record Feedback */
+        post: operations["record_feedback_api_devtest_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/devtest/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Status
+         * @description How much feedback awaits triage — the skill advances the cursor when it processes.
+         */
+        get: operations["status_api_devtest_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/bundle": {
         parameters: {
             query?: never;
@@ -1921,6 +1989,19 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** FeedbackReq */
+        FeedbackReq: {
+            /** Item Id */
+            item_id: string;
+            /** Verdict */
+            verdict: string;
+            /** Comment */
+            comment?: string | null;
+            /** Route */
+            route?: string | null;
+            /** Screenshot B64 */
+            screenshot_b64?: string | null;
+        };
         /**
          * FigureManifestResponse
          * @description `status`: `done` (figures usable), `none` (no HTML rendering, or not derived yet —
@@ -2029,6 +2110,13 @@ export interface components {
             text: string;
             /** Project */
             project?: string | null;
+        };
+        /** NewItemReq */
+        NewItemReq: {
+            /** Title */
+            title: string;
+            /** Description */
+            description?: string | null;
         };
         /** NotesAgentReq */
         NotesAgentReq: {
@@ -3037,6 +3125,143 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_items_api_devtest_items_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    create_item_api_devtest_items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewItemReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_feedback_api_devtest_feedback_get: {
+        parameters: {
+            query?: {
+                item_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_feedback_api_devtest_feedback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    status_api_devtest_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

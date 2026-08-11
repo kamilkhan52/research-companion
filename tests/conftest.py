@@ -42,6 +42,9 @@ def _app_state_is_never_the_real_one(tmp_path_factory, monkeypatch):
     """
     root = tmp_path_factory.mktemp("app-state")
     monkeypatch.setattr(config, "APP_STATE_DIR", root)
+    # The devtest inbox resolves the git COMMON root, which no path monkeypatch reaches — a
+    # test that forgets RC_DEVTEST_DIR would write .dev-feedback/ into the real checkout.
+    monkeypatch.setenv("RC_DEVTEST_DIR", str(root / "dev-feedback"))
     monkeypatch.setattr(config, "SETTINGS_FILE", root / "settings.json")
     from app import audio_jobs
     monkeypatch.setattr(audio_jobs, "AUDIO_DIR", root / "audio")
