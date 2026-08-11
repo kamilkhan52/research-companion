@@ -225,6 +225,17 @@ def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
     end_m = _EDITOR_END_RE.search(synthesis)
     if end_m:
         synthesis = synthesis[:end_m.start()]
+    else:
+        # The prompt requires ###END###. Without it a truncated document is indistinguishable
+        # from a complete one — and this document REPLACES synthesis.md on approval, so silent
+        # truncation is data loss deferred to the reader's approval tap. Refuse and retry.
+        raise AgentError("The synthesis editor's output was cut off before it finished. "
+                         "Try Finish reading again.")
+    # A model that inverted the order puts its plan AFTER the document; it must not become
+    # part of the proposed synthesis.
+    stray_plan = _PLAN_RE.search(synthesis)
+    if stray_plan:
+        synthesis = synthesis[:stray_plan.start()]
     synthesis = synthesis.strip()
     if not synthesis:
         raise AgentError("The synthesis editor returned an empty working-notes document. "

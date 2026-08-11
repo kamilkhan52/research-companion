@@ -159,9 +159,25 @@ def test_editor_parses_plan_then_synthesis(monkeypatch):
 
 
 def test_editor_tolerates_heading_drift_and_missing_plan(monkeypatch):
-    plan, synth = _editor(monkeypatch, "## SYNTHESIS\nJust the doc.")
+    plan, synth = _editor(monkeypatch, "## SYNTHESIS\nJust the doc.\n## END")
     assert plan == ""
     assert synth == "Just the doc."
+
+
+def test_editor_refuses_a_document_without_its_end_marker(monkeypatch):
+    """###END### is required: without it a truncated document is indistinguishable from a
+    complete one, and this document REPLACES synthesis.md on approval."""
+    import pytest
+    from app import agent
+    with pytest.raises(agent.AgentError, match="cut off"):
+        _editor(monkeypatch, "###PLAN###\np\n###SYNTHESIS###\n## Doc that just stops")
+
+
+def test_an_inverted_plan_never_enters_the_document(monkeypatch):
+    plan, synth = _editor(monkeypatch,
+        "###SYNTHESIS###\n## Doc\n###PLAN###\nlate plan\n###END###")
+    assert synth == "## Doc"
+    assert "late plan" not in synth
 
 
 def test_editor_refuses_output_without_a_document(monkeypatch):

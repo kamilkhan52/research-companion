@@ -165,6 +165,24 @@ Drifted single-shot synthesis that must NOT survive.
     assert sessions.read_records("p")[-1]["proposed_commit"]["plan"].startswith("Plan:")
 
 
+def test_the_plan_reaches_the_review_payload(temp_project, monkeypatch):
+    """The other side of the contract: the client's Change-plan section reads
+    `committer.review(slug)["plan"]` — a fixture-only assertion on the mobile side left this
+    droppable with the whole backend suite green (the review proved it by revert)."""
+    from app import committer
+
+    _fake_editor(monkeypatch, plan="The stated intent.")
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    proposed = ("###CANONICAL###\nPreview.\n###STATE###\nready_to_draft_notes\n"
+                "###COMMIT_SUMMARY###\nS.\n###NOTES_BLOCK###\n## N\nX.\n###END###")
+    _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
+    payload = committer.review("p")
+    assert payload["plan"] == "The stated intent."
+    assert payload["synthesis_proposed"] == "## Working notes\nEdited by the second pass."
+
+
 def test_a_revision_turn_stays_single_shot(temp_project, monkeypatch):
     """The reader's feedback addresses the existing proposal as a whole; the editor pass is
     deliberately finish-only (documented in _maybe_edit_synthesis)."""
@@ -817,16 +835,16 @@ def test_empty_final_falls_back_to_last_segment_text_only(temp_project):
     assert finished.status == "done"
     assert finished.turn["canonical"] == "The grounded answer."
 
-def test_finish_stream_advances_the_notes_phase(temp_project):
-    """DR-056: the client stages the Finish wait from `notes_phase`, which only the server can
-    observe (markers never reach client items). The phase advances as sections arrive and the
-    settled snapshot retains the last one."""
+def test_a_finish_shaped_stream_reaches_notes_and_the_editor_owns_synthesis(temp_project):
+    """DR-056 × DR-058: production finish streams no longer carry a SYNTHESIS marker (the
+    prompt says leave it NONE), so the marker advance legitimately stops at `notes` — the
+    `synthesis` stage flips when the editor pass starts, pinned by the editor tests. This
+    replaces a test that streamed a marker shape production can no longer produce."""
     slug = _session_with_reply()
     chunks = [
         "###CANONICAL###\nHere is the review preview.",
-        "\n###STATE###\nready_to_draft_notes\n###COMMIT_SUMMARY###\nDone.",
-        "\n###NOTES_BLOCK###\n## Notes\nA finding.",
-        "\n###SYNTHESIS###\nThe synthesis so far.",
+        "\n###STATE###\nin_discussion\n###COMMIT_SUMMARY###\nNONE.",
+        "\n###NOTES_BLOCK###\nNONE",
         "\n###END###",
     ]
     def runner(s2, h):
@@ -835,7 +853,7 @@ def test_finish_stream_advances_the_notes_phase(temp_project):
         yield {"type": "final", "text": "".join(chunks)}
 
     finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=runner).id)
-    assert finished.notes_phase == "synthesis"
+    assert finished.notes_phase == "notes"
 
 
 def test_notes_phase_advances_live_and_forward_only():

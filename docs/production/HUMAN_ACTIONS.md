@@ -850,6 +850,12 @@ the disposable-account run above has passed.
   token. Setup context is in `docs/figma-workflow.md`; the MCP server currently starts with an
   empty token because this item does not exist (exit 44).
 
+- **Check your vault prompt overrides after DR-058** (one-time): if your vault has
+  `Analysis/Finish Instruction.md`, it still tells the model to write the full SYNTHESIS
+  single-shot. The editor overwrites it so nothing breaks — but every Finish then pays for two
+  working-notes documents. Delete or update the override to the new bundled default (leave
+  SYNTHESIS as NONE).
+
 ## Standing rules
 
 - **No secrets in the repository, in documentation examples, in logs, or in chat.** Publishable keys
