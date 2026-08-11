@@ -53,6 +53,23 @@ def test_unknown_status_excludes_provider_body(monkeypatch):
     assert secret not in str(err.value)
 
 
+def test_tts_1_hd_is_retired_and_synthesizes_as_tts_1(monkeypatch):
+    """DR-042: a stored setting (or RC_TTS_MODEL override) naming the retired HD model must not
+    quietly double every narration's cost — the request goes out at tts-1."""
+    sent = {}
+
+    def capture(url, **kw):
+        sent.update(kw.get("json") or {})
+        return FakeResp(200, content=b"mp3!")
+
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"openai_api_key": "sk-test", "tts_model": "tts-1-hd"})
+    monkeypatch.setattr(httpx, "post", capture)
+
+    assert tts.openai_speech("hello") == b"mp3!"
+    assert sent["model"] == "tts-1"
+
+
 def test_success_returns_audio_bytes(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp(200, content=b"mp3!"))
     assert tts.openai_speech("hello") == b"mp3!"

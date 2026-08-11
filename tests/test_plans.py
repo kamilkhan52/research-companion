@@ -24,9 +24,11 @@ def test_the_real_tiers_match_the_measured_pricing_analysis():
     assert plans.PLANS["basic"].monthly_credits == 2_500
 
 
-def test_free_excludes_premium_audio_because_audio_is_the_largest_variable_cost():
-    assert plans.PLANS["free"].premium_audio is False
-    assert plans.PLANS["basic"].premium_audio is True
+def test_audio_quality_is_not_a_plan_dimension():
+    """DR-042 (Kamil, 2026-08-10): plans differ in allowance, never in audio quality — the
+    credit ceiling bounds what any plan can spend on narration. The field must stay gone."""
+    for plan in plans.PLANS.values():
+        assert not hasattr(plan, "premium_audio")
 
 
 def test_the_ceiling_comes_from_the_plan():

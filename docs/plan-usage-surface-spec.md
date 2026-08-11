@@ -105,8 +105,8 @@ Use server `plan.summary` verbatim in the plan card. Presentation labels are tit
 | `free` | `Free` | `3–4 papers a month, your device's voice` |
 | `basic` | `Basic` | `20 papers a month, 45 minutes of studio narration` |
 
-`premium_audio` may drive a compact `Studio narration included` / `Device voice` row, but it must
-not imply separate audio credits. `monthly_credits` and all nano-USD fields remain transport data.
+`premium_audio` is GONE (DR-042, 2026-08-10): audio quality is not a plan dimension, so the
+plan card carries no audio row. `monthly_credits` and all nano-USD fields remain transport data.
 
 ## Layout and styling
 

@@ -934,7 +934,6 @@ export interface Plan {
   plan: {
     name: 'tester' | 'free' | 'basic' | string;
     summary: string;
-    premium_audio: boolean;
     monthly_credits: number;
   };
   limit_nanousd: number;

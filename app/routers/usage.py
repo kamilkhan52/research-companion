@@ -66,7 +66,6 @@ def get_plan(request: Request):
         "plan": {
             "name": plan.name,
             "summary": summary,
-            "premium_audio": plan.premium_audio,
             "monthly_credits": plan.monthly_credits,
         },
         "limit_nanousd": limit,

@@ -162,6 +162,13 @@ def openai_speech(text: str) -> bytes:
     if not key:
         raise TTSError("No OpenAI API key set. Add it in Settings → Speech.")
     model = s.get("tts_model") or "tts-1"
+    if model == "tts-1-hd":
+        # Retired as a selectable model (DR-042, Kamil 2026-08-10): not audibly better than
+        # tts-1, slower, and twice the price — and audio quality is no longer a plan dimension.
+        # Mapped here rather than only removed from pickers, so a stored setting or an
+        # RC_TTS_MODEL override naming it cannot quietly double every narration's cost.
+        log.info("tts-1-hd is retired; synthesizing with tts-1")
+        model = "tts-1"
     voice = s.get("tts_voice") or "alloy"
     spoken_text = normalize_for_speech(text)
     body = {"model": model, "voice": voice, "input": spoken_text,
