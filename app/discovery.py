@@ -274,6 +274,57 @@ def filter_hidden(items: list | None) -> list:
     ]
 
 
+def _library_match(entry_keys: list[str], candidate_keys: list[str]) -> bool:
+    """Like `_hidden_match`, but for a library `Paper` rather than a full provider candidate.
+
+    `_hidden_match`'s conflicting-id veto only fires when BOTH sides carry the SAME kind of
+    strong id — and a `Paper` never carries `doi:`/`openalex:`/`s2:` (only `arxiv:`/`title:`), so
+    that veto can never fire for those kinds. A title-only bridge would then silently drop a
+    candidate carrying a DOI/OpenAlex/S2 id the library side never had any way to confirm OR
+    refute (Opus review, PR #370: a library paper with no arXiv id bridged, on title alone, to a
+    candidate carrying three unrelated strong ids). Require the candidate to be equally bare —
+    no strong id of any kind — before trusting a title match; a candidate that carries any real
+    identifier is judged on that identifier or not at all.
+    """
+    entry = set(entry_keys or [])
+    cand = set(candidate_keys)
+    entry_strong = {k for k in entry if k.startswith(_STRONG_PREFIXES)}
+    cand_strong = {k for k in cand if k.startswith(_STRONG_PREFIXES)}
+    if entry_strong & cand_strong:
+        return True
+    if cand_strong:
+        return False
+    return bool(_usable_title_keys(entry) & _usable_title_keys(cand))
+
+
+def filter_in_library(items: list | None, papers: list | None = None) -> list:
+    """Drop suggestions that identify the same paper as something already on the reading list
+    (DR-002, 2026-08-11 device pass: "I also see some papers already in the project. They
+    shouldn't be included."). The wide-recall design (`~/.claude/plans/keen-finding-rabin.md`,
+    Stage A) named this exclusion from the start; it was never actually wired in.
+
+    `Paper` (`store.list_papers`) carries only `arxiv_id` and `title`, not the DOI/OpenAlex/S2
+    ids a provider result might, so this only catches what those two fields identify — still the
+    common case. Matching is `_library_match`, not `_hidden_match` directly — see its docstring
+    for why the asymmetric id richness between a `Paper` and a real candidate needs a stricter
+    rule than the reader's own explicit hides do.
+    """
+    items = items or []
+    papers = list(store.list_papers()) if papers is None else papers
+    if not papers:
+        return items
+    library_keys = [_identity_keys({"arxiv_id": p.arxiv_id, "title": p.title}) for p in papers]
+    kept = []
+    for item in items:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        cand_keys = _identity_keys(item)
+        if not any(_library_match(keys, cand_keys) for keys in library_keys):
+            kept.append(item)
+    return kept
+
+
 # ---------- LLM plumbing ----------
 
 def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:

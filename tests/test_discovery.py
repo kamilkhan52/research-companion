@@ -792,6 +792,61 @@ def test_title_match_never_bridges_conflicting_openalex_ids(temp_project):
     }]
 
 
+# ---------- already-in-library exclusion (DR-002, 2026-08-11 device pass) ----------
+
+def test_filter_in_library_drops_a_suggestion_already_on_the_reading_list(temp_project):
+    from app import store
+    store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+    store.add_entry("A Paper With No arXiv Id")
+
+    kept = discovery.filter_in_library([
+        {"arxiv_id": "1706.03762v5", "title": "Attention is all you need"},  # versioned, same id
+        {"title": "a paper with no arxiv id"},  # title-only match against the second entry
+        {"arxiv_id": "2401.00000", "title": "Genuinely New Paper"},
+    ])
+    assert [c["title"] for c in kept] == ["Genuinely New Paper"]
+
+
+def test_filter_in_library_keeps_everything_for_an_empty_project(temp_project):
+    items = [{"arxiv_id": "1706.03762", "title": "Attention is all you need"}]
+    assert discovery.filter_in_library(items) == items
+
+
+def test_filter_in_library_does_not_bridge_conflicting_arxiv_ids(temp_project):
+    from app import store
+    store.add_entry("Shared Title Words", arxiv_id="2401.00001")
+
+    kept = discovery.filter_in_library([
+        {"arxiv_id": "2402.99999", "title": "Shared Title Words"},  # different work, same title
+    ])
+    assert kept == [{"arxiv_id": "2402.99999", "title": "Shared Title Words"}]
+
+
+def test_filter_in_library_does_not_bridge_a_candidate_with_an_unconfirmable_strong_id(temp_project):
+    # Opus review, PR #370: a library Paper only ever carries arxiv_id/title, never doi/openalex/
+    # s2 — so a title-only library entry used to bridge, via _hidden_match's title fallback, to
+    # a candidate carrying THREE strong ids none of which the library side had any way to
+    # confirm or refute. That candidate must survive; it might genuinely be a different paper.
+    from app import store
+    store.add_entry("Deep Learning")  # no arxiv id at all — title is all this entry has
+
+    kept = discovery.filter_in_library([
+        {"title": "Deep learning", "doi": "10.1038/nature14539",
+         "arxiv_id": "1234.56789", "openalex_id": "https://openalex.org/W999"},
+    ])
+    assert len(kept) == 1
+
+
+def test_filter_in_library_still_bridges_two_equally_bare_titles(temp_project):
+    # The case the title fallback exists for: neither side has ANY strong identifier, so title
+    # is genuinely the only signal available on both sides.
+    from app import store
+    store.add_entry("A Wholly Undated Survey")
+
+    kept = discovery.filter_in_library([{"title": "a wholly undated survey"}])
+    assert kept == []
+
+
 def test_distinct_openalex_only_rows_keep_separate_reservoir_and_verdict_keys():
     candidates = [
         {"openalex_id": "https://openalex.org/W1", "title": "Shared title",
