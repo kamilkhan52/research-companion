@@ -223,6 +223,10 @@ export interface Review {
   title: string;
   summary: string;
   notes_block: string;
+  /** DR-058: the synthesis editor's change plan — what enriches the working notes, where the
+   *  paper adds nothing, new questions. Shown above the working-notes diff; empty on
+   *  pre-editor proposals and revision turns. */
+  plan?: string;
   synthesis_current: string;
   synthesis_proposed: string;
   /** Echoed back with an explicit-payload approve; a branch switch/regeneration changes it and

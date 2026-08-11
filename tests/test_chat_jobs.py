@@ -109,7 +109,24 @@ Unrequested synthesis.
     assert sessions.read_records(slug)[-1]["proposed_commit"] is None
 
 
-def test_finish_turn_still_records_the_requested_notes_proposal(temp_project):
+def _fake_editor(monkeypatch, plan="Plan: fold in the 40% result.",
+                 synthesis="## Working notes\nEdited by the second pass."):
+    calls = []
+
+    def fake(*, project_name, goals, current_synthesis, paper_title, notes_block, model=None):
+        calls.append({"project_name": project_name, "current": current_synthesis,
+                      "title": paper_title, "notes_block": notes_block})
+        return plan, synthesis
+
+    monkeypatch.setattr(chat_jobs.agent, "edit_synthesis", fake)
+    return calls
+
+
+def test_finish_turn_runs_the_synthesis_editor_and_overwrites_drift(temp_project, monkeypatch):
+    """DR-058: the finish proposal's synthesis comes from the SEPARATE editor pass — including
+    when the model drifts and emits a SYNTHESIS section anyway, which must be overwritten or
+    the over-weighted single-shot rewrite silently returns."""
+    calls = _fake_editor(monkeypatch)
     sessions.start_session("p", "Paper P")
     sessions.record_user("p", "Draft notes now", kind="finish")
     proposed = """###CANONICAL###
@@ -122,7 +139,7 @@ Drafted notes.
 ## Notes
 Requested.
 ###SYNTHESIS###
-Requested synthesis.
+Drifted single-shot synthesis that must NOT survive.
 ###END###"""
 
     job = chat_jobs.start_turn(
@@ -132,8 +149,83 @@ Requested synthesis.
     finished = _wait_until_settled(job.id)
 
     assert finished.status == "done"
-    assert finished.turn["proposed_commit"]["notes_block"] == "## Notes\nRequested."
+    commit = finished.turn["proposed_commit"]
+    assert commit["notes_block"] == "## Notes\nRequested."
+    assert commit["synthesis"] == "## Working notes\nEdited by the second pass."
+    assert commit["plan"] == "Plan: fold in the 40% result."
+    assert "Drifted" not in commit["synthesis"]
     assert finished.state == "notes_drafted"
+    # The editor saw the paper as its NOTES, not its full text — the whole point.
+    assert calls[0]["notes_block"] == "## Notes\nRequested."
+    # title_for falls back to the slug for a paper not on the reading list (this seed's case).
+    assert calls[0]["title"] == "p"
+    # DR-056's second stage covers this pass.
+    assert finished.notes_phase == "synthesis"
+    # And the recorded transcript carries the edited proposal (what review reads).
+    assert sessions.read_records("p")[-1]["proposed_commit"]["plan"].startswith("Plan:")
+
+
+def test_the_plan_reaches_the_review_payload(temp_project, monkeypatch):
+    """The other side of the contract: the client's Change-plan section reads
+    `committer.review(slug)["plan"]` — a fixture-only assertion on the mobile side left this
+    droppable with the whole backend suite green (the review proved it by revert)."""
+    from app import committer
+
+    _fake_editor(monkeypatch, plan="The stated intent.")
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    proposed = ("###CANONICAL###\nPreview.\n###STATE###\nready_to_draft_notes\n"
+                "###COMMIT_SUMMARY###\nS.\n###NOTES_BLOCK###\n## N\nX.\n###END###")
+    _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
+    payload = committer.review("p")
+    assert payload["plan"] == "The stated intent."
+    assert payload["synthesis_proposed"] == "## Working notes\nEdited by the second pass."
+
+
+def test_a_revision_turn_stays_single_shot(temp_project, monkeypatch):
+    """The reader's feedback addresses the existing proposal as a whole; the editor pass is
+    deliberately finish-only (documented in _maybe_edit_synthesis)."""
+    calls = _fake_editor(monkeypatch)
+    sessions.start_session("p", "Paper P")
+    sessions.record_user("p", "please revise", kind="revision",
+                         authored_text="More on the ablations.")
+    proposed = """###CANONICAL###
+Revised.
+###STATE###
+ready_to_draft_notes
+###COMMIT_SUMMARY###
+Revised notes.
+###NOTES_BLOCK###
+## Notes
+Revised.
+###SYNTHESIS###
+Revised synthesis stays.
+###END###"""
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
+    assert finished.turn["proposed_commit"]["synthesis"] == "Revised synthesis stays."
+    assert calls == []
+
+
+def test_a_failed_editor_fails_the_turn_before_recording(temp_project, monkeypatch):
+    """A proposal whose approval would erase the working notes must never be recorded; the
+    turn errors cleanly and is retryable, like a parse failure."""
+    def broken(**kwargs):
+        raise chat_jobs.AgentError("The synthesis editor returned no working-notes document.")
+
+    monkeypatch.setattr(chat_jobs.agent, "edit_synthesis", broken)
+    sessions.start_session("p", "Paper P")
+    before = len(sessions.read_records("p"))
+    sessions.record_user("p", "Draft notes now", kind="finish")
+    proposed = ("###CANONICAL###\nPreview.\n###STATE###\nready_to_draft_notes\n"
+                "###COMMIT_SUMMARY###\nS.\n###NOTES_BLOCK###\n## N\nX.\n###END###")
+    finished = _wait_until_settled(chat_jobs.start_turn(
+        "p", runner=_sync_runner([{"type": "final", "text": proposed}])).id)
+    assert finished.status == "error"
+    assert "synthesis editor" in (finished.error or "")
+    # Nothing was recorded past the user's finish request.
+    assert len(sessions.read_records("p")) == before + 1
 
 
 def test_items_interleave_tool_calls_with_canonical_only_text(temp_project):
@@ -743,16 +835,16 @@ def test_empty_final_falls_back_to_last_segment_text_only(temp_project):
     assert finished.status == "done"
     assert finished.turn["canonical"] == "The grounded answer."
 
-def test_finish_stream_advances_the_notes_phase(temp_project):
-    """DR-056: the client stages the Finish wait from `notes_phase`, which only the server can
-    observe (markers never reach client items). The phase advances as sections arrive and the
-    settled snapshot retains the last one."""
+def test_a_finish_shaped_stream_reaches_notes_and_the_editor_owns_synthesis(temp_project):
+    """DR-056 × DR-058: production finish streams no longer carry a SYNTHESIS marker (the
+    prompt says leave it NONE), so the marker advance legitimately stops at `notes` — the
+    `synthesis` stage flips when the editor pass starts, pinned by the editor tests. This
+    replaces a test that streamed a marker shape production can no longer produce."""
     slug = _session_with_reply()
     chunks = [
         "###CANONICAL###\nHere is the review preview.",
-        "\n###STATE###\nready_to_draft_notes\n###COMMIT_SUMMARY###\nDone.",
-        "\n###NOTES_BLOCK###\n## Notes\nA finding.",
-        "\n###SYNTHESIS###\nThe synthesis so far.",
+        "\n###STATE###\nin_discussion\n###COMMIT_SUMMARY###\nNONE.",
+        "\n###NOTES_BLOCK###\nNONE",
         "\n###END###",
     ]
     def runner(s2, h):
@@ -761,7 +853,7 @@ def test_finish_stream_advances_the_notes_phase(temp_project):
         yield {"type": "final", "text": "".join(chunks)}
 
     finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=runner).id)
-    assert finished.notes_phase == "synthesis"
+    assert finished.notes_phase == "notes"
 
 
 def test_notes_phase_advances_live_and_forward_only():
