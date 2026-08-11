@@ -136,6 +136,12 @@ def load_result() -> dict | None:
             )
             suggestion.setdefault("affiliations", [])
             suggestion.setdefault("credibility", 0.0)
+            # `authors` and `reasons` were added later still and never got the same treatment —
+            # a project whose discovery.json predates them loaded with the KEY MISSING, which
+            # serializes as absent JSON and crashes the client's `s.authors.length` /
+            # `s.reasons[0]` on render. Same upgrade-in-memory, no write.
+            suggestion.setdefault("authors", [])
+            suggestion.setdefault("reasons", [])
         result.setdefault("source_counts", {
             provider: sum(
                 1 for suggestion in suggestions

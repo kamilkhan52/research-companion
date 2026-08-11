@@ -444,7 +444,11 @@ function SuggestionCard({
     );
   }
 
-  const authors = s.authors.length > 2 ? `${s.authors[0]} et al.` : s.authors.join(', ');
+  // Defensive: a discovery result persisted before this field existed can still reach
+  // the client missing it entirely (the backend backfills known-old projects, but this
+  // guard is what stops a future gap like it from crashing the whole screen again).
+  const authorList = s.authors ?? [];
+  const authors = authorList.length > 2 ? `${authorList[0]} et al.` : authorList.join(', ');
   const meta = [
     authors || null,
     s.year,
@@ -484,11 +488,11 @@ function SuggestionCard({
           </Text>
         </View>
       </View>
-      {s.reasons[0] ? (
+      {(s.reasons ?? [])[0] ? (
         <View style={styles.reasonRow}>
           <Icon name="check" size={14} color={t.mint} />
           <Text variant="caption" color={t.text} style={{ flex: 1, opacity: 0.85 }}>
-            {s.reasons[0]}
+            {(s.reasons ?? [])[0]}
           </Text>
         </View>
       ) : null}
