@@ -19,6 +19,7 @@ const review: Review = {
   notes_block: 'Key idea: activation-aware quantization.',
   synthesis_current: 'old synthesis',
   synthesis_proposed: 'New synthesis paragraph.',
+  plan: 'Fold in the 40% result; the related-work section adds nothing new.',
   proposal_revision: 'rev-1',
 };
 
@@ -62,6 +63,9 @@ test('renders the proposed notes and synthesis for review', async () => {
   expect(screen.getByText('What this paper contributes on its own.')).toBeTruthy();
   // DR-057: the section is named in the reader's own vocabulary — it IS the working notes.
   expect(screen.getByText('Working notes')).toBeTruthy();
+  // DR-058: the editor's change plan sits above the diff as the intent to judge it against.
+  expect(screen.getByText('Change plan')).toBeTruthy();
+  expect(screen.getByText(/Fold in the 40% result/)).toBeTruthy();
   expect(screen.getByText(
     'The proposed rewrite of your working notes — the synthesis across everything read so far.',
   )).toBeTruthy();

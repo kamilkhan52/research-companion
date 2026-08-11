@@ -139,3 +139,45 @@ def test_canonical_prefix_hides_other_sections_before_canonical():
 def test_canonical_prefix_holds_back_forming_heading_marker():
     raw = "###CANONICAL###\nAnswer text.\n\n## NOTES_BL"
     assert agent.canonical_prefix(raw) == "Answer text."
+
+# ---- DR-058: the synthesis editor's output contract ----
+
+def _editor(monkeypatch, raw):
+    from app import agent
+    monkeypatch.setattr(agent, "_complete", lambda *a, **k: raw)
+    return agent.edit_synthesis(
+        project_name="P", goals="g", current_synthesis="old doc",
+        paper_title="T", notes_block="## N")
+
+
+def test_editor_parses_plan_then_synthesis(monkeypatch):
+    plan, synth = _editor(monkeypatch,
+        "###PLAN###\nAdd the 40% result; skip the related-work rehash.\n"
+        "###SYNTHESIS###\n## Working notes\nUpdated.\n###END###")
+    assert plan == "Add the 40% result; skip the related-work rehash."
+    assert synth == "## Working notes\nUpdated."
+
+
+def test_editor_tolerates_heading_drift_and_missing_plan(monkeypatch):
+    plan, synth = _editor(monkeypatch, "## SYNTHESIS\nJust the doc.")
+    assert plan == ""
+    assert synth == "Just the doc."
+
+
+def test_editor_refuses_output_without_a_document(monkeypatch):
+    import pytest
+    from app import agent
+    with pytest.raises(agent.AgentError):
+        _editor(monkeypatch, "###PLAN###\nA plan but no document.")
+    with pytest.raises(agent.AgentError):
+        _editor(monkeypatch, "###PLAN###\np\n###SYNTHESIS###\n\n###END###")
+
+
+def test_proposed_commit_carries_the_plan_field():
+    from app.models import ProposedCommit
+    d = ProposedCommit(summary="s", notes_block="n", synthesis="y", plan="p").to_dict()
+    assert d["plan"] == "p"
+    # Old dicts without the field still construct (default "") — proposals recorded before
+    # the editor existed must keep loading.
+    assert ProposedCommit(summary="s", notes_block="n", synthesis="y").to_dict()["plan"] == ""
+

@@ -19,6 +19,7 @@ import { AgentActivity } from '@/components/AgentActivity';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
+import { Markdown } from '@/components/Markdown';
 import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -215,6 +216,16 @@ export function NotesReviewSheet({
                 )}
               </ReviewSection>
 
+              {data.plan?.trim() ? (
+                <ReviewSection
+                  icon="git-branch"
+                  title="Change plan"
+                  description="The editor's stated intent — judge the working-notes diff against it."
+                >
+                  <Markdown text={data.plan} />
+                </ReviewSection>
+              ) : null}
+
               <ReviewSection
                 icon="layers"
                 title="Working notes"
@@ -305,7 +316,7 @@ function ReviewSection({
   description,
   children,
 }: {
-  icon: 'file-text' | 'layers';
+  icon: 'file-text' | 'layers' | 'git-branch';
   title: string;
   description: string;
   children: ReactNode;

@@ -325,12 +325,37 @@ _OPENING_MESSAGE = (
 
 _FINISH_INSTRUCTION = (
     "We're done with this paper. Draft the Notes block now (key findings and learnings per "
-    "the reading method) and propose the complete rewritten working notes that fold in what "
-    "this paper adds. Fill the COMMIT_SUMMARY, NOTES_BLOCK, and SYNTHESIS sections. In "
-    "CANONICAL, give me a short readable preview of the notes and what changed in the "
-    "working notes so I can review before approving. Use the exact ###NAME### marker lines "
+    "the reading method). Fill the COMMIT_SUMMARY and NOTES_BLOCK sections, and leave "
+    "SYNTHESIS as NONE — a separate editing pass folds this paper into the working notes "
+    "afterwards, so do not rewrite them here. In CANONICAL, give me a short readable preview "
+    "of the notes so I can review before approving. Use the exact ###NAME### marker lines "
     "for the sections — not markdown headings."
 )
+
+#: DR-058 — Kamil's design for bounding one paper's influence on the working notes: a
+#: SEPARATE editor that must reason about the exact changes before making any. The model that
+#: just spent a full context window on the paper systematically over-weights it; this pass sees
+#: the paper only as its committed-size notes, and its plan is surfaced in review so the reader
+#: can judge the diff against the editor's own stated intent.
+_SYNTHESIS_EDITOR = """You are the working-notes editor for a research reading project. You \
+receive the project's description, the CURRENT working notes (the synthesis across everything \
+read so far), and the Notes block just drafted for a newly finished paper. Your job is to fold \
+the paper into the working notes with deliberate restraint.
+
+First, under a ###PLAN### marker line, state your change plan in a few short paragraphs or \
+bullets: what from this paper genuinely enriches the working notes (new findings, corrections, \
+tensions with earlier papers, methods worth cross-referencing); where the paper does NOT add \
+significantly to what the notes already say (say so plainly — most papers repeat much of what \
+a project already knows); and any new open questions it raises. The plan is shown to the \
+reader beside the diff, so write it as the justification for exactly the changes you make.
+
+Then, under a ###SYNTHESIS### marker line, output the COMPLETE working-notes document with \
+the planned changes applied — and only those changes. Preserve the existing structure, \
+claims, links, and voice unless the plan says otherwise; integrate rather than reframe; one \
+paper must never reorganize the whole document. If the current working notes are empty, draft \
+a concise first synthesis grounded only in the supplied Notes block. Never invent material \
+beyond the supplied notes and current document. End with ###END###."""
+
 
 _REQUEST_CHANGES = (
     "Revise the draft based on this feedback, then re-propose the updated Notes block and the "
@@ -803,8 +828,18 @@ REGISTRY = (
         label="Finish / draft-notes instruction",
         relative_path="Analysis/Finish Instruction.md",
         bundled_default=_FINISH_INSTRUCTION,
+        # SYNTHESIS still required in the text: the instruction must keep telling the model to
+        # leave it as NONE, or drift re-grows the single-shot rewrite DR-058 removed.
         required_literals=("COMMIT_SUMMARY", "NOTES_BLOCK", "SYNTHESIS"),
-        description="Requests the final Notes block and cross-paper synthesis.",
+        description="Requests the final Notes block; the synthesis editor owns the rewrite.",
+    ),
+    PromptSpec(
+        key="synthesis_editor",
+        label="Working-notes editor (synthesis pass)",
+        relative_path="Analysis/Synthesis Editor.md",
+        bundled_default=_SYNTHESIS_EDITOR,
+        required_literals=("###PLAN###", "###SYNTHESIS###"),
+        description="Plans, then applies, one paper's changes to the working notes (DR-058).",
     ),
     PromptSpec(
         key="request_changes",

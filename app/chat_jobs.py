@@ -34,9 +34,11 @@ from . import (
     graph,
     logging_config,
     preview_jobs,
+    projects,
     quotas,
     rate_limits,
     sessions,
+    store,
 )
 from .agent import AgentError
 from .jobs import Job, JobRegistry, new_id, now_iso
@@ -194,6 +196,7 @@ def start_turn(slug: str, runner: RunnerFn | None = None,
         if not turn.canonical.strip():
             raise AgentError("The model returned an empty response. Try again, or switch the "
                              "analysis model in Settings.")
+        _maybe_edit_synthesis(job, turn)
         audio_job_id = None
         audio_error = None
         if job.delivery_mode == "listening":
@@ -436,6 +439,53 @@ def _advance_notes_phase(job: ChatJob, full: str, delta_len: int = 0) -> None:
     elif job.notes_phase is None and _NOTES_MARKER_RE.search(tail):
         with _registry.lock:
             job.notes_phase = "notes"
+
+
+def _maybe_edit_synthesis(job: ChatJob, turn) -> None:
+    """DR-058 — replace the finish turn's single-shot working-notes rewrite with the separate
+    synthesis-editor pass, and OVERWRITE any synthesis the model emitted despite the prompt:
+    skipping the editor when the model drifted would silently revert to the over-weighted
+    rewrite this feature removes.
+
+    Finish turns only. Revisions stay single-shot (the reader's feedback addresses an existing
+    proposal, both halves of which the model must adjust together), and the project review
+    chat's synthesis-only proposals have no paper notes to edit from.
+
+    Spend semantics, decided deliberately (the admission-state lesson): this is a CONTINUATION
+    of the one thing the reader asked for — Finish — on the chat worker, inside the turn's own
+    reservation, exactly like the narration continuation. `usage.record` meters the pass under
+    `synthesis_edit` against that hold; the analysis hold ($0.15) comfortably covers the
+    measured turn (~$0.06) plus this pass. A second admission would let one Finish consume two
+    concurrency slots and refuse mid-flight with a ghost 429.
+
+    Runs BEFORE record_assistant: a failed editor fails the turn cleanly (retryable, like a
+    parse failure) rather than persisting a proposal whose approval would erase the working
+    notes. The paid first pass is lost on that path — the same cost a parse failure already
+    carries.
+    """
+    proposed = turn.proposed_commit
+    if not proposed or not proposed.get("notes_block"):
+        return
+    records = sessions.read_records(job.slug)
+    if not (records and records[-1].get("role") == "user"
+            and records[-1].get("kind") == "finish"):
+        return
+    # DR-056's second stage IS this pass now: the finish stream no longer carries a SYNTHESIS
+    # marker (the prompt says leave it NONE), so the stage flips here, honestly.
+    with _registry.lock:
+        job.notes_phase = "synthesis"
+        job.activity = "Updating the working notes…"
+    pid = config.active_project_id()
+    meta = projects._read_meta(pid) if pid else {}
+    plan, synthesis = agent.edit_synthesis(
+        project_name=meta.get("name") or (pid or "this project"),
+        goals=(meta.get("goals") or "").strip(),
+        current_synthesis=store.read_synthesis(),
+        paper_title=store.title_for(job.slug),
+        notes_block=proposed["notes_block"],
+    )
+    proposed["synthesis"] = synthesis
+    proposed["plan"] = plan
 
 
 def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:

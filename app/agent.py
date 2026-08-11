@@ -178,6 +178,60 @@ def _parse(content: str, *, allow_proposed_commit: bool = True) -> Turn:
     )
 
 
+_PLAN_RE = re.compile(r"^#{1,6}\s*PLAN\s*#{0,6}\s*$", re.M)
+_SYNTH_START_RE = re.compile(r"^#{1,6}\s*SYNTHESIS\s*#{0,6}\s*$", re.M)
+_EDITOR_END_RE = re.compile(r"^#{1,6}\s*END\s*#{0,6}\s*$", re.M)
+
+
+def edit_synthesis(*, project_name: str, goals: str, current_synthesis: str,
+                   paper_title: str, notes_block: str, model: str | None = None) -> tuple[str, str]:
+    """DR-058 — the synthesis-editor pass: plan first, then the complete rewritten working
+    notes. A SEPARATE call from the finish turn, so the model that just spent its whole context
+    on the paper is not the one deciding how much of the working notes to rewrite: this pass
+    sees the paper only at committed-notes size, must state its change plan before touching the
+    document, and the plan ships to review beside the diff.
+
+    Returns (plan, synthesis). Raises AgentError when the output carries no usable SYNTHESIS —
+    the caller fails the turn rather than proposing a commit that would erase the working notes.
+
+    Reasoning stays ON: unlike narration or a profile, planning an edit is exactly the kind of
+    task reasoning models are for, and the finish wait already covers the latency (DR-056's
+    "Updating working notes" stage is this pass).
+    """
+    user = (
+        f"# Project: {project_name}\n"
+        + (f"\n## Research goals\n{goals}\n" if goals.strip() else "")
+        + "\n## CURRENT working notes\n"
+        + (current_synthesis.strip() or "(empty — no synthesis yet)")
+        + f"\n\n## Newly finished paper: {paper_title}\n### Its drafted Notes block\n"
+        + notes_block.strip()
+    )
+    raw = _complete(
+        [{"role": "system", "content": prompts.get("synthesis_editor")},
+         {"role": "user", "content": user}],
+        model=model,
+        max_tokens=16_000,
+        operation="synthesis_edit",
+    )
+    plan_m = _PLAN_RE.search(raw)
+    synth_m = _SYNTH_START_RE.search(raw)
+    if not synth_m:
+        raise AgentError("The synthesis editor returned no working-notes document. "
+                         "Try Finish reading again.")
+    plan = ""
+    if plan_m and plan_m.end() <= synth_m.start():
+        plan = raw[plan_m.end():synth_m.start()].strip()
+    synthesis = raw[synth_m.end():]
+    end_m = _EDITOR_END_RE.search(synthesis)
+    if end_m:
+        synthesis = synthesis[:end_m.start()]
+    synthesis = synthesis.strip()
+    if not synthesis:
+        raise AgentError("The synthesis editor returned an empty working-notes document. "
+                         "Try Finish reading again.")
+    return plan, synthesis
+
+
 def _complete(messages: list[dict], model: str | None = None,
               temperature: float = 0.3, max_tokens: int = 8000,
               operation: str = "analysis", reasoning: dict | None = None) -> str:

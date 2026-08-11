@@ -67,6 +67,10 @@ _LIMITS: dict[str, tuple[int, float]] = {
     "listening_preview_research": (6_000, 180.0),
     "affiliations": (2_000, 120.0),
     "author_profile": (4_000, 180.0),
+    # DR-058 — the synthesis editor's single call: an explicit change plan plus the COMPLETE
+    # rewritten working notes. The document half dominates; working notes on a mature project
+    # run thousands of words, so this gets notes-tier headroom rather than a short-reply cap.
+    "synthesis_edit": (16_000, 300.0),
     "lab_research": (8_000, 300.0),
     # The hunt emits tool calls and a short summary, never a document. It ran unbounded on both
     # axes — pydantic-ai's default request limit and an analysis-sized per-request cap — which made

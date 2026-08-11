@@ -38,6 +38,9 @@ def review(slug: str) -> dict:
         "title": store.title_for(slug),
         "summary": proposed.get("summary", ""),
         "notes_block": proposed.get("notes_block", ""),
+        # DR-058: the editor's change plan — review shows it above the working-notes diff as
+        # the stated intent the diff should be judged against. Empty on pre-editor proposals.
+        "plan": proposed.get("plan", ""),
         "synthesis_current": store.read_synthesis(),
         "synthesis_proposed": proposed.get("synthesis", ""),
         # Echo back with an explicit-payload approval; a branch switch or regeneration in the
