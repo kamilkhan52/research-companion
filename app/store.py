@@ -40,6 +40,7 @@ class _FileKey(NamedTuple):
 
 _parse_cache: dict[str, tuple[_FileKey, list[dict]]] = {}
 _notes_cache: dict[str, tuple[_FileKey, bool]] = {}
+_source_url_cache: dict[str, tuple[_FileKey, str]] = {}
 
 # Serializes every reading-list.md read-modify-write (add_entry, set_abstract, annotate_entry).
 # Background retrieval jobs for different papers finish concurrently and annotate their
@@ -411,16 +412,41 @@ def corpus_arxiv_id_for(slug: str) -> str:
     return m.group("aid").strip() if m else ""
 
 
+#: Comfortably more than the 2000-char window `_SOURCE_META_RE` searches, in utf-8 worst case
+#: (4 bytes/char) — the meta header is always near the top of the file, so a bounded read finds
+#: it without paying for the paper's full text (often hundreds of KB).
+_SOURCE_HEAD_BYTES = 8192
+
+
+def _scan_for_source_url(p: Path) -> str:
+    with p.open("rb") as f:
+        head = f.read(_SOURCE_HEAD_BYTES).decode("utf-8", errors="ignore")
+    m = _SOURCE_META_RE.search(head[:2000])
+    return m.group("url").strip() if m else ""
+
+
 def source_url_for(slug: str) -> str:
     """The source URL recorded in the corpus file's meta header ("" if none / not retrieved).
     Set when the paper was retrieved from an explicit PDF/abstract URL rather than an arXiv id;
     lets callers that need the original PDF (e.g. cover rendering) recover it for non-arXiv
-    papers. Deterministic file read — no network (invariant 3)."""
+    papers. Deterministic file read — no network (invariant 3).
+
+    Memoized by the file's (mtime, size), same shape as `has_notes` above: the previous
+    implementation read the entire corpus file on every call, once per paper inside
+    `list_papers()` — fine for an occasional cover render, but PR #370 put `list_papers()` on
+    Discover's ~1.5s poll path, which made this the dominant cost of every poll on a large
+    project (measured ~65MB of reads/request on a 300-paper project)."""
     p = corpus_path(slug)
-    if not p.exists():
+    key = _file_key(p)
+    if key is None:
+        _source_url_cache.pop(str(p), None)
         return ""
-    m = _SOURCE_META_RE.search(p.read_text(encoding="utf-8", errors="ignore")[:2000])
-    return m.group("url").strip() if m else ""
+    hit = _source_url_cache.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    result = _scan_for_source_url(p)
+    _source_url_cache[str(p)] = (key, result)
+    return result
 
 
 def reading_list_overview() -> str:
@@ -577,6 +603,7 @@ def write_full_text(slug: str, title: str, full_text: str, meta: dict) -> Path:
         p = corpus_path(slug)
         atomic_write_text(p, "\n".join(lines))
         _notes_cache.pop(str(p), None)   # content changed — drop any stale has_notes verdict
+        _source_url_cache.pop(str(p), None)
         # Retrieval often RESOLVES the paper's identity (a title search found the arXiv id) that
         # the reading-list entry never had — record it there too, so the entry gains its year and
         # every id-keyed feature (backfill, graph matching) sees it. Only on STRONG evidence:
@@ -656,6 +683,7 @@ def append_notes_block(slug: str, title: str, notes_block: str) -> None:
         body = "## Notes\n\n" + body
     atomic_write_text(p, text.rstrip() + "\n\n" + body.strip() + "\n")
     _notes_cache.pop(str(p), None)   # a Notes block was just added/replaced
+    _source_url_cache.pop(str(p), None)
 
 
 def set_status_read(slug: str) -> bool:
@@ -814,6 +842,7 @@ def rename_entry(slug: str, title: str) -> bool:
                     "\n".join(corpus_lines) + ("\n" if text.endswith("\n") else ""),
                 )
                 _notes_cache.pop(str(corpus), None)
+                _source_url_cache.pop(str(corpus), None)
         return True
 
 
@@ -945,3 +974,4 @@ def append_removed_marker(slug: str) -> None:
     text = p.read_text(encoding="utf-8")
     atomic_write_text(p, text.rstrip() + "\n\n" + marker + "\n")
     _notes_cache.pop(str(p), None)   # content changed — drop the memoized verdict
+    _source_url_cache.pop(str(p), None)

@@ -79,6 +79,41 @@ def test_external_same_size_replacement_with_preserved_mtime_is_picked_up(temp_p
     assert {p.slug for p in store.list_papers()} == {"z"}
 
 
+# ---- source_url_for cache + head scan ----
+# PR #370 put list_papers() (and so source_url_for, via source_url_for(slug) in list_papers'
+# per-paper loop) on Discover's ~1.5s poll path. The previous implementation read the entire
+# corpus file on every call just to grab a meta line from its first 2000 characters.
+
+def test_source_url_for_scans_at_most_once_until_corpus_changes(temp_project, monkeypatch):
+    store.write_full_text("a", "Paper A", "body", {"slug": "a", "source": "https://x.test/a.pdf"})
+    calls = _spy(monkeypatch, "_scan_for_source_url")
+
+    assert store.source_url_for("a") == "https://x.test/a.pdf"
+    store.source_url_for("a")
+    assert calls["n"] == 1       # one scan, then cached
+
+    store.write_full_text("a", "Paper A", "body", {"slug": "a", "source": "https://x.test/b.pdf"})
+    assert store.source_url_for("a") == "https://x.test/b.pdf"   # invalidated by the write
+    assert calls["n"] == 2
+
+
+def test_source_url_for_correct_when_the_meta_header_sits_beyond_a_naive_slice(temp_project):
+    # A very long title pushes the "- source:" line past the old code's read pattern only if
+    # read_text()[:2000] and a bounded byte-read disagree about where the header actually is —
+    # they shouldn't, since the header is always written first, but this pins that invariant
+    # against a title long enough to matter.
+    long_title = "T" * 500
+    store.write_full_text(
+        "a", long_title, "body" * 5000, {"slug": "a", "source": "https://x.test/a.pdf"},
+    )
+    assert store.source_url_for("a") == "https://x.test/a.pdf"
+
+
+def test_source_url_for_empty_when_no_source_recorded(temp_project):
+    store.write_full_text("a", "Paper A", "body", {"slug": "a"})
+    assert store.source_url_for("a") == ""
+
+
 # ---- has_notes cache + tail scan ----
 
 def test_has_notes_scans_at_most_once_until_corpus_changes(temp_project, monkeypatch):
