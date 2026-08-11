@@ -57,6 +57,26 @@ def test_related_papers_uses_graph_edges(temp_project):
     assert "b: \"Paper B\"" in _framed_content(out)  # a cites b, surfaced from the graph edge
 
 
+def test_related_papers_empty_answer_states_its_scope(temp_project):
+    """DR-054: with no built map, a bare "(none)" read as "this paper has no references" and the
+    model said so while the paper's bibliography sat in the same context. The empty answer must
+    name its scope and forbid that generalization."""
+    add_paper(temp_project, "a", "Paper A", full_text="t")
+    out = _framed_content(research_tools.related_papers("a"))
+    assert "(none)" not in out
+    assert "reference map has not been built" in out
+    assert "never report the paper as having none" in out
+
+    # With a built map the scope disclaimer would be false, so it must disappear — the empty
+    # marker then claims exactly what the graph proves: nothing IN THIS PROJECT.
+    data = graph_store.load()
+    data["graph"] = {"nodes": [], "edges": [{"source": "x", "target": "y"}]}
+    graph_store.save(data)
+    out = _framed_content(research_tools.related_papers("a"))
+    assert "(none among this project's papers)" in out
+    assert "has not been built" not in out
+
+
 # ---- web tools: fetch_url ----
 
 # ---- web tools: provider chain (Firecrawl -> DuckDuckGo) ----

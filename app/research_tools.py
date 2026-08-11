@@ -133,16 +133,31 @@ def related_papers(slug: str) -> str:
             if e.get("target") == slug and e.get("source") in papers:
                 cited_by.add(e["source"])
 
+    # An empty answer must say what it is NOT claiming. This tool sees only in-project
+    # relationships, and without a built map it sees only the reading list's own `cites` links —
+    # a model that read "(none)" as "this paper has no references" contradicted the bibliography
+    # sitting in the same context (DR-054), on projects whose map was simply absent (DR-046).
+    if isinstance(graph, dict) and graph.get("edges"):
+        none_marker = "  (none among this project's papers)"
+        scope_note = ""
+    else:
+        none_marker = "  (none found in the reading list's own citation links)"
+        scope_note = ("\n\nNote: this project's reference map has not been built, so only "
+                      "reading-list citation links were available to this lookup. This says "
+                      "nothing about the paper's actual bibliography — read the paper's full "
+                      "text for its references, and never report the paper as having none.")
+
     def _fmt(slugs: set[str]) -> str:
         slugs = {s for s in slugs if s in papers and s != slug}
         if not slugs:
-            return "  (none)"
+            return none_marker
         return "\n".join(f"  - {s}: \"{papers[s].title}\"" for s in sorted(slugs))
 
     return model_provenance.frame(
         "project_relationship_metadata",
-        f"Papers '{slug}' cites (in-project):\n{_fmt(cites)}\n\n"
-        f"Papers that cite '{slug}' (in-project):\n{_fmt(cited_by)}",
+        f"Papers '{slug}' cites (among papers IN this project):\n{_fmt(cites)}\n\n"
+        f"Papers IN this project that cite '{slug}':\n{_fmt(cited_by)}"
+        f"{scope_note}",
         source=slug,
     )
 
