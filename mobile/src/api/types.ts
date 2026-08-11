@@ -653,6 +653,9 @@ export interface AuthorProfileJob {
   author: string;
   profile: string;
   cached: boolean;
+  /** "context" while the corpus context is assembled, "writing" once the model call is in
+   *  flight (DR-047 staged progress). Absent from snapshots taken before the stage was set. */
+  stage?: string;
 }
 
 /** One researched lab card (R7.7): an evidenced group with its board members. */

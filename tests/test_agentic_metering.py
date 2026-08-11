@@ -307,7 +307,7 @@ def test_labs_meters_a_run_that_dies_partway(monkeypatch):
         return billed
 
     monkeypatch.setattr(agent_harness, "_openrouter_model",
-                        lambda model_id=None, operation="analysis": FunctionModel(respond))
+                        lambda model_id=None, operation="analysis", **kw: FunctionModel(respond))
 
     with pytest.raises(RuntimeError):
         lab_research._research_with_agent("An Author", "MIT", ["A Paper"])
@@ -340,7 +340,7 @@ def test_preview_research_meters_a_run_that_dies_partway(monkeypatch):
         return billed
 
     monkeypatch.setattr(agent_harness, "_openrouter_model",
-                        lambda model_id=None, operation="analysis": FunctionModel(respond))
+                        lambda model_id=None, operation="analysis", **kw: FunctionModel(respond))
 
     with pytest.raises(RuntimeError):
         preview_jobs._research_with_agent("A Paper", "metadata")

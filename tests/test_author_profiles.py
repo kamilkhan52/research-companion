@@ -42,16 +42,35 @@ def _settled(job_id, timeout=5.0):
 def test_profile_job_generates_caches_and_merges(temp_project, monkeypatch):
     _seed_graph(temp_project)
     calls: list[str] = []
+    kwargs_seen: list[dict] = []
+    stages: list[str] = []
+
+    def _live_stage() -> str:
+        return next(iter(author_profiles._jobs.values())).stage
+
+    # `resolve_model` runs between the two stage writes and `complete` after the second, so
+    # capturing the live stage at each proves BOTH stages were published in order — asserting
+    # only the settled snapshot proves nothing more than that the last write won.
+    def capture_resolve():
+        stages.append(_live_stage())
+        return "test/model"
 
     def fake_complete(messages, **kwargs):
+        stages.append(_live_stage())
         calls.append(messages[1]["content"])
+        kwargs_seen.append(kwargs)
         return "Song Han leads efficient-ML research central to this project."
 
+    monkeypatch.setattr(author_profiles.graph, "resolve_model", capture_resolve)
     monkeypatch.setattr(author_profiles.llm, "complete", fake_complete)
 
     snap = _settled(author_profiles.start_profile("Song Han").id)
     assert snap["status"] == "done"
     assert "efficient-ML" in snap["profile"]
+    # DR-047: a profile is a rewrite of supplied context — hidden reasoning must be off, or a
+    # reasoning model can spend the whole 600-token budget thinking and emit nothing.
+    assert kwargs_seen[0]["reasoning"] == {"enabled": False}
+    assert stages == ["context", "writing"]
     # Generous context: the project brief and both paper groups reached the model.
     assert "AWQ" in calls[0] and "StreamingLLM" in calls[0]
 

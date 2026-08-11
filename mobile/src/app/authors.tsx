@@ -16,10 +16,11 @@ import { keys, useGraphAuthors } from '@/api/queries';
 import { showToast } from '@/ui/Toast';
 import { BottomSheet } from '@/components/BottomSheet';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
+import { ProgressSteps, type ProgressStepItem } from '@/components/ProgressSteps';
 import { TopBar } from '@/components/TopBar';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
 import { useActiveProject } from '@/store/project';
-import { Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
+import { AnimatedProgressBar, Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
@@ -310,12 +311,21 @@ function LabsView({
   return (
     <>
       {researching ? (
-        <View style={styles.researchRow}>
-          <ActivityIndicator size="small" color={t.mint} />
-          <Text variant="caption" color={t.muted} style={{ flex: 1 }}>
-            Researching labs · {job!.done}/{job!.total}
-            {job!.current ? ` · ${job!.current}` : ''}
-          </Text>
+        // The standard progress treatment (DR-047): a real fraction of the pass plus who is
+        // being researched right now, not a spinner beside a counter.
+        <View style={styles.researchProgress}>
+          <View style={styles.researchRow}>
+            <ActivityIndicator size="small" color={t.mint} />
+            <Text variant="caption" color={t.text} style={{ flex: 1 }}>
+              Researching labs · {job!.done} of {job!.total} authors
+            </Text>
+          </View>
+          <AnimatedProgressBar value={labsFraction(job!.done, job!.total)} />
+          {job!.current ? (
+            <Text variant="caption" color={t.muted} numberOfLines={1}>
+              Searching the web for {job!.current}'s group…
+            </Text>
+          ) : null}
         </View>
       ) : (
         <Button
@@ -420,11 +430,29 @@ function LabsView({
 
 /** The one-paragraph LLM profile: shows the cached paragraph when the board carries one,
  *  else offers to generate it (background job + polling, like every LLM op). */
+/** The two real stages of a profile job as ProgressSteps items (DR-047). The server publishes
+ *  "context" then "writing"; an empty stage (a snapshot taken before the worker's first write,
+ *  or a server predating the field) reads as the first stage under way — never as done. */
+export function profileSteps(stage: string): ProgressStepItem[] {
+  const writing = stage === 'writing';
+  return [
+    { key: 'context', label: 'Reading the papers', state: writing ? 'done' : 'active' },
+    { key: 'writing', label: 'Writing the profile', state: writing ? 'active' : 'pending' },
+  ];
+}
+
+/** The labs pass as a fraction for AnimatedProgressBar; an unstarted or empty pass is 0. */
+export function labsFraction(done: number, total: number): number {
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
+  return Math.max(0, Math.min(1, done / total));
+}
+
 function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAuthor }) {
   const t = useTheme();
   const qc = useQueryClient();
   const [profile, setProfile] = useState(author.profile ?? null);
   const [state, setState] = useState<'idle' | 'running' | 'error'>('idle');
+  const [stage, setStage] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
@@ -437,11 +465,13 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
   async function generate() {
     if (!pid || state === 'running') return;
     setState('running');
+    setStage('');
     setError(null);
     try {
       let job = (await api.startAuthorProfile(pid, author.name)).job;
       const deadline = Date.now() + 3 * 60 * 1000;
       while (job.status === 'running' && Date.now() < deadline) {
+        if (alive.current) setStage(job.stage ?? '');
         await new Promise((r) => setTimeout(r, 2000));
         job = (await api.getAuthorProfileJob(pid, job.id)).job;
       }
@@ -478,15 +508,21 @@ function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAutho
       </Text>
     );
   }
+  if (state === 'running') {
+    // The same staged treatment as the map build (DR-047): which part of the work is under way,
+    // not a spinner that only moves at the end.
+    return (
+      <ProgressSteps dotSize={22} style={{ marginTop: space.sm }} steps={profileSteps(stage)} />
+    );
+  }
   return (
     <View style={{ marginTop: space.xs, gap: space.xs }}>
       <Button
-        title={state === 'running' ? 'Writing profile…' : 'Get profile'}
+        title="Get profile"
         variant="ghost"
         icon="user"
         onPress={() => void generate()}
-        loading={state === 'running'}
-        disabled={!pid || state === 'running'}
+        disabled={!pid}
       />
       {error ? (
         <Text variant="caption" color={t.danger}>{error}</Text>
@@ -622,6 +658,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   countStat: { flexDirection: 'row', alignItems: 'center', gap: 3, marginRight: 10 },
   countStatValue: { fontVariant: ['tabular-nums'] },
   researchRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
+  researchProgress: { gap: space.xs, paddingBottom: space.sm },
   labCard: {
     backgroundColor: t.surface,
     borderWidth: 1,

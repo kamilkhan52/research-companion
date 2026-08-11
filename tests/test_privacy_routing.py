@@ -91,6 +91,75 @@ def test_agentic_path_sends_the_routing_constraint(monkeypatch):
     settings = model.settings or {}
     assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
     assert settings.get("openrouter_usage") == {"include": True}
+    # Reasoning stays the model's own default unless a caller opts out — the analysis turn
+    # must never inherit a lookup job's no-reasoning hint.
+    assert "openrouter_reasoning" not in settings
+
+
+def test_no_reasoning_opt_out_rides_the_native_settings(monkeypatch):
+    """`no_reasoning=True` (lab research — DR-047) must reach OpenRouter as the same
+    `{"enabled": false}` payload `llm.NO_REASONING` sends on the raw path."""
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "anthropic/claude-test"},
+    )
+
+    model = agent_harness._openrouter_model(no_reasoning=True)
+
+    settings = model.settings or {}
+    assert settings.get("openrouter_reasoning") == {"enabled": False}
+    # The opt-out must not displace the unconditional privacy constraint.
+    assert settings.get("openrouter_provider") == llm.PRIVACY_ROUTING
+
+
+def test_no_reasoning_reaches_the_request_body(monkeypatch):
+    """The settings-dict assertion above pins what WE wrote; this pins what OpenRouter would
+    RECEIVE. `openrouter_reasoning` is mapped into the body by pydantic-ai's private
+    `_openrouter_settings_to_openai_settings`, and `OpenRouterModelSettings` is a plain dict at
+    runtime — a dependency bump that renames the key would silently turn reasoning back on for
+    every labs pass with the settings test still green (the `AgentRunResult.usage` failure
+    shape, which broke Labs in production for three weeks)."""
+    import asyncio
+    import json as jsonlib
+
+    from app import spend_control
+    from pydantic_ai.messages import ModelRequest
+    from pydantic_ai.models import ModelRequestParameters
+
+    monkeypatch.setattr(spend_control, "require_enabled", lambda: None)
+    monkeypatch.setattr(
+        config,
+        "load_settings",
+        lambda: {"openrouter_api_key": "k", "model": "openrouter/free"},
+    )
+    model = agent_harness._openrouter_model(operation="lab_research", no_reasoning=True)
+
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(jsonlib.loads(request.content))
+        return httpx.Response(
+            200,
+            json=_zero_cost_response_payload(streamed=False),
+            headers={"content-type": "application/json"},
+        )
+
+    # Replace the INNER transport only, exactly as tests/test_spend_ceiling.py does — swapping
+    # the client's transport wholesale would silently discard the dispatch-accounting wrapper.
+    client = model._provider._own_http_client
+    assert isinstance(client._transport, agent_harness._DispatchAccountingTransport)
+    client._transport._inner = httpx.MockTransport(handler)
+
+    asyncio.run(model.request(
+        [ModelRequest.user_text_prompt("hi")],
+        model.settings,
+        ModelRequestParameters(),
+    ))
+
+    assert bodies, "no request reached the transport"
+    assert bodies[0]["reasoning"] == {"enabled": False}
+    assert bodies[0]["provider"] == dict(llm.PRIVACY_ROUTING)
 
 
 def _zero_cost_response_payload(*, streamed: bool) -> dict:
