@@ -42,6 +42,8 @@ import { NowPlaying } from '@/components/NowPlaying';
 import { PaperEntityProvider } from '@/components/PaperEntityProvider';
 import { SpendRefusalHost } from '@/components/SpendRefusalSheet';
 import { shouldShowStackNowPlaying } from '@/lib/nowPlayingVisibility';
+import { DevTestBubble } from '@/components/DevTestBubble';
+import { useDevMode } from '@/api/queries';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { AuthGate } from '@/components/AuthGate';
 import { ProjectProvider } from '@/store/project';
@@ -54,6 +56,14 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // The four tab screens render NowPlaying inside the tab bar (above the tab row); the root
 // copy covers only stack screens pushed over the tabs, so the card never doubles up.
+function DevTestOverlay() {
+  // Dev builds only: the server's RC_DEV flag is the gate (production reports dev:false, and
+  // every /api/devtest route 404s there regardless).
+  const dev = useDevMode();
+  if (!dev) return null;
+  return <DevTestBubble />;
+}
+
 function StackNowPlaying() {
   const pathname = usePathname();
   if (!shouldShowStackNowPlaying(pathname)) return null;
@@ -121,6 +131,7 @@ function ThemedShell() {
           </Stack>
         </View>
         <StackNowPlaying />
+        <DevTestOverlay />
         {/* Cross-project duplicate preflight raised by useAddPaper from every add surface. */}
         <ExistingPaperOfferHost />
         {/* Global "start the paper summary?" offer, raised by useAddPaper from any add site. */}

@@ -13,3 +13,6 @@ projects/
 
 # Web client (Vite)
 web/node_modules/
+
+# In-app device-test feedback inbox (DR-060) — triaged into the ledger by /device-feedback
+.dev-feedback/
