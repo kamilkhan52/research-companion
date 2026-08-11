@@ -16,6 +16,8 @@ import { ApiError } from '@/api/client';
 import type { StreamItem } from '@/api/types';
 import { useNotes, useReview } from '@/api/queries';
 import { AgentActivity } from '@/components/AgentActivity';
+import { ProgressSteps } from '@/components/ProgressSteps';
+import { finishSteps } from '@/lib/finishSteps';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
 import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
 import { useTheme, useThemedStyles, type DensityMode } from '@/theme/ThemeProvider';
@@ -32,6 +34,7 @@ export function NotesReviewSheet({
   requesting = false,
   requestActivity = 'Reviewing notes…',
   requestItems = [],
+  requestPhase = null,
   refreshNonce = 0,
 }: {
   visible: boolean;
@@ -44,6 +47,10 @@ export function NotesReviewSheet({
   requesting?: boolean;
   requestActivity?: string;
   requestItems?: StreamItem[];
+  /** DR-056: the redraft's marker phase — stages the requesting panel like the Finish
+   *  card. The sheet stays open during Request changes, so this is where the stages
+   *  must live to be seen. */
+  requestPhase?: 'notes' | 'synthesis' | null;
   refreshNonce?: number;
 }) {
   const t = useTheme();
@@ -168,12 +175,19 @@ export function NotesReviewSheet({
               </View>
 
               {requesting ? (
-                <AgentActivity
-                  emphasis="panel"
-                  status={requestActivity}
-                  detail={words > 0 ? `${words} words drafted` : undefined}
-                  testID="notes-review-activity"
-                />
+                <>
+                  <ProgressSteps
+                    dotSize={20}
+                    style={styles.requestSteps}
+                    steps={finishSteps(requestPhase ?? 'drafting')}
+                  />
+                  <AgentActivity
+                    emphasis="panel"
+                    status={requestActivity}
+                    detail={words > 0 ? `${words} words drafted` : undefined}
+                    testID="notes-review-activity"
+                  />
+                </>
               ) : null}
 
               <ReviewSection
@@ -313,6 +327,7 @@ function ReviewSection({
 }
 
 const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create({
+  requestSteps: { marginBottom: space.sm },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

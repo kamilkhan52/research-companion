@@ -79,6 +79,7 @@ import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
 import { ProgressSteps } from '@/components/ProgressSteps';
+import { finishSteps } from '@/lib/finishSteps';
 import { retrievalProgress } from '@/lib/retrievalSteps';
 import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefSheet';
 import {
@@ -353,13 +354,6 @@ export default function DiscussionScreen() {
     handleTurnDone,
     activeThread,
   );
-  // DR-056: a Finish (or Request changes) turn shows staged progress instead of an
-  // unexplained Stop-only wait. Set by the actions that draft a proposal; cleared when the
-  // stream ends (the review auto-open takes over from there).
-  const [finishing, setFinishing] = useState(false);
-  useEffect(() => {
-    if (!stream.streaming) setFinishing(false);
-  }, [stream.streaming]);
   usePreviewCues({
     enabled: listeningMode,
     project: pid,
@@ -445,7 +439,6 @@ export default function DiscussionScreen() {
 
   async function finishReadingFromMenu() {
     if (!paths || !slug) return;
-    setFinishing(true);
     await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
   }
 
@@ -679,8 +672,6 @@ export default function DiscussionScreen() {
           onContinue={() => void continueFromCommitted()}
           headerHeight={headerHeight}
           reviewReadyNonce={reviewReadyNonce}
-          finishing={finishing}
-          onProposalTurnStarted={() => setFinishing(true)}
           onMutated={() => {
             // The whole project's sessions, not just this one: approving notes flips this paper
             // to `read`, which changes the "N you've read" count shown on every paper it cites.
@@ -1233,8 +1224,6 @@ function DiscussionThread({
   headerHeight,
   onMutated,
   reviewReadyNonce,
-  finishing,
-  onProposalTurnStarted,
 }: {
   pid: string;
   slug: string;
@@ -1254,8 +1243,6 @@ function DiscussionThread({
   onMutated: () => void;
   /** Bumped by the parent when a turn settles with a fresh Notes proposal (D03 auto-open). */
   reviewReadyNonce: number;
-  finishing: boolean;
-  onProposalTurnStarted: () => void;
 }) {
   const theme = useTheme();
   const { themeName } = useThemeMode();
@@ -1607,7 +1594,6 @@ function DiscussionThread({
   }
 
   async function requestChanges(feedback: string) {
-    onProposalTurnStarted();
     const t = feedback.trim();
     if (!t) return;
     await stream.run(
@@ -1801,7 +1787,7 @@ function DiscussionThread({
         <StreamingTurnBody
           items={msg.streamItems}
           activity={stream.activity}
-          finishPhase={finishing ? stream.notesPhase ?? 'drafting' : null}
+          finishPhase={stream.proposalTurn ? stream.notesPhase ?? 'drafting' : null}
         />
       );
     }
@@ -1833,7 +1819,7 @@ function DiscussionThread({
         textStyle={{ left: styles.userText, right: styles.userText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, finishing, styles, figureContext, sentenceAnnotationsFor]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2100,6 +2086,7 @@ function DiscussionThread({
       onCommitted={() => { setReviewOpen(false); onMutated(); }}
       onRequestEdits={requestChanges}
       requesting={stream.streaming}
+      requestPhase={stream.notesPhase}
       requestActivity={stream.activity}
       requestItems={stream.items}
       refreshNonce={reviewReadyNonce}
@@ -3019,18 +3006,6 @@ function SmoothMarkdown({ text }: { text: string }) {
 // agent UIs conventionally show it — rather than pinning all tools above all text. The streamed
 // Until answer text arrives, the shared activity component makes the current grounded work
 // explicit without exposing internal model-state language.
-/** DR-056 — the Finish wait as its real phases. `notes` still reads as drafting (the paper's
- *  notes are part of the draft); `synthesis` flips the working-notes stage active; the review
- *  step stays pending until the stream ends and the auto-open takes over. Exported for tests. */
-export function finishSteps(phase: string): { key: string; label: string; state: 'done' | 'active' | 'pending' }[] {
-  const synthesis = phase === 'synthesis';
-  return [
-    { key: 'notes', label: 'Drafting notes', state: synthesis ? 'done' : 'active' },
-    { key: 'synthesis', label: 'Updating working notes', state: synthesis ? 'active' : 'pending' },
-    { key: 'review', label: 'Opening review', state: 'pending' },
-  ];
-}
-
 function StreamingTurnBody({
   items,
   activity,

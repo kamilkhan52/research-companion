@@ -2,7 +2,7 @@
 // must never show done before the stream ends, and the review step stays pending until the
 // auto-open takes over.
 
-import { finishSteps } from '@/app/paper/[slug]';
+import { finishSteps } from '@/lib/finishSteps';
 
 test.each([
   ['drafting', ['active', 'pending', 'pending']],

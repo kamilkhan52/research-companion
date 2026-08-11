@@ -413,19 +413,23 @@ def _trail(job: ChatJob) -> list[dict]:
         return [dict(it) for it in job.items if it.get("kind") in ("tool", "thought")]
 
 
-# Tolerant like agent._parse: the model drifts to markdown headings ("## NOTES_BLOCK").
-_NOTES_MARKER_RE = re.compile(r"#{2,}\s*NOTES_BLOCK")
-_SYNTHESIS_MARKER_RE = re.compile(r"#{2,}\s*SYNTHESIS")
-#: A marker arrives within one recent delta; scanning the whole accumulated text per delta is
-#: quadratic for nothing. The window comfortably covers any delta plus a straddled marker.
+# Tolerant of heading drift like agent._parse ("## NOTES_BLOCK"), but anchored to a line of
+# its own: the finish prompt asks the CANONICAL preview to talk ABOUT the notes and synthesis,
+# so prose like "## SYNTHESIS OF RESULTS" must not skip a stage — that is precisely the
+# dishonesty DR-056 exists to remove.
+_NOTES_MARKER_RE = re.compile(r"^\s*#{2,}\s*NOTES_BLOCK\s*#*\s*$", re.M)
+_SYNTHESIS_MARKER_RE = re.compile(r"^\s*#{2,}\s*SYNTHESIS\s*#*\s*$", re.M)
+#: Base scan window. The effective window also covers the whole incoming delta (plus slack for
+#: a straddled marker): a provider that emits its completion in one large chunk would otherwise
+#: hide a marker deeper than any fixed tail.
 _PHASE_SCAN_TAIL = 4_000
 
 
-def _advance_notes_phase(job: ChatJob, full: str) -> None:
-    """Forward-only phase advance from the raw stream (DR-056). Cheap: scans the tail, and only
-    for markers not yet seen. Ordinary turns emit no NOTES/SYNTHESIS markers, so their phase
-    stays None and the client's staged card never renders for them."""
-    tail = full[-_PHASE_SCAN_TAIL:]
+def _advance_notes_phase(job: ChatJob, full: str, delta_len: int = 0) -> None:
+    """Forward-only phase advance from the raw stream (DR-056). Cheap: scans a tail sized to
+    the delta, and only for markers not yet seen. Ordinary turns emit no NOTES/SYNTHESIS marker
+    lines, so their phase stays None and the client's staged card never renders for them."""
+    tail = full[-max(_PHASE_SCAN_TAIL, delta_len + 200):]
     if job.notes_phase != "synthesis" and _SYNTHESIS_MARKER_RE.search(tail):
         with _registry.lock:
             job.notes_phase = "synthesis"
@@ -447,6 +451,10 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
         pieces.clear()
         with _registry.lock:
             job.activity = "Analyzing results…"
+            # The boundary means "the answer starts over" — including the single-shot fallback
+            # replaying the whole turn. notes_phase must restart with the document, or pre-tool
+            # commentary that named a marker pins a stage before the real document exists.
+            job.notes_phase = None
             # At most one live text item exists (each boundary demotes the previous one); it
             # sits before any tool items from the same segment, so demote it in place.
             for i in range(len(job.items) - 1, -1, -1):
@@ -464,7 +472,7 @@ def _apply(job: ChatJob, ev: dict, pieces: list[str], sent: int) -> int:
     if ev["type"] == "text":
         pieces.append(ev["text"])
         full = "".join(pieces)
-        _advance_notes_phase(job, full)
+        _advance_notes_phase(job, full, len(ev["text"]))
         canon = agent.canonical_prefix(full)
         if len(canon) > sent:
             delta = canon[sent:]

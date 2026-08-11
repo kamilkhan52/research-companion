@@ -775,12 +775,39 @@ def test_notes_phase_advances_live_and_forward_only():
     assert job.notes_phase == "notes"
     chat_jobs._advance_notes_phase(job, "…\n###SYNTHESIS###\nthe working notes")
     assert job.notes_phase == "synthesis"
-    chat_jobs._advance_notes_phase(job, "…later text mentioning ###NOTES_BLOCK### again")
+    chat_jobs._advance_notes_phase(job, "…later text\n###NOTES_BLOCK###\nagain")
     assert job.notes_phase == "synthesis"  # forward-only
-    # Tolerant of heading drift, like agent._parse.
+    # Tolerant of heading drift, like agent._parse — but only a marker ALONE on its line.
     job2 = chat_jobs.ChatJob(id="j2", slug="p")
     chat_jobs._advance_notes_phase(job2, "## NOTES_BLOCK\ncontent")
     assert job2.notes_phase == "notes"
+    # Prose ABOUT the sections must not advance anything: the finish preview legitimately
+    # says things like "## SYNTHESIS OF RESULTS" while still writing the canonical.
+    job3 = chat_jobs.ChatJob(id="j3", slug="p")
+    chat_jobs._advance_notes_phase(job3, "## SYNTHESIS OF RESULTS\nThey report gains.")
+    chat_jobs._advance_notes_phase(job3, "I emit a ## NOTES_BLOCK section when done.")
+    assert job3.notes_phase is None
+    # A marker buried deep inside ONE huge delta (single-chunk providers) is still seen.
+    job4 = chat_jobs.ChatJob(id="j4", slug="p")
+    huge = "###NOTES_BLOCK###\n" + ("x" * 6_000)
+    chat_jobs._advance_notes_phase(job4, huge, delta_len=len(huge))
+    assert job4.notes_phase == "notes"
+
+
+def test_a_segment_boundary_restarts_the_phase_with_the_document(temp_project):
+    """A segment means the answer starts over — including the single-shot fallback replaying
+    the turn — so a phase pinned by pre-tool commentary must not survive it."""
+    slug = _session_with_reply()
+
+    def runner(s2, h):
+        yield {"type": "text", "text": "thinking…\n###SYNTHESIS###\n(quoted in commentary)"}
+        yield {"type": "segment"}
+        yield {"type": "text", "text": "###CANONICAL###\nThe real answer."}
+        yield {"type": "final",
+               "text": "###CANONICAL###\nThe real answer.\n###STATE###\nin_discussion\n###END###"}
+
+    finished = _wait_until_settled(chat_jobs.start_turn(slug, runner=runner).id)
+    assert finished.notes_phase is None
 
 
 def test_an_ordinary_turn_never_gains_a_notes_phase(temp_project):
