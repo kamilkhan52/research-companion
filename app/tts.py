@@ -101,6 +101,17 @@ _ESTIMATED_USD_PER_CHARACTER = {
 }
 
 
+def nanousd_per_char(model: str) -> int | None:
+    """The per-character rate the ceiling should assume for `model`, in nano-USD, or None for a
+    model this module cannot price. Estimated rates count — an under-sized hold lets spend
+    escape the ceiling, which is the failure the estimates exist to prevent (DR-042 round 2:
+    sizing every hold at tts-1's rate under-reserved 2.7x on gpt-4o-mini-tts)."""
+    usd = _USD_PER_CHARACTER.get(model) or _ESTIMATED_USD_PER_CHARACTER.get(model)
+    if usd is None:
+        return None
+    return int(usd * 1_000_000_000)
+
+
 def _record_dispatch(model: str, spoken_text: str, *, estimated: bool = False) -> None:
     """Charge one completed or transport-ambiguous dispatch to the active usage scope.
 

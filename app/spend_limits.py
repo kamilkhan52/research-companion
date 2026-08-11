@@ -122,25 +122,33 @@ _MAX_NANOUSD: dict[str, int] = {
     "lab_research": 40_000_000,     # $0.04
 }
 
-#: tts-1's published character rate (§2c/§7): $15 per 1M characters = 15,000 nano-USD/char.
-_TTS1_NANOUSD_PER_CHAR = 15_000
-#: Stage-2 narration rewrite can expand the canonical text for the ear; 1.25x covers the
-#: observed variation without re-inflating the hold past small ceilings.
+#: ASSUMED stage-2 expansion of canonical text into narration. Not a measured distribution —
+#: the pricing doc's token means imply a mean ratio near 1.1, and the local transcripts hold too
+#: few pairs to call it more than that — so this sits modestly above the implied mean rather
+#: than claiming to bound the spread. The ceiling may legitimately settle ABOVE the hold when a
+#: narration expands past it: `quotas.settle` charges actual, so the overage is billed, not
+#: lost (see `speech_hold_nanousd`).
 _SPEECH_TEXT_MARGIN = 1.25
 
-def speech_hold_nanousd(chars: int) -> int:
+def speech_hold_nanousd(chars: int, rate_nanousd_per_char: int | None) -> int:
     """The admission hold for narrating a text of `chars` characters (DR-042).
 
-    Character-priced synthesis is exactly computable before dispatch, so the hold is the text's
-    own cost with margin, plus the stage-2 narration LLM lease — never the flat worst-case,
-    which alone exceeded the Free ceiling and refused every narration on the smallest plan. A
-    short piece therefore admits on any plan; a long one is refused honestly as larger than the
-    allowance, with the device-voice path offered. Clamped to the flat bound so a pathological
-    length cannot reserve more than the old ceiling did.
+    Sized from the text at THE CONFIGURED MODEL'S rate (the caller resolves it via
+    `tts.nanousd_per_char`), with margin, plus the stage-2 narration LLM lease — never the flat
+    worst-case, which alone exceeded the Free ceiling and refused every narration on the
+    smallest plan. Round 2 of the review is why the rate is a parameter: sizing every hold at
+    tts-1's 15,000 nano/char under-reserved 2.7x for `gpt-4o-mini-tts`, letting one job admit on
+    Free and settle 40% past the whole monthly ceiling. An unknown model's rate (None) falls
+    back to the flat bound, as does an unknown length — never to a free pass.
+
+    The hold is an ESTIMATE the settlement may exceed: a narration that expands past the margin
+    is charged at actual. That direction is safe for the ledger (the money is billed) and bounded
+    by the per-request caps; the clamp below only stops a pathological length from reserving more
+    than the old flat bound did.
     """
-    if chars <= 0:
+    if chars <= 0 or rate_nanousd_per_char is None or rate_nanousd_per_char <= 0:
         return _MAX_NANOUSD["speech_synthesis"]
-    estimated = int(chars * _TTS1_NANOUSD_PER_CHAR * _SPEECH_TEXT_MARGIN)
+    estimated = int(chars * rate_nanousd_per_char * _SPEECH_TEXT_MARGIN)
     return min(_MAX_NANOUSD["speech_synthesis"],
                estimated + _MAX_NANOUSD["narration"])
 

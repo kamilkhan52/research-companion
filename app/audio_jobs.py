@@ -294,6 +294,10 @@ def start_job(text: str, billing_project: str | None = None,
     return _registry.start_or_join(jid, lambda: AudioJob(id=new_id()), work,
                                    project_id=_audio_scope(), metered=metered,
                                    reserves=True,
-                                   # Sized from the text rather than the flat worst case, so a
-                                   # short narration admits on a small ceiling (DR-042).
-                                   hold_max_nanousd=spend_limits.speech_hold_nanousd(len(text)))
+                                   # Sized from the text at the configured model's rate, so a
+                                   # short narration admits on a small ceiling (DR-042) and an
+                                   # expensive model cannot under-reserve.
+                                   hold_max_nanousd=spend_limits.speech_hold_nanousd(
+                                       len(text),
+                                       tts.nanousd_per_char(tts.resolve_model(
+                                           config.load_settings().get("tts_model")))))

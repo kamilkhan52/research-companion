@@ -87,25 +87,38 @@ def test_speech_holds_scale_with_the_text():
     ($0.20), so every narration on Free was refused regardless of length — a de-facto quality
     tier. Sized from the text, a short piece admits on the smallest plan while a full-paper
     narration still cannot outrun the old bound."""
-    from app import spend_limits
+    from app import spend_limits, tts
 
     free_ceiling = plans.PLANS["free"].monthly_credits * 1_000_000
+    tts1 = tts.nanousd_per_char("tts-1")
     # A short summary (~5k chars) must fit inside an untouched Free month.
-    assert spend_limits.speech_hold_nanousd(5_000) < free_ceiling
+    assert spend_limits.speech_hold_nanousd(5_000, tts1) < free_ceiling
     # The mean full-paper narration (10,702 chars — pricing §2c) must NOT fit: ~160 credits of
     # TTS plus margin and the rewrite lease is more than the month, and the refusal sheet's
     # "won't fit your plan / use device voice" is the honest answer.
-    assert spend_limits.speech_hold_nanousd(10_702) > free_ceiling
+    assert spend_limits.speech_hold_nanousd(10_702, tts1) > free_ceiling
+    # The hold scales with the MODEL's rate, not tts-1's: pricing gpt-4o-mini-tts at tts-1's
+    # rate let a 7k-char narration admit on Free and settle 40% past the whole month (round 2).
+    mini = tts.nanousd_per_char("gpt-4o-mini-tts")
+    assert mini is not None and mini > tts1
+    assert spend_limits.speech_hold_nanousd(7_000, mini) > free_ceiling
     # A pathological length clamps to the old flat bound rather than reserving beyond it.
-    assert spend_limits.speech_hold_nanousd(10_000_000) == 600_000_000
-    # No text information falls back to the flat bound — never to a free pass.
-    assert spend_limits.speech_hold_nanousd(0) == 600_000_000
+    assert spend_limits.speech_hold_nanousd(10_000_000, tts1) == 600_000_000
+    # Missing information — length or a rate for an unknown model — falls back to the flat
+    # bound, never to a free pass.
+    assert spend_limits.speech_hold_nanousd(0, tts1) == 600_000_000
+    assert spend_limits.speech_hold_nanousd(5_000, None) == 600_000_000
 
 
 def test_audio_admission_holds_what_the_text_costs(temp_project, monkeypatch):
-    """The hold reaching the registry is the sized one, not the flat table entry."""
-    from app import audio_jobs, spend_limits
+    """The hold reaching the registry is sized from the text at the CONFIGURED model's rate.
+    Injected narrate/synth fns, like every audio test — the first version omitted them, and the
+    worker made a real provider call whenever a key was in the environment, green either way."""
+    from app import audio_jobs, config, spend_limits, tts
 
+    monkeypatch.setattr(config, "load_settings",
+                        lambda: {"speech_provider": "openai", "tts_model": "gpt-4o-mini-tts",
+                                 "tts_voice": "alloy", "openai_api_key": "sk-test"})
     seen = {}
     real = audio_jobs._registry.start_or_join
 
@@ -114,11 +127,13 @@ def test_audio_admission_holds_what_the_text_costs(temp_project, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(audio_jobs._registry, "start_or_join", capture)
-    monkeypatch.setattr(audio_jobs, "_synthesize", lambda *a, **k: b"mp3", raising=False)
     text = "x" * 5_000
-    try:
-        audio_jobs.start_job(text)
-    except Exception:
-        pass  # synthesis internals are not under test; the admission kwargs are
-    assert seen["hold"] == spend_limits.speech_hold_nanousd(5_000)
+    job = audio_jobs.start_job(text, narrate_fn=lambda t: t, synth_fn=lambda t: b"mp3")
+    deadline = __import__("time").time() + 5
+    while audio_jobs.get_job(job.id) and audio_jobs.get_job(job.id).status == "running":
+        if __import__("time").time() > deadline:
+            raise TimeoutError()
+        __import__("time").sleep(0.02)
+    assert seen["hold"] == spend_limits.speech_hold_nanousd(
+        5_000, tts.nanousd_per_char("gpt-4o-mini-tts"))
 
