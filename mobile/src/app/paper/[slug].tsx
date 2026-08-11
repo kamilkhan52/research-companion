@@ -1797,6 +1797,7 @@ function DiscussionThread({
           entry={msg.entry}
           isSummary={isPaperSummaryTurn(msg.entry, threadId, slug)}
           audioId={branchAudioId(pid, slug, msg.entry, threadId)}
+          slug={slug}
           title={title}
           favorites={favorites}
           onRetry={handleRetry}
@@ -2778,6 +2779,7 @@ function AssistantBody({
   entry,
   isSummary = false,
   audioId,
+  slug,
   title,
   favorites,
   onRetry,
@@ -2792,6 +2794,8 @@ function AssistantBody({
   /** The opening account of the paper, styled as an artifact rather than a reply. */
   isSummary?: boolean;
   audioId: string;
+  /** So a `propose_notes_update` tool call in this entry's trail can link to its review (DR-043). */
+  slug?: string;
   title: string;
   favorites: FavoriteModel[];
   onRetry: (
@@ -2865,7 +2869,7 @@ function AssistantBody({
         </View>
       ) : null}
       {entry.agent_trail && entry.agent_trail.length > 0 ? (
-        <AgentTrail trail={entry.agent_trail} />
+        <AgentTrail trail={entry.agent_trail} slug={slug} />
       ) : null}
       <Markdown
         text={canonical}

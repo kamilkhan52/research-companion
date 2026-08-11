@@ -24,6 +24,7 @@ import { showToast } from '@/ui/Toast';
 import { Button, Chip, Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 
 // Guarded: the JS package resolves as soon as it's `npm install`ed and Metro serves it —
 // that says nothing about whether a SPECIFIC installed dev-client APK has the native module
@@ -100,7 +101,14 @@ export function DevTestBubble() {
     }
   }, []);
 
-  const sections = useMemo(() => sectionItems(items), [items]);
+  // Exclude the pinned "Just added" item from its normal section — Opus review, PR #371: it
+  // used to render there too, a second mounted `ItemCard` for the same item.id sharing one
+  // AsyncStorage draft key with independent in-memory state, so submitting a verdict on one
+  // instance's debounced write could resurrect it on the other.
+  const sections = useMemo(
+    () => sectionItems(justCreated ? items.filter((i) => i.id !== justCreated.id) : items),
+    [items, justCreated],
+  );
 
   return (
     <>
@@ -208,11 +216,17 @@ function Section({ label, tone }: { label: string; tone: string }) {
   );
 }
 
-function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void }) {
+interface NewItemDraft { title: string; description: string }
+const NEW_ITEM_DRAFT_FALLBACK: NewItemDraft = { title: '', description: '' };
+
+// Exported for a direct persistence test (DR-065), same reasoning as ItemCard above.
+export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  // DR-065: an unfinished new-issue draft used to vanish the moment the sheet closed (Modal
+  // unmount kills local useState) — the same persisted-draft pattern the notes screen already
+  // uses for exactly this failure mode.
+  const draft = usePersistedDraft<NewItemDraft>(draftKey('devtest-new-item'), NEW_ITEM_DRAFT_FALLBACK);
   const [busy, setBusy] = useState(false);
   return (
     <View style={styles.card}>
@@ -220,15 +234,15 @@ function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void })
       <TextInput
         placeholder="What's wrong / what's the idea?"
         placeholderTextColor={t.muted}
-        value={title}
-        onChangeText={setTitle}
+        value={draft.value.title}
+        onChangeText={(title) => draft.setValue((v) => ({ ...v, title }))}
         style={styles.input}
       />
       <TextInput
         placeholder="Steps, context, expectations (optional)"
         placeholderTextColor={t.muted}
-        value={description}
-        onChangeText={setDescription}
+        value={draft.value.description}
+        onChangeText={(description) => draft.setValue((v) => ({ ...v, description }))}
         multiline
         style={[styles.input, styles.inputTall]}
       />
@@ -236,12 +250,15 @@ function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void })
         <Button
           title="Create"
           loading={busy}
-          disabled={!title.trim()}
+          disabled={!draft.value.title.trim()}
           onPress={async () => {
             setBusy(true);
             try {
-              const { item } = await api.createDevTestItem(title.trim(), description.trim() || undefined);
+              const { item } = await api.createDevTestItem(
+                draft.value.title.trim(), draft.value.description.trim() || undefined,
+              );
               showToast('Issue recorded for triage.');
+              await draft.clear(NEW_ITEM_DRAFT_FALLBACK);
               onDone(item);
             } catch (e) {
               showToast((e as Error).message ?? 'Could not create the issue.');
@@ -251,22 +268,40 @@ function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void })
             }
           }}
         />
-        <Button title="Cancel" variant="ghost" onPress={() => onDone(null)} />
+        <Button title="Cancel" variant="ghost" onPress={() => {
+          void draft.clear(NEW_ITEM_DRAFT_FALLBACK);
+          onDone(null);
+        }} />
       </View>
     </View>
   );
 }
 
-function ItemCard({ item, shot, route, startExpanded = false }: {
+interface ItemCardDraft { expanded: boolean; comment: string; attach: boolean }
+
+// Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
+// card would mean mocking the network fetch just to get here.
+export function ItemCard({ item, shot, route, startExpanded = false }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [expanded, setExpanded] = useState(startExpanded);
-  const [comment, setComment] = useState('');
-  const [attach, setAttach] = useState(false);
+  // DR-065: "which item was opened, any unfinished message... full resumption of previous
+  // state" — closing the sheet (or the app dying) used to lose whichever card was expanded and
+  // whatever remark was half-typed, since it was plain useState inside a Modal. Keyed per item
+  // id so several cards can each keep their own in-progress remark independently, same as the
+  // notes screen's drafts.
+  const draft = usePersistedDraft<ItemCardDraft>(
+    draftKey('devtest-item', item.id),
+    { expanded: startExpanded, comment: '', attach: false },
+  );
+  const { expanded, comment, attach } = draft.value;
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<DevTestFeedbackEntry[] | null>(null);
+
+  const setExpanded = (next: boolean) => draft.setValue((v) => ({ ...v, expanded: next }));
+  const setComment = (next: string) => draft.setValue((v) => ({ ...v, comment: next }));
+  const setAttach = (next: boolean) => draft.setValue((v) => ({ ...v, attach: next }));
 
   const send = async (verdict: 'pass' | 'fail' | 'remark') => {
     if (verdict === 'remark' && !comment.trim()) {
@@ -283,9 +318,9 @@ function ItemCard({ item, shot, route, startExpanded = false }: {
         screenshot_b64: attach && shot ? shot : undefined,
       });
       showToast(`${item.id}: ${verdict} recorded${attach && shot ? ' with screenshot' : ''}.`);
-      setComment('');
-      setAttach(false);
-      setExpanded(false);
+      // Nothing left to resume once a verdict lands — clear the draft rather than leave stale
+      // text behind for next time.
+      await draft.clear({ expanded: false, comment: '', attach: false });
     } catch (e) {
       showToast((e as Error).message ?? 'Could not record feedback.');
     } finally {
@@ -296,7 +331,7 @@ function ItemCard({ item, shot, route, startExpanded = false }: {
   return (
     <View style={styles.card}>
       <Pressable
-        onPress={() => setExpanded((v) => !v)}
+        onPress={() => setExpanded(!expanded)}
         accessibilityRole="button"
         accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.`}
       >
@@ -351,7 +386,7 @@ function ItemCard({ item, shot, route, startExpanded = false }: {
             style={styles.input}
           />
           {shot ? (
-            <Pressable onPress={() => setAttach((v) => !v)} style={styles.attachRow} hitSlop={8}>
+            <Pressable onPress={() => setAttach(!attach)} style={styles.attachRow} hitSlop={8}>
               <Icon name={attach ? 'check-square' : 'square'} size={16} color={t.mint} />
               <Text variant="caption" color={t.text}>Attach the captured screen</Text>
             </Pressable>
