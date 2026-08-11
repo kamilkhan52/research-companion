@@ -34,6 +34,27 @@ LOCAL_PROJECTS="/Users/kamil/research-companion/projects"
 # Kamil's real reading data into history.
 BACKUP_ROOT="$HOME/.research-companion-backups"
 TS="$(date +%Y%m%dT%H%M%S)"
+# `flyctl ssh console` connects as root; the app runs as uid/gid 10001 (Dockerfile `USER rc`).
+# A tar extracted as root restores ownership from the local archive — Kamil's macOS uid, which
+# does not exist in the container — so anything written there afterward (every notes save, every
+# git commit committer.py makes) fails EACCES until this is corrected.
+REMOTE_UID=10001
+
+# Counts project directories one level deep (each is `<pid>/.git`), excluding dot-directories
+# (`.trash`, an in-progress `.importing-*`) the same way `projects.list_projects()` does — so a
+# top-level `projects/` that exists but is empty, or mid-write, is caught rather than treated as
+# "some data present," and the local/remote counts are comparing the same thing. The two `find`
+# expressions below are kept textually identical on purpose (`! -name ".*"` etc.) so they can't
+# silently drift apart.
+local_project_count() {
+  find "$LOCAL_PROJECTS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null \
+    | wc -l | tr -d '[:space:]'
+}
+remote_project_count() {
+  flyctl ssh console -a "$APP" -C \
+    "sh -c 'find /data/projects -mindepth 1 -maxdepth 1 -type d ! -name \".*\" 2>/dev/null | wc -l'" \
+    2>/dev/null | tr -d '[:space:]'
+}
 
 direction="${1:-}"
 if [[ "$direction" != "down" && "$direction" != "up" ]]; then
@@ -52,6 +73,15 @@ if [[ "$direction" == "down" ]]; then
   read -r -p "Continue? [y/N] " confirm
   [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Aborted."; exit 1; }
 
+  remote_count="$(remote_project_count)"
+  if [[ -z "$remote_count" || "$remote_count" == "0" ]]; then
+    echo "Could not confirm production has any projects (got '$remote_count'). Refusing to" >&2
+    echo "overwrite the local copy with what might be an empty or failed read. Check" >&2
+    echo "'flyctl ssh console -a $APP -C \"ls /data/projects\"' by hand first." >&2
+    exit 1
+  fi
+  echo "Production reports $remote_count project(s)."
+
   if [[ -d "$LOCAL_PROJECTS" ]]; then
     mkdir -p "$BACKUP_ROOT"
     backup="$BACKUP_ROOT/projects-${TS}"
@@ -62,10 +92,36 @@ if [[ "$direction" == "down" ]]; then
   echo "-> pulling from production ($APP:/data/projects)"
   flyctl ssh console -a "$APP" -C "tar czf - -C /data projects" \
     | tar xzf - -C "$(dirname "$LOCAL_PROJECTS")"
-  echo "Done. Local projects/ now matches production as of this moment."
+
+  got_count="$(local_project_count)"
+  if [[ "$got_count" != "$remote_count" ]]; then
+    echo "Extraction produced $got_count project(s), production reported $remote_count." >&2
+    echo "Something went wrong mid-transfer (dropped connection, disk full). NOT overwriting" >&2
+    echo "your backup — restoring it now so nothing is lost." >&2
+    rm -rf "$LOCAL_PROJECTS"
+    mv "${backup:-/nonexistent}" "$LOCAL_PROJECTS" 2>/dev/null || true
+    exit 1
+  fi
+  echo "Done. Local projects/ now matches production ($got_count projects) as of this moment."
   echo "Restart the local server (./run.sh) if it was already running, so it picks up the new data."
 
 else
+  local_count="$(local_project_count)"
+  if [[ -z "$local_count" || "$local_count" == "0" ]]; then
+    echo "Local projects/ has no project directories (got '$local_count'). Refusing to push —" >&2
+    echo "this would wipe production's real data with nothing to replace it. If this is really" >&2
+    echo "intentional, that is not what this script is for; do it by hand." >&2
+    exit 1
+  fi
+  remote_count="$(remote_project_count)"
+  echo "Local has $local_count project(s); production currently reports ${remote_count:-unknown}."
+  if [[ -n "$remote_count" && "$remote_count" != "0" && "$local_count" -lt "$remote_count" ]]; then
+    echo "Local has FEWER projects than production. This is very likely a local copy that never" >&2
+    echo "finished syncing (an interrupted 'down'), not real data loss on production. Refusing —" >&2
+    echo "run 'down' again first, or investigate before pushing." >&2
+    exit 1
+  fi
+
   echo "This will PUSH local projects/ up and OVERWRITE production's live reading data."
   echo "Before continuing, make sure:"
   echo "  - nothing is actively writing to production right now (check: flyctl logs -a $APP)"
@@ -74,12 +130,39 @@ else
   [[ "$confirm" == "overwrite production" ]] || { echo "Aborted."; exit 1; }
 
   echo "-> snapshotting production's current projects/ first"
-  flyctl ssh console -a "$APP" -C "tar czf /data/projects-backup-${TS}.tar.gz -C /data projects"
+  flyctl ssh console -a "$APP" -C "tar czf /data/projects-backup-${TS}.tar.gz -C /data projects" \
+    || echo "   (nothing to snapshot — production had no projects/ yet)"
   echo "   saved on the Fly volume as /data/projects-backup-${TS}.tar.gz (delete manually once you trust the push)"
 
-  echo "-> pushing local projects/ to production ($APP:/data/projects)"
-  tar czf - -C "$(dirname "$LOCAL_PROJECTS")" projects \
-    | flyctl ssh console -a "$APP" -C "sh -c 'rm -rf /data/projects && tar xzf - -C /data'"
-  echo "Done. Production's projects/ now matches local as of this moment."
+  # Staged, not in-place: extract to a sibling directory first and verify it, so the destructive
+  # delete of the live directory happens only once we know the new one is actually good — a
+  # mid-stream failure here used to leave production's real projects/ already deleted with a
+  # truncated replacement (or none at all).
+  echo "-> uploading and staging on production (not yet live)"
+  tar czf - -C "$(dirname "$LOCAL_PROJECTS")" projects | flyctl ssh console -a "$APP" -C "sh -c '
+    set -e
+    rm -rf /data/projects.incoming
+    mkdir /data/projects.incoming
+    tar xzf - -C /data/projects.incoming --strip-components=1
+    chown -R ${REMOTE_UID}:${REMOTE_UID} /data/projects.incoming
+  '"
+
+  staged_count="$(flyctl ssh console -a "$APP" -C \
+    "sh -c 'find /data/projects.incoming -mindepth 1 -maxdepth 1 -type d ! -name \".*\" 2>/dev/null | wc -l'" \
+    2>/dev/null | tr -d '[:space:]')"
+  if [[ "$staged_count" != "$local_count" ]]; then
+    echo "Staged $staged_count project(s) on production but local had $local_count — the upload" >&2
+    echo "didn't land cleanly. Production's LIVE projects/ has NOT been touched. Staged copy left" >&2
+    echo "at /data/projects.incoming for inspection; clean it up by hand once you've looked." >&2
+    exit 1
+  fi
+
+  echo "-> staged copy verified ($staged_count projects) — swapping it in"
+  flyctl ssh console -a "$APP" -C "sh -c '
+    set -e
+    rm -rf /data/projects
+    mv /data/projects.incoming /data/projects
+  '"
+  echo "Done. Production's projects/ now matches local ($staged_count projects) as of this moment."
   echo "Point your phone back at https://research-companion.fly.dev when you're ready to use it live again."
 fi
