@@ -31,11 +31,14 @@ def start_discovery(pid: str, req: DiscoverReq):
 
 
 def _without_hidden(result: dict | None) -> dict | None:
-    """A copy of the persisted result with hidden suggestions removed (R12.3). The stored
-    file keeps every suggestion, so unhiding never needs a re-run."""
+    """A copy of the persisted result with hidden suggestions AND already-in-library papers
+    removed (R12.3; library exclusion added DR-002, 2026-08-11). The stored file keeps every
+    suggestion either way, so unhiding never needs a re-run and neither would un-excluding."""
     if not result or not isinstance(result.get("suggestions"), list):
         return result
-    return {**result, "suggestions": discovery.filter_hidden(result["suggestions"])}
+    suggestions = discovery.filter_hidden(result["suggestions"])
+    suggestions = discovery.filter_in_library(suggestions)
+    return {**result, "suggestions": suggestions}
 
 
 @project_router.get("/discover")

@@ -792,6 +792,36 @@ def test_title_match_never_bridges_conflicting_openalex_ids(temp_project):
     }]
 
 
+# ---------- already-in-library exclusion (DR-002, 2026-08-11 device pass) ----------
+
+def test_filter_in_library_drops_a_suggestion_already_on_the_reading_list(temp_project):
+    from app import store
+    store.add_entry("Attention Is All You Need", arxiv_id="1706.03762")
+    store.add_entry("A Paper With No arXiv Id")
+
+    kept = discovery.filter_in_library([
+        {"arxiv_id": "1706.03762v5", "title": "Attention is all you need"},  # versioned, same id
+        {"title": "a paper with no arxiv id"},  # title-only match against the second entry
+        {"arxiv_id": "2401.00000", "title": "Genuinely New Paper"},
+    ])
+    assert [c["title"] for c in kept] == ["Genuinely New Paper"]
+
+
+def test_filter_in_library_keeps_everything_for_an_empty_project(temp_project):
+    items = [{"arxiv_id": "1706.03762", "title": "Attention is all you need"}]
+    assert discovery.filter_in_library(items) == items
+
+
+def test_filter_in_library_does_not_bridge_conflicting_arxiv_ids(temp_project):
+    from app import store
+    store.add_entry("Shared Title Words", arxiv_id="2401.00001")
+
+    kept = discovery.filter_in_library([
+        {"arxiv_id": "2402.99999", "title": "Shared Title Words"},  # different work, same title
+    ])
+    assert kept == [{"arxiv_id": "2402.99999", "title": "Shared Title Words"}]
+
+
 def test_distinct_openalex_only_rows_keep_separate_reservoir_and_verdict_keys():
     candidates = [
         {"openalex_id": "https://openalex.org/W1", "title": "Shared title",

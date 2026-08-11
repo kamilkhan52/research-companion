@@ -274,6 +274,28 @@ def filter_hidden(items: list | None) -> list:
     ]
 
 
+def filter_in_library(items: list | None, papers: list | None = None) -> list:
+    """Drop suggestions that identify the same paper as something already on the reading list
+    (DR-002, 2026-08-11 device pass: "I also see some papers already in the project. They
+    shouldn't be included."). The wide-recall design (`~/.claude/plans/keen-finding-rabin.md`,
+    Stage A) named this exclusion from the start; it was never actually wired in.
+
+    `Paper` (`store.list_papers`) carries only `arxiv_id` and `title`, not the DOI/OpenAlex/S2
+    ids a provider result might, so this only catches what those two fields identify — still the
+    common case, and the same strong-id-first, title-as-fallback matching `filter_hidden` uses.
+    """
+    items = items or []
+    papers = list(store.list_papers()) if papers is None else papers
+    if not papers:
+        return items
+    library_keys = [_identity_keys({"arxiv_id": p.arxiv_id, "title": p.title}) for p in papers]
+    return [
+        item for item in items
+        if not isinstance(item, dict)
+        or not any(_hidden_match(keys, _identity_keys(item)) for keys in library_keys)
+    ]
+
+
 # ---------- LLM plumbing ----------
 
 def _default_llm(model: str, system: str, user: str, max_tokens: int) -> str:
