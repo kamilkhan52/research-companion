@@ -15,7 +15,7 @@
 
 import { usePathname } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
@@ -25,8 +25,12 @@ import { Button, Chip, Icon, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
-// Guarded: absent from dev clients built before this feature. captureScreen grabs the whole
-// window, which is why the bubble hides itself for the frame.
+// Guarded: the JS package resolves as soon as it's `npm install`ed and Metro serves it —
+// that says nothing about whether a SPECIFIC installed dev-client APK has the native module
+// compiled in (DR-062: `require()` succeeding made canScreenshot() report true on an old
+// client, so a real capture failure showed the wrong, less actionable message). The library
+// itself gates every call on `NativeModules.RNViewShot`, so that's the real availability
+// check — same signal, checked once, instead of inferred from whether a call happened to throw.
 let captureScreen: ((opts: object) => Promise<string>) | null = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -35,7 +39,7 @@ try {
   captureScreen = null;
 }
 
-export const canScreenshot = () => captureScreen !== null;
+export const canScreenshot = () => captureScreen !== null && NativeModules.RNViewShot != null;
 
 /** Tester-facing ordering: verify first (that queue is why the feature exists), then open
  *  work, then everything else collapsed. Exported for tests. */
@@ -65,10 +69,15 @@ export function DevTestBubble() {
   const [error, setError] = useState<string | null>(null);
   const [showRest, setShowRest] = useState(false);
   const [creating, setCreating] = useState(false);
+  // DR-063: "I don't think I see the issue I just opened." A new item lands in the Open
+  // section, which renders below whatever the verify queue holds (up to dozens of cards) —
+  // easy to miss entirely. Pin it in its own section at the very top instead, expanded, until
+  // the reader dismisses it or opens another new-issue form.
+  const [justCreated, setJustCreated] = useState<DevTestItem | null>(null);
 
   const open = useCallback(async () => {
     let captured: string | null = null;
-    if (captureScreen) {
+    if (captureScreen && canScreenshot()) {
       setHidden(true);
       // Two frames so the hidden bubble is actually out of the composited frame.
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
@@ -118,7 +127,10 @@ export function DevTestBubble() {
                 onPress={() => setCreating(true)}
               />
               <Pressable
-                onPress={() => setVisible(false)}
+                onPress={() => {
+                  setVisible(false);
+                  setJustCreated(null);
+                }}
                 accessibilityRole="button"
                 accessibilityLabel="Close"
                 hitSlop={12}
@@ -140,9 +152,29 @@ export function DevTestBubble() {
               <NewItemForm
                 onDone={(item) => {
                   setCreating(false);
-                  if (item) setItems((prev) => [item, ...prev]);
+                  if (item) {
+                    setItems((prev) => [item, ...prev]);
+                    setJustCreated(item);
+                  }
                 }}
               />
+            ) : null}
+            {justCreated ? (
+              <>
+                <View style={styles.justAddedRow}>
+                  <Section label="Just added" tone={t.mint} />
+                  <Pressable onPress={() => setJustCreated(null)} hitSlop={8} accessibilityLabel="Dismiss">
+                    <Icon name="x" size={16} color={t.muted} />
+                  </Pressable>
+                </View>
+                <ItemCard
+                  key={`new-${justCreated.id}`}
+                  item={justCreated}
+                  shot={shot}
+                  route={pathname}
+                  startExpanded
+                />
+              </>
             ) : null}
             <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
             {sections.verify.map((i) => (
@@ -225,10 +257,12 @@ function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => void })
   );
 }
 
-function ItemCard({ item, shot, route }: { item: DevTestItem; shot: string | null; route: string }) {
+function ItemCard({ item, shot, route, startExpanded = false }: {
+  item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
+}) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(startExpanded);
   const [comment, setComment] = useState('');
   const [attach, setAttach] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -264,7 +298,7 @@ function ItemCard({ item, shot, route }: { item: DevTestItem; shot: string | nul
       <Pressable
         onPress={() => setExpanded((v) => !v)}
         accessibilityRole="button"
-        accessibilityLabel={`${item.id}: ${item.title}`}
+        accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.`}
       >
         <View style={styles.cardHead}>
           <Chip label={item.id} color={t.violet} dot={false} />
@@ -272,6 +306,11 @@ function ItemCard({ item, shot, route }: { item: DevTestItem; shot: string | nul
           {item.feedback_count ? (
             <Chip label={`${item.feedback_count} note${item.feedback_count === 1 ? '' : 's'}`} color={t.mint} dot={false} />
           ) : null}
+          {/* Nothing else on a collapsed card hints it's tappable (DR-061) — this chevron is
+              the only affordance, so it has to be unambiguous on its own. */}
+          <View style={styles.cardChevron}>
+            <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
+          </View>
         </View>
         <Text variant="body" numberOfLines={expanded ? undefined : 2} style={styles.cardTitle}>
           {item.title}
@@ -362,7 +401,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: t.line,
   },
-  cardHead: { flexDirection: 'row', gap: space.xs, flexWrap: 'wrap', marginBottom: space.xs },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: space.xs, flexWrap: 'wrap', marginBottom: space.xs },
+  cardChevron: { marginLeft: 'auto' },
+  justAddedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   cardTitle: { fontFamily: fonts.bodyMedium },
   how: { marginTop: space.xs, lineHeight: 18 },
   history: { marginTop: 4 },
