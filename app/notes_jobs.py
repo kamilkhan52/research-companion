@@ -205,6 +205,65 @@ def start_edit(target: str, instruction: str, runner: RunnerFn | None = None) ->
         )
 
 
+#: Cap on the discussion context folded into a mid-paper notes proposal. The tail is kept —
+#: the newest exchanges are the ones not yet in the notes.
+DISCUSSION_CONTEXT_CHARS = 24_000
+
+
+def start_discussion_update(target: str, thread_id: str | None = None,
+                            runner: RunnerFn | None = None) -> NotesJob:
+    """Propose a notes update from the discussion so far (DR-043) — any time, not only at
+    paper finish. Reached from the client's Update-notes button and from the analyst's
+    `propose_notes_update` tool (which passes no thread: inside a chat worker the ambient
+    thread contextvar names the conversation the tool was called from).
+
+    Unlike `start_edit`, the target may have no committed notes yet — mid-paper is exactly when
+    they usually don't exist — so the model drafts or integrates. Invariant 4 is untouched:
+    the result is a proposal on the job, applied only by an explicit human `save()`.
+    """
+    with mutation_lock(target):
+        _require_target(target)
+        if target == WORKING:
+            raise NotesError("Discussion updates target a paper's notes, not the working notes.")
+        current = read(target)
+        parts: list[str] = []
+        for record in sessions.read_records(target, thread_id):
+            role = record.get("role")
+            text = (record.get("text") or "").strip()
+            if role in ("user", "assistant") and text:
+                parts.append(f"[{role}] {text}")
+        discussion = "\n\n".join(parts)[-DISCUSSION_CONTEXT_CHARS:]
+        if not discussion.strip():
+            raise NotesError("There is no discussion to fold into the notes yet.")
+        title = title_for(target)
+        action = "Integrate the discussion into" if current.strip() else "Draft"
+        instruction = f"Fold the discussion so far into the notes for {title}."
+        prompt = (
+            "=== CURRENT COMMITTED NOTES ===\n"
+            f"{current.strip() or '(none yet)'}\n"
+            "=== END CURRENT NOTES ===\n\n"
+            "=== DISCUSSION SO FAR (newest last) ===\n"
+            f"{discussion}\n"
+            "=== END DISCUSSION ===\n\n"
+            f"Instruction: {action} this paper's notes and return the COMPLETE document. "
+            "Capture the findings, methods, quantitative results, quoted evidence, and open "
+            "questions the discussion has established that the current notes do not yet hold. "
+            "Use ONLY the supplied discussion and current notes — no external research, no "
+            "invented material. Preserve existing content unless the integration requires "
+            "reorganizing it; keep the paper's own terminology and any markdown links intact."
+        )
+        return _start_proposal(
+            target,
+            instruction,
+            prompt,
+            base_revision=_content_revision(current),
+            runner=runner,
+            kind="discussion_update",
+            summary=f"Notes from the discussion: {title}",
+            reject_running=False,
+        )
+
+
 def start_split_destination(
     papers: list[dict],
     *,

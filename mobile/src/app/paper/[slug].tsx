@@ -74,6 +74,7 @@ import { SentenceCommentComposer } from '@/components/chat/SentenceCommentCompos
 import { GrowingComposer } from '@/components/chat/GrowingComposer';
 import { NotesReviewSheet } from '@/components/NotesReviewSheet';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
+import { showToast } from '@/ui/Toast';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ConnectionNotice } from '@/components/ConnectionNotice';
 import { AgentTrail, ToolLine } from '@/components/AgentTrail';
@@ -440,6 +441,21 @@ export default function DiscussionScreen() {
     await stream.run(paths.finish, { slug, model: selectedModel ?? undefined });
   }
 
+  // DR-043 — a notes proposal from the discussion so far, any time. The job runs server-side;
+  // the notes screen resumes it and hosts the review, so approval stays exactly where #345
+  // put it. The agent can start the same job itself via its propose_notes_update tool.
+  async function updateNotesFromDiscussion() {
+    if (!pid || !slug) return;
+    try {
+      await api.startNotesDiscussionUpdate(pid, slug, activeThread);
+      showToast('Drafting a notes update from the discussion…');
+      router.push(`/notes/${encodeURIComponent(slug)}`);
+    } catch (e) {
+      if (presentSpendRefusal(e, { operation: 'other', retry: updateNotesFromDiscussion })) return;
+      showToast((e as Error).message ?? 'Could not start the notes update.');
+    }
+  }
+
   // Committed -> back in discussion (polish plan H.2): the server keeps everything recorded;
   // only the state flips, so the composer returns and a later Finish proposes a fresh draft.
   async function continueFromCommitted() {
@@ -532,6 +548,9 @@ export default function DiscussionScreen() {
             }
             finishReadingDisabled={stream.streaming}
             onFinishReading={() => void finishReadingFromMenu()}
+            showUpdateNotes={hasSession && transcript.length > 0}
+            updateNotesDisabled={stream.streaming}
+            onUpdateNotes={() => void updateNotesFromDiscussion()}
             showContinue={state === 'committed'}
             onContinue={() => void continueFromCommitted()}
             modelLabel={
@@ -687,6 +706,9 @@ export function OverflowMenu({
   onGraph,
   paperUrl,
   showFinishReading,
+  showUpdateNotes,
+  updateNotesDisabled,
+  onUpdateNotes,
   finishReadingDisabled,
   onFinishReading,
   showContinue,
@@ -710,6 +732,9 @@ export function OverflowMenu({
   onGraph: () => void;
   paperUrl: string | null;
   showFinishReading: boolean;
+  showUpdateNotes: boolean;
+  updateNotesDisabled: boolean;
+  onUpdateNotes: () => void;
   finishReadingDisabled: boolean;
   onFinishReading: () => void;
   showContinue: boolean;
@@ -783,6 +808,17 @@ export function OverflowMenu({
       icon: 'message-circle',
       accent: t.mint,
       onPress: onContinue,
+    });
+  }
+  if (showUpdateNotes) {
+    options.push({
+      key: 'update-notes',
+      title: 'Update notes from discussion',
+      subtitle: 'Draft a proposal now — you review before anything is saved',
+      icon: 'edit-3',
+      accent: t.mint,
+      disabled: updateNotesDisabled,
+      onPress: onUpdateNotes,
     });
   }
   if (hasNotes) {

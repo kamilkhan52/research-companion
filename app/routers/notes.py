@@ -181,6 +181,24 @@ def notes_agent_job(target: str, req: NotesAgentReq):
     return {"job": notes_jobs.snapshot(job.id)}
 
 
+class DiscussionUpdateReq(BaseModel):
+    thread_id: str | None = None
+
+
+@project_router.post("/notes/{target}/discussion_update_job")
+def notes_discussion_update_job(target: str, req: DiscussionUpdateReq):
+    """Start (or join) a notes proposal from the discussion so far (DR-043) — available after
+    any response, not only at paper finish. Poll /notes/jobs/{id}; apply via POST
+    /notes/{target}. The agent's `propose_notes_update` tool reaches the same machinery."""
+    if not config.has_api_key():
+        raise HTTPException(status_code=400, detail="No OpenRouter API key set. Open Settings.")
+    try:
+        job = notes_jobs.start_discussion_update(target, req.thread_id)
+    except notes_jobs.NotesError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"job": notes_jobs.snapshot(job.id)}
+
+
 @project_router.get("/review/{slug}")
 def get_review(slug: str, thread_id: str = sessions.MAIN_THREAD):
     try:

@@ -533,6 +533,9 @@ test('paper overflow menu retains the destructive delete action', async () => {
       showFinishReading={false}
       finishReadingDisabled={false}
       onFinishReading={() => {}}
+      showUpdateNotes={false}
+      updateNotesDisabled={false}
+      onUpdateNotes={() => {}}
       showContinue={false}
       onContinue={() => {}}
       modelLabel="Default"

@@ -448,3 +448,86 @@ def test_default_notes_editor_includes_math_contract(monkeypatch):
 
     assert notes_jobs.agent.MATH_MARKDOWN_CONTRACT in captured["messages"][0]["content"]
     assert events[-1] == {"type": "final", "text": "revised notes"}
+
+# ---- DR-043: notes proposal from the discussion, any time ----
+
+def _discussed_paper(temp_project, slug="p1"):
+    add_paper(temp_project, slug, "Paper One", full_text="text")
+    sessions.start_session(slug, "Paper One")
+    sessions.record_user(slug, "What is the key finding?", kind="reply")
+    # Assistant records go through record_assistant(Turn); appending the record directly keeps
+    # this seed independent of the Turn machinery — read_records is the consumer under test.
+    sessions._append_record(slug, {
+        "role": "assistant", "text": "The key finding is X improves Y by 40%.",
+    })
+    return slug
+
+
+def test_discussion_update_drafts_notes_that_do_not_exist_yet(temp_project):
+    """Mid-paper is exactly when committed notes usually don't exist — unlike start_edit,
+    the discussion update drafts rather than refusing."""
+    slug = _discussed_paper(temp_project)
+    job = notes_jobs.start_discussion_update(
+        slug, runner=_sync_runner([{"type": "final", "text": "## Notes\nX improves Y."}]))
+    finished = _wait_until_settled(job.id)
+    assert finished.status == "done"
+    assert finished.result == "## Notes\nX improves Y."
+    # Invariant 4: a proposal only — nothing on disk until save().
+    assert notes_jobs.read(slug).strip() == ""
+
+
+def test_discussion_update_prompt_carries_the_discussion_and_current_notes(temp_project):
+    slug = _discussed_paper(temp_project)
+    notes_jobs.save(slug, "## Notes\nEarlier committed point.")
+    prompts_seen = []
+
+    def runner(target, prompt):
+        prompts_seen.append(prompt)
+        return iter([{"type": "final", "text": "## Notes\nMerged."}])
+
+    _wait_until_settled(notes_jobs.start_discussion_update(slug, runner=runner).id)
+    assert "X improves Y by 40%" in prompts_seen[0]          # the discussion reached the model
+    assert "Earlier committed point." in prompts_seen[0]     # so did the committed notes
+    assert "ONLY the supplied discussion" in prompts_seen[0]  # and the grounding constraint
+
+
+def test_discussion_update_refuses_working_target_and_empty_discussions(temp_project):
+    add_paper(temp_project, "quiet", "Quiet Paper", full_text="t")
+    with pytest.raises(notes_jobs.NotesError):
+        notes_jobs.start_discussion_update("working")
+    with pytest.raises(notes_jobs.NotesError):
+        notes_jobs.start_discussion_update("quiet")   # no discussion yet
+
+
+def test_the_analyst_tool_starts_the_proposal_in_its_own_thread(temp_project, monkeypatch):
+    """The propose_notes_update tool passes no thread: the ambient thread contextvar names the
+    conversation it was called from, which is what must reach the notes job. The tool is found
+    through the AGENT'S registered toolset — asserting on a module-level list would stay green
+    with the registration deleted."""
+    from app import agent_harness
+    from pydantic_ai.models.test import TestModel
+
+    slug = _discussed_paper(temp_project)
+    calls = []
+
+    def capture(target, thread_id=None, runner=None):
+        calls.append((target, sessions.active_thread_id()))
+        return notes_jobs.NotesJob(id="fake", target=target)
+
+    monkeypatch.setattr(notes_jobs, "start_discussion_update", capture)
+
+    ag = agent_harness.build_agent(slug, model=TestModel())
+    fn = None
+    for toolset in getattr(ag, "toolsets", []):
+        for name, tool in (getattr(toolset, "tools", {}) or {}).items():
+            if "propose_notes_update" in str(name):
+                fn = getattr(tool, "function", None)
+    assert fn is not None, "propose_notes_update is not registered on the session agent"
+
+    # Call the closure inside a bound side thread, as the tool threadpool would (Pydantic AI
+    # copies context into its executor).
+    with sessions.thread_scope("side-1"):
+        out = fn(reason="capture the 40% result")
+    assert calls == [(slug, "side-1")]
+    assert "review" in out.lower() or "approval" in out.lower()
+

@@ -366,6 +366,12 @@ export const startNotesAgent = (pid: string, target: string, instruction: string
   apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/agent_job`, {
     instruction,
   }).then(noting((r) => r.job));
+/** Start (or join) a notes proposal from the discussion so far (DR-043) — any time, not only
+ *  at paper finish. The notes screen resumes the job and hosts the review. */
+export const startNotesDiscussionUpdate = (pid: string, target: string, threadId?: string) =>
+  apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/discussion_update_job`, {
+    thread_id: threadId === 'main' ? undefined : threadId,
+  }).then(noting((r) => r.job));
 export const getNotesJob = (pid: string, id: string) =>
   apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** The notes-edit job currently running for a target, if any — for reattaching on entry. */
