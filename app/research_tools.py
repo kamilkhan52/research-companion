@@ -125,7 +125,8 @@ def related_papers(slug: str) -> str:
 
     # Enrich with in-project graph edges if a graph exists (source/target are node ids; for
     # project papers the node id is the slug).
-    graph = graph_store.load().get("graph")
+    data = graph_store.load()
+    graph = data.get("graph")
     if isinstance(graph, dict):
         for e in graph.get("edges", []):
             if e.get("source") == slug and e.get("target") in papers:
@@ -137,15 +138,29 @@ def related_papers(slug: str) -> str:
     # relationships, and without a built map it sees only the reading list's own `cites` links —
     # a model that read "(none)" as "this paper has no references" contradicted the bibliography
     # sitting in the same context (DR-054), on projects whose map was simply absent (DR-046).
-    if isinstance(graph, dict) and graph.get("edges"):
+    #
+    # "Map built" means the graph EXISTS, matching `has_graph` (see graph.py's status guard): a
+    # freshly built or interrupted build persists `edges: []`, and gating on edge presence told
+    # the model "the map has not been built" about a map that had been — the same failure class,
+    # pointed the other way. These notes are DECLARATIVE facts about what this lookup could see;
+    # the standing instruction never to report a paper as having no references on this tool's
+    # basis lives in the analyst tool guidance (the trusted channel), not inside a provenance
+    # envelope the model is told to treat as evidence-only.
+    if graph is not None:
         none_marker = "  (none among this project's papers)"
-        scope_note = ""
+        extraction = graph_store.get_paper_extraction(data, slug)
+        if extraction is not None and extraction.get("status") == "done":
+            scope_note = ""
+        else:
+            scope_note = ("\n\nNote: this paper has not itself been analyzed into the reference "
+                          "map (no completed extraction); only other papers' edges and "
+                          "reading-list links were available to this lookup. Its own "
+                          "bibliography is in its full text.")
     else:
         none_marker = "  (none found in the reading list's own citation links)"
-        scope_note = ("\n\nNote: this project's reference map has not been built, so only "
-                      "reading-list citation links were available to this lookup. This says "
-                      "nothing about the paper's actual bibliography — read the paper's full "
-                      "text for its references, and never report the paper as having none.")
+        scope_note = ("\n\nNote: this project's reference map has not been built; only "
+                      "reading-list citation links were available to this lookup. The paper's "
+                      "own bibliography is in its full text.")
 
     def _fmt(slugs: set[str]) -> str:
         slugs = {s for s in slugs if s in papers and s != slug}
