@@ -29,14 +29,21 @@ LEDGER_SAMPLE = """# Device-review feedback ledger
 """
 
 
-def test_routes_do_not_exist_outside_dev(tmp_path, monkeypatch):
+def test_every_route_is_absent_outside_dev(tmp_path, monkeypatch):
+    """ALL five routes, not a sample: the first cut gated two in test, and deleting the guard
+    from the other three left the whole suite green — the only thing between production and
+    this surface was uncovered."""
     monkeypatch.setenv("RC_DEVTEST_DIR", str(tmp_path / "inbox"))
     monkeypatch.setattr(config, "dev_mode", lambda: False)
     from app.main import app
 
     c = TestClient(app)
     assert c.get("/api/devtest/items").status_code == 404
-    assert c.post("/api/devtest/feedback", json={"item_id": "DR-001", "verdict": "pass"}).status_code == 404
+    assert c.post("/api/devtest/items", json={"title": "x"}).status_code == 404
+    assert c.post("/api/devtest/feedback",
+                  json={"item_id": "DR-001", "verdict": "pass"}).status_code == 404
+    assert c.get("/api/devtest/feedback").status_code == 404
+    assert c.get("/api/devtest/status").status_code == 404
 
 
 def test_ledger_rows_parse_with_state_and_test_instructions():
@@ -47,8 +54,7 @@ def test_ledger_rows_parse_with_state_and_test_instructions():
     assert items[2]["state"] == "closed"
 
 
-def test_items_merge_untriaged_new_items(client, monkeypatch):
-    monkeypatch.setattr(devtest, "_LEDGER", devtest._LEDGER)  # real ledger parses too
+def test_items_merge_untriaged_new_items(client):
     created = client.post("/api/devtest/items",
                           json={"title": "Composer clips on fold", "description": "Open composer"})
     assert created.status_code == 200
@@ -61,7 +67,7 @@ def test_items_merge_untriaged_new_items(client, monkeypatch):
 
 
 def test_feedback_roundtrip_with_screenshot(client, tmp_path):
-    png = base64.b64encode(b"\x89PNG fake").decode()
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n fake").decode()
     r = client.post("/api/devtest/feedback", json={
         "item_id": "DR-001", "verdict": "fail", "comment": "Bar overlaps in Black theme",
         "route": "/paper/awq", "screenshot_b64": png,
@@ -71,7 +77,7 @@ def test_feedback_roundtrip_with_screenshot(client, tmp_path):
     assert entry["screenshot"].startswith(".dev-feedback/screenshots/")
     # The bytes landed where the entry points (relative to the inbox dir override).
     shot = tmp_path / "inbox" / "screenshots" / entry["screenshot"].split("/")[-1]
-    assert shot.read_bytes() == b"\x89PNG fake"
+    assert shot.read_bytes() == b"\x89PNG\r\n\x1a\n fake"
 
     listed = client.get("/api/devtest/feedback", params={"item_id": "DR-001"}).json()["entries"]
     assert listed[-1]["comment"] == "Bar overlaps in Black theme"
@@ -93,21 +99,58 @@ def test_remark_requires_a_comment_and_verdicts_are_closed(client):
                        json={"item_id": "DR-001", "verdict": "pass"}).status_code == 200
 
 
-def test_bad_screenshots_are_refused_not_stored(client, tmp_path):
-    r = client.post("/api/devtest/feedback", json={
-        "item_id": "DR-001", "verdict": "fail", "screenshot_b64": "not-base64!!!",
-    })
-    assert r.status_code == 400
+def test_a_bad_screenshot_never_discards_the_verdict(client, tmp_path):
+    """The comment is the reader's typed input; a broken IMAGE must record the entry anyway,
+    with the reason in its place — the first cut 400ed and lost both."""
+    for payload in ("not-base64!!!",
+                    base64.b64encode(b"#!/bin/sh not an image").decode(),
+                    "A" * (9_000_000)):
+        r = client.post("/api/devtest/feedback", json={
+            "item_id": "DR-001", "verdict": "fail", "comment": "precious words",
+            "screenshot_b64": payload,
+        })
+        assert r.status_code == 200
+        assert r.json()["entry"]["screenshot"] is None
+        assert r.json()["entry"]["screenshot_error"]
     assert not list((tmp_path / "inbox" / "screenshots").glob("*"))
+    entries = client.get("/api/devtest/feedback").json()["entries"]
+    assert all(e["comment"] == "precious words" for e in entries)
 
 
-def test_the_inbox_survives_a_torn_line(client, tmp_path):
+def test_same_second_screenshots_do_not_collide(client, tmp_path):
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n bytes").decode()
+    paths = set()
+    for _ in range(3):
+        r = client.post("/api/devtest/feedback", json={
+            "item_id": "DR-001", "verdict": "remark", "comment": "x",
+            "screenshot_b64": png,
+        })
+        paths.add(r.json()["entry"]["screenshot"])
+    assert len(paths) == 3  # a shared name would point one entry at another's pixels
+
+
+def test_line_separator_characters_cannot_swallow_an_entry(client):
+    """U+2028 is a line separator to str.splitlines(): written raw, one entry became several
+    unreadable fragments and a 200 silently lost the input."""
+    r = client.post("/api/devtest/feedback", json={
+        "item_id": "DR-001", "verdict": "remark", "comment": "before\u2028after",
+    })
+    assert r.status_code == 200
+    entries = client.get("/api/devtest/feedback").json()["entries"]
+    assert entries[-1]["comment"] == "before\u2028after"
+
+
+def test_the_inbox_survives_a_real_torn_write(client, tmp_path):
+    """A genuine torn append ends mid-line with NO trailing newline. The first version of this
+    test appended a newline-terminated fragment — a shape torn writes never produce — and
+    passed while the real case welded the next entry onto the fragment and lost both."""
     client.post("/api/devtest/feedback", json={"item_id": "DR-001", "verdict": "pass"})
     p = tmp_path / "inbox" / "feedback.jsonl"
-    p.write_text(p.read_text() + '{"torn": \n', encoding="utf-8")
-    client.post("/api/devtest/feedback", json={"item_id": "DR-001", "verdict": "pass"})
+    with p.open("ab") as f:
+        f.write(b'{"torn": ')   # no newline — the crash happened mid-write
+    client.post("/api/devtest/feedback", json={"item_id": "DR-002", "verdict": "pass"})
     entries = client.get("/api/devtest/feedback").json()["entries"]
-    assert len(entries) == 2  # both good lines read; the torn one skipped, file intact
+    assert [e["item_id"] for e in entries] == ["DR-001", "DR-002"]
 
 
 def test_new_item_ids_never_touch_the_ledger(client):

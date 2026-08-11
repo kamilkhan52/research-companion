@@ -14,7 +14,7 @@
 // the feature degrades to text-only feedback with an explanatory chip.
 
 import { usePathname } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -73,7 +73,9 @@ export function DevTestBubble() {
       // Two frames so the hidden bubble is actually out of the composited frame.
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       try {
-        captured = await captureScreen({ format: 'png', result: 'base64', quality: 0.9 });
+        // jpg: PNG ignores `quality` on both platforms, and a full-screen PNG can brush
+        // the server's payload cap; JPEG at 0.8 is 5-10x smaller and plenty for triage.
+        captured = await captureScreen({ format: 'jpg', result: 'base64', quality: 0.8 });
       } catch {
         captured = null;
       }
@@ -295,8 +297,8 @@ function ItemCard({ item, shot, route }: { item: DevTestItem; shot: string | nul
               }}
             />
           ) : (
-            history.map((e) => (
-              <Text key={e.ts} variant="caption" color={t.muted} style={styles.history}>
+            history.map((e, idx) => (
+              <Text key={`${e.ts}-${idx}`} variant="caption" color={t.muted} style={styles.history}>
                 {e.ts.slice(5, 16)} · {e.verdict}{e.comment ? ` — ${e.comment}` : ''}
               </Text>
             ))
@@ -316,9 +318,12 @@ function ItemCard({ item, shot, route }: { item: DevTestItem; shot: string | nul
             </Pressable>
           ) : null}
           <View style={styles.row}>
-            <Button title="Pass" icon="check" loading={busy} onPress={() => void send('pass')} />
-            <Button title="Fail" icon="x" variant="ghost" onPress={() => void send('fail')} />
-            <Button title="Remark" icon="message-circle" variant="ghost" onPress={() => void send('remark')} />
+            <Button title="Pass" icon="check" loading={busy} disabled={busy}
+              onPress={() => void send('pass')} />
+            <Button title="Fail" icon="x" variant="ghost" disabled={busy}
+              onPress={() => void send('fail')} />
+            <Button title="Remark" icon="message-circle" variant="ghost" disabled={busy}
+              onPress={() => void send('remark')} />
           </View>
         </>
       ) : null}

@@ -29,6 +29,7 @@ import binascii
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -41,10 +42,31 @@ log = logging_config.get("devtest")
 
 router = APIRouter()
 
-#: Repo root — this file is app/routers/devtest.py. The dev server runs from a checkout, which
-#: is the whole premise of the feature (RC_DEVTEST_DIR overrides for tests).
+#: This file is app/routers/devtest.py; its checkout root is two levels up. The LEDGER is read
+#: from this checkout (the running server's code and its ledger travel together), but the
+#: feedback INBOX must not be checkout-relative: the dev server runs from the main checkout
+#: while the agent triages from a PR worktree, and a worktree-relative inbox means the agent
+#: reads an empty directory and writes a cursor the server never sees — silent in both
+#: directions. `_main_root()` resolves the git COMMON directory's parent, which is the same
+#: main checkout from every worktree. RC_DEVTEST_DIR overrides for tests.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER = _REPO_ROOT / "docs" / "device-review-ledger.md"
+
+
+def _main_root() -> Path:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return Path(out.stdout.strip()).parent
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _REPO_ROOT
 
 #: A screenshot is one phone screen; 8 MB of base64 is already generous.
 MAX_SCREENSHOT_B64 = 8_000_000
@@ -62,7 +84,7 @@ def _dir() -> Path:
     import os
 
     override = os.environ.get("RC_DEVTEST_DIR")
-    d = Path(override) if override else _REPO_ROOT / ".dev-feedback"
+    d = Path(override) if override else _main_root() / ".dev-feedback"
     d.mkdir(parents=True, exist_ok=True)
     (d / "screenshots").mkdir(exist_ok=True)
     return d
@@ -112,10 +134,27 @@ def _read_feedback() -> list[dict]:
 
 
 def _append_feedback(entry: dict) -> dict:
-    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **entry}
+    from datetime import UTC, datetime
+
+    # UTC with microseconds: a naive local timestamp made two same-second entries share a ts
+    # (the strict-> cursor then skipped the second) and let a DST step-back hide an hour of
+    # feedback behind an already-advanced cursor.
+    entry = {"ts": datetime.now(UTC).isoformat(), **entry}
     p = _feedback_path()
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # A torn append ends mid-line WITHOUT a newline; blindly appending welds the next entry
+    # onto the fragment and loses both. Check the last byte first (append handles are not
+    # readable) and heal with a leading newline.
+    needs_newline = False
+    if p.exists() and p.stat().st_size:
+        with p.open("rb") as r:
+            r.seek(-1, 2)
+            needs_newline = r.read(1) != b"\n"
+    with p.open("ab") as f:
+        if needs_newline:
+            f.write(b"\n")
+        # ensure_ascii: U+2028/U+2029/NEL are line separators to str.splitlines(); left raw
+        # they split one entry into unreadable fragments — a 200 that silently lost the input.
+        f.write((json.dumps(entry, ensure_ascii=True) + "\n").encode("utf-8"))
     return entry
 
 
@@ -126,10 +165,11 @@ def list_items():
     _require_dev()
     try:
         items = parse_ledger(_LEDGER.read_text(encoding="utf-8"))
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         items = []
     known = {i["id"] for i in items}
-    for entry in _read_feedback():
+    inbox = _read_feedback()
+    for entry in inbox:
         if entry.get("kind") == "new_item" and entry.get("id") not in known:
             items.append({
                 "id": entry["id"], "raised": entry["ts"][:10],
@@ -139,7 +179,7 @@ def list_items():
             })
             known.add(entry["id"])
     counts: dict[str, int] = {}
-    for entry in _read_feedback():
+    for entry in inbox:
         if entry.get("kind") == "feedback" and entry.get("item_id"):
             counts[entry["item_id"]] = counts.get(entry["item_id"], 0) + 1
     for item in items:
@@ -190,18 +230,34 @@ def record_feedback(req: FeedbackReq):
     comment = (req.comment or "").strip()
     if req.verdict == "remark" and not comment:
         raise HTTPException(status_code=400, detail="A remark needs a comment.")
+    # The verdict and comment are the reader's input; a bad IMAGE must never discard them.
+    # Every screenshot failure below records the entry anyway, with the reason in its place.
     shot_path = None
+    shot_error = None
     if req.screenshot_b64:
+        raw = b""
         if len(req.screenshot_b64) > MAX_SCREENSHOT_B64:
-            raise HTTPException(status_code=400, detail="Screenshot too large.")
-        try:
-            raw = base64.b64decode(req.screenshot_b64, validate=True)
-        except (binascii.Error, ValueError) as e:
-            raise HTTPException(status_code=400, detail="Screenshot is not valid base64.") from e
-        safe_item = re.sub(r"[^A-Za-z0-9-]", "_", req.item_id)[:40]
-        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_item}.png"
-        (_dir() / "screenshots" / name).write_bytes(raw)
-        shot_path = f".dev-feedback/screenshots/{name}"
+            shot_error = "screenshot too large"
+        else:
+            try:
+                raw = base64.b64decode(req.screenshot_b64, validate=True)
+            except (binascii.Error, ValueError):
+                shot_error = "screenshot not valid base64"
+        # Image magic only (PNG/JPEG/WebP): this is an open-auth dev server reachable over the
+        # tunnel, and an arbitrary-bytes sink named .png is a write primitive nobody needs.
+        if raw and not (raw[:8] == b"\x89PNG\r\n\x1a\n" or raw[:3] == b"\xff\xd8\xff"
+                        or raw[:4] == b"RIFF"):
+            shot_error = "screenshot is not an image"
+            raw = b""
+        if raw:
+            safe_item = re.sub(r"[^A-Za-z0-9-]", "_", req.item_id)[:40]
+            # A uuid suffix: one capture attached to several remarks in the same second must
+            # not overwrite — a screenshot field pointing at someone else's pixels is worse
+            # for triage than none.
+            name = (f"{time.strftime('%Y%m%d-%H%M%S')}-{safe_item}-"
+                    f"{uuid.uuid4().hex[:6]}.png")
+            (_dir() / "screenshots" / name).write_bytes(raw)
+            shot_path = f".dev-feedback/screenshots/{name}"
     entry = _append_feedback({
         "kind": "feedback",
         "item_id": req.item_id,
@@ -209,6 +265,7 @@ def record_feedback(req: FeedbackReq):
         "comment": comment[:4000],
         "route": (req.route or "")[:200],
         "screenshot": shot_path,
+        **({"screenshot_error": shot_error} if shot_error else {}),
     })
     log.info("devtest %s on %s%s", req.verdict, req.item_id,
              " +screenshot" if shot_path else "")

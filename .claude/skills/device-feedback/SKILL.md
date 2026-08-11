@@ -49,8 +49,11 @@ delete them**. This skill turns that inbox into ledger updates.
 
 ## Rules
 
-- The inbox is input, the ledger is the record. Screenshots stay on disk (gitignored); the
-  ledger references their paths — do not commit binaries.
+- The inbox is input, the ledger is the record. When a ledger row needs its screenshot to
+  survive local cleanup (the ledger's own workflow rule), COPY it to
+  `docs/device-review-assets/<DR-id>/` and reference that path — never the temporary
+  `.dev-feedback/` path — and keep such copies small (they are jpg). Screenshots that only
+  informed your triage and are not referenced by a row stay in the gitignored inbox.
 - `.dev-feedback/` exists only on the dev machine. If it is missing, there is nothing to
   triage — say so; do not invent entries.
 - When Kamil asks "look at my device feedback" or similar, this skill is what he means.
