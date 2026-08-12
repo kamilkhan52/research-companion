@@ -86,7 +86,9 @@ test('a submitted verdict clears the ephemeral fields but keeps the verdict mark
     const raw = await AsyncStorage.getItem(draftKey('devtest-item', item.id));
     expect(raw).not.toBeNull();
     const stored = JSON.parse(raw!);
-    expect(stored.value).toEqual({ expanded: false, comment: '', attach: false, verdict: 'pass' });
+    expect(stored.value).toEqual({
+      expanded: false, comment: '', attach: false, verdict: 'pass', verdictAt: expect.any(Number),
+    });
   });
 });
 

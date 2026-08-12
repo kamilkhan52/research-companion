@@ -13,6 +13,7 @@
 // native module the current dev client may predate — the require is guarded, and without it
 // the feature degrades to text-only feedback with an explanatory chip.
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -59,6 +60,72 @@ export function sectionItems(items: DevTestItem[]): {
   return { verify, open, rest };
 }
 
+// DR-077 — Kamil: "Add sorting and filtering options to the dev test bubble list... the idea is
+// to be easily able to jump back into whatever I was working on and then find the next one to
+// work on." Filtering needs to know which items already carry a pass/fail verdict; sorting by
+// recency needs to know WHEN. Both live in the DR-075 per-item persisted draft already.
+export type ReviewFilter = 'all' | 'unreviewed' | 'reviewed' | 'passed' | 'failed';
+export type SortMode = 'default' | 'recent' | 'az';
+export type VerdictInfo = { verdict: 'pass' | 'fail'; at: number };
+
+export const REVIEW_FILTERS: { key: ReviewFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'unreviewed', label: 'Not reviewed' },
+  { key: 'reviewed', label: 'Reviewed' },
+  { key: 'passed', label: 'Passed' },
+  { key: 'failed', label: 'Failed' },
+];
+export const SORT_MODES: { key: SortMode; label: string }[] = [
+  { key: 'default', label: 'Priority' },
+  { key: 'recent', label: 'Recently reviewed' },
+  { key: 'az', label: 'A–Z' },
+];
+
+const ITEM_DRAFT_PREFIX = `${draftKey('devtest-item')}:`;
+
+/** Reads every item's persisted verdict straight from storage, not just currently-mounted
+ *  cards — a card inside the collapsed "Everything else" section (or simply not yet scrolled
+ *  to) never mounts, so its verdict would otherwise be invisible to filtering/sorting until
+ *  that section is expanded. Exported for a direct test; a corrupt entry just contributes
+ *  nothing rather than blocking the rest of the sheet. */
+export async function loadAllVerdicts(): Promise<Record<string, VerdictInfo>> {
+  const keys = await AsyncStorage.getAllKeys();
+  const itemKeys = keys.filter((k) => k.startsWith(ITEM_DRAFT_PREFIX));
+  if (!itemKeys.length) return {};
+  const pairs = await AsyncStorage.multiGet(itemKeys);
+  const out: Record<string, VerdictInfo> = {};
+  for (const [key, raw] of pairs) {
+    if (!raw) continue;
+    try {
+      const stored = JSON.parse(raw) as { value?: { verdict?: 'pass' | 'fail'; verdictAt?: number } };
+      const verdict = stored.value?.verdict;
+      if (verdict === 'pass' || verdict === 'fail') {
+        const id = decodeURIComponent(key.slice(ITEM_DRAFT_PREFIX.length));
+        out[id] = { verdict, at: stored.value?.verdictAt ?? 0 };
+      }
+    } catch {
+      // ignore a corrupt entry — see doc comment above
+    }
+  }
+  return out;
+}
+
+/** A Chip driven by its own Pressable rather than Chip's built-in `onPress` (same reasoning as
+ *  the member chips in authors.tsx): gives it a real accessibilityRole/State as a toggle. */
+function ToggleChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={label}
+      style={({ pressed }) => pressed && { opacity: 0.7 }}
+    >
+      <Chip label={label} dot={false} selected={active} />
+    </Pressable>
+  );
+}
+
 export function DevTestBubble() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -96,6 +163,32 @@ export function DevTestBubble() {
     scrollDraft.setValue(scrollOffsetRef.current);
   }, [scrollDraft]);
 
+  // DR-077: search/filter/sort state persists across opens the same way everything else in
+  // this sheet does — one key for the whole toolbar, so leaving mid-review (e.g. filtered to
+  // "Not reviewed") and coming back keeps the exact view, matching the "jump back into whatever
+  // I was working on" ask.
+  const toolbar = usePersistedDraft<{ query: string; filter: ReviewFilter; sort: SortMode }>(
+    draftKey('devtest-toolbar'), { query: '', filter: 'all', sort: 'default' },
+  );
+  const { query, filter, sort } = toolbar.value;
+  const setQuery = (next: string) => toolbar.setValue((v) => ({ ...v, query: next }));
+  const setFilter = (next: ReviewFilter) => toolbar.setValue((v) => ({ ...v, filter: next }));
+  const setSort = (next: SortMode) => toolbar.setValue((v) => ({ ...v, sort: next }));
+
+  // Seeded in bulk on open (covers items whose card has never mounted — DR-077's whole point is
+  // finding those), then kept live by each mounted ItemCard reporting its own verdict as it
+  // loads or changes (`reportVerdict` below).
+  const [verdicts, setVerdicts] = useState<Record<string, VerdictInfo>>({});
+  const reportVerdict = useCallback((id: string, info: VerdictInfo | undefined) => {
+    setVerdicts((prev) => {
+      const cur = prev[id];
+      if (cur?.verdict === info?.verdict && cur?.at === info?.at) return prev;
+      const next = { ...prev };
+      if (info) next[id] = info; else delete next[id];
+      return next;
+    });
+  }, []);
+
   const open = useCallback(async () => {
     let captured: string | null = null;
     if (captureScreen && canScreenshot()) {
@@ -119,16 +212,44 @@ export function DevTestBubble() {
     } catch (e) {
       setError((e as Error).message ?? 'Could not load test items.');
     }
+    setVerdicts(await loadAllVerdicts().catch(() => ({})));
   }, []);
 
   // Exclude the pinned "Just added" item from its normal section — Opus review, PR #371: it
   // used to render there too, a second mounted `ItemCard` for the same item.id sharing one
   // AsyncStorage draft key with independent in-memory state, so submitting a verdict on one
   // instance's debounced write could resurrect it on the other.
-  const sections = useMemo(
-    () => sectionItems(justCreated ? items.filter((i) => i.id !== justCreated.id) : items),
-    [items, justCreated],
+  const filteredItems = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return items.filter((i) => {
+      if (q && !i.id.toLowerCase().includes(q) && !i.title.toLowerCase().includes(q)) return false;
+      const v = verdicts[i.id]?.verdict;
+      switch (filter) {
+        case 'unreviewed': return !v;
+        case 'reviewed': return !!v;
+        case 'passed': return v === 'pass';
+        case 'failed': return v === 'fail';
+        default: return true;
+      }
+    });
+  }, [items, query, filter, verdicts]);
+
+  const scoped = useMemo(
+    () => (justCreated ? filteredItems.filter((i) => i.id !== justCreated.id) : filteredItems),
+    [filteredItems, justCreated],
   );
+  const sections = useMemo(() => sectionItems(scoped), [scoped]);
+
+  // Sorting bypasses the priority sections entirely — "A–Z" / "Recently reviewed" are explicit
+  // requests to browse the whole matched set as one flat list, not grouped by ledger state.
+  // `null` means "use the default priority sections above" (unchanged behavior).
+  const flatSorted = useMemo(() => {
+    if (sort === 'default') return null;
+    const copy = [...scoped];
+    if (sort === 'az') copy.sort((a, b) => a.title.localeCompare(b.title));
+    else copy.sort((a, b) => (verdicts[b.id]?.at ?? -1) - (verdicts[a.id]?.at ?? -1));
+    return copy;
+  }, [sort, scoped, verdicts]);
 
   // DR-074: restore once per open, after the list has real content to scroll to — not on every
   // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
@@ -188,6 +309,55 @@ export function DevTestBubble() {
           </Text>
           {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
 
+          {/* DR-077 — search/filter/sort, outside the KeyboardAvoidingView/ScrollView below so
+              it stays put while the list scrolls. Filter and sort are mutually independent:
+              filter narrows WHICH items are in play, sort decides how to browse the result —
+              "Not reviewed" + "Priority" for finding the next one, "Reviewed" + "Recently
+              reviewed" for jumping back into whatever was just being worked on. */}
+          <View style={styles.searchRow}>
+            <TextInput
+              placeholder="Search by id or title"
+              placeholderTextColor={t.muted}
+              value={query}
+              onChangeText={setQuery}
+              style={[styles.searchInput, { flex: 1 }]}
+              accessibilityLabel="Search device-test items"
+            />
+            {/* Opus review, PR #387: a persisted search query has no other way to notice it's
+                still filtering the list days later — surface a way to clear it right next to
+                where it's typed, not just a muted caption below. */}
+            {query.length ? (
+              <Pressable
+                onPress={() => setQuery('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={8}
+                style={styles.searchClear}
+              >
+                <Icon name="x" size={16} color={t.muted} />
+              </Pressable>
+            ) : null}
+          </View>
+          {/* Opus review, PR #387: two visually identical chip rows with no label read as one
+              confusing group — "Filter"/"Sort" name what each row actually does. */}
+          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            {REVIEW_FILTERS.map((f) => (
+              <ToggleChip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
+            ))}
+          </ScrollView>
+          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            {SORT_MODES.map((s) => (
+              <ToggleChip key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
+            ))}
+          </ScrollView>
+          {query.trim() || filter !== 'all' ? (
+            <Text variant="caption" color={t.muted} style={styles.matchCount}>
+              {filteredItems.length} of {items.length} shown
+            </Text>
+          ) : null}
+
           {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
               same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
               scope of its own (DR-072 only fixed the closed-sheet trigger button). Same
@@ -230,26 +400,38 @@ export function DevTestBubble() {
                     shot={shot}
                     route={pathname}
                     startExpanded
+                    onVerdictChange={reportVerdict}
                   />
                 </>
               ) : null}
-              <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
-              {sections.verify.map((i) => (
-                <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-              ))}
-              <Section label={`Open (${sections.open.length})`} tone={t.amber} />
-              {sections.open.map((i) => (
-                <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-              ))}
-              <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
-                <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
-                <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
-              </Pressable>
-              {showRest
-                ? sections.rest.map((i) => (
-                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-                  ))
-                : null}
+              {flatSorted ? (
+                <>
+                  <Section label={`Results (${flatSorted.length})`} tone={t.mint} />
+                  {flatSorted.map((i) => (
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                  ))}
+                </>
+              ) : (
+                <>
+                  <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
+                  {sections.verify.map((i) => (
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                  ))}
+                  <Section label={`Open (${sections.open.length})`} tone={t.amber} />
+                  {sections.open.map((i) => (
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                  ))}
+                  <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
+                    <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
+                    <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
+                  </Pressable>
+                  {showRest
+                    ? sections.rest.map((i) => (
+                        <ItemCard key={i.id} item={i} shot={shot} route={pathname} onVerdictChange={reportVerdict} />
+                      ))
+                    : null}
+                </>
+              )}
             </ScrollView>
           </KeyboardAvoidingView>
         </View>
@@ -333,12 +515,18 @@ interface ItemCardDraft {
   // indication... this helps me see what next to test." A remark already shows via the
   // feedback_count chip; this is the same idea for a verdict already given THIS session.
   verdict?: 'pass' | 'fail';
+  // DR-077: WHEN the verdict landed, not just what it was — "Recently reviewed" sort needs this,
+  // and it's the same field either way, so it's not worth a second persisted key.
+  verdictAt?: number;
 }
 
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
-export function ItemCard({ item, shot, route, startExpanded = false }: {
+export function ItemCard({ item, shot, route, startExpanded = false, onVerdictChange }: {
   item: DevTestItem; shot: string | null; route: string; startExpanded?: boolean;
+  // DR-077: reports this card's own verdict up to the list so filtering/sorting can see it the
+  // instant it changes, without waiting for the sheet to close and reopen.
+  onVerdictChange?: (id: string, info: VerdictInfo | undefined) => void;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -351,9 +539,17 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
     draftKey('devtest-item', item.id),
     { expanded: startExpanded, comment: '', attach: false },
   );
-  const { expanded, comment, attach, verdict: lastVerdict } = draft.value;
+  const { expanded, comment, attach, verdict: lastVerdict, verdictAt } = draft.value;
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<DevTestFeedbackEntry[] | null>(null);
+
+  // DR-077: only report once the persisted load has actually resolved — reporting the fallback
+  // (undefined) value during the one render before `ready` flips would transiently clobber a
+  // verdict the parent already knows about from its own bulk `loadAllVerdicts` read on open.
+  useEffect(() => {
+    if (!draft.ready) return;
+    onVerdictChange?.(item.id, lastVerdict ? { verdict: lastVerdict, at: verdictAt ?? 0 } : undefined);
+  }, [item.id, draft.ready, lastVerdict, verdictAt, onVerdictChange]);
 
   const setExpanded = (next: boolean) => draft.setValue((v) => ({ ...v, expanded: next }));
   const setComment = (next: string) => draft.setValue((v) => ({ ...v, comment: next }));
@@ -382,6 +578,7 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
       draft.setValue((v) => ({
         expanded: false, comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
+        verdictAt: verdict === 'remark' ? v.verdictAt : Date.now(),
       }));
       // Opus review, PR #380: `setValue`'s write is debounced 300ms, but tapping the card closed
       // right after Pass/Fail unmounts `ItemCard` (the Modal renders no children while hidden),
@@ -530,4 +727,18 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   attachRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginTop: space.sm },
   row: { flexDirection: 'row', gap: space.sm, marginTop: space.md, alignItems: 'center' },
   restToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  searchInput: {
+    marginTop: space.sm,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.sm,
+    padding: space.sm,
+    color: t.text,
+    backgroundColor: t.surface,
+  },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  searchClear: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  chipRowLabel: { marginTop: space.sm },
+  filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
+  matchCount: { marginTop: 2 },
 });
