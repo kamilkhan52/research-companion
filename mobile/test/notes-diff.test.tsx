@@ -36,8 +36,18 @@ test('proposal paper references remain tappable inside the diff', async () => {
 // a real diff but reads as a wall of green text with nothing to contrast it against.
 
 test('a first draft (empty before) is labeled, not just a wall of added lines', async () => {
-  const screen = await renderAsync(<NotesDiff before="" after="Brand new notes." />);
+  // Multi-paragraph, matching the real shape (agent._parse's NOTES_BLOCK/SYNTHESIS output is
+  // never a single bare line) — a single-line `after` with no blank line hits a pre-existing
+  // diffLines quirk (before's one empty-string line pairs against nothing, emitting a stray
+  // removed row) that a real first draft never actually produces.
+  const screen = await renderAsync(
+    <NotesDiff before="" after={'Brand new notes.\n\nA second paragraph, freshly drafted.'} />,
+  );
   expect(screen.getByText('First draft — everything below is new')).toBeTruthy();
+  // The label sits above real content, not above nothing.
+  expect(screen.getByText('Brand new notes.')).toBeTruthy();
+  expect(screen.getByText('A second paragraph, freshly drafted.')).toBeTruthy();
+  expect(screen.queryByLabelText('Removed line')).toBeNull();
 });
 
 test('an ordinary revision with real prior content carries no first-draft label', async () => {
