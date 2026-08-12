@@ -17,6 +17,7 @@ import TrackPlayer, {
   usePlaybackState,
   useProgress,
 } from 'react-native-track-player';
+import { useKeyboardState } from 'react-native-keyboard-controller';
 import { checkpointPlayback } from '../../playback-persistence';
 
 import { useAudio } from '@/audio/AudioProvider';
@@ -50,7 +51,18 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const { state } = usePlaybackState();
   const { position, duration } = useProgress(500);
 
-  const wrapStyle = [styles.wrap, inset && { marginBottom: Math.max(insets.bottom, space.sm) }];
+  // DR-055: this card sits outside any screen's own KeyboardAvoidingView (it's rendered at the
+  // root layout / above the tab bar, not inside the composer's scope), so without this it stays
+  // put while the keyboard covers it from below rather than being pushed above it like the
+  // composer itself is. `react-native-keyboard-controller`'s keyboard state is global — this
+  // works whether or not the component that opened the keyboard is a sibling or not.
+  const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
+
+  const wrapStyle = [
+    styles.wrap,
+    inset && { marginBottom: keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, space.sm) },
+    !inset && keyboardHeight > 0 && { marginBottom: keyboardHeight },
+  ];
 
   // Preparing (nothing loaded yet): announce the stage + real progress; tap for the big view.
   if (!track) {
@@ -58,7 +70,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
     const { stage, done, total, title } = audio.prep;
     const determinate = stage === 'synthesizing' && total > 0;
     return (
-      <View style={wrapStyle}>
+      <View testID="now-playing-wrap" style={wrapStyle}>
         <Pressable onPress={openPlayer} style={styles.card} accessibilityLabel="Open player">
           <View style={styles.row}>
             <View style={styles.artBadge}>
