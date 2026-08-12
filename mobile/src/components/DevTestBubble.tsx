@@ -749,9 +749,12 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
   searchClear: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   // The row View (not the ScrollView) owns the vertical footprint — see the comment at the
-  // usage site. Fixed label width keeps the two chip rows' left edges aligned.
+  // usage site. The shared label minimum keeps the two chip rows' left edges aligned.
   toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
-  chipRowLabel: { width: 44 },
+  // minWidth, not width: at OS font scales past ~1.4x "Filter" outgrows 44px and a fixed width
+  // would wrap it to a second line (Opus review, PR #388) — min keeps the two rows' chips
+  // aligned at 1x and lets the label take more room instead of wrapping when scaled.
+  chipRowLabel: { minWidth: 44 },
   filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
   matchCount: { marginTop: 2 },
 });
