@@ -14,7 +14,7 @@
 // the feature degrades to text-only feedback with an explanatory chip.
 
 import { usePathname } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -75,6 +75,12 @@ export function DevTestBubble() {
   // easy to miss entirely. Pin it in its own section at the very top instead, expanded, until
   // the reader dismisses it or opens another new-issue form.
   const [justCreated, setJustCreated] = useState<DevTestItem | null>(null);
+  // DR-074: "the scrolled position should also be in the state. In a long list, I shouldn't be
+  // needing to scroll over and over again." Same persisted-draft mechanism DR-065 uses for
+  // per-item state, keyed once for the whole list rather than per item.
+  const scrollDraft = usePersistedDraft<number>(draftKey('devtest-scroll'), 0);
+  const scrollRef = useRef<ScrollView>(null);
+  const restoredScrollRef = useRef(false);
 
   const open = useCallback(async () => {
     let captured: string | null = null;
@@ -109,6 +115,16 @@ export function DevTestBubble() {
     () => sectionItems(justCreated ? items.filter((i) => i.id !== justCreated.id) : items),
     [items, justCreated],
   );
+
+  // DR-074: restore once per open, after the list has real content to scroll to — not on every
+  // scroll-driven update to scrollDraft.value (the ref guard blocks re-entry once it's run).
+  useEffect(() => {
+    if (!visible) { restoredScrollRef.current = false; return; }
+    if (restoredScrollRef.current || !scrollDraft.ready || !items.length) return;
+    restoredScrollRef.current = true;
+    const y = scrollDraft.value;
+    if (y > 0) requestAnimationFrame(() => scrollRef.current?.scrollTo({ y, animated: false }));
+  }, [visible, items.length, scrollDraft.ready, scrollDraft.value]);
 
   return (
     <>
@@ -155,7 +171,13 @@ export function DevTestBubble() {
           </Text>
           {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
 
-          <ScrollView contentContainerStyle={styles.scroll}>
+          <ScrollView
+            testID="devtest-scroll"
+            ref={scrollRef}
+            contentContainerStyle={styles.scroll}
+            onScroll={(e) => scrollDraft.setValue(e.nativeEvent.contentOffset.y)}
+            scrollEventThrottle={100}
+          >
             {creating ? (
               <NewItemForm
                 onDone={(item) => {
@@ -277,7 +299,13 @@ export function NewItemForm({ onDone }: { onDone: (item: DevTestItem | null) => 
   );
 }
 
-interface ItemCardDraft { expanded: boolean; comment: string; attach: boolean }
+interface ItemCardDraft {
+  expanded: boolean; comment: string; attach: boolean;
+  // DR-075: "besides the 'Notes' [count], Pass and Fail feedback too should have some
+  // indication... this helps me see what next to test." A remark already shows via the
+  // feedback_count chip; this is the same idea for a verdict already given THIS session.
+  verdict?: 'pass' | 'fail';
+}
 
 // Exported for a direct persistence test (DR-065) — mounting the whole bubble to reach one
 // card would mean mocking the network fetch just to get here.
@@ -295,7 +323,7 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
     draftKey('devtest-item', item.id),
     { expanded: startExpanded, comment: '', attach: false },
   );
-  const { expanded, comment, attach } = draft.value;
+  const { expanded, comment, attach, verdict: lastVerdict } = draft.value;
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<DevTestFeedbackEntry[] | null>(null);
 
@@ -318,9 +346,15 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
         screenshot_b64: attach && shot ? shot : undefined,
       });
       showToast(`${item.id}: ${verdict} recorded${attach && shot ? ' with screenshot' : ''}.`);
-      // Nothing left to resume once a verdict lands — clear the draft rather than leave stale
-      // text behind for next time.
-      await draft.clear({ expanded: false, comment: '', attach: false });
+      // Nothing left to resume once a verdict lands, but DR-075 wants the fact that a pass/fail
+      // was already given to survive close/reopen (a remark leaves no verdict, so it doesn't
+      // touch whatever verdict already exists). `clear()` DELETES the persisted entry — it
+      // would drop the verdict the next time this card mounts fresh, so this uses `setValue`
+      // (which actually persists) instead, resetting only the ephemeral fields.
+      draft.setValue((v) => ({
+        expanded: false, comment: '', attach: false,
+        verdict: verdict === 'remark' ? v.verdict : verdict,
+      }));
     } catch (e) {
       showToast((e as Error).message ?? 'Could not record feedback.');
     } finally {
@@ -328,18 +362,23 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
     }
   };
 
+  const verdictColor = lastVerdict === 'pass' ? t.mint : lastVerdict === 'fail' ? t.danger : null;
+
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, verdictColor ? { borderColor: verdictColor } : null]}>
       <Pressable
         onPress={() => setExpanded(!expanded)}
         accessibilityRole="button"
-        accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.`}
+        accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.${lastVerdict ? ` Already ${lastVerdict === 'pass' ? 'passed' : 'failed'} this session.` : ''}`}
       >
         <View style={styles.cardHead}>
           <Chip label={item.id} color={t.violet} dot={false} />
           <Chip label={item.state} color={t.muted} dot={false} />
           {item.feedback_count ? (
             <Chip label={`${item.feedback_count} note${item.feedback_count === 1 ? '' : 's'}`} color={t.mint} dot={false} />
+          ) : null}
+          {lastVerdict ? (
+            <Chip label={lastVerdict === 'pass' ? 'Passed' : 'Failed'} color={verdictColor ?? undefined} dot={false} />
           ) : null}
           {/* Nothing else on a collapsed card hints it's tappable (DR-061) — this chevron is
               the only affordance, so it has to be unambiguous on its own. */}
