@@ -8,7 +8,8 @@
 import { renderAsync, screen } from '@testing-library/react-native';
 
 import { EmptyBuildState } from '@/app/(tabs)/graph';
-import type { GraphBuildState } from '@/hooks/useGraphBuild';
+import type { GraphBuildProgress, GraphBuildState } from '@/hooks/useGraphBuild';
+import type { GraphStatus } from '@/api/types';
 
 const BUILD: GraphBuildState = {
   building: false,
@@ -37,7 +38,7 @@ const STATUS = {
   semantic_scholar_stale_papers: [],
   retrieval_candidates: {},
   retrieval_errors: {},
-} as never;
+} satisfies GraphStatus;
 
 test('a project with no reading history yet shows only the bare empty state', async () => {
   await renderAsync(
@@ -55,23 +56,36 @@ test('a project with notes but no map here says nothing was lost', async () => {
   expect(screen.getByText(/nothing was lost, the map just hasn't been built here/)).toBeTruthy();
 });
 
-test('a build already in progress never shows the prior-work line', async () => {
-  const building: GraphBuildState = {
-    ...BUILD,
-    building: true,
-    progress: {
-      phase: 'metadata',
-      graphStage: null,
-      total: 3,
-      ready: 0,
-      done: 0,
-      currentTitle: null,
-      retrievalCandidates: {},
-      retrievalErrors: {},
-    } as never,
-  };
+test('a build already in progress shows its own banner, not the prior-work line', async () => {
+  const progress = {
+    phase: 'metadata',
+    graphStage: null,
+    total: 3,
+    ready: 0,
+    done: 0,
+    currentTitle: null,
+    perPaper: {},
+    retrievalCandidates: {},
+  } satisfies GraphBuildProgress;
+  const building: GraphBuildState = { ...BUILD, building: true, progress };
   await renderAsync(
     <EmptyBuildState status={STATUS} build={building} projectId="p" hasPriorWork={true} />,
   );
+  // Positive assertion that the build's own progress UI actually rendered — not just that the
+  // prior-work line is absent, which a component rendering nothing would also satisfy.
+  expect(screen.getByText('Building map…')).toBeTruthy();
+  expect(screen.queryByText(/nothing was lost/)).toBeNull();
+});
+
+// Opus review, PR #374: a build that just FAILED also has an empty `graph` and hasPriorWork can
+// still be true — showing "nothing was lost, the map just hasn't been built here" ahead of the
+// actual error is misleading in exactly the way this row exists to prevent (a wrong cause
+// preempting the real one). The reassurance line must defer to a real error.
+test('a failed build shows the error, not the prior-work reassurance', async () => {
+  const failed: GraphBuildState = { ...BUILD, error: 'Semantic Scholar timed out.' };
+  await renderAsync(
+    <EmptyBuildState status={STATUS} build={failed} projectId="p" hasPriorWork={true} />,
+  );
+  expect(screen.getByText('Semantic Scholar timed out.')).toBeTruthy();
   expect(screen.queryByText(/nothing was lost/)).toBeNull();
 });

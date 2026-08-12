@@ -444,7 +444,7 @@ export function EmptyBuildState({
       <Text variant="title" style={{ textAlign: 'center', marginBottom: space.lg }}>
         No map yet
       </Text>
-      {hasPriorWork ? (
+      {hasPriorWork && !build.error ? (
         <Text variant="caption" color={t.muted} style={{ textAlign: 'center', marginBottom: space.md }}>
           This project already has papers with notes — nothing was lost, the map just hasn't
           been built here.
