@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
-import { useDevMode, useGraph } from '@/api/queries';
+import { useDevMode, useGraph, useProjectState } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
 import { BottomSheet } from '@/components/BottomSheet';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
@@ -62,6 +62,7 @@ export default function GraphScreen() {
   const { focus, t: focusNonce } = useLocalSearchParams<{ focus?: string; t?: string }>();
   const { activePid } = useActiveProject();
   const graphQuery = useGraph(activePid);
+  const projectState = useProjectState(activePid);
   const build = useGraphBuild(activePid);
   const { allowAllFilter } = useGraphSettings();
   const devMode = useDevMode();
@@ -319,7 +320,12 @@ export default function GraphScreen() {
       ) : !graph ? (
         <>
           {refreshFailed}
-          <EmptyBuildState status={status} build={build} projectId={activePid} />
+          <EmptyBuildState
+            status={status}
+            build={build}
+            projectId={activePid}
+            hasPriorWork={(projectState.data?.papers ?? []).some((p) => p.has_notes)}
+          />
         </>
       ) : (
         <>
@@ -404,14 +410,16 @@ export default function GraphScreen() {
   );
 }
 
-function EmptyBuildState({
+export function EmptyBuildState({
   status,
   build,
   projectId,
+  hasPriorWork,
 }: {
   status: GraphStatus | null;
   build: GraphBuildState;
   projectId: string;
+  hasPriorWork: boolean;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -425,11 +433,23 @@ function EmptyBuildState({
   // DR-045: no map means say that and nothing else. The mechanics of how a build works
   // (Semantic Scholar, arXiv matching, full-text retrieval) belong to the build's own staged
   // progress, not to an empty screen.
+  //
+  // DR-046: a project with real reading history (at least one paper with notes) but no map is
+  // most often an import — the derived graph lives only in `.state/`, which stays behind on the
+  // source instance. An empty map here reads as data loss unless something says otherwise; the
+  // one extra line stays factual rather than guessing "imported," since the same state is also
+  // reachable by simply never having opened this tab before.
   return (
     <View style={styles.emptyWrap}>
       <Text variant="title" style={{ textAlign: 'center', marginBottom: space.lg }}>
         No map yet
       </Text>
+      {hasPriorWork ? (
+        <Text variant="caption" color={t.muted} style={{ textAlign: 'center', marginBottom: space.md }}>
+          This project already has papers with notes — nothing was lost, the map just hasn't
+          been built here.
+        </Text>
+      ) : null}
       {build.error ? (
         <Text variant="caption" color={t.danger} style={{ textAlign: 'center', marginBottom: space.md }}>
           {build.error}
