@@ -135,14 +135,24 @@ test('a just-created item renders exactly once, not once pinned and once in Open
 // DR-074 — Kamil: "the scrolled position should also be in the state. In a long list, I
 // shouldn't be needing to scroll over and over again."
 
-test('scrolling the list persists the offset', async () => {
+test('scrolling the list persists the offset once the gesture settles', async () => {
+  // Opus review, PR #380: persisting on every raw `scroll` event puts a `setState` on
+  // `DevTestBubble` per throttled frame, which re-renders every unmemoized `ItemCard` below it —
+  // a real cost on the 75-row list DR-074 exists for. The fix tracks the live offset in a ref
+  // (no re-render) and only commits it at the natural pause points, so a bare `scroll` event
+  // must NOT persist anything — only `onScrollEndDrag`/`onMomentumScrollEnd` do.
   const screen = render(<DevTestBubble />);
   fireEvent.press(screen.getByLabelText('Open device-test companion'));
   await waitFor(() => expect(screen.getByText('New issue')).toBeTruthy());
 
-  fireEvent.scroll(screen.getByTestId('devtest-scroll'), {
+  const list = screen.getByTestId('devtest-scroll');
+  const event = {
     nativeEvent: { contentOffset: { y: 640 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
-  });
+  };
+  fireEvent.scroll(list, event);
+  expect(await AsyncStorage.getItem(draftKey('devtest-scroll'))).toBeNull();
+
+  fireEvent(list, 'scrollEndDrag', event);
   await waitFor(async () => {
     const raw = await AsyncStorage.getItem(draftKey('devtest-scroll'));
     expect(raw).toContain('"value":640');
@@ -187,6 +197,29 @@ test('a passed verdict is still visible after the card unmounts and remounts', a
     expect(raw).toContain('"verdict":"pass"');
   });
   first.unmount();
+
+  const second = render(<ItemCard item={item} shot={null} route="/discover" />);
+  await waitFor(() => expect(second.getByText('Passed')).toBeTruthy());
+});
+
+// Opus review, PR #380: `setValue`'s write is debounced 300ms, and closing the sheet unmounts
+// `ItemCard` outright (the Modal renders no children while hidden) — cancelling any pending
+// write. A verdict tapped and then closed within that window used to vanish, which is exactly
+// what DR-075 exists to prevent. `send()` now follows `setValue` with `markSubmitted()`, which
+// writes to AsyncStorage immediately rather than on a timer — so this asserts the storage write
+// landed with NO wait at all, unlike the sibling test above which deliberately waits first.
+test('a verdict is persisted immediately, before the write-debounce would otherwise fire', async () => {
+  const item = { ...ITEM, id: 'DR-995' };
+  const first = render(<ItemCard item={item} shot={null} route="/discover" />);
+  fireEvent.press(first.getByText(item.title));
+  fireEvent.press(first.getByText('Pass'));
+  await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
+  // No waitFor/debounce delay here on purpose — simulates the sheet closing (unmount) the
+  // instant the API call resolves, before the 300ms debounce timer would have fired.
+  first.unmount();
+
+  const raw = await AsyncStorage.getItem(draftKey('devtest-item', item.id));
+  expect(raw).toContain('"verdict":"pass"');
 
   const second = render(<ItemCard item={item} shot={null} route="/discover" />);
   await waitFor(() => expect(second.getByText('Passed')).toBeTruthy());

@@ -81,6 +81,14 @@ export function DevTestBubble() {
   const scrollDraft = usePersistedDraft<number>(draftKey('devtest-scroll'), 0);
   const scrollRef = useRef<ScrollView>(null);
   const restoredScrollRef = useRef(false);
+  // Opus review, PR #380: persisting on every `onScroll` puts a `setState` on this component —
+  // which re-renders every unmemoized `ItemCard` below it, dozens of them — on every throttled
+  // scroll frame. Track the live offset in a ref (no re-render) and only commit it to the
+  // persisted draft at the natural pause points, one re-render per gesture instead of per frame.
+  const scrollOffsetRef = useRef(0);
+  const commitScrollOffset = useCallback(() => {
+    scrollDraft.setValue(scrollOffsetRef.current);
+  }, [scrollDraft]);
 
   const open = useCallback(async () => {
     let captured: string | null = null;
@@ -175,7 +183,9 @@ export function DevTestBubble() {
             testID="devtest-scroll"
             ref={scrollRef}
             contentContainerStyle={styles.scroll}
-            onScroll={(e) => scrollDraft.setValue(e.nativeEvent.contentOffset.y)}
+            onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+            onScrollEndDrag={commitScrollOffset}
+            onMomentumScrollEnd={commitScrollOffset}
             scrollEventThrottle={100}
           >
             {creating ? (
@@ -355,6 +365,12 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
         expanded: false, comment: '', attach: false,
         verdict: verdict === 'remark' ? v.verdict : verdict,
       }));
+      // Opus review, PR #380: `setValue`'s write is debounced 300ms, but tapping the card closed
+      // right after Pass/Fail unmounts `ItemCard` (the Modal renders no children while hidden),
+      // which cancels the pending write outright — losing the exact verdict DR-075 exists to
+      // keep. `markSubmitted` writes `valueRef.current` (already updated by `setValue` above,
+      // synchronously) to AsyncStorage immediately, so there's nothing left for an unmount to cancel.
+      await draft.markSubmitted();
     } catch (e) {
       showToast((e as Error).message ?? 'Could not record feedback.');
     } finally {
@@ -378,7 +394,9 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
             <Chip label={`${item.feedback_count} note${item.feedback_count === 1 ? '' : 's'}`} color={t.mint} dot={false} />
           ) : null}
           {lastVerdict ? (
-            <Chip label={lastVerdict === 'pass' ? 'Passed' : 'Failed'} color={verdictColor ?? undefined} dot={false} />
+            // Opus review, PR #380: an explicit `=== 'fail'` check (not an else) so a future
+            // widening of the verdict type can't silently mislabel an unrecognized value "Failed".
+            <Chip label={lastVerdict === 'fail' ? 'Failed' : 'Passed'} color={verdictColor ?? undefined} dot={false} />
           ) : null}
           {/* Nothing else on a collapsed card hints it's tappable (DR-061) — this chevron is
               the only affordance, so it has to be unambiguous on its own. */}
