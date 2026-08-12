@@ -41,7 +41,7 @@ import { fullPaperUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { Button, Card, Icon, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export const DISCOVER_PLACEHOLDER = 'Type a topic or question';
 
@@ -201,20 +201,22 @@ export default function DiscoverScreen() {
                 {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
                 scholarly sources, ranked by fit and evidence.
               </Text>
-              <View style={styles.actionKey}>
-                <View style={styles.actionKeyItem}>
-                  <Icon name="align-left" size={14} color={t.muted} />
-                  <Text variant="caption" color={t.muted}>Abstract</Text>
+              {visible.length > 0 ? (
+                <View style={styles.actionKey}>
+                  <View style={styles.actionKeyItem}>
+                    <Icon name="align-left" size={14} color={t.muted} />
+                    <Text variant="caption" color={t.muted}>Abstract</Text>
+                  </View>
+                  <View style={styles.actionKeyItem}>
+                    <Icon name="external-link" size={14} color={t.muted} />
+                    <Text variant="caption" color={t.muted}>Full paper</Text>
+                  </View>
+                  <View style={styles.actionKeyItem}>
+                    <Icon name="eye-off" size={14} color={t.muted} />
+                    <Text variant="caption" color={t.muted}>Hide</Text>
+                  </View>
                 </View>
-                <View style={styles.actionKeyItem}>
-                  <Icon name="external-link" size={14} color={t.muted} />
-                  <Text variant="caption" color={t.muted}>Full paper</Text>
-                </View>
-                <View style={styles.actionKeyItem}>
-                  <Icon name="eye-off" size={14} color={t.muted} />
-                  <Text variant="caption" color={t.muted}>Hide</Text>
-                </View>
-              </View>
+              ) : null}
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
                   <SuggestionCard
@@ -446,7 +448,8 @@ export function SuggestionCard({
           </Text>
           <Pressable
             onPress={() => void handleUndoHide()}
-            style={styles.actionBtn}
+            accessibilityRole="button"
+            style={styles.undoBtn}
             accessibilityLabel={`Undo hiding ${s.title}`}>
             <Text variant="caption" color={t.mint}>Undo</Text>
           </Pressable>
@@ -521,6 +524,7 @@ export function SuggestionCard({
         {s.abstract ? (
           <Pressable
             onPress={() => setShowAbstract((v) => !v)}
+            accessibilityRole="button"
             style={[styles.actionBtn, showAbstract && styles.actionBtnActive]}
             accessibilityLabel={`${showAbstract ? 'Hide' : 'Show'} abstract for ${s.title}`}>
             <Icon name="align-left" size={20} color={showAbstract ? t.mint : t.muted} />
@@ -529,6 +533,7 @@ export function SuggestionCard({
         {paperUrl ? (
           <Pressable
             onPress={() => Linking.openURL(paperUrl)}
+            accessibilityRole="button"
             style={styles.actionBtn}
             accessibilityLabel={`Open full paper for ${s.title}`}>
             <Icon name="external-link" size={20} color={t.muted} />
@@ -538,6 +543,7 @@ export function SuggestionCard({
           <Pressable
             onPress={() => void handleHide()}
             disabled={hideBusy}
+            accessibilityRole="button"
             style={styles.actionBtn}
             accessibilityLabel={`Hide ${s.title} from recommendations`}>
             <Icon name="eye-off" size={20} color={t.muted} />
@@ -615,7 +621,7 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   errorCard: { marginTop: space.md, borderColor: t.danger },
   suggestionCard: { borderColor: t.line2 },
-  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.sm, alignItems: 'center' },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm, alignItems: 'center' },
   // DR-070 — Kamil: "turn these large buttons into icons so they're more compact." A one-time
   // key row above the results list carries the labels now; the icon choice is deliberately kept
   // distinct from Authors' existing `file-text` = "papers in project" stat (DR-048's open icon
@@ -630,6 +636,17 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     justifyContent: 'center',
   },
   actionBtnActive: { borderColor: t.mint, backgroundColor: t.mintWash },
+  // Opus review, PR #381: this used to share `actionBtn`, which the icon-button conversion
+  // turned into a fixed 48x48 square with no horizontal padding — fine for a single icon, but
+  // "Undo" is text and needs room to sit in, especially at a larger accessibility font scale.
+  // Its own style keeps the auto-width/padded geometry while still meeting the touch-target floor.
+  undoBtn: {
+    minHeight: control.minTouch,
+    paddingHorizontal: space.md,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   actionKey: {
     flexDirection: 'row',
     flexWrap: 'wrap',

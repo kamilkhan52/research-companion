@@ -91,3 +91,26 @@ test('full paper and hide actions render as icon-only buttons with their labels 
   expect(screen.getByLabelText('Hide A Paper Worth Reading from recommendations')).toBeTruthy();
   await unmountAsync();
 });
+
+// Opus review, PR #381: the icon-button conversion repurposed `styles.actionBtn` into a fixed
+// 48x48 square with no horizontal padding — a style the hidden-state "Undo" TEXT button also
+// used, unaccounted for in the original diff. A word doesn't fit a zero-padding icon square the
+// same way an icon does, especially at a larger accessibility font scale.
+test('the Undo control on a hidden suggestion keeps its own padded geometry, not the icon-square style', async () => {
+  // `jest.mock('@/api/endpoints')` (bare, no factory) doesn't automock `hideSuggestion`/
+  // `unhideSuggestion` in this suite for reasons unrelated to this PR (confirmed: even the real,
+  // unmocked module reports them `undefined` via `Object.keys` in this test environment — a
+  // pre-existing jest/babel transform quirk, not something introduced here). Direct assignment
+  // onto the mocked module namespace sidesteps it without touching every other test's automock.
+  (api as unknown as { hideSuggestion: jest.Mock }).hideSuggestion = jest.fn().mockResolvedValue({
+    hidden: { keys: ['c1'], title: 'A Paper Worth Reading', hidden_at: '2026-08-12T00:00:00Z' },
+  });
+  const { unmountAsync } = await renderCard({ ...BASE, abstract: '' });
+  await fireEventAsync.press(screen.getByLabelText('Hide A Paper Worth Reading from recommendations'));
+  const undo = await screen.findByLabelText('Undo hiding A Paper Worth Reading');
+  const flat = StyleSheet.flatten(undo.props.style);
+  // Not the icon-square dimensions — a fixed 48x48 with no padding is exactly what broke here.
+  expect(flat.width).not.toBe(48);
+  expect(flat.paddingHorizontal).toBeTruthy();
+  await unmountAsync();
+});
