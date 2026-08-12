@@ -3,7 +3,7 @@
 // since this bubble is how Kamil files feedback about exactly that kind of bug. Same fix as
 // DR-055/DR-072's Toast fix: read the global keyboard-controller state.
 
-import { renderAsync, screen } from '@testing-library/react-native';
+import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { useKeyboardState } from 'react-native-keyboard-controller';
@@ -52,4 +52,15 @@ test('a stale height reading after dismissal does not keep the bubble lifted', a
   await renderAsync(<DevTestBubble />);
   const trigger = screen.getByLabelText('Open device-test companion');
   expect(bottom(trigger)).toBe(96);
+});
+
+// DR-076 — the sheet's own ScrollView had no `keyboardShouldPersistTaps`, so at the RN default
+// ("never") the first tap on Pass/Fail with the keyboard open was consumed dismissing the
+// keyboard instead of registering — needed a second tap to actually submit a verdict.
+test('the open sheet lets a tap register on the same gesture that dismisses the keyboard', async () => {
+  mockKeyboard({ isVisible: false, height: 0 });
+  await renderAsync(<DevTestBubble />);
+  await fireEventAsync.press(screen.getByLabelText('Open device-test companion'));
+  await waitFor(() => expect(screen.getByTestId('devtest-scroll')).toBeTruthy());
+  expect(screen.getByTestId('devtest-scroll').props.keyboardShouldPersistTaps).toBe('handled');
 });

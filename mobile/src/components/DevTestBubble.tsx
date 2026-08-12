@@ -16,7 +16,7 @@
 import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
-import { useKeyboardState } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
@@ -188,61 +188,70 @@ export function DevTestBubble() {
           </Text>
           {error ? <Text variant="caption" color={t.danger}>{error}</Text> : null}
 
-          <ScrollView
-            testID="devtest-scroll"
-            ref={scrollRef}
-            contentContainerStyle={styles.scroll}
-            onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
-            onScrollEndDrag={commitScrollOffset}
-            onMomentumScrollEnd={commitScrollOffset}
-            scrollEventThrottle={100}
-          >
-            {creating ? (
-              <NewItemForm
-                onDone={(item) => {
-                  setCreating(false);
-                  if (item) {
-                    setItems((prev) => [item, ...prev]);
-                    setJustCreated(item);
-                  }
-                }}
-              />
-            ) : null}
-            {justCreated ? (
-              <>
-                <View style={styles.justAddedRow}>
-                  <Section label="Just added" tone={t.mint} />
-                  <Pressable onPress={() => setJustCreated(null)} hitSlop={8} accessibilityLabel="Dismiss">
-                    <Icon name="x" size={16} color={t.muted} />
-                  </Pressable>
-                </View>
-                <ItemCard
-                  key={`new-${justCreated.id}`}
-                  item={justCreated}
-                  shot={shot}
-                  route={pathname}
-                  startExpanded
+          {/* DR-076 — the comment field sits directly above the Pass/Fail/Remark row inside this
+              same ScrollView, and this whole sheet is a plain RN Modal with no keyboard-avoiding
+              scope of its own (DR-072 only fixed the closed-sheet trigger button). Same
+              react-native-keyboard-controller wrapper the rest of the app already uses
+              (discover.tsx, paper/[slug].tsx) — its keyboard state is global, so it works inside
+              a Modal's own native window the same as anywhere else. */}
+          <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+            <ScrollView
+              testID="devtest-scroll"
+              ref={scrollRef}
+              contentContainerStyle={styles.scroll}
+              onScroll={(e) => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+              onScrollEndDrag={commitScrollOffset}
+              onMomentumScrollEnd={commitScrollOffset}
+              scrollEventThrottle={100}
+              keyboardShouldPersistTaps="handled"
+            >
+              {creating ? (
+                <NewItemForm
+                  onDone={(item) => {
+                    setCreating(false);
+                    if (item) {
+                      setItems((prev) => [item, ...prev]);
+                      setJustCreated(item);
+                    }
+                  }}
                 />
-              </>
-            ) : null}
-            <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
-            {sections.verify.map((i) => (
-              <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-            ))}
-            <Section label={`Open (${sections.open.length})`} tone={t.amber} />
-            {sections.open.map((i) => (
-              <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-            ))}
-            <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
-              <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
-              <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
-            </Pressable>
-            {showRest
-              ? sections.rest.map((i) => (
-                  <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
-                ))
-              : null}
-          </ScrollView>
+              ) : null}
+              {justCreated ? (
+                <>
+                  <View style={styles.justAddedRow}>
+                    <Section label="Just added" tone={t.mint} />
+                    <Pressable onPress={() => setJustCreated(null)} hitSlop={8} accessibilityLabel="Dismiss">
+                      <Icon name="x" size={16} color={t.muted} />
+                    </Pressable>
+                  </View>
+                  <ItemCard
+                    key={`new-${justCreated.id}`}
+                    item={justCreated}
+                    shot={shot}
+                    route={pathname}
+                    startExpanded
+                  />
+                </>
+              ) : null}
+              <Section label={`To verify (${sections.verify.length})`} tone={t.mint} />
+              {sections.verify.map((i) => (
+                <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
+              ))}
+              <Section label={`Open (${sections.open.length})`} tone={t.amber} />
+              {sections.open.map((i) => (
+                <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
+              ))}
+              <Pressable onPress={() => setShowRest((v) => !v)} style={styles.restToggle}>
+                <Section label={`Everything else (${sections.rest.length})`} tone={t.muted} />
+                <Icon name={showRest ? 'chevron-up' : 'chevron-down'} size={16} color={t.muted} />
+              </Pressable>
+              {showRest
+                ? sections.rest.map((i) => (
+                    <ItemCard key={i.id} item={i} shot={shot} route={pathname} />
+                  ))
+                : null}
+            </ScrollView>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     </>
