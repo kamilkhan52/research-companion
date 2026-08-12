@@ -107,7 +107,7 @@ import { useStreamingTurn } from '@/hooks/useStreamingTurn';
 import { useActiveProject } from '@/store/project';
 import { useListeningMode } from '@/store/listening';
 import { clearLastThread, loadLastThread, saveLastThread } from '@/lib/lastThread';
-import { fullPaperUrl } from '@/lib/paperLinks';
+import { fullPaperUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import {
   composeSentenceReply,
   removeSentenceComment,
@@ -249,6 +249,13 @@ export default function DiscussionScreen() {
     if (href.startsWith('rc-paper:')) {
       const s = href.slice('rc-paper:'.length);
       if (s) showPaperActions(s);
+      return;
+    }
+    // DR-054: a citation the model has no sourceable URL for. Opens the same sheet as an
+    // external URL reference, with a title-search fallback in place of "Open link".
+    const searchTitle = titleFromRcSearchLink(href);
+    if (searchTitle) {
+      setExternalRef({ href, label: label ?? searchTitle });
       return;
     }
     if (!/^https?:\/\//i.test(href)) return;

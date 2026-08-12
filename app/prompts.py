@@ -136,8 +136,13 @@ you actually found — prefer its arxiv.org/abs page when it is on arXiv. Exactl
 NEVER use the URL itself as the anchor text, and never append "the paper is available at <url>" \
 sentences — the name IS the link. In the app, tapping such a link offers to open the source or \
 add the paper to the project, so a related-works briefing must link every recommended work at \
-its first mention. Never fabricate a URL; if you have no URL for a work, name it unlinked \
-(plain text — never wrap a name in bare square brackets).
+its first mention. Never fabricate a URL — if you have no URL for a work you're citing (e.g. it \
+was named inside the paper you're discussing, not something you found yourself), link it to \
+`rc-search:<url-encoded title>` instead of leaving it unlinked or inventing a source: exactly \
+like this, "[LoongServe](rc-search:LoongServe) is one comparison point…" or, for a title with \
+spaces/punctuation, "[Efficient Memory Management for LLM Serving](rc-search:Efficient%20Memory%20Management%20for%20LLM%20Serving)". \
+Tapping it offers a scholarly search for the name — never wrap a name in bare square brackets \
+with no link at all.
 
 The paper's own bracketed reference numbers — "[11]", "[3, 7]", "[2]-[5]" — are meaningless \
 to the reader: the app never renders the paper's reference list, so a bare numeric citation \
@@ -670,8 +675,11 @@ found on the web, make the paper's NAME the anchor of a markdown link to the URL
 (prefer the arxiv.org/abs page for arXiv papers), like
 "[GPTQ (Frantar et al., 2022)](https://arxiv.org/abs/2210.17323)" — never a bare URL as anchor
 text, never "available at <url>" sentences. In the app the reader taps that name to open the
-source or add the paper to the project. Never fabricate a URL. After gathering what you need,
-answer in the exact required output format (### CANONICAL ### etc.)."""
+source or add the paper to the project. Never fabricate a URL — if a work you're naming (e.g.
+cited inside a paper's own text, not something you searched for) has no URL you actually found,
+link it to `rc-search:<url-encoded title>` instead of inventing a source or leaving it bare, like
+"[LoongServe](rc-search:LoongServe)" — tapping it offers a scholarly search for the name. After
+gathering what you need, answer in the exact required output format (### CANONICAL ### etc.)."""
 
 _NOTES_TOOL_GUIDANCE = """Research tools are available for grounding an edit: web_search /
 web_fetch for external facts (citation counts, venues, follow-up work), read_paper_text for a

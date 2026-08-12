@@ -15,6 +15,7 @@ import { FigureCard } from '@/components/FigureCard';
 import { InlineMath, MathBlock } from '@/components/MathView';
 import type { PaperFigure } from '@/api/types';
 import { planFigurePlacement } from '@/lib/figures';
+import { RC_SEARCH_PREFIX } from '@/lib/paperLinks';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -50,8 +51,10 @@ export interface SentenceAnnotations {
 const MONO = Platform.select({ ios: 'Menlo', default: 'monospace' });
 
 /** Called when an inline link is tapped. The discussion screen provides one (via
- *  LinkHandlerContext) that routes `rc-paper:<slug>` links into the in-project paper's discussion
- *  and prompts for external references; elsewhere links just open http(s) URLs externally. */
+ *  LinkHandlerContext) that routes `rc-paper:<slug>` links into the in-project paper's discussion,
+ *  `rc-search:<title>` links (DR-054 — a citation with no sourceable URL) into a title-search
+ *  fallback, and prompts for external URL references; elsewhere links just open http(s) URLs
+ *  externally. */
 export type LinkHandler = (href: string, label?: string) => void;
 
 const defaultLinkPress: LinkHandler = (href) => {
@@ -663,6 +666,18 @@ function Inline({
                 {' '}
                 {t.text}
               </RNText>
+            ) : t.href?.startsWith(RC_SEARCH_PREFIX) ? (
+              // DR-054: a work the model has a name for but no sourceable URL for — an
+              // app-internal marker instead of a fabricated link. Search-icon prefix (no
+              // underline) signals "opens options to look this up", distinct from both a
+              // direct external link and an in-project relationship.
+              <RNText
+                onPress={suppressLinks ? undefined : () => onLinkPress(t.href ?? '', t.text)}
+                style={{ color: theme.mint, fontFamily: serif ? fonts.serifSemiBold : fonts.bodySemiBold }}>
+                <Icon name="search" size={serif ? 13 : 12} color={theme.mint} />
+                {' '}
+                {t.text}
+              </RNText>
             ) : (
               <RNText
                 style={{ color: theme.mint, textDecorationLine: 'underline' }}
@@ -746,7 +761,7 @@ function emphasisToken(type: 'bold' | 'italic', content: string): InlineToken {
  *  literal bracketed text. Repaired into a proper link before tokenizing; a legitimate
  *  parenthetical like "[GPTQ (Frantar et al., 2022)](url)" never matches because its
  *  parenthetical does not start with a link scheme. */
-const MALFORMED_LINK_RE = /\[([^\[\]()]+?)\s*\(((?:rc-paper:|https?:\/\/)[^\s()]+)\)\]/g;
+const MALFORMED_LINK_RE = /\[([^\[\]()]+?)\s*\(((?:rc-paper:|rc-search:|https?:\/\/)[^\s()]+)\)\]/g;
 
 function tokenizeInline(rawInput: string): InlineToken[] {
   const input = rawInput.replace(MALFORMED_LINK_RE, '[$1]($2)');

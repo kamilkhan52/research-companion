@@ -8,6 +8,7 @@ import { Alert, Linking } from 'react-native';
 
 import { useAddPaper, useProjectMembership } from '@/api/queries';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
+import { scholarSearchUrl } from '@/lib/paperLinks';
 import { useTheme } from '@/theme/ThemeProvider';
 
 export interface ExternalRef {
@@ -39,6 +40,9 @@ export function ExternalRefSheet({
 
   if (!refItem) return null;
   const arxivId = parseArxivId(refItem.href);
+  // DR-054: the model has no real URL for this one — it's a name-only citation
+  // (`rc-search:<title>`), the app-internal scheme it uses instead of fabricating a source.
+  const isRealUrl = /^https?:\/\//i.test(refItem.href);
   // A label that is a URL (models often write "available at [arxiv.org/…](url)") is not a
   // title; without a title, membership can only match by arXiv id, and an add falls back to
   // an "arXiv <id>" placeholder (the discussion opens with the real paper title later).
@@ -57,8 +61,9 @@ export function ExternalRefSheet({
         title: title ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
         arxivId: arxivId ?? undefined,
         // Without an arXiv id the href is the only source we have — carry it so the
-        // analysis offer's retrieval fetches that link instead of title-searching.
-        pdfUrl: arxivId ? undefined : refItem!.href,
+        // analysis offer's retrieval fetches that link instead of title-searching. A
+        // name-only citation has no source URL at all, real or otherwise.
+        pdfUrl: !isRealUrl || arxivId ? undefined : refItem!.href,
       });
       if (!result.paper) return;
       setAddedHref(refItem!.href);
@@ -68,16 +73,27 @@ export function ExternalRefSheet({
   }
 
   const options: SheetOption[] = [
-    {
-      key: 'open',
-      title: 'Open link',
-      subtitle: refItem.href,
-      icon: 'external-link',
-      onPress: () => {
-        onClose();
-        void Linking.openURL(refItem.href).catch(() => undefined);
-      },
-    },
+    isRealUrl
+      ? {
+          key: 'open',
+          title: 'Open link',
+          subtitle: refItem.href,
+          icon: 'external-link',
+          onPress: () => {
+            onClose();
+            void Linking.openURL(refItem.href).catch(() => undefined);
+          },
+        }
+      : {
+          key: 'open',
+          title: 'Search Scholar',
+          subtitle: title ?? undefined,
+          icon: 'search',
+          onPress: () => {
+            onClose();
+            void Linking.openURL(scholarSearchUrl(title ?? '')).catch(() => undefined);
+          },
+        },
     inProject
       ? {
           key: 'add',

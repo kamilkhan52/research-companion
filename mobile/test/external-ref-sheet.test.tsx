@@ -1,11 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { Linking } from 'react-native';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { ProjectState } from '@/api/types';
 import { ExternalRefSheet, parseArxivId } from '@/components/ExternalRefSheet';
+import { rcSearchLink } from '@/lib/paperLinks';
 
 const projectState = {
   project: { id: 'proj', name: 'Proj' },
@@ -88,5 +90,45 @@ test('a URL-shaped label is not treated as a title; add uses the arXiv placehold
   await fireEventAsync.press(screen.getByText('Add to reading list'));
   await waitFor(() =>
     expect(api.addPaper).toHaveBeenCalledWith('proj', 'arXiv 2211.10438', undefined, '2211.10438', undefined, undefined),
+  );
+});
+
+// DR-054 — a citation the model has no sourceable URL for arrives as `rc-search:<title>`
+// instead of a real link. There's nothing to "Open" (no source was ever found), so the sheet
+// must offer a title search instead, and never store the pseudo-href as a pdfUrl on add.
+
+test('a name-only reference (rc-search) offers a Scholar search, not "Open link"', async () => {
+  const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true as never);
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: rcSearchLink('LoongServe'), label: 'LoongServe' }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  expect(screen.getAllByText('LoongServe').length).toBeGreaterThan(0);
+  expect(screen.queryByText('Open link')).toBeNull();
+  expect(screen.getByText('Search Scholar')).toBeTruthy();
+
+  await fireEventAsync.press(screen.getByText('Search Scholar'));
+  expect(openURL).toHaveBeenCalledWith('https://scholar.google.com/scholar?q=LoongServe');
+});
+
+test('adding a name-only reference never stores the rc-search marker as a pdfUrl', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: rcSearchLink('LoongServe'), label: 'LoongServe' }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  await fireEventAsync.press(screen.getByText('Add to reading list'));
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith('proj', 'LoongServe', undefined, undefined, undefined, undefined),
   );
 });

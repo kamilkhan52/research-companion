@@ -19,7 +19,7 @@ import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
 import { LinkHandlerContext, PaperIndexContext, type LinkHandler } from '@/components/Markdown';
 import { RelatedWorksSheet } from '@/components/RelatedWorksSheet';
 import { useActiveProject } from '@/store/project';
-import { fullPaperUrl } from '@/lib/paperLinks';
+import { fullPaperUrl, scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import { useTheme } from '@/theme/ThemeProvider';
 import { stateMetaFor } from '@/theme/tokens';
 
@@ -53,6 +53,14 @@ export function PaperEntityProvider({ children }: { children: ReactNode }) {
       if (href.startsWith('rc-paper:')) {
         const s = href.slice('rc-paper:'.length);
         if (s) setSlug(s);
+        return;
+      }
+      // DR-054: no sourceable URL for this one — fall back to a title search. The discussion
+      // screen overrides this handler with its own (ExternalRefSheet, with an add option); this
+      // default only covers surfaces that don't.
+      const searchTitle = titleFromRcSearchLink(href);
+      if (searchTitle) {
+        void Linking.openURL(scholarSearchUrl(searchTitle)).catch(() => undefined);
         return;
       }
       if (/^https?:\/\//i.test(href)) void Linking.openURL(href).catch(() => undefined);

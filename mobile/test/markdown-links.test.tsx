@@ -28,6 +28,31 @@ test('an external link passes its URL through to the handler', async () => {
   expect(onLinkPress).toHaveBeenCalledWith('https://arxiv.org/abs/2303.08774', 'GPT-4');
 });
 
+// DR-054 — a citation the model has no sourceable URL for arrives as `rc-search:<title>`
+// instead of being left as dead unlinked text.
+
+test('an rc-search link (name with no known URL) is tappable and passes through the marker', async () => {
+  const onLinkPress = jest.fn();
+  await renderAsync(
+    <Markdown
+      text={'This is compared against [LoongServe](rc-search:LoongServe) in the paper.'}
+      onLinkPress={onLinkPress}
+    />,
+  );
+  await fireEventAsync.press(screen.getByText(/LoongServe/));
+  expect(onLinkPress).toHaveBeenCalledWith('rc-search:LoongServe', 'LoongServe');
+});
+
+test('the malformed-link repair also catches an rc-search target written inside the brackets', async () => {
+  // Same model malformation MALFORMED_LINK_RE already fixes for rc-paper: and https:.
+  const onLinkPress = jest.fn();
+  await renderAsync(
+    <Markdown text={'[LoongServe (rc-search:LoongServe)] handles this differently.'} onLinkPress={onLinkPress} />,
+  );
+  await fireEventAsync.press(screen.getByText(/LoongServe/));
+  expect(onLinkPress).toHaveBeenCalledWith('rc-search:LoongServe', 'LoongServe');
+});
+
 // ---- app-wide paper awareness: exact-title linkification (PaperIndexContext) ----
 
 import { PaperIndexContext } from '@/components/Markdown';

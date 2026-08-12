@@ -19,6 +19,7 @@ import { ExternalRefSheet, type ExternalRef } from '@/components/ExternalRefShee
 import { ProgressSteps, type ProgressStepItem } from '@/components/ProgressSteps';
 import { TopBar } from '@/components/TopBar';
 import { presentSpendJobRefusal, presentSpendRefusal } from '@/components/SpendRefusalSheet';
+import { scholarSearchUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { AnimatedProgressBar, Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
@@ -30,7 +31,7 @@ function externalHref(p: AuthorPaper): string {
   if (p.arxiv_id) return `https://arxiv.org/abs/${p.arxiv_id}`;
   if (p.doi) return `https://doi.org/${p.doi}`;
   if (p.url) return p.url;
-  return `https://scholar.google.com/scholar?q=${encodeURIComponent(p.title ?? '')}`;
+  return scholarSearchUrl(p.title ?? '');
 }
 
 type Mode = 'authors' | 'labs';
