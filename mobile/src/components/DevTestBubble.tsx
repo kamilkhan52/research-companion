@@ -16,6 +16,7 @@
 import { usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as api from '@/api/endpoints';
@@ -62,6 +63,11 @@ export function DevTestBubble() {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
+  // DR-072 — the trigger bubble is positioned off the bottom safe-area inset alone, so a
+  // keyboard open on whatever screen the bubble floats over (e.g. mid-comment) covers it —
+  // mildly self-defeating, since this bubble is how Kamil files feedback about exactly that
+  // kind of bug. Same fix as DR-055/DR-072's Toast fix: read the global keyboard state.
+  const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
   const pathname = usePathname();
   const [visible, setVisible] = useState(false);
   const [hidden, setHidden] = useState(false);   // bubble hidden for the capture frame
@@ -141,7 +147,10 @@ export function DevTestBubble() {
           onPress={() => void open()}
           accessibilityRole="button"
           accessibilityLabel="Open device-test companion"
-          style={[styles.bubble, { bottom: insets.bottom + 96 }]}
+          style={[
+            styles.bubble,
+            { bottom: keyboardHeight > 0 ? keyboardHeight + space.md : insets.bottom + 96 },
+          ]}
         >
           <Icon name="clipboard" size={20} color={t.mintInk} />
         </Pressable>

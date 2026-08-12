@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Animated, StyleSheet, View } from 'react-native';
+import { useKeyboardState } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useThemedStyles } from '@/theme/ThemeProvider';
@@ -50,6 +51,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
   const styles = useThemedStyles(makeStyles);
+  // DR-072 — a toast fired while the keyboard is open (saving notes, adding a paper from the
+  // composer) used to render behind it, since this provider mounts at the app root rather than
+  // inside whatever screen's keyboard-avoiding scope opened the keyboard. Same fix as DR-055's
+  // mini player: read the global keyboard state rather than depending on being inside a
+  // particular composer's KeyboardAvoidingView.
+  const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
   const anim = useRef(new Animated.Value(0)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -93,11 +100,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {message != null ? (
         <Animated.View
+          testID="toast-wrap"
           pointerEvents="none"
           style={[
             styles.wrap,
             {
-              bottom: insets.bottom + space.xxl,
+              bottom: keyboardHeight > 0 ? keyboardHeight + space.sm : insets.bottom + space.xxl,
               opacity: anim,
               transform: [
                 { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
