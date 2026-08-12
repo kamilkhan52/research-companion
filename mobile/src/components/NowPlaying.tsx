@@ -51,17 +51,23 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
   const { state } = usePlaybackState();
   const { position, duration } = useProgress(500);
 
-  // DR-055: this card sits outside any screen's own KeyboardAvoidingView (it's rendered at the
-  // root layout / above the tab bar, not inside the composer's scope), so without this it stays
+  // DR-055: the STACK copy sits outside the screen's own KeyboardAvoidingView (it's a sibling
+  // of the Stack at the root layout, not inside the composer's scope), so without this it stays
   // put while the keyboard covers it from below rather than being pushed above it like the
   // composer itself is. `react-native-keyboard-controller`'s keyboard state is global — this
   // works whether or not the component that opened the keyboard is a sibling or not.
+  //
+  // Deliberately NOT applied to the tab-bar copy (`inset=false`): that card sits ABOVE an
+  // in-flow tab row that does not move when the keyboard opens, so pushing the card up by the
+  // full keyboard height would overshoot by the tab row's own height and leave a gap between
+  // the card and the keyboard. No tab screen has a bottom-anchored text input today (Discover's
+  // goals field lives inside a scrolling card with its own KeyboardAvoidingView) — Kamil's
+  // report was specifically about the paper screen's comment composer, a stack screen.
   const keyboardHeight = useKeyboardState((s) => (s.isVisible ? s.height : 0));
 
   const wrapStyle = [
     styles.wrap,
     inset && { marginBottom: keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, space.sm) },
-    !inset && keyboardHeight > 0 && { marginBottom: keyboardHeight },
   ];
 
   // Preparing (nothing loaded yet): announce the stage + real progress; tap for the big view.
@@ -112,7 +118,7 @@ export function NowPlaying({ inset = true }: { inset?: boolean }) {
     : `${fmt(position)} ${duration ? `/ ${fmt(duration)}` : ''}${playing ? '' : ' · paused'}`;
 
   return (
-    <View style={wrapStyle}>
+    <View testID="now-playing-wrap" style={wrapStyle}>
       <Pressable onPress={openPlayer} style={styles.card} accessibilityLabel="Open player">
         <View style={styles.row}>
           <Pressable
