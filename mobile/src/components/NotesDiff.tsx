@@ -115,8 +115,17 @@ export function NotesDiff({
   if (!changed) {
     return <Text variant="caption" color={t.muted}>No text changes proposed.</Text>;
   }
+  // DR-059: an empty `before` (the first synthesis for a project, or first notes for a paper)
+  // diffs as every line added — a real diff, but a wall of green with no removed/unchanged
+  // lines next to it does not read as "a diff" to someone looking for one. Say what it is.
+  const isFirstDraft = !before.trim() && after.trim().length > 0;
   return (
     <View accessibilityLabel="Proposed line changes" style={styles.root}>
+      {isFirstDraft ? (
+        <Text variant="caption" color={t.muted} style={styles.firstDraftLabel}>
+          First draft — everything below is new
+        </Text>
+      ) : null}
       {lines.map((line, index) => {
         if (line.kind === 'gap') {
           return (
@@ -170,6 +179,12 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create(
     borderColor: t.line2,
     borderRadius: radius.sm,
     backgroundColor: t.elevated,
+  },
+  firstDraftLabel: {
+    paddingHorizontal: space.sm,
+    paddingVertical: density === 'tight' ? 4 : space.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: t.line2,
   },
   line: {
     minHeight: density === 'tight' ? 32 : 36,
