@@ -173,3 +173,39 @@ test('the build sheet closes itself once the build finishes', async () => {
   );
   expect(screen.queryByText('MAP BUILD')).toBeNull();
 });
+
+// Opus review, PR #382: the hint state (including the one-time "skeleton ready" announcement)
+// used to live inside the details view itself, which unmounts every time the build sheet closes
+// — resetting the "announced once" guard and re-firing the hint on every reopen. It now lives in
+// MapControlRail, which stays mounted across the sheet's own open/close cycle.
+test('the skeleton-ready hint announces once and does not return on a sheet reopen', async () => {
+  const progress = {
+    phase: 'extraction' as const, graphStage: 'skeleton' as const,
+    total: 10, ready: 10, done: 4, currentTitle: null,
+    perPaper: {}, retrievalCandidates: {},
+  };
+  await renderAsync(
+    <MapControlRail
+      building
+      progress={progress}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  const hintText = 'Fast map ready — explore it now; enrichment keeps improving it in the background.';
+  expect(screen.getByText(hintText)).toBeTruthy();
+  await fireEventAsync.press(screen.getByLabelText('Dismiss hint'));
+  expect(screen.queryByText(hintText)).toBeNull();
+
+  // Close the sheet (unmounts the details view), then reopen it.
+  await fireEventAsync.press(screen.getByLabelText('Dismiss test bottom sheet'));
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.queryByText(hintText)).toBeNull();
+});

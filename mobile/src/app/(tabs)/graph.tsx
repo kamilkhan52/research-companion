@@ -621,18 +621,13 @@ const SKELETON_HINT =
 // a new hint replaces the old one.
 const HINT_MS = 6000;
 
-// The build steps/hint/current-paper/progress-bar content, shared between the full banner (an
-// EmptyBuildState card, still full-size — DR-069 didn't touch the no-map-yet path) and the
-// compact control rail's build-details sheet (DR-069 — a sheet the reader explicitly opened is
-// already "expanded", so it renders this directly with no collapse chrome of its own).
-export function BuildProgressDetails({ progress }: { progress: GraphBuildState['progress'] }) {
-  const t = useTheme();
-  const styles = useThemedStyles(makeStyles);
-  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
-  const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
-  const skeletonReady = progress?.graphStage === 'skeleton';
-  const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
-
+// Hint state (the tap-to-explain step callouts, plus the one-time "skeleton ready" announcement)
+// used to live inside the details view itself — but that view unmounts on every collapse (the
+// full banner) or sheet dismiss (the control rail's build sheet), which reset the "announced
+// once" guard and made the skeleton hint re-fire on every reopen. Opus review, PR #382. Each
+// OWNER (the thing that actually stays mounted for the build's whole lifetime) holds this hook's
+// state instead, so the guard survives its details view unmounting and remounting underneath it.
+function useBuildHint(progress: GraphBuildState['progress']) {
   const [hint, setHint] = useState<string | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showHint = useCallback((text: string) => {
@@ -640,17 +635,47 @@ export function BuildProgressDetails({ progress }: { progress: GraphBuildState['
     if (hintTimer.current) clearTimeout(hintTimer.current);
     hintTimer.current = setTimeout(() => setHint(null), HINT_MS);
   }, []);
+  const dismissHint = useCallback(() => setHint(null), []);
   useEffect(() => () => {
     if (hintTimer.current) clearTimeout(hintTimer.current);
   }, []);
-  // The skeleton becoming usable is announced ONCE as a transient hint, not a permanent badge.
+  const skeletonReady = progress?.graphStage === 'skeleton';
   const skeletonAnnounced = useRef(false);
+  // `useGraphBuild.run()` resets `progress` to `phase: 'preparing'` at the start of every build —
+  // the one moment that distinguishes "a genuinely new build" from "the same build's details view
+  // remounted". Without this, `MapControlRail` staying mounted across separate rebuilds (unlike
+  // the old per-render-conditional banner it replaced) would silently suppress the announcement
+  // on a second rebuild within the same screen visit, since the guard would never reset.
+  useEffect(() => {
+    if (progress?.phase === 'preparing') skeletonAnnounced.current = false;
+  }, [progress?.phase]);
   useEffect(() => {
     if (skeletonReady && !skeletonAnnounced.current) {
       skeletonAnnounced.current = true;
       showHint(SKELETON_HINT);
     }
   }, [skeletonReady, showHint]);
+  return { hint, showHint, dismissHint };
+}
+
+// The build steps/hint/current-paper/progress-bar content, shared between the full banner (an
+// EmptyBuildState card, still full-size — DR-069 didn't touch the no-map-yet path) and the
+// compact control rail's build-details sheet (DR-069 — a sheet the reader explicitly opened is
+// already "expanded", so it renders this directly with no collapse chrome of its own). Purely
+// presentational: hint state belongs to whichever owner calls `useBuildHint` and stays mounted.
+function BuildProgressDetails({
+  progress, hint, onStepPress, onDismissHint,
+}: {
+  progress: GraphBuildState['progress'];
+  hint: string | null;
+  onStepPress: (text: string) => void;
+  onDismissHint: () => void;
+}) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
+  const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
+  const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
 
   if (!progress) return null;
   return (
@@ -661,12 +686,12 @@ export function BuildProgressDetails({ progress }: { progress: GraphBuildState['
           key: step.key,
           label: step.label,
           state: i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending',
-          onPress: () => showHint(step.hint),
+          onPress: () => onStepPress(step.hint),
           accessibilityLabel: `What does ${step.label} mean?`,
         }))}
       />
       {hint ? (
-        <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
+        <Pressable onPress={onDismissHint} accessibilityLabel="Dismiss hint">
           <ToneSurface tone="mint" style={styles.buildHint}>
             <Text variant="caption" color={t.text}>{hint}</Text>
           </ToneSurface>
@@ -702,6 +727,7 @@ export function BuildProgressBanner({
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [expanded, setExpanded] = useState(true);
+  const { hint, showHint, dismissHint } = useBuildHint(progress);
 
   useEffect(() => {
     setExpanded(true);
@@ -751,7 +777,12 @@ export function BuildProgressBanner({
       </Pressable>
       {progress && expanded ? (
         <View style={{ marginTop: space.md }}>
-          <BuildProgressDetails progress={progress} />
+          <BuildProgressDetails
+            progress={progress}
+            hint={hint}
+            onStepPress={showHint}
+            onDismissHint={dismissHint}
+          />
         </View>
       ) : null}
     </Card>
@@ -803,7 +834,7 @@ export function MapControlRail({
   const [buildSheetOpen, setBuildSheetOpen] = useState(false);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const active = filters.find((item) => item.key === filter) ?? filters[0];
-  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
+  const { hint, showHint, dismissHint } = useBuildHint(progress);
 
   // The build segment disappears the moment a build finishes (that's the whole point — it's
   // what makes the rail shrink back to just the filter pill), so a sheet the reader had open
@@ -831,11 +862,16 @@ export function MapControlRail({
           <Pressable
             onPress={() => setBuildSheetOpen(true)}
             accessibilityRole="button"
-            accessibilityLabel={`Map build in progress${progress ? `, ${Math.round(pct * 100)} percent ready` : ''} — show details`}
+            accessibilityLabel={`Map build in progress${progress ? `, ${progress.done} of ${progress.ready} analyzed` : ''} — show details`}
             style={styles.railSegment}
           >
             <Icon name="share-2" size={16} color={t.mint} />
             <Text variant="label" color={t.mint} numberOfLines={1}>Building…</Text>
+            {progress ? (
+              <Text variant="caption" color={t.muted} numberOfLines={1}>
+                {progress.done}/{progress.ready}
+              </Text>
+            ) : null}
           </Pressable>
         ) : null}
         <Pressable
@@ -859,7 +895,12 @@ export function MapControlRail({
           </View>
         </View>
         <View style={{ marginTop: space.md }}>
-          <BuildProgressDetails progress={progress} />
+          <BuildProgressDetails
+            progress={progress}
+            hint={hint}
+            onStepPress={showHint}
+            onDismissHint={dismissHint}
+          />
         </View>
       </BottomSheet>
 

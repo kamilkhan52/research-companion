@@ -71,7 +71,12 @@ test('a build that settles as done fires the ready toast once', async () => {
 // DR-069 — the codex-designed control-rail toast ("Map updated · N papers") needs a real count
 // to be a signal rather than a chime; falls back to the old copy when a settled job carries no
 // graph (shouldn't happen on a real 'done' job, but the toast must not crash or say "· undefined").
-test('a build that settles as done with a graph reports the paper count', async () => {
+//
+// Opus review: `total_papers` (the reading-list count) and `nodes.length` (that PLUS every
+// external work the graph cites) are genuinely different numbers on a real project — the fixture
+// below deliberately keeps them apart (3 vs 12) so a regression back to `total_papers` fails
+// this test instead of passing by coincidence.
+test('a build that settles as done with a graph reports the node count, matching the header', async () => {
   jest.mocked(api.startGraphBuild).mockResolvedValueOnce({ build: baseJob });
   jest.mocked(api.getGraphBuildStatus).mockResolvedValue({
     build: {
@@ -84,10 +89,10 @@ test('a build that settles as done with a graph reports the paper count', async 
         model: 'm',
         stage: 'enriched',
         completeness: {
-          total_papers: 1049, metadata_papers: 1049, ready_papers: 1049,
-          analyzed_papers: 1049, metadata_only_edges: 0,
+          total_papers: 3, metadata_papers: 3, ready_papers: 3,
+          analyzed_papers: 3, metadata_only_edges: 0,
         },
-        nodes: [],
+        nodes: Array.from({ length: 12 }, (_, i) => ({ id: `n${i}` })),
         edges: [],
       },
     } as never,
@@ -101,7 +106,7 @@ test('a build that settles as done with a graph reports the paper count', async 
   await act(async () => { await result.current.run(); });
 
   await waitFor(() => expect(result.current.building).toBe(false));
-  expect(showToast).toHaveBeenCalledWith('Map updated · 1049 papers');
+  expect(showToast).toHaveBeenCalledWith('Map updated · 12 papers');
 
   await unmountAsync();
   client.clear();
