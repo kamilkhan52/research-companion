@@ -1,4 +1,6 @@
 import { fireEventAsync, renderAsync, screen } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
+import type { ReactTestInstance } from 'react-test-renderer';
 
 import { SentenceCommentComposer } from '@/components/chat/SentenceCommentComposer';
 import {
@@ -9,6 +11,18 @@ import {
   upsertSentenceComment,
   type PendingSentenceComment,
 } from '@/lib/sentenceComments';
+
+/** Walks up from a host text node to the nearest ancestor carrying the given prop — the exact
+ *  composite depth between a rendered Text and its wrapping Pressable isn't a contract worth
+ *  hard-coding. */
+function nearestAncestorWith(node: ReactTestInstance, prop: string): ReactTestInstance | null {
+  let current: ReactTestInstance | null = node;
+  while (current) {
+    if (current.props[prop] !== undefined) return current;
+    current = current.parent;
+  }
+  return null;
+}
 
 const first: PendingSentenceComment = {
   assistantIndex: 1,
@@ -125,4 +139,75 @@ test('annotation mode explains the next step before a sentence is selected', asy
   expect(screen.getByText('Select a sentence in the response')).toBeTruthy();
   await fireEventAsync.press(screen.getByText('Done'));
   expect(onDone).toHaveBeenCalled();
+});
+
+// DR-053 §2 — Kamil: "I also can't really click it and it doesn't do anything." The design
+// doc (comment-mode-polish-design.md) names this as the one already-identifiable defect: both
+// Done controls are a bare Pressable around a Text with no hitSlop and no minimum size, while
+// the queued chips already carry minHeight: 54. RNTL's fireEvent.press bypasses real touch
+// geometry entirely (it calls onPress directly, hitSlop or not), so this can only be tested as
+// a style/prop assertion — the actual tap-target fix is unverifiable in Jest, same as the
+// design doc says.
+
+test('both Done controls carry a real hit-target extension, not a bare text tap', async () => {
+  const hintScreen = await renderAsync(
+    <SentenceCommentComposer
+      active
+      comments={[]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={jest.fn()}
+    />,
+  );
+  expect(nearestAncestorWith(hintScreen.getByText('Done'), 'hitSlop')).toBeTruthy();
+
+  const queueScreen = await renderAsync(
+    <SentenceCommentComposer
+      active={false}
+      comments={[first]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={jest.fn()}
+    />,
+  );
+  expect(nearestAncestorWith(queueScreen.getByText('Done'), 'hitSlop')).toBeTruthy();
+});
+
+test('the attached-comments tray has a real surface, not text floating with no background', async () => {
+  await renderAsync(
+    <SentenceCommentComposer
+      active={false}
+      comments={[first]}
+      selected={null}
+      draft=""
+      onChangeDraft={jest.fn()}
+      onSave={jest.fn()}
+      onCancelSelection={jest.fn()}
+      onOpen={jest.fn()}
+      onRemove={jest.fn()}
+      onDone={jest.fn()}
+    />,
+  );
+  // Walk up from the queue head text to the nearest ancestor whose flattened style actually
+  // paints a surface — the exact composite depth to the tray View isn't a contract worth
+  // hard-coding.
+  let node: ReactTestInstance | null = screen.getByText('1 comment attached');
+  let style: Record<string, unknown> = {};
+  while (node) {
+    style = (StyleSheet.flatten(node.props.style) ?? {}) as Record<string, unknown>;
+    if (style.backgroundColor) break;
+    node = node.parent;
+  }
+  expect(style.backgroundColor).toBeTruthy();
+  expect(style.borderWidth ?? style.borderTopWidth).toBeTruthy();
 });

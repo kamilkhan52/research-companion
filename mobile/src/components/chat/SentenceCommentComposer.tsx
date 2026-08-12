@@ -52,7 +52,7 @@ export function SentenceCommentComposer({
           <Text variant="caption" color={t.muted} style={styles.hintText}>
             Select a sentence in the response
           </Text>
-          <Pressable onPress={onDone} accessibilityRole="button">
+          <Pressable onPress={onDone} hitSlop={12} accessibilityRole="button">
             <Text variant="label" color={t.violet}>Done</Text>
           </Pressable>
         </View>
@@ -101,7 +101,7 @@ export function SentenceCommentComposer({
             <Text variant="overline" color={t.violet}>
               {comments.length} comment{comments.length === 1 ? '' : 's'} attached
             </Text>
-            <Pressable onPress={onDone} accessibilityRole="button">
+            <Pressable onPress={onDone} hitSlop={12} accessibilityRole="button">
               <Text variant="label" color={t.muted}>Done</Text>
             </Pressable>
           </View>
@@ -185,9 +185,18 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     color: t.text,
   },
   ok: { minWidth: 58 },
+  // DR-053 §2: `queue`/`queueHead` used to carry no background at all, so the tray read as
+  // text floating over whatever chat content sat behind the composer overlay rather than a
+  // deliberate part of the composer stack. A real surface (matching `hint`'s card treatment
+  // above) makes it read as attached, not incidental.
   queue: {
     gap: space.xs,
-    paddingVertical: space.xs,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
   },
   queueHead: {
     flexDirection: 'row',
