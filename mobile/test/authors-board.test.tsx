@@ -1,11 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { createTestQueryClient } from './queryClient';
 import { fireEventAsync, renderAsync, screen, waitFor } from '@testing-library/react-native';
+import { Linking, StyleSheet } from 'react-native';
+import type { ReactTestInstance } from 'react-test-renderer';
 
 import * as api from '@/api/endpoints';
 import { setBaseUrl } from '@/api/config';
 import type { AuthorBoardResponse } from '@/api/types';
-import AuthorsScreen from '@/app/authors';
+import AuthorsScreen, { labFallbackDescription } from '@/app/authors';
 
 const mockPush = jest.fn();
 jest.mock('expo-router', () => ({ useRouter: () => ({ push: mockPush, back: jest.fn() }) }));
@@ -163,4 +165,131 @@ test('Labs initially shows five researched groups and reveals more on demand', a
   await fireEventAsync.press(screen.getByText('Show more labs (5 of 7)'));
   expect(screen.getByText('Research Lab 6')).toBeTruthy();
   expect(screen.getByText('Research Lab 7')).toBeTruthy();
+});
+
+// DR-048 — Kamil, refining DR-008: "one per row rather than two; the stat icons need a key...
+// Research Lab's placement and labelling do not say what it is doing."
+
+test('the icon key renders once above the author list, not per card', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  expect(screen.getAllByText('Papers in project')).toHaveLength(1);
+  expect(screen.getAllByText('Significant citations')).toHaveLength(1);
+  expect(screen.getAllByText('Referenced works')).toHaveLength(1);
+});
+
+test('author cards render one per row (full width), not two-up', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  let node: ReactTestInstance | null = screen.getByText('Song Han');
+  let width: unknown;
+  let flexBasis: unknown;
+  while (node) {
+    const flat = StyleSheet.flatten(node.props?.style) as
+      { width?: unknown; flexBasis?: unknown } | undefined;
+    width = flat?.width;
+    flexBasis = flat?.flexBasis;
+    if (width != null || flexBasis != null) break;
+    node = node.parent;
+  }
+  expect(width).toBe('100%');
+  expect(flexBasis).toBeUndefined();
+});
+
+test('the Labs callout names the actual scope, not a bare button', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  expect(screen.getByText('Find labs behind top authors')).toBeTruthy();
+  expect(screen.getByText('Checks up to 10 top authors on the web. Results are saved.')).toBeTruthy();
+  expect(screen.getByText("Research top authors' labs")).toBeTruthy();
+});
+
+test('the Labs icon key omits "Referenced works" — lab data carries no such count', async () => {
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: '', focus: '',
+        members: ['Song Han'], in_project_count: 2, significant_count: 1,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  await waitFor(() => expect(screen.getByText('Han Lab')).toBeTruthy());
+  expect(screen.getByText('Papers in project')).toBeTruthy();
+  expect(screen.getByText('Significant citations')).toBeTruthy();
+  expect(screen.queryByText('Referenced works')).toBeNull();
+});
+
+test('a lab with a persisted focus shows it, ranked, without falling back', async () => {
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: '', focus: 'Efficient LLM inference systems.',
+        // significant_count deliberately 0: a CountStat chip only renders past zero, so a "1"
+        // there would collide with the rank number "1" this test asserts against.
+        members: ['Song Han'], in_project_count: 2, significant_count: 0,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  expect(screen.getByText('1')).toBeTruthy(); // rank
+  expect(screen.getByText('Efficient LLM inference systems.')).toBeTruthy();
+  expect(screen.queryByText(labFallbackDescription({ institution: 'MIT', members: ['Song Han'] }))).toBeNull();
+});
+
+// The description Kamil asked for "does not have to be generated" (DR-048) — this is the case
+// where the web pass genuinely found no summary; the row must still be legible.
+test('a lab with no persisted focus falls back to a deterministic description, never a fresh call', async () => {
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: '', focus: '',
+        members: ['Song Han'], in_project_count: 2, significant_count: 1,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  expect(screen.getByText('Research group at MIT; represented in this project by Song Han.')).toBeTruthy();
+});
+
+test('the lab card offers a globe URL action instead of a bare link line', async () => {
+  const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true as never);
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: 'https://hanlab.mit.edu', focus: 'Focus.',
+        members: ['Song Han'], in_project_count: 2, significant_count: 1,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  expect(screen.queryByText(/hanlab\.mit\.edu/)).toBeNull();
+  await fireEventAsync.press(screen.getByLabelText("Open Han Lab's website"));
+  expect(openURL).toHaveBeenCalledWith('https://hanlab.mit.edu');
+  openURL.mockRestore();
 });
