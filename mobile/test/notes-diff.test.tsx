@@ -31,6 +31,26 @@ test('proposal paper references remain tappable inside the diff', async () => {
   expect(onLinkPress).toHaveBeenCalledWith('rc-paper:awq', 'Activation-aware Weight Quantization');
 });
 
+// DR-059 — Kamil: "I still don't see diff for the working notes." Diagnosed: an empty `before`
+// (a project's first synthesis, or a paper's first notes) diffs as every line added, which is
+// a real diff but reads as a wall of green text with nothing to contrast it against.
+
+test('a first draft (empty before) is labeled, not just a wall of added lines', async () => {
+  const screen = await renderAsync(<NotesDiff before="" after="Brand new notes." />);
+  expect(screen.getByText('First draft — everything below is new')).toBeTruthy();
+});
+
+test('an ordinary revision with real prior content carries no first-draft label', async () => {
+  const screen = await renderAsync(<NotesDiff before="Old text." after="Old text. More." />);
+  expect(screen.queryByText('First draft — everything below is new')).toBeNull();
+});
+
+test('an empty before with no proposed change still reads as "no changes", not a first draft', async () => {
+  const screen = await renderAsync(<NotesDiff before="" after="" />);
+  expect(screen.getByText('No text changes proposed.')).toBeTruthy();
+  expect(screen.queryByText('First draft — everything below is new')).toBeNull();
+});
+
 test('progress reports real phases and words rather than characters', () => {
   const items = [
     { kind: 'tool' as const, name: 'paper_search', detail: 'Checking citations' },
