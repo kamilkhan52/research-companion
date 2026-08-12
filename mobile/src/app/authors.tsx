@@ -423,7 +423,16 @@ function LabsView({
           <Text variant="body" color={t.text} style={{ marginTop: 2 }} numberOfLines={2}>
             {lab.focus || labFallbackDescription(lab)}
           </Text>
-          <View style={styles.chipRow}>
+          {/* Opus review, PR #386: CountStat's own "the card is one accessible unit and its
+              label already names all three counts in words" (below) is true of AuthorCard,
+              which carries that label — but was never true here. The old Chip row this replaced
+              read "2 in project"/"3 significant" as literal text; a screen reader now heard bare
+              numbers with nothing naming them. `accessible` stays off the whole labCard (not
+              just this row) so the member chips below stay individually pressable. */}
+          <View
+            style={styles.chipRow}
+            accessible
+            accessibilityLabel={`${lab.in_project_count} in project${lab.significant_count > 0 ? `, ${lab.significant_count} significant` : ''}.`}>
             <CountStat icon="file-text" count={lab.in_project_count} color={t.mint} />
             {lab.significant_count > 0 ? (
               <CountStat icon="star" count={lab.significant_count} color={t.amber} />
@@ -465,6 +474,11 @@ function LabsView({
               groups behind the top authors.
             </Text>
           ) : null}
+          {/* Opus review, PR #386: these are ordinary AuthorCards (all three CountStat icons,
+              including `link`), not the two-item LAB_ICON_KEY above the ranked labs — a project
+              that hasn't run the web pass yet (labs.length === 0, the default state) showed
+              unlabelled icons with no key anywhere on screen. */}
+          <IconKey items={AUTHOR_ICON_KEY} />
           {groups.map((g) => (
             <View key={g.affiliation} style={{ marginTop: space.md }}>
               <Text variant="caption" color={t.muted} style={styles.groupHeader}>
@@ -718,7 +732,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     width: '100%',
     gap: 6,
     padding: space.md,
-    borderRadius: 14,
+    // Opus review, PR #386: was a hardcoded 14 (pre-existing, from the two-up grid) — now that
+    // this card stacks in the same full-width column as labCard/labsCallout (radius.lg = 20),
+    // the mismatch reads as an inconsistency it didn't when the two never shared a column.
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line,
     backgroundColor: t.surface,

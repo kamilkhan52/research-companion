@@ -293,3 +293,62 @@ test('the lab card offers a globe URL action instead of a bare link line', async
   expect(openURL).toHaveBeenCalledWith('https://hanlab.mit.edu');
   openURL.mockRestore();
 });
+
+// Opus review, PR #386, Finding 1: the ranked-labs section's LAB_ICON_KEY only renders once
+// `visibleLabs.length` is nonzero — every project starts with `labs: { labs: [], researched:
+// false }` (the `board` fixture's default), so this is the state most projects are in when a
+// reader first opens Labs mode. The "not yet mapped to a lab" section below reuses AuthorCard's
+// full three-icon vocabulary (including `link`, which LAB_ICON_KEY omits) and had no key of its
+// own before this fix.
+test('the unmapped-authors section carries its own icon key, even before any lab research has run', async () => {
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  // The default fixture never researches labs, so TOP LABS/LAB_ICON_KEY never render — the only
+  // "Referenced works" label possible here comes from AUTHOR_ICON_KEY above the unmapped groups.
+  expect(screen.queryByText('TOP LABS')).toBeNull();
+  expect(screen.getByText('Papers in project')).toBeTruthy();
+  expect(screen.getByText('Significant citations')).toBeTruthy();
+  expect(screen.getByText('Referenced works')).toBeTruthy();
+});
+
+// Opus review, PR #386, Finding 2: swapping the old Chip row (readable text: "2 in project") for
+// bare-icon CountStats dropped the accessibility label that named the counts in words — unlike
+// AuthorCard, which carries its own full label.
+test('a lab card names its counts in words for a screen reader, not just bare icons', async () => {
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: '', focus: 'Focus.',
+        members: ['Song Han'], in_project_count: 2, significant_count: 3,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  screen.getByLabelText('2 in project, 3 significant.');
+});
+
+test('a lab card with no significant citations omits that clause from the counts label', async () => {
+  const labAuthors = [{ ...board.authors[0], papers: [] }];
+  jest.mocked(api.getGraphAuthors).mockResolvedValueOnce({
+    ...board,
+    authors: labAuthors,
+    labs: {
+      labs: [{
+        lab_name: 'Han Lab', institution: 'MIT', url: '', focus: 'Focus.',
+        members: ['Song Han'], in_project_count: 2, significant_count: 0,
+      }],
+      covered_authors: ['Song Han'], researched: true, researched_at: '2026-07-18T00:00:00Z',
+    },
+  });
+  await renderAsync(wrap(<AuthorsScreen />));
+  await waitFor(() => expect(screen.getByText('Song Han')).toBeTruthy());
+  await fireEventAsync.press(screen.getByText('Labs'));
+  screen.getByLabelText('2 in project.');
+});
