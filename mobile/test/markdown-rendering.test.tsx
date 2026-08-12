@@ -181,6 +181,15 @@ describe('sentence annotation render path', () => {
       textDecorationColor: themes.dim.violet,
       textDecorationLine: 'underline',
     });
+    // DR-053 §1 — Kamil: the badge was "too large and too transparent to read over thread
+    // text." The declared background was already opaque (t.violet, never a wash) — the fix is
+    // sizing: a small explicit lineHeight so the badge doesn't inherit the ~26px serif body
+    // line box and read as an oversized rectangle. Never a wash color at any density/palette.
+    expect(screen.getByLabelText('2 attached comments')).toHaveStyle({
+      backgroundColor: themes.dim.violet,
+      fontSize: 10,
+      lineHeight: 14,
+    });
   });
 
   test('sentence tap wins over link navigation while annotation mode is active', async () => {
