@@ -56,7 +56,7 @@ test('a candidate with no abstract shows no Abstract toggle', async () => {
 
 test('a candidate whose payload omits `abstract` entirely (the real shape from a channel gap) also shows no toggle', async () => {
   const { abstract: _drop, ...withoutAbstract } = BASE;
-  const { unmountAsync } = await renderCard(withoutAbstract as PaperSuggestion);
+  const { unmountAsync } = await renderCard(withoutAbstract);
   expect(screen.queryByLabelText(/abstract for A Paper Worth Reading/i)).toBeNull();
   await unmountAsync();
 });
