@@ -97,14 +97,9 @@ test('full paper and hide actions render as icon-only buttons with their labels 
 // used, unaccounted for in the original diff. A word doesn't fit a zero-padding icon square the
 // same way an icon does, especially at a larger accessibility font scale.
 test('the Undo control on a hidden suggestion keeps its own padded geometry, not the icon-square style', async () => {
-  // `jest.mock('@/api/endpoints')` (bare, no factory) doesn't automock `hideSuggestion`/
-  // `unhideSuggestion` in this suite for reasons unrelated to this PR (confirmed: even the real,
-  // unmocked module reports them `undefined` via `Object.keys` in this test environment — a
-  // pre-existing jest/babel transform quirk, not something introduced here). Direct assignment
-  // onto the mocked module namespace sidesteps it without touching every other test's automock.
-  (api as unknown as { hideSuggestion: jest.Mock }).hideSuggestion = jest.fn().mockResolvedValue({
+  jest.mocked(api.hideSuggestion).mockResolvedValue({
     hidden: { keys: ['c1'], title: 'A Paper Worth Reading', hidden_at: '2026-08-12T00:00:00Z' },
-  });
+  } as never);
   const { unmountAsync } = await renderCard({ ...BASE, abstract: '' });
   await fireEventAsync.press(screen.getByLabelText('Hide A Paper Worth Reading from recommendations'));
   const undo = await screen.findByLabelText('Undo hiding A Paper Worth Reading');

@@ -644,6 +644,8 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     minHeight: control.minTouch,
     paddingHorizontal: space.md,
     borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: t.line2,
     alignItems: 'center',
     justifyContent: 'center',
   },
