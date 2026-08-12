@@ -6,7 +6,8 @@
 // reviewed).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import { DevTestBubble } from '@/components/DevTestBubble';
 import { draftKey } from '@/hooks/usePersistedDraft';
@@ -187,6 +188,27 @@ test('"Recently reviewed" sort orders reviewed items newest-verdict-first', asyn
   expect(beta).toBeGreaterThan(-1);
   expect(beta).toBeLessThan(alpha);
   expect(alpha).toBeLessThan(zulu);
+});
+
+// Kamil's 2026-08-12 device screenshot: each bare horizontal ScrollView stretched to claim a
+// third of the screen's height (RN ScrollView's base style is `flexGrow: 1`, and the sheet is a
+// flex column with spare space), shoving the list to the very bottom. The fix wraps each
+// label+chips pair in a plain row View, which defaults to `flexGrow: 0` and hugs its content.
+// RNTL computes no real layout, so this pins the structure the fix depends on instead: the
+// label and its chips must share a flexDirection-row wrapper whose own style does not grow.
+test('each chip row is wrapped in a non-growing row View, label inline with its chips', async () => {
+  const screen = await openBubble();
+  for (const [testID, label, chip] of [
+    ['devtest-filter-toolbar', 'Filter', 'Not reviewed'],
+    ['devtest-sort-toolbar', 'Sort', 'Recently reviewed'],
+  ] as const) {
+    const row = screen.getByTestId(testID);
+    const style = StyleSheet.flatten(row.props.style) as { flexDirection?: string; flexGrow?: number };
+    expect(style.flexDirection).toBe('row');
+    expect(style.flexGrow ?? 0).toBe(0);
+    expect(within(row).getByText(label)).toBeTruthy();
+    expect(within(row).getByLabelText(chip)).toBeTruthy();
+  }
 });
 
 test('the search/filter/sort choices survive closing and reopening the sheet', async () => {
