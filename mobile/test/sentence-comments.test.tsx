@@ -11,6 +11,7 @@ import {
   upsertSentenceComment,
   type PendingSentenceComment,
 } from '@/lib/sentenceComments';
+import { control } from '@/theme/tokens';
 
 /** Walks up from a host text node to the nearest ancestor carrying the given prop — the exact
  *  composite depth between a rendered Text and its wrapping Pressable isn't a contract worth
@@ -22,6 +23,18 @@ function nearestAncestorWith(node: ReactTestInstance, prop: string): ReactTestIn
     current = current.parent;
   }
   return null;
+}
+
+/** Walks up from a host text node to the nearest ancestor whose flattened style declares a
+ *  minHeight — real layout, unlike hitSlop, which a parent's bounds can silently clip away. */
+function minHeightOf(node: ReactTestInstance): number {
+  let current: ReactTestInstance | null = node;
+  while (current) {
+    const style = StyleSheet.flatten(current.props.style) as { minHeight?: number } | undefined;
+    if (style?.minHeight) return style.minHeight;
+    current = current.parent;
+  }
+  return 0;
 }
 
 const first: PendingSentenceComment = {
@@ -148,8 +161,15 @@ test('annotation mode explains the next step before a sentence is selected', asy
 // geometry entirely (it calls onPress directly, hitSlop or not), so this can only be tested as
 // a style/prop assertion — the actual tap-target fix is unverifiable in Jest, same as the
 // design doc says.
+//
+// Opus review, PR #379: asserting only that `hitSlop` is DEFINED passed even when it produced
+// no real tap-target gain — Android clips a Pressable's touch area to its PARENT's bounds, and
+// neither `hint` nor `queueHead` had the height for the slop to extend into, so a 12px slop on
+// a ~16px text row only ever reached ~40px, still short of control.minTouch (48). `minHeight`
+// is real layout (the surrounding row grows to fit it), not a clippable invisible region, so
+// that's the property actually worth asserting.
 
-test('both Done controls carry a real hit-target extension, not a bare text tap', async () => {
+test('both Done controls meet the real minimum touch target, not just a hitSlop prop', async () => {
   const hintScreen = await renderAsync(
     <SentenceCommentComposer
       active
@@ -164,6 +184,7 @@ test('both Done controls carry a real hit-target extension, not a bare text tap'
       onDone={jest.fn()}
     />,
   );
+  expect(minHeightOf(hintScreen.getByText('Done'))).toBeGreaterThanOrEqual(control.minTouch);
   expect(nearestAncestorWith(hintScreen.getByText('Done'), 'hitSlop')).toBeTruthy();
 
   const queueScreen = await renderAsync(
@@ -180,6 +201,7 @@ test('both Done controls carry a real hit-target extension, not a bare text tap'
       onDone={jest.fn()}
     />,
   );
+  expect(minHeightOf(queueScreen.getByText('Done'))).toBeGreaterThanOrEqual(control.minTouch);
   expect(nearestAncestorWith(queueScreen.getByText('Done'), 'hitSlop')).toBeTruthy();
 });
 

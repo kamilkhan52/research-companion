@@ -11,7 +11,7 @@ import {
 } from '@/lib/sentenceComments';
 import { Button, Icon, IconButton, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { radius, space, type ThemePalette } from '@/theme/tokens';
+import { control, radius, space, type ThemePalette } from '@/theme/tokens';
 
 export function SentenceCommentComposer({
   active,
@@ -52,7 +52,7 @@ export function SentenceCommentComposer({
           <Text variant="caption" color={t.muted} style={styles.hintText}>
             Select a sentence in the response
           </Text>
-          <Pressable onPress={onDone} hitSlop={12} accessibilityRole="button">
+          <Pressable onPress={onDone} hitSlop={12} style={styles.doneBtn} accessibilityRole="button">
             <Text variant="label" color={t.violet}>Done</Text>
           </Pressable>
         </View>
@@ -101,7 +101,7 @@ export function SentenceCommentComposer({
             <Text variant="overline" color={t.violet}>
               {comments.length} comment{comments.length === 1 ? '' : 's'} attached
             </Text>
-            <Pressable onPress={onDone} hitSlop={12} accessibilityRole="button">
+            <Pressable onPress={onDone} hitSlop={12} style={styles.doneBtn} accessibilityRole="button">
               <Text variant="label" color={t.muted}>Done</Text>
             </Pressable>
           </View>
@@ -185,6 +185,12 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     color: t.text,
   },
   ok: { minWidth: 58 },
+  // DR-053 §2, Opus review: hitSlop alone doesn't produce a real tap target — Android clips a
+  // Pressable's touchable area to its PARENT's bounds, and neither `hint` nor `queueHead` had
+  // enough height for the slop to have anywhere to extend into. minHeight is real layout, so
+  // both surrounding rows grow to fit it (flex rows size to their tallest child) instead of
+  // silently clipping an invisible hit-test region back down to the bare text's ~16px.
+  doneBtn: { minHeight: control.minTouch, justifyContent: 'center' },
   // DR-053 §2: `queue`/`queueHead` used to carry no background at all, so the tray read as
   // text floating over whatever chat content sat behind the composer overlay rather than a
   // deliberate part of the composer stack. A real surface (matching `hint`'s card treatment

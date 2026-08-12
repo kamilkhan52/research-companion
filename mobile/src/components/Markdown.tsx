@@ -509,7 +509,7 @@ function AnnotatableParagraph({
               <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks />
               {state?.commentCount ? (
                 // DR-053 §1: was inheriting the sentence's line box and reading as an oversized
-                // rectangle rather than a badge. lineHeight (not the ~21px serif body line)
+                // rectangle rather than a badge. lineHeight (not the ~26px serif body line)
                 // keeps it superscript-sized regardless of surrounding type; the background
                 // stays fully opaque (t.violet, never a wash) so it can't read as transparent.
                 <RNText
