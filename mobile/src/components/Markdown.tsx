@@ -19,7 +19,7 @@ import { RC_SEARCH_PREFIX } from '@/lib/paperLinks';
 import { stripPseudoToolTags } from '@/lib/toolTags';
 import { Icon, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, space, type ThemePalette } from '@/theme/tokens';
+import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 /** When present, the paper's figures are carded inline immediately before the first paragraph that
  *  references each one (R.10). Absent everywhere except the committed discussion transcript,
@@ -511,6 +511,10 @@ function AnnotatableParagraph({
               }}>
               <Inline text={sentence} onLinkPress={onLinkPress} suppressLinks />
               {state?.commentCount ? (
+                // DR-053 §1: was inheriting the sentence's line box and reading as an oversized
+                // rectangle rather than a badge. lineHeight (not the ~26px serif body line)
+                // keeps it superscript-sized regardless of surrounding type; the background
+                // stays fully opaque (t.violet, never a wash) so it can't read as transparent.
                 <RNText
                   accessibilityLabel={`${state.commentCount} attached comments`}
                   style={{
@@ -518,6 +522,9 @@ function AnnotatableParagraph({
                     color: t.bg,
                     fontFamily: fonts.bodyBold,
                     fontSize: 10,
+                    lineHeight: 14,
+                    borderRadius: radius.sm,
+                    overflow: 'hidden',
                   }}>
                   {` ${state.commentCount} `}
                 </RNText>
