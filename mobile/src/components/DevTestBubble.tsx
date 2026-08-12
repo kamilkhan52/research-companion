@@ -339,19 +339,29 @@ export function DevTestBubble() {
             ) : null}
           </View>
           {/* Opus review, PR #387: two visually identical chip rows with no label read as one
-              confusing group — "Filter"/"Sort" name what each row actually does. */}
-          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-            {REVIEW_FILTERS.map((f) => (
-              <ToggleChip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
-            ))}
-          </ScrollView>
-          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-            {SORT_MODES.map((s) => (
-              <ToggleChip key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
-            ))}
-          </ScrollView>
+              confusing group — "Filter"/"Sort" name what each row actually does. The label sits
+              INSIDE the same row View as its chips, and that plain View wrapper is load-bearing,
+              not just compactness: RN's ScrollView base style carries `flexGrow: 1`, so a bare
+              horizontal ScrollView in this flex-column sheet stretches to claim a share of the
+              spare VERTICAL space (Kamil's 2026-08-12 screenshot: two chip rows each filling a
+              third of the screen, the list shoved to the bottom). A View defaults to
+              `flexGrow: 0`, so each row hugs its content height. */}
+          <View style={styles.toolbarRow} testID="devtest-filter-toolbar">
+            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+              {REVIEW_FILTERS.map((f) => (
+                <ToggleChip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
+              ))}
+            </ScrollView>
+          </View>
+          <View style={styles.toolbarRow} testID="devtest-sort-toolbar">
+            <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+              {SORT_MODES.map((s) => (
+                <ToggleChip key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
+              ))}
+            </ScrollView>
+          </View>
           {query.trim() || filter !== 'all' ? (
             <Text variant="caption" color={t.muted} style={styles.matchCount}>
               {filteredItems.length} of {items.length} shown
@@ -738,7 +748,10 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
   searchClear: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  chipRowLabel: { marginTop: space.sm },
+  // The row View (not the ScrollView) owns the vertical footprint — see the comment at the
+  // usage site. Fixed label width keeps the two chip rows' left edges aligned.
+  toolbarRow: { flexDirection: 'row', alignItems: 'center', marginTop: space.xs },
+  chipRowLabel: { width: 44 },
   filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
   matchCount: { marginTop: 2 },
 });
