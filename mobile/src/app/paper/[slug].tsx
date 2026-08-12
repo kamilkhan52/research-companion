@@ -124,17 +124,21 @@ import {
   Chip,
   Icon,
   IconButton,
+  makeTextStyles,
   Screen,
   Text,
   type IconName,
 } from '@/ui';
 import {
+  MAX_TEXT_SCALE,
+  MIN_TEXT_SCALE,
+  TEXT_SCALE_STEP,
   useTheme,
   useThemedStyles,
   useThemeMode,
   type DensityMode,
 } from '@/theme/ThemeProvider';
-import { floatShadow, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { control, floatShadow, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 // The library caps each message row to Message/styles.js's default `maxWidth: '70%'` (a
 // row of `flexDirection: 'row'`, so a plain width override on the child bubble can't stretch
@@ -702,6 +706,97 @@ const STATE_LABEL: Record<string, string> = {
 
 // ---------- top bar: overflow menu + model picker ----------
 
+// DR-068 — the "current size" label reads the EXACT resolved serifBody size (Comfortable 17 /
+// Tight 15.5, mobile/src/ui/index.tsx) rather than a hardcoded number, so it can never drift
+// from what Markdown.tsx's own scaling actually multiplies.
+function TextSizeStepperRow({
+  scale,
+  onChange,
+}: {
+  scale: number;
+  onChange: (next: number) => void;
+}) {
+  const t = useTheme();
+  const baseText = useThemedStyles(makeTextStyles);
+  const resolvedSize = Math.round(baseText.serifBody.fontSize * scale * 10) / 10;
+  const percent = Math.round(scale * 100);
+  const atMin = scale <= MIN_TEXT_SCALE;
+  const atMax = scale >= MAX_TEXT_SCALE;
+  // Opus review, PR #385: each button's label now carries the CURRENT value, not just the
+  // action — a screen reader focusing either button after a step announces the new percentage
+  // in the same breath, rather than the reader having to swipe back to the value text to learn
+  // what changed.
+  return (
+    <View style={stepperStyles.row}>
+      <View style={[stepperStyles.badge, { backgroundColor: t.elevated }]}>
+        <Text variant="heading" color={t.muted}>Aa</Text>
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text variant="heading" numberOfLines={1}>Text size</Text>
+        <Text variant="caption" color={t.muted} numberOfLines={1}>Discussion text</Text>
+      </View>
+      <View style={[stepperStyles.segmented, { borderColor: t.line2 }]}>
+        <Pressable
+          onPress={() => onChange(scale - TEXT_SCALE_STEP)}
+          disabled={atMin}
+          accessibilityRole="button"
+          accessibilityLabel={`Decrease Discussion text size, currently ${percent} percent`}
+          style={[stepperStyles.segBtn, atMin && { opacity: 0.4 }]}
+        >
+          <Icon name="minus" size={16} color={t.text} />
+        </Pressable>
+        <Text variant="caption" color={t.muted} style={stepperStyles.segValue} numberOfLines={1}>
+          {`${percent}% · ${resolvedSize}`}
+        </Text>
+        <Pressable
+          onPress={() => onChange(scale + TEXT_SCALE_STEP)}
+          disabled={atMax}
+          accessibilityRole="button"
+          accessibilityLabel={`Increase Discussion text size, currently ${percent} percent`}
+          style={[stepperStyles.segBtn, atMax && { opacity: 0.4 }]}
+        >
+          <Icon name="plus" size={16} color={t.text} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const stepperStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingHorizontal: space.lg,
+    paddingVertical: 10,
+  },
+  // Matches OptionsSheet's own badge (38px, elevated fill) so this row's leading glyph lines
+  // up with every ordinary row's icon badge rather than starting flush against the sheet edge.
+  badge: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // One segmented control — minus, live value, plus — matching the mockup's "flanking" layout
+  // (Kamil: "plus and minus signs besides current font size") rather than the value sitting
+  // apart from the buttons as a caption.
+  segmented: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: radius.pill,
+  },
+  segBtn: {
+    width: control.minTouch,
+    height: control.minTouch,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segValue: { minWidth: 62, textAlign: 'center' },
+});
+
 // The single overflow trigger for every discussion-level action that isn't the composer
 // itself: navigation into related works / graph / notes, then the quieter mode toggles —
 // grouped per Figma `08c · Actions menu`.
@@ -760,6 +855,7 @@ export function OverflowMenu({
 }) {
   const t = useTheme();
   const [open, setOpen] = useState(false);
+  const { discussionTextScale, setDiscussionTextScale } = useThemeMode();
 
   const options: SheetOption[] = [
     {
@@ -850,6 +946,19 @@ export function OverflowMenu({
       onPress: onPickReadingMode,
     });
   }
+  // DR-068 — Kamil: "plus and minus signs besides current font size, and instant apply."
+  // Custom compound row (OptionsSheet's `render` slot): two 48x48 targets plus a live label,
+  // never closing the sheet, so trying a few steps doesn't mean reopening the menu each time.
+  options.push({
+    key: 'text-size',
+    title: 'Text size',
+    icon: 'type',
+    closeOnPress: false,
+    onPress: () => {},
+    render: () => (
+      <TextSizeStepperRow scale={discussionTextScale} onChange={setDiscussionTextScale} />
+    ),
+  });
   options.push({
     key: 'listening',
     title: listeningMode ? 'Turn off listening' : 'Turn on listening',
@@ -1252,8 +1361,23 @@ function DiscussionThread({
   reviewReadyNonce: number;
 }) {
   const theme = useTheme();
-  const { themeName } = useThemeMode();
+  const { themeName, discussionTextScale } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  // DR-068: "user-message text" is explicitly in scope. userText's own fontSize/lineHeight
+  // mirror the `body` variant exactly (see the style def below) — scaled the same way
+  // Markdown.tsx scales serifBody, just against this style object instead of a themed one.
+  // Opus review: computed once here (not inline inside renderMessageText, a useCallback body
+  // where a hook can't legally live) so it keeps a stable reference across renders that don't
+  // actually change the scale or density.
+  const scaledUserText = useMemo(() => (
+    discussionTextScale === 1 ? styles.userText : [
+      styles.userText,
+      {
+        fontSize: styles.userText.fontSize * discussionTextScale,
+        lineHeight: styles.userText.lineHeight * discussionTextScale,
+      },
+    ]
+  ), [styles.userText, discussionTextScale]);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -1824,10 +1948,10 @@ function DiscussionThread({
         // marginHorizontal: 10) so userText's padding is the only inset — otherwise the two
         // stack and user text sits at a different inset than assistantBody's.
         containerStyle={{ left: ZERO_INSET, right: ZERO_INSET }}
-        textStyle={{ left: styles.userText, right: styles.userText }}
+        textStyle={{ left: scaledUserText, right: scaledUserText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, scaledUserText]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
@@ -2818,6 +2942,7 @@ function AssistantBody({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const { discussionTextScale } = useThemeMode();
   const audio = useAudio();
   const { playing } = useIsPlaying();
 
@@ -2882,6 +3007,7 @@ function AssistantBody({
         text={canonical}
         figureContext={figureContext}
         sentenceAnnotations={sentenceAnnotations}
+        textScale={discussionTextScale}
       />
       {modelLabel ? (
         <Text
@@ -3009,7 +3135,10 @@ function MsgAction({
 // A streamed text run revealed through the smoothing buffer (useSmoothText): the job poller
 // delivers ~900ms snapshots, and this types them out continuously instead of in lumps.
 function SmoothMarkdown({ text }: { text: string }) {
-  return <Markdown text={useSmoothText(text)} />;
+  // DR-068 — streamed text is still Discussion content ("Apply changes immediately to...
+  // streaming response text"), so it scales the same as the settled transcript.
+  const { discussionTextScale } = useThemeMode();
+  return <Markdown text={useSmoothText(text)} textScale={discussionTextScale} />;
 }
 
 // The live assistant turn: text runs and tool invocations rendered in arrival order, so tool
