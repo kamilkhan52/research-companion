@@ -201,6 +201,20 @@ export default function DiscoverScreen() {
                 {result.focus ? `${result.focus} · ` : ''}{result.candidate_count} papers across
                 scholarly sources, ranked by fit and evidence.
               </Text>
+              <View style={styles.actionKey}>
+                <View style={styles.actionKeyItem}>
+                  <Icon name="align-left" size={14} color={t.muted} />
+                  <Text variant="caption" color={t.muted}>Abstract</Text>
+                </View>
+                <View style={styles.actionKeyItem}>
+                  <Icon name="external-link" size={14} color={t.muted} />
+                  <Text variant="caption" color={t.muted}>Full paper</Text>
+                </View>
+                <View style={styles.actionKeyItem}>
+                  <Icon name="eye-off" size={14} color={t.muted} />
+                  <Text variant="caption" color={t.muted}>Hide</Text>
+                </View>
+              </View>
               <View style={{ gap: space.sm }}>
                 {visible.map((s, i) => (
                   <SuggestionCard
@@ -507,11 +521,9 @@ export function SuggestionCard({
         {s.abstract ? (
           <Pressable
             onPress={() => setShowAbstract((v) => !v)}
-            style={styles.actionBtn}
+            style={[styles.actionBtn, showAbstract && styles.actionBtnActive]}
             accessibilityLabel={`${showAbstract ? 'Hide' : 'Show'} abstract for ${s.title}`}>
-            <Text variant="caption" color={t.muted}>
-              {showAbstract ? 'Hide abstract' : 'Abstract'}
-            </Text>
+            <Icon name="align-left" size={20} color={showAbstract ? t.mint : t.muted} />
           </Pressable>
         ) : null}
         {paperUrl ? (
@@ -519,8 +531,7 @@ export function SuggestionCard({
             onPress={() => Linking.openURL(paperUrl)}
             style={styles.actionBtn}
             accessibilityLabel={`Open full paper for ${s.title}`}>
-            <Icon name="external-link" size={13} color={t.muted} />
-            <Text variant="caption" color={t.muted}>Full paper</Text>
+            <Icon name="external-link" size={20} color={t.muted} />
           </Pressable>
         ) : null}
         {!inLibrary ? (
@@ -529,14 +540,14 @@ export function SuggestionCard({
             disabled={hideBusy}
             style={styles.actionBtn}
             accessibilityLabel={`Hide ${s.title} from recommendations`}>
-            <Icon name="eye-off" size={13} color={t.muted} />
-            <Text variant="caption" color={t.muted}>Hide</Text>
+            <Icon name="eye-off" size={20} color={t.muted} />
           </Pressable>
         ) : null}
         <View style={{ flex: 1 }} />
         <Button
           title={added ? 'Added' : inLibrary ? 'In library' : 'Add'}
           icon={inLibrary ? 'check' : 'plus'}
+          iconSize={inLibrary ? 17 : 24}
           onPress={handleAdd}
           loading={addPaper.isPending}
           disabled={inLibrary || addPaper.isPending}
@@ -593,7 +604,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     color: t.violet,
   },
   reasonRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: space.sm },
-  addBtn: { height: 40, paddingHorizontal: space.lg },
+  // DR-070 — "Make the Add button larger than the rest with a large plus." Taller than the
+  // 48px icon row it sits beside, so it reads as the primary action rather than a fourth peer.
+  addBtn: { height: 56, paddingHorizontal: space.lg },
   footer: {
     padding: space.md,
     borderTopWidth: 1,
@@ -602,15 +615,26 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   },
   errorCard: { marginTop: space.md, borderColor: t.danger },
   suggestionCard: { borderColor: t.line2 },
-  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.sm, flexWrap: 'wrap' },
+  actions: { flexDirection: 'row', gap: space.sm, marginTop: space.sm, alignItems: 'center' },
+  // DR-070 — Kamil: "turn these large buttons into icons so they're more compact." A one-time
+  // key row above the results list carries the labels now; the icon choice is deliberately kept
+  // distinct from Authors' existing `file-text` = "papers in project" stat (DR-048's open icon
+  // question is the same vocabulary question, not yet answered for that screen).
   actionBtn: {
-    height: 36,
-    paddingHorizontal: space.md,
-    borderRadius: radius.sm,
+    width: 48,
+    height: 48,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: t.line2,
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'row',
   },
+  actionBtnActive: { borderColor: t.mint, backgroundColor: t.mintWash },
+  actionKey: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.md,
+    marginBottom: space.sm,
+  },
+  actionKeyItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 });
