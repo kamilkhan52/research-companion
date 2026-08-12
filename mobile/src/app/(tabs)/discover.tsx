@@ -349,7 +349,7 @@ function LiveFinds({ job, cancelled = false }: { job: DiscoveryJob; cancelled?: 
 
 // ---------- one suggestion ----------
 
-function SuggestionCard({
+export function SuggestionCard({
   pid,
   suggestion: s,
   rank,
@@ -504,14 +504,16 @@ function SuggestionCard({
       ) : null}
 
       <View style={styles.actions}>
-        <Pressable
-          onPress={() => setShowAbstract((v) => !v)}
-          style={styles.actionBtn}
-          accessibilityLabel={`${showAbstract ? 'Hide' : 'Show'} abstract for ${s.title}`}>
-          <Text variant="caption" color={t.muted}>
-            {showAbstract ? 'Hide abstract' : 'Abstract'}
-          </Text>
-        </Pressable>
+        {s.abstract ? (
+          <Pressable
+            onPress={() => setShowAbstract((v) => !v)}
+            style={styles.actionBtn}
+            accessibilityLabel={`${showAbstract ? 'Hide' : 'Show'} abstract for ${s.title}`}>
+            <Text variant="caption" color={t.muted}>
+              {showAbstract ? 'Hide abstract' : 'Abstract'}
+            </Text>
+          </Pressable>
+        ) : null}
         {paperUrl ? (
           <Pressable
             onPress={() => Linking.openURL(paperUrl)}
