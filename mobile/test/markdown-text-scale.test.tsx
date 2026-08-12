@@ -9,6 +9,14 @@ import { StyleSheet } from 'react-native';
 import type { ReactTestInstance } from 'react-test-renderer';
 
 import { Markdown } from '@/components/Markdown';
+import { InlineMath } from '@/components/MathView';
+
+// Same convention as markdown-math.test.tsx: pin the deterministic plain-text fallback (SVG
+// availability varies by environment) so the math-scaling assertions below are stable.
+jest.mock('@/lib/math', () => ({
+  ...jest.requireActual('@/lib/math'),
+  getSvgXml: () => null,
+}));
 
 // Plain-text spans render as bare, unstyled RNText nested inside the styled `<Text variant=…>`
 // that carries the actual fontSize (RN's own text-style inheritance, not reflected on the leaf
@@ -62,4 +70,32 @@ test('table cells scale', async () => {
     <Markdown text={'| A | B |\n|---|---|\n| one | two |'} textScale={1.2} />,
   );
   expect(fontSize('one')).toBeCloseTo(17 * 1.2);
+});
+
+// Opus review, PR #385: a display-math block used to render at a fixed 17px regardless of
+// textScale — at 1.4x, prose read at 23.8px next to a formula stuck at 16-17px, a visibly
+// mismatched line for a paper-discussion app where equations are core content.
+test('a display-math block scales with the surrounding prose', async () => {
+  await renderAsync(
+    <Markdown text={'\\[ s^* = \\arg\\min_{s} L(s) \\]'} textScale={1.4} />,
+  );
+  const block = screen.getByTestId('math-block');
+  expect((StyleSheet.flatten(block.props.style) as { fontSize?: number }).fontSize)
+    .toBeCloseTo(17 * 1.4);
+});
+
+// Inline math's SVG path sizes its own width/height off `fontSize` (an SVG has no text to
+// inherit scaling through) — the jest fallback path (SVG forced off elsewhere in this suite)
+// renders plain inherited text and can't distinguish the prop being wired from it being
+// ignored, so this asserts the prop directly reaches InlineMath.
+test('inline math is handed the scaled fontSize, not the bare default', async () => {
+  const { UNSAFE_getByType } = await renderAsync(
+    <Markdown text={'The value \\(x_i\\) is updated.'} textScale={1.3} />,
+  );
+  expect(UNSAFE_getByType(InlineMath).props.fontSize).toBeCloseTo(16 * 1.3);
+});
+
+test('fenced code blocks scale, matching the prose around them', async () => {
+  await renderAsync(<Markdown text={'```\nconst x = 1;\n```'} textScale={1.3} />);
+  expect(fontSize('const x = 1;')).toBeCloseTo(13 * 1.3);
 });

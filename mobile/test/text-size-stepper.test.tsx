@@ -58,8 +58,12 @@ test('the text-size row shows the default 100% and resolved size', async () => {
 
 test('pressing increase steps the scale up, applies instantly, and the sheet stays open', async () => {
   await openMenu();
-  await fireEventAsync.press(screen.getByLabelText('Increase Discussion text size'));
+  // Opus review, PR #385: each button's label now carries the CURRENT value too, so a screen
+  // reader focusing it after a step announces the new percentage without swiping back to the
+  // value text — assert against that live-updating label, not a bare action name.
+  await fireEventAsync.press(screen.getByLabelText('Increase Discussion text size, currently 100 percent'));
   expect(screen.getByText('110% · 18.7')).toBeTruthy();
+  expect(screen.getByLabelText('Increase Discussion text size, currently 110 percent')).toBeTruthy();
   // Still open: "More actions" trigger is a sibling, not visible while the sheet covers it,
   // but an unrelated row (e.g. Model) is still reachable without reopening.
   expect(screen.getByText('Model')).toBeTruthy();
@@ -70,7 +74,7 @@ test('pressing increase steps the scale up, applies instantly, and the sheet sta
 test('the decrease button disables at the minimum instead of going negative', async () => {
   await AsyncStorage.setItem('rc.discussionTextScale', '0.9');
   await openMenu();
-  const decrease = screen.getByLabelText('Decrease Discussion text size');
+  const decrease = screen.getByLabelText('Decrease Discussion text size, currently 90 percent');
   expect(decrease.props.accessibilityState.disabled).toBe(true);
   await fireEventAsync.press(decrease);
   expect(screen.getByText('90% · 15.3')).toBeTruthy();
@@ -79,6 +83,12 @@ test('the decrease button disables at the minimum instead of going negative', as
 test('the increase button disables at the maximum', async () => {
   await AsyncStorage.setItem('rc.discussionTextScale', '1.4');
   await openMenu();
-  const increase = screen.getByLabelText('Increase Discussion text size');
+  const increase = screen.getByLabelText('Increase Discussion text size, currently 140 percent');
   expect(increase.props.accessibilityState.disabled).toBe(true);
+});
+
+test('the text-size row has a leading badge and a "Discussion text" scope subtitle', async () => {
+  await openMenu();
+  expect(screen.getByText('Aa')).toBeTruthy();
+  expect(screen.getByText('Discussion text')).toBeTruthy();
 });

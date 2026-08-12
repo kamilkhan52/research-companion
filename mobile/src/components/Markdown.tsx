@@ -475,11 +475,11 @@ function Block({
     case 'code':
       return (
         <View style={styles.code}>
-          <Text style={{ fontFamily: MONO, fontSize: 13, color: t.text }}>{block.text}</Text>
+          <Text style={{ fontFamily: MONO, fontSize: 13 * textScale, color: t.text }}>{block.text}</Text>
         </View>
       );
     case 'math':
-      return <MathBlock tex={block.tex} />;
+      return <MathBlock tex={block.tex} fontSize={17 * textScale} />;
     case 'rule':
       return <View testID="md-rule" style={styles.rule} />;
     case 'table':
@@ -596,6 +596,7 @@ function MdTable({
 }) {
   const styles = useThemedStyles(makeStyles);
   const scaledStyle = useScaledSerifStyle('serifBody');
+  const textScale = useContext(TextScaleContext);
   const nCols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
   const chars: number[] = [];
   for (let c = 0; c < nCols; c++) {
@@ -616,7 +617,7 @@ function MdTable({
             styles.tableCell,
             fits
               ? { flex: weights[c], minWidth: 0 }
-              : { width: Math.min(280, Math.max(72, 20 + chars[c] * 6.4)) },
+              : { width: Math.min(280, Math.max(72, 20 + chars[c] * 6.4)) * textScale },
           ]}>
           <Text
             variant="serifBody"
@@ -680,14 +681,15 @@ function Inline({
   // `theme`, not `t`: renderToken's token param below is named `t`, which would shadow it.
   const theme = useTheme();
   const matcher = useContext(TitleMatcherContext);
+  const textScale = useContext(TextScaleContext);
   let tokens = tokenizeInline(text);
   if (matcher) tokens = linkifyTitles(tokens, matcher);
   const renderToken = (t: InlineToken, i: number) => (
         <Fragment key={i}>
           {t.type === 'math' ? (
-            <InlineMath tex={t.text} />
+            <InlineMath tex={t.text} fontSize={16 * textScale} />
           ) : t.type === 'code' ? (
-            <RNText style={{ fontFamily: MONO, fontSize: 13.5, color: theme.mint }}>{t.text}</RNText>
+            <RNText style={{ fontFamily: MONO, fontSize: 13.5 * textScale, color: theme.mint }}>{t.text}</RNText>
           ) : t.type === 'link' ? (
             t.href?.startsWith('rc-paper:') ? (
               // A project paper — a *relationship* (design system: violet), rendered as a

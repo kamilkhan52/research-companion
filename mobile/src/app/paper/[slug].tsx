@@ -722,30 +722,42 @@ function TextSizeStepperRow({
   const percent = Math.round(scale * 100);
   const atMin = scale <= MIN_TEXT_SCALE;
   const atMax = scale >= MAX_TEXT_SCALE;
+  // Opus review, PR #385: each button's label now carries the CURRENT value, not just the
+  // action — a screen reader focusing either button after a step announces the new percentage
+  // in the same breath, rather than the reader having to swipe back to the value text to learn
+  // what changed.
   return (
     <View style={stepperStyles.row}>
+      <View style={[stepperStyles.badge, { backgroundColor: t.elevated }]}>
+        <Text variant="heading" color={t.muted}>Aa</Text>
+      </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text variant="heading" numberOfLines={1}>Text size</Text>
-        <Text variant="caption" color={t.muted}>{`${percent}% · ${resolvedSize}`}</Text>
+        <Text variant="caption" color={t.muted} numberOfLines={1}>Discussion text</Text>
       </View>
-      <Pressable
-        onPress={() => onChange(scale - TEXT_SCALE_STEP)}
-        disabled={atMin}
-        accessibilityRole="button"
-        accessibilityLabel="Decrease Discussion text size"
-        style={[stepperStyles.btn, { borderColor: t.line2 }, atMin && { opacity: 0.4 }]}
-      >
-        <Icon name="minus" size={18} color={t.text} />
-      </Pressable>
-      <Pressable
-        onPress={() => onChange(scale + TEXT_SCALE_STEP)}
-        disabled={atMax}
-        accessibilityRole="button"
-        accessibilityLabel="Increase Discussion text size"
-        style={[stepperStyles.btn, { borderColor: t.line2 }, atMax && { opacity: 0.4 }]}
-      >
-        <Icon name="plus" size={18} color={t.text} />
-      </Pressable>
+      <View style={[stepperStyles.segmented, { borderColor: t.line2 }]}>
+        <Pressable
+          onPress={() => onChange(scale - TEXT_SCALE_STEP)}
+          disabled={atMin}
+          accessibilityRole="button"
+          accessibilityLabel={`Decrease Discussion text size, currently ${percent} percent`}
+          style={[stepperStyles.segBtn, atMin && { opacity: 0.4 }]}
+        >
+          <Icon name="minus" size={16} color={t.text} />
+        </Pressable>
+        <Text variant="caption" color={t.muted} style={stepperStyles.segValue} numberOfLines={1}>
+          {`${percent}% · ${resolvedSize}`}
+        </Text>
+        <Pressable
+          onPress={() => onChange(scale + TEXT_SCALE_STEP)}
+          disabled={atMax}
+          accessibilityRole="button"
+          accessibilityLabel={`Increase Discussion text size, currently ${percent} percent`}
+          style={[stepperStyles.segBtn, atMax && { opacity: 0.4 }]}
+        >
+          <Icon name="plus" size={16} color={t.text} />
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -754,18 +766,35 @@ const stepperStyles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
+    gap: space.md,
     paddingHorizontal: space.lg,
     paddingVertical: 10,
   },
-  btn: {
-    width: control.minTouch,
-    height: control.minTouch,
+  // Matches OptionsSheet's own badge (38px, elevated fill) so this row's leading glyph lines
+  // up with every ordinary row's icon badge rather than starting flush against the sheet edge.
+  badge: {
+    width: 38,
+    height: 38,
     borderRadius: radius.pill,
-    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // One segmented control — minus, live value, plus — matching the mockup's "flanking" layout
+  // (Kamil: "plus and minus signs besides current font size") rather than the value sitting
+  // apart from the buttons as a caption.
+  segmented: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: radius.pill,
+  },
+  segBtn: {
+    width: control.minTouch,
+    height: control.minTouch,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segValue: { minWidth: 62, textAlign: 'center' },
 });
 
 // The single overflow trigger for every discussion-level action that isn't the composer
@@ -1334,6 +1363,21 @@ function DiscussionThread({
   const theme = useTheme();
   const { themeName, discussionTextScale } = useThemeMode();
   const styles = useThemedStyles(makeStyles);
+  // DR-068: "user-message text" is explicitly in scope. userText's own fontSize/lineHeight
+  // mirror the `body` variant exactly (see the style def below) — scaled the same way
+  // Markdown.tsx scales serifBody, just against this style object instead of a themed one.
+  // Opus review: computed once here (not inline inside renderMessageText, a useCallback body
+  // where a hook can't legally live) so it keeps a stable reference across renders that don't
+  // actually change the scale or density.
+  const scaledUserText = useMemo(() => (
+    discussionTextScale === 1 ? styles.userText : [
+      styles.userText,
+      {
+        fontSize: styles.userText.fontSize * discussionTextScale,
+        lineHeight: styles.userText.lineHeight * discussionTextScale,
+      },
+    ]
+  ), [styles.userText, discussionTextScale]);
   const opening = useOpeningDraft(pid, slug, threadId);
   // The paper's arXiv-HTML figure manifest (R.10) — carded inline in committed responses.
   // `none`/absent = no cards, so this is purely additive; resolved at render time so a
@@ -1897,16 +1941,6 @@ function DiscussionThread({
         />
       );
     }
-    // DR-068: "user-message text" is explicitly in scope. userText's own fontSize/lineHeight
-    // mirror the `body` variant exactly (see the style def below) — scaled the same way
-    // Markdown.tsx scales serifBody, just against this style object instead of a themed one.
-    const scaledUserText = discussionTextScale === 1 ? styles.userText : [
-      styles.userText,
-      {
-        fontSize: styles.userText.fontSize * discussionTextScale,
-        lineHeight: styles.userText.lineHeight * discussionTextScale,
-      },
-    ];
     return (
       <MessageText
         {...props}
@@ -1917,7 +1951,7 @@ function DiscussionThread({
         textStyle={{ left: scaledUserText, right: scaledUserText }}
       />
     );
-  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, discussionTextScale]);
+  }, [pid, slug, threadId, title, favorites, handleRetry, canRetry, handleSwitchBranch, switchingBranch, stream.streaming, stream.activity, stream.notesPhase, stream.proposalTurn, styles, figureContext, sentenceAnnotationsFor, scaledUserText]);
 
   const renderBubble = useCallback((props: BubbleProps<DiscussionMessage>) => (
     <Bubble
