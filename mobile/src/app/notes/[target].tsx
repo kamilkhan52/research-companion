@@ -32,7 +32,7 @@ import { TopBar } from '@/components/TopBar';
 import { useNotesAgent } from '@/hooks/useNotesAgent';
 import { draftKey, usePersistedDraft } from '@/hooks/usePersistedDraft';
 import { useActiveProject } from '@/store/project';
-import { fullPaperUrl } from '@/lib/paperLinks';
+import { fullPaperUrl, scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import { Button, Card, Icon, IconButton, Screen, Text } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
@@ -100,7 +100,16 @@ export default function NotesScreen() {
     if (href.startsWith('rc-paper:')) {
       const slug = href.slice('rc-paper:'.length);
       if (slug) router.push(`/paper/${encodeURIComponent(slug)}`);
-    } else if (/^https?:\/\//i.test(href)) {
+      return;
+    }
+    // DR-054: no sourceable URL for this one — fall back to a title search, same target the
+    // discussion's ExternalRefSheet offers for the same link (this view has no "add" sheet).
+    const searchTitle = titleFromRcSearchLink(href);
+    if (searchTitle) {
+      void Linking.openURL(scholarSearchUrl(searchTitle)).catch(() => undefined);
+      return;
+    }
+    if (/^https?:\/\//i.test(href)) {
       void Linking.openURL(href).catch(() => undefined);
     }
   };

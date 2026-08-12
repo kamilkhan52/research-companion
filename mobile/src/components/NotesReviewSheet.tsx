@@ -18,6 +18,7 @@ import { useNotes, useReview } from '@/api/queries';
 import { AgentActivity } from '@/components/AgentActivity';
 import { ProgressSteps } from '@/components/ProgressSteps';
 import { finishSteps } from '@/lib/finishSteps';
+import { scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import { draftedWordCount, NotesDiff } from '@/components/NotesDiff';
 import { Markdown } from '@/components/Markdown';
 import { Button, Card, IconButton, Screen, Text, ToneIcon, ToneSurface } from '@/ui';
@@ -131,7 +132,16 @@ export function NotesReviewSheet({
     if (href.startsWith('rc-paper:')) {
       const target = href.slice('rc-paper:'.length);
       if (target) router.push(`/paper/${encodeURIComponent(target)}`);
-    } else if (/^https?:\/\//i.test(href)) {
+      return;
+    }
+    // DR-054: no sourceable URL for this one — fall back to a title search, same target the
+    // discussion's ExternalRefSheet offers for the same link (this view has no "add" sheet).
+    const searchTitle = titleFromRcSearchLink(href);
+    if (searchTitle) {
+      void Linking.openURL(scholarSearchUrl(searchTitle)).catch(() => undefined);
+      return;
+    }
+    if (/^https?:\/\//i.test(href)) {
       void Linking.openURL(href).catch(() => undefined);
     }
   };

@@ -188,6 +188,22 @@ def test_prompts_instruct_linking_web_found_papers():
     assert "arxiv.org/abs" in guidance
 
 
+def test_prompts_instruct_rc_search_for_a_citation_with_no_url():
+    """DR-054: a work cited by NAME with no sourceable URL (e.g. a reference inside the paper
+    being discussed, not something the model found itself) used to be left unlinked — dead text
+    a reader can't act on. Both response paths must offer the rc-search: fallback instead of
+    silently dropping the link, so a prompt edit can't quietly regress back to "name it
+    unlinked"."""
+    from app import prompts
+
+    analysis = prompts.get("analysis_system")
+    assert "rc-search:" in analysis
+    assert "Never fabricate a URL" in analysis
+
+    guidance = prompts.get("analyst_tool_guidance")
+    assert "rc-search:" in guidance
+
+
 def test_narration_asks_for_no_hidden_reasoning(monkeypatch):
     """Narration is a rewrite of an argument already made, not a problem to solve. The shipped
     default narration model is a reasoning model, and on 2026-07-30 it spent 8,848 tokens thinking
