@@ -150,6 +150,11 @@ test('scrolling the list persists the offset once the gesture settles', async ()
     nativeEvent: { contentOffset: { y: 640 }, contentSize: { height: 2000, width: 400 }, layoutMeasurement: { height: 600, width: 400 } },
   };
   fireEvent.scroll(list, event);
+  // Opus review round 2: without this wait, the assertion below is trivially true on the OLD
+  // (unfixed) code too — it's still inside the 300ms write debounce either way, so it wasn't
+  // actually distinguishing "never persisted" from "not persisted yet". Outlasting the debounce
+  // here means a bare `scroll` event genuinely writes nothing under the real fix.
+  await new Promise((r) => setTimeout(r, 500));
   expect(await AsyncStorage.getItem(draftKey('devtest-scroll'))).toBeNull();
 
   fireEvent(list, 'scrollEndDrag', event);

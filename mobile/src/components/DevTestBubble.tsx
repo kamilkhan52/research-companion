@@ -385,7 +385,7 @@ export function ItemCard({ item, shot, route, startExpanded = false }: {
       <Pressable
         onPress={() => setExpanded(!expanded)}
         accessibilityRole="button"
-        accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.${lastVerdict ? ` Already ${lastVerdict === 'pass' ? 'passed' : 'failed'} this session.` : ''}`}
+        accessibilityLabel={`${item.id}: ${item.title}. Tap to ${expanded ? 'collapse' : 'leave a pass, fail, or remark'}.${lastVerdict ? ` Already ${lastVerdict === 'fail' ? 'failed' : 'passed'} this session.` : ''}`}
       >
         <View style={styles.cardHead}>
           <Chip label={item.id} color={t.violet} dot={false} />
