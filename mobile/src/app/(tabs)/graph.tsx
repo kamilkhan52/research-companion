@@ -5,7 +5,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { useDevMode, useGraph, useProjectState } from '@/api/queries';
 import type { GraphEdge, GraphNode, GraphRecommendation, GraphRetrievalCandidate, GraphStatus } from '@/api/types';
@@ -329,17 +329,15 @@ export default function GraphScreen() {
         </>
       ) : (
         <>
-          {build.building ? (
-            <BuildProgressBanner progress={build.progress} projectId={activePid} />
-          ) : null}
-
           {needsEnrichment ? <SkeletonResume build={build} /> : null}
 
           <RetrievalConfirmations candidates={retrievalCandidates} build={build} />
 
           <RetrievalErrors errors={retrievalErrors} build={build} />
 
-          <FilterBar
+          <MapControlRail
+            building={build.building}
+            progress={build.progress}
             query={query}
             onQueryChange={setQuery}
             showSearch={showSearch}
@@ -623,6 +621,75 @@ const SKELETON_HINT =
 // a new hint replaces the old one.
 const HINT_MS = 6000;
 
+// The build steps/hint/current-paper/progress-bar content, shared between the full banner (an
+// EmptyBuildState card, still full-size — DR-069 didn't touch the no-map-yet path) and the
+// compact control rail's build-details sheet (DR-069 — a sheet the reader explicitly opened is
+// already "expanded", so it renders this directly with no collapse chrome of its own).
+export function BuildProgressDetails({ progress }: { progress: GraphBuildState['progress'] }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
+  const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
+  const skeletonReady = progress?.graphStage === 'skeleton';
+  const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
+
+  const [hint, setHint] = useState<string | null>(null);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHint = useCallback((text: string) => {
+    setHint(text);
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+    hintTimer.current = setTimeout(() => setHint(null), HINT_MS);
+  }, []);
+  useEffect(() => () => {
+    if (hintTimer.current) clearTimeout(hintTimer.current);
+  }, []);
+  // The skeleton becoming usable is announced ONCE as a transient hint, not a permanent badge.
+  const skeletonAnnounced = useRef(false);
+  useEffect(() => {
+    if (skeletonReady && !skeletonAnnounced.current) {
+      skeletonAnnounced.current = true;
+      showHint(SKELETON_HINT);
+    }
+  }, [skeletonReady, showHint]);
+
+  if (!progress) return null;
+  return (
+    <>
+      <ProgressSteps
+        dotSize={22}
+        steps={BUILD_STEPS.map((step, i) => ({
+          key: step.key,
+          label: step.label,
+          state: i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending',
+          onPress: () => showHint(step.hint),
+          accessibilityLabel: `What does ${step.label} mean?`,
+        }))}
+      />
+      {hint ? (
+        <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
+          <ToneSurface tone="mint" style={styles.buildHint}>
+            <Text variant="caption" color={t.text}>{hint}</Text>
+          </ToneSurface>
+        </Pressable>
+      ) : null}
+      {progress.currentTitle ? (
+        <ToneSurface tone="neutral" style={styles.currentPaper}>
+          <Text variant="overline" color={t.muted}>{verb}</Text>
+          <Marquee
+            text={progress.currentTitle}
+            textStyle={styles.currentPaperTitle}
+            accessibilityLabel={`${verb} ${progress.currentTitle}`}
+          />
+        </ToneSurface>
+      ) : null}
+      <View style={styles.progressRow}>
+        <AnimatedProgressBar value={pct} color={t.mint} height={6} />
+        <Text variant="caption" color={t.muted}>{progress.done} analyzed</Text>
+      </View>
+    </>
+  );
+}
+
 export function BuildProgressBanner({
   progress,
   large,
@@ -634,10 +701,6 @@ export function BuildProgressBanner({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
-  const phaseIndex = Math.max(0, BUILD_STEPS.findIndex((s) => s.key === progress?.phase));
-  const skeletonReady = progress?.graphStage === 'skeleton';
-  const verb = BUILD_STEPS[phaseIndex]?.verb ?? 'Working';
   const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
@@ -663,25 +726,6 @@ export function BuildProgressBanner({
     }
   };
 
-  const [hint, setHint] = useState<string | null>(null);
-  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showHint = useCallback((text: string) => {
-    setHint(text);
-    if (hintTimer.current) clearTimeout(hintTimer.current);
-    hintTimer.current = setTimeout(() => setHint(null), HINT_MS);
-  }, []);
-  useEffect(() => () => {
-    if (hintTimer.current) clearTimeout(hintTimer.current);
-  }, []);
-  // The skeleton becoming usable is announced ONCE as a transient hint, not a permanent badge.
-  const skeletonAnnounced = useRef(false);
-  useEffect(() => {
-    if (skeletonReady && !skeletonAnnounced.current) {
-      skeletonAnnounced.current = true;
-      showHint(SKELETON_HINT);
-    }
-  }, [skeletonReady, showHint]);
-
   return (
     <Card style={[styles.banner, large && styles.bannerLarge]}>
       <Pressable
@@ -706,40 +750,9 @@ export function BuildProgressBanner({
         <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
       </Pressable>
       {progress && expanded ? (
-        <>
-          <ProgressSteps
-            dotSize={22}
-            style={{ marginTop: space.md }}
-            steps={BUILD_STEPS.map((step, i) => ({
-              key: step.key,
-              label: step.label,
-              state: i < phaseIndex ? 'done' : i === phaseIndex ? 'active' : 'pending',
-              onPress: () => showHint(step.hint),
-              accessibilityLabel: `What does ${step.label} mean?`,
-            }))}
-          />
-          {hint ? (
-            <Pressable onPress={() => setHint(null)} accessibilityLabel="Dismiss hint">
-              <ToneSurface tone="mint" style={styles.buildHint}>
-                <Text variant="caption" color={t.text}>{hint}</Text>
-              </ToneSurface>
-            </Pressable>
-          ) : null}
-          {progress.currentTitle ? (
-            <ToneSurface tone="neutral" style={styles.currentPaper}>
-              <Text variant="overline" color={t.muted}>{verb}</Text>
-              <Marquee
-                text={progress.currentTitle}
-                textStyle={styles.currentPaperTitle}
-                accessibilityLabel={`${verb} ${progress.currentTitle}`}
-              />
-            </ToneSurface>
-          ) : null}
-          <View style={styles.progressRow}>
-            <AnimatedProgressBar value={pct} color={t.mint} height={6} />
-            <Text variant="caption" color={t.muted}>{progress.done} analyzed</Text>
-          </View>
-        </>
+        <View style={{ marginTop: space.md }}>
+          <BuildProgressDetails progress={progress} />
+        </View>
       ) : null}
     </Card>
   );
@@ -758,7 +771,15 @@ function ErrorBanner({ detail, onDismiss }: { detail: string; onDismiss: () => v
   );
 }
 
-export function FilterBar({
+// DR-069 — Kamil: "UI taking up too much of graph real estate still." The old MAP BUILD banner
+// (full-size, expanded by default) and FILTER card (a 56-64px summary that itself expanded
+// inline) stacked above the canvas ate roughly half the screen on a build-in-progress map with
+// real content already below it. Once a usable map exists, both collapse into one 48px
+// segmented rail; each segment opens a bottom sheet instead of expanding in place. Designed via
+// a codex session against a live emulator capture — see `docs/device-review-assets/DR-069/`.
+export function MapControlRail({
+  building,
+  progress,
   query,
   onQueryChange,
   showSearch,
@@ -767,6 +788,8 @@ export function FilterBar({
   onFilterChange,
   visibleCount,
 }: {
+  building: boolean;
+  progress: GraphBuildState['progress'];
   query: string;
   onQueryChange: (v: string) => void;
   showSearch: boolean;
@@ -777,10 +800,20 @@ export function FilterBar({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const [expanded, setExpanded] = useState(false);
+  const [buildSheetOpen, setBuildSheetOpen] = useState(false);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const active = filters.find((item) => item.key === filter) ?? filters[0];
+  const pct = progress && progress.ready > 0 ? progress.done / progress.ready : 0;
+
+  // The build segment disappears the moment a build finishes (that's the whole point — it's
+  // what makes the rail shrink back to just the filter pill), so a sheet the reader had open
+  // for it would otherwise linger with nothing left to show.
+  useEffect(() => {
+    if (!building) setBuildSheetOpen(false);
+  }, [building]);
+
   return (
-    <View style={styles.filterBar}>
+    <View style={styles.railWrap}>
       {showSearch ? (
         <TextInput
           value={query}
@@ -793,41 +826,63 @@ export function FilterBar({
           autoFocus
         />
       ) : null}
-      <Pressable
-        onPress={() => setExpanded((value) => !value)}
-        accessibilityRole="button"
-        accessibilityLabel={`${expanded ? 'Collapse' : 'Show'} map filters. ${active?.label ?? filter} selected. ${visibleCount} nodes visible.`}
-        accessibilityState={{ expanded }}
-        style={styles.filterSummary}
-      >
-        <ToneIcon name="sliders" tone="violet" compact />
-        <View style={styles.filterHeading}>
-          <Text variant="overline" color={t.violet}>FILTER</Text>
-          <Text variant="heading" numberOfLines={1}>{active?.label ?? filter}</Text>
+      <View style={styles.rail}>
+        {building ? (
+          <Pressable
+            onPress={() => setBuildSheetOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Map build in progress${progress ? `, ${Math.round(pct * 100)} percent ready` : ''} — show details`}
+            style={styles.railSegment}
+          >
+            <Icon name="share-2" size={16} color={t.mint} />
+            <Text variant="label" color={t.mint} numberOfLines={1}>Building…</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => setFilterSheetOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Map filter: ${active?.label ?? filter}. ${visibleCount} ${visibleCount === 1 ? 'node' : 'nodes'} visible. Tap to change.`}
+          style={styles.railSegment}
+        >
+          <Icon name="sliders" size={16} color={t.violet} />
+          <Text variant="label" numberOfLines={1}>{active?.label ?? filter}</Text>
+          <Text variant="caption" color={t.muted}>{visibleCount}</Text>
+        </Pressable>
+      </View>
+
+      <BottomSheet visible={buildSheetOpen} onClose={() => setBuildSheetOpen(false)} scrollable>
+        <View style={styles.sheetHeadRow}>
+          <ToneIcon name="share-2" tone="mint" compact />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text variant="overline" color={t.mint}>MAP BUILD</Text>
+            <Text variant="heading" numberOfLines={1}>Building map…</Text>
+          </View>
         </View>
-        <Text variant="caption" color={t.muted}>
+        <View style={{ marginTop: space.md }}>
+          <BuildProgressDetails progress={progress} />
+        </View>
+      </BottomSheet>
+
+      <BottomSheet visible={filterSheetOpen} onClose={() => setFilterSheetOpen(false)}>
+        <Text variant="heading">Filter</Text>
+        <Text variant="caption" color={t.muted} style={{ marginTop: 2, marginBottom: space.md }}>
           {visibleCount} {visibleCount === 1 ? 'node' : 'nodes'} visible
         </Text>
-        <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.muted} />
-      </Pressable>
-      {expanded ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={styles.filterChips}>
-            {filters.map((f) => (
-              <Pressable
-                key={f.key}
-                onPress={() => onFilterChange(f.key)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: f.key === filter }}
-                style={[styles.filterChipTarget, f.key === filter && styles.filterChipTargetActive]}
-              >
-                {f.key === filter ? <Icon name="check" size={15} color={t.mint} /> : null}
-                <Text variant="label" color={f.key === filter ? t.mint : t.text}>{f.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </ScrollView>
-      ) : null}
+        <View style={styles.filterChips}>
+          {filters.map((f) => (
+            <Pressable
+              key={f.key}
+              onPress={() => { onFilterChange(f.key); setFilterSheetOpen(false); }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: f.key === filter }}
+              style={[styles.filterChipTarget, f.key === filter && styles.filterChipTargetActive]}
+            >
+              {f.key === filter ? <Icon name="check" size={15} color={t.mint} /> : null}
+              <Text variant="label" color={f.key === filter ? t.mint : t.text}>{f.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </BottomSheet>
     </View>
   );
 }
@@ -979,23 +1034,26 @@ const makeStyles = (t: ThemePalette, density: DensityMode) => StyleSheet.create(
     borderColor: t.line2,
   },
   pagerBtnDisabled: { opacity: 0.4 },
-  filterBar: {
-    marginHorizontal: space.md,
-    marginTop: space.sm,
-    paddingHorizontal: density === 'tight' ? space.sm : space.md,
-    backgroundColor: t.surface,
+  // DR-069 — the compact rail replacing the old full-width MAP BUILD banner + FILTER card.
+  // `railWrap` holds the (optional) search input above the rail; `rail` is the 48px segmented
+  // row itself, left-aligned and sized to its content rather than stretched full-width — a
+  // filter-only rail (the common case once a build finishes) reads as a compact ~150px pill,
+  // not a card spanning the screen.
+  railWrap: { marginHorizontal: space.md, marginTop: space.sm, gap: space.sm },
+  rail: { flexDirection: 'row', alignSelf: 'flex-start', gap: space.sm },
+  railSegment: {
+    height: 48,
+    paddingHorizontal: space.md,
+    borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: t.line,
-    borderRadius: radius.md,
-  },
-  filterSummary: {
-    minHeight: density === 'tight' ? 56 : 64,
+    borderColor: t.line2,
+    backgroundColor: t.elevated,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
+    gap: 6,
   },
-  filterHeading: { flex: 1, minWidth: 0, gap: 2 },
-  filterChips: { flexDirection: 'row', gap: space.sm, paddingBottom: space.sm },
+  sheetHeadRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  filterChips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   filterChipTarget: {
     minHeight: 48,
     paddingHorizontal: space.md,
