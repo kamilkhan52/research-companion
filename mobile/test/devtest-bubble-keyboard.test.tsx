@@ -64,3 +64,25 @@ test('the open sheet lets a tap register on the same gesture that dismisses the 
   await waitFor(() => expect(screen.getByTestId('devtest-scroll')).toBeTruthy());
   expect(screen.getByTestId('devtest-scroll').props.keyboardShouldPersistTaps).toBe('handled');
 });
+
+// Opus review, PR #384: `keyboardShouldPersistTaps` alone doesn't prove the ScrollView is
+// actually wrapped in the KeyboardAvoidingView — a structural check that walks the render tree
+// is what actually guards the headline fix. Proven to catch a regression: swapping the real
+// KeyboardAvoidingView for a plain View (i.e. reverting the fix) leaves the other tests in this
+// file green, but this one goes red.
+test('the sheet ScrollView is genuinely wrapped in a KeyboardAvoidingView, not just floating in the Modal', async () => {
+  mockKeyboard({ isVisible: false, height: 0 });
+  await renderAsync(<DevTestBubble />);
+  await fireEventAsync.press(screen.getByLabelText('Open device-test companion'));
+  const scroll = await screen.findByTestId('devtest-scroll');
+  let node: ReactTestInstance | null = scroll.parent;
+  let foundKeyboardAvoidingView = false;
+  while (node) {
+    if (node.props?.behavior === 'padding') {
+      foundKeyboardAvoidingView = true;
+      break;
+    }
+    node = node.parent;
+  }
+  expect(foundKeyboardAvoidingView).toBe(true);
+});
