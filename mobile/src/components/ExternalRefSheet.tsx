@@ -8,7 +8,7 @@ import { Alert, Linking } from 'react-native';
 
 import { useAddPaper, useProjectMembership } from '@/api/queries';
 import { OptionsSheet, type SheetOption } from '@/components/chat/OptionsSheet';
-import { scholarSearchUrl } from '@/lib/paperLinks';
+import { scholarSearchUrl, titleFromRcSearchLink } from '@/lib/paperLinks';
 import { useTheme } from '@/theme/ThemeProvider';
 
 export interface ExternalRef {
@@ -49,16 +49,22 @@ export function ExternalRefSheet({
   const urlish = /^(https?:\/\/|www\.|arxiv\.org\b|doi\.org\b)/i;
   const rawLabel = refItem.label?.trim();
   const title = rawLabel && rawLabel !== refItem.href && !urlish.test(rawLabel) ? rawLabel : null;
+  // DR-054, Opus review: `title` is null whenever the label is missing, URL-shaped, or equals
+  // the href — every one of the existing `title ?? refItem.href` fallbacks below would then
+  // store or display the raw `rc-search:<title>` marker verbatim (a reading-list entry
+  // literally titled "rc-search:LoongServe", committed to git). Decode the marker itself as
+  // the next-best title before ever falling all the way to the bare href.
+  const bestTitle = title ?? titleFromRcSearchLink(refItem.href);
   const added = addedHref === refItem.href;
-  const inProject = added || isInProject({ arxivId, title });
+  const inProject = added || isInProject({ arxivId, title: bestTitle });
 
   async function handleAdd() {
     if (!pid || inProject || addPaper.isPending) return;
     try {
       const result = await addPaper.mutateAsync({
-        // Never store a URL as a reading-list title; the arXiv placeholder mirrors the
-        // Discover paste flow (retrieval fills in the real title).
-        title: title ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
+        // Never store a URL (real or the rc-search: marker) as a reading-list title; the
+        // arXiv placeholder mirrors the Discover paste flow (retrieval fills in the real title).
+        title: bestTitle ?? (arxivId ? `arXiv ${arxivId}` : refItem!.href),
         arxivId: arxivId ?? undefined,
         // Without an arXiv id the href is the only source we have — carry it so the
         // analysis offer's retrieval fetches that link instead of title-searching. A
@@ -87,11 +93,11 @@ export function ExternalRefSheet({
       : {
           key: 'open',
           title: 'Search Scholar',
-          subtitle: title ?? undefined,
+          subtitle: bestTitle ?? undefined,
           icon: 'search',
           onPress: () => {
             onClose();
-            void Linking.openURL(scholarSearchUrl(title ?? '')).catch(() => undefined);
+            void Linking.openURL(scholarSearchUrl(bestTitle ?? '')).catch(() => undefined);
           },
         },
     inProject
@@ -119,7 +125,7 @@ export function ExternalRefSheet({
       visible
       onClose={onClose}
       title="External reference"
-      subtitle={title ?? refItem.href}
+      subtitle={bestTitle ?? refItem.href}
       options={options}
     />
   );

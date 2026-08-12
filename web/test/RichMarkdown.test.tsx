@@ -28,6 +28,23 @@ describe('RichMarkdown', () => {
     expect(screen.getByText('Attention Is All You Need', { selector: 'code' })).toBeInTheDocument();
   });
 
+  // DR-054 — a citation the model has no sourceable URL for arrives as `rc-search:<title>`.
+  // DOMPurify's ALLOWED_URI_REGEXP would strip any scheme not explicitly listed, and the
+  // review that surfaced this found exactly that: rc-search was missing, so every one of
+  // these links silently lost its href and became dead inert text.
+  it('keeps an rc-search link tappable rather than stripping its href', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<RichMarkdown text="This is compared against [LoongServe](rc-search:LoongServe) in the paper." />);
+
+    const link = screen.getByRole('link', { name: 'LoongServe' });
+    expect(link).toHaveAttribute('href', 'rc-search:LoongServe');
+    await userEvent.setup().click(link);
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://scholar.google.com/scholar?q=LoongServe', '_blank', 'noopener,noreferrer',
+    );
+    openSpy.mockRestore();
+  });
+
   it('renders equations and removes unsafe URLs', () => {
     const { container } = render(<RichMarkdown text={'Inline $x^2$ and [unsafe](javascript:alert(1)).'} />);
     expect(container.querySelector('.katex')).not.toBeNull();

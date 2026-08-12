@@ -760,8 +760,9 @@ function emphasisToken(type: 'bold' | 'italic', content: string): InlineToken {
  *  "[PIM-LLM (rc-paper:pim-llm)]" or "[Name (https://…)]" — invalid markdown that rendered as
  *  literal bracketed text. Repaired into a proper link before tokenizing; a legitimate
  *  parenthetical like "[GPTQ (Frantar et al., 2022)](url)" never matches because its
- *  parenthetical does not start with a link scheme. */
-const MALFORMED_LINK_RE = /\[([^\[\]()]+?)\s*\(((?:rc-paper:|rc-search:|https?:\/\/)[^\s()]+)\)\]/g;
+ *  parenthetical does not start with a link scheme. `rc-search:` allows internal spaces
+ *  (unlike the URL schemes) — its target is a title, not something whitespace-safe by nature. */
+const MALFORMED_LINK_RE = /\[([^\[\]()]+?)\s*\(((?:rc-paper:|https?:\/\/)[^\s()]+|rc-search:[^()]+)\)\]/g;
 
 function tokenizeInline(rawInput: string): InlineToken[] {
   const input = rawInput.replace(MALFORMED_LINK_RE, '[$1]($2)');
@@ -773,9 +774,13 @@ function tokenizeInline(rawInput: string): InlineToken[] {
   // (a variable, TeX command, script, equality, or Greek letter) are required, and the body may
   // not start with a digit. Escaped dollars and numeric spans stay prose, so prices cannot
   // consume the text between them. Numeric equations must use the explicit `\( … \)` contract.
-  // Then link `[label](href)`, so its label isn't consumed by emphasis parsing.
+  // Then link `[label](href)`, so its label isn't consumed by emphasis parsing. The href itself
+  // excludes whitespace EXCEPT for `rc-search:` targets, which are title text rather than a
+  // conventional URL and cannot be relied on to arrive percent-encoded (DR-054, Opus review):
+  // the model is instructed to encode spaces, but the parser must not silently corrupt into
+  // visible raw markdown when it forgets.
   const re =
-    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|(?<!\\)\$(?!\$|\s|\d)(?=[^$\n]*(?:[A-Za-z\\_^=]|[\u0370-\u03ff]))([^$\n]*?\S)(?<!\\)\$(?!\$))|(\[([^\]]+)\]\(([^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
+    /(\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|(?<!\\)\$(?!\$|\s|\d)(?=[^$\n]*(?:[A-Za-z\\_^=]|[\u0370-\u03ff]))([^$\n]*?\S)(?<!\\)\$(?!\$))|(\[([^\]]+)\]\((rc-search:[^)]*|[^)\s]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|((?:\*|_)([^*_]+)(?:\*|_))/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(input)) !== null) {

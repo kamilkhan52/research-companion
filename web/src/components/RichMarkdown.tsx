@@ -36,7 +36,8 @@ function renderMarkdown(text: string, papers: { title: string; slug: string }[])
   const raw = marked.parse(repairGluedHeadings(stripPseudoToolTags(text))) as string;
   const safe = DOMPurify.sanitize(raw, {
     ADD_ATTR: ['target'],
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|rc-paper):)/i,
+    // DR-054: `rc-search:<title>` marks a citation the model has no sourceable URL for.
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|rc-paper|rc-search):)/i,
   });
   const root = document.createElement('div');
   root.innerHTML = safe;
@@ -75,10 +76,21 @@ export function RichMarkdown({ text, onNavigate, className = '' }: { text: strin
   function click(event: MouseEvent<HTMLDivElement>) {
     const anchor = (event.target as HTMLElement).closest('a');
     const href = anchor?.getAttribute('href') || '';
-    if (!href.startsWith('rc-paper:')) return;
-    event.preventDefault();
-    const slug = href.slice('rc-paper:'.length);
-    if (slug && onNavigate) onNavigate(`paper/${encodeURIComponent(slug)}`);
+    if (href.startsWith('rc-paper:')) {
+      event.preventDefault();
+      const slug = href.slice('rc-paper:'.length);
+      if (slug && onNavigate) onNavigate(`paper/${encodeURIComponent(slug)}`);
+      return;
+    }
+    // DR-054: no sourceable URL for this one — fall back to a title search, same target the
+    // mobile client's ExternalRefSheet offers for the same link. Web has no equivalent
+    // add-to-list sheet yet, so open the search directly rather than leaving a dead click.
+    if (href.startsWith('rc-search:')) {
+      event.preventDefault();
+      let title = href.slice('rc-search:'.length);
+      try { title = decodeURIComponent(title); } catch { /* use the raw (unencoded) title as-is */ }
+      if (title) window.open(`https://scholar.google.com/scholar?q=${encodeURIComponent(title)}`, '_blank', 'noopener,noreferrer');
+    }
   }
   return <div className={`rich-markdown ${className}`} onClick={click} dangerouslySetInnerHTML={{ __html: html }} />;
 }

@@ -116,7 +116,12 @@ test('a name-only reference (rc-search) offers a Scholar search, not "Open link"
   expect(openURL).toHaveBeenCalledWith('https://scholar.google.com/scholar?q=LoongServe');
 });
 
-test('adding a name-only reference never stores the rc-search marker as a pdfUrl', async () => {
+test('adding a name-only reference never carries the rc-search marker as a source_url', async () => {
+  // Opus review, PR #377: `pdfUrl` is never one of api.addPaper's own arguments — it only
+  // reaches the wire as `source_url` on the PREFLIGHT duplicate-check call
+  // (useAddPaper -> api.findPaperMatches). Asserting on api.addPaper's call shape (the
+  // original version of this test) can't observe the guard at all; it passed even before the
+  // guard existed.
   jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
   await renderAsync(
     wrap(
@@ -129,6 +134,40 @@ test('adding a name-only reference never stores the rc-search marker as a pdfUrl
   );
   await fireEventAsync.press(screen.getByText('Add to reading list'));
   await waitFor(() =>
+    expect(api.findPaperMatches).toHaveBeenCalledWith('proj', {
+      title: 'LoongServe',
+      arxiv_id: undefined,
+      source_url: undefined,
+    }),
+  );
+  await waitFor(() =>
     expect(api.addPaper).toHaveBeenCalledWith('proj', 'LoongServe', undefined, undefined, undefined, undefined),
+  );
+});
+
+// Opus review, PR #377 (F4): `title` derived from `refItem.label` is null whenever the label
+// is missing, URL-shaped, or equal to the href — every `title ?? refItem.href` fallback in the
+// component would then store or display the raw `rc-search:<title>` marker verbatim (a
+// reading-list entry literally titled "rc-search:LoongServe: A..."). The href itself must be
+// decoded as the next-best title before ever falling all the way to the bare marker.
+test('a name-only reference with no usable label still adds under its decoded title, never the raw marker', async () => {
+  jest.mocked(api.addPaper).mockResolvedValue({ paper: { slug: 'new' } } as never);
+  await renderAsync(
+    wrap(
+      <ExternalRefSheet
+        pid="proj"
+        refItem={{ href: rcSearchLink('LoongServe: A Distributed Serving System') }}
+        onClose={() => {}}
+      />,
+    ),
+  );
+  expect(screen.getAllByText('LoongServe: A Distributed Serving System').length).toBeGreaterThan(0);
+  expect(screen.queryByText(/^rc-search:/)).toBeNull();
+
+  await fireEventAsync.press(screen.getByText('Add to reading list'));
+  await waitFor(() =>
+    expect(api.addPaper).toHaveBeenCalledWith(
+      'proj', 'LoongServe: A Distributed Serving System', undefined, undefined, undefined, undefined,
+    ),
   );
 });
