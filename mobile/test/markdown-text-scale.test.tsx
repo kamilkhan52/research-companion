@@ -99,3 +99,33 @@ test('fenced code blocks scale, matching the prose around them', async () => {
   await renderAsync(<Markdown text={'```\nconst x = 1;\n```'} textScale={1.3} />);
   expect(fontSize('const x = 1;')).toBeCloseTo(13 * 1.3);
 });
+
+test('inline code (backtick span within prose) scales too', async () => {
+  await renderAsync(<Markdown text="Set `x = 1` before calling." textScale={1.3} />);
+  expect(fontSize('x = 1')).toBeCloseTo(13.5 * 1.3);
+});
+
+// Opus review round 2, PR #385: the earlier "table cells scale" test uses a 2-column table,
+// which takes the flex-weighted `fits` branch — the FIXED-width branch (>3 columns) is a
+// separate code path with its own width formula and was never exercised. Reverting just that
+// `* textScale` left the full suite green.
+test('wide-table (fixed-width) columns scale their width too, not just their text', async () => {
+  await renderAsync(
+    <Markdown
+      text={'| A | B | C | D |\n|---|---|---|---|\n| one | two | three | four |'}
+      textScale={1.3}
+    />,
+  );
+  let node: ReactTestInstance | null = screen.getByText('one');
+  let width: number | undefined;
+  while (node) {
+    width = (StyleSheet.flatten(node.props?.style) as { width?: number } | undefined)?.width;
+    if (width != null) break;
+    node = node.parent;
+  }
+  expect(node).toBeTruthy();
+  // Column 0's widest cell is "one" (3 chars) vs header "A" (1 char): chars[0] = 3, so the
+  // unscaled width clamps to the 72 floor (Markdown.tsx's MdTable) — exercising the multiplier
+  // at the boundary as well as the general case.
+  expect(width).toBeCloseTo(72 * 1.3);
+});

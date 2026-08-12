@@ -92,3 +92,24 @@ test('the text-size row has a leading badge and a "Discussion text" scope subtit
   expect(screen.getByText('Aa')).toBeTruthy();
   expect(screen.getByText('Discussion text')).toBeTruthy();
 });
+
+// Opus review round 2, PR #385: minus/value/plus left-to-right is the defining property of the
+// round-1 layout fix (Kamil: "plus and minus signs BESIDES current font size") — swapping the
+// two Pressables (plus/value/minus) left every other test in this file green, since none of
+// them assert order. Walks the segmented control's own children rather than the two buttons'
+// labels in isolation, so a reorder is the one thing this test can't miss.
+test('the segmented control reads minus, value, plus — left to right', async () => {
+  await openMenu();
+  // Document order in the serialized tree is rendering order — a cheap, robust way to check
+  // relative position without depending on exactly how many host-view layers sit between the
+  // three elements (Pressable wraps its own View internally).
+  const json = JSON.stringify(screen.toJSON());
+  const decreaseAt = json.indexOf('Decrease Discussion text size, currently 100 percent');
+  const valueAt = json.indexOf('100% · 17');
+  const increaseAt = json.indexOf('Increase Discussion text size, currently 100 percent');
+  expect(decreaseAt).toBeGreaterThan(-1);
+  expect(valueAt).toBeGreaterThan(-1);
+  expect(increaseAt).toBeGreaterThan(-1);
+  expect(decreaseAt).toBeLessThan(valueAt);
+  expect(valueAt).toBeLessThan(increaseAt);
+});
