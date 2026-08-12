@@ -137,7 +137,14 @@ test('a verdict recorded in the current session updates the filter immediately, 
   fireEvent.press(screen.getByText('Pass'));
   await waitFor(() => expect(api.recordDevTestFeedback).toHaveBeenCalled());
 
-  await waitFor(() => expect(screen.queryByText('Zulu widget')).toBeNull());
+  // This propagation crosses two components (ItemCard's own draft update -> its
+  // onVerdictChange effect -> the PARENT's verdicts state -> filteredItems recompute -> this
+  // card unmounting), one hop more indirect than the single-component DR-075 updates elsewhere
+  // in this file — CI's shared runners are slow enough (~13x local, from the suite's own total
+  // time) that the default 1000ms waitFor budget was observed to fail this specific assertion
+  // on CI (twice) while never failing locally. Same generous-timeout precedent as the
+  // AsyncStorage round-trips in devtest-bubble-persistence.test.tsx.
+  await waitFor(() => expect(screen.queryByText('Zulu widget')).toBeNull(), { timeout: 3000 });
   expect(screen.getByText('Beta gadget')).toBeTruthy();
 });
 
