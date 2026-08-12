@@ -438,6 +438,7 @@ export function Button({
   loading,
   disabled,
   icon,
+  iconSize = 17,
   style,
   ...rest
 }: PressableProps & {
@@ -445,6 +446,7 @@ export function Button({
   variant?: ButtonVariant;
   loading?: boolean;
   icon?: IconName;
+  iconSize?: number;
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
@@ -472,7 +474,7 @@ export function Button({
         <ActivityIndicator color={variant === 'primary' ? t.mintInk : t.mint} />
       ) : (
         <>
-          {icon ? <Feather name={icon} size={17} color={fg} /> : null}
+          {icon ? <Feather name={icon} size={iconSize} color={fg} /> : null}
           <Text variant="heading" color={fg}>
             {title}
           </Text>
