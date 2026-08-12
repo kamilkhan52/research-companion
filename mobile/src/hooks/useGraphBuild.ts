@@ -185,7 +185,16 @@ export function useGraphBuild(pid: string | null): GraphBuildState {
       // app (tab screens stay mounted, so this poll loop keeps running); a quiet toast is the
       // only completion signal off the Map tab. applyJob only ever sees a settled job once
       // (polling stops right here), so this can't double-fire.
-      if (job.status === 'done') showToast('Reference map ready');
+      // DR-069: the count turns this into a real signal ("did my new papers make it in?"), not
+      // just a "something happened" chime. Opus review caught that `completeness.total_papers`
+      // (the reading-list paper count) is a different, smaller number than what the Map header
+      // itself shows (`graph.nodes.length`, project papers PLUS external works) — a toast
+      // disagreeing with the count directly above it would read as a second, contradictory
+      // source of truth. Match the header's own number.
+      if (job.status === 'done') {
+        const n = job.graph?.nodes.length;
+        showToast(n != null ? `Map updated · ${n} paper${n === 1 ? '' : 's'}` : 'Reference map ready');
+      }
       if (pid) {
         qc.invalidateQueries({ queryKey: keys.graph(pid) });
         // A completed build refreshes authors/affiliations too (U.9) — an open Authors

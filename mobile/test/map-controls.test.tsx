@@ -2,11 +2,17 @@ import { fireEventAsync, renderAsync, screen } from '@testing-library/react-nati
 
 import {
   GRAPH_PAGE_SIZE,
-  FilterBar,
+  MapControlRail,
   GraphPagerOverlay,
 } from '@/app/(tabs)/graph';
 import { DISCOVER_PLACEHOLDER } from '@/app/(tabs)/discover';
 import { ProgressSteps } from '@/components/ProgressSteps';
+
+const FILTERS = [
+  { key: 'project' as const, label: 'In project' },
+  { key: 'external' as const, label: 'External' },
+  { key: 'significant' as const, label: 'Significant' },
+];
 
 test('Map reveals papers in batches of 50 and keeps paging controls in one overlay', async () => {
   const onIncrease = jest.fn();
@@ -51,30 +57,197 @@ test('shared progress steps render completed checks for both Map and Discover ti
   expect(screen.getByText('Ranked')).toBeTruthy();
 });
 
-test('Map filters start as one active-chip row and expand inline', async () => {
-  const onFilterChange = jest.fn();
+// DR-069 — the compact rail replacing the old full-size MAP BUILD banner + FILTER card. Each
+// segment now opens a bottom sheet instead of expanding in place.
+
+test('with no build running, the rail shows only the compact filter pill', async () => {
   await renderAsync(
-    <FilterBar
+    <MapControlRail
+      building={false}
+      progress={null}
       query=""
       onQueryChange={jest.fn()}
       showSearch={false}
-      filters={[
-        { key: 'project', label: 'In project' },
-        { key: 'external', label: 'External' },
-        { key: 'significant', label: 'Significant' },
-      ]}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+
+  expect(screen.getByText('Significant')).toBeTruthy();
+  expect(screen.getByText('23')).toBeTruthy();
+  expect(screen.queryByText('Building…')).toBeNull();
+});
+
+test('tapping the filter segment opens a sheet, and picking a filter closes it', async () => {
+  const onFilterChange = jest.fn();
+  await renderAsync(
+    <MapControlRail
+      building={false}
+      progress={null}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
       filter="significant"
       onFilterChange={onFilterChange}
       visibleCount={23}
     />,
   );
 
-  expect(screen.getByText('Significant')).toBeTruthy();
-  expect(screen.getByText('23 nodes visible')).toBeTruthy();
   expect(screen.queryByText('External')).toBeNull();
-
-  await fireEventAsync.press(screen.getByLabelText(/Show map filters/));
+  await fireEventAsync.press(screen.getByLabelText(/Map filter: Significant/));
   expect(screen.getByText('External')).toBeTruthy();
+
   await fireEventAsync.press(screen.getByText('External'));
   expect(onFilterChange).toHaveBeenCalledWith('external');
+  expect(screen.queryByText('External')).toBeNull();
+});
+
+test('a running build adds a segment that opens its own progress sheet', async () => {
+  await renderAsync(
+    <MapControlRail
+      building
+      progress={{
+        phase: 'extraction',
+        graphStage: 'enriched',
+        total: 10,
+        ready: 10,
+        done: 4,
+        currentTitle: 'Attention Is All You Need',
+        perPaper: {},
+        retrievalCandidates: {},
+      }}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+
+  expect(screen.getByText('Building…')).toBeTruthy();
+  expect(screen.queryByText('MAP BUILD')).toBeNull();
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText('MAP BUILD')).toBeTruthy();
+  expect(screen.getByText('4 analyzed')).toBeTruthy();
+});
+
+test('the build sheet closes itself once the build finishes', async () => {
+  const progress = {
+    phase: 'extraction' as const, graphStage: 'enriched' as const,
+    total: 10, ready: 10, done: 4, currentTitle: null,
+    perPaper: {}, retrievalCandidates: {},
+  };
+  const { rerenderAsync } = await renderAsync(
+    <MapControlRail
+      building
+      progress={progress}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText('MAP BUILD')).toBeTruthy();
+
+  await rerenderAsync(
+    <MapControlRail
+      building={false}
+      progress={{ ...progress, done: 10 }}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+  expect(screen.queryByText('MAP BUILD')).toBeNull();
+});
+
+// Opus review, PR #382: the hint state (including the one-time "skeleton ready" announcement)
+// used to live inside the details view itself, which unmounts every time the build sheet closes
+// — resetting the "announced once" guard and re-firing the hint on every reopen. It now lives in
+// MapControlRail, which stays mounted across the sheet's own open/close cycle.
+test('the skeleton-ready hint announces once and does not return on a sheet reopen', async () => {
+  const progress = {
+    phase: 'extraction' as const, graphStage: 'skeleton' as const,
+    total: 10, ready: 10, done: 4, currentTitle: null,
+    perPaper: {}, retrievalCandidates: {},
+  };
+  await renderAsync(
+    <MapControlRail
+      building
+      progress={progress}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />,
+  );
+
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  const hintText = 'Fast map ready — explore it now; enrichment keeps improving it in the background.';
+  expect(screen.getByText(hintText)).toBeTruthy();
+  await fireEventAsync.press(screen.getByLabelText('Dismiss hint'));
+  expect(screen.queryByText(hintText)).toBeNull();
+
+  // Close the sheet (unmounts the details view), then reopen it.
+  await fireEventAsync.press(screen.getByLabelText('Dismiss test bottom sheet'));
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.queryByText(hintText)).toBeNull();
+});
+
+// Opus review round 2, PR #382: the once-guard's SECOND half — resetting on a genuinely new
+// build (`phase === 'preparing'`) — had no test of its own; deleting that reset effect left this
+// entire file green. A build re-reaching skeleton stage within the same screen visit (a second
+// rebuild) must get its own fresh announcement, not stay silently suppressed by the first one's.
+test('a genuinely new build re-announces the skeleton hint', async () => {
+  const hintText = 'Fast map ready — explore it now; enrichment keeps improving it in the background.';
+  const skeleton = {
+    phase: 'extraction' as const, graphStage: 'skeleton' as const,
+    total: 10, ready: 10, done: 4, currentTitle: null, perPaper: {}, retrievalCandidates: {},
+  };
+  const rail = (building: boolean, progress: unknown) => (
+    <MapControlRail
+      building={building}
+      progress={progress as never}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />
+  );
+  const { rerenderAsync } = await renderAsync(rail(true, skeleton));
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText(hintText)).toBeTruthy();
+  await fireEventAsync.press(screen.getByLabelText('Dismiss hint'));
+  await fireEventAsync.press(screen.getByLabelText('Dismiss test bottom sheet'));
+
+  // The first build finishes...
+  await rerenderAsync(rail(false, { ...skeleton, graphStage: 'enriched', done: 10 }));
+  // ...then a second, genuinely new build starts — exactly what useGraphBuild.run() sets.
+  await rerenderAsync(rail(true, {
+    phase: 'preparing', graphStage: null,
+    total: 0, ready: 0, done: 0, currentTitle: null, perPaper: {}, retrievalCandidates: {},
+  }));
+  await rerenderAsync(rail(true, skeleton));
+
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText(hintText)).toBeTruthy();
 });
