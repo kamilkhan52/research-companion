@@ -209,3 +209,45 @@ test('the skeleton-ready hint announces once and does not return on a sheet reop
   await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
   expect(screen.queryByText(hintText)).toBeNull();
 });
+
+// Opus review round 2, PR #382: the once-guard's SECOND half — resetting on a genuinely new
+// build (`phase === 'preparing'`) — had no test of its own; deleting that reset effect left this
+// entire file green. A build re-reaching skeleton stage within the same screen visit (a second
+// rebuild) must get its own fresh announcement, not stay silently suppressed by the first one's.
+test('a genuinely new build re-announces the skeleton hint', async () => {
+  const hintText = 'Fast map ready — explore it now; enrichment keeps improving it in the background.';
+  const skeleton = {
+    phase: 'extraction' as const, graphStage: 'skeleton' as const,
+    total: 10, ready: 10, done: 4, currentTitle: null, perPaper: {}, retrievalCandidates: {},
+  };
+  const rail = (building: boolean, progress: unknown) => (
+    <MapControlRail
+      building={building}
+      progress={progress as never}
+      query=""
+      onQueryChange={jest.fn()}
+      showSearch={false}
+      filters={FILTERS}
+      filter="significant"
+      onFilterChange={jest.fn()}
+      visibleCount={23}
+    />
+  );
+  const { rerenderAsync } = await renderAsync(rail(true, skeleton));
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText(hintText)).toBeTruthy();
+  await fireEventAsync.press(screen.getByLabelText('Dismiss hint'));
+  await fireEventAsync.press(screen.getByLabelText('Dismiss test bottom sheet'));
+
+  // The first build finishes...
+  await rerenderAsync(rail(false, { ...skeleton, graphStage: 'enriched', done: 10 }));
+  // ...then a second, genuinely new build starts — exactly what useGraphBuild.run() sets.
+  await rerenderAsync(rail(true, {
+    phase: 'preparing', graphStage: null,
+    total: 0, ready: 0, done: 0, currentTitle: null, perPaper: {}, retrievalCandidates: {},
+  }));
+  await rerenderAsync(rail(true, skeleton));
+
+  await fireEventAsync.press(screen.getByLabelText(/Map build in progress/));
+  expect(screen.getByText(hintText)).toBeTruthy();
+});
