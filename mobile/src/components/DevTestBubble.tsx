@@ -314,19 +314,39 @@ export function DevTestBubble() {
               filter narrows WHICH items are in play, sort decides how to browse the result —
               "Not reviewed" + "Priority" for finding the next one, "Reviewed" + "Recently
               reviewed" for jumping back into whatever was just being worked on. */}
-          <TextInput
-            placeholder="Search by id or title"
-            placeholderTextColor={t.muted}
-            value={query}
-            onChangeText={setQuery}
-            style={styles.searchInput}
-            accessibilityLabel="Search device-test items"
-          />
+          <View style={styles.searchRow}>
+            <TextInput
+              placeholder="Search by id or title"
+              placeholderTextColor={t.muted}
+              value={query}
+              onChangeText={setQuery}
+              style={[styles.searchInput, { flex: 1 }]}
+              accessibilityLabel="Search device-test items"
+            />
+            {/* Opus review, PR #387: a persisted search query has no other way to notice it's
+                still filtering the list days later — surface a way to clear it right next to
+                where it's typed, not just a muted caption below. */}
+            {query.length ? (
+              <Pressable
+                onPress={() => setQuery('')}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                hitSlop={8}
+                style={styles.searchClear}
+              >
+                <Icon name="x" size={16} color={t.muted} />
+              </Pressable>
+            ) : null}
+          </View>
+          {/* Opus review, PR #387: two visually identical chip rows with no label read as one
+              confusing group — "Filter"/"Sort" name what each row actually does. */}
+          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Filter</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
             {REVIEW_FILTERS.map((f) => (
               <ToggleChip key={f.key} label={f.label} active={filter === f.key} onPress={() => setFilter(f.key)} />
             ))}
           </ScrollView>
+          <Text variant="caption" color={t.muted} style={styles.chipRowLabel}>Sort</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
             {SORT_MODES.map((s) => (
               <ToggleChip key={s.key} label={s.label} active={sort === s.key} onPress={() => setSort(s.key)} />
@@ -716,6 +736,9 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     color: t.text,
     backgroundColor: t.surface,
   },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
+  searchClear: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  chipRowLabel: { marginTop: space.sm },
   filterRow: { flexDirection: 'row', gap: space.xs, paddingVertical: space.xs },
   matchCount: { marginTop: 2 },
 });

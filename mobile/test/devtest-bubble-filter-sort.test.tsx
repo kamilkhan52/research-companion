@@ -55,12 +55,31 @@ async function seedVerdict(id: string, verdict: 'pass' | 'fail', at: number) {
   );
 }
 
+// Several tests below reuse the same three item ids, seeding a fresh verdict before each
+// `openBubble()` — but a verdict from an EARLIER test would otherwise linger in the mock
+// AsyncStorage store and could accidentally satisfy a later test's assumption that an item is
+// unreviewed (e.g. DR-C is expected to have no verdict in some tests, one in others).
+afterEach(async () => {
+  await AsyncStorage.clear();
+});
+
 test('search narrows the list to a matching id or title', async () => {
   const screen = await openBubble();
   fireEvent.changeText(screen.getByPlaceholderText('Search by id or title'), 'beta');
   expect(screen.getByText('Beta gadget')).toBeTruthy();
   expect(screen.queryByText('Zulu widget')).toBeNull();
   expect(screen.queryByText('Alpha thing')).toBeNull();
+});
+
+// Opus review, PR #387: a persisted search query has no other affordance to notice or clear it
+// once typed — the caption below is muted text, easy to miss on a phone.
+test('a clear button appears once search text is entered, and empties the field', async () => {
+  const screen = await openBubble();
+  expect(screen.queryByLabelText('Clear search')).toBeNull();
+  fireEvent.changeText(screen.getByPlaceholderText('Search by id or title'), 'beta');
+  fireEvent.press(screen.getByLabelText('Clear search'));
+  expect(screen.getByPlaceholderText('Search by id or title').props.value).toBe('');
+  expect(screen.getByText('Zulu widget')).toBeTruthy();
 });
 
 test('the "Not reviewed" filter excludes a verdict recorded on an item whose card never mounted', async () => {
@@ -83,7 +102,10 @@ test('the "Not reviewed" filter excludes a verdict recorded on an item whose car
   expect(screen.queryByText('Alpha thing')).toBeNull();
 });
 
-test('the "Reviewed" filter shows only items with a persisted verdict, seeded in bulk on open', async () => {
+// Opus review, PR #387: DR-A always mounts (it's in the "To verify" section), so this alone
+// doesn't prove the BULK read specifically — the "never mounted" test above does that. This one
+// just checks filter membership.
+test('the "Reviewed" filter shows only items with a persisted verdict', async () => {
   await seedVerdict('DR-A', 'pass', 1000);
   const screen = await openBubble();
   fireEvent.press(screen.getByLabelText('Reviewed'));
@@ -135,21 +157,29 @@ test('"A–Z" sort flattens the sections into one alphabetical list', async () =
   expect(beta).toBeLessThan(zulu);
 });
 
+// Opus review, PR #387: with only two reviewed items, "most recent first" and "alphabetical"
+// are the only two possible orderings — whichever one a test picks, a WRONG implementation
+// (alphabetical sort standing in for recency, same coincidence class as the A–Z fixture above)
+// can pass it by accident. Three items with recency order (Beta, Alpha, Zulu) that matches
+// neither the fetch/array order (Zulu, Beta, Alpha) nor the alphabetical order (Alpha, Beta,
+// Zulu) rules both wrong implementations out at once. Revert-verified: swapping the recency
+// comparator for `title.localeCompare` reds this test (it didn't before this fix).
 test('"Recently reviewed" sort orders reviewed items newest-verdict-first', async () => {
+  await seedVerdict('DR-B', 'fail', 9000);
+  await seedVerdict('DR-C', 'pass', 5000);
   await seedVerdict('DR-A', 'pass', 1000);
-  await seedVerdict('DR-B', 'fail', 5000);
   const screen = await openBubble();
   fireEvent.press(screen.getByLabelText('Reviewed'));
   fireEvent.press(screen.getByLabelText('Recently reviewed'));
   await waitFor(() => expect(screen.getByText('Beta gadget')).toBeTruthy());
-  expect(screen.queryByText('Alpha thing')).toBeNull();
 
   const json = JSON.stringify(screen.toJSON());
-  const zulu = json.indexOf('Zulu widget');
   const beta = json.indexOf('Beta gadget');
-  // DR-B's verdict (5000) is newer than DR-A's (1000), so it sorts first.
+  const alpha = json.indexOf('Alpha thing');
+  const zulu = json.indexOf('Zulu widget');
   expect(beta).toBeGreaterThan(-1);
-  expect(beta).toBeLessThan(zulu);
+  expect(beta).toBeLessThan(alpha);
+  expect(alpha).toBeLessThan(zulu);
 });
 
 test('the search/filter/sort choices survive closing and reopening the sheet', async () => {
