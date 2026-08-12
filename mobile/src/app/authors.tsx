@@ -23,7 +23,7 @@ import { scholarSearchUrl } from '@/lib/paperLinks';
 import { useActiveProject } from '@/store/project';
 import { AnimatedProgressBar, Button, Chip, Icon, Screen, Text, type IconName } from '@/ui';
 import { useTheme, useThemedStyles } from '@/theme/ThemeProvider';
-import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
+import { control, fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
 /** The same target a chat's external reference would open: arXiv abs page when the id is
  *  known, DOI resolver, the extracted URL, else a Scholar title search. */
@@ -38,6 +38,38 @@ type Mode = 'authors' | 'labs';
 const UNKNOWN_LABEL = 'Independent / unknown';
 export const AUTHORS_PAGE_SIZE = 10;
 export const LABS_PAGE_SIZE = 5;
+
+// DR-048 — Kamil, refining DR-008: "the stat icons need a key". Same icons the cards already
+// use (CountStat below) — no new vocabulary, just naming what was already there. `file-text`
+// stays exclusive to "papers in project" everywhere in the app (Discover's icon choices —
+// align-left/external-link/eye-off, DR-070 — are deliberately a different vocabulary, not
+// reused here). Labs data carries no referenced-works count, so its key drops `link`.
+const AUTHOR_ICON_KEY: { icon: IconName; label: string }[] = [
+  { icon: 'file-text', label: 'Papers in project' },
+  { icon: 'star', label: 'Significant citations' },
+  { icon: 'link', label: 'Referenced works' },
+];
+const LAB_ICON_KEY: { icon: IconName; label: string }[] = [
+  { icon: 'file-text', label: 'Papers in project' },
+  { icon: 'star', label: 'Significant citations' },
+];
+
+/** A one-time, non-interactive legend above a list of icon+count cards — same pattern as
+ *  Discover's DR-070 key, shown once rather than repeated on every card. */
+function IconKey({ items }: { items: { icon: IconName; label: string }[] }) {
+  const t = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  return (
+    <View style={styles.iconKey}>
+      {items.map((item) => (
+        <View key={item.icon} style={styles.iconKeyItem}>
+          <Icon name={item.icon} size={14} color={t.muted} />
+          <Text variant="caption" color={t.muted}>{item.label}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
 
 export default function AuthorsScreen() {
   const router = useRouter();
@@ -87,6 +119,7 @@ export default function AuthorsScreen() {
 
           {mode === 'authors' ? (
             <>
+              <IconKey items={AUTHOR_ICON_KEY} />
               <View style={styles.cardGrid}>
                 {authors.slice(0, authorLimit).map((a) => (
                   <AuthorCard key={a.name} author={a} onPress={() => setSelected(a)} />
@@ -310,33 +343,44 @@ function LabsView({
 
   return (
     <>
-      {researching ? (
-        // The standard progress treatment (DR-047): a real fraction of the pass plus who is
-        // being researched right now, not a spinner beside a counter.
-        <View style={styles.researchProgress}>
-          <View style={styles.researchRow}>
-            <ActivityIndicator size="small" color={t.mint} />
-            <Text variant="caption" color={t.text} style={{ flex: 1 }}>
-              Researching labs · {job!.done} of {job!.total} authors
-            </Text>
+      {/* DR-048 — Kamil, refining DR-008: "Research Lab's placement and labelling do not say
+          what it is doing." A bare ghost button read as researching one lab, not ten authors.
+          The callout names the actual scope up front; opening this screen never triggers the
+          pass itself (invariant-adjacent to notes review: nothing runs until asked). */}
+      <View style={styles.labsCallout}>
+        <Text variant="heading">Find labs behind top authors</Text>
+        <Text variant="caption" color={t.muted} style={{ marginTop: 2 }}>
+          Checks up to 10 top authors on the web. Results are saved.
+        </Text>
+        {researching ? (
+          // The standard progress treatment (DR-047): a real fraction of the pass plus who is
+          // being researched right now, not a spinner beside a counter.
+          <View style={styles.researchProgress}>
+            <View style={styles.researchRow}>
+              <ActivityIndicator size="small" color={t.mint} />
+              <Text variant="caption" color={t.text} style={{ flex: 1 }}>
+                Researching labs · {job!.done} of {job!.total} authors
+              </Text>
+            </View>
+            <AnimatedProgressBar value={labsFraction(job!.done, job!.total)} />
+            {job!.current ? (
+              <Text variant="caption" color={t.muted} numberOfLines={1}>
+                Searching the web for {job!.current}'s group…
+              </Text>
+            ) : null}
           </View>
-          <AnimatedProgressBar value={labsFraction(job!.done, job!.total)} />
-          {job!.current ? (
-            <Text variant="caption" color={t.muted} numberOfLines={1}>
-              Searching the web for {job!.current}'s group…
-            </Text>
-          ) : null}
-        </View>
-      ) : (
-        <Button
-          title={labs?.researched ? 'Re-run lab research' : 'Research labs (web pass)'}
-          variant="ghost"
-          icon="globe"
-          onPress={() => void startResearch()}
-          loading={starting}
-          disabled={!pid}
-        />
-      )}
+        ) : (
+          <Button
+            title={labs?.researched ? 'Re-run lab research' : "Research top authors' labs"}
+            variant="ghost"
+            icon="globe"
+            onPress={() => void startResearch()}
+            loading={starting}
+            disabled={!pid}
+            style={{ marginTop: space.sm }}
+          />
+        )}
+      </View>
 
       {labs?.researched && labs.labs.length === 0 && !researching ? (
         <Text variant="caption" color={t.muted} style={styles.labsNote}>
@@ -345,19 +389,53 @@ function LabsView({
         </Text>
       ) : null}
 
-      {visibleLabs.map((lab) => (
+      {visibleLabs.length ? (
+        <>
+          <Text variant="caption" color={t.mint} style={styles.groupHeader}>TOP LABS</Text>
+          <IconKey items={LAB_ICON_KEY} />
+        </>
+      ) : null}
+      {visibleLabs.map((lab, i) => (
         <View key={lab.lab_name} style={styles.labCard}>
-          <Text variant="heading">{lab.lab_name}</Text>
-          {lab.institution ? (
-            <Text variant="caption" color={t.muted}>{lab.institution}</Text>
-          ) : null}
-          {lab.focus ? (
-            <Text variant="body" color={t.text} style={{ marginTop: 2 }}>{lab.focus}</Text>
-          ) : null}
-          <View style={styles.chipRow}>
-            <Chip label={`${lab.in_project_count} in project`} color={t.mint} dot={false} />
+          <View style={styles.labHeadRow}>
+            <Text variant="overline" color={t.muted} style={styles.labRank}>{i + 1}</Text>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text variant="heading">{lab.lab_name}</Text>
+              {lab.institution ? (
+                <Text variant="caption" color={t.muted}>{lab.institution}</Text>
+              ) : null}
+            </View>
+            {lab.url ? (
+              <Pressable
+                onPress={() => void Linking.openURL(lab.url).catch(() => undefined)}
+                accessibilityRole="link"
+                accessibilityLabel={`Open ${lab.lab_name}'s website`}
+                hitSlop={8}
+                style={styles.labUrlBtn}>
+                <Icon name="globe" size={16} color={t.mint} />
+              </Pressable>
+            ) : null}
+          </View>
+          {/* The description Kamil asked for "does not have to be generated" — LabCard.focus is
+              the already-persisted result of the web pass above; opening this screen never
+              triggers a fresh LLM/web call. A deterministic fallback keeps every ranked lab
+              legible even when the pass found no summary for it. */}
+          <Text variant="body" color={t.text} style={{ marginTop: 2 }} numberOfLines={2}>
+            {lab.focus || labFallbackDescription(lab)}
+          </Text>
+          {/* Opus review, PR #386: CountStat's own "the card is one accessible unit and its
+              label already names all three counts in words" (below) is true of AuthorCard,
+              which carries that label — but was never true here. The old Chip row this replaced
+              read "2 in project"/"3 significant" as literal text; a screen reader now heard bare
+              numbers with nothing naming them. `accessible` stays off the whole labCard (not
+              just this row) so the member chips below stay individually pressable. */}
+          <View
+            style={styles.chipRow}
+            accessible
+            accessibilityLabel={`${lab.in_project_count} in project${lab.significant_count > 0 ? `, ${lab.significant_count} significant` : ''}.`}>
+            <CountStat icon="file-text" count={lab.in_project_count} color={t.mint} />
             {lab.significant_count > 0 ? (
-              <Chip label={`${lab.significant_count} significant`} color={t.amber} dot={false} />
+              <CountStat icon="star" count={lab.significant_count} color={t.amber} />
             ) : null}
           </View>
           <View style={styles.chipRow}>
@@ -373,13 +451,6 @@ function LabsView({
               );
             })}
           </View>
-          {lab.url ? (
-            <Pressable
-              onPress={() => void Linking.openURL(lab.url).catch(() => undefined)}
-              accessibilityRole="link">
-              <Text variant="caption" color={t.mint}>{lab.url} ↗</Text>
-            </Pressable>
-          ) : null}
         </View>
       ))}
       {labLimit < (labs?.labs.length ?? 0) ? (
@@ -403,6 +474,11 @@ function LabsView({
               groups behind the top authors.
             </Text>
           ) : null}
+          {/* Opus review, PR #386: these are ordinary AuthorCards (all three CountStat icons,
+              including `link`), not the two-item LAB_ICON_KEY above the ranked labs — a project
+              that hasn't run the web pass yet (labs.length === 0, the default state) showed
+              unlabelled icons with no key anywhere on screen. */}
+          <IconKey items={AUTHOR_ICON_KEY} />
           {groups.map((g) => (
             <View key={g.affiliation} style={{ marginTop: space.md }}>
               <Text variant="caption" color={t.muted} style={styles.groupHeader}>
@@ -445,6 +521,13 @@ export function profileSteps(stage: string): ProgressStepItem[] {
 export function labsFraction(done: number, total: number): number {
   if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return 0;
   return Math.max(0, Math.min(1, done / total));
+}
+
+/** DR-048: when the web pass found no summary for a lab, describe it from data the board
+ *  already holds rather than leaving the row bare — never a fresh LLM/web call. */
+export function labFallbackDescription(lab: { institution: string; members: string[] }): string {
+  const who = lab.members.length ? `represented in this project by ${lab.members.join(', ')}` : 'represented in this project';
+  return lab.institution ? `Research group at ${lab.institution}; ${who}.` : `Research group ${who}.`;
 }
 
 function AuthorProfile({ pid, author }: { pid: string | null; author: BoardAuthor }) {
@@ -641,24 +724,43 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
   scroll: { padding: space.lg, paddingTop: space.sm, gap: space.sm },
   explainerToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
   explainerBody: { lineHeight: 18 },
-  cardGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  // DR-048 — Kamil, refining DR-008: "one per row rather than two." The prior two-per-row grid
+  // (flexBasis: '46%') is what forced the stat icons onto their own line below a truncated
+  // name; a full-width row gives the name room and the icon key above now carries the words.
+  cardGrid: { gap: space.sm },
   card: {
-    flexGrow: 1,
-    flexBasis: '46%',
-    minWidth: 0,
+    width: '100%',
     gap: 6,
     padding: space.md,
-    borderRadius: 14,
+    // Opus review, PR #386: was a hardcoded 14 (pre-existing, from the two-up grid) — now that
+    // this card stacks in the same full-width column as labCard/labsCallout (radius.lg = 20),
+    // the mismatch reads as an inconsistency it didn't when the two never shared a column.
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: t.line,
     backgroundColor: t.surface,
   },
+  iconKey: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.md,
+    marginBottom: space.xs,
+  },
+  iconKeyItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   // Icon + number, sized so three fit on one line of a phone-width card.
   countStat: { flexDirection: 'row', alignItems: 'center', gap: 3, marginRight: 10 },
   countStatValue: { fontVariant: ['tabular-nums'] },
   researchRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
-  researchProgress: { gap: space.xs, paddingBottom: space.sm },
+  researchProgress: { gap: space.xs, paddingTop: space.sm },
+  labsCallout: {
+    backgroundColor: t.surface,
+    borderWidth: 1,
+    borderColor: t.line,
+    borderRadius: radius.lg,
+    padding: space.md,
+    marginBottom: space.sm,
+  },
   labCard: {
     backgroundColor: t.surface,
     borderWidth: 1,
@@ -667,6 +769,16 @@ const makeStyles = (t: ThemePalette) => StyleSheet.create({
     padding: space.md,
     gap: 6,
     marginTop: space.sm,
+  },
+  labHeadRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
+  labRank: { minWidth: 18 },
+  labUrlBtn: {
+    width: control.minTouch,
+    height: control.minTouch,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -space.sm,
+    marginRight: -space.sm,
   },
   groupHeader: { marginBottom: 6, letterSpacing: 0.5 },
   labsNote: { lineHeight: 18, marginBottom: space.xs },
