@@ -146,7 +146,9 @@ export function Discovery({ onNavigate }: Props) {
                     {suggestion.year ? ` · ${suggestion.year}` : ''}
                     {suggestion.citation_count ? ` · ${suggestion.citation_count} citations` : ''}
                   </div>
-                  <p className="suggestion-abstract muted">{suggestion.abstract?.slice(0, 200)}{(suggestion.abstract?.length ?? 0) > 200 ? '…' : ''}</p>
+                  {suggestion.abstract ? (
+                    <p className="suggestion-abstract muted">{suggestion.abstract.slice(0, 200)}{suggestion.abstract.length > 200 ? '…' : ''}</p>
+                  ) : null}
                 </div>
                 <button className="btn ghost" onClick={() => void add(suggestion.title, suggestion.arxiv_id, suggestion.abstract, suggestion.year)} disabled={inLibrary || addingId === id}>
                   {added.has(id) ? 'Added ✓' : inLibrary ? 'In library' : addingId === id ? 'Adding…' : '+ Add'}

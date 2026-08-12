@@ -143,6 +143,30 @@ def test_the_citation_chase_carries_the_anchor_it_came_from():
     assert out[0]["provenance"][0]["anchor_title"] == "My Paper"
 
 
+def test_the_citation_chase_requests_and_carries_the_abstract():
+    """DR-071: this channel's `select` used to omit `abstract_inverted_index` while the topic
+    sweep's identical call included it, so every forward-citation candidate silently reached the
+    client (and the abstract-scoring stage) with no abstract at all — not because the paper
+    lacked one, but because the request never asked OpenAlex for it."""
+    captured = {}
+
+    def handler(request):
+        captured["select"] = request.url.params.get("select", "")
+        return httpx.Response(200, json={"results": [
+            {"id": "https://openalex.org/W5", "title": "Cites You",
+             "publication_year": 2025, "cited_by_count": 7,
+             "abstract_inverted_index": {"Cites": [0], "you.": [1]}}]})
+
+    client = _client(handler)
+    out = discovery_recall.chase_citations(
+        [{"slug": "p1", "openalex_id": "https://openalex.org/W1", "title": "My Paper"}],
+        client=client)
+    client.close()
+
+    assert "abstract_inverted_index" in captured["select"]
+    assert out[0]["abstract"] == "Cites you."
+
+
 def test_an_outage_during_the_chase_yields_no_candidates_rather_than_raising():
     def handler(request):
         raise httpx.ConnectError("down")

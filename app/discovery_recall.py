@@ -278,8 +278,8 @@ def chase_citations(anchors: list[dict], *, client: httpx.Client,
                 f"{OPENALEX_BASE}/works",
                 params={"filter": ",".join(filters), "sort": "cited_by_count:desc",
                         "per-page": CITES_PER_PAGE,
-                        "select": "id,doi,title,publication_year,cited_by_count,type,"
-                                  "primary_location,authorships"},
+                        "select": "id,doi,title,abstract_inverted_index,publication_year,"
+                                  "cited_by_count,type,primary_location,authorships"},
                 timeout=TIMEOUT_S)
         except httpx.HTTPError:
             log.info("citation chase unreachable for %s; skipping", key)
