@@ -746,7 +746,9 @@ export interface PaperSuggestion {
   doi?: string | null;
   paper_id?: string | null;
   title: string;
-  abstract: string;
+  /** Omitted on the wire, not just empty, when the recall channel that found this candidate
+   * didn't request or carry one — see DR-071. */
+  abstract?: string;
   authors: string[];
   affiliations: string[];
   year: number | null;
