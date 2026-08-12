@@ -36,7 +36,7 @@ import {
   type ThemePalette,
 } from '@/theme/tokens';
 
-type TextVariant =
+export type TextVariant =
   | 'display'
   | 'title'
   | 'heading'
@@ -49,7 +49,10 @@ type TextVariant =
   | 'serifBody'
   | 'serifItalic';
 
-const makeTextStyles = (t: ThemePalette, density: DensityMode) => {
+// Exported for Markdown.tsx's DR-068 text-scale multiplier, which needs the EXACT resolved
+// base fontSize/lineHeight per (palette, density) to multiply against — duplicating these
+// numbers locally would drift the moment this file's density scale changes.
+export const makeTextStyles = (t: ThemePalette, density: DensityMode) => {
   const tight = density === 'tight';
   return StyleSheet.create({
   // Manrope — UI scale (DS: Display/32, Section heading/22, body, METADATA·13/MEDIUM)

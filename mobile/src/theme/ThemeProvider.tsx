@@ -26,8 +26,26 @@ type OsScheme = 'light' | 'dark' | 'unspecified' | null | undefined;
 
 const MODE_KEY = 'rc.themeMode';
 const DENSITY_KEY = 'rc.layoutDensity';
+const DISCUSSION_TEXT_SCALE_KEY = 'rc.discussionTextScale';
 
 export type DensityMode = 'comfortable' | 'tight';
+
+// DR-068 — Kamil: "using a font size... plus and minus signs besides current font size, and
+// instant apply." A device-wide multiplier on top of the existing density-aware typography
+// (Comfortable/Tight), not a competing absolute scale — scoped to the Discussion transcript only
+// (see Markdown.tsx's `textScale` prop), so notes and other Markdown surfaces are unaffected.
+export const MIN_TEXT_SCALE = 0.9;
+export const MAX_TEXT_SCALE = 1.4;
+export const TEXT_SCALE_STEP = 0.1;
+const DEFAULT_TEXT_SCALE = 1;
+
+function clampTextScale(n: number): number {
+  // Rounded to 1 decimal explicitly: `Math.round(n / STEP) * STEP` alone lands on
+  // 1.2000000000000002 for real inputs (0.1 has no exact binary representation), which would
+  // silently fail a `=== 1.2`-style comparison anywhere this value gets compared or persisted.
+  const stepped = Math.round(Math.round(n / TEXT_SCALE_STEP) * TEXT_SCALE_STEP * 10) / 10;
+  return Math.min(MAX_TEXT_SCALE, Math.max(MIN_TEXT_SCALE, stepped));
+}
 
 export const THEME_MODES: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -57,6 +75,9 @@ interface ThemeContextValue {
   /** Device-local reading/list rhythm. Comfortable is the unchanged default. */
   density: DensityMode;
   setDensity: (density: DensityMode) => void;
+  /** Multiplier applied on top of density-resolved typography, Discussion transcript only. */
+  discussionTextScale: number;
+  setDiscussionTextScale: (scale: number) => void;
 }
 
 // Default (no provider mounted): Dim, mode-setting a no-op. This keeps isolated component
@@ -69,6 +90,8 @@ const DEFAULT_VALUE: ThemeContextValue = {
   theme: themes.dim,
   density: 'comfortable',
   setDensity: () => {},
+  discussionTextScale: DEFAULT_TEXT_SCALE,
+  setDiscussionTextScale: () => {},
 };
 
 const ThemeContext = createContext<ThemeContextValue>(DEFAULT_VALUE);
@@ -76,12 +99,17 @@ const ThemeContext = createContext<ThemeContextValue>(DEFAULT_VALUE);
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>('system');
   const [density, setDensityState] = useState<DensityMode>('comfortable');
+  const [discussionTextScale, setDiscussionTextScaleState] = useState(DEFAULT_TEXT_SCALE);
   const [ready, setReady] = useState(false);
   const osScheme = useColorScheme();
 
   useEffect(() => {
-    Promise.all([AsyncStorage.getItem(MODE_KEY), AsyncStorage.getItem(DENSITY_KEY)])
-      .then(([storedMode, storedDensity]) => {
+    Promise.all([
+      AsyncStorage.getItem(MODE_KEY),
+      AsyncStorage.getItem(DENSITY_KEY),
+      AsyncStorage.getItem(DISCUSSION_TEXT_SCALE_KEY),
+    ])
+      .then(([storedMode, storedDensity, storedTextScale]) => {
         if (
           storedMode === 'system' ||
           storedMode === 'dim' ||
@@ -93,6 +121,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (storedDensity === 'comfortable' || storedDensity === 'tight') {
           setDensityState(storedDensity);
         }
+        const parsedScale = storedTextScale ? Number(storedTextScale) : NaN;
+        if (Number.isFinite(parsedScale)) setDiscussionTextScaleState(clampTextScale(parsedScale));
       })
       .finally(() => setReady(true));
   }, []);
@@ -104,6 +134,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       themeName,
       theme: themes[themeName],
       density,
+      discussionTextScale,
       setMode: (next) => {
         setModeState(next);
         AsyncStorage.setItem(MODE_KEY, next);
@@ -112,8 +143,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setDensityState(next);
         AsyncStorage.setItem(DENSITY_KEY, next);
       },
+      setDiscussionTextScale: (next) => {
+        const clamped = clampTextScale(next);
+        setDiscussionTextScaleState(clamped);
+        AsyncStorage.setItem(DISCUSSION_TEXT_SCALE_KEY, String(clamped));
+      },
     };
-  }, [density, mode, osScheme]);
+  }, [density, discussionTextScale, mode, osScheme]);
 
   if (!ready) return null; // pre-paint gate: never flash the wrong theme on cold boot
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -130,6 +166,10 @@ export function useTheme(): ThemePalette {
 
 export function useDensity(): DensityMode {
   return useThemeMode().density;
+}
+
+export function useDiscussionTextScale(): number {
+  return useThemeMode().discussionTextScale;
 }
 
 // One StyleSheet per (factory, palette, density) tuple, ever — palettes are static singletons,

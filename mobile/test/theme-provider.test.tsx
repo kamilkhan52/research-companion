@@ -38,13 +38,17 @@ function contrastRatio(a: string, b: string): number {
 }
 
 function Probe() {
-  const { mode, themeName, theme, setMode, density, setDensity } = useThemeMode();
+  const {
+    mode, themeName, theme, setMode, density, setDensity,
+    discussionTextScale, setDiscussionTextScale,
+  } = useThemeMode();
   const styles = useThemedStyles(makeProbeStyles);
   seenStyles.push(styles);
   return (
     <View>
       <Text>{`mode:${mode} name:${themeName} bg:${theme.bg}`}</Text>
       <Text>{`density:${density}`}</Text>
+      <Text>{`textScale:${discussionTextScale}`}</Text>
       <Text>
         {`stylebg:${StyleSheet.flatten(styles.pill).backgroundColor} padding:${StyleSheet.flatten(styles.pill).padding}`}
       </Text>
@@ -52,6 +56,18 @@ function Probe() {
       <Pressable
         accessibilityLabel="toggle density"
         onPress={() => setDensity(density === 'tight' ? 'comfortable' : 'tight')}
+      />
+      <Pressable
+        accessibilityLabel="grow text"
+        onPress={() => setDiscussionTextScale(discussionTextScale + 0.1)}
+      />
+      <Pressable
+        accessibilityLabel="shrink text"
+        onPress={() => setDiscussionTextScale(discussionTextScale - 0.1)}
+      />
+      <Pressable
+        accessibilityLabel="set text scale wild"
+        onPress={() => setDiscussionTextScale(5)}
       />
     </View>
   );
@@ -166,4 +182,70 @@ test('without a provider, components render Dim (migration-period default)', asy
   await renderAsync(<Probe />);
   expect(screen.getByText(`mode:system name:dim bg:${themes.dim.bg}`)).toBeTruthy();
   expect(screen.getByText('density:comfortable')).toBeTruthy();
+});
+
+// DR-068 — the Discussion text-size multiplier follows the same persistence idiom as mode and
+// density (loaded pre-paint, written on every change), plus its own clamp to a sane range so a
+// corrupted or hand-edited value can never render illegibly small/large text.
+
+test('defaults to 1x, persists changes, and steps by 0.1', async () => {
+  await renderAsync(
+    <ThemeProvider>
+      <Probe />
+    </ThemeProvider>,
+  );
+  expect(screen.getByText('textScale:1')).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('grow text'));
+  });
+  expect(screen.getByText('textScale:1.1')).toBeTruthy();
+  expect(await AsyncStorage.getItem('rc.discussionTextScale')).toBe('1.1');
+});
+
+test('restores a persisted text scale', async () => {
+  await AsyncStorage.setItem('rc.discussionTextScale', '1.2');
+  await renderAsync(
+    <ThemeProvider>
+      <Probe />
+    </ThemeProvider>,
+  );
+  expect(screen.getByText('textScale:1.2')).toBeTruthy();
+});
+
+test('a junk persisted text scale falls back to the 1x default', async () => {
+  await AsyncStorage.setItem('rc.discussionTextScale', 'not-a-number');
+  await renderAsync(
+    <ThemeProvider>
+      <Probe />
+    </ThemeProvider>,
+  );
+  expect(screen.getByText('textScale:1')).toBeTruthy();
+});
+
+test('setting the scale clamps to the allowed 0.9-1.4 range', async () => {
+  await renderAsync(
+    <ThemeProvider>
+      <Probe />
+    </ThemeProvider>,
+  );
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('set text scale wild'));
+  });
+  expect(screen.getByText('textScale:1.4')).toBeTruthy();
+  expect(await AsyncStorage.getItem('rc.discussionTextScale')).toBe('1.4');
+});
+
+test('shrinking below the minimum clamps rather than going negative or to zero', async () => {
+  await AsyncStorage.setItem('rc.discussionTextScale', '0.9');
+  await renderAsync(
+    <ThemeProvider>
+      <Probe />
+    </ThemeProvider>,
+  );
+  expect(screen.getByText('textScale:0.9')).toBeTruthy();
+  await act(async () => {
+    fireEvent.press(screen.getByLabelText('shrink text'));
+  });
+  expect(screen.getByText('textScale:0.9')).toBeTruthy();
 });

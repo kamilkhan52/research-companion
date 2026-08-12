@@ -17,7 +17,7 @@ import type { PaperFigure } from '@/api/types';
 import { planFigurePlacement } from '@/lib/figures';
 import { RC_SEARCH_PREFIX } from '@/lib/paperLinks';
 import { stripPseudoToolTags } from '@/lib/toolTags';
-import { Icon, Text } from '@/ui';
+import { Icon, makeTextStyles, Text } from '@/ui';
 import { useDensity, useTheme, useThemedStyles } from '@/theme/ThemeProvider';
 import { fonts, radius, space, type ThemePalette } from '@/theme/tokens';
 
@@ -78,6 +78,22 @@ interface TitleMatcher {
 
 const TitleMatcherContext = createContext<TitleMatcher | null>(null);
 
+// DR-068 — a device-wide multiplier on top of density-resolved typography, applied only where
+// the `Markdown` caller opts in via `textScale` (the Discussion transcript); every other
+// consumer (notes, streaming previews outside Discussion, review sheets) reads the default 1
+// and renders exactly as before. Context, not a prop threaded through every block/inline
+// function, since the scale needs to reach `AnnotatableParagraph` and `MdTable` too.
+const TextScaleContext = createContext(1);
+
+/** The exact resolved base fontSize/lineHeight for a serif variant, multiplied by the active
+ *  scale — `undefined` at the default 1x so an unscaled render adds no style object at all. */
+function useScaledSerifStyle(variant: 'serifBody' | 'serifItalic') {
+  const scale = useContext(TextScaleContext);
+  const base = useThemedStyles(makeTextStyles)[variant];
+  if (scale === 1) return undefined;
+  return { fontSize: base.fontSize * scale, lineHeight: base.lineHeight * scale };
+}
+
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** One alternation over every known title, longest first so a superset title wins over a
@@ -98,11 +114,15 @@ export function Markdown({
   onLinkPress,
   figureContext,
   sentenceAnnotations,
+  textScale,
 }: {
   text: string;
   onLinkPress?: LinkHandler;
   figureContext?: FigureContext;
   sentenceAnnotations?: SentenceAnnotations;
+  /** DR-068 — device-wide Discussion text-size multiplier. Omit (or 1) for every surface that
+   *  isn't the Discussion transcript. */
+  textScale?: number;
 }) {
   // Old transcripts may carry leaked `<search for="…">` pseudo tool tags (G.2); the backend
   // cleans new ones before recording, this pass cleans the archive at render time.
@@ -121,32 +141,34 @@ export function Markdown({
     return planFigurePlacement(texts, figures);
   }, [blocks, figureContext?.figures]);
   return (
-    <TitleMatcherContext.Provider value={matcher}>
-      <View style={{ gap: density === 'tight' ? 6 : space.sm }}>
-        {blocks.map((block, i) => (
-          <Fragment key={i}>
-            {/* BEFORE the block that first mentions the figure, not after it (DR-003). Carding
-                after meant reading "as Figure 3 shows, the loss diverges", scrolling past the
-                rest of the paragraph, and only then meeting Figure 3 — by which point the
-                sentence it illustrates is off-screen. */}
-            {figureCards?.[i]?.map((fig) => (
-              <FigureCard
-                key={fig.id}
-                pid={figureContext!.pid}
-                slug={figureContext!.slug}
-                figure={fig}
-                version={figureContext!.version}
+    <TextScaleContext.Provider value={textScale ?? 1}>
+      <TitleMatcherContext.Provider value={matcher}>
+        <View style={{ gap: density === 'tight' ? 6 : space.sm }}>
+          {blocks.map((block, i) => (
+            <Fragment key={i}>
+              {/* BEFORE the block that first mentions the figure, not after it (DR-003). Carding
+                  after meant reading "as Figure 3 shows, the loss diverges", scrolling past the
+                  rest of the paragraph, and only then meeting Figure 3 — by which point the
+                  sentence it illustrates is off-screen. */}
+              {figureCards?.[i]?.map((fig) => (
+                <FigureCard
+                  key={fig.id}
+                  pid={figureContext!.pid}
+                  slug={figureContext!.slug}
+                  figure={fig}
+                  version={figureContext!.version}
+                />
+              ))}
+              <Block
+                block={block}
+                onLinkPress={handleLink}
+                sentenceAnnotations={sentenceAnnotations}
               />
-            ))}
-            <Block
-              block={block}
-              onLinkPress={handleLink}
-              sentenceAnnotations={sentenceAnnotations}
-            />
-          </Fragment>
-        ))}
-      </View>
-    </TitleMatcherContext.Provider>
+            </Fragment>
+          ))}
+        </View>
+      </TitleMatcherContext.Provider>
+    </TextScaleContext.Provider>
   );
 }
 
@@ -396,17 +418,26 @@ function Block({
   const density = useDensity();
   const styles = useThemedStyles(makeStyles);
   const headingStyles = density === 'tight' ? TIGHT_HEADING_STYLES : HEADING_STYLES;
+  const textScale = useContext(TextScaleContext);
+  const scaledParagraphStyle = useScaledSerifStyle('serifBody');
+  const scaledQuoteStyle = useScaledSerifStyle('serifItalic');
   switch (block.kind) {
-    case 'heading':
+    case 'heading': {
+      const base = (headingStyles[block.level] ?? headingStyles[4]) as {
+        fontFamily: string; fontSize: number; lineHeight: number;
+      };
       return (
         <Text
           style={[
-            headingStyles[block.level] ?? headingStyles[4],
+            textScale === 1
+              ? base
+              : { ...base, fontSize: base.fontSize * textScale, lineHeight: base.lineHeight * textScale },
             { color: t.text, marginTop: space.xs },
           ]}>
           <Inline text={block.text} onLinkPress={onLinkPress} serif={block.level < 4} />
         </Text>
       );
+    }
     case 'paragraph':
       if (sentenceAnnotations?.active) {
         return (
@@ -418,7 +449,7 @@ function Block({
         );
       }
       return (
-        <Text variant="serifBody">
+        <Text variant="serifBody" style={scaledParagraphStyle}>
           <Inline text={block.text} onLinkPress={onLinkPress} />
         </Text>
       );
@@ -427,7 +458,7 @@ function Block({
         <View style={styles.quote}>
           {block.blocks.map((child, index) => (
             child.kind === 'paragraph' ? (
-              <Text key={index} variant="serifItalic">
+              <Text key={index} variant="serifItalic" style={scaledQuoteStyle}>
                 <Inline text={child.text} onLinkPress={onLinkPress} />
               </Text>
             ) : (
@@ -455,15 +486,15 @@ function Block({
       return <MdTable block={block} onLinkPress={onLinkPress} />;
     case 'list': {
       const ordinals = block.items.map((item, idx) => listOrdinal(block, idx));
-      const markerWidth = Math.max(22, ...ordinals.map((o) => o.length * 9));
+      const markerWidth = Math.max(22, ...ordinals.map((o) => o.length * 9)) * textScale;
       return (
         <View style={{ gap: 4 }}>
           {block.items.map((item, idx) => (
             <View key={idx} style={styles.listItem}>
-              <Text variant="serifBody" color={t.mint} style={{ width: markerWidth }}>
+              <Text variant="serifBody" color={t.mint} style={[scaledParagraphStyle, { width: markerWidth }]}>
                 {ordinals[idx]}
               </Text>
-              <Text variant="serifBody" style={{ flex: 1 }}>
+              <Text variant="serifBody" style={[scaledParagraphStyle, { flex: 1 }]}>
                 <Inline text={item.text} onLinkPress={onLinkPress} />
               </Text>
             </View>
@@ -485,8 +516,9 @@ function AnnotatableParagraph({
 }) {
   const t = useTheme();
   const sentences = useMemo(() => splitAnnotatableSentences(text), [text]);
+  const scaledStyle = useScaledSerifStyle('serifBody');
   return (
-    <Text variant="serifBody">
+    <Text variant="serifBody" style={scaledStyle}>
       {sentences.map((sentence, index) => {
         // Queue/display the sentence the reader actually sees, not its Markdown control
         // syntax (`[label](url)`, emphasis markers). Equations retain explicit TeX delimiters
@@ -563,6 +595,7 @@ function MdTable({
   onLinkPress: LinkHandler;
 }) {
   const styles = useThemedStyles(makeStyles);
+  const scaledStyle = useScaledSerifStyle('serifBody');
   const nCols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
   const chars: number[] = [];
   for (let c = 0; c < nCols; c++) {
@@ -587,7 +620,7 @@ function MdTable({
           ]}>
           <Text
             variant="serifBody"
-            style={head ? { fontFamily: fonts.serifSemiBold } : undefined}>
+            style={[scaledStyle, head ? { fontFamily: fonts.serifSemiBold } : undefined]}>
             <Inline text={cells[c] ?? ''} onLinkPress={onLinkPress} />
           </Text>
         </View>

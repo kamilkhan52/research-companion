@@ -4,6 +4,7 @@
 // (polish plan F.5) — per-message long-press and retry menus included; never use the native
 // action sheet.
 
+import type { ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Icon, Text, type IconName } from '@/ui';
@@ -26,6 +27,12 @@ export interface SheetOption {
   /** Visually nest a child choice under its parent row. */
   level?: number;
   onPress: () => void;
+  /** DR-068 — replace the standard icon+title+subtitle Pressable row with custom content (e.g.
+   *  a +/- stepper) for this one entry. `icon`/`onPress`/`disabled`/`closeOnPress` are ignored
+   *  when set; the row never closes the sheet on its own (the custom content owns its own taps).
+   *  `title`/`icon` are still required on the type so ordinary options stay simple to author,
+   *  but a `render` row's own values there are unused. */
+  render?: () => ReactNode;
 }
 
 export function OptionsSheet({
@@ -66,42 +73,46 @@ export function OptionsSheet({
             {options.map((opt) => (
               <View key={opt.key}>
                 {opt.section ? <View style={styles.divider} /> : null}
-                <Pressable
-                  onPress={() => {
-                    if (opt.closeOnPress !== false) onClose();
-                    opt.onPress();
-                  }}
-                  disabled={opt.disabled}
-                  accessibilityRole="menuitem"
-                  accessibilityState={{
-                    selected: !!opt.selected,
-                    disabled: !!opt.disabled,
-                  }}
-                  style={({ pressed }) => [
-                    styles.row,
-                    opt.level ? styles.nestedRow : null,
-                    pressed && { backgroundColor: t.elevated },
-                    opt.disabled && { opacity: 0.45 },
-                  ]}
-                >
-                  <View style={[styles.badge, opt.selected && styles.badgeSelected]}>
-                    <Icon
-                      name={opt.selected ? 'check' : opt.icon}
-                      size={16}
-                      color={opt.selected ? t.mint : (opt.accent ?? t.muted)}
-                    />
-                  </View>
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text variant="heading" numberOfLines={1} color={opt.accent ?? t.text}>
-                      {opt.title}
-                    </Text>
-                    {opt.subtitle ? (
-                      <Text variant="caption" numberOfLines={1}>
-                        {opt.subtitle}
+                {opt.render ? (
+                  opt.render()
+                ) : (
+                  <Pressable
+                    onPress={() => {
+                      if (opt.closeOnPress !== false) onClose();
+                      opt.onPress();
+                    }}
+                    disabled={opt.disabled}
+                    accessibilityRole="menuitem"
+                    accessibilityState={{
+                      selected: !!opt.selected,
+                      disabled: !!opt.disabled,
+                    }}
+                    style={({ pressed }) => [
+                      styles.row,
+                      opt.level ? styles.nestedRow : null,
+                      pressed && { backgroundColor: t.elevated },
+                      opt.disabled && { opacity: 0.45 },
+                    ]}
+                  >
+                    <View style={[styles.badge, opt.selected && styles.badgeSelected]}>
+                      <Icon
+                        name={opt.selected ? 'check' : opt.icon}
+                        size={16}
+                        color={opt.selected ? t.mint : (opt.accent ?? t.muted)}
+                      />
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text variant="heading" numberOfLines={1} color={opt.accent ?? t.text}>
+                        {opt.title}
                       </Text>
-                    ) : null}
-                  </View>
-                </Pressable>
+                      {opt.subtitle ? (
+                        <Text variant="caption" numberOfLines={1}>
+                          {opt.subtitle}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                )}
               </View>
             ))}
           </ScrollView>
