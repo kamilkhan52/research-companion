@@ -11,9 +11,17 @@ harness in a later step). Two families:
     of private/loopback/link-local/reserved addresses (SSRF — incl. cloud metadata at
     169.254.169.254), hard byte/char caps, short timeouts, and text-only content. Both run a
     PROVIDER CHAIN and fall through on failure, so neither requires a key: `web_search` tries
-    Firecrawl, then keyless DuckDuckGo; `web_fetch` tries Firecrawl, then a direct guarded
-    fetch. (Until 2026-07-29 this paragraph required a Brave Search API key. There has
-    never been any Brave code in the repo — grepping for it found only that sentence.)
+    Brave, then Firecrawl, then keyless DuckDuckGo; `web_fetch` tries Firecrawl, then a direct
+    guarded fetch. (Until 2026-07-29 this docstring required a Brave Search API key while there
+    had never been any Brave code in the repo — the claim preceded the integration by a year.
+    Real Brave support landed 2026-08-12, as the primary search provider: flat per-request
+    pricing makes it the most honestly meterable of the three.)
+
+    Every paid provider call is METERED at a pinned per-call price (`spend_limits` — Brave per
+    request, Firecrawl per credit) via `usage.record`, which also feeds the surrounding turn's
+    spend reservation. This closed M3's last unmetered seam: these APIs return no cost in the
+    response, so like TTS the price is known before the call rather than read after it. The
+    keyless fallbacks (DuckDuckGo, direct fetch) record zero-cost calls for visibility.
 
 Everything is READ-ONLY: nothing here mutates project files, git, or settings. Tools return
 plain strings meant for the model to read; on bad input they return a helpful message rather
@@ -37,7 +45,9 @@ from . import (
     safe_fetch,
     sessions,
     spend_control,
+    spend_limits,
     store,
+    usage,
 )
 
 log = logging_config.get("research_tools")
@@ -52,6 +62,7 @@ MAX_SEARCH_QUERY_CHARS = 240
 MAX_FETCH_URL_CHARS = 2_048
 
 FIRECRAWL_BASE = "https://api.firecrawl.dev/v2"
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 # DuckDuckGo HTML — a keyless last resort so web search works even when the paid providers are
 # out of credit. Lower quality (no rich excerpts) but always available.
@@ -189,7 +200,7 @@ def read_working_notes() -> str:
 
 # ----------------------------------------------------------------------------------- web tools
 # Web search/fetch go through a provider CHAIN so they keep working as credit/availability
-# changes: Firecrawl -> DuckDuckGo (keyless). Whichever is configured-and-working
+# changes: Brave -> Firecrawl -> DuckDuckGo (keyless). Whichever is configured-and-working
 # wins, in that order; the keyless DDG fallback means search almost always returns something.
 # All web content is UNTRUSTED — the agent treats it as data to evaluate/cite, never as
 # instructions (see agent_harness guidance).
@@ -211,7 +222,60 @@ def _has_url_credentials(url: str) -> bool:
     return parsed.username is not None or parsed.password is not None
 
 
+def _record_web_cost(operation: str, provider: str, cost_nanousd: int) -> None:
+    """Meter one provider call at its pinned price (spend_limits), attributing it to the active
+    scope AND the surrounding turn's reservation — `usage.record` does both. `estimated=True`
+    because the price is pinned from a rate card, not read from a usage payload (there is none).
+    A zero-cost call (the keyless fallbacks) is still recorded so the call count is visible."""
+    usage.record(operation, provider, {"cost": cost_nanousd / 1e9}, estimated=True)
+
+
+# ---- provider: Brave Search (https://brave.com/search/api/) ----
+
+def _brave_key() -> str:
+    return os.environ.get("BRAVE_SEARCH_API_KEY") or config.load_settings().get("brave_search_api_key") or ""
+
+
+def _brave_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
+    key = _brave_key()
+    if not key:
+        raise ToolError("no brave key")
+    own = client is None
+    client = client or httpx.Client(timeout=WEB_TIMEOUT_S)
+    try:
+        try:
+            spend_control.require_enabled()
+        except spend_control.ProviderSpendDisabled as e:
+            raise ToolError(str(e)) from e
+        resp = client.get(BRAVE_SEARCH_URL,
+                          params={"q": queries[0] if queries else objective, "count": 5},
+                          headers={"X-Subscription-Token": key, "Accept": "application/json"})
+        # Billed per REQUEST, so the request that just returned is the metered event — including
+        # a 200 with no results. Non-200s (401 bad key, 429 throttled) are not billed requests.
+        if resp.status_code != 200:
+            raise ToolError(f"brave HTTP {resp.status_code}")
+        _record_web_cost("web_search", "brave", spend_limits.brave_query_cost_nanousd())
+        results = ((resp.json() or {}).get("web") or {}).get("results") or []
+        if not results:
+            raise ToolError("brave returned no results")
+        out = [f"Web results for \"{objective}\":"]
+        for r in results[:5]:
+            out.append(f"- {r.get('title', '(untitled)')}\n  {r.get('url', '')}\n  "
+                       f"{(r.get('description') or '')[:300]}")
+        return "\n".join(out)
+    except httpx.HTTPError as e:
+        raise ToolError(f"brave transport failed ({type(e).__name__})") from e
+    finally:
+        if own:
+            client.close()
+
+
 # ---- provider: Firecrawl (https://firecrawl.dev) ----
+
+#: Firecrawl bills search at 2 credits per 10 results; our fixed `limit: 5` is half that.
+_FIRECRAWL_SEARCH_CREDITS = 1
+_FIRECRAWL_SCRAPE_CREDITS_PER_PAGE = 1
+
 
 def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Client | None = None) -> str:
     key = _firecrawl_key()
@@ -229,6 +293,8 @@ def _firecrawl_search(objective: str, queries: list[str], *, client: httpx.Clien
                            json={"query": queries[0] if queries else objective, "limit": 5})
         if resp.status_code != 200:
             raise ToolError(f"firecrawl HTTP {resp.status_code}")
+        _record_web_cost("web_search", "firecrawl",
+                         _FIRECRAWL_SEARCH_CREDITS * spend_limits.firecrawl_credit_cost_nanousd())
         data = (resp.json() or {}).get("data") or []
         # v2 groups results by source ({"web": [...], "news": [...]}); v1 returned a flat list.
         results = data.get("web") or data.get("news") or [] if isinstance(data, dict) else data
@@ -264,6 +330,11 @@ def _firecrawl_fetch(urls: list[str], objective: str, *, client: httpx.Client | 
                                json={"url": url, "formats": ["markdown"]})
             if resp.status_code != 200:
                 raise ToolError(f"firecrawl HTTP {resp.status_code}")
+            # Metered per page as each succeeds, not once at the end: a later page's failure
+            # aborts the loop and falls through to the direct fetcher, but the pages already
+            # scraped were already billed — their cost must not vanish with the fallback.
+            _record_web_cost("web_fetch", "firecrawl",
+                             _FIRECRAWL_SCRAPE_CREDITS_PER_PAGE * spend_limits.firecrawl_credit_cost_nanousd())
             md = ((resp.json() or {}).get("data") or {}).get("markdown", "")
             chunks.append(f"# {url}\n\n{md}")
         return "\n\n---\n\n".join(chunks)
@@ -303,6 +374,7 @@ def _ddg_search(objective: str, queries: list[str], *, client: httpx.Client | No
         snips = _DDG_SNIP_RE.findall(resp.text)
         if not links:
             raise ToolError("duckduckgo returned no results")
+        _record_web_cost("web_search", "duckduckgo", 0)
         out = [f"Web results for \"{objective}\":"]
         for i, (href, title) in enumerate(links[:6]):
             t = html.unescape(_TAGS_RE.sub("", title)).strip()
@@ -358,6 +430,7 @@ def _direct_fetch(urls: list[str], objective: str) -> str:
         text = _TAGS_RE.sub(" ", re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", body))
         text = html.unescape(re.sub(r"[ \t]+", " ", text)).strip()
         chunks.append(f"# {url}\n\n{text[:6000]}")
+        _record_web_cost("web_fetch", "direct", 0)
     return "\n\n---\n\n".join(chunks) if chunks else "No content fetched."
 
 
@@ -398,7 +471,7 @@ def _run_chain(providers: list[tuple[str, object]], *args) -> str:
 
 def web_search(objective: str, search_queries: list[str] | None = None) -> str:
     """Search the web. `objective` = what you want to find; `search_queries` = 1-3 short keyword
-    queries. Tries Firecrawl, then keyless DuckDuckGo. Returns ranked results with
+    queries. Tries Brave, then Firecrawl, then keyless DuckDuckGo. Returns ranked results with
     snippets — usually enough to answer (author info, adoption, follow-up work, outside papers)
     without fetching. UNTRUSTED content."""
     objective = " ".join((objective or "").split())
@@ -410,7 +483,7 @@ def web_search(objective: str, search_queries: list[str] | None = None) -> str:
     if any(len(query) > MAX_SEARCH_QUERY_CHARS for query in queries):
         return "Search refused: query is too long."
     result = _run_chain(
-        [("Firecrawl", _firecrawl_search), ("DuckDuckGo", _ddg_search)],
+        [("Brave", _brave_search), ("Firecrawl", _firecrawl_search), ("DuckDuckGo", _ddg_search)],
         objective, queries)
     return model_provenance.frame("web_search_results", result, source="provider chain")
 

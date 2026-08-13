@@ -83,3 +83,52 @@ def test_http_status_error_is_per_url_not_a_tool_error(monkeypatch):
     out = research_tools._direct_fetch(["https://a.example/missing", "https://b.example/ok"], "obj")
     assert "404" in out
     assert "good" in out
+
+
+# ---- Firecrawl fetch metering (M3's last unmetered seam) ----
+
+class _Sequenced:
+    """A fake httpx client returning queued responses in order."""
+    def __init__(self, *resps):
+        self._resps = list(resps)
+
+    def post(self, url, **kw):
+        return self._resps.pop(0)
+
+    def close(self):
+        pass
+
+
+def _resp(status: int, text: str = "") -> httpx.Response:
+    return httpx.Response(status, content=text.encode(),
+                          request=httpx.Request("POST", "https://example.com"))
+
+
+def test_firecrawl_fetch_meters_each_scraped_page(temp_project, monkeypatch):
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_firecrawl_key", lambda: "fc-test")
+    page = '{"data":{"markdown":"content"}}'
+    out = research_tools._firecrawl_fetch(["https://a.test", "https://b.test"], "obj",
+                                          client=_Sequenced(_resp(200, page), _resp(200, page)))
+    assert "content" in out
+    data = usage.load()
+    assert data["by_operation"]["web_fetch"]["calls"] == 2
+    # 1 credit/page at the pinned Hobby rate: 2 pages = 6_400_000 nano-USD.
+    assert data["by_operation"]["web_fetch"]["cost_nanousd"] == 6_400_000
+
+
+def test_pages_billed_before_a_mid_loop_failure_stay_metered(temp_project, monkeypatch):
+    """The second page's failure aborts the loop and the chain falls through to the direct
+    fetcher — but the first page was already scraped and billed by Firecrawl, and its cost must
+    not vanish with the fallback."""
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_firecrawl_key", lambda: "fc-test")
+    with pytest.raises(research_tools.ToolError):
+        research_tools._firecrawl_fetch(
+            ["https://a.test", "https://b.test"], "obj",
+            client=_Sequenced(_resp(200, '{"data":{"markdown":"x"}}'), _resp(402)))
+    data = usage.load()
+    assert data["by_operation"]["web_fetch"]["calls"] == 1
+    assert data["by_operation"]["web_fetch"]["cost_nanousd"] == 3_200_000

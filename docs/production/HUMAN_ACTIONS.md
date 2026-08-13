@@ -27,9 +27,13 @@ done or a later milestone. Read this before the H-numbered sections.
    cannot kill an in-flight job. `FIRECRAWL_API_KEY` as a Fly secret also works but restarts the
    machine. **Parallel was removed entirely** (PR #290) — its account was out of credit, and its
    key being present was measurably worse than no key, because the keyless anonymous tier works.
-4. **Web search is now Firecrawl, then keyless DuckDuckGo.** Decided 2026-07-29: one clean
-   method, on the plan Kamil already pays for. Note the research memo recommended the opposite
-   (Parallel over Firecrawl) on result shape — see PR #290 if tool-round counts become a problem.
+4. **Web search is now Brave → Firecrawl → keyless DuckDuckGo, and METERED (2026-08-12).**
+   Every provider call records a pinned per-call cost into the ledger and the turn's spend
+   reservation — this closed §8.4 of the pricing analysis, M3's last unmetered seam. Brave was
+   added as the primary because its flat $5/1k-request pricing is the most honestly meterable
+   (and every Brave account gets $5/mo of auto-applied credit, so ~1k queries/mo cost nothing).
+   See H29 for the one action this leaves. The 2026-07-29 decision note (Firecrawl over
+   Parallel, PR #290) still stands for the fetch path.
 
 **Not blocking, but decided and worth not re-litigating:** the AAB should NOT be rushed — see the
 correction under "Then the AAB and the closed track" in `10-roadmap.md`. Uploading early freezes the
@@ -809,6 +813,19 @@ The app requires login, so Play review needs working test credentials.
 
 ### H19 — Final release authorization · `todo`
 Promotion to the production track. Never automate this.
+
+### H29 — Brave Search API key for production (optional, recommended) · `todo`
+Create a free account at <https://brave.com/search/api/> (a credit card is required for identity
+verification, but every account gets **$5/month of automatically-applied credit** — at the flat
+$5/1,000-request rate that is ~1,000 free searches a month, more than current usage), then paste
+the key into **in-app Settings → Research agent (web search) → Brave Search API key** on
+production (the operator route — takes effect without a machine restart, unlike a Fly secret).
+**Why an agent can't:** account creation and card entry are Kamil's.
+**What it buys:** real ranked API results as the primary search provider instead of Firecrawl
+credits or scraped DuckDuckGo HTML, at effectively $0 for current volume — and every call is
+metered at the pinned rate either way. Without it, nothing breaks: the chain serves Firecrawl
+(where its key is set) and keyless DuckDuckGo.
+**Report back:** "Brave key set on production" — nothing else; the key never goes through chat.
 
 ### H23 — Supabase server secret for account deletion · `done` (staging, 2026-07-28)
 Create or retrieve a server-side Supabase secret/service-role key for each environment, then set it

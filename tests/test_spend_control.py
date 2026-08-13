@@ -129,6 +129,12 @@ def test_openai_speech_refuses_without_recording_or_dispatching(monkeypatch):
 def test_data_providers_refuse_or_degrade_before_dispatch(monkeypatch):
     monkeypatch.setenv("RC_PROVIDER_SPEND_DISABLED", "true")
 
+    brave = NoDispatchClient()
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "test-key")
+    with pytest.raises(research_tools.ToolError, match="temporarily paused"):
+        research_tools._brave_search("topic", ["query"], client=brave)
+    assert brave.calls == 0
+
     firecrawl = NoDispatchClient()
     monkeypatch.setattr(research_tools, "_firecrawl_key", lambda: "test-key")
     with pytest.raises(research_tools.ToolError, match="temporarily paused"):

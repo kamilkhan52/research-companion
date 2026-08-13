@@ -189,22 +189,117 @@ def test_an_unwrapped_exception_is_named_when_every_provider_fails(temp_project,
     assert "DuckDuckGo (empty)" in out       # a provider that answered nothing is not omitted
 
 
-def test_the_module_docstring_does_not_promise_a_brave_key(temp_project):
-    """It claimed web_search "needs a Brave Search API key" while no Brave code has ever existed
-    and both web tools in fact fall through to a keyless provider.
-
-    Asserts the absence of the CLAIM rather than of the word: the corrected docstring names Brave
-    once, in a note explaining that the old sentence was wrong.
+def test_the_module_docstring_still_promises_keyless_search(temp_project):
+    """History: the docstring once claimed web_search "needs a Brave Search API key" while no
+    Brave code existed (fixed 2026-07-29); real Brave support then landed 2026-08-12. What must
+    stay true through all of it: neither web tool requires a key — both fall through to a keyless
+    provider — and the docstring says so.
     """
     doc = research_tools.__doc__ or ""
     assert "needs a Brave Search API key" not in doc
     assert "keyless DuckDuckGo" in doc                    # what it actually does
-    assert "never been any Brave code" in doc             # the note saying the old claim was false
+    assert "neither requires a key" in doc
 
 
 def test_web_search_all_providers_down_returns_readable_error(temp_project, monkeypatch):
     boom = lambda *a, **k: (_ for _ in ()).throw(research_tools.ToolError("down"))  # noqa: E731
-    for name in ("_firecrawl_search", "_ddg_search"):
+    for name in ("_brave_search", "_firecrawl_search", "_ddg_search"):
         monkeypatch.setattr(research_tools, name, boom)
     out = research_tools.web_search("x", ["x"])
     assert "no provider available" in out.lower()
+
+
+# ---- web tools: Brave (primary provider) + metering (M3's last unmetered seam) ----
+
+BRAVE_BODY = ('{"web":{"results":[{"title":"FlashInfer","url":"https://arxiv.org/abs/2501.01005",'
+              '"description":"An attention engine"}]}}')
+
+
+def test_brave_search_formats_results(temp_project, monkeypatch):
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "BSA-test")
+    out = research_tools._brave_search("flashinfer", ["flashinfer"],
+                                       client=_OneShot(_resp(200, text=BRAVE_BODY)))
+    assert "FlashInfer" in out and "arxiv.org/abs/2501.01005" in out
+
+
+def test_brave_search_without_a_key_falls_through(temp_project, monkeypatch):
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "")
+    with pytest.raises(research_tools.ToolError):
+        research_tools._brave_search("q", ["q"])
+
+
+def test_brave_search_names_http_failures_without_echoing_the_body(temp_project, monkeypatch):
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "BSA-test")
+    secret = "PRIVATE_PROMPT_ECHO_brave"
+    with pytest.raises(research_tools.ToolError) as err:
+        research_tools._brave_search("q", ["q"],
+                                     client=_OneShot(_resp(429, text=f'{{"error":"{secret}"}}')))
+    assert "429" in str(err.value)
+    assert secret not in str(err.value)
+
+
+def test_brave_is_tried_before_firecrawl(temp_project, monkeypatch):
+    calls = []
+    monkeypatch.setattr(research_tools, "_brave_search",
+                        lambda *a, **k: calls.append("brave") or "Web results: from brave")
+    monkeypatch.setattr(research_tools, "_firecrawl_search",
+                        lambda *a, **k: calls.append("firecrawl") or "Web results: from firecrawl")
+    out = research_tools.web_search("anything", ["q"])
+    assert "from brave" in out
+    assert calls == ["brave"]  # Firecrawl never ran — Brave answered first
+
+
+def test_a_billed_brave_search_is_metered_at_the_pinned_price(temp_project, monkeypatch):
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "BSA-test")
+    research_tools._brave_search("q", ["q"], client=_OneShot(_resp(200, text=BRAVE_BODY)))
+    data = usage.load()
+    assert data["by_operation"]["web_search"]["calls"] == 1
+    # $5/1k requests = 5_000_000 nano-USD (the pinned default; spend_limits owns the number).
+    assert data["by_operation"]["web_search"]["cost_nanousd"] == 5_000_000
+    assert data["by_model"]["brave"]["calls"] == 1
+
+
+def test_a_200_with_no_results_is_still_billed_and_still_metered(temp_project, monkeypatch):
+    """Brave bills the REQUEST — an empty answer costs the same as a full one, and the chain
+    falling through to the next provider must not un-count it."""
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "BSA-test")
+    with pytest.raises(research_tools.ToolError, match="no results"):
+        research_tools._brave_search("q", ["q"],
+                                     client=_OneShot(_resp(200, text='{"web":{"results":[]}}')))
+    assert usage.load()["by_operation"]["web_search"]["cost_nanousd"] == 5_000_000
+
+
+def test_a_firecrawl_search_is_metered_per_credit(temp_project, monkeypatch):
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_firecrawl_key", lambda: "fc-test")
+    body = '{"success":true,"data":[{"title":"T","url":"https://x.test","description":"d"}]}'
+    research_tools._firecrawl_search("q", ["q"], client=_OneShot(_resp(200, text=body)))
+    # 1 credit at the pinned Hobby rate ($16/5000 credits = 3_200_000 nano-USD).
+    assert usage.load()["by_operation"]["web_search"]["cost_nanousd"] == 3_200_000
+
+
+def test_a_ddg_search_is_metered_as_a_zero_cost_call(temp_project):
+    from app import usage
+
+    page = ('<a class="result__a" href="https://x.test">X</a>'
+            '<a class="result__snippet">s</a>')
+    research_tools._ddg_search("q", ["q"], client=_OneShot(_resp(200, text=page)))
+    data = usage.load()
+    assert data["by_operation"]["web_search"]["calls"] == 1
+    assert data["by_operation"]["web_search"]["cost_nanousd"] == 0
+
+
+def test_a_failed_brave_request_is_not_metered(temp_project, monkeypatch):
+    """Non-200s (bad key, throttle) are not billed requests, so metering one would overstate
+    spend on every retry loop."""
+    from app import usage
+
+    monkeypatch.setattr(research_tools, "_brave_key", lambda: "BSA-test")
+    with pytest.raises(research_tools.ToolError):
+        research_tools._brave_search("q", ["q"], client=_OneShot(_resp(500)))
+    assert usage.load()["by_operation"] == {}

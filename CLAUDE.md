@@ -251,3 +251,13 @@ open); completed milestones and dated handoffs are in `90-history.md`.
 - Client-facing "quick" actions (approve, reopen, add paper) may be plain POSTs; anything that
   generates or runs minutes-long must be a job (invariant 1). See `mobile/src/api/endpoints.ts`
   — the `turnJobPaths` comment spells this out.
+
+## Working with Kamil (standing instructions, 2026-08-12)
+
+- **Anything waiting on Kamil gets asked in chat, not filed in a doc.** When work hits a decision
+  or action only he can take — a key to create, a pricing call, a design pick — give one short
+  paragraph of background and ask the concrete question directly in the conversation, with a
+  recommendation. Still record the item in `HUMAN_ACTIONS.md` / the ledger for the file, but the
+  ASK happens in chat; he is not reading docs day-to-day, and "see H29" is not a question.
+- **Docs meant for Kamil to read are delivered as rendered files.** Write PDF or HTML and send
+  the file in the conversation (SendUserFile). A path to a markdown file is not delivery.

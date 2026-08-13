@@ -23,7 +23,7 @@ log = logging_config.get("quotas")
 
 _PG_BIGINT_MAX = 9_223_372_036_854_775_807
 _MAX_LEASE_SECONDS = 24 * 60 * 60
-_PROVIDERS = {"openrouter", "openai", "firecrawl", "openalex", "semantic_scholar"}
+_PROVIDERS = {"openrouter", "openai", "brave", "firecrawl", "openalex", "semantic_scholar"}
 
 
 class QuotaError(RuntimeError):

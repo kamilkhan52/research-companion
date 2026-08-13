@@ -2320,6 +2320,8 @@ export interface components {
             tts_model?: string | null;
             /** Tts Voice */
             tts_voice?: string | null;
+            /** Brave Search Api Key */
+            brave_search_api_key?: string | null;
             /** Firecrawl Api Key */
             firecrawl_api_key?: string | null;
             /** Semantic Scholar Api Key */
