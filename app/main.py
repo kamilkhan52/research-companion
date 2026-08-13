@@ -15,9 +15,12 @@ from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import Headers
+from starlette.types import Receive, Scope, Send
 
 from . import (
     account_deletion,
@@ -189,6 +192,51 @@ _start_deploy_guard()
 _apply_migrations()
 
 app = FastAPI(title=config.APP_TITLE)
+
+# Already-compressed payloads that must never pass through gzip, anchored to their real route
+# shapes so an unlucky project/paper id (a pid literally named "figures") can't opt ordinary
+# JSON out of compression: cover/figure images are PNG/JPEG (CPU spent to save nothing),
+# narration MP3s likewise, project bundles are zlib-compressed git data, and the SPA's .woff2
+# fonts carry their own Brotli. `/api/audio/jobs*` is ordinary JSON and stays compressible.
+_UNCOMPRESSED_MEDIA = re.compile(
+    r"/papers/[^/]+/cover\.png$"
+    r"|/papers/[^/]+/figures/"
+    r"|^/api/audio/(?!jobs(?:$|/))"
+    r"|^/api/projects/[^/]+/bundle$"
+    r"|\.woff2$"
+)
+
+
+class SelectiveGZipMiddleware(GZipMiddleware):
+    """GZipMiddleware that leaves media and ranged responses alone.
+
+    Starlette's middleware can only exclude by content TYPE, and only text/event-stream; the
+    decision here has to happen before the response exists, so it keys on the request instead.
+    The Range bypass is structural, not a path list: GZipResponder compresses a 206 like any
+    other response, leaving a Content-Range that no longer describes the bytes on the wire —
+    seeking audio players break on exactly that — and it must hold for every Range-capable
+    route (FileResponse media, the StaticFiles mount) without each remembering to enrol.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and (
+            _UNCOMPRESSED_MEDIA.search(scope.get("path", ""))
+            or Headers(scope=scope).get("range")
+        ):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
+# Response compression. This app's hot payloads are JSON-wrapped scholarly prose — a 97 KB
+# session transcript gzips to ~33 KB, the 53-paper project state to ~4 KB — and the clients
+# POLL: the turn snapshot every 900 ms for the life of a turn. The minimum_size floor keeps
+# tiny health/settings responses (and sub-1KB poll snapshots) uncompressed — for buffered
+# responses; a streaming body compresses regardless of size (Starlette can only apply the
+# floor when the first body message is the whole body). Level 6 rather than the default 9:
+# past 6 the ratio on this JSON barely moves but the CPU cost keeps climbing, and a
+# single-worker deployment (invariant 6) pays it on the request path.
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1000, compresslevel=6)
 
 # ---------- exposure hardening: CORS + user auth (Supabase) ----------
 # All env-gated and OFF by default, so local/tunnel use is unchanged. See app/auth.py for the
