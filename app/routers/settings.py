@@ -19,6 +19,7 @@ class SettingsReq(BaseModel):
     speech_provider: str | None = None
     tts_model: str | None = None
     tts_voice: str | None = None
+    brave_search_api_key: str | None = None  # web search provider (agent tools; primary)
     firecrawl_api_key: str | None = None   # web search/fetch provider (agent tools)
     semantic_scholar_api_key: str | None = None  # citation/reference metadata provider
     openalex_api_key: str | None = None    # citation/authorship metadata provider (metered)
@@ -35,6 +36,7 @@ def read_settings(request: Request):
     s = config.load_settings()
     key = s.get("openrouter_api_key") or ""
     okey = s.get("openai_api_key") or ""
+    bkey = s.get("brave_search_api_key") or ""
     fkey = s.get("firecrawl_api_key") or ""
     s2key = s.get("semantic_scholar_api_key") or ""
     oakey = s.get("openalex_api_key") or ""
@@ -46,6 +48,7 @@ def read_settings(request: Request):
         "has_openai_key": bool(okey), "openai_key_hint": (okey[:6] + "…") if okey else "",
         "speech_provider": s.get("speech_provider"), "tts_model": s.get("tts_model"),
         "tts_voice": s.get("tts_voice"), "voices": tts.OPENAI_VOICES,
+        "has_brave_key": bool(bkey), "brave_key_hint": (bkey[:6] + "…") if bkey else "",
         "has_firecrawl_key": bool(fkey), "firecrawl_key_hint": (fkey[:6] + "…") if fkey else "",
         "has_semantic_scholar_key": bool(s2key),
         "semantic_scholar_key_hint": (s2key[:6] + "…") if s2key else "",
@@ -106,6 +109,7 @@ def write_settings(req: SettingsReq, request: Request):
         "has_openai_key": bool(merged.get("openai_api_key")),
         "speech_provider": merged.get("speech_provider"),
         "tts_model": merged.get("tts_model"), "tts_voice": merged.get("tts_voice"),
+        "has_brave_key": bool(merged.get("brave_search_api_key")),
         "has_firecrawl_key": bool(merged.get("firecrawl_api_key")),
         "has_semantic_scholar_key": bool(merged.get("semantic_scholar_api_key")),
         "has_openalex_key": bool(merged.get("openalex_api_key")),

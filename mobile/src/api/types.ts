@@ -255,6 +255,8 @@ export interface Settings {
   tts_model: string | null;
   tts_voice: string | null;
   voices: string[];
+  has_brave_key: boolean;
+  brave_key_hint: string;
   has_firecrawl_key: boolean;
   firecrawl_key_hint: string;
   has_semantic_scholar_key: boolean;

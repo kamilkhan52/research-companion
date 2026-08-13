@@ -122,10 +122,15 @@ never saw it; its guarantee survives on the job path.
    `codex/job-terminal-after-settlement` publishes a job's terminal status only after its
    reservation settles (DR-035).
 
-   Still open in M3: `research_tools` web search, which is external API spend with no per-call cost
-   the app can see and needs a provider-side decision rather than a code change; DR-036, refreshing
-   the account's standing after every metered job; and DR-049, giving background-job refusals
-   structured metadata so a client stops classifying them by exact server prose.
+   The three remainders this section used to list are closed as of 2026-08-12: DR-036 (the
+   account's standing refreshes at the API layer after metered jobs) and DR-049 (background-job
+   refusals carry structured metadata; the client's exact-prose matcher is gone) both shipped —
+   see their ledger rows — and `research_tools` web search is now METERED: every provider call
+   (Brave, newly added as primary → Firecrawl → keyless DuckDuckGo) records a pinned per-call
+   price from `spend_limits.py` through `usage.record`, feeding both the ledger and the turn's
+   spend reservation. Prices verified against published rate cards 2026-08-12; §8.4 of the
+   pricing analysis records the closure. The one open piece is operational, not code: H29 (a
+   Brave key on production, optional — ~1,000 searches/month are free on any Brave account).
 
    **What actually gates progress now is device acceptance, not code.** Thirty-six ledger rows sit
    at `implemented — verify`. Merging is not acceptance, and a row only closes when Kamil has seen

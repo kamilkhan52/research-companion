@@ -100,6 +100,7 @@ export default function SettingsScreen() {
   const [narrationModel, setNarrationModel] = useState('');
   const [previewModel, setPreviewModel] = useState('');
   const [openaiKey, setOpenaiKey] = useState('');
+  const [braveKey, setBraveKey] = useState('');
   const [firecrawlKey, setFirecrawlKey] = useState('');
   const [semanticScholarKey, setSemanticScholarKey] = useState('');
   const [voice, setVoice] = useState('');
@@ -207,11 +208,12 @@ export default function SettingsScreen() {
     return {
       ...(usable(apiKey) ? { openrouter_api_key: apiKey.trim() } : {}),
       ...(usable(openaiKey) ? { openai_api_key: openaiKey.trim() } : {}),
+      ...(usable(braveKey) ? { brave_search_api_key: braveKey.trim() } : {}),
       ...(usable(firecrawlKey) ? { firecrawl_api_key: firecrawlKey.trim() } : {}),
       ...(usable(semanticScholarKey)
         ? { semantic_scholar_api_key: semanticScholarKey.trim() } : {}),
     };
-  }, [apiKey, openaiKey, firecrawlKey, semanticScholarKey]);
+  }, [apiKey, openaiKey, braveKey, firecrawlKey, semanticScholarKey]);
 
   const saveKeys = useCallback(async () => {
     const sent = dirtyKeys;
@@ -231,6 +233,7 @@ export default function SettingsScreen() {
     );
     setApiKey(clearIfStillSent(sent.openrouter_api_key));
     setOpenaiKey(clearIfStillSent(sent.openai_api_key));
+    setBraveKey(clearIfStillSent(sent.brave_search_api_key));
     setFirecrawlKey(clearIfStillSent(sent.firecrawl_api_key));
     setSemanticScholarKey(clearIfStillSent(sent.semantic_scholar_api_key));
   }, [isOperator, dirtyKeys, saveSettings]);
@@ -522,6 +525,17 @@ export default function SettingsScreen() {
               {/* Research agent — web-search provider keys for the analyst's tools */}
               <Section title="Research agent (web search)">
                 <Label
+                  text="Brave Search API key"
+                  hint={settings.data?.has_brave_key ? `set (${settings.data.brave_key_hint})` : 'not set'}
+                />
+                <Field
+                  value={braveKey}
+                  onChangeText={setBraveKey}
+                  placeholder={settings.data?.has_brave_key ? 'Replace key…' : 'BSA…'}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <Label
                   text="Firecrawl API key"
                   hint={settings.data?.has_firecrawl_key ? `set (${settings.data.firecrawl_key_hint})` : 'not set'}
                 />
@@ -534,9 +548,9 @@ export default function SettingsScreen() {
                 />
                 <Text variant="caption" color={t.muted} style={{ marginTop: space.xs }}>
                   Lets the analyst search the web and read outside papers mid-discussion (author
-                  info, adoption, follow-up work). It uses Firecrawl, falling back to a keyless
-                  search when no key is set — so search works either way, and is better with one.
-                  Reading your own project's papers needs no key.
+                  info, adoption, follow-up work). Search tries Brave first, then Firecrawl, then
+                  a keyless fallback — so it works either way, and is better with a key. Firecrawl
+                  also serves page fetches. Reading your own project's papers needs no key.
                 </Text>
               </Section>
 

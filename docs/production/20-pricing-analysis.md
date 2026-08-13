@@ -492,6 +492,17 @@ These are prerequisites, not nice-to-haves. In priority order:
 4. **Web search is entirely unmetered.** `app/research_tools.py` calls the Parallel Search MCP
    (and Firecrawl) with no accounting. Real cash, per agentic turn, invisible.
 
+   > **CLOSED 2026-08-12.** Every provider call in the chain (now Brave → Firecrawl → keyless
+   > DuckDuckGo; Parallel was retired earlier) records a pinned per-call cost through
+   > `usage.record`, which also feeds the surrounding turn's spend reservation. Prices live in
+   > `spend_limits.py`, verified against the published rate cards on 2026-08-12: Brave $5/1k
+   > requests (every account gets $5/mo of auto-applied credit at that same rate), Firecrawl
+   > $0.0032/credit at Hobby (search = 1 credit at our 5-result limit, scrape = 1 credit/page),
+   > both env-overridable (`RC_BRAVE_NANOUSD_PER_QUERY`, `RC_FIRECRAWL_NANOUSD_PER_CREDIT`).
+   > Like TTS, the price is known before the call because these APIs return no cost in the
+   > response. Production still needs a key set (H29) — until then it serves keyless DuckDuckGo,
+   > metered at $0, which is honest.
+
 5. **`listening_preview` is the biggest LLM volume in the app and looks unintentional.** 1,745
    calls vs 101 analysis turns = **17.3 cues per turn**, each sending **11,373 prompt tokens to
    produce 86 tokens of output**. That is 197 K prompt tokens per turn spent on cues — 4.4× the

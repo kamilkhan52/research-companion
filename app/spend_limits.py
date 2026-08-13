@@ -17,9 +17,12 @@ signed-in account gets the same operator-configured monthly ceiling, defaulting 
 doc's Basic allowance.
 
 **These numbers are provisional and the roadmap says so.** They are grounded in measured spend
-(§2 of the pricing analysis) but the analysis's own §8 lists preconditions, and one of them is not
-met: web search through `research_tools` is still unmetered, so real spend is *understated* by
-whatever an agentic turn does on the open web. A ceiling can only bound what the ledger can see.
+(§2 of the pricing analysis) but the analysis's own §8 lists preconditions. Its web-search
+precondition is now met: every provider call in `research_tools` records a pinned per-call cost
+(see the web prices below), so an agentic turn's open-web activity reaches the same ledger its
+tokens do. The prices are pinned from published rate cards rather than read from a usage payload —
+search APIs bill flat per-request or per-credit and return no cost in the response, the same
+shape that made `tts-1` the audio default (its docstring tells that story).
 """
 from __future__ import annotations
 
@@ -62,6 +65,55 @@ def monthly_limit_nanousd() -> int:
             else:
                 log.warning("RC_MONTHLY_CREDITS=%d is not positive; using %d", parsed, credits)
     return credits * NANOUSD_PER_CREDIT
+
+
+# ---- web search/fetch prices (the last unmetered seam of M3) ----
+#
+# Search providers bill flat per-request (Brave) or per-credit (Firecrawl) and return NO cost in
+# the response body, so like TTS the price is pinned here from the published rate card and the
+# cost of a call is known before it is made. Env-overridable because the real rate depends on the
+# account's plan with that provider (Firecrawl's $/credit differs per tier). Defaults are the
+# published paid rates: a key of unknown provenance must never spend invisibly — over-counting is
+# a mild error, real spend escaping the ceiling is the failure this module exists to prevent.
+
+#: Brave's "Search" plan is $5.00 per 1,000 requests, and every account gets $5/month of
+#: automatically-applied credit (checked 2026-08-12, https://brave.com/search/api/). The credit
+#: is a discount on Brave's bill, not a different rate — so metering at the flat rate is honest
+#: on every tier, and the first ~1,000 queries a month simply cost the operator nothing.
+_BRAVE_DEFAULT_NANOUSD_PER_QUERY = 5_000_000  # $0.005
+
+#: Firecrawl Hobby is $16/mo for 5,000 credits → $0.0032/credit (checked 2026-08-12,
+#: https://www.firecrawl.dev/pricing). Search costs 2 credits per 10 results (our limit of 5 =
+#: 1 credit); scrape is 1 credit per page. Higher tiers are cheaper per credit — override down.
+_FIRECRAWL_DEFAULT_NANOUSD_PER_CREDIT = 3_200_000  # $0.0032
+
+
+def _env_price(var: str, default: int) -> int:
+    """A pinned price with an env override. Zero is a VALID override (free tier); negative or
+    malformed values fall back — same absence-is-dangerous discipline as the monthly ceiling."""
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer; using %d", var, raw, default)
+        return default
+    if parsed < 0:
+        log.warning("%s=%d is negative; using %d", var, parsed, default)
+        return default
+    return parsed
+
+
+def brave_query_cost_nanousd() -> int:
+    """The pinned cost of one Brave Search API request."""
+    return _env_price("RC_BRAVE_NANOUSD_PER_QUERY", _BRAVE_DEFAULT_NANOUSD_PER_QUERY)
+
+
+def firecrawl_credit_cost_nanousd() -> int:
+    """The pinned cost of one Firecrawl credit (search = 1 credit at ≤5 results; scrape =
+    1 credit per page)."""
+    return _env_price("RC_FIRECRAWL_NANOUSD_PER_CREDIT", _FIRECRAWL_DEFAULT_NANOUSD_PER_CREDIT)
 
 
 #: Pessimistic ceiling per operation, in nano-USD, from the measured per-operation costs in
