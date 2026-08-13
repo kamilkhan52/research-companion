@@ -22,6 +22,10 @@ const MAX_LAG = 1000;
 // exactly while the poller and composer are also busy. Per-tick amounts scale by the same
 // factor below, so chars-per-SECOND (and the equilibrium lag) are unchanged; only the paint
 // granularity coarsens, from ~1 to ~2 words per frame, which reading speed cannot distinguish.
+// One step, not the whole answer: per-tick cost is still O(length), so total work over a turn
+// stays quadratic — halving the cadence halves the constant. If very long analyses still
+// bottleneck here, the next rungs are a further threshold (or a length-derived tick) and a
+// prefix-stable Markdown parse that only re-parses the growing tail block.
 const SLOW_TICK_ABOVE_CHARS = 4000;
 const SLOW_TICK_MS = 66;
 

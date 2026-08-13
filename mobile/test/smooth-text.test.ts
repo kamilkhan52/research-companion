@@ -12,6 +12,27 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.useRealTimers();
+  jest.restoreAllMocks(); // the pace test spies on global setInterval; don't leak it
+});
+
+test('exactly one interval is alive across target changes', () => {
+  const setSpy = jest.spyOn(global, 'setInterval');
+  const clearSpy = jest.spyOn(global, 'clearInterval');
+  const { rerender, unmount } = renderHook(
+    ({ text }: { text: string }) => useSmoothText(text),
+    { initialProps: { text: 'first chunk of text' } },
+  );
+  act(() => jest.advanceTimersByTime(66));
+  rerender({ text: 'first chunk of text, grown' });
+  act(() => jest.advanceTimersByTime(66));
+  rerender({ text: 'first chunk of text, grown further' });
+  act(() => jest.advanceTimersByTime(66));
+
+  // Each target change tears down the previous interval before creating the next: at any
+  // moment intervals-created exceeds intervals-cleared by exactly the one that is live.
+  expect(setSpy.mock.calls.length).toBe(clearSpy.mock.calls.length + 1);
+  unmount();
+  expect(setSpy.mock.calls.length).toBe(clearSpy.mock.calls.length);
 });
 
 test('reveals the full target and never goes backwards', () => {
