@@ -67,7 +67,26 @@ test('a node without server coordinates falls back to the simulation', () => {
   rerender({ ns: make() });
   expect(computeForceLayout).toHaveBeenCalledTimes(1);
 
-  // A coordinate actually changing IS a new layout input.
+  // The build stage also assigns coordinates progressively. The simulation reads none of them,
+  // so a partial coordinate update on a still-incomplete graph must not re-run it either.
   rerender({ ns: [node('a', { x: 5, y: 0 }), node('b')] });
-  expect(computeForceLayout).toHaveBeenCalledTimes(2);
+  expect(computeForceLayout).toHaveBeenCalledTimes(1);
+});
+
+test('on the server path, a coordinate change is a new layout', () => {
+  // `c` is interior to the bounding box — a corner node would rescale to the same normalized
+  // position either way, since the rescale maps the box onto a fixed canvas.
+  const make = (cx: number) => [
+    node('a', { x: 0, y: 0 }),
+    node('b', { x: 10, y: 4 }),
+    node('c', { x: cx, y: 2 }),
+  ];
+  const { result, rerender } = renderHook(
+    ({ ns }: { ns: GraphNode[] }) => useGraphLayout(ns, [edge('a', 'b')]),
+    { initialProps: { ns: make(5) } },
+  );
+  const before = result.current.positions.c;
+  rerender({ ns: make(8) });
+  expect(result.current.positions.c).not.toEqual(before);
+  expect(computeForceLayout).not.toHaveBeenCalled();
 });

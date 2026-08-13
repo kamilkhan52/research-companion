@@ -69,6 +69,8 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
   // would re-run the memo — and on the coordinate-less fallback path, the O(n²) simulation —
   // on every poll refetch during the build stage, which is exactly the identity churn the
   // shape signature exists to absorb.
+  const hasAllCoords =
+    nodes.length > 0 && nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number');
   const coordSignature = useMemo(
     () => nodes.map((n) => `${n.x ?? '_'}:${n.y ?? '_'}`).join(','),
     [nodes],
@@ -80,7 +82,7 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
   // (post-rebuild, it always does). A useMemo computes eagerly; only not-mounting the hook or
   // branching INSIDE it avoids the work.
   return useMemo<LayoutResult>(() => {
-    if (nodes.length && nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
+    if (hasAllCoords) {
       const MARGIN = 80;
       const W = 1500;
       const xs = nodes.map((n) => n.x as number);
@@ -109,7 +111,9 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     });
     // Signatures, never `nodes` identity: shape covers what the simulation reads, coordinates
     // cover what the rescale reads, and a poll refetch that changes neither recomputes nothing.
-    // nodes/nodeIds/edgeInputs are re-derived from the same data each render.
+    // The coordinate signature only participates on the server path — the fallback simulation
+    // reads no coordinates, so a build stage assigning them progressively must not re-run it
+    // on every partial update. nodes/nodeIds/edgeInputs are re-derived from the same data.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signature, coordSignature]);
+  }, [signature, hasAllCoords ? coordSignature : '', hasAllCoords]);
 }
