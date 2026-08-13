@@ -54,34 +54,6 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
   // So rescale the visible nodes' bounding box to a phone-sized canvas. The rescale is
   // monotonic per axis, so relative positions — including both semantic axis orders —
   // are preserved exactly.
-  const serverLayout = useMemo<LayoutResult | null>(() => {
-    if (!nodes.length || !nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
-      return null;
-    }
-    const MARGIN = 80;
-    const W = 1500;
-    const xs = nodes.map((n) => n.x as number);
-    const ys = nodes.map((n) => n.y as number);
-    const xmin = Math.min(...xs);
-    const xspan = Math.max(1, Math.max(...xs) - xmin);
-    const ymin = Math.min(...ys);
-    const yspan = Math.max(1, Math.max(...ys) - ymin);
-    // Derive canvas height from the data's own aspect instead of a fixed tall canvas:
-    // stretching every visible subset onto ~2200px of y inflated vertical distances, so
-    // time-distant citations rendered as very long vertical edges. Clamped so extreme spans
-    // can't flatten to a strip; the per-axis rescale stays monotonic, so both semantic
-    // axis orders are untouched.
-    const H = Math.min(2200, Math.round(W * Math.min(1.15, Math.max(0.55, yspan / xspan))));
-    const positions: Record<string, { x: number; y: number }> = {};
-    for (const n of nodes) {
-      positions[n.id] = {
-        x: MARGIN + (((n.x as number) - xmin) / xspan) * (W - 2 * MARGIN),
-        y: MARGIN + (((n.y as number) - ymin) / yspan) * (H - 2 * MARGIN),
-      };
-    }
-    return { positions, width: W, height: H, semantic: true };
-  }, [nodes]);
-
   const nodeIds = useMemo(() => nodes.map((n) => n.id), [nodes]);
   const edgeInputs = useMemo(
     () => edges.map((e) => ({ source: e.source, target: e.target })),
@@ -94,15 +66,41 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     [nodeIds, edgeInputs],
   );
 
-  const clientLayout = useMemo(
-    () =>
-      computeForceLayout(nodeIds, edgeInputs, {
-        iterations: Math.min(260, 120 + nodeIds.length * 2),
-      }),
-    // signature is the real dependency; nodeIds/edgeInputs are derived from it each render.
+  // ONE memo for both paths, so the simulation is truly lazy. These used to be two useMemos
+  // combined with `??` — which meant the O(n²·iterations) simulation executed on every
+  // filter/page change and its result was thrown away whenever the server layout existed
+  // (post-rebuild, it always does). A useMemo computes eagerly; only not-mounting the hook or
+  // branching INSIDE it avoids the work.
+  return useMemo<LayoutResult>(() => {
+    if (nodes.length && nodes.every((n) => typeof n.x === 'number' && typeof n.y === 'number')) {
+      const MARGIN = 80;
+      const W = 1500;
+      const xs = nodes.map((n) => n.x as number);
+      const ys = nodes.map((n) => n.y as number);
+      const xmin = Math.min(...xs);
+      const xspan = Math.max(1, Math.max(...xs) - xmin);
+      const ymin = Math.min(...ys);
+      const yspan = Math.max(1, Math.max(...ys) - ymin);
+      // Derive canvas height from the data's own aspect instead of a fixed tall canvas:
+      // stretching every visible subset onto ~2200px of y inflated vertical distances, so
+      // time-distant citations rendered as very long vertical edges. Clamped so extreme spans
+      // can't flatten to a strip; the per-axis rescale stays monotonic, so both semantic
+      // axis orders are untouched.
+      const H = Math.min(2200, Math.round(W * Math.min(1.15, Math.max(0.55, yspan / xspan))));
+      const positions: Record<string, { x: number; y: number }> = {};
+      for (const n of nodes) {
+        positions[n.id] = {
+          x: MARGIN + (((n.x as number) - xmin) / xspan) * (W - 2 * MARGIN),
+          y: MARGIN + (((n.y as number) - ymin) / yspan) * (H - 2 * MARGIN),
+        };
+      }
+      return { positions, width: W, height: H, semantic: true };
+    }
+    return computeForceLayout(nodeIds, edgeInputs, {
+      iterations: Math.min(260, 120 + nodeIds.length * 2),
+    });
+    // `nodes` carries the server coordinates (the rescale's real input); signature covers the
+    // shape the simulation depends on; nodeIds/edgeInputs are derived from those each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [signature],
-  );
-
-  return serverLayout ?? clientLayout;
+  }, [nodes, signature]);
 }

@@ -100,6 +100,15 @@ export function GraphCanvas({
   const startX = useSharedValue(0);
   const startY = useSharedValue(0);
   const startScale = useSharedValue(INITIAL_SCALE);
+  // The zoom the counter-scale styles react to: `scale` quantized to the label bucket, stepped
+  // via a short timing whenever the bucket changes. Those styles fan out to every node circle
+  // and label, so following raw `scale.value` cost ~N native view updates on EVERY pinch frame
+  // — measured as the difference between pan (p50 25 ms, which never touches scale) and pinch
+  // (p50 48 ms at 100 nodes). Following the bucket instead makes the steady-state per-frame
+  // cost zero, with a ~120 ms catch-up per crossing. Within a bucket (a quarter-doubling) a
+  // label drifts at most ~19% from constant screen size before snapping — unnoticeable next to
+  // the text itself resizing with the canvas, which is what it replaced.
+  const stepScale = useSharedValue(bucketScale(zoomBucket(INITIAL_SCALE)));
 
   // The default (and "Reset view") scale always fits the current visible node set's whole
   // bounding box into the viewport, rather than a fixed constant — the box's aspect ratio (and
@@ -153,6 +162,10 @@ export function GraphCanvas({
   // both gestures' begin/finalize flips ONE piece of JS state on the 0<->1 transitions.
   const [gestureActive, setGestureActive] = useState(false);
   const activeTouches = useSharedValue(0);
+  // Which quantized zoom bucket the JS side has settled on (declutter + label lift). Declared
+  // before the gestures because their onFinalize worklets capture `setLabelBucket` at creation
+  // — a later declaration would be a temporal-dead-zone read during render.
+  const [labelBucket, setLabelBucket] = useState(() => zoomBucket(INITIAL_SCALE));
 
   // One-finger drag only: two-finger movement belongs to the pinch, whose focal-follow term
   // pans for free — letting both write the translate every frame makes them fight (jitter).
@@ -191,7 +204,14 @@ export function GraphCanvas({
     })
     .onFinalize(() => {
       activeTouches.value -= 1;
-      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
+      if (activeTouches.value === 0) {
+        runOnJS(setGestureActive)(false);
+        // Settle the label declutter for wherever the zoom ended (see the reaction below,
+        // which stays silent while a finger is down). Same-value sets are free: React bails
+        // out of a state update that matches the current value.
+        const v = scale.value;
+        runOnJS(setLabelBucket)(v > 0 ? Math.round(Math.log2(v) * BUCKETS_PER_DOUBLING) : 0);
+      }
     });
 
   const startFocalX = useSharedValue(0);
@@ -243,7 +263,12 @@ export function GraphCanvas({
     })
     .onFinalize(() => {
       activeTouches.value -= 1;
-      if (activeTouches.value === 0) runOnJS(setGestureActive)(false);
+      if (activeTouches.value === 0) {
+        runOnJS(setGestureActive)(false);
+        // Mirror of the pan's settle: the reaction stays silent while touches are down.
+        const v = scale.value;
+        runOnJS(setLabelBucket)(v > 0 ? Math.round(Math.log2(v) * BUCKETS_PER_DOUBLING) : 0);
+      }
     });
 
   const composed = Gesture.Simultaneous(pan, pinch);
@@ -267,10 +292,10 @@ export function GraphCanvas({
   // 2 worklets per frame — the canvas transform and this — rather than one per visible node.
   // Giving each label its own useAnimatedStyle would be ~100 mappers per frame on a dense graph.
   //
-  // The inverse scale cancels the canvas transform exactly, so a label's SCREEN size is constant
-  // at every zoom. Zooming then spreads the nodes without growing the text, which is what buys
-  // room for more labels. `transformOrigin` keeps the label pinned under its node as it shrinks.
-  const [labelBucket, setLabelBucket] = useState(() => zoomBucket(INITIAL_SCALE));
+  // The inverse scale cancels the canvas transform (to bucket precision — see `stepScale`), so
+  // a label's SCREEN size is held ~constant at every zoom. Zooming then spreads the nodes
+  // without growing the text, which is what buys room for more labels. `transformOrigin` keeps
+  // the label pinned under its node as it shrinks.
   // Screen-space declutter. Priority is the node radius: a bigger circle is a more significant
   // paper, so when two labels want the same cell the more important one keeps it. The selected
   // node is pinned — the reader asked for that one, and it must never lose to a neighbour.
@@ -286,16 +311,19 @@ export function GraphCanvas({
   ), [nodes, positions, selectedId, labelBucket]);
 
   const labelCounterScale = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 / scale.value }],
+    transform: [{ scale: 1 / stepScale.value }],
   }));
 
   // Node circles: grow with the canvas up to NODE_GROWTH_CAP, then hold. One shared style for
   // every node, for the same reason the labels have one — a per-node animated style would be
   // ~100 worklets a frame. Origin stays centred: the circle marks a position that means something
   // (X is time, Y is citation impact) and edges are drawn to that point, so shrinking toward any
-  // other origin would detach a node from its own edges.
+  // other origin would detach a node from its own edges. Reads `stepScale`, not `scale`: both
+  // counter styles push a transform to every attached view when their input changes, so tracking
+  // the raw zoom made every pinch frame cost scale with node count — the measured pinch-vs-pan
+  // gap.
   const nodeCounterScale = useAnimatedStyle(() => ({
-    transform: [{ scale: Math.min(1, NODE_GROWTH_CAP / scale.value) }],
+    transform: [{ scale: Math.min(1, NODE_GROWTH_CAP / stepScale.value) }],
   }));
 
   // How much the circle has shrunk, as a plain number. The label sits below the circle at a fixed
@@ -322,7 +350,20 @@ export function GraphCanvas({
       return Math.round(Math.log2(value) * BUCKETS_PER_DOUBLING);
     },
     (bucket, previous) => {
-      if (bucket !== previous) runOnJS(setLabelBucket)(bucket);
+      if (bucket === previous) return;
+      // UI-thread half: step the counter-scale styles' input (2^(bucket/4), inlined for the
+      // same worklet-boundary reason as the quantizer above). A direct assignment, not
+      // withTiming: an animated catch-up kept the per-view fan-out alive for its whole
+      // duration ~10 times per pinch, which measured as most of the remaining zoom jank
+      // (p50 36 ms vs 25 ms pan). The snap is a ≤9% label-size step — quantization half a
+      // bucket either side — which is imperceptible next to the canvas moving under it.
+      stepScale.value = 2 ** (bucket / BUCKETS_PER_DOUBLING);
+      // JS half: the declutter recompute re-renders EVERY node (labelledIds + nodeShrink), so
+      // while a finger is down it would land mid-gesture — measured as 70–100 ms spikes, ~10
+      // times per full pinch. Defer it; each gesture's onFinalize settles the bucket once the
+      // last touch lifts. Labels keep their gesture-start layout until release (the same
+      // settle-on-release behavior sigma.js uses).
+      if (activeTouches.value === 0) runOnJS(setLabelBucket)(bucket);
     },
   );
 
