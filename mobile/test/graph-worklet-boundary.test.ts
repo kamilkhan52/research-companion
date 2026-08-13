@@ -29,6 +29,29 @@ test('the zoom quantizer does not call an imported function on the UI thread', (
   expect(prepare).not.toMatch(/zoomBucket\s*\(/);
 });
 
+test('the reaction result callback calls nothing but Math and runOnJS', () => {
+  // Same UI-thread boundary as the prepare block, added when stepScale stepping moved in here:
+  // the result callback runs as a worklet too, so an imported helper call is the same #295
+  // crash. Comments are stripped first — prose like "every node (labelledIds …)" would
+  // otherwise read as a call.
+  const start = source.indexOf('(bucket, previous)');
+  expect(start).toBeGreaterThan(-1);
+  const end = source.indexOf('  );', start);
+  expect(end).toBeGreaterThan(start);
+  const body = source
+    .slice(start, end)
+    .replace(/\/\/[^\n]*/g, '');
+  const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'return']);
+  const calls = [...body.matchAll(/([A-Za-z_$][\w$.]*)\s*\(/g)]
+    .map((m) => m[1])
+    .filter((name) => !KEYWORDS.has(name));
+  // `setLabelBucket` is deliberately NOT allow-listed: it only appears wrapped as
+  // `runOnJS(setLabelBucket)(…)`, where it precedes `)` rather than `(` and so never matches
+  // — a DIRECT `setLabelBucket(…)` call from this worklet would be the crash, and should fail.
+  const disallowed = calls.filter((name) => !name.startsWith('Math.') && name !== 'runOnJS');
+  expect(disallowed).toEqual([]);
+});
+
 test('the quantizer is inlined against the shared constant, so it cannot drift', () => {
   const prepare = animatedReactionPrepareBlock();
   expect(prepare).toContain('BUCKETS_PER_DOUBLING');
