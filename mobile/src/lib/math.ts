@@ -134,7 +134,8 @@ function ensureMathJax(): boolean {
 }
 
 const svgCache = new Map<string, RenderedMath | null>();
-const SVG_CACHE_MAX = 300;
+/** Exported for the LRU eviction test, which needs to fill the cache exactly. */
+export const SVG_CACHE_MAX = 300;
 
 function attr(svg: string, name: string): number {
   const m = new RegExp(`${name}="([-\\d.]+)ex"`).exec(svg);
@@ -142,11 +143,21 @@ function attr(svg: string, name: string): number {
 }
 
 /** TeX → self-contained SVG. Returns null when MathJax can't handle the input (the caller
- * falls back to `texToPlain`). Cached — chat lists re-render the same formulas constantly. */
+ * falls back to `texToPlain`). Cached with LRU eviction — chat lists re-render the same
+ * formulas constantly, and eviction must be one-at-a-time: the cache used to CLEAR wholesale
+ * when full, and streaming turns mint a fresh key for every partial TeX span as a formula
+ * arrives, so one math-heavy turn could wipe the cache and force every visible equation on
+ * screen to re-convert at once. */
 export function texToSvg(tex: string, display: boolean): RenderedMath | null {
   const key = `${display ? 'D' : 'I'}|${tex}`;
   const hit = svgCache.get(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) {
+    // Refresh recency: a Map iterates in insertion order, so re-inserting makes the eviction
+    // below drop the least-recently-USED key, not merely the oldest-inserted.
+    svgCache.delete(key);
+    svgCache.set(key, hit);
+    return hit;
+  }
   let result: RenderedMath | null = null;
   if (ensureMathJax()) {
     try {
@@ -165,7 +176,9 @@ export function texToSvg(tex: string, display: boolean): RenderedMath | null {
       result = null;
     }
   }
-  if (svgCache.size >= SVG_CACHE_MAX) svgCache.clear();
+  while (svgCache.size >= SVG_CACHE_MAX) {
+    svgCache.delete(svgCache.keys().next().value as string);
+  }
   svgCache.set(key, result);
   return result;
 }
