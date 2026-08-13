@@ -18,16 +18,21 @@ afterEach(() => {
 test('exactly one interval is alive across target changes', () => {
   const setSpy = jest.spyOn(global, 'setInterval');
   const clearSpy = jest.spyOn(global, 'clearInterval');
-  const { rerender, unmount } = renderHook(
+  const finalText = 'first chunk of text, grown further';
+  const { result, rerender, unmount } = renderHook(
     ({ text }: { text: string }) => useSmoothText(text),
     { initialProps: { text: 'first chunk of text' } },
   );
   act(() => jest.advanceTimersByTime(66));
   rerender({ text: 'first chunk of text, grown' });
   act(() => jest.advanceTimersByTime(66));
-  rerender({ text: 'first chunk of text, grown further' });
+  rerender({ text: finalText });
   act(() => jest.advanceTimersByTime(66));
 
+  // Premise: the reveal must still be in flight — a completed reveal clears its own interval
+  // from inside the tick, which would double-count against the effect cleanup below and fail
+  // the accounting for a reason that is not a leak.
+  expect(result.current.length).toBeLessThan(finalText.length);
   // Each target change tears down the previous interval before creating the next: at any
   // moment intervals-created exceeds intervals-cleared by exactly the one that is live.
   expect(setSpy.mock.calls.length).toBe(clearSpy.mock.calls.length + 1);
