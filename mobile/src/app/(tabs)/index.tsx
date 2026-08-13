@@ -4,7 +4,7 @@
 
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,9 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from 'react-native-gesture-handler/ReanimatedSwipeable';
 // Virtualized list for the paper rows (audit 2026-08-13): the plain ScrollView mounted every
 // row eagerly — the worst mount frame measured in the app (138 ms at 34 papers), linear in
 // library size. FlashList v2 is JS-only (no native module, no rebuild) and needs no
@@ -290,20 +292,28 @@ export default function LibraryScreen() {
   // ListEmptyComponent — the same branch chain the ScrollView used, minus the rows case.
   const rowsReady =
     !!activePid && !stateQuery.isLoading && !stateQuery.isError && papers.length > 0;
-  const rowExtra = { selectMode, selected };
-  const renderPaperRow: ListRenderItem<Paper> = ({ item }) => (
-    <PaperRow
-      paper={item}
-      selectMode={selectMode}
-      selected={selected.has(item.slug)}
-      onPress={() =>
-        selectMode
-          ? toggleSelected(item.slug)
-          : router.push(`/paper/${encodeURIComponent(item.slug)}`)
-      }
-      onLongPress={() => !selectMode && enterSelect(item.slug)}
-      onRemove={() => confirmRemove(item)}
-    />
+  // Memoized so FlashList (uncompiled library code) sees a stable extraData between selection
+  // changes — a fresh object every render re-renders every visible row on every poll/keystroke.
+  const rowExtra = useMemo(() => ({ selectMode, selected }), [selectMode, selected]);
+  const renderPaperRow: ListRenderItem<Paper> = useCallback(
+    ({ item }) => (
+      <PaperRow
+        paper={item}
+        selectMode={selectMode}
+        selected={selected.has(item.slug)}
+        onPress={() =>
+          selectMode
+            ? toggleSelected(item.slug)
+            : router.push(`/paper/${encodeURIComponent(item.slug)}`)
+        }
+        onLongPress={() => !selectMode && enterSelect(item.slug)}
+        onRemove={() => confirmRemove(item)}
+      />
+    ),
+    // The handler functions are per-render but compiler-memoized (app code); the states below
+    // are the real invalidators.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectMode, selected, router],
   );
 
   const header = (
@@ -366,6 +376,9 @@ export default function LibraryScreen() {
             tintColor={t.mint}
           />
         }
+        // An inline ELEMENT on purpose — FlashList reconciles it by type so header state
+        // (filter/sort UI) survives re-renders; "tidying" it into `() => (…)` would make it a
+        // new component type each render and remount the header on every keystroke.
         ListHeaderComponent={
           <>
         {continueSession ? (
@@ -760,7 +773,8 @@ function formatActivityTime(timestamp: string): string {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function PaperRow({
+// Exported for the swipe-reset test only; the Library renders it through FlashList.
+export function PaperRow({
   paper,
   onPress,
   onLongPress,
@@ -777,6 +791,15 @@ function PaperRow({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  // FlashList recycles cells: this component instance can receive a DIFFERENT paper's props
+  // without unmounting, and the swipeable's open/closed translation is instance-local state.
+  // Without the reset, a row swiped open and scrolled away comes back as another paper already
+  // showing the destructive Remove affordance (Opus review, P1). Keyed on the slug, not the
+  // object: a refetch delivering the same paper must not slam a deliberately opened row shut.
+  const swipeRef = useRef<SwipeableMethods>(null);
+  useEffect(() => {
+    swipeRef.current?.close();
+  }, [paper.slug]);
   const stateKey = paperStateKey(paper);
   const sm = stateMetaFor(t);
   const meta = sm[stateKey] ?? sm.unread;
@@ -857,6 +880,7 @@ function PaperRow({
   if (selectMode) return rowBody;
   return (
     <ReanimatedSwipeable
+      ref={swipeRef}
       overshootRight={false}
       rightThreshold={40}
       renderRightActions={(_progress, _translation, methods) => (
