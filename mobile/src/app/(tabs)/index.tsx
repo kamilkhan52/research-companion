@@ -16,6 +16,11 @@ import {
   View,
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+// Virtualized list for the paper rows (audit 2026-08-13): the plain ScrollView mounted every
+// row eagerly — the worst mount frame measured in the app (138 ms at 34 papers), linear in
+// library size. FlashList v2 is JS-only (no native module, no rebuild) and needs no
+// estimatedItemSize.
+import { FlashList, type ListRenderItem } from '@shopify/flash-list';
 
 import { backfillCovers, getOpeningDraft, getSession } from '@/api/endpoints';
 import {
@@ -75,6 +80,12 @@ import { floatShadow, fonts, radius, space, stateMetaFor, type ThemePalette } fr
 // remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
 // to a different/reachable server — is retried on the next mount rather than silently skipped.
 let coverBackfillDoneFor: string | null = null;
+
+// Stable empty-data sentinel: the list's pre-load states render through ListEmptyComponent,
+// and a fresh [] each render would look like a data change to the list.
+const NO_PAPERS: Paper[] = [];
+const paperKey = (p: Paper) => p.slug;
+const RowGap = () => <View style={{ height: space.sm }} />;
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -275,6 +286,26 @@ export default function LibraryScreen() {
     );
   };
 
+  // Rows render only once a project's papers have loaded; every other state renders through
+  // ListEmptyComponent — the same branch chain the ScrollView used, minus the rows case.
+  const rowsReady =
+    !!activePid && !stateQuery.isLoading && !stateQuery.isError && papers.length > 0;
+  const rowExtra = { selectMode, selected };
+  const renderPaperRow: ListRenderItem<Paper> = ({ item }) => (
+    <PaperRow
+      paper={item}
+      selectMode={selectMode}
+      selected={selected.has(item.slug)}
+      onPress={() =>
+        selectMode
+          ? toggleSelected(item.slug)
+          : router.push(`/paper/${encodeURIComponent(item.slug)}`)
+      }
+      onLongPress={() => !selectMode && enterSelect(item.slug)}
+      onRemove={() => confirmRemove(item)}
+    />
+  );
+
   const header = (
     <TabHeader
       title="Scholiast"
@@ -314,8 +345,18 @@ export default function LibraryScreen() {
           onPress={() => setSwitcherOpen(true)}
         />
       </View>
-      <ScrollView
-        contentContainerStyle={[styles.list, { paddingTop: pillHeight + space.sm }]}
+      <FlashList
+        data={rowsReady ? visiblePapers : NO_PAPERS}
+        renderItem={renderPaperRow}
+        keyExtractor={paperKey}
+        // Rows read selection state that lives outside `data`; a change must reach the
+        // already-rendered items.
+        extraData={rowExtra}
+        ItemSeparatorComponent={RowGap}
+        contentContainerStyle={{
+          ...StyleSheet.flatten(styles.list),
+          paddingTop: pillHeight + space.sm,
+        }}
         refreshControl={
           <RefreshControl
             refreshing={stateQuery.isFetching || recentQuery.isFetching}
@@ -324,7 +365,9 @@ export default function LibraryScreen() {
             }}
             tintColor={t.mint}
           />
-        }>
+        }
+        ListHeaderComponent={
+          <>
         {continueSession ? (
           <ContinueCard
             session={continueSession}
@@ -388,8 +431,10 @@ export default function LibraryScreen() {
             </Pressable>
           </View>
         ) : null}
-
-        {!activePid && projectsQuery.isError ? (
+          </>
+        }
+        ListEmptyComponent={
+        !activePid && projectsQuery.isError ? (
           // A baked default URL means fresh installs start "connected" — when the server is
           // unreachable (phone off the tailnet, backend down) that must read as a network
           // problem with a retry, not as an empty account.
@@ -429,30 +474,14 @@ export default function LibraryScreen() {
             pid={activePid}
             onDiscover={() => router.push('/discover')}
           />
-        ) : visiblePapers.length === 0 ? (
+        ) : (
+          // rowsReady with zero visible rows: the filter matched nothing.
           <Text variant="caption" style={{ textAlign: 'center', paddingVertical: space.xl }}>
             No papers match this filter.
           </Text>
-        ) : (
-          <View style={{ gap: space.sm }}>
-            {visiblePapers.map((p) => (
-              <PaperRow
-                key={p.slug}
-                paper={p}
-                selectMode={selectMode}
-                selected={selected.has(p.slug)}
-                onPress={() =>
-                  selectMode
-                    ? toggleSelected(p.slug)
-                    : router.push(`/paper/${encodeURIComponent(p.slug)}`)
-                }
-                onLongPress={() => !selectMode && enterSelect(p.slug)}
-                onRemove={() => confirmRemove(p)}
-              />
-            ))}
-          </View>
-        )}
-      </ScrollView>
+        )
+        }
+      />
       </View>
 
       {selectMode ? (
