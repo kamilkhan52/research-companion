@@ -22,6 +22,21 @@ def test_large_json_is_gzipped():
     assert len(resp.content) > 1000  # premise: this payload is big enough to qualify
     assert resp.headers.get("content-encoding") == "gzip"
     assert resp.json()["prompts"]  # body survives the round trip (httpx decompresses)
+    # The wire actually shrank: content-length counts encoded bytes, resp.content decoded ones.
+    assert int(resp.headers["content-length"]) < len(resp.content)
+
+
+def test_a_range_request_bypasses_compression_entirely():
+    """Structural, not per-route: a gzip-wrapped 206 leaves Content-Range describing bytes that
+    are no longer on the wire, so ANY request that asks for a range gets identity — even on a
+    route that happens to ignore the header, like this JSON one."""
+    client = _client()
+    resp = client.get(
+        "/api/prompts",
+        headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+    )
+    assert resp.status_code == 200  # this route ignores Range; the middleware must not
+    assert "content-encoding" not in resp.headers
 
 
 def test_small_responses_stay_identity():
@@ -43,14 +58,21 @@ def test_media_paths_bypass_compression():
 
     Asserted on the regex rather than end-to-end because a real cover/figure/audio response
     needs a rendered artifact on disk; the dispatch above it is two lines that only consult
-    this pattern.
+    this pattern (the Range bypass beside it IS asserted end-to-end above).
     """
     from app.main import _UNCOMPRESSED_MEDIA as media
 
     assert media.search("/api/projects/p1/papers/some-slug/cover.png")
     assert media.search("/api/projects/p1/papers/some-slug/figures/fig-3.png")
     assert media.search("/api/audio/abc123.mp3")
+    assert media.search("/api/projects/p1/bundle")
+    assert media.search("/assets/KaTeX_Main-Regular.woff2")
     assert not media.search("/api/audio/jobs")
     assert not media.search("/api/audio/jobs/j-42")
     assert not media.search("/api/projects/p1/session/some-slug")
     assert not media.search("/api/prompts")
+    # Anchored to the route shape: an id that happens to be called "figures" or "bundle" is
+    # ordinary JSON and stays compressible.
+    assert not media.search("/api/projects/figures/state")
+    assert not media.search("/api/projects/p1/papers/figures/notes")
+    assert not media.search("/api/projects/p1/bundle/extra")
