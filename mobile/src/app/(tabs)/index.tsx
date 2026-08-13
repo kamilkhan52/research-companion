@@ -4,7 +4,7 @@
 
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,14 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from 'react-native-gesture-handler/ReanimatedSwipeable';
+// Virtualized list for the paper rows (audit 2026-08-13): the plain ScrollView mounted every
+// row eagerly — the worst mount frame measured in the app (138 ms at 34 papers), linear in
+// library size. FlashList v2 is JS-only (no native module, no rebuild) and needs no
+// estimatedItemSize.
+import { FlashList, type ListRenderItem } from '@shopify/flash-list';
 
 import { backfillCovers, getOpeningDraft, getSession } from '@/api/endpoints';
 import {
@@ -75,6 +82,12 @@ import { floatShadow, fonts, radius, space, stateMetaFor, type ThemePalette } fr
 // remounts/tab switches). Set only after the POST resolves, so a transient failure — or a switch
 // to a different/reachable server — is retried on the next mount rather than silently skipped.
 let coverBackfillDoneFor: string | null = null;
+
+// Stable empty-data sentinel: the list's pre-load states render through ListEmptyComponent,
+// and a fresh [] each render would look like a data change to the list.
+const NO_PAPERS: Paper[] = [];
+const paperKey = (p: Paper) => p.slug;
+const RowGap = () => <View style={{ height: space.sm }} />;
 
 export default function LibraryScreen() {
   const router = useRouter();
@@ -275,6 +288,34 @@ export default function LibraryScreen() {
     );
   };
 
+  // Rows render only once a project's papers have loaded; every other state renders through
+  // ListEmptyComponent — the same branch chain the ScrollView used, minus the rows case.
+  const rowsReady =
+    !!activePid && !stateQuery.isLoading && !stateQuery.isError && papers.length > 0;
+  // Memoized so FlashList (uncompiled library code) sees a stable extraData between selection
+  // changes — a fresh object every render re-renders every visible row on every poll/keystroke.
+  const rowExtra = useMemo(() => ({ selectMode, selected }), [selectMode, selected]);
+  const renderPaperRow: ListRenderItem<Paper> = useCallback(
+    ({ item }) => (
+      <PaperRow
+        paper={item}
+        selectMode={selectMode}
+        selected={selected.has(item.slug)}
+        onPress={() =>
+          selectMode
+            ? toggleSelected(item.slug)
+            : router.push(`/paper/${encodeURIComponent(item.slug)}`)
+        }
+        onLongPress={() => !selectMode && enterSelect(item.slug)}
+        onRemove={() => confirmRemove(item)}
+      />
+    ),
+    // The handler functions are per-render but compiler-memoized (app code); the states below
+    // are the real invalidators.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectMode, selected, router],
+  );
+
   const header = (
     <TabHeader
       title="Scholiast"
@@ -314,8 +355,18 @@ export default function LibraryScreen() {
           onPress={() => setSwitcherOpen(true)}
         />
       </View>
-      <ScrollView
-        contentContainerStyle={[styles.list, { paddingTop: pillHeight + space.sm }]}
+      <FlashList
+        data={rowsReady ? visiblePapers : NO_PAPERS}
+        renderItem={renderPaperRow}
+        keyExtractor={paperKey}
+        // Rows read selection state that lives outside `data`; a change must reach the
+        // already-rendered items.
+        extraData={rowExtra}
+        ItemSeparatorComponent={RowGap}
+        contentContainerStyle={{
+          ...StyleSheet.flatten(styles.list),
+          paddingTop: pillHeight + space.sm,
+        }}
         refreshControl={
           <RefreshControl
             refreshing={stateQuery.isFetching || recentQuery.isFetching}
@@ -324,7 +375,12 @@ export default function LibraryScreen() {
             }}
             tintColor={t.mint}
           />
-        }>
+        }
+        // An inline ELEMENT on purpose — FlashList reconciles it by type so header state
+        // (filter/sort UI) survives re-renders; "tidying" it into `() => (…)` would make it a
+        // new component type each render and remount the header on every keystroke.
+        ListHeaderComponent={
+          <>
         {continueSession ? (
           <ContinueCard
             session={continueSession}
@@ -388,8 +444,10 @@ export default function LibraryScreen() {
             </Pressable>
           </View>
         ) : null}
-
-        {!activePid && projectsQuery.isError ? (
+          </>
+        }
+        ListEmptyComponent={
+        !activePid && projectsQuery.isError ? (
           // A baked default URL means fresh installs start "connected" — when the server is
           // unreachable (phone off the tailnet, backend down) that must read as a network
           // problem with a retry, not as an empty account.
@@ -429,30 +487,14 @@ export default function LibraryScreen() {
             pid={activePid}
             onDiscover={() => router.push('/discover')}
           />
-        ) : visiblePapers.length === 0 ? (
+        ) : (
+          // rowsReady with zero visible rows: the filter matched nothing.
           <Text variant="caption" style={{ textAlign: 'center', paddingVertical: space.xl }}>
             No papers match this filter.
           </Text>
-        ) : (
-          <View style={{ gap: space.sm }}>
-            {visiblePapers.map((p) => (
-              <PaperRow
-                key={p.slug}
-                paper={p}
-                selectMode={selectMode}
-                selected={selected.has(p.slug)}
-                onPress={() =>
-                  selectMode
-                    ? toggleSelected(p.slug)
-                    : router.push(`/paper/${encodeURIComponent(p.slug)}`)
-                }
-                onLongPress={() => !selectMode && enterSelect(p.slug)}
-                onRemove={() => confirmRemove(p)}
-              />
-            ))}
-          </View>
-        )}
-      </ScrollView>
+        )
+        }
+      />
       </View>
 
       {selectMode ? (
@@ -731,7 +773,8 @@ function formatActivityTime(timestamp: string): string {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function PaperRow({
+// Exported for the swipe-reset test only; the Library renders it through FlashList.
+export function PaperRow({
   paper,
   onPress,
   onLongPress,
@@ -748,6 +791,15 @@ function PaperRow({
 }) {
   const t = useTheme();
   const styles = useThemedStyles(makeStyles);
+  // FlashList recycles cells: this component instance can receive a DIFFERENT paper's props
+  // without unmounting, and the swipeable's open/closed translation is instance-local state.
+  // Without the reset, a row swiped open and scrolled away comes back as another paper already
+  // showing the destructive Remove affordance (Opus review, P1). Keyed on the slug, not the
+  // object: a refetch delivering the same paper must not slam a deliberately opened row shut.
+  const swipeRef = useRef<SwipeableMethods>(null);
+  useEffect(() => {
+    swipeRef.current?.close();
+  }, [paper.slug]);
   const stateKey = paperStateKey(paper);
   const sm = stateMetaFor(t);
   const meta = sm[stateKey] ?? sm.unread;
@@ -828,6 +880,7 @@ function PaperRow({
   if (selectMode) return rowBody;
   return (
     <ReanimatedSwipeable
+      ref={swipeRef}
       overshootRight={false}
       rightThreshold={40}
       renderRightActions={(_progress, _translation, methods) => (

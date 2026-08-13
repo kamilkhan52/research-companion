@@ -8,6 +8,12 @@ module.exports = {
   // inside a GestureHandlerRootView / GestureDetector (e.g. BottomSheet).
   setupFiles: ['react-native-gesture-handler/jestSetup.js'],
   setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
+  // jest-expo's default whitelist, plus @shopify/flash-list (ships untransformed ESM/JSX).
+  transformIgnorePatterns: [
+    '/node_modules/(?!(.pnpm|react-native|@react-native|@react-native-community|expo|@expo|@expo-google-fonts|react-navigation|@react-navigation|@sentry/react-native|native-base|standard-navigation|@shopify/flash-list))',
+    '/node_modules/react-native-reanimated/plugin/',
+    '/node_modules/@react-native/babel-preset/',
+  ],
   testMatch: ['<rootDir>/test/**/*.test.[jt]s?(x)'],
   moduleNameMapper: {
     '^@gorhom/bottom-sheet$': '<rootDir>/test/mocks/bottomSheet.tsx',
