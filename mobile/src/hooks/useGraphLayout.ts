@@ -65,6 +65,14 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     () => `${nodeIds.join(',')}|${edgeInputs.map((e) => `${e.source}>${e.target}`).join(',')}`,
     [nodeIds, edgeInputs],
   );
+  // The server-coordinate half of the input, as a value: depending on `nodes` identity here
+  // would re-run the memo — and on the coordinate-less fallback path, the O(n²) simulation —
+  // on every poll refetch during the build stage, which is exactly the identity churn the
+  // shape signature exists to absorb.
+  const coordSignature = useMemo(
+    () => nodes.map((n) => `${n.x ?? '_'}:${n.y ?? '_'}`).join(','),
+    [nodes],
+  );
 
   // ONE memo for both paths, so the simulation is truly lazy. These used to be two useMemos
   // combined with `??` — which meant the O(n²·iterations) simulation executed on every
@@ -99,8 +107,9 @@ export function useGraphLayout(nodes: GraphNode[], edges: GraphEdge[]): LayoutRe
     return computeForceLayout(nodeIds, edgeInputs, {
       iterations: Math.min(260, 120 + nodeIds.length * 2),
     });
-    // `nodes` carries the server coordinates (the rescale's real input); signature covers the
-    // shape the simulation depends on; nodeIds/edgeInputs are derived from those each render.
+    // Signatures, never `nodes` identity: shape covers what the simulation reads, coordinates
+    // cover what the rescale reads, and a poll refetch that changes neither recomputes nothing.
+    // nodes/nodeIds/edgeInputs are re-derived from the same data each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, signature]);
+  }, [signature, coordSignature]);
 }

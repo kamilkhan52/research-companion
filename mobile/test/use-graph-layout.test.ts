@@ -50,12 +50,24 @@ test('server-laid-out graphs never run the client simulation', () => {
 });
 
 test('a node without server coordinates falls back to the simulation', () => {
-  const { result } = renderHook(() =>
-    useGraphLayout([node('a', { x: 0, y: 0 }), node('b')], [edge('a', 'b')]),
+  const make = () => [node('a', { x: 0, y: 0 }), node('b')];
+  const { result, rerender } = renderHook(
+    ({ ns }: { ns: GraphNode[] }) => useGraphLayout(ns, [edge('a', 'b')]),
+    { initialProps: { ns: make() } },
   );
 
   expect(computeForceLayout).toHaveBeenCalledTimes(1);
   expect(result.current.semantic).toBeFalsy();
   expect(result.current.positions.a).toBeDefined();
   expect(result.current.positions.b).toBeDefined();
+
+  // A poll refetch delivers the same shape with fresh object identities — the build stage does
+  // this continuously, and it is where the fallback path lives. The simulation must not re-run
+  // (Opus review: depending on `nodes` identity re-ran it on every poll).
+  rerender({ ns: make() });
+  expect(computeForceLayout).toHaveBeenCalledTimes(1);
+
+  // A coordinate actually changing IS a new layout input.
+  rerender({ ns: [node('a', { x: 5, y: 0 }), node('b')] });
+  expect(computeForceLayout).toHaveBeenCalledTimes(2);
 });
