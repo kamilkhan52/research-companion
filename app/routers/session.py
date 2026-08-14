@@ -596,6 +596,8 @@ def clear_chats(slug: str):
     contributed (invariant 4: that removal is a proposal the human approves, never a side
     effect of this endpoint).
     """
+    # get_state is thread-scoped and this route runs under the MAIN contextvar — a proxy for
+    # "any chats at all", valid because main is created first and dropped last.
     if not sessions.get_state(slug):
         raise HTTPException(status_code=409, detail="No chats to clear for this paper.")
     if committer.approval_in_flight(slug):
@@ -611,7 +613,10 @@ def clear_chats(slug: str):
                 detail="A response is still generating — stop it before clearing chats.")
         # Only paths git already knows about may enter the commit's pathspec (project_split's
         # lesson: a never-committed transcript errors with "pathspec did not match").
-        tracked = set(projects._git(pid, "ls-files").splitlines())
+        # quotePath=false: ls-files otherwise octal-quotes non-ASCII names, which would fail
+        # the exact-membership test and silently drop such a file from the pathspec.
+        tracked = set(
+            projects._git(pid, "-c", "core.quotePath=false", "ls-files").splitlines())
         rels: list[str] = []
         for jsonl, _branches in sessions.thread_storage_paths(slug):
             try:
@@ -622,14 +627,18 @@ def clear_chats(slug: str):
                 rels.append(rel)
         sessions.remove_thread_storage(slug)
         sessions.drop_session(slug)
-    if rels:
-        try:
-            projects._git(pid, "add", "-A", "--", *rels)
-            projects._git(pid, "commit", "-q", "-m", f"Clear chats: {slug}")
-        except projects.ProjectError:
-            # The clear itself succeeded; a failed bookkeeping commit leaves deletions
-            # staged/dirty for the next approval to sweep — annoying, not incorrect.
-            pass
+        # Git INSIDE the lock (Opus review, PR #406): after release, a fresh chat_start_job
+        # can recreate one of these very paths, and `add -A -- <rel>` would then stage the
+        # NEW transcript's content under a "Clear chats" message. The commit is also
+        # pathspec-limited so a previous failure's staged leftovers can't ride along.
+        if rels:
+            try:
+                projects._git(pid, "add", "-A", "--", *rels)
+                projects._git(pid, "commit", "-q", "-m", f"Clear chats: {slug}", "--", *rels)
+            except projects.ProjectError:
+                # The clear itself succeeded; a failed bookkeeping commit leaves deletions
+                # staged/dirty for the next approval to sweep — annoying, not incorrect.
+                pass
     paper = store.get_paper(slug)
     return {
         "cleared": True,
