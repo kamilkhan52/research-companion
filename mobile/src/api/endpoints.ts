@@ -405,6 +405,16 @@ export const startNotesDiscussionUpdate = (pid: string, target: string, threadId
   apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(target)}/discussion_update_job`, {
     thread_id: threadId === 'main' ? undefined : threadId,
   }).then(noting((r) => r.job));
+/** Start (or join) a mid-conversation PROJECT Notes proposal from one of `slug`'s responses
+ *  (DR-081). Conservative by design; the Project Notes screen resumes it and hosts the
+ *  review, like every Project Notes proposal. */
+export const startProjectNotesFold = (
+  pid: string, slug: string, assistantIndex: number, threadId?: string,
+) =>
+  apiPost<{ job: NotesJob }>(`${P(pid)}/notes/${encodeURIComponent(slug)}/project_fold_job`, {
+    assistant_index: assistantIndex,
+    thread_id: threadId === 'main' ? undefined : threadId,
+  }).then(noting((r) => r.job));
 export const getNotesJob = (pid: string, id: string) =>
   apiGet<{ job: NotesJob }>(`${P(pid)}/notes/jobs/${encodeURIComponent(id)}`).then(noting((r) => r.job));
 /** The notes-edit job currently running for a target, if any — for reattaching on entry. */
