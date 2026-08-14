@@ -446,7 +446,7 @@ export interface NotesJob {
   id: string;
   target: string;
   instruction: string;
-  kind: 'edit' | 'split_destination' | 'split_source_cleanup';
+  kind: 'edit' | 'discussion_update' | 'project_fold' | 'split_destination' | 'split_source_cleanup';
   summary: string;
   base_revision: string;
   /** Present for a paper-by-paper relocation integration queue. */

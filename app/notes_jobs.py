@@ -328,6 +328,9 @@ def start_project_notes_fold(slug: str, assistant_index: int | None = None,
                                  else record.get("canonical", "").strip())
             if role == "user" and record.get("kind") == "reply" and record.get("text", "").strip():
                 parts.append(f"Reader: {record['text'].strip()}")
+            elif (role == "user" and record.get("kind") == "revision"
+                  and record.get("authored_text")):
+                parts.append(f"Reader revision: {record['authored_text'].strip()}")
             elif (role == "assistant" and not record.get("proposed_commit")
                   and record.get("canonical", "").strip()):
                 parts.append(f"Analyst: {record['canonical'].strip()}")

@@ -3094,12 +3094,17 @@ function AssistantBody({
           onPress={() => void copy()}
           accessibilityLabel="Copy this response"
         />
-        <MsgAction
-          icon="edit-3"
-          label="Project Notes"
-          onPress={() => onFoldToProjectNotes(entry.assistant_index)}
-          accessibilityLabel="Fold this response into the Project Notes"
-        />
+        {/* Opus review, PR #398: a DRAFT response (proposed_commit) renders through this same
+            body, and folding one always 400s server-side — a draft is approved or discarded,
+            not folded. Hide the action there instead of offering a dead end. */}
+        {!entry.proposed_commit ? (
+          <MsgAction
+            icon="edit-3"
+            label="Project Notes"
+            onPress={() => onFoldToProjectNotes(entry.assistant_index)}
+            accessibilityLabel="Fold this response into the Project Notes"
+          />
+        ) : null}
         {canRetry ? (
           <MsgAction
             icon="rotate-ccw"

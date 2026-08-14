@@ -641,6 +641,12 @@ def test_project_fold_targets_working_and_uses_only_the_chosen_response(temp_pro
 def test_project_fold_without_index_folds_the_discussion_tail(temp_project):
     add_paper(temp_project, "p1", "Paper One")
     _seed_fold_discussion("p1", "Paper One")
+    # Opus review, PR #398: reader feedback on a draft lives in `authored_text` on a
+    # `revision` record — the tail must carry it, same filter as start_discussion_update.
+    sessions._append_record("p1", {
+        "role": "user", "kind": "revision", "text": "(rendered template)",
+        "authored_text": "Please emphasize the KV-cache angle.",
+    })
     captured = {}
 
     def runner(target, prompt):
@@ -650,10 +656,12 @@ def test_project_fold_without_index_folds_the_discussion_tail(temp_project):
     job = notes_jobs.start_project_notes_fold("p1", runner=runner)
     assert _wait_until_settled(job.id).status == "done"
     # The agent-tool path (no index — the response being generated is not yet recorded) reads
-    # the discussion tail: reader questions and both responses.
+    # the discussion tail: reader questions, revision feedback, and both responses.
     assert "What did we learn here?" in captured["prompt"]
     assert "First response" in captured["prompt"]
     assert "Second response" in captured["prompt"]
+    assert "Reader revision: Please emphasize the KV-cache angle." in captured["prompt"]
+    assert "(rendered template)" not in captured["prompt"]
 
 
 def test_project_fold_rejects_a_missing_response(temp_project):
