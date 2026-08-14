@@ -12,11 +12,14 @@ delete them**. This skill turns that inbox into ledger updates.
 
 ## Where things are
 
-- `.dev-feedback/feedback.jsonl` — one JSON entry per line, append-only. Two kinds:
+- `.dev-feedback/feedback.jsonl` — one JSON entry per line, append-only. Three kinds:
   - `{"kind": "feedback", "ts", "item_id", "verdict": "pass|fail|remark", "comment", "route", "screenshot"}`
     — `route` is the app screen he was on; `screenshot` is a repo-relative PNG path or null.
   - `{"kind": "new_item", "ts", "id": "NEW-…", "title", "description"}` — an issue he opened
     from the phone; the `NEW-…` id is provisional until you assign a DR number.
+  - `{"kind": "response", "ts", "item_id", "text"}` — YOUR reply (DR-080), written via
+    `devtest.append_response` in step 3 below; renders as markdown under the item in the
+    phone's bubble.
 - `.dev-feedback/screenshots/*.png` — view them with the Read tool; they render as images.
 - `.dev-feedback/processed-through` — the triage cursor (a timestamp). Entries with `ts` newer
   than it are unprocessed. `GET /api/devtest/status` on the dev server reports the same count.
@@ -37,13 +40,20 @@ delete them**. This skill turns that inbox into ledger updates.
    - **new_item** → create the next `DR-0XX` row (max existing + 1), `open`, with his title as
      the feedback text and his description in the evidence column; note the provisional
      `NEW-…` id so the app's untriaged entry reconciles on his next refresh.
-3. Advance the cursor to the newest processed `ts`:
+3. **Answer him in the bubble (DR-080).** For every triaged entry that deserves a reply —
+   a diagnosis, "fixed in PR #N, please re-test", "split into DR-0XX, this one can close",
+   or "couldn't reproduce, which screen?" — append a `response` entry:
+   `.venv/bin/python -c "from app.routers import devtest; devtest.append_response('DR-0XX', '''<markdown>''')"`
+   It renders formatted under the item in the phone's bubble, so he can decide pass/close
+   from there without reading the ledger. Keep it short and decision-oriented. A pass
+   verdict needs no reply unless something is worth flagging.
+4. Advance the cursor to the newest processed `ts`:
    `.venv/bin/python -c "from app.routers import devtest; devtest.mark_processed_through('<ts>')"`
    (or write the file directly). Never advance it past entries you did not actually triage.
-4. Commit the ledger changes on a branch and open a PR titled for the pass (the ledger's
+5. Commit the ledger changes on a branch and open a PR titled for the pass (the ledger's
    workflow: merging never closes a row — only his pass verdicts do, which is what you just
    recorded).
-5. If any feedback names a defect that is quick and unambiguous, fix-and-PR per the normal
+6. If any feedback names a defect that is quick and unambiguous, fix-and-PR per the normal
    flow — but the LEDGER update always happens first, so his input is durably recorded even if
    the fix stalls.
 
