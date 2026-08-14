@@ -179,11 +179,17 @@ def list_items():
             })
             known.add(entry["id"])
     counts: dict[str, int] = {}
+    response_counts: dict[str, int] = {}
     for entry in inbox:
         if entry.get("kind") == "feedback" and entry.get("item_id"):
             counts[entry["item_id"]] = counts.get(entry["item_id"], 0) + 1
+        elif entry.get("kind") == "response" and entry.get("item_id"):
+            response_counts[entry["item_id"]] = response_counts.get(entry["item_id"], 0) + 1
     for item in items:
         item["feedback_count"] = counts.get(item["id"], 0)
+        # DR-080: an agent reply is the signal the tester can decide pass/close from — the
+        # card surfaces its presence without having to open the history first.
+        item["response_count"] = response_counts.get(item["id"], 0)
     return {"items": items}
 
 
@@ -275,9 +281,11 @@ def record_feedback(req: FeedbackReq):
 @router.get("/api/devtest/feedback")
 def list_feedback(item_id: str | None = None):
     """Prior entries — so closed items can be revisited and commented on later with their
-    history visible."""
+    history visible. Includes the agent's `response` entries (DR-080): triage answers —
+    diagnosis, "fixed in PR #N", "split into DR-0XX, this can close" — interleave with the
+    tester's own notes so the pass/close decision can be made from the phone."""
     _require_dev()
-    entries = [e for e in _read_feedback() if e.get("kind") == "feedback"]
+    entries = [e for e in _read_feedback() if e.get("kind") in ("feedback", "response")]
     if item_id:
         entries = [e for e in entries if e.get("item_id") == item_id]
     return {"entries": entries[-200:]}
@@ -302,3 +310,24 @@ def status():
 def mark_processed_through(ts: str) -> None:
     """For the triage skill (via a tiny script), not HTTP: advance the cursor."""
     atomic_write_text(_cursor_path(), ts)
+
+
+def append_response(item_id: str, text: str) -> dict:
+    """For the triage skill, not HTTP (DR-080): record the agent's answer to an item's
+    feedback — diagnosis, "fixed in PR #N", "split into DR-0XX, this one can close" — so it
+    shows up under the item in the phone's bubble and Kamil can decide pass/close from there.
+
+    Deliberately filesystem-side like `mark_processed_through`: the dev server is reachable
+    over an open-auth tunnel, and an HTTP write that impersonates the agent's voice is a
+    forgery primitive nobody needs. The agent has the checkout; it writes where it stands.
+    Markdown is expected — the client renders it formatted.
+    """
+    item_id = item_id.strip()
+    text = text.strip()
+    if not item_id or not text:
+        raise ValueError("append_response needs a non-empty item_id and text")
+    return _append_feedback({
+        "kind": "response",
+        "item_id": item_id[:40],
+        "text": text[:8000],
+    })

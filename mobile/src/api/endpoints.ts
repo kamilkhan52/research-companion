@@ -104,14 +104,20 @@ export interface DevTestItem {
   state: string;
   how_to_test: string;
   feedback_count: number;
+  /** DR-080: agent replies recorded by triage — the card flags their presence. */
+  response_count?: number;
 }
 export interface DevTestFeedbackEntry {
   ts: string;
   item_id: string;
-  verdict: 'pass' | 'fail' | 'remark';
-  comment: string;
-  route: string;
-  screenshot: string | null;
+  /** Absent on entries written before kinds existed; those are tester feedback. */
+  kind?: 'feedback' | 'response';
+  verdict?: 'pass' | 'fail' | 'remark';
+  comment?: string;
+  route?: string;
+  screenshot?: string | null;
+  /** DR-080: the agent's markdown reply (kind === 'response'). */
+  text?: string;
 }
 export const getDevTestItems = () => apiGet<{ items: DevTestItem[] }>('/api/devtest/items');
 export const createDevTestItem = (title: string, description?: string) =>
